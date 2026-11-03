@@ -42,8 +42,11 @@ pub(super) enum Token {
     /// `(` and `)` outside a word.
     Open,
     Close,
-    /// A redirection, whose target is the next word.
-    Redirect,
+    /// A redirection, whose target is the next word; `writes` when it opens
+    /// the target to write (`>`, `>>`, `>|`, `<>`).
+    Redirect {
+        writes: bool,
+    },
     /// The body of a here-document: text a command reads, not code.
     Text(String),
     /// An arithmetic command, `(( ... ))`, as written: no `<<` in it opens
@@ -827,7 +830,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
                 lexer.chars.next();
                 if lexer.chars.next_if_eq(&'<').is_some() {
                     // A here-string: its word is the text.
-                    lexer.tokens.push(Token::Redirect);
+                    lexer.tokens.push(Token::Redirect { writes: false });
                 } else {
                     let tabs = lexer.chars.next_if_eq(&'-').is_some();
                     let delimiter = lexer.delimiter();
@@ -841,12 +844,14 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
             }
             '<' | '>' => {
                 lexer.end_word_before_redirection();
-                while lexer
+                let mut writes = c == '>';
+                while let Some(next) = lexer
                     .chars
                     .next_if(|c| matches!(c, '<' | '>' | '&' | '|' | '!'))
-                    .is_some()
-                {}
-                lexer.tokens.push(Token::Redirect);
+                {
+                    writes |= next == '>';
+                }
+                lexer.tokens.push(Token::Redirect { writes });
             }
             c if c.is_whitespace() => lexer.end_word(),
             c => lexer.word_char(c),

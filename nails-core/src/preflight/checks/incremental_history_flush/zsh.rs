@@ -35,7 +35,10 @@
 //! a line, as brace expansion may make the word, and after an `o` among flags
 //! (`set -oshare_history`). An `fc` with a flag that writes the history file
 //! (`-A`, `-W`, `-P`) counts as such a write wherever it stands, as a hook may
-//! run it after every command. No turn-off counts: zsh can end with the option
+//! run it after every command, and so does a redirection to the history file
+//! and, in a hook, a word that names it, while a redirection there whose target
+//! an expansion makes is a doubt. An `emulate -R ksh` turns `SHARE_HISTORY` on,
+//! as ksh's defaults hold it. No turn-off counts: zsh can end with the option
 //! on after one, through a redefined `unsetopt`, a trap or a hook, a plugin
 //! loaded later or an error that stops the file before the line, and no reading
 //! of the files shows that it holds. A `setopt` with an expansion the check
@@ -288,9 +291,14 @@ struct Reader<'a, F: Filesystem> {
     fpath: Vec<Result<(PathBuf, bool), String>>,
     /// The functions the files read autoload by name.
     autoloads: Vec<String>,
-    /// The `fc` commands that write the history file, as the warning names
-    /// them (`/etc/zshrc names \`fc -AI\``).
+    /// What writes the history file otherwise than the options, as the
+    /// warning names it (`/etc/zshrc names \`fc -AI\``).
     fc: Vec<String>,
+    /// The functions the files make hooks ([`Event::Hook`]).
+    hooks: Vec<String>,
+    /// What writes the history file or may, should the function it is in be
+    /// a hook: the function, and the write or the doubt it is then.
+    in_functions: Vec<(String, Result<String, String>)>,
     /// What the check could not follow.
     doubts: Vec<String>,
     /// Whether a file read may turn `RCS` or `GLOBAL_RCS` on again
@@ -533,6 +541,34 @@ impl<F: Filesystem> Reader<'_, F> {
                     self.prompts.push(doubt);
                 }
             }
+            Event::Turns { option, what } => self.options[option] = Some(what),
+            Event::Redirect {
+                target,
+                function,
+                computed,
+            } => {
+                if backstop::history_path(&target) {
+                    let what = format!("{place} redirects output to `{target}`");
+                    if !self.fc.contains(&what) {
+                        self.fc.push(what);
+                    }
+                } else if computed && let Some(function) = function {
+                    let doubt = format!(
+                        "it cannot tell where the output that `{function}` in {place} \
+                         redirects to `{target}` goes, which may be the history file"
+                    );
+                    self.in_functions.push((function, Err(doubt)));
+                }
+            }
+            Event::Names { word, function } => {
+                let what = format!("{place} names `{word}` in `{function}`");
+                self.in_functions.push((function, Ok(what)));
+            }
+            Event::Hook(name) => {
+                if !self.hooks.contains(&name) {
+                    self.hooks.push(name);
+                }
+            }
         }
     }
 
@@ -683,6 +719,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         fpath: Vec::new(),
         autoloads: Vec::new(),
         fc: Vec::new(),
+        hooks: Vec::new(),
+        in_functions: Vec::new(),
         doubts: Vec::new(),
         rcs: false,
         prompt_subst: false,
@@ -724,6 +762,18 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         }
     }
     reader.autoloaded();
+    // What a function holds counts where zsh runs it as a hook: by its name
+    // (`preexec`, `TRAPDEBUG`) or as the files make it one.
+    for (function, found) in std::mem::take(&mut reader.in_functions) {
+        let hook = walk::HOOKS.contains(&function.as_str())
+            || function.starts_with("TRAP")
+            || reader.hooks.contains(&function);
+        match found {
+            Ok(write) if hook && !reader.fc.contains(&write) => reader.fc.push(write),
+            Err(doubt) if hook => reader.doubt(doubt),
+            _ => {}
+        }
+    }
     // A prompt's code runs only when PROMPT_SUBST is on; whether a command
     // line turns it on, the check reads beside the files.
     let mut doubts = reader.doubts;

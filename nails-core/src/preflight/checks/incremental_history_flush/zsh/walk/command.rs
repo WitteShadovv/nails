@@ -10,7 +10,7 @@
 
 use super::super::OH_MY_ZSH;
 use super::super::backstop::{
-    self, FC_WRITES, is_fc_flag, qualifier_code, reexpands, zdotdir_writes,
+    self, FC_WRITES, history_path, is_fc_flag, qualifier_code, reexpands, zdotdir_writes,
 };
 use super::super::lexer::{Word, is_name};
 use super::strings::PROMPTS;
@@ -274,11 +274,28 @@ impl Walker<'_> {
                 "it cannot tell what `emulate {what}` in {place} turns on"
             ))
         };
+        // `-R` resets every option to the mode's defaults, and ksh's turns
+        // SHARE_HISTORY on (zsh 5.9.1: `emulate -R ksh`, not `emulate ksh`).
+        let mut reset = false;
+        let mut mode = None;
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             if arg.expands {
                 self.events.push(doubt(&arg.text));
                 continue;
+            }
+            if mode.is_none() {
+                if let Some(flags) = arg.text.strip_prefix('-')
+                    && !flags.is_empty()
+                    && flags.chars().all(|c| c.is_ascii_alphabetic())
+                    && !matches!(flags, "o" | "c")
+                {
+                    reset |= flags.contains('R');
+                    continue;
+                }
+                if !arg.text.starts_with(['-', '+']) {
+                    mode = Some(arg.text.clone());
+                }
             }
             match arg.text.as_str() {
                 "-o" | "+o" => match args.next() {
@@ -299,6 +316,45 @@ impl Walker<'_> {
                 },
                 _ => self.mention(&arg.text),
             }
+        }
+        if reset && mode.as_deref() == Some("ksh") {
+            self.events.push(Event::Turns {
+                option: 1,
+                what: format!(
+                    "{} runs `emulate -R ksh`, whose reset to ksh's defaults turns on",
+                    self.place
+                ),
+            });
+        }
+    }
+
+    /// The events of an `add-zsh-hook` or a `zle -N` of `args`: the function
+    /// it makes a hook, which zsh runs as commands are entered or end, or as
+    /// a key is pressed ([`Event::Hook`]); one an expansion names is a doubt.
+    pub(super) fn hook(&mut self, command: &str, args: &[Word]) {
+        for arg in args {
+            self.mention(&arg.text);
+        }
+        let words: Vec<&Word> = args
+            .iter()
+            .filter(|arg| !arg.text.starts_with('-'))
+            .collect();
+        let function = match command {
+            // `add-zsh-hook hook function`.
+            "add-zsh-hook" => words.get(1),
+            // `zle -N widget [function]`.
+            _ if args.first().is_some_and(|flag| flag.text == "-N") => {
+                words.get(1).or(words.first())
+            }
+            _ => None,
+        };
+        match function {
+            Some(function) if function.expands => self.events.push(Event::Doubt(format!(
+                "it cannot tell which function `{command} ... {}` in {} makes a hook",
+                function.text, self.place
+            ))),
+            Some(function) => self.events.push(Event::Hook(function.text.clone())),
+            None => {}
         }
     }
 
@@ -430,8 +486,20 @@ impl Walker<'_> {
         };
         let args: Vec<Word> = words.collect();
         self.qualifier(&command.text);
+        let function = self.function();
         for arg in &args {
             self.qualifier(&arg.text);
+            // A command in a function that names the history file may write
+            // it, as `tee -a ~/.zsh_history` does, should the function be a
+            // hook.
+            if let Some(function) = &function
+                && history_path(&arg.text)
+            {
+                self.events.push(Event::Names {
+                    word: arg.text.clone(),
+                    function: function.clone(),
+                });
+            }
         }
         if command.expands && command.text.starts_with(['$', '`']) {
             // `$c`, `${:-source}`, `$(print source)`: any command, a
@@ -466,7 +534,17 @@ impl Walker<'_> {
             }
             "set" => {
                 let mut args = args.iter();
+                // The values `-A` assigns an array, and the positional
+                // parameters after `--`, set no option.
+                let mut values = false;
                 while let Some(arg) = args.next() {
+                    if arg.expands && !values {
+                        self.events.push(Event::Doubt(format!(
+                            "it cannot tell which options `set {}` in {} turns on",
+                            arg.text, self.place
+                        )));
+                    }
+                    values |= matches!(arg.text.as_str(), "--" | "-A" | "+A");
                     if matches!(arg.text.as_str(), "-o" | "+o")
                         && let Some(name) = args.next()
                     {
@@ -516,6 +594,7 @@ impl Walker<'_> {
             }
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
+            "add-zsh-hook" | "zle" => self.hook(&command.text, &args),
             "trap" => self.trap(&args, unconditional),
             "sched" => self.sched(&args, unconditional),
             "zstyle" => self.zstyle(&args, unconditional),
