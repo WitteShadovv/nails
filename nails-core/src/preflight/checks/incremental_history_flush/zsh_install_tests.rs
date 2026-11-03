@@ -294,6 +294,39 @@ fn an_fc_alias_counts_as_used_in_a_stock_function_zsh_expands_aliases_in() {
 }
 
 #[test]
+fn the_dump_file_compinit_is_given_is_no_file_the_code_makes_first() {
+    // compinit makes the dump file only once it has read it or found none,
+    // so one that is not there now is none the code makes before zsh reads
+    // it: zsh 5.9.2 writes nothing with these, the stock compinit's own
+    // name of it aside.
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+    let known = install(&fs, &[]);
+    for rc in [
+        "autoload -Uz compinit && compinit -d ~/.cache/zcd\n",
+        "autoload -Uz compinit && compinit -d \"$HOME/.cache/zcd\"\n",
+        "alias h='fc -l'\nautoload compinit && compinit\n",
+    ] {
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{rc}");
+    }
+    // A command that names it beyond compinit may make it first.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "mkdump ~/.cache/zcd\nautoload -Uz compinit && compinit -d ~/.cache/zcd\n",
+    );
+    assert!(
+        scan_with(&fs, UNKNOWN, &known)
+            .doubts
+            .iter()
+            .any(|doubt| doubt.contains("/home/alice/.cache/zcd, which is not there now")),
+        "{:?}",
+        scan_with(&fs, UNKNOWN, &known)
+    );
+}
+
+#[test]
 fn a_changed_compinit_or_one_found_first_elsewhere_is_read_as_code() {
     // A compinit whose bytes are no stock one is any function.
     let fs = MockFilesystem::new();
