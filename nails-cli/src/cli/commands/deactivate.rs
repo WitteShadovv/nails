@@ -310,8 +310,9 @@ fn confirm_or_cancel(
     write_prompt(settings, poweroff, bound, err);
     match answer() {
         Answer::Yes => return None,
-        // Ctrl+C leaves the cursor after the prompt: end its line first.
-        Answer::Cancelled => {
+        // Ctrl+C, or the end of the input, leaves the cursor after the
+        // prompt: end its line first.
+        Answer::Cancelled | Answer::EndOfInput => {
             let _ = writeln!(err);
         }
         Answer::No => {}

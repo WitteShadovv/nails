@@ -703,7 +703,8 @@ fn the_prompt_says_where_the_session_ends_before_asking() {
 
 /// An answer other than yes reads as `activate`'s cancel: the neutral notice
 /// after the prompt, no error, and exit 130. Ctrl+C at the prompt is one too,
-/// its notice on a line of its own. A yes goes on without one.
+/// and so is the end of the input, each with its notice on a line of its own,
+/// since no Enter ended the prompt's. A yes goes on without one.
 #[test]
 fn a_declined_or_interrupted_deactivation_is_a_neutral_notice_and_exits_130() {
     use crate::cli::commands::prompt::Answer;
@@ -717,6 +718,7 @@ fn a_declined_or_interrupted_deactivation_is_a_neutral_notice_and_exits_130() {
     for (answer, ending) in [
         (Answer::No, format!("Continue? [y/N]: {notice}")),
         (Answer::Cancelled, format!("Continue? [y/N]: \n{notice}")),
+        (Answer::EndOfInput, format!("Continue? [y/N]: \n{notice}")),
     ] {
         let (status, shown) = ask(answer);
         assert_eq!(status, Some(ExitStatus::Cancelled), "{answer:?}");

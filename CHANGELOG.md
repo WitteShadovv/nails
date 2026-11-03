@@ -1327,6 +1327,9 @@ of this changelog for that version becomes the release notes word for word, and
   image: the record of the live session, which says nothing about the image. An offline scan now
   leaves the file unread, and `state_file_status` is `not_checked` under `--json`; a live scan
   reports it as before.
+- At the question of `activate`, `deactivate` and `discard`, the end of the input (Ctrl+D) cancels
+  as a "no" does, and its notice now starts on a line of its own. It began on the question's row,
+  as the terminal echoes no newline for Ctrl+D.
 
 ### Security
 
