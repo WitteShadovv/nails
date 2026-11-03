@@ -478,7 +478,7 @@ soft-reboots with `py/nails_e2e/session.py`:
   next session, an emergency and its timed log, `recover`/`emergency` on
   the plain decoy changing nothing, and eth1 keeping the static addresses
   NixOS gave it (`networking.interfaces`) in both hidden sessions and after
-  both ways back;
+  both ways back, with the unit that adds them running at every switch;
 - `session-emergency`: the activation command typed on a decoy tty never reaches
   its history, emergency from a hidden login shell, the decoy's avahi-daemon
   and a service with a PID file in `/run` starting again after the emergency

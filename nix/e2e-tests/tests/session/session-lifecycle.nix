@@ -26,10 +26,13 @@
 # the test network (`networking.interfaces.eth1`): in both hidden sessions,
 # and on the decoy after the deactivation and after the emergency. NixOS
 # applies them with network-addresses-eth1.service, whose stop deletes them,
-# and a soft-reboot never starts that unit again (it starts when eth1
-# appears), so they outlive the switches only because the session clears that
-# stop until the way back (STOP_GUARDED_UNITS in nails-teardown). Each of
-# those places that lacks one is recorded, and the test fails at the end
+# and the session clears that stop until the way back (STOP_GUARDED_UNITS in
+# nails-teardown). The unit starts when eth1 appears, which a soft-reboot does
+# not replay, so nothing starts it again after the first activation. The test
+# starts it before each later switch: every switch then has a stop that would
+# delete the addresses, and the start puts back what an earlier switch
+# deleted, so each place judges the switch right before it. Each place where
+# eth1 lacks an address or is down is recorded, and the test fails at the end
 # naming them all.
 _:
 let
@@ -99,6 +102,23 @@ in
         if not up:
             gaps.append(f"{where}: eth1 is down")
         return gaps
+
+
+    def start_address_unit(where):
+        """Start network-addresses-eth1.service at `where`, before a switch.
+
+        Nothing starts it again after the first soft-reboot, so without this
+        the switch would have no stop for the session to clear. The start also
+        adds back the addresses an earlier switch deleted, so the place after
+        the switch judges that switch alone."""
+        machine.succeed("systemctl start network-addresses-eth1.service")
+        machine.succeed("systemctl is-active network-addresses-eth1.service")
+        stop = machine.succeed(
+            "systemctl show -p ExecStop --value network-addresses-eth1.service"
+        ).strip()
+        machine.log(f"{where}: the unit's stop command: {stop or 'none'}")
+        gaps = eth1_gaps(where)
+        assert STATIC_ADDRESSES and not gaps, f"{STATIC_ADDRESSES}: {gaps}"
 
 
     def peek_decoy(decoy_dev, command):
@@ -257,6 +277,7 @@ in
             ), f"{line} is not in the hidden session's journal"
 
     with subtest("deactivate soft-reboots back and leaves no hidden /run"):
+        start_address_unit("the hidden session before deactivate")
         machine.succeed("echo probe > /run/hidden-run-probe")
         machine.succeed("systemd-run --unit hidden-probe --property=Type=exec sleep infinity")
         wall = session.wall_clock(machine)
@@ -320,11 +341,13 @@ in
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         status = read_status_json(config_path=CONFIG)
         assert status["place"] == "decoy", status
+        start_address_unit("the decoy before the second activation")
         canonical_activate(CONFIG, "--overlay-only", "activate-2")
         assert machine.succeed("cat /root/hidden-canary").strip() == canary
         address_gaps.extend(eth1_gaps("the second hidden session"))
 
     with subtest("emergency in the hidden session kills it and returns at once"):
+        start_address_unit("the second hidden session before the emergency")
         # A unit gets systemd's default PATH, without coreutils on NixOS.
         machine.succeed(
             "systemd-run --unit hidden-writer --property=Type=exec --setenv=PATH=$PATH "
