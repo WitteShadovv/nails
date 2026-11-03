@@ -42,7 +42,7 @@ use nails_api::Event;
 use nails_api::protocol::PowerOffInstead;
 
 use crate::client::{Plan, PlanData};
-use crate::emergency::Finish;
+use crate::emergency::{Finish, Firing};
 use crate::envelope::{self, Attention, ErrorBody, Place, Readiness, StatusData};
 use crate::text;
 use crate::worker::{Ask, Failure, Kind, Update};
@@ -255,9 +255,9 @@ pub enum Effect {
     /// window as gone, which cancels an activation before its point of no
     /// return. The session ends with the answer that follows.
     HangUp,
-    /// Fire the emergency ([`crate::emergency`]) to end the session with
-    /// this finish; it goes its own way.
-    Emergency(Finish),
+    /// Fire the emergency ([`crate::emergency`]) to end the session as this
+    /// firing says; it goes its own way.
+    Emergency(Firing),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -428,10 +428,10 @@ impl Model {
         if !self.shows_emergency() {
             return None;
         }
-        let (finish, _) = self.emergency_finish();
-        self.emergency_fired = Some(finish);
+        let firing = self.emergency_firing();
+        self.emergency_fired = Some(firing.finish());
         self.close_question();
-        Some(Effect::Emergency(finish))
+        Some(Effect::Emergency(firing))
     }
 
     /// Whether the Emergency control shows: in a hidden session, by the

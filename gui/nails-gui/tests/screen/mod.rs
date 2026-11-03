@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
-use nails_gui::emergency::Finish;
+use nails_gui::emergency::{Finish, Firing};
 use nails_gui::model::Model;
 use nails_gui::ui::{Controller, Hooks};
 use nails_gui::worker::{Ask, Update};
@@ -40,7 +40,7 @@ pub struct Screen {
     hang_ups: Rc<Cell<u32>>,
     closed: Rc<Cell<bool>>,
     /// The finish of each emergency the window fired.
-    emergencies: Rc<RefCell<Vec<Finish>>>,
+    emergencies: Rc<RefCell<Vec<Firing>>>,
 }
 
 impl Screen {
@@ -68,7 +68,7 @@ impl Screen {
 
     /// As [`Screen::with`], and the emergency, once counted, also fires
     /// through `emergency`.
-    pub fn with_emergency(model: Model, emergency: Box<dyn Fn(Finish)>) -> Self {
+    pub fn with_emergency(model: Model, emergency: Box<dyn Fn(Firing)>) -> Self {
         thread_local! {
             static PLATFORM: Cell<bool> = const { Cell::new(false) };
         }
@@ -95,9 +95,9 @@ impl Screen {
                     ask: Box::new(move |ask| asks.borrow_mut().push(ask)),
                     hang_up: Box::new(move || hang_ups.set(hang_ups.get() + 1)),
                     close: Box::new(move || closed.set(true)),
-                    emergency: Box::new(move |finish| {
-                        emergencies.borrow_mut().push(finish);
-                        emergency(finish);
+                    emergency: Box::new(move |firing| {
+                        emergencies.borrow_mut().push(firing);
+                        emergency(firing);
                     }),
                 },
             )
@@ -120,6 +120,11 @@ impl Screen {
 
     /// The finish of each emergency the window fired, in order.
     pub fn finishes(&self) -> Vec<Finish> {
+        self.firings().into_iter().map(Firing::finish).collect()
+    }
+
+    /// Each emergency the window fired, in order.
+    pub fn firings(&self) -> Vec<Firing> {
         self.emergencies.borrow().clone()
     }
 
