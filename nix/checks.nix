@@ -205,8 +205,10 @@ in
   # shards take their time box), and the E2E metadata sources the shard
   # planner's tests scan (default.nix, the tests tree and the checked-in
   # weights) and the helper library and batched scenarios the E2E
-  # synchronisation lint scans. git is a tool because changes.py shells out to
-  # it and its tests build throwaway repositories, e2fsprogs and btrfs-progs
+  # synchronisation lint scans, and the distribution tier, whose Nix files say
+  # what the path filter of distro-e2e.yml must cover. git is a tool because
+  # changes.py shells out to it and its tests (those of distro-e2e.yml's choice
+  # of suites too) build throwaway repositories, e2fsprogs and btrfs-progs
   # because the oracle's free-space planting is tested on ext4 and btrfs images
   # it makes and checks, util-linux, sleuthkit and dosfstools because the
   # oracle's choice of how to compare each partition of a disk is tested on GPT
@@ -222,7 +224,7 @@ in
       ../justfile
       ../docs/ci.md
       ../.github/workflows
-      ./distro-tests/images.json
+      ./distro-tests
       ./e2e-tests/default.nix
       ./e2e-tests/lib
       ./e2e-tests/tests
