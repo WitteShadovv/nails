@@ -14,6 +14,11 @@ mod autoload;
 #[path = "zsh_runtime_tests.rs"]
 mod runtime;
 
+// Where a zsh's fpath starts, the stock compinit and promptinit, and
+// NixOS's generated files.
+#[path = "zsh_install_tests.rs"]
+mod installed;
+
 // What the way a zsh starts makes it read and turn on.
 #[path = "zsh_start_tests.rs"]
 mod start;
@@ -52,7 +57,7 @@ fn seed(fs: &MockFilesystem, path: &str, text: &str) {
 
 /// What `fs` sets for a zsh started as `start`, in the home.
 fn scan(fs: &MockFilesystem, start: Start) -> Scan {
-    zsh(fs, &[PathBuf::from(HOME)], start)
+    zsh(fs, &[PathBuf::from(HOME)], start, &Install::default())
 }
 
 /// The settings `fs` turns on, as the warning names them.
@@ -254,7 +259,7 @@ fn a_path_is_resolved_in_every_home_and_config_home_it_may_be_in() {
     );
     let homes = [PathBuf::from("/root"), PathBuf::from(HOME)];
     let on_in_both = |fs: &MockFilesystem| -> Vec<String> {
-        zsh(fs, &homes, NOT_LOGIN)
+        zsh(fs, &homes, NOT_LOGIN, &Install::default())
             .writes
             .into_iter()
             .map(|write| write.what)
