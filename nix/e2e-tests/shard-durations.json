@@ -31,6 +31,7 @@
   "post-emergency-image": 60,
   "preflight-checks": 53,
   "preflight-decoy-filesystem": 40,
+  "preflight-decoy-zvol": 30,
   "preflight-hidden-root": 26,
   "preflight-space": 26,
   "preflight-storage-readiness": 28,
