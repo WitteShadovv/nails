@@ -222,3 +222,26 @@ fn a_function_s_file_the_code_may_make_before_zsh_loads_it_is_a_doubt() {
     let rc = "cp ~/.src ~/zfn/other\nfpath=(~/zfn $fpath)\nautoload -Uz compinit && compinit\n";
     assert_eq!(known_with(rc), Scan::default());
 }
+
+#[test]
+fn many_functions_behind_directories_that_lack_them_are_checked_in_one_pass() {
+    // Each function looked up in a directory in front of the one that holds
+    // it is a file that is not there, which the check asks each file it reads
+    // about: 1500 functions in the last of three directories, read at once.
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit"]);
+    for dir in ["zfn1", "zfn2", "zfn3"] {
+        fs.mock_set_path_type(&format!("{HOME}/{dir}"), PathKind::Dir);
+    }
+    let names: Vec<String> = (0..1500).map(|at| format!("_f{at}")).collect();
+    let body = "local x=$1\nprint -r -- ${x} ${x}/y{a,b} > /dev/null\n".repeat(20);
+    for name in &names {
+        seed(&fs, &format!("{HOME}/zfn3/{name}"), &body);
+    }
+    let rc = format!(
+        "fpath=(~/zfn1 ~/zfn2 ~/zfn3 $fpath)\nautoload -Uz {}\n",
+        names.join(" ")
+    );
+    seed(&fs, "/home/alice/.zshrc", &rc);
+    assert_eq!(scan_with(&fs, UNKNOWN, &install(&fs, &[])), Scan::default());
+}
