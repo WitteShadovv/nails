@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::client::{Answer, Plan, PlanData};
-use crate::model::View;
+use crate::model::{Choice, View};
 use crate::worker::{Ask, Kind, Update};
 
 fn fixture(name: &str) -> Value {
@@ -499,6 +499,105 @@ fn once_the_engine_holds_the_volume_and_the_record_they_stay_held_in_its_words()
     model.back();
     model.choose(row("log_path"));
     assert_eq!(model.page().action, Some(text::SAVE_ACTION));
+}
+
+/// The page of `window.emergency`: its three endings, each with its line,
+/// the default marked whether it is in force or not.
+#[test]
+fn the_emergency_offers_its_three_endings_with_the_default_marked() {
+    const KEY: &str = "window.emergency";
+    let line = |spelling: &str| text::choice(KEY, spelling).1;
+    let mut model = settings("config-show");
+    assert_eq!(
+        model.page().choices[row(KEY)],
+        Choice {
+            title: text::FACT_EMERGENCY.to_string(),
+            subtitle: "Return to the decoy. The default".to_string(),
+        }
+    );
+    assert_eq!(model.choose(row(KEY)), None, "the key's page opens");
+    let page = model.page();
+    assert_eq!(page.heading, text::FACT_EMERGENCY);
+    assert_eq!(page.description, text::setting(KEY).1);
+    assert_eq!(
+        page.facts,
+        [
+            ("Now".to_string(), "Return to the decoy".to_string()),
+            ("Comes from".to_string(), "The default".to_string()),
+        ]
+    );
+    assert_eq!(
+        page.choices,
+        [
+            Choice {
+                title: "Return to the decoy".to_string(),
+                subtitle: format!("{}. {}", text::CHOSEN_DEFAULT, line("return")),
+            },
+            Choice {
+                title: "Power off".to_string(),
+                subtitle: line("poweroff").to_string(),
+            },
+            Choice {
+                title: "Restart".to_string(),
+                subtitle: line("reboot").to_string(),
+            },
+        ]
+    );
+    // The return's line says where it powers off instead, as the way back
+    // of Return to Decoy does.
+    assert!(
+        line("return").contains("powers off instead"),
+        "{}",
+        line("return")
+    );
+    assert_eq!((page.action, page.secondary), (None, None));
+    assert_eq!(model.choose(0), None, "what holds already asks nothing");
+    assert_eq!(
+        model.choose(2),
+        Some(set(KEY, SettingValue::Text("reboot".to_string())))
+    );
+
+    // Where the file sets it, Now marks that ending, the default keeps its
+    // mark, and the page offers the default.
+    let mut shown = fixture("config-show");
+    shown["data"]["config"]["window"]["emergency"] = json!("poweroff");
+    shown["data"]["sources"]["window"] = json!("file");
+    shown["data"]["sources"]["window.emergency"] = json!("file");
+    let mut model = settings_on(shown);
+    assert_eq!(
+        model.page().choices[row(KEY)].subtitle,
+        "Power off. The settings file"
+    );
+    model.choose(row(KEY));
+    let page = model.page();
+    assert_eq!(
+        page.facts,
+        [
+            ("Now".to_string(), "Power off".to_string()),
+            ("Comes from".to_string(), "The settings file".to_string()),
+        ]
+    );
+    let lines: Vec<&str> = page
+        .choices
+        .iter()
+        .map(|choice| choice.subtitle.as_str())
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            format!("{}. {}", text::DEFAULT_CHOICE, line("return")),
+            format!("{}. {}", text::CHOSEN, line("poweroff")),
+            line("reboot").to_string(),
+        ]
+    );
+    assert_eq!(page.action, Some(text::USE_DEFAULT));
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::ConfigEdit(ConfigEditArgs {
+            set: Vec::new(),
+            unset: vec![KEY.to_string()],
+        }))))
+    );
 }
 
 #[test]
