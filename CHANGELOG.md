@@ -713,16 +713,17 @@ of this changelog for that version becomes the release notes word for word, and
   through an SSH login to the machine itself, are not recognised. Name the flake by its absolute
   path or a plain URL.
 - A cancelled activation says what it left. Its notice read "Activation cancelled; nothing was
-  changed.", which was not true once the activation had gone on past its question: the residue
-  baseline and the parts of the hidden NixOS system a build had finished stay on the hidden volume.
-  It now reads "Activation cancelled. It wrote nothing to this computer's disk.", and once the
-  entry of an activation that builds a hidden NixOS system has begun, a second line follows:
-  "Anything already built stays on the hidden volume for the next activation." With a hidden root
-  on storage allowed with `--allow-decoy-storage`, where everything the activation writes lands,
-  it reads "Activation cancelled. What it wrote to the storage you allowed stays there." The
-  `--json` cancel envelope and the window carry the same words. A Ctrl+C after the question, or
-  under `-y`, starts the notice on a line of its own on a terminal, where it began right after the
-  `^C` the terminal echoed.
+  changed.", but what the activation wrote to the hidden volume stays there, such as its log, the
+  residue baseline and the parts of the hidden NixOS system a build had finished. On a hidden
+  volume of its own it now reads "Activation cancelled. It wrote nothing to this computer's
+  disk.", and once the entry of an activation that builds a hidden NixOS system has begun, a
+  second line follows: "Anything already built stays on the hidden volume for the next
+  activation." Where the attach gate warned about the hidden root, as for an encrypted container
+  file on a decoy filesystem, it reads "Activation cancelled. What it wrote to the hidden volume
+  stays there.", and for a root allowed with `--allow-decoy-storage` "Activation cancelled. What
+  it wrote to the storage you allowed stays there." The `--json` cancel envelope and the window
+  carry the same words. A Ctrl+C after the question, or under `-y`, starts the notice on a line
+  of its own on a terminal, where it began right after the `^C` the terminal echoed.
 - `rehearse plant` sends its notification canary with normal urgency, as an ordinary message has,
   where it used low urgency. A desktop may show a notification of low urgency without a banner, so
   the channel was reported as planted while the operator saw nothing of it. The operator guide

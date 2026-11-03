@@ -269,6 +269,8 @@ fn a_plain_failure_names_the_error_on_stderr_and_promises_no_leftovers() {
 
 /// A cancel is the one cancel shape, no failure: it reads the same whether the
 /// operator answered `n` or pressed Ctrl+C, at the prompt or during the entry.
+/// Reported from the error alone, it knows nothing of where the hidden volume
+/// lies, so it claims nothing about this computer's disk.
 #[test]
 fn a_cancel_reads_as_the_one_cancel_shape() {
     let cancelled = ActivateResult::Failed(&NailsError::Cancelled);
@@ -277,7 +279,7 @@ fn a_cancel_reads_as_the_one_cancel_shape() {
     assert_eq!(value["error"]["code"], "cancelled");
     assert_eq!(
         value["error"]["message"],
-        "Activation cancelled. It wrote nothing to this computer's disk."
+        "Activation cancelled. What it wrote to the hidden volume stays there."
     );
     // The cancel shape carries no data.
     assert!(value.get("data").is_none(), "{value}");
@@ -287,12 +289,11 @@ fn a_cancel_reads_as_the_one_cancel_shape() {
     assert_eq!(
         err,
         vec![
-            "\u{25cb} Activation cancelled. It wrote nothing to this computer's disk.".to_string()
+            "\u{25cb} Activation cancelled. What it wrote to the hidden volume stays there."
+                .to_string()
         ]
     );
-    // An error the entry returns for a cancel prints as a cancel without more
-    // knowledge: the plain notice.
-    assert_eq!(err, cancel_lines(Cancel::default(), Style::default()));
+    assert_eq!(err, cancel_lines(Cancel::unjudged(), Style::default()));
 }
 
 /// The envelope of a cancel `print_activate_cancel` prints, as a value
@@ -303,21 +304,42 @@ fn cancel_value(cancel: Cancel) -> serde_json::Value {
     crate::cli::output::test_support::envelope("activate", &line)
 }
 
+/// Every place the attach gate can find the hidden volume.
+const STORAGES: [RootStorage; 3] = [
+    RootStorage::OwnVolume,
+    RootStorage::Warned,
+    RootStorage::Allowed,
+];
+
+/// Every notice a cancelled activation can print.
+const NOTICES: [CancelNotice; 4] = [
+    CancelNotice::Plain,
+    CancelNotice::KeepsBuild,
+    CancelNotice::WarnedStorage,
+    CancelNotice::AllowedStorage,
+];
+
 /// Each notice says only what holds: nothing written to this computer's disk
 /// when the hidden volume is a volume of its own, what a build had finished
 /// kept on the hidden volume once a building entry began, and on storage the
-/// operator allowed, what was written there kept, with no word about the
-/// disk. The window shows the same words, from the envelope's message.
+/// gate warned about or the operator allowed, what was written there kept,
+/// with no word about the disk. The window shows the same words, from the
+/// envelope's message.
 #[test]
 fn each_cancel_notice_says_only_what_the_cancel_left() {
     let disk = "Activation cancelled. It wrote nothing to this computer's disk.";
     let build = "Anything already built stays on the hidden volume for the next activation.";
+    let warned = "Activation cancelled. What it wrote to the hidden volume stays there.";
     let allowed = "Activation cancelled. What it wrote to the storage you allowed stays there.";
     for (notice, lines) in [
         (CancelNotice::Plain, vec![format!("\u{25cb} {disk}")]),
         (
             CancelNotice::KeepsBuild,
             vec![format!("\u{25cb} {disk}"), format!("  {build}")],
+        ),
+        (
+            CancelNotice::WarnedStorage,
+            vec![format!("\u{25cb} {warned}")],
         ),
         (
             CancelNotice::AllowedStorage,
@@ -340,21 +362,126 @@ fn each_cancel_notice_says_only_what_the_cancel_left() {
         format!("{disk}\n{build}"),
         "the second line follows the first in the one message"
     );
-    // On allowed storage the disk may hold what was written: never the
-    // sentence that it holds nothing.
-    assert!(!CancelNotice::AllowedStorage.text().contains("nothing"));
 }
 
-/// Which notice an activation's state gives: allowed storage first, since
-/// there the writes may be on this computer's own disk, then a build that may
-/// have begun.
+/// Which notice an activation's state gives: where the gate found the hidden
+/// volume first, then a build that may have begun, which only a volume of its
+/// own adds a line for.
 #[test]
 fn the_notice_follows_where_the_volume_lies_and_whether_a_build_began() {
-    assert_eq!(CancelNotice::new(false, false), CancelNotice::Plain);
-    assert_eq!(CancelNotice::new(false, true), CancelNotice::KeepsBuild);
-    assert_eq!(CancelNotice::new(true, false), CancelNotice::AllowedStorage);
-    assert_eq!(CancelNotice::new(true, true), CancelNotice::AllowedStorage);
-    assert_eq!(CancelNotice::default(), CancelNotice::Plain);
+    for (storage, building, notice) in [
+        (RootStorage::OwnVolume, false, CancelNotice::Plain),
+        (RootStorage::OwnVolume, true, CancelNotice::KeepsBuild),
+        (RootStorage::Warned, false, CancelNotice::WarnedStorage),
+        (RootStorage::Warned, true, CancelNotice::WarnedStorage),
+        (RootStorage::Allowed, false, CancelNotice::AllowedStorage),
+        (RootStorage::Allowed, true, CancelNotice::AllowedStorage),
+    ] {
+        assert_eq!(
+            CancelNotice::new(storage, building),
+            notice,
+            "{storage:?} {building}"
+        );
+    }
+}
+
+/// Only a hidden volume the gate found of its own, with no warning, gets the
+/// sentence that the activation wrote nothing to this computer's disk. One in
+/// a container file on a decoy filesystem, which warns without an override,
+/// never does, at any point of the activation, and neither does a cancel that
+/// knows nothing of where the volume lies.
+#[test]
+fn only_a_volume_of_its_own_gets_the_sentence_about_the_disk() {
+    let disk = "nothing to this computer's disk";
+    for storage in STORAGES {
+        for builds in [false, true] {
+            let facts = CancelFacts {
+                storage,
+                builds,
+                on_terminal: false,
+            };
+            for cancel in [
+                facts.at_prompt(),
+                facts.by_signal(false),
+                facts.by_signal(true),
+            ] {
+                assert_eq!(
+                    cancel.notice.text().contains(disk),
+                    storage == RootStorage::OwnVolume,
+                    "{storage:?} {builds} {cancel:?}"
+                );
+            }
+        }
+    }
+    assert!(!Cancel::unjudged().notice.text().contains(disk));
+}
+
+/// At the prompt nothing was built, and the prompt ends its own line: the
+/// notice never starts with a line break there, and only where the gate found
+/// the hidden volume changes what it says.
+#[test]
+fn a_cancel_at_the_prompt_reads_as_nothing_built() {
+    for (storage, notice) in [
+        (RootStorage::OwnVolume, CancelNotice::Plain),
+        (RootStorage::Warned, CancelNotice::WarnedStorage),
+        (RootStorage::Allowed, CancelNotice::AllowedStorage),
+    ] {
+        for (builds, on_terminal) in [(false, false), (true, true)] {
+            let facts = CancelFacts {
+                storage,
+                builds,
+                on_terminal,
+            };
+            let cancel = facts.at_prompt();
+            assert_eq!(cancel.notice, notice, "{facts:?}");
+            assert!(!cancel.below_echo, "{facts:?}");
+        }
+    }
+}
+
+/// After the question, or without one under `-y`, only a signal cancels: the
+/// notice starts below the terminal's `^C` when it goes to a terminal, and
+/// says what a build left only once the entry of an activation that builds a
+/// hidden NixOS system had begun, on a volume of its own.
+#[test]
+fn a_signal_cancel_says_what_the_entry_got_to() {
+    for (storage, builds, entered, notice) in [
+        (RootStorage::OwnVolume, false, false, CancelNotice::Plain),
+        (RootStorage::OwnVolume, false, true, CancelNotice::Plain),
+        (RootStorage::OwnVolume, true, false, CancelNotice::Plain),
+        (RootStorage::OwnVolume, true, true, CancelNotice::KeepsBuild),
+        (RootStorage::Warned, true, true, CancelNotice::WarnedStorage),
+        (
+            RootStorage::Warned,
+            false,
+            false,
+            CancelNotice::WarnedStorage,
+        ),
+        (
+            RootStorage::Allowed,
+            true,
+            true,
+            CancelNotice::AllowedStorage,
+        ),
+        (
+            RootStorage::Allowed,
+            false,
+            false,
+            CancelNotice::AllowedStorage,
+        ),
+    ] {
+        for on_terminal in [false, true] {
+            let facts = CancelFacts {
+                storage,
+                builds,
+                on_terminal,
+            };
+            let cancel = facts.by_signal(entered);
+            let case = format!("{facts:?} entered: {entered}");
+            assert_eq!(cancel.notice, notice, "{case}");
+            assert_eq!(cancel.below_echo, on_terminal, "{case}");
+        }
+    }
 }
 
 /// A Ctrl+C while nothing is asked leaves the terminal's `^C` echo where the
@@ -362,11 +489,7 @@ fn the_notice_follows_where_the_volume_lies_and_whether_a_build_began() {
 /// its envelope is the same.
 #[test]
 fn a_notice_below_the_echo_starts_on_a_line_of_its_own() {
-    for notice in [
-        CancelNotice::Plain,
-        CancelNotice::KeepsBuild,
-        CancelNotice::AllowedStorage,
-    ] {
+    for notice in NOTICES {
         let inline = Cancel {
             notice,
             below_echo: false,
@@ -399,11 +522,7 @@ fn every_cancel_notice_fits_80_columns() {
             color: false,
             ascii,
         };
-        for notice in [
-            CancelNotice::Plain,
-            CancelNotice::KeepsBuild,
-            CancelNotice::AllowedStorage,
-        ] {
+        for notice in NOTICES {
             let cancel = Cancel {
                 notice,
                 below_echo: true,

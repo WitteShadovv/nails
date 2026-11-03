@@ -18,7 +18,7 @@
 
 use super::prompt::{Answer, read_answer_from_stdin};
 use crate::cli::args::ActivateArgs;
-use crate::cli::output::activate::CancelNotice;
+use crate::cli::output::activate::CancelFacts;
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::{self, ActivateResult, ExitStatus, OutputSettings};
@@ -183,40 +183,21 @@ pub fn execute(
             &begun.locked.entry_advisories(),
         ))
     {
-        return report_cancelled(
-            settings,
-            prompt_cancel(begun.locked.accepted().is_some()),
-            status,
-        );
+        let cancel = cancel_facts(settings, &begun.locked).at_prompt();
+        return report_cancelled(settings, cancel, status);
     }
     finish(settings, begun.locked, || {})
 }
 
-/// The cancel at the prompt of an activation whose hidden volume may lie on
-/// storage the operator allowed (`on_allowed_storage`): nothing was built
-/// yet, and the prompt's line is ended already, by the Enter of an answer or,
-/// for a Ctrl+C, by [`confirm_logout`] itself.
-fn prompt_cancel(on_allowed_storage: bool) -> output::activate::Cancel {
-    output::activate::Cancel {
-        notice: CancelNotice::new(on_allowed_storage, false),
-        below_echo: false,
-    }
-}
-
-/// The cancel once the question is answered, or skipped with `-y`, where only
-/// a signal stops the activation (or, for the window, its hang-up): what was
-/// built depends on whether the entry had begun (`entered`) in an activation
-/// that `builds` a hidden NixOS system. The notice starts below the `^C` the
-/// terminal echoed when it goes to a terminal (`on_terminal`).
-fn signal_cancel(
-    on_allowed_storage: bool,
-    builds: bool,
-    entered: bool,
-    on_terminal: bool,
-) -> output::activate::Cancel {
-    output::activate::Cancel {
-        notice: CancelNotice::new(on_allowed_storage, builds && entered),
-        below_echo: on_terminal,
+/// What a cancel of `locked` may say, read in this one place for the prompt
+/// and for every step after it: where the attach gate found the hidden
+/// volume, whether the activation builds a hidden NixOS system, and whether
+/// its notice goes to a terminal.
+fn cancel_facts(settings: &OutputSettings, locked: &LockedActivation) -> CancelFacts {
+    CancelFacts {
+        storage: locked.root_storage(),
+        builds: locked.builds_hidden_system(),
+        on_terminal: !settings.is_json() && std::io::stderr().is_terminal(),
     }
 }
 
@@ -225,8 +206,9 @@ fn signal_cancel(
 pub(crate) struct Begun {
     /// The handle that enters and commits, holding the lock until dropped.
     pub(crate) locked: LockedActivation,
-    /// The warning the attach gate raised for a risk the operator allowed,
-    /// already printed on stderr.
+    /// The warning the attach gate raised, for storage the operator allowed
+    /// or for a root that only warns by itself (an encrypted container file
+    /// on a decoy filesystem), already printed on stderr.
     #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     pub(crate) warning: Option<String>,
     /// The line saying no configuration file was found, which the caller
@@ -292,8 +274,9 @@ pub(crate) fn begin(
         Prepared::Proceed(ready) => ready,
     };
 
-    // The attach gate raised a warning the operator overrode: show it before
-    // taking the lock (the lock itself writes nothing to report).
+    // The attach gate raised a warning, for storage the operator allowed or
+    // for a root that only warns by itself: show it before taking the lock
+    // (the lock itself writes nothing to report).
     let warning = ready.warning().map(str::to_string);
     if let Some(warning) = &warning {
         crate::cli::output::eprintln_tolerating_broken_pipe(&format!("warning: {warning}"));
@@ -322,25 +305,22 @@ pub(crate) fn finish(
     at_point_of_no_return: impl FnOnce(),
 ) -> ExitStatus {
     let json = settings.is_json();
-    let builds = locked.builds_hidden_system();
-    let on_allowed_storage = locked.accepted().is_some();
-    let on_terminal = !json && std::io::stderr().is_terminal();
-    let cancelled = |entered: bool| signal_cancel(on_allowed_storage, builds, entered, on_terminal);
+    let facts = cancel_facts(settings, &locked);
     // Ctrl+C sets a flag that every step from here on reads (see
     // nails_core::cancel). At the prompt it ends the activation at once;
     // during the residue baseline, before the entry begins.
     if nails_core::cancel::is_cancelled() {
-        return report_cancelled(settings, cancelled(false), ExitStatus::Cancelled);
+        return report_cancelled(settings, facts.by_signal(false), ExitStatus::Cancelled);
     }
     write_baseline(settings, &locked, json);
     if nails_core::cancel::is_cancelled() {
-        return report_cancelled(settings, cancelled(false), ExitStatus::Cancelled);
+        return report_cancelled(settings, facts.by_signal(false), ExitStatus::Cancelled);
     }
 
     // Under --json activation prints one envelope and nothing else, so there is
     // no progress line on stdout; a window watches progress on its own channel.
     if !json && settings.verbosity >= Verbosity::Normal {
-        crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(builds));
+        crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(facts.builds));
     }
     let start = Instant::now();
     let result = locked.enter();
@@ -353,7 +333,7 @@ pub(crate) fn finish(
         }
         Ok(EnterOutcome::Prepared { entry, elapsed }) => (entry, elapsed),
         Err(NailsError::Cancelled) => {
-            return report_cancelled(settings, cancelled(true), ExitStatus::Cancelled);
+            return report_cancelled(settings, facts.by_signal(true), ExitStatus::Cancelled);
         }
         Err(error) => {
             print_result(settings, &ActivateResult::Failed(&error), duration);
