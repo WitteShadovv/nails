@@ -368,34 +368,39 @@ shares between drivers, by the name its driver gives it (`ublkb<N>`). It
 refuses a root whose data reaches one wherever it sits on the way down: the
 disk itself, a partition of it, an encrypted mapping, a logical volume or an
 md array on it, or an image file on a filesystem on it, a filesystem of the
-decoy's included. A filesystem's way down starts at every device it keeps
-data on, not only the one it is mounted from: an XFS log or realtime device,
-which its mount options name, an ext3 or ext4 journal on a device of its own,
-which jbd2 lists in `/proc/fs/jbd2` and the filesystem's journal thread names,
-and the other devices of a bcachefs filesystem, which its source names. The
-gate weighs those devices as it weighs the one the filesystem is mounted from,
-for the root, for a filesystem that holds an image file on the root's way and
-for the filesystems the decoy has mounted, and it refuses a root (`storage_unjudged`)
-when one of them cannot be read or found. It refuses a root just the same when it cannot tell what a
-disk on that way is: when `/proc/devices` cannot be read (run the command
-where `/proc` is mounted), or names no driver for the disk's number, when
-sysfs does not list a device that another names below it or cannot list what
-lies below a device, or when a loop device shows no file (as for a path longer
-than the kernel shows). It refuses a ZFS volume, and a disk or a way down it
-cannot tell, before it weighs the decoy's storage, so the override lifts that
-refusal for no root, not even one on a filesystem of the decoy's that lies on
-such a volume. An image file on a
-filesystem of the decoy's that lies on an `nbd` or `ublk` device is refused as
-an image file on that filesystem; an encrypted container there, which would
-only warn on another disk, is refused as on the device. A loop device over the
-node of a device outside `/dev` lies on that device, as the loop driver's
-record shows, and a `zram` device on the device it writes pages back to, if it
-has one. A disk the root's data does not reach changes nothing, and the gate
-takes an ordinary disk, an iSCSI disk (a SCSI disk to the kernel) and a `zram`
-device that writes nothing back for disks of their own.
-When the filesystem that holds the root's image file lies in an image file
-itself, the gate judges that file as it judges the root's own, as deep as such
-files go.
+decoy's included. A filesystem's way down starts at every device it keeps data
+on, not only the one it is mounted from: an XFS log or realtime device, which
+its mount options name, an ext3 or ext4 journal on a device of its own, which
+jbd2 lists in `/proc/fs/jbd2` and the filesystem's journal thread names, and
+the other devices of a bcachefs filesystem, which its source names. The gate
+weighs those devices as it weighs the one the filesystem is mounted from, for
+the root, for a filesystem that holds an image file on the root's way and for
+the filesystems the decoy has mounted, and it refuses a root
+(`storage_unjudged`) when one of them cannot be read or found. It refuses a
+root just the same when it cannot tell what a disk on that way is: when
+`/proc/devices` cannot be read (run the command where `/proc` is mounted), or
+names no driver for the disk's number, when sysfs does not list a device that
+another names below it or cannot list what lies below a device, or when a loop
+device shows no file (as for a path longer than the kernel shows). The range
+of numbers the kernel shares between drivers names no driver either, so a disk
+on it that sits below no other device in sysfs, a `ublk` disk aside, is
+refused as one whose driver the kernel does not name (a zoned loop device,
+`zloop`, keeps its zones in files that sysfs does not show), while an NVMe
+disk, below its controller or its multipath subsystem, counts as one of its
+own. It refuses a ZFS volume, and a disk or a way down it cannot tell, before
+it weighs the decoy's storage, so the override lifts that refusal for no root,
+not even one on a filesystem of the decoy's that lies on such a volume. An
+image file on a filesystem of the decoy's that lies on an `nbd` or `ublk`
+device is refused as an image file on that filesystem; an encrypted container
+there, which would only warn on another disk, is refused as on the device. A
+loop device over the node of a device outside `/dev` lies on that device, as
+the loop driver's record shows, and a `zram` device on the device it writes
+pages back to, if it has one. A disk the root's data does not reach changes
+nothing, and the gate takes an ordinary disk, an iSCSI disk (a SCSI disk to
+the kernel) and a `zram` device that writes nothing back for disks of their
+own. When the filesystem that holds the root's image file lies in an image
+file itself, the gate judges that file as it judges the root's own, as deep as
+such files go.
 
 An encrypted container file on a decoy filesystem only warns (unless that
 filesystem lies on a ZFS volume or an `nbd` or `ublk` device, see above):

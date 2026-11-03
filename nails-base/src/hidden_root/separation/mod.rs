@@ -190,7 +190,10 @@ pub enum Untraced {
     /// A ZFS volume (`zvol`, named `zd<N>`): its data lies in its pool, and
     /// nothing here reads which disks a pool is on.
     ZfsVolume,
-    /// A disk whose major number `/proc/devices` names no driver for.
+    /// A disk whose major number `/proc/devices` names no driver for, or
+    /// one on the range the kernel shares between drivers (`blkext`) that
+    /// sits below no other device and is no userspace block device, as a
+    /// zoned loop device (`zloop<N>`), which keeps its zones in files.
     UnnamedDriver,
     /// A device that cannot be found among those sysfs lists, though the
     /// root's data reaches it: one another device names below it, the device

@@ -301,6 +301,41 @@ fn a_name_that_only_begins_as_a_drivers_does_is_a_plain_disk() {
 }
 
 #[test]
+fn a_disk_on_the_shared_range_that_sits_on_no_hardware_is_refused_as_untraced() {
+    // A zoned loop device keeps its zones in files, and sysfs shows none of
+    // them; its number comes from the range the kernel shares between
+    // drivers, which names none.
+    let zloop = Disk {
+        name: "zloop0",
+        dir: "/sys/devices/virtual/block/zloop0",
+        dev: "259:12",
+        part: "259:13",
+    };
+    for (what, decoy) in layouts(&zloop) {
+        assert_untraced(what, &decoy, Untraced::UnnamedDriver);
+    }
+    // An NVMe disk shares the range below its controller, and so does the
+    // disk of a multipath subsystem, below the subsystem.
+    for (name, dir) in [
+        ("nvme1n1", "/sys/devices/pci0/nvme/nvme1/nvme1n1"),
+        (
+            "nvme2n1",
+            "/sys/devices/virtual/nvme-subsystem/nvme-subsys2/nvme2n1",
+        ),
+    ] {
+        let disk = Disk {
+            name,
+            dir,
+            dev: "259:20",
+            part: "259:21",
+        };
+        for (what, decoy) in layouts(&disk) {
+            assert_eq!(decoy.assess(), Assessment::Attached, "{name}: {what}");
+        }
+    }
+}
+
+#[test]
 fn a_disk_whose_kind_cannot_be_read_is_refused_whatever_the_override() {
     let sdb = Disk {
         name: "sdb",
