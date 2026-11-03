@@ -561,13 +561,18 @@ history yourself so an interactive shell has nowhere to write:
   too, as no reading of the files can show that a turn-off holds: leave them
   out of every startup file (on NixOS, out of `programs.zsh.setOptions`), or
   type the decoy commands in a zsh started as `zsh -f`, which reads no startup
-  file but `/etc/zshenv`. With NixOS's or Home Manager's `programs.zsh`, only
-  `zsh -f` passes the check: NixOS's generated files hold code it cannot
-  follow, and Home Manager names the options in `.zshrc` whether it turns them
-  on or off. The same goes for nearly any `.zshrc`, as it autoloads `compinit`
-  from zsh's own directories, which the check does not read. A history tool
-  that records each command itself, such as atuin, writes as the command runs
-  too. No kill takes back what such a shell has written.
+  file but `/etc/zshenv`. With NixOS's `programs.zsh`, `SHARE_HISTORY` taken
+  out of `programs.zsh.setOptions`, the zsh you type `nails activate` into
+  passes: the check knows the lines NixOS generates as they are written, and
+  follows `compinit` and `promptinit` into zsh's own directory and the Nix
+  profiles. It does so for a `.zshrc` that autoloads `compinit` too, when that
+  zsh is one from the Nix store. For any other zsh, and when the check finds
+  no shell you typed into, it cannot tell where zsh finds `compinit`, and
+  `zsh -f` is the one that passes. With Home Manager's `programs.zsh`, only
+  `zsh -f` passes the check, as it names the options in `.zshrc` whether it
+  turns them on or off. A history tool that records each command itself,
+  such as atuin, writes as the command runs too. No kill takes back what such
+  a shell has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation

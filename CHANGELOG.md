@@ -741,10 +741,10 @@ of this changelog for that version becomes the release notes word for word, and
   which may turn them on again, a sourced file read where it is sourced when its path resolves (so
   Home Manager's `dotDir`, whose sourced `.zshenv` sets `ZDOTDIR`, is followed), an `eval` of words
   the check can read as code, the file of each function they autoload, by its path or by its name in
-  each directory they add to `fpath` (one that no directory they put in front of `fpath` holds is a
-  doubt, as zsh then finds it in a directory it was built with or in one that an `FPATH` from its
-  environment names, so nearly every `.zshrc`, which autoloads `compinit`, makes the check warn that
-  it cannot tell), a here-document's body as text, and `INC_APPEND_HISTORY_TIME` named as writing a
+  each directory they add to `fpath` (where the check cannot tell where zsh's `fpath` starts, one
+  that no directory they put in front of `fpath` holds is a doubt, as zsh then finds it in a
+  directory it was built with or in one that an `FPATH` from its environment names), a
+  here-document's body as text, and `INC_APPEND_HISTORY_TIME` named as writing a
   line once its command ends. An `fc` that writes the history file (`fc -A`, `fc -W`, `fc -P`, with
   other flags too, as in `fc -AI`) counts as such a write wherever it stands, as a hook (`precmd`,
   `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs it after each command the way bash's `history -a`
@@ -757,11 +757,9 @@ of this changelog for that version becomes the release notes word for word, and
   check cannot tell, which is zsh's default. An operator who turns the options off in `.zshrc` now
   gets a warning, whose fix the check can see: typing the decoy commands in a zsh started as
   `zsh -f`, which reads no startup file but `/etc/zshenv`, and for a zsh started so, taking what the
-  check names out of `/etc/zshenv`. That is the fix on NixOS too, whose generated `/etc/zshrc` sets
-  `SHARE_HISTORY` by default and, with it taken out of `programs.zsh.setOptions`, still runs an
-  `eval` of what `dircolors` prints and autoloads `compinit` from directories added to `fpath` that
-  the check cannot resolve, and with Home Manager, which names the options whether it turns them on
-  or off. The options the command line of the shell turns on count too: one of the three
+  check names out of `/etc/zshenv`. That is the fix with Home Manager too, which names the options
+  whether it turns them on or off. The options the command line of the shell turns on count too: one
+  of the three
   (`zsh -o sharehistory`, `zsh --share-history`, `zsh -fo share_history`) is on, and a zsh that runs
   as sh or ksh, by the name it was started under or `--emulate sh`, which reads their startup files,
   is a doubt. A redirection to the history file, `$HISTFILE` or a path whose last part holds `hist`
@@ -807,6 +805,34 @@ of this changelog for that version becomes the release notes word for word, and
   backslash going on in the next. It still only warns: such a shell has written the decoy commands
   before activation starts, so a refusal would take none of them back, and for a shell that writes a
   line once its command ends, a refused activation would add its own.
+- The `incremental-history-flush` check no longer warns that it cannot tell for what most zsh
+  setups hold, each by a rule that takes the exact form it knows and reads any other as before. A
+  hook's output to `$TTY` (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`) goes to the terminal zsh sets
+  it to as it starts, while no file it reads sets `TTY`. An alias for an `fc` with no `-A`, `-W` or
+  `-P` (`alias h='fc -l'`) is no doubt until a file uses its name, which would hand that `fc` the
+  words after it (`h -W`). Of the shell the command was typed into, the check now reads from `/proc`
+  the program it runs and the variables of its environment that tell where zsh finds the functions
+  it autoloads (`FPATH`, and the `NIX_PROFILES`, `USER` and `XDG_STATE_HOME` that NixOS's
+  `/etc/zshenv` reads the Nix profiles with). For a zsh from the Nix store as nixpkgs builds it,
+  whose program names one directory of zsh's own and no other, `fpath` starts there, or in the
+  directories an `FPATH` in its environment names, so a function that no directory holds is none
+  zsh can run, and zsh's own `compinit` and `promptinit`, and the `compaudit`, `compdump`,
+  `add-zsh-hook` and `add-zle-hook-widget` they run, are known by their bytes as zsh 5.9, 5.9.1 and
+  5.9.2 ship them. `compinit` is read for the dump file it sources, as data when each of its lines
+  is one `compdump` writes, and for the completion functions it marks, which zsh runs as you
+  complete a word and which the check reads when a file runs one by name, makes one a hook or runs
+  one in a command substitution. `promptinit` is read for the themes it marks and the one `prompt`
+  runs (`prompt suse`), and may turn `PROMPT_SUBST` on. On NixOS the `eval` of what coreutils'
+  `dircolors` prints in the generated `/etc/zshrc`, and the loop in `/etc/zshenv` that puts three
+  directories of each Nix profile in front of `fpath`, are known as NixOS writes them, so with
+  `SHARE_HISTORY` taken out of `programs.zsh.setOptions` a typed zsh passes. A zsh from elsewhere,
+  or one the check reads without a typed shell, warns that it cannot tell where `compinit` is, as
+  before. On the way the check reads a function's body set by its name (`functions[preexec]='...'`)
+  as that function's code, where it passed one that wrote each command line to the history file,
+  and warns that it cannot tell at a `functions=(...)` or `aliases=(...)` array, and at a parameter
+  set by a name another one holds (`${(P)name::=on}`, with which `options[sharehistory]` was set
+  unseen) or that an expansion makes in a `zstyle -s`, `getopts`, `strftime -s`, `vared` or
+  `zparseopts`.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
