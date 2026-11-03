@@ -65,11 +65,13 @@ const BOOT_MOUNTS: &[&str] = &["/boot", "/boot/efi", "/efi"];
 /// boots from, its type, read from the disk's GPT:
 ///
 /// - fails for the `/home`, `/srv`, `/var`, `/var/tmp` and swap types, which
-///   systemd mounts or uses at every later boot of the decoy;
+///   systemd mounts or uses at every later boot of the decoy, and for the
+///   swap type with the no-auto flag as well, though systemd leaves such a
+///   partition alone;
 /// - warns for one of the first four with the no-auto flag, which systemd
 ///   honours, and for the root, EFI system partition and extended boot
-///   loader types, which it acts on under conditions a decoy rarely meets:
-///   the type still names a use the partition does not have;
+///   loader types, which it acts on only under some conditions: the type
+///   still names a use the partition does not have;
 /// - passes for any other type, and for an MBR;
 /// - warns where the table does not list the partition where the kernel has
 ///   it, where the GPT is damaged, and where neither the disk nor udev's

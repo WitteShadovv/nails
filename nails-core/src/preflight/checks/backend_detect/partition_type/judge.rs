@@ -156,10 +156,19 @@ impl Finding {
                     place,
                 )
             }
+            AutoRole::Swap if no_auto => Finding::Fail(
+                format!(
+                    "{typed}, with the no-auto flag, which tells systemd not to use it. systemd \
+                     leaves it alone, but anyone who reads the partition table sees a swap \
+                     partition that the decoy never uses, and the check refuses the swap type \
+                     with or without the flag."
+                ),
+                place,
+            ),
             AutoRole::Swap => Finding::Fail(
                 format!(
-                    "{typed}. At every later boot of the decoy, systemd uses every swap \
-                     partition of that disk as swap, whatever its flags say, unless an fstab \
+                    "{typed}. At every later boot of the decoy, systemd uses the first swap \
+                     partition of that disk without the no-auto flag as swap, unless an fstab \
                      line names a swap, and asks for its passphrase first when it is a LUKS \
                      volume: a failed swap or a passphrase prompt shows that the partition is \
                      there. {SPARED}"
@@ -168,8 +177,8 @@ impl Finding {
             ),
             AutoRole::Esp | AutoRole::Xbootldr | AutoRole::Root => Finding::Warn(
                 format!(
-                    "{typed}. systemd {}, but anyone who reads the partition table sees a type \
-                     the partition's use does not explain.",
+                    "{typed}. systemd {}. Anyone who reads the partition table sees a type the \
+                     partition's use does not explain.",
                     rare_use(role)
                 ),
                 Some(place),
@@ -191,20 +200,23 @@ fn capitalized(text: &str) -> String {
 }
 
 /// When systemd acts on a partition of `role`, one of the types it uses
-/// only under conditions a decoy rarely meets.
+/// only under some conditions.
 fn rare_use(role: AutoRole) -> &'static str {
     match role {
         AutoRole::Esp => {
-            "mounts an EFI system partition of that disk only when the boot loader says it \
-             started from it"
+            "mounts the first EFI system partition of that disk at /boot or /efi when no fstab \
+             line mounts anything at or below either and one of them is empty or missing, on a \
+             UEFI boot only when the boot loader says it started from that disk, on a BIOS boot \
+             without that condition"
         }
         AutoRole::Xbootldr => {
-            "mounts an extended boot loader partition of that disk at /boot only when no fstab \
-             line mounts /boot and that folder is empty"
+            "mounts the first extended boot loader partition of that disk at /boot when no \
+             fstab line mounts anything at or below /boot or /efi and /boot is empty or missing, \
+             on a UEFI boot only when the boot loader says it started from that disk"
         }
         _ => {
-            "takes a root partition from that disk only in the initrd, and only when the kernel \
-             command line names no root"
+            "takes a root partition from that disk at boot only when the kernel command line \
+             names no root"
         }
     }
 }

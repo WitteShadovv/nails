@@ -155,16 +155,17 @@ fn a_mount_type_says_when_systemd_mounts_it() {
     let result = typed(SWAP, 0);
     assert!(
         result.message().contains(
-            "systemd uses every swap partition of that disk as swap, whatever its flags say, \
-             unless an fstab line names a swap, and asks for its passphrase first when it is a \
-             LUKS volume: a failed swap or a passphrase prompt shows that the partition is there."
+            "systemd uses the first swap partition of that disk without the no-auto flag as \
+             swap, unless an fstab line names a swap, and asks for its passphrase first when it \
+             is a LUKS volume: a failed swap or a passphrase prompt shows that the partition is \
+             there."
         ),
         "{result:?}"
     );
 }
 
 #[test]
-fn the_no_auto_flag_turns_a_mount_type_into_a_warning_and_swap_ignores_it() {
+fn the_no_auto_flag_turns_a_mount_type_into_a_warning_but_a_swap_type_is_refused() {
     for (type_id, point) in [
         (HOME, "/home"),
         (SRV, "/srv"),
@@ -184,8 +185,27 @@ fn the_no_auto_flag_turns_a_mount_type_into_a_warning_and_swap_ignores_it() {
         );
         assert!(fix(&result).contains(&sgdisk("/dev/nvme0n1")), "{result:?}");
     }
-    // systemd uses a swap partition whatever its flags say.
-    assert!(typed(SWAP, NO_AUTO).is_fail());
+    // systemd leaves a swap partition with the flag alone too, but the check
+    // refuses the swap type with or without it.
+    let result = typed(SWAP, NO_AUTO);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "The hidden root at {ROOT} is stored on a disk the decoy boots from. Partition 5 of \
+             nvme0n1 (nvme0n1p5) has the GPT type of a swap partition, with the no-auto flag, \
+             which tells systemd not to use it. systemd leaves it alone, but anyone who reads \
+             the partition table sees a swap partition that the decoy never uses, and the check \
+             refuses the swap type with or without the flag."
+        )
+    );
+    assert!(
+        result
+            .remediation()
+            .unwrap_or_default()
+            .contains(&sgdisk("/dev/nvme0n1")),
+        "{result:?}"
+    );
     // Another flag changes nothing.
     assert!(typed(SRV, 1).is_fail());
 }
@@ -196,20 +216,23 @@ fn the_boot_and_root_types_only_warn() {
         (
             ESP,
             "an EFI system partition",
-            "mounts an EFI system partition of that disk only when the boot loader says it \
-             started from it",
+            "mounts the first EFI system partition of that disk at /boot or /efi when no fstab \
+             line mounts anything at or below either and one of them is empty or missing, on a \
+             UEFI boot only when the boot loader says it started from that disk, on a BIOS boot \
+             without that condition",
         ),
         (
             XBOOTLDR,
             "an extended boot loader partition",
-            "mounts an extended boot loader partition of that disk at /boot only when no fstab \
-             line mounts /boot and that folder is empty",
+            "mounts the first extended boot loader partition of that disk at /boot when no \
+             fstab line mounts anything at or below /boot or /efi and /boot is empty or missing, \
+             on a UEFI boot only when the boot loader says it started from that disk",
         ),
         (
             ROOT_X86_64,
             "a root partition",
-            "takes a root partition from that disk only in the initrd, and only when the kernel \
-             command line names no root",
+            "takes a root partition from that disk at boot only when the kernel command line \
+             names no root",
         ),
     ] {
         let result = typed(type_id, 0);
@@ -217,8 +240,8 @@ fn the_boot_and_root_types_only_warn() {
             warning(&result),
             format!(
                 "The hidden root at {ROOT} is stored on a disk the decoy boots from. Partition 5 \
-                 of nvme0n1 (nvme0n1p5) has the GPT type of {kind}. systemd {when}, but anyone \
-                 who reads the partition table sees a type the partition's use does not explain."
+                 of nvme0n1 (nvme0n1p5) has the GPT type of {kind}. systemd {when}. Anyone who \
+                 reads the partition table sees a type the partition's use does not explain."
             )
         );
         assert!(fix(&result).contains(&sgdisk("/dev/nvme0n1")), "{result:?}");

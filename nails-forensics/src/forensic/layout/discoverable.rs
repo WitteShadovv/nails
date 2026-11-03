@@ -5,18 +5,24 @@
 //!
 //! systemd-gpt-auto-generator runs at every boot and looks at the partitions
 //! of the disk the root file system is on (systemd-gpt-auto-generator(8), the
-//! UAPI.2 Discoverable Partitions Specification). By its GPT type it mounts
+//! UAPI.2 Discoverable Partitions Specification, and systemd's
+//! `dissect-image.c`, which picks the partitions). By its GPT type it mounts
 //! the first partition of the `/home`, `/srv`, `/var` and `/var/tmp` types at
 //! that folder, when no fstab line mounts the folder and the folder is empty
 //! (`/var` only when the partition's uuid is the one the machine ID gives
 //! it), and asks for the passphrase first when such a partition is a LUKS
-//! volume; it uses every partition of the swap type as swap; it mounts an
-//! extended boot loader partition at `/boot` and the EFI system partition the
-//! boot loader started from at `/boot` or `/efi` on first access; and in the
-//! initrd, when the kernel command line names no root, it takes a root
-//! partition of the machine's architecture from the disk of that EFI system
-//! partition. The no-auto attribute flag ([`NO_AUTO`]) keeps it from using a
-//! partition of any of these types but swap and the EFI system partition.
+//! volume; it uses the first partition of the swap type as swap, unless an
+//! fstab line names a swap; it mounts the first extended boot loader
+//! partition at `/boot` and the first EFI system partition at `/boot` or
+//! `/efi` on first access, when no fstab line mounts anything at or below
+//! those folders and the folder is empty or missing, on a UEFI boot only
+//! when the boot loader says it started from that disk; and at boot, when
+//! the kernel command line names no root, it takes a root partition of the
+//! machine's architecture from the disk of the EFI system partition the boot
+//! loader started from. The no-auto attribute flag ([`NO_AUTO`]) keeps
+//! it from using a partition of any of these types but the EFI system
+//! partition, and a partition it leaves alone for the flag is not the first
+//! of its type.
 
 use serde::Serialize;
 
@@ -44,9 +50,10 @@ pub enum AutoRole {
 
 impl AutoRole {
     /// Whether the no-auto flag keeps systemd from using a partition of this
-    /// type: it does for every type but swap and the EFI system partition.
+    /// type: it does for every type but the EFI system partition, for which
+    /// systemd reads no such flag.
     pub fn honours_no_auto(self) -> bool {
-        !matches!(self, AutoRole::Swap | AutoRole::Esp)
+        self != AutoRole::Esp
     }
 
     /// The folder systemd mounts a partition of this type at; `None` for
@@ -148,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn no_auto_holds_for_every_role_but_swap_and_the_efi_system_partition() {
+    fn no_auto_holds_for_every_role_but_the_efi_system_partition() {
         let honoured: Vec<AutoRole> = AUTO_DISCOVERED_TYPES
             .iter()
             .map(|(_, role)| *role)
@@ -163,6 +170,7 @@ mod tests {
                 AutoRole::Srv,
                 AutoRole::Var,
                 AutoRole::VarTmp,
+                AutoRole::Swap,
                 AutoRole::Xbootldr,
             ]
         );
