@@ -20,22 +20,9 @@ mod fpath;
 mod hooks;
 mod strings;
 
+pub(super) use super::builtins::HOOKS;
 pub(super) use event::Event;
-
-/// The functions zsh runs as hooks by their name, as commands are entered or
-/// end (`preexec`, `precmd`), as a line goes into the history
-/// (`zshaddhistory`), or as the directory changes, time passes or the shell
-/// ends. A `TRAP...` function is run as its signal comes, `TRAPDEBUG` before
-/// each command.
-pub(super) const HOOKS: &[&str] = &[
-    "precmd",
-    "preexec",
-    "zshaddhistory",
-    "chpwd",
-    "periodic",
-    "zshexit",
-    "zsh_directory_name",
-];
+pub(super) use strings::PROMPTS;
 
 /// The option that `word` names, by its place in [`OPTIONS`], and whether the
 /// name turns it on (`false` for its `no` form); `None` for any other word.
@@ -176,6 +163,11 @@ struct Walker<'a> {
     /// How many assignments by a name another parameter holds it read
     /// ([`backstop::indirect_assignments`]).
     indirects: usize,
+    /// How often it read an array of hook functions set or declared
+    /// ([`backstop::hook_writes`]).
+    hooks: usize,
+    /// How often it read a prompt set ([`backstop::prompt_writes`]).
+    prompts: usize,
     /// The function the code walked runs in, for code a command of a
     /// function runs from a string (`eval`, a trap's).
     outer: Option<String>,
@@ -614,6 +606,7 @@ impl Walker<'_> {
             "function" => {
                 if let Some(Token::Word(name)) = self.tokens.next() {
                     self.mention(&name.text);
+                    self.events.push(Event::Define(name.text.clone()));
                     self.pending.function_name = Some(name.text);
                 }
                 if self.tokens.next_if_eq(&Token::Open).is_some() {
@@ -644,6 +637,7 @@ impl Walker<'_> {
         if let Some(hook) = name.strip_suffix("_functions")
             && HOOKS.contains(&hook)
         {
+            self.hooks += 1;
             for item in &items {
                 if item.expands {
                     self.events.push(Event::Doubt(format!(
@@ -662,6 +656,13 @@ impl Walker<'_> {
             // Function bodies or alias values, each beside its name.
             self.events.push(Event::Doubt(format!(
                 "it cannot tell what code `{name}=(...)` in {} gives",
+                self.place
+            )));
+        }
+        if name == "mapfile" {
+            // zsh/mapfile writes each file its keys name.
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which files `mapfile=(...)` in {} writes",
                 self.place
             )));
         }
@@ -757,6 +758,7 @@ impl Walker<'_> {
             self.tokens.next();
             if let Some(name) = self.pending.words.pop() {
                 self.mention(&name.text);
+                self.events.push(Event::Define(name.text.clone()));
                 self.pending.function_name = Some(name.text);
             }
             self.pending.function_next = true;
@@ -785,10 +787,16 @@ impl Walker<'_> {
                         self.mention_options(&target.text);
                         self.qualifier(&target.text);
                         if writes {
+                            // `exec 3>>file` keeps the descriptor open.
+                            let kept = matches!(
+                                self.pending.words.as_slice(),
+                                [word] if word.text == "exec"
+                            );
                             self.events.push(Event::Redirect {
                                 computed: target.expands || target.text.contains(['$', '`']),
                                 function: self.function(),
                                 target: target.text,
+                                kept,
                             });
                         }
                     }
@@ -839,6 +847,8 @@ struct Walked {
     fcs: usize,
     nix_profiles: usize,
     indirects: usize,
+    hooks: usize,
+    prompts: usize,
     may_stop: bool,
 }
 
@@ -849,14 +859,8 @@ pub(super) struct Read {
     pub(super) confused: bool,
 }
 
-/// Walk zsh code `text` from the file at `place`; what the lexer could not
-/// read is a doubt.
-fn walk_text(text: &str, place: &str) -> Walked {
-    walk_text_in(text, place, None)
-}
-
 /// Walk zsh code `text` from the file at `place` that runs in the function
-/// `outer`, when in one ([`walk_text`]).
+/// `outer`, when in one; what the lexer could not read is a doubt.
 fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
     let (tokens, flaws) = lex(text);
     let walker = Walker {
@@ -875,6 +879,8 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         fcs: 0,
         nix_profiles: 0,
         indirects: 0,
+        hooks: 0,
+        prompts: 0,
         outer,
         pending: Pending::default(),
     }
@@ -905,17 +911,22 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         fcs: walker.fcs,
         nix_profiles: walker.nix_profiles,
         indirects: walker.indirects,
+        hooks: walker.hooks,
+        prompts: walker.prompts,
         may_stop: walker.may_stop,
     }
 }
 
-/// What zsh code `text` from the file at `place` does ([`Read`]). What the
-/// lexer could not read is a doubt, and so is a `source`, a `.`, an `eval`,
-/// an `autoload` or a `ZDOTDIR` setting the file's lines hold beyond those
-/// the walk read; an option they name beyond those the tokens name counts as
-/// on, and an `fpath` setting beyond those the walk read adds a directory the
-/// check cannot follow ([`backstop`]).
-pub(super) fn events(text: &str, place: &str) -> Read {
+/// What zsh code `text` from the file at `place` does, as the code of the
+/// function `outer` when it runs as one (an autoloaded function's file, one a
+/// function sources) ([`Read`]). What the lexer could not read is a doubt,
+/// and so is a `source`, a `.`, an `eval`, an `autoload`, a `ZDOTDIR`
+/// setting or an array of hook functions set that the file's lines hold
+/// beyond those the walk read; an option they name beyond those the tokens
+/// name counts as on, a prompt set beyond those the walk read holds code the
+/// check cannot follow, and an `fpath` setting beyond those the walk read adds
+/// a directory the check cannot follow ([`backstop`]).
+pub(super) fn events(text: &str, place: &str, outer: Option<String>) -> Read {
     let (tokens, _) = lex(text);
     let mut read = [0; 3];
     for token in &tokens {
@@ -931,7 +942,7 @@ pub(super) fn events(text: &str, place: &str) -> Read {
             read[at] += 1;
         }
     }
-    let walked = walk_text(text, place);
+    let walked = walk_text_in(text, place, outer);
     let mut events = walked.events;
     let named = backstop::named(text);
     for (at, (&lines, &tokens)) in named.options.iter().zip(&read).enumerate() {
@@ -978,6 +989,18 @@ pub(super) fn events(text: &str, place: &str) -> Read {
         events.push(Event::Doubt(format!(
             "it cannot tell which parameter a line of {place} may set by the name another one \
              holds"
+        )));
+    }
+    if named.hooks > walked.hooks {
+        events.push(Event::Doubt(format!(
+            "it cannot tell which functions a line of {place} may make hooks, which zsh runs as \
+             each command is entered or ends"
+        )));
+    }
+    if named.prompts > walked.prompts {
+        events.push(Event::Prompt(format!(
+            "it cannot follow a prompt that a line of {place} may set, whose code zsh runs as it \
+             shows the prompt, as PROMPT_SUBST may be on"
         )));
     }
     Read {

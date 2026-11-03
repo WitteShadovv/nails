@@ -67,7 +67,7 @@ fn warns_on_zsh_inc_append_history_in_the_home() {
     assert!(
         message.ends_with(
             "Type the decoy commands in a zsh started as `zsh -f`, which reads no startup file \
-             but /etc/zshenv."
+             but /etc/zshenv and, on NixOS, /etc/zshenv.local."
         ),
         "{message}"
     );
@@ -1033,7 +1033,7 @@ fi
 #[test]
 fn a_warning_gives_the_fix_the_check_can_see() {
     let fix = "Type the decoy commands in a zsh started as `zsh -f`, which reads no startup \
-               file but /etc/zshenv.";
+               file but /etc/zshenv and, on NixOS, /etc/zshenv.local.";
     // A final unsetopt is no fix: it names the option all the same.
     let fs = MockFilesystem::new();
     seed(
@@ -1060,6 +1060,7 @@ fn a_warning_gives_the_fix_the_check_can_see() {
     // shell's program and environment, it cannot follow the directories
     // /etc/zshenv adds to fpath, so the fix is zsh -f there.
     let fs = MockFilesystem::new();
+    zsh::seed_coreutils(&fs, "00000000000000000000000000000000-coreutils-9.5");
     seed(&fs, "/etc/zshenv", NIXOS_ZSHENV);
     seed(
         &fs,
@@ -1115,8 +1116,9 @@ fn a_warning_gives_the_fix_the_check_can_see() {
     assert!(
         message.contains("/etc/zshenv.local names SHARE_HISTORY")
             && message.contains(
-                "A zsh started as `zsh -f` still reads /etc/zshenv and what it sources, so \
-                 take what the check names out of them."
+                "A zsh started as `zsh -f` still reads /etc/zshenv, on NixOS \
+                 /etc/zshenv.local too, and what they source, so take what the check names out \
+                 of them."
             )
             && !message.contains(fix),
         "{message}"
@@ -1133,7 +1135,7 @@ fn an_fc_that_writes_the_history_file_is_named_in_the_warning() {
             "zsh, the shell this command was typed into, may write each command line to its \
              history file as you enter it: /home/alice/.zshrc names `fc -AI`. So {ON_DISK}. Type \
              the decoy commands in a zsh started as `zsh -f`, which reads no startup file but \
-             /etc/zshenv."
+             /etc/zshenv and, on NixOS, /etc/zshenv.local."
         )
     );
 }
@@ -1149,7 +1151,8 @@ fn a_zsh_f_whose_command_line_or_zshenv_turns_more_on_warns() {
             "zsh, the shell this command was typed into, may write each command line to its \
              history file as you enter it: its command line turns on SHARE_HISTORY. So \
              {ON_DISK}. Type the decoy commands in a zsh started as `zsh -f`, with nothing else \
-             on its command line, which reads no startup file but /etc/zshenv."
+             on its command line, which reads no startup file but /etc/zshenv and, on NixOS, \
+             /etc/zshenv.local."
         )
     );
     // A zsh -f whose /etc/zshenv turns RCS on again reads ~/.zshrc too.
@@ -1159,9 +1162,9 @@ fn a_zsh_f_whose_command_line_or_zshenv_turns_more_on_warns() {
     assert!(
         message.contains("/home/alice/.zshrc names SHARE_HISTORY")
             && message.ends_with(
-                "A zsh started as `zsh -f` still reads /etc/zshenv and what it sources, and as \
-                 they name RCS or GLOBAL_RCS, it may read the other startup files too: take \
-                 that out of them."
+                "A zsh started as `zsh -f` still reads /etc/zshenv, on NixOS \
+                 /etc/zshenv.local too, and what they source, and as they name RCS or \
+                 GLOBAL_RCS, it may read the other startup files too: take that out of them."
             ),
         "{message}"
     );
@@ -1253,13 +1256,29 @@ fn a_typed_zsh_is_read_with_its_program_and_environment() {
 fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
     assert_eq!(
         environment(
-            b"HOME=/home/alice\0FPATH=/a:/b\0USER=alice\0FPATH=/c\0TOKEN=x\0=y\0NIX_PROFILES=/p q\0"
+            b"HOME=/home/alice\0FPATH=/a:/b\0USER=alice\0FPATH=/c\0TOKEN=x\0=y\0\
+              NIX_PROFILES=/p q\0_compdir=/c\0ZDOTDIR=/z\0"
         ),
-        [
-            ("FPATH".to_string(), "/a:/b".to_string()),
-            ("USER".to_string(), "alice".to_string()),
-            ("NIX_PROFILES".to_string(), "/p q".to_string()),
-        ]
+        Some(
+            [
+                ("HOME", "/home/alice"),
+                ("FPATH", "/a:/b"),
+                ("USER", "alice"),
+                ("NIX_PROFILES", "/p q"),
+                ("_compdir", "/c"),
+                ("ZDOTDIR", "/z"),
+            ]
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .to_vec()
+        )
     );
-    assert_eq!(environment(b""), Vec::<(String, String)>::new());
+    assert_eq!(environment(b""), Some(Vec::new()));
+    // A value that is no UTF-8 names a path the check cannot name, so the
+    // environment counts as unknown; one of a variable it does not keep
+    // does not count.
+    assert_eq!(environment(b"FPATH=/home/alice/fn\xff\0USER=alice\0"), None);
+    assert_eq!(
+        environment(b"TOKEN=\xff\0USER=alice\0").map(|env| env.len()),
+        Some(1)
+    );
 }

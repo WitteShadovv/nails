@@ -706,8 +706,15 @@ fi
 
 /// A NixOS host as `programs.zsh` sets it up, without `SHARE_HISTORY`,
 /// whose system profile links zsh's own functions and a completion function
-/// of another package.
+/// of another package, and the coreutils its `/etc/zshrc` names.
 fn nixos(fs: &MockFilesystem) {
+    nixos_without_coreutils(fs);
+    seed_coreutils(fs, "2gfxiwls9hbgwdwcy43mprchwsq36mg6-coreutils-9.11");
+}
+
+/// A NixOS host as [`nixos`] sets it up, but for the coreutils its
+/// `/etc/zshrc` names.
+fn nixos_without_coreutils(fs: &MockFilesystem) {
     nix_zsh(
         fs,
         &[OWN],
@@ -821,6 +828,31 @@ fn a_nixos_zsh_that_differs_from_what_nixos_writes_does_not_pass() {
         seed(&fs, "/etc/zshrc", &NIXOS_ZSHRC.replacen(from, to, 1));
         assert!(warns(&fs, &SESSION), "{to}");
     }
+    // A store path named for coreutils whose dircolors is no link to its
+    // coreutils program, or whose program is none that prints what GNU
+    // dircolors does (a script that prints `setopt share_history`).
+    let bin = "/nix/store/2gfxiwls9hbgwdwcy43mprchwsq36mg6-coreutils-9.11/bin";
+    for (path, bytes) in [
+        ("dircolors", &b"#!/bin/sh\necho setopt share_history\n"[..]),
+        ("coreutils", &b"#!/bin/sh\necho setopt share_history\n"[..]),
+        ("coreutils", &b"\x7fELF\0setopt share_history\0"[..]),
+    ] {
+        let fs = MockFilesystem::new();
+        nixos(&fs);
+        if path == "dircolors" {
+            // Its own program, not the link nixpkgs makes.
+            let fresh = MockFilesystem::new();
+            nixos_without_coreutils(&fresh);
+            fresh.mock_set_file_bytes(&format!("{bin}/dircolors"), bytes);
+            assert!(warns(&fresh, &SESSION), "{path}");
+            continue;
+        }
+        fs.mock_set_file_bytes(&format!("{bin}/{path}"), bytes);
+        assert!(warns(&fs, &SESSION), "{path}");
+    }
+    let fs = MockFilesystem::new();
+    nixos_without_coreutils(&fs);
+    assert!(warns(&fs, &SESSION), "no coreutils");
     // The loop over the profiles with more in its body, the profiles named
     // otherwise, ZSH_VERSION set, or an environment the check cannot read.
     for (from, to) in [
@@ -864,4 +896,381 @@ fn a_nixos_zsh_that_differs_from_what_nixos_writes_does_not_pass() {
         "setopt share_history\n",
     );
     assert!(warns(&fs, &SESSION));
+}
+
+/// Whether `found` is anything but a pass.
+fn warned(found: &Scan) -> bool {
+    !found.writes.is_empty() || !found.doubts.is_empty()
+}
+
+#[test]
+fn prompt_restore_runs_prompt_default_setup() {
+    // zsh 5.9.2 writes each command line to HISTFILE with a
+    // prompt_default_setup that makes a hook, once `prompt` has run.
+    let fs = MockFilesystem::new();
+    nix_zsh(
+        &fs,
+        &[OWN],
+        &["promptinit", "add-zsh-hook", "add-zle-hook-widget"],
+    );
+    seed(
+        &fs,
+        "/home/alice/zfn/prompt_default_setup",
+        "precmd() { fc -AI }\n",
+    );
+    let known = install(&fs, &[]);
+    for line in [
+        "prompt restore",
+        "prompt suse; prompt restore",
+        "prompt -s restore",
+    ] {
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("fpath=(~/zfn $fpath)\nautoload -Uz promptinit && promptinit\n{line}\n"),
+        );
+        assert!(
+            scan_with(&fs, UNKNOWN, &known)
+                .writes
+                .iter()
+                .any(|write| write.what.contains("prompt_default_setup names `fc -AI`")),
+            "{line}"
+        );
+    }
+    // Without a `prompt`, its code to restore the prompt is none.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "fpath=(~/zfn $fpath)\nautoload -Uz promptinit && promptinit\n",
+    );
+    assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default());
+}
+
+#[test]
+fn compinit_sources_a_dump_file_in_each_zdotdir_and_home_it_may_run_with() {
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+    seed(&fs, "/home/alice/.zcompdump", "precmd() { fc -AI }\n");
+    let known = install(&fs, &[]);
+    // zsh 5.9.2 sources ~/.zcompdump with a ZDOTDIR set after compinit, and
+    // ~/alt/.zcompdump with HOME set before it.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "autoload -Uz compinit && compinit -C\nZDOTDIR=$HOME/other\n",
+    );
+    assert!(warned(&scan_with(&fs, UNKNOWN, &known)));
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "HOME=$HOME/alt\nautoload -Uz compinit && compinit -C\n",
+    );
+    assert!(
+        scan_with(&fs, UNKNOWN, &known).doubts.contains(
+            &"it cannot follow the HOME that /home/alice/.zshrc may set, which changes where zsh \
+              reads the user's startup files and the dump file compinit sources"
+                .to_string()
+        ),
+        "{:?}",
+        scan_with(&fs, UNKNOWN, &known)
+    );
+    // zsh 5.9.2 reads ~/alt/.zshrc with HOME set so in ~/.zshenv.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshenv", "HOME=/home/alice/alt\n");
+    seed(&fs, "/home/alice/alt/.zshrc", "setopt share_history\n");
+    assert!(warned(&scan(&fs, UNKNOWN)));
+}
+
+#[test]
+fn a_stock_dump_holds_data_in_which_zsh_expands_no_alias() {
+    // Its `'history' '_fc'` names no use of `alias history='fc -l 1'`, and
+    // zsh 5.9.2 writes nothing with them.
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+    let known = install(&fs, &[]);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "alias history='fc -l 1'\nautoload -Uz compinit && compinit\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.zcompdump",
+        &dump::tests::DUMP.replace("'eval' '_precommand'", "'history' '_fc'"),
+    );
+    assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default());
+    // An alias named like a command of its lines is used.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "alias zle='fc -l'\nautoload -Uz compinit && compinit\n",
+    );
+    assert!(warned(&scan_with(&fs, UNKNOWN, &known)));
+}
+
+#[test]
+fn compinit_s_marks_by_the_first_line_of_a_completion_function_are_read() {
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+    let known = install(&fs, &[]);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "fpath=(~/zcomp $fpath)\nautoload -Uz compinit && compinit -D\n",
+    );
+    // zsh 5.9.2 marks the functions of a compiled file with `-w`, a hook
+    // among them, which runs after each command.
+    for line in [
+        "#autoload -w",
+        "#autoload precmd",
+        "#autoload +X -w",
+        "#autoload\t-m",
+    ] {
+        seed(&fs, "/home/alice/zcomp/_b", &format!("{line}\n:\n"));
+        fs.mock_set_directory_contents(
+            Path::new("/home/alice/zcomp"),
+            vec![PathBuf::from("/home/alice/zcomp/_b")],
+        );
+        assert!(warned(&scan_with(&fs, UNKNOWN, &known)), "{line}");
+    }
+    for line in [
+        "#autoload",
+        "#autoload +X",
+        "#compdef git",
+        "#compdef -k complete-word \\C-xt",
+    ] {
+        seed(&fs, "/home/alice/zcomp/_b", &format!("{line}\n:\n"));
+        assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{line}");
+    }
+    // A dump file that marks with `-w` is read as code, a doubt.
+    seed(&fs, "/home/alice/zcomp/_b", "#autoload\n:\n");
+    seed(
+        &fs,
+        "/home/alice/.zcompdump",
+        "#files: 1\tversion: 5.9.2\n\nautoload -Uz -w _b\n",
+    );
+    assert!(warned(&scan_with(&fs, UNKNOWN, &known)));
+}
+
+#[test]
+fn what_the_environment_holds_of_where_zsh_reads_its_files_counts() {
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "autoload -Uz compinit && compinit\nautoload -Uz myfn && myfn\n",
+    );
+    seed(&fs, "/home/alice/evil/x/myfn", "setopt share_history\n");
+    fs.mock_set_path_type("/home/alice/evil/Base", PathKind::Dir);
+    // zsh 5.9.2's compaudit puts the directories under a `_compdir` from the
+    // environment in fpath, and myfn then turns SHARE_HISTORY on.
+    let found = scan_with(
+        &fs,
+        UNKNOWN,
+        &install(&fs, &[("_compdir", "/home/alice/evil")]),
+    );
+    assert!(
+        found.doubts.contains(
+            &"it cannot tell which directories compaudit, which compinit runs, puts in fpath, \
+              as the shell's environment names _compdir"
+                .to_string()
+        ),
+        "{found:?}"
+    );
+    assert_eq!(scan_with(&fs, UNKNOWN, &install(&fs, &[])), Scan::default());
+    // A ZDOTDIR there is where zsh reads the user's files.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/zd/.zshrc", "setopt share_history\n");
+    let found = scan_with(
+        &fs,
+        UNKNOWN,
+        &install(&fs, &[("ZDOTDIR", "/home/alice/zd")]),
+    );
+    assert_eq!(
+        found
+            .writes
+            .iter()
+            .map(|write| write.what.as_str())
+            .collect::<Vec<_>>(),
+        ["/home/alice/zd/.zshrc names SHARE_HISTORY"]
+    );
+    assert!(warned(&scan_with(
+        &fs,
+        UNKNOWN,
+        &install(&fs, &[("ZDOTDIR", "zd")])
+    )));
+    // A HOME there is the one zsh runs with; one not among the homes is a
+    // doubt.
+    let known = install(&fs, &[("HOME", "/home/alice")]);
+    assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default());
+    let found = zsh(
+        &fs,
+        &[PathBuf::from(HOME)],
+        UNKNOWN,
+        &install(&fs, &[("HOME", "/srv/other")]),
+    );
+    assert_eq!(
+        found.doubts,
+        [
+            "it cannot tell what the user's startup files hold, as the shell's environment sets \
+             HOME to `/srv/other`, a home the check does not read"
+        ]
+    );
+}
+
+#[test]
+fn nix_profiles_are_split_as_zsh_splits_them() {
+    use super::super::install::profile_words;
+    assert_eq!(
+        profile_words("/run/current-system/sw\t/home/alice/.nix-profile  /a+b@c"),
+        Some(
+            [
+                "/run/current-system/sw",
+                "/home/alice/.nix-profile",
+                "/a+b@c"
+            ]
+            .map(str::to_string)
+            .to_vec()
+        )
+    );
+    // zsh 5.9.2's `${(z)...}` splits `;`, `&` and `>` off as words of their
+    // own, and no no-break space.
+    for value in [
+        "/nonexistent;/home/alice/evil",
+        "/a&/b",
+        "/a>/b",
+        "/a\u{a0}/b",
+        "/a\n/b",
+        "relative/profile",
+        "/a$x",
+    ] {
+        assert_eq!(profile_words(value), None, "{value:?}");
+    }
+}
+
+#[test]
+fn a_function_loaded_by_its_path_puts_its_directory_in_front_of_fpath() {
+    // zsh 5.9.2 finds `helper` beside `init`, which it loads by its path,
+    // and a function `-d` names in fpath when its path holds none.
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit"]);
+    let known = install(&fs, &[]);
+    seed(
+        &fs,
+        "/home/alice/.zplug/init",
+        "autoload -Uz helper; helper\n",
+    );
+    seed(&fs, "/home/alice/.zplug/helper", "setopt share_history\n");
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "autoload -Uz ~/.zplug/init; init\n",
+    );
+    assert!(warned(&scan_with(&fs, UNKNOWN, &known)));
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit"]);
+    seed(&fs, "/home/alice/zfn/hist_setup", "setopt share_history\n");
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "fpath=(~/zfn $fpath)\nautoload -Uzd ~/nowhere/hist_setup; hist_setup\n",
+    );
+    assert!(warned(&scan_with(&fs, UNKNOWN, &install(&fs, &[]))));
+}
+
+#[test]
+fn an_fpath_whose_elements_an_expansion_changes_is_one_the_check_cannot_follow() {
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit"]);
+    let known = install(&fs, &[]);
+    // zsh 5.9.2 looks for compinit in directories relative to where it
+    // runs with the first two.
+    for set in [
+        "fpath=(${(s:/:)fpath})",
+        "fpath=($FPATH[2,10] $fpath)",
+        "fpath=(${fpath[(I)x]})",
+        "fpath=(${(L)fpath})",
+        "fpath=($fpath:h)",
+    ] {
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{set}\nautoload -Uz compinit && compinit\n"),
+        );
+        assert!(warned(&scan_with(&fs, UNKNOWN, &known)), "{set}");
+    }
+    // Elements kept as they are, or some of them, are none.
+    for set in [
+        "fpath=(${(u)fpath})",
+        "fpath=(${fpath[2,-1]} $fpath[1])",
+        "fpath=(${(@)fpath} ${fpath[@]})",
+        "fpath=(${fpath:#/nix/store/x})",
+    ] {
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{set}\nautoload -Uz compinit && compinit\n"),
+        );
+        assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{set}");
+    }
+}
+
+#[test]
+fn a_nix_zsh_built_to_look_in_another_directory_has_no_known_fpath() {
+    // As `--enable-site-fndir` or `--enable-additional-fpath` builds it.
+    for extra in [
+        "/etc/zsh/functions",
+        "/opt/zfuncs",
+        "/usr/share/zsh/site-functions",
+    ] {
+        let fs = MockFilesystem::new();
+        nix_zsh(&fs, &[OWN, extra], &["compinit"]);
+        assert_eq!(install(&fs, &[]).fpath, None, "{extra}");
+    }
+    // The paths a nixpkgs build names beside its own are none, and a string
+    // of `/` and a byte is data unless it names a directory.
+    let fs = MockFilesystem::new();
+    nix_zsh(
+        &fs,
+        &[
+            OWN,
+            "/etc/zshrc",
+            "/dev/tty",
+            "/tmp/zsh",
+            "/0",
+            "/run/current-system/sw/bin:/bin:/usr/bin:/nix/var/nix/profiles/default/bin",
+            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-glibc-2.42/lib/ld-linux-x86-64.so.2",
+            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-ncurses-6.6/lib",
+        ],
+        &["compinit"],
+    );
+    assert_eq!(install(&fs, &[]).fpath, Some(vec![PathBuf::from(OWN)]));
+    fs.mock_set_path_type("/0", PathKind::Dir);
+    assert_eq!(install(&fs, &[]).fpath, None);
+}
+
+#[test]
+fn the_zshenv_of_nixpkgs_zsh_reads_zshenv_local_on_nixos() {
+    // zsh 5.9.2 from nixpkgs, started with -f, turns SHARE_HISTORY on with
+    // these files.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/NIXOS", "");
+    seed(&fs, "/etc/zshenv.local", "setopt share_history\n");
+    let bare = Start {
+        login: Some(false),
+        rcs: false,
+        global_rcs: true,
+    };
+    assert!(warned(&scan(&fs, bare)));
+    // With no /etc/zshenv, it reads /etc/set-environment.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/NIXOS", "");
+    seed(&fs, "/etc/set-environment", "setopt share_history\n");
+    assert!(warned(&scan(&fs, bare)));
+    // Not on NixOS, it reads neither.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshenv.local", "setopt share_history\n");
+    seed(&fs, "/etc/set-environment", "setopt share_history\n");
+    assert_eq!(scan(&fs, bare), Scan::default());
 }
