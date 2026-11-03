@@ -71,6 +71,23 @@ fn with_token_everywhere() -> RehearsalState {
     }
 }
 
+#[test]
+fn plant_says_a_rehearsal_does_not_run_on_a_root_the_override_accepted() {
+    // The plan records the gate's sentence for the root it accepted.
+    let failure = accepted_root(
+        "/mnt is not a volume of its own: it is stored on a network block device, which a \
+         program can serve from a file on this computer's own disk",
+    );
+    assert_eq!(failure.exit, ExitStatus::PreflightRefused);
+    assert_eq!(failure.code, "not_separate_volume");
+    assert_eq!(
+        failure.message,
+        "/mnt is not a volume of its own: it is stored on a network block device, which a \
+         program can serve from a file on this computer's own disk. A rehearsal does not run \
+         on a root accepted with --allow-decoy-storage. Nothing was written."
+    );
+}
+
 /// A view carries the fingerprint and the redacted channels, never the
 /// token: printed with `Debug` it shows no trace of it.
 #[test]
