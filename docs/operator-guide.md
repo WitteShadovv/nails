@@ -1402,14 +1402,16 @@ afterwards:
   ending in a backslash going on in the next. zsh's it reads as zsh does and
   fails closed where it cannot follow them:
 
-  - in zsh's order, once for each home the shell can run with, `zprofile`
-    and `zlogin` only for a login shell, only `/etc/zshenv` and what it
-    sources for a zsh started with `-f` (`--no-rcs`, `-o norcs`), and none of
-    `/etc`'s other files for one started with `-d`, a line ending in a
-    backslash going on in the next, the body of a here-document as text, not
-    code, in a `$(...)` too, and a file they source read where it is sourced
-    when its path resolves, so it follows Home Manager's `dotDir`, whose
-    `.zshenv` the home's sources and which sets `ZDOTDIR`;
+  - in zsh's order, once for each home the shell can run with, `zprofile` and
+    `zlogin` only for a login shell, only `/etc/zshenv` and what it sources
+    for a zsh started with `-f` (`--no-rcs`, `-o norcs`), and none of `/etc`'s
+    other files for one started with `-d`, unless what it read so far names
+    `RCS` or `GLOBAL_RCS` (`setopt rcs`, `set +f`, an `emulate`), which may
+    turn them on again, a line ending in a backslash going on in the next, the
+    body of a here-document as text, not code, in a `$(...)` too, and a file
+    they source read where it is sourced when its path resolves, so it follows
+    Home Manager's `dotDir`, whose `.zshenv` the home's sources and which sets
+    `ZDOTDIR`;
   - an `fc` that writes the history file (`fc -A`, `fc -W` or `fc -P`,
     with other flags too, as in `fc -AI`) counts as a write wherever it
     stands: a hook (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs
@@ -1417,8 +1419,16 @@ afterwards:
     One with an expansion among its words is a doubt;
   - the file of each function they autoload (`autoload`, `functions -u`,
     `typeset -fu`), by its path or by its name in each directory they add
-    to `fpath`, where zsh looks for it as it first runs it, but not in the
-    directories zsh was built with;
+    to `fpath`, where zsh looks for it as it first runs it. One that no
+    directory they put in front of `fpath` holds is a doubt, `compinit`
+    among them: zsh then finds it in a directory it was built with, or in
+    one that an `FPATH` from its environment names, which the check does not
+    read;
+  - the options on the command line of the shell you typed the command
+    into: one of the three it turns on (`zsh -o sharehistory`,
+    `zsh --share-history`, `zsh -fo share_history`) counts as on, and a zsh
+    that runs as sh or ksh, by the name it was started under or
+    `--emulate sh`, reads their startup files, which is a doubt;
   - an option counts as on wherever a file zsh reads names it, outside a line
     that is a comment: a `setopt`, an `unsetopt`, Home Manager's
     `set_opts=(... NO_SHARE_HISTORY ...)` array, an alias, a test or a comment
@@ -1450,8 +1460,7 @@ afterwards:
   when an expansion holds what it cannot read as zsh does (a `case` in a
   `$(...)`, a `${ command }`), or when the shell is not bash, zsh, fish or
   dash (dash keeps no history file). It does not see a setting made by a
-  plugin manager's function, one in a function zsh autoloads from the
-  directories it was built with, one you typed into the shell, a file a bash
+  plugin manager's function, one you typed into the shell, a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
   keeps its own record of each command, such as atuin.
@@ -1473,21 +1482,23 @@ afterwards:
   So zsh passes only when no file it reads names the three options and nothing
   is left the check cannot tell: zsh's default, under which a zsh writes its
   history only as it exits, which the kill at activation keeps it from doing.
-  If you turn the options off in your `.zshrc`, the check still warns, as it
-  cannot see that the turn-off holds. The fix it gives is one it can see: type
-  the decoy commands in a zsh started as `zsh -f`, which reads no startup file
-  but `/etc/zshenv`, so the check reads only that, and passes when that names
-  none of the options and holds nothing it cannot follow. When `/etc/zshenv`
-  names one, or holds what the check cannot follow, the warning for such a zsh
-  tells you to take that out of it and of what it sources. On NixOS,
-  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default. Take it out
-  of `programs.zsh.setOptions` and rebuild all the same, so that no zsh writes
-  as you type, but the check still cannot tell there: the generated
-  `/etc/zshrc` runs an `eval` of what `dircolors` prints and autoloads
-  `compinit` from the directories that `/etc/zshenv` adds to `fpath`, which it
-  cannot resolve. Home Manager's `programs.zsh` names the options in `.zshrc`
-  whether it turns them on or off (`history.share`). So with either, `zsh -f`
-  is the fix the check can see.
+  As nearly every `.zshrc` autoloads `compinit` from zsh's own directories, a
+  zsh started as `zsh -f` is in practice the one that passes. If you turn the
+  options off in your `.zshrc`, the check still warns, as it cannot see that
+  the turn-off holds. The fix it gives is one it can see: type the decoy
+  commands in a zsh started as `zsh -f`, which reads no startup file but
+  `/etc/zshenv`, so the check reads only that, and passes when that names none
+  of the options and holds nothing it cannot follow. When `/etc/zshenv` names
+  one, or holds what the check cannot follow, the warning for such a zsh tells
+  you to take that out of it and of what it sources. On NixOS, `programs.zsh`
+  sets `SHARE_HISTORY` in `/etc/zshrc` by default. Take it out of
+  `programs.zsh.setOptions` and rebuild all the same, so that no zsh writes as
+  you type, but the check still cannot tell there: the generated `/etc/zshrc`
+  runs an `eval` of what `dircolors` prints and autoloads `compinit` from the
+  directories that `/etc/zshenv` adds to `fpath`, which it cannot resolve.
+  Home Manager's `programs.zsh` names the options in `.zshrc` whether it turns
+  them on or off (`history.share`). So with either, `zsh -f` is the fix the
+  check can see.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

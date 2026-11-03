@@ -169,7 +169,7 @@ pub(super) fn options(text: &str) -> Vec<(usize, bool)> {
         match braces(chunk) {
             Some(words) => {
                 for word in words {
-                    named_in(&word, &mut found);
+                    named_in(&word, &option, &mut found);
                 }
             }
             None => found.extend((0..super::OPTIONS.len()).map(|at| (at, true))),
@@ -178,8 +178,51 @@ pub(super) fn options(text: &str) -> Vec<(usize, bool)> {
     found
 }
 
-/// Add the options that the parts of `word` name to `found` ([`options`]).
-fn named_in(word: &str, found: &mut Vec<(usize, bool)>) {
+/// Whether `text`, zsh code, may turn `RCS` or `GLOBAL_RCS` on again, which
+/// make a zsh started with `-f` or `-d` read the startup files it skips: a
+/// word that names one of them, in either form and as [`options`] reads
+/// words; a `set`, `setopt` or `unsetopt` with a word of flags that holds `f`
+/// or `d`, the letters of `NO_RCS` and `NO_GLOBAL_RCS` (`set +f`); and an
+/// `emulate`, as `emulate -R` sets every option as zsh starts with it. A line
+/// that is a comment is left out.
+pub(super) fn names_rcs(text: &str) -> bool {
+    let rcs = |word: &str| {
+        let name: String = word
+            .chars()
+            .filter(|c| *c != '_')
+            .collect::<String>()
+            .to_lowercase();
+        let name = name.strip_prefix("no").unwrap_or(&name);
+        matches!(name, "rcs" | "globalrcs").then_some(())
+    };
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .any(|line| {
+            let named = line.split_whitespace().any(|chunk| match braces(chunk) {
+                Some(words) => words.iter().any(|word| {
+                    let mut found = Vec::new();
+                    named_in(word, &rcs, &mut found);
+                    !found.is_empty()
+                }),
+                None => true,
+            });
+            let flags = ["set", "setopt", "unsetopt"]
+                .iter()
+                .any(|command| whole_words(line, command) > 0)
+                && line.split_whitespace().any(|word| {
+                    let word = word.trim_matches(['\'', '"', '\\']);
+                    word.len() > 1
+                        && word.starts_with(['-', '+'])
+                        && word[1..].starts_with(|c: char| c.is_ascii_alphabetic())
+                        && word.contains(['f', 'd'])
+                });
+            named || flags || whole_words(line, "emulate") > 0
+        })
+}
+
+/// Add what the parts of `word` name, as `named` reads a part, to `found`
+/// ([`options`]).
+fn named_in<T>(word: &str, named: &impl Fn(&str) -> Option<T>, found: &mut Vec<T>) {
     let mut start = None;
     for (at, c) in word
         .char_indices()
@@ -190,14 +233,14 @@ fn named_in(word: &str, found: &mut Vec<(usize, bool)>) {
             None if part => start = Some(at),
             Some(from) if !part => {
                 let piece = &word[from..at];
-                if let Some(hit) = option(piece) {
+                if let Some(hit) = named(piece) {
                     found.push(hit);
                 } else if word[..from].ends_with(['-', '+']) {
                     // Flags, an `o` among them, and the option's name after it.
                     found.extend(
                         piece
                             .match_indices('o')
-                            .find_map(|(o, _)| option(&piece[o + 1..])),
+                            .find_map(|(o, _)| named(&piece[o + 1..])),
                     );
                 }
                 start = None;

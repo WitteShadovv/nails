@@ -14,6 +14,10 @@ mod autoload;
 #[path = "zsh_runtime_tests.rs"]
 mod runtime;
 
+// What the way a zsh starts makes it read and turn on.
+#[path = "zsh_start_tests.rs"]
+mod start;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.

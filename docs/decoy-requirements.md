@@ -575,17 +575,18 @@ history yourself so an interactive shell has nowhere to write:
   Manager's `programs.zsh` through `history.share`, which is on by default,
   and so does Oh My Zsh), keep `fc -A` and `fc -W` out of zsh's hooks and
   `history -a` and `history -w` out of bash's `PROMPT_COMMAND`, and type the
-  decoy commands in fish only as
-  `fish --private`. For zsh, the check counts any mention of the three
-  options in a file zsh reads as on, an `unsetopt` too, as no reading of the
-  files can show that a turn-off holds: leave them out of every startup file
-  (on NixOS, out of `programs.zsh.setOptions`), or type the decoy commands in
-  a zsh started as `zsh -f`, which reads no startup file but `/etc/zshenv`.
-  With NixOS's or Home Manager's `programs.zsh`, only `zsh -f` passes the
-  check: NixOS's generated files hold code it cannot follow, and Home
-  Manager names the options in `.zshrc` whether it turns them on or off. A
-  history tool that records each command itself, such as atuin, writes as
-  the command runs too. No kill takes back what such a shell has written.
+  decoy commands in fish only as `fish --private`. For zsh, the check counts
+  any mention of the three options in a file zsh reads as on, an `unsetopt`
+  too, as no reading of the files can show that a turn-off holds: leave them
+  out of every startup file (on NixOS, out of `programs.zsh.setOptions`), or
+  type the decoy commands in a zsh started as `zsh -f`, which reads no startup
+  file but `/etc/zshenv`. With NixOS's or Home Manager's `programs.zsh`, only
+  `zsh -f` passes the check: NixOS's generated files hold code it cannot
+  follow, and Home Manager names the options in `.zshrc` whether it turns them
+  on or off. The same goes for nearly any `.zshrc`, as it autoloads `compinit`
+  from zsh's own directories, which the check does not read. A history tool
+  that records each command itself, such as atuin, writes as the command runs
+  too. No kill takes back what such a shell has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation
