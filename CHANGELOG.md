@@ -327,10 +327,11 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/bash.bashrc`, `/etc/profile`, `/etc/zshrc` and `/etc/zsh/zshrc`, and the installer's
   `.backup-before-nix` copies); and what Nix keeps in `/root` and in each home `/etc/passwd` names,
   the single-user installer's hook lines in its shell startup files among it, except a home on the
-  hidden volume. A home behind an automount point that nothing is mounted on yet is named instead
-  of looked into, since the lookup would mount it. It names each one it finds, and what it cannot
-  look up or read, and never refuses. It passes on NixOS and is skipped inside a hidden session,
-  whose `/` shows the session's own files.
+  hidden volume. A lookup that would pass an automount point that nothing is mounted on yet, on
+  the way to a home or a file and through a link or not, is not made, since it would mount it: the
+  check names that path instead, and where it cannot read the mount table it looks up nothing. It
+  names each one it finds, and what it cannot look up or read, and never refuses. It passes on
+  NixOS and is skipped inside a hidden session, whose `/` shows the session's own files.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

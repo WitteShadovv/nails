@@ -112,6 +112,10 @@ impl Filesystem for RealFilesystem {
         file_ops::is_symlink(path)
     }
 
+    fn read_link(&self, path: &Path) -> Result<PathBuf> {
+        file_ops::read_link(path)
+    }
+
     fn mount_root(&self, path: &Path) -> Result<MountRoot> {
         file_ops::mount_root(path)
     }

@@ -1039,17 +1039,19 @@ session it is skipped, because `/` shows the session's own files there, its own
 Nix among them.
 
 It does not look into a home that lies on the hidden volume, as `/etc/passwd`
-names it or where its links lead. Nor does it look into a home behind an
-automount point that nothing is mounted on yet, as the mount table shows it,
-since the lookup would mount it: the warning names that home instead, and once
-something is mounted there, the check looks into it.
+names it or where its links lead.
 
-The check writes nothing. It opens each file it reads with `O_NOATIME`, so run
-as root it changes none of their access times (an unprivileged `nails check`
-cannot ask for that, and the links a lookup follows still get theirs), and it
-reads no file that a link leads onto the hidden volume. A link onto an
-automount point that nothing is mounted on yet is followed all the same, on
-the way to a home or to a file, and the lookup mounts it.
+The check writes nothing and mounts nothing. It opens each file it reads with
+`O_NOATIME`, so run as root it changes none of their access times (an
+unprivileged `nails check` cannot ask for that, and the links a lookup follows
+still get theirs), and it reads no file that a link leads onto the hidden
+volume. Before each lookup it reads the links on the way one by one, without
+following them, and asks the mount table whether the lookup would pass an
+automount point that nothing is mounted on yet, which the lookup would mount.
+Where it would, the check does not make that lookup: the warning names the
+path, or the home, and the automount point instead, and once something is
+mounted there, the check looks it up. Where it cannot read the mount table, it
+looks up nothing and says so.
 
 When it warns, use the decoy's Nix only for what the decoy itself needs, and
 install the hidden session's software inside a hidden session. If the decoy

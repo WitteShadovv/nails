@@ -759,17 +759,63 @@ fn a_home_that_is_a_file_holds_nothing() {
     );
 }
 
+/// The decoy's root filesystem, as the mount table lists it.
+const ROOT_MOUNT: &str = "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n";
+
+/// The directory of an indirect map at `/net`, as the automounter mounts it:
+/// a lookup of a name in it mounts that name, while the directory itself is
+/// no automount point.
+const NET_MAP: &str = "40 1 0:60 / /net rw,relatime - autofs /etc/auto.net \
+                       rw,fd=7,pgrp=900,timeout=300,minproto=5,maxproto=5,indirect,pipe_ino=200\n";
+
+/// What the automounter mounts for the name `srv` of that map.
+const NET_SRV: &str = "41 40 0:61 / /net/srv rw,relatime - nfs4 srv:/export rw,vers=4.2\n";
+
+/// The accounts of root and of bob, whose home leads onto the share.
+const BOB_PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
+                          bob:x:1001:1001:Bob:/home/bob:/bin/bash\n";
+
+/// The account of root alone.
+const ROOT_PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n";
+
+/// The first line of what the check says on `fs`.
+fn first_line(fs: &MockFilesystem) -> String {
+    let result = DecoyNixTraceCheck::new(PathBuf::from("/mnt/data"), false)
+        .run(fs)
+        .unwrap();
+    assert!(result.is_warn() || result.is_pass(), "{result:?}");
+    result.message().lines().next().unwrap().to_string()
+}
+
+/// Why the check does not look up each of `paths`, behind the automount
+/// point `point`, as the warning says it.
+fn behind(point: &str, paths: &[&str]) -> String {
+    let reasons: Vec<String> = paths
+        .iter()
+        .map(|path| {
+            format!(
+                "NAILS does not look up {path}, since the lookup would mount the automount \
+                 point {point}"
+            )
+        })
+        .collect();
+    format!(
+        "NAILS cannot tell whether a Nix install left traces on the decoy: {}.",
+        reasons.join("; ")
+    )
+}
+
 /// A home behind an automount point that nothing is mounted on yet is not
 /// looked into, since the lookup would mount it, and the warning names it;
-/// once the automount is mounted, the home is looked into.
+/// once the automount is mounted, the home is looked into. An automount
+/// point whose type the table does not give counts as one itself.
 #[test]
 fn a_home_behind_an_automount_point_is_named_and_not_looked_into() {
     let fs = MockFilesystem::new();
     fs.mock_add_file("/etc/passwd", STOCK_PASSWD);
     fs.mock_set_path_type("/home/alice/.nix-profile", PathKind::Symlink);
-    let root_mount = "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n";
     fs.mock_set_mount_table(&format!(
-        "{root_mount}30 1 0:50 / /home rw,relatime - autofs systemd-1 rw,fd=50\n"
+        "{ROOT_MOUNT}30 1 0:50 / /home rw,relatime - autofs systemd-1 rw,fd=50\n"
     ));
     let check = DecoyNixTraceCheck::new(PathBuf::from("/mnt/data"), false);
     let result = check.run(&fs).unwrap();
@@ -777,17 +823,236 @@ fn a_home_behind_an_automount_point_is_named_and_not_looked_into() {
     assert_eq!(
         result.message().lines().next().unwrap(),
         "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS does not look \
-         into /home/alice, behind the automount point /home, which the lookup would mount."
+         into /home/alice, since the lookup would mount the automount point /home."
     );
 
     fs.mock_set_mount_table(&format!(
-        "{root_mount}30 1 0:50 / /home rw,relatime - autofs systemd-1 rw,fd=50\n\
+        "{ROOT_MOUNT}30 1 0:50 / /home rw,relatime - autofs systemd-1 rw,fd=50\n\
          31 30 8:2 / /home rw,relatime - ext4 /dev/sda2 rw\n"
     ));
     let result = check.run(&fs).unwrap();
     assert_eq!(
         result.message().lines().next().unwrap(),
         "Nix is installed on the decoy, or was: it holds /home/alice/.nix-profile."
+    );
+}
+
+/// A home whose link leads behind an automount point that nothing is
+/// mounted on yet, a name of an indirect map here, is not looked into
+/// either, and the warning names it. The directory of the map mounts
+/// nothing itself: once the name is mounted, the lookup passes it and the
+/// home is looked into.
+#[test]
+fn a_home_whose_link_leads_behind_an_automount_point_is_named_and_not_looked_into() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", BOB_PASSWD);
+    fs.create_symlink(Path::new("/net/srv/bob"), Path::new("/home/bob"))
+        .unwrap();
+    // The mock reads each path as it is named, so what Nix keeps in the home
+    // is set where the check names it.
+    fs.mock_set_path_type("/home/bob/.nix-profile", PathKind::Symlink);
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}"));
+    assert_eq!(
+        first_line(&fs),
+        "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS does not look \
+         into /home/bob, since the lookup would mount the automount point /net/srv."
+    );
+
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}{NET_SRV}"));
+    assert_eq!(
+        first_line(&fs),
+        "Nix is installed on the decoy, or was: it holds /home/bob/.nix-profile."
+    );
+}
+
+/// A path below a direct automount point, as systemd makes one for
+/// `x-systemd.automount`, is not looked up while nothing is mounted there,
+/// and the warning names each; once it is mounted, they are looked up.
+#[test]
+fn a_path_behind_an_automount_point_is_named_and_not_looked_up() {
+    let automount = "30 1 0:50 / /usr/local rw,relatime - autofs systemd-1 \
+                     rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n";
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", ROOT_PASSWD);
+    fs.mock_set_path_type("/usr/local/bin/nix", PathKind::Symlink);
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{automount}"));
+    assert_eq!(
+        first_line(&fs),
+        behind(
+            "/usr/local",
+            &[
+                "/usr/local/lib/systemd/system/nix-daemon.service",
+                "/usr/local/lib/systemd/system/nix-daemon.socket",
+                "/usr/local/bin/nix",
+                "/usr/local/etc/fish/conf.d/nix.fish",
+            ]
+        )
+    );
+
+    fs.mock_set_mount_table(&format!(
+        "{ROOT_MOUNT}{automount}31 30 8:3 / /usr/local rw,relatime - ext4 /dev/sda3 rw\n"
+    ));
+    assert_eq!(
+        first_line(&fs),
+        "Nix is installed on the decoy, or was: it holds /usr/local/bin/nix."
+    );
+}
+
+/// A link on the way to a path is read and followed to where it leads, a
+/// relative one with `..` too, before the lookup: one that leads behind an
+/// automount point keeps each path below it from being looked up.
+#[test]
+fn a_link_on_the_way_is_followed_where_it_leads_before_the_lookup() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", ROOT_PASSWD);
+    fs.create_symlink(Path::new("../net/srv/local"), Path::new("/usr/local"))
+        .unwrap();
+    fs.mock_set_path_type("/usr/local/bin/nix", PathKind::Symlink);
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}"));
+    assert_eq!(
+        first_line(&fs),
+        behind(
+            "/net/srv",
+            &[
+                "/usr/local/lib/systemd/system/nix-daemon.service",
+                "/usr/local/lib/systemd/system/nix-daemon.socket",
+                "/usr/local/bin/nix",
+                "/usr/local/etc/fish/conf.d/nix.fish",
+            ]
+        )
+    );
+
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}{NET_SRV}"));
+    assert_eq!(
+        first_line(&fs),
+        "Nix is installed on the decoy, or was: it holds /usr/local/bin/nix."
+    );
+}
+
+/// A link a lookup ends in is not followed, as `/nix` is looked up: the link
+/// is the trace, wherever it leads.
+#[test]
+fn a_link_at_the_end_of_a_lookup_is_named_and_not_followed() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", ROOT_PASSWD);
+    fs.create_symlink(Path::new("/net/srv/nix"), Path::new("/nix"))
+        .unwrap();
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}"));
+    assert_eq!(
+        first_line(&fs),
+        "Nix is installed on the decoy, or was: it holds /nix."
+    );
+}
+
+/// A file the check reads, a startup file of a home here, whose link leads
+/// behind an automount point is not read, and the warning names it.
+#[test]
+fn a_file_whose_link_leads_behind_an_automount_point_is_not_read() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", STOCK_PASSWD);
+    fs.mock_set_path_type("/home/alice", PathKind::Dir);
+    fs.create_symlink(
+        Path::new("/net/srv/dotfiles/bashrc"),
+        Path::new("/home/alice/.bashrc"),
+    )
+    .unwrap();
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}"));
+    assert_eq!(
+        first_line(&fs),
+        behind("/net/srv", &["/home/alice/.bashrc"])
+    );
+}
+
+/// A unit directory whose link leads behind an automount point is neither
+/// resolved nor listed, and nothing in it is looked up.
+#[test]
+fn a_unit_directory_behind_an_automount_point_is_not_listed() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", ROOT_PASSWD);
+    fs.create_symlink(
+        Path::new("/net/srv/units"),
+        Path::new("/etc/systemd/system"),
+    )
+    .unwrap();
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}"));
+    assert_eq!(
+        first_line(&fs),
+        behind(
+            "/net/srv",
+            &[
+                "/etc/systemd/system/nix-daemon.service",
+                "/etc/systemd/system/nix-daemon.socket",
+                "/etc/systemd/system/nix-daemon.service.d",
+                "/etc/systemd/system/nix-daemon.socket.d",
+                "/etc/systemd/system",
+            ]
+        )
+    );
+}
+
+/// A lookup follows as many links as the kernel follows in one, 40, and
+/// stops at a loop.
+#[test]
+fn a_lookup_follows_as_many_links_as_the_kernel_and_ends_at_a_loop() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", BOB_PASSWD);
+    // /home/bob, /l1, ..., /l39: 40 links, the last onto the share.
+    fs.create_symlink(Path::new("/l1"), Path::new("/home/bob"))
+        .unwrap();
+    for n in 1..39 {
+        fs.create_symlink(
+            Path::new(&format!("/l{}", n + 1)),
+            Path::new(&format!("/l{n}")),
+        )
+        .unwrap();
+    }
+    fs.create_symlink(Path::new("/net/srv/bob"), Path::new("/l39"))
+        .unwrap();
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}"));
+    assert_eq!(
+        first_line(&fs),
+        "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS does not look \
+         into /home/bob, since the lookup would mount the automount point /net/srv."
+    );
+
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", BOB_PASSWD);
+    fs.create_symlink(Path::new("/home/bob"), Path::new("/home/bob"))
+        .unwrap();
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}"));
+    let line = first_line(&fs);
+    assert!(
+        line.starts_with(
+            "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS cannot look \
+             up /home/bob/.nix-profile ("
+        ),
+        "{line}"
+    );
+}
+
+/// Without the running system's mount table NAILS cannot tell where a
+/// lookup would mount an automount point, so it looks up nothing, and the
+/// warning says why.
+#[test]
+fn without_the_mount_table_nothing_is_looked_up() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/nix", PathKind::Dir);
+    fs.mock_set_mount_table_error("no mountinfo");
+    let line = first_line(&fs);
+    assert!(
+        line.starts_with(
+            "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS cannot read \
+             the mount table ("
+        ),
+        "{line}"
+    );
+    assert!(line.contains("no mountinfo"), "{line}");
+    assert!(
+        line.ends_with(
+            "), which shows whether a hidden session is running and where a lookup would mount \
+             an automount point, so it looks up nothing."
+        ),
+        "{line}"
     );
 }
 
@@ -916,10 +1181,6 @@ fn inside_a_hidden_session_the_check_is_skipped() {
     let result = check.run(&other).unwrap();
     assert!(result.is_warn(), "{result:?}");
     assert!(result.message().contains("it holds /nix."), "{result:?}");
-
-    // A mount table NAILS cannot read leaves the decoy to be read.
-    other.mock_set_mount_table_error("no mountinfo");
-    assert!(check.run(&other).unwrap().is_warn());
 }
 
 /// The check writes nothing, whatever it finds.

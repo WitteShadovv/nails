@@ -190,6 +190,28 @@ fn canonicalize_resolves_relative_link_targets_against_the_link_directory() {
 }
 
 #[test]
+fn read_link_gives_the_recorded_target_as_written() {
+    let fs = MockFilesystem::new();
+    fs.create_symlink(Path::new("../net/home"), Path::new("/home/bob"))
+        .unwrap();
+
+    assert_eq!(
+        fs.read_link(Path::new("/home/bob")).unwrap(),
+        Path::new("../net/home")
+    );
+    // What is no recorded link is no link to read, as for readlink(2).
+    fs.mock_set_path_type("/home/alice", PathKind::Dir);
+    for path in ["/home/alice", "/home/missing"] {
+        let error = fs.read_link(Path::new(path)).unwrap_err();
+        assert_eq!(
+            error.io_kind(),
+            Some(std::io::ErrorKind::InvalidInput),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn canonicalize_refuses_a_link_loop() {
     let fs = MockFilesystem::new();
     fs.create_symlink(Path::new("/b"), Path::new("/a")).unwrap();
