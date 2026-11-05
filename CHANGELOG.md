@@ -1527,6 +1527,25 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Security
 
+- A switch into or out of a hidden session that hangs until `soft-reboot.target`'s job timeout
+  (30 minutes) now powers the machine off. systemd ended such a switch by force
+  (`JobTimeoutAction=soft-reboot-force` in every series from 254 to 262), which never runs
+  `systemd-soft-reboot.service` and so skips NAILS's last step before the switch: the hidden
+  session started without the masks that keep its systemd from swapping onto a decoy disk or
+  mounting one read-write, or the decoy started with the hidden session's files in `/run`. NAILS's
+  soak test hit the forced entry twice, after a switch stalled in systemd. Activation now installs
+  a runtime drop-in for `soft-reboot.target` next to its other drop-ins that sets
+  `JobTimeoutAction=poweroff-force`, and the timeout itself stays the unit's own. It covers the way
+  in, run by the decoy's PID 1, and the way back, run by the hidden session's, and it goes wherever
+  the transition drop-in goes: on the way back, and in a cancelled, failed or refused activation,
+  `recover` and an emergency on the decoy. A plain `poweroff` would not do: systemd skips that
+  action while `shutdown.target` is active or queued, as it is during a switch. The activation
+  refuses when, once the drop-ins are loaded, the action is another one, which a later drop-in of
+  the decoy's would cause, and `verify` reports the drop-in if it is left on the decoy. The NixOS
+  module text for `soft-reboot.target` that `nails check` prints stays as it is: a drop-in under
+  `/run` overrides the unit file wherever that lies. A plain `emergency` in the hidden session
+  returns through the same switch, so the drop-in covers it too, and `deactivate --poweroff` and
+  `emergency --poweroff` power off as before.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the
@@ -1710,10 +1729,9 @@ of this changelog for that version becomes the release notes word for word, and
   NAILS's NixOS VM tests 7 of about 13,000 switches stopped this way, all on the way in, and one
   on the way back in a test run set up to provoke it. Pressing Alt+Up with the left Alt key on the
   computer's keyboard woke PID 1 in the tests, and the switch went on. If that does nothing, power
-  off rather than wait: after 30 minutes systemd switches by force and skips NAILS's last step
-  before the switch, so the hidden session would start without the masks that keep its systemd
-  from swapping onto a decoy disk or mounting one read-write, or the decoy with the hidden
-  session's files in `/run`. systemd fixed the issue in 259.10, 260.6, 261.4 and 262.1. On
+  off. Left alone, the machine powers itself off about 30 minutes after the switch began, where
+  systemd would have switched by force without NAILS's last step before the switch (see
+  Security). systemd fixed the issue in 259.10, 260.6, 261.4 and 262.1. On
   3 November 2026 no release of 254 to 258 had the fix, and no supported decoy had it, neither in
   its systemd release nor as a patch of its package: Debian 13 had systemd 257.13, Ubuntu 24.04
   255.4, Ubuntu 26.04 259.9, NixOS 26.05 260.5 and NixOS unstable 262. See docs/operator-guide.md.

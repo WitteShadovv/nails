@@ -10,9 +10,12 @@
 //! 2. the runtime directory: the snapshot, the RAM copy of the binary and
 //!    configuration, the plan; `noexec` cleared on `/run` when it is set
 //!    (Debian, Ubuntu), recorded in the plan;
-//! 3. the transition drop-in installed and the service manager reloaded,
-//!    before anything is mounted at `/run/nextroot`: an activation killed
-//!    later leaves an unarmed next root that any soft-reboot disarms;
+//! 3. the transition drop-in and the runtime guards installed and the service
+//!    manager reloaded, before anything is mounted at `/run/nextroot`: an
+//!    activation killed later leaves an unarmed next root that any soft-reboot
+//!    disarms. From here on a switch that hangs until its job timeout powers
+//!    the machine off ([`transition::SWITCH_TIMEOUT_ACTION`]); the entry is
+//!    refused when a guard does not hold once loaded;
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume. Before it is mounted the operator's home
 //!    is made in the fresh-home persona, and in either persona the directories
@@ -84,6 +87,9 @@ use nails_teardown::whole_root::{
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+mod guards;
+use guards::{check_stop_guards, check_switch_timeout};
+
 /// The configuration copy's name in the runtime directory.
 pub const CONFIG_COPY_NAME: &str = "settings.toml";
 
@@ -116,6 +122,9 @@ pub trait EntryHost {
     /// `systemctl show --property=ExecStop --value` prints them: empty when it
     /// runs none, or when the unit does not exist.
     fn unit_stop_commands(&self, unit: &str) -> Result<String>;
+    /// What `unit`'s job timeout does with every drop-in loaded, as
+    /// `systemctl show --property=JobTimeoutAction --value` prints it.
+    fn job_timeout_action(&self, unit: &str) -> Result<String>;
     /// The units PID 1 holds in the failed state now, recorded in the plan so
     /// the way back resets only the failures the session caused.
     fn failed_units(&self) -> Vec<String> {
@@ -153,14 +162,11 @@ pub struct RealEntryHost;
 
 impl EntryHost for RealEntryHost {
     fn unit_stop_commands(&self, unit: &str) -> Result<String> {
-        let systemctl = nails_teardown::whole_root::tools::find(None, "systemctl")
-            .ok_or_else(|| NailsError::InvalidState("systemctl not found".to_string()))?;
-        nails_teardown::whole_root::tools::run_output(
-            &systemctl,
-            &["show", "--property=ExecStop", "--value", unit],
-            std::time::Duration::from_secs(30),
-        )
-        .ok_or_else(|| NailsError::InvalidState(format!("systemctl show {unit} failed")))
+        guards::show_property(unit, "ExecStop")
+    }
+
+    fn job_timeout_action(&self, unit: &str) -> Result<String> {
+        guards::show_property(unit, "JobTimeoutAction")
     }
 
     fn failed_units(&self) -> Vec<String> {
@@ -851,39 +857,8 @@ fn install_transition(paths: &Paths, host: &dyn EntryHost, dropin: &mut bool) ->
     transition::install_dropin(&paths.run, &binary).map_err(|e| io(&paths.run, e))?;
     *dropin = true;
     host.daemon_reload()?;
-    check_stop_guards(host)
-}
-
-/// Refuse the entry when a guarded unit still runs stop commands once the
-/// drop-ins are loaded: a drop-in that sorts after the guard set `ExecStop=`
-/// again, and that stop would undo what the switch needs (see
-/// [`transition::STOP_GUARDED_UNITS`]). A prefix guard has no unit of its own
-/// to ask about; its units carry their stop in the unit file, which every
-/// drop-in follows.
-fn check_stop_guards(host: &dyn EntryHost) -> Result<()> {
-    for unit in transition::STOP_GUARDED_UNITS
-        .iter()
-        .filter(|unit| !transition::is_unit_prefix(unit))
-    {
-        let stop = host.unit_stop_commands(unit)?;
-        if !stop.trim().is_empty() {
-            return Err(NailsError::PreFlightCheckFailed(vec![(
-                "stop-guard".to_string(),
-                format!(
-                    "{unit} would still run a stop command during the switch ({}): a drop-in \
-                     that sorts after /run/systemd/system/{unit}.d/{} sets ExecStop= again, \
-                     and that stop undoes what the switch needs",
-                    stop.trim(),
-                    transition::STOP_GUARD_NAME
-                ),
-                Some(format!(
-                    "Remove the ExecStop= from that drop-in (`systemctl cat {unit}` shows \
-                     where it is) and activate again"
-                )),
-            )]));
-        }
-    }
-    Ok(())
+    check_stop_guards(host)?;
+    check_switch_timeout(host)
 }
 
 /// The mounts below `root`, with their mount points made relative to it (as

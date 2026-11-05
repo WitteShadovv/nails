@@ -43,6 +43,94 @@ impl EntryHost for StopHost {
     fn unit_stop_commands(&self, _: &str) -> Result<String> {
         Ok(self.0.to_string())
     }
+    fn job_timeout_action(&self, _: &str) -> Result<String> {
+        unreachable!("not used by the stop-guard check")
+    }
+}
+
+/// A host that only answers what the switch's job timeout does, as
+/// `systemctl show` prints it.
+struct TimeoutHost(&'static str);
+
+impl EntryHost for TimeoutHost {
+    fn daemon_reload(&self) -> Result<()> {
+        Ok(())
+    }
+    fn build_hidden_system(&self, _: &NixOSBuilder, _: &Path, _: &Path) -> Result<PathBuf> {
+        unreachable!("not used by the timeout check")
+    }
+    fn keep_hidden_closure(&self, _: &Path, _: &Path, _: &Path) -> Result<store::KeepReport> {
+        unreachable!("not used by the timeout check")
+    }
+    fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
+        unreachable!("not used by the timeout check")
+    }
+    fn unit_stop_commands(&self, _: &str) -> Result<String> {
+        unreachable!("not used by the timeout check")
+    }
+    fn job_timeout_action(&self, unit: &str) -> Result<String> {
+        assert_eq!(unit, "soft-reboot.target");
+        Ok(self.0.to_string())
+    }
+}
+
+/// The entry goes on only when the switch powers off at its job timeout with
+/// every drop-in loaded: any other action, a plain `poweroff` included (which
+/// systemd skips during a switch), refuses it and names the guard.
+#[test]
+fn a_switch_that_would_not_power_off_at_its_timeout_refuses_the_entry() {
+    assert!(check_switch_timeout(&TimeoutHost("poweroff-force\n")).is_ok());
+    for action in ["soft-reboot-force", "poweroff", "none", ""] {
+        let error = check_switch_timeout(&TimeoutHost(action)).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            matches!(error, NailsError::PreFlightCheckFailed(_)),
+            "{text}"
+        );
+        assert!(text.contains("soft-reboot.target"), "{text}");
+        assert!(
+            text.contains(&format!("(JobTimeoutAction={action})")),
+            "{text}"
+        );
+        assert!(
+            text.contains("/run/systemd/system/soft-reboot.target.d/zz-overlay-runtime.conf"),
+            "{text}"
+        );
+    }
+}
+
+/// A `systemctl` that cannot be asked refuses the entry as well.
+#[test]
+fn a_timeout_action_that_cannot_be_read_refuses_the_entry() {
+    struct Unreadable;
+    impl EntryHost for Unreadable {
+        fn daemon_reload(&self) -> Result<()> {
+            Ok(())
+        }
+        fn build_hidden_system(&self, _: &NixOSBuilder, _: &Path, _: &Path) -> Result<PathBuf> {
+            unreachable!()
+        }
+        fn keep_hidden_closure(&self, _: &Path, _: &Path, _: &Path) -> Result<store::KeepReport> {
+            unreachable!()
+        }
+        fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
+            unreachable!()
+        }
+        fn unit_stop_commands(&self, _: &str) -> Result<String> {
+            unreachable!()
+        }
+        fn job_timeout_action(&self, unit: &str) -> Result<String> {
+            Err(NailsError::InvalidState(format!(
+                "systemctl show {unit} failed"
+            )))
+        }
+    }
+    let error = check_switch_timeout(&Unreadable).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("systemctl show soft-reboot.target failed")
+    );
 }
 
 #[test]
@@ -72,6 +160,9 @@ fn a_prefix_guard_is_not_asked_about_by_name() {
             } else {
                 "{ path=/bin/true }".to_string()
             })
+        }
+        fn job_timeout_action(&self, _: &str) -> Result<String> {
+            unreachable!()
         }
     }
     assert!(check_stop_guards(&PrefixOnly).is_ok());

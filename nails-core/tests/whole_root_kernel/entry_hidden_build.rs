@@ -82,6 +82,9 @@ impl EntryHost for BuildHost {
     fn unit_stop_commands(&self, unit: &str) -> Result<String> {
         self.host.unit_stop_commands(unit)
     }
+    fn job_timeout_action(&self, unit: &str) -> Result<String> {
+        self.host.job_timeout_action(unit)
+    }
     fn kernel_settings(&self) -> Vec<KernelSetting> {
         self.host.kernel_settings()
     }
