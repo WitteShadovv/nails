@@ -1575,6 +1575,32 @@ of this changelog for that version becomes the release notes word for word, and
   machine off, and the next boot is the plain decoy with the session's end recorded.
   The distribution smoke tests check that the hidden PID 1 has the drop-in loaded and that the
   decoy has its own unit again after each way back.
+- Activation refuses a decoy whose unattended-upgrades (Debian, Ubuntu) installs the pending updates
+  at shutdown. Its shutdown helper takes every switch for a shutdown, so with
+  `Unattended-Upgrade::InstallOnShutdown` on it ran that install on the decoy disk at activation and
+  logged it there, and the hidden session's own copy did the same into the session's overlay at the
+  way back. No check read the setting. `decoy-persistence` now refuses
+  while the decoy's helper runs with the setting on, a finding of its own with its own fix, which
+  `--allow-persistent-decoy` turns into a warning for one run; as for kdump, the window's launcher
+  stays usable and `status` does not call the decoy persistent. It reads the setting as apt does:
+  the files of `/etc/apt/apt.conf.d` apt reads, in its order and skipping those it skips by name,
+  then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file NAILS cannot read or
+  apt refuses, an `#include`, and a `Dir` or `RootDir` setting leave the setting unknown, which is
+  refused as if it were on. When only the hidden session would install (the decoy's helper stopped
+  but enabled, or the session's overlay turning the setting on), it warns instead. The decoy
+  requirements now say to set the setting to `false` rather than delete the line, which stays in
+  effect until the helper restarts. A new fuzz target, `apt_conf`, drives the reader.
+- Activation refuses while a daily unattended-upgrade run is in progress (the
+  `unattended-upgrade-run` check): `apt-daily-upgrade.service` is active, or a process holds
+  `/run/unattended-upgrades.lock`. At the switch unattended-upgrades' shutdown helper stopped such a
+  run and wrote `Unattended-upgrade in progress during shutdown` to its log on the decoy disk,
+  whatever `Unattended-Upgrade::InstallOnShutdown` said, and APT blocks shutdown only while dpkg
+  runs, so `shutdown-inhibitors` did not see it. The check reads the lock from `/proc/locks` by the
+  lock file's device and inode, without opening or locking the file, refuses when it cannot tell,
+  and says to try again in a few minutes; no flag lifts it. The entry looks again right before it
+  asks logind for the switch. A new distribution test, `<image>-apt-shutdown` on Debian 13, Ubuntu
+  24.04 and Ubuntu 26.04, holds a daily run with its lock taken and shows the refusal leaves no line
+  on the decoy disk, where a plain `systemctl soft-reboot` during the same run writes it.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the

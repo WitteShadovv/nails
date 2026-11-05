@@ -302,11 +302,13 @@ pub struct ActivateArgs {
     ///
     /// By default activation refuses a host that keeps forensic traces on the
     /// decoy disk: a persistent systemd-journald journal, an active
-    /// rsyslog/syslog-ng/auditd, or an armed kdump. What the decoy logs while
-    /// it shuts down for the soft-reboot, and while it starts again afterwards,
-    /// would survive on the decoy disk, and a kernel crash during the session
-    /// would leave a dump of its memory in /var/crash there. This flag allows
-    /// that risk for this activation only and cannot be stored.
+    /// rsyslog/syslog-ng/auditd, an armed kdump, or unattended-upgrades set to
+    /// install at shutdown. What the decoy logs while it shuts down for the
+    /// soft-reboot, and while it starts again afterwards, would survive on the
+    /// decoy disk, a kernel crash during the session would leave a dump of its
+    /// memory in /var/crash there, and unattended-upgrades would install the
+    /// pending updates there at the switch. This flag allows that risk for
+    /// this activation only and cannot be stored.
     #[arg(long)]
     pub allow_persistent_decoy: bool,
 
