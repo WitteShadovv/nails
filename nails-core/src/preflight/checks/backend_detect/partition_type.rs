@@ -27,12 +27,14 @@
 //! partition on a disk the decoy boots from: a disk under its root file
 //! system or its EFI system partition, and the disk the generator reads. It
 //! judges a partition the same on each of them, as the type shows in the
-//! table on all, and its texts say whether the generator reads the disk. A
-//! partition the decoy claims as its own storage is the decoy's business,
-//! and the attach gate's. It reads the disk's partition table read-only and
-//! without changing an access time, and matches the entry by its number and
-//! its start; where the disk cannot be read, as without root, it takes the
-//! entry from udev's record of the partition.
+//! table on all, and its texts say whether the generator reads the disk, or
+//! that the check cannot tell, where sysfs does not list the devices below
+//! the root file system. A partition the decoy claims as its own storage is
+//! the decoy's business, and the attach gate's. It reads the disk's
+//! partition table read-only and without changing an access time, and
+//! matches the entry by its number and its start; where the disk cannot be
+//! read, as without root, it takes the entry from udev's record of the
+//! partition.
 //!
 //! [`discoverable`]: crate::forensic::layout::discoverable
 
