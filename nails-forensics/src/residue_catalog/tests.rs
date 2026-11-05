@@ -308,6 +308,29 @@ fn the_offline_update_and_domain_rows_say_how_they_are_caught() {
 }
 
 #[test]
+fn the_unattended_upgrades_rows_say_how_they_are_caught() {
+    // Both are records the decoy's own unattended-upgrades writes at a
+    // switch, each refused by a check of its own: the install at shutdown
+    // by decoy-persistence, which lists it among its fail-closed findings,
+    // and a daily run in progress by unattended-upgrade-run.
+    let install = class("unattended-upgrades-install-on-shutdown").expect("the install row");
+    assert_eq!(install.preflight, Probe::Check("decoy-persistence"));
+    let run = class("unattended-upgrades-run-at-the-switch").expect("the daily-run row");
+    assert_eq!(run.preflight, Probe::Check("unattended-upgrade-run"));
+    for row in [install, run] {
+        assert!(row.preflight_blocks, "{}", row.id);
+        assert!(!row.residual, "{}", row.id);
+        assert_eq!(row.kind, ResidueKind::Session, "{}", row.id);
+        assert_eq!(row.platforms, Platforms::DEBIAN, "{}", row.id);
+        assert_eq!(row.doc_anchor, "decoy-requirements.md#unattended-upgrades");
+        assert!(!row.verify.detects(), "{}", row.id);
+    }
+    let table = super::docs::render_block("fail-closed", "decoy-requirements.md").unwrap();
+    assert!(table.contains(install.title), "{table}");
+    assert!(!table.contains(run.title), "{table}");
+}
+
+#[test]
 fn the_locate_database_row_says_how_it_is_caught() {
     // An updatedb that would list the hidden volume refuses activation
     // through its own check, which no flag lifts; verify notes a database it
