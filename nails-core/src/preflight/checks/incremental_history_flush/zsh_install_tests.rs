@@ -1446,3 +1446,41 @@ fn the_count_of_a_dump_file_s_first_line_is_arithmetic() {
     seed(&fs, "/home/alice/.zcompdump", "#files: 5\tversion: 5.9.2\n");
     assert_eq!(scan_with(&fs, UNKNOWN, &install(&fs, &[])), Scan::default());
 }
+
+#[test]
+fn a_word_compdef_compinit_or_prompt_may_expand_into_others_is_a_doubt() {
+    let fs = MockFilesystem::new();
+    nix_zsh(
+        &fs,
+        &[OWN],
+        &["compinit", "compaudit", "compdump", "promptinit"],
+    );
+    let known = install(&fs, &[]);
+    // zsh 5.9.2 expands each word before compdef, compinit or prompt reads
+    // it, which may make it a flag that binds keys to a function or names
+    // another dump file, or name another theme.
+    for (line, doubt) in [
+        (
+            "autoload -Uz compinit && compinit && compdef {-k,lines} complete-word '^M'",
+            "it cannot tell which function `compdef {-k,lines} complete-word ^M` in \
+             /home/alice/.zshrc autoloads",
+        ),
+        (
+            "autoload -Uz compinit && compinit {-d,~/.zd}",
+            "it cannot tell which dump file `compinit {-d,~/.zd}` in /home/alice/.zshrc sources",
+        ),
+        (
+            "autoload -Uz promptinit && promptinit && prompt {suse,x}",
+            "it cannot tell which prompt theme `prompt {suse,x}` in /home/alice/.zshrc runs",
+        ),
+    ] {
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        assert!(
+            scan_with(&fs, UNKNOWN, &known)
+                .doubts
+                .contains(&doubt.to_string()),
+            "{line}: {:?}",
+            scan_with(&fs, UNKNOWN, &known)
+        );
+    }
+}

@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What one simple command of a startup file does, as the walk reads it: the
-//! options a `setopt`, `unsetopt` or `set -o` turns on or off, the files a
-//! `source` or `.` reads, what an `eval` of words the walk can read runs, the
+//! What one simple command of a startup file does, as the walk reads it, past
+//! its precommands and their options: the options a `setopt`, `unsetopt` or
+//! `set -o` turns on or off ([`super::options`]), the files a `source` or `.`
+//! reads, what an `eval` of words the walk can read runs, the
 //! `ZDOTDIR` and `XDG_CONFIG_HOME` an assignment sets, the directories one
 //! adds to `fpath`, the functions an `autoload` marks, and the options any
 //! other word names.
@@ -305,12 +306,13 @@ impl Walker<'_> {
     /// flag ([`FC_WRITES`]: `fc -AI`, `fc -W`, `history -p -a`), does so
     /// whenever it runs, as it does after every command from a hook
     /// (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`), the way bash's
-    /// `history -a` does from `PROMPT_COMMAND`. One whose words hold an
-    /// expansion, which may be such a flag, is a doubt.
+    /// `history -a` does from `PROMPT_COMMAND`. One whose flags hold an
+    /// expansion, or a word brace expansion or a glob may make other words
+    /// of (`fc {-AI,-AI}`), which may be such a flag, is a doubt.
     pub(super) fn fc(&mut self, command: &str, args: &[Word]) {
         let mut flags = Vec::new();
         for arg in args {
-            if arg.expands {
+            if arg.expands || arg.bare {
                 self.fcs += 1;
                 let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
                 self.events.push(Event::Doubt(format!(
@@ -433,6 +435,65 @@ impl Walker<'_> {
         }
     }
 
+    /// Read the precommands that start `words`, a command's words past its
+    /// assignments, and their options, as zsh does (Src/exec.c): `command`'s
+    /// `-p`, `-v` and `-V`, and a `--` after them, where a word with any other
+    /// letter is the command, and `exec`'s `-c`, `-l` and `-a`, which takes
+    /// the rest of its word or the next word, up to a `--`. zsh expands an
+    /// alias named like a precommand that is no builtin in its place (`alias
+    /// -- -=...`), as the code of a function of that name the command runs.
+    /// `false` when zsh runs no command: a `command -v` or `-V`, which prints
+    /// what its words are, and an `exec` with a flag it does not know.
+    fn precommands(&mut self, words: &mut std::iter::Peekable<std::vec::IntoIter<Word>>) -> bool {
+        let plain = |word: &Word| !word.expands && !word.bare && word.text.len() > 1;
+        while let Some(word) = words.next_if(|word| PRECOMMANDS.contains(&word.text.as_str())) {
+            match word.text.as_str() {
+                "-" | "nocorrect" | "time" | "!" => self.events.push(Event::Call {
+                    name: word.text,
+                    args: Vec::new(),
+                    function: self.function(),
+                    input: Input::None,
+                }),
+                "command" => {
+                    let mut whence = false;
+                    while let Some(flags) = words.next_if(|word| {
+                        plain(word)
+                            && word.text.strip_prefix('-').is_some_and(|flags| {
+                                flags.chars().all(|c| matches!(c, 'p' | 'v' | 'V'))
+                            })
+                    }) {
+                        whence |= flags.text.contains(['v', 'V']);
+                    }
+                    if whence {
+                        return false;
+                    }
+                    words.next_if(|word| word.text == "--");
+                }
+                "exec" => {
+                    while let Some(flags) =
+                        words.next_if(|word| plain(word) && word.text.starts_with('-'))
+                    {
+                        if flags.text == "--" {
+                            break;
+                        }
+                        let letters = &flags.text[1..];
+                        let (before, argv0) = letters
+                            .split_once('a')
+                            .map_or((letters, None), |(before, rest)| (before, Some(rest)));
+                        if !before.chars().all(|c| matches!(c, 'c' | 'l')) {
+                            return false;
+                        }
+                        if argv0 == Some("") {
+                            words.next();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
     /// The events of one simple command, `words`, which ran `after` a
     /// condition (`&&`, `||`) or not, in a pipeline or the background or
     /// not, and reads `input`.
@@ -458,18 +519,12 @@ impl Walker<'_> {
             self.assignment(&word, unconditional);
             assignments.push(word);
         }
-        while let Some(word) = words.next_if(|word| PRECOMMANDS.contains(&word.text.as_str())) {
-            // zsh expands an alias named like a precommand that is no builtin
-            // in its place (`alias -- -=...`), as the code of a function of
-            // that name the command runs.
-            if matches!(word.text.as_str(), "-" | "nocorrect" | "time" | "!") {
-                self.events.push(Event::Call {
-                    name: word.text,
-                    args: Vec::new(),
-                    function: self.function(),
-                    input: Input::None,
-                });
+        if !self.precommands(&mut words) {
+            // `command -v`, which prints what its words are.
+            for word in words {
+                self.mention(&word.text);
             }
+            return;
         }
         let Some(command) = words.next() else {
             self.computed_assignments(&assignments);
@@ -479,9 +534,9 @@ impl Walker<'_> {
         self.qualifier(&command.text);
         let function = self.function();
         self.words(&command, &args, function.as_ref());
-        if command.expands && command.text.starts_with(['$', '`']) {
-            // `$c`, `${:-source}`, `$(print source)`: any command, a
-            // `source` among them.
+        if (command.expands || command.bare) && !matches!(command.text.as_str(), "[[" | "[") {
+            // `$c`, `${:-source}`, `$(print source)`, `ali$s`, `{-p,alias}`:
+            // any command, a `source` or an `alias -g` among them.
             self.events.push(Event::Doubt(format!(
                 "it cannot tell what command `{}` in {} runs",
                 command.text, self.place
@@ -490,6 +545,16 @@ impl Walker<'_> {
                 self.mention(&arg.text);
             }
             return;
+        }
+        if command.text == "functions"
+            && let Some(word) = args.iter().find(|arg| arg.bare)
+        {
+            // `functions {-c,logger} preexec`.
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell what `functions` in {} does with `{}`, which zsh may expand \
+                 into its flags or into names",
+                self.place, word.text
+            )));
         }
         self.parameters(&command, &args);
         self.command_arithmetic(&command.text, &args);
@@ -501,7 +566,7 @@ impl Walker<'_> {
             "setopt" | "unsetopt" => self.setopt(&command.text, &args, unconditional),
             "set" => self.set_builtin(&args, unconditional),
             "source" | "." => self.source(&command.text, args, unconditional, function),
-            "eval" if args.iter().all(|arg| !arg.expands) => {
+            "eval" if args.iter().all(|arg| !arg.expands && !arg.bare) => {
                 // Its words are code the walk reads as zsh would run them,
                 // past the `--` that may end its options.
                 let skip = usize::from(args.first().is_some_and(|arg| arg.text == "--"));
@@ -536,7 +601,8 @@ impl Walker<'_> {
             }
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
-            "add-zsh-hook" | "add-zle-hook-widget" | "zle" => self.hook(&command.text, &args),
+            "add-zsh-hook" | "add-zle-hook-widget" => self.hook(&command.text, &args),
+            "zle" => self.zle(&args),
             "trap" => self.trap(&args, unconditional),
             "sched" => self.sched(&args, unconditional),
             "zstyle" => self.zstyle(&args, unconditional),

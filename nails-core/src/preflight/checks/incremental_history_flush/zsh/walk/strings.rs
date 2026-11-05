@@ -10,7 +10,7 @@
 //! looks a style up, at a time or as keys are pressed counts as a hook's, and
 //! an alias's value as the code of a function of its name, where it is used.
 
-use super::super::backstop::{FC_WRITES, history_path, is_fc_flag};
+use super::super::backstop::{FC_WRITES, KEPT, braces, history_path, is_fc_flag};
 use super::super::lexer::{Token, Word, lex};
 use super::{Event, Walker};
 
@@ -94,16 +94,44 @@ const RESERVED: &[&str] = &[
 /// The name of the alias that `text` defines: `name` of `name=value`, or of
 /// `aliases[name]=value`; `None` for a suffix or global alias, which zsh
 /// expands elsewhere than as a command's name, and for a name that holds
-/// what zsh may expand.
+/// what zsh may expand, brace expansion's `{`, `,` and `}` among it.
 fn alias_name(text: &str) -> Option<&str> {
+    let expands = ['$', '`', '\\', '\'', '"', '[', ']', '*', '?', '{', ',', '}'];
+    alias_target(text).filter(|name| !name.is_empty() && !name.contains(expands))
+}
+
+/// The name as written of the alias that `text` defines, `name` of
+/// `name=value` or of `aliases[name]=value` ([`alias_name`]).
+fn alias_target(text: &str) -> Option<&str> {
     let (target, _) = text.split_once('=')?;
-    let name = match target.strip_prefix("aliases[") {
-        Some(rest) => rest.strip_suffix(']')?,
-        None if target.contains('[') => return None,
-        None => target,
-    };
-    (!name.is_empty() && !name.contains(['$', '`', '\\', '\'', '"', '[', ']', '*', '?']))
-        .then_some(name)
+    match target.strip_prefix("aliases[") {
+        Some(rest) => rest.strip_suffix(']'),
+        None if target.contains('[') => None,
+        None => Some(target),
+    }
+}
+
+/// The words brace expansion makes of `word`, outside quotes, where each of
+/// its groups is a list (`{jpg,png}`) and none of those words starts with `-`
+/// or `+`, which may be a flag: `None` for a word with no such group, or any
+/// other group (a range, a `BRACE_CCL` one), a glob or an expansion, which
+/// may make other words.
+fn brace_list(word: &Word) -> Option<Vec<String>> {
+    if !word.bare
+        || word.expands
+        || word.text.contains([
+            '*', '?', '[', ']', '(', ')', '|', '<', '>', '^', '#', '~', '$', '`',
+        ])
+    {
+        return None;
+    }
+    let words = braces(&word.text)?;
+    let kept = |text: &String| text.contains([KEPT.0, KEPT.1]);
+    (words.len() > 1
+        && !words
+            .iter()
+            .any(|text| kept(text) || text.starts_with(['-', '+'])))
+    .then_some(words)
 }
 
 /// The parameters whose value zsh shows as a prompt, which `PROMPT_SUBST`
@@ -185,10 +213,11 @@ impl Walker<'_> {
     /// word as an alias too. An `fc` that writes nothing is no doubt in the
     /// value of an alias zsh expands only as a command's name
     /// ([`Event::FcAlias`]). A word an expansion makes that is no definition
-    /// as written is a doubt too: it may be a flag (`-g`) that makes the
-    /// aliases after it global, or definitions. So is a regular alias named
-    /// like a reserved word ([`RESERVED`]), which runs wherever that word
-    /// starts a command.
+    /// as written is a doubt too, and so is any word brace expansion or a
+    /// glob may make other words of (`{-g,-g}`, `{-,-}g`): it may be a flag
+    /// (`-g`) that makes the aliases after it global, or definitions. So is a
+    /// regular alias named like a reserved word ([`RESERVED`]), which runs
+    /// wherever that word starts a command.
     pub(super) fn alias(&mut self, args: &[Word], unconditional: bool) {
         // `-g` and `-s` make an alias zsh expands elsewhere than as a
         // command's name; `-r` is the default, and `--` ends the flags.
@@ -196,13 +225,28 @@ impl Walker<'_> {
         let mut global = false;
         let mut suffix = false;
         let mut flags = true;
+        // A list zsh brace-expands into words that can be no flag
+        // (`alias -s {jpg,png}=feh`) stands for those words.
+        let mut words = Vec::new();
         for arg in args {
             self.mention(&arg.text);
-            if !arg.text.contains('=') && computed(arg) {
+            match brace_list(arg) {
+                Some(listed) => words.extend(listed.into_iter().map(|text| Word {
+                    text,
+                    expands: false,
+                    quoted: arg.quoted,
+                    bare: false,
+                })),
+                None => words.push(arg.clone()),
+            }
+        }
+        for arg in &words {
+            if (!arg.text.contains('=') && computed(arg)) || arg.bare {
                 let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
                 self.events.push(Event::Doubt(format!(
-                    "it cannot tell which aliases `alias {}` in {} defines, as an expansion \
-                     makes `{}`, which may make them global",
+                    "it cannot tell which aliases `alias {}` in {} defines, as an expansion, \
+                     brace expansion or a glob may make `{}` other words, which may be a flag \
+                     that makes them global",
                     words.join(" "),
                     self.place,
                     arg.text
@@ -247,7 +291,8 @@ impl Walker<'_> {
             return;
         }
         let name = alias_name(text);
-        if let Some(reserved) = name.filter(|name| regular && RESERVED.contains(name)) {
+        if let Some(reserved) = alias_target(text).filter(|name| regular && RESERVED.contains(name))
+        {
             self.events.push(Event::Doubt(format!(
                 "it cannot tell what the alias `{text}` in {} runs where it is used, as zsh \
                  expands it in place of the reserved word `{reserved}` wherever that starts a \
@@ -324,7 +369,7 @@ impl Walker<'_> {
         let mut args = args.iter().peekable();
         args.next_if(|arg| arg.text == "--");
         if let Some(code) = args.next() {
-            if computed(code) {
+            if computed(code) || code.bare {
                 self.events.push(Event::Doubt(format!(
                     "it cannot tell what code `trap {}` in {} runs",
                     code.text, self.place
@@ -361,7 +406,7 @@ impl Walker<'_> {
             None => return,
         }
         let command: Vec<&Word> = args.collect();
-        if command.iter().any(|word| computed(word)) {
+        if command.iter().any(|word| computed(word) || word.bare) {
             let words: Vec<&str> = command.iter().map(|word| word.text.as_str()).collect();
             self.events.push(Event::Doubt(format!(
                 "it cannot tell what command `sched ... {}` in {} runs",
@@ -390,13 +435,21 @@ impl Walker<'_> {
     /// count for the options they name.
     pub(super) fn zstyle(&mut self, args: &[Word], unconditional: bool) {
         // The style the stock add-zle-hook-widget runs the widgets of as each
-        // line is entered, or one an expansion names, which may be it.
-        let style = match args.first().map(|flag| flag.text.as_str()) {
-            Some("-e") => args.get(2),
-            Some(flag) if flag.starts_with('-') => None,
+        // line is entered, or one an expansion names, which may be it. zsh
+        // takes a first word `-e`, `-` or one that starts with `--` for a
+        // definition past it (zutil.c's bin_zstyle), as the stock
+        // add-zle-hook-widget writes `zstyle -- "$hook" widgets ...`, and any
+        // other flag for none; one an expansion, brace expansion or a glob may
+        // make may be any of them.
+        let style = match args.first() {
+            Some(first) if computed(first) || first.bare => Some(first),
+            Some(flag) if flag.text == "-e" || flag.text == "-" || flag.text.starts_with("--") => {
+                args.get(2)
+            }
+            Some(flag) if flag.text.starts_with('-') => None,
             _ => args.get(1),
         };
-        if style.is_some_and(|style| style.text == "widgets" || computed(style)) {
+        if style.is_some_and(|style| style.text == "widgets" || computed(style) || style.bare) {
             let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
             self.events.push(Event::Doubt(format!(
                 "it cannot tell which widgets `zstyle {}` in {} makes add-zle-hook-widget run \
@@ -414,7 +467,7 @@ impl Walker<'_> {
         for (at, arg) in args.iter().enumerate().skip(1) {
             if at < 3 {
                 self.mention(&arg.text);
-            } else if computed(arg) {
+            } else if computed(arg) || arg.bare {
                 self.events.push(Event::Doubt(format!(
                     "it cannot tell what code `zstyle -e ... {}` in {} runs",
                     arg.text, self.place
