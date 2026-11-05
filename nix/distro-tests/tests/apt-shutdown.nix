@@ -300,10 +300,12 @@ distroVm.buildVmTest {
         print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
         print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
         assert count(helper_log, IN_PROGRESS) > lines_before, tail(helper_log)
-        # The run ended with the old userspace: the row passes again.
+        # The run ended with the old userspace: once its unit is no longer
+        # active, the row passes again. The unit keeps the ID of its last
+        # run, so its state is what tells.
         vm.wait_until_succeeds(
-            "test -z \"$(systemctl show -P InvocationID apt-daily-upgrade.service)\"",
-            timeout=120,
+            "systemctl show -P ActiveState apt-daily-upgrade.service | grep -qx -e inactive -e failed",
+            timeout=300,
         )
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         assert row("unattended-upgrade-run")["status"] == "pass"
