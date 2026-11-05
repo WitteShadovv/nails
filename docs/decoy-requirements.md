@@ -134,6 +134,11 @@ write the name of every file on the volume into the decoy's locate database
 (see [The locate database](#the-locate-database), which also names what it
 does not read).
 
+The `hidden-volume` check refuses too, and no flag lifts that refusal either,
+while the hidden volume's filesystem is mounted anywhere but at the hidden
+root, as a desktop that mounts drives by itself can mount it once the volume
+is unlocked (see [Attaching the drive](#attaching-the-drive)).
+
 kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
 kernel is loaded), or when `kdump-tools.service` (Ubuntu, Debian) or
 `kdump.service` (Fedora) is enabled or active. The soft-reboot into the hidden
@@ -1106,6 +1111,56 @@ uptime points to use the decoy does not account for.
 If `/var` is on a wiped-on-boot tmpfs, the first three are wiped at every boot
 anyway. `verify` reports their timestamps as notes, so you can see what an
 examiner would see.
+
+## Attaching the drive
+
+The routine is to attach the drive that holds the hidden volume, unlock the
+volume from a terminal with `cryptsetup open`, mount it at the hidden root and
+activate. A desktop that mounts drives by itself can mount the unlocked
+filesystem a second time: gnome-shell through gvfs and udisks2, KDE Plasma's
+Device Auto-Mount once it is turned on, and udiskie mount a new filesystem under
+`/media/<user>/` on Debian and Ubuntu, and under `/run/media/<user>/` on most
+other distributions, in a directory named after the filesystem's label or UUID.
+While it is mounted there, the decoy's desktop reaches the hidden files. On
+Debian and Ubuntu that directory is made on the decoy's root filesystem, and
+its name can stay there after the directory is gone, in the filesystem's
+journal or in the blocks of `/media/<user>`.
+
+Whether a desktop mounts a mapping that `cryptsetup` opened, rather than one it
+unlocked itself, depends on the desktop and its release, and is not verified
+for GNOME or KDE Plasma. udiskie does: in the `routine-automount` VM test,
+where it runs as a root service, it mounted the mapping that `cryptsetup`
+opened on a USB stick at `/run/media/root/<UUID>` less than two seconds after
+the mapping appeared, sooner than a person types the mount line. The test
+records what udiskie does in each run.
+
+NAILS cannot keep a desktop from doing this, and it changes no setting of the
+decoy. Instead `check` and activation refuse, with no flag to lift it, while
+the volume's filesystem is mounted anywhere but at the hidden root
+(`hidden-volume`, exit 4). Every mount of the same filesystem counts, a bind of
+a folder of it and another btrfs subvolume of it included. The refusal names
+each other mount point and the line that unmounts it, such as
+`sudo umount /media/alice/data`. A bind of the volume at the hidden root itself
+is no second mount, and neither is one below a next root mounted at
+`/run/nextroot`, where an activation binds the volume (`session-state` refuses
+while one is mounted). A hidden root on a filesystem the decoy uses,
+accepted with `--allow-decoy-storage`, is not judged this way: the decoy mounts
+that filesystem wherever it does.
+
+Turn the automatic mounting of removable media off long before the next use,
+so that the change is not dated next to a session, and unlock the drive from a
+terminal, not from the desktop's prompt or file manager, which leave udisks2
+state behind (see [udisks2 state](#udisks2-state)). The settings, which are not
+verified for every release:
+
+- **GNOME:** `gsettings set org.gnome.desktop.media-handling automount false`,
+  run as the desktop user. `automount-open false` keeps it from opening a
+  window for a drive it mounts.
+- **KDE Plasma:** System Settings, Device Auto-Mount: leave the automatic
+  mounting of removable media off (Plasma's own default), for all devices and
+  for each device it lists, on login and on attach. The device notifier then
+  only offers to mount the drive. Do not take the offer.
+- **udiskie:** start it with `--no-automount`, or not at all.
 
 ## Setup traces an examiner looks for
 

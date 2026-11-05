@@ -1393,6 +1393,20 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Security
 
+- `check` and activation refuse a hidden volume whose filesystem is mounted a second time anywhere
+  but at the hidden root. A desktop that mounts drives by itself (gnome-shell through gvfs and
+  udisks2, KDE Plasma, udiskie) can mount a volume unlocked from a terminal again under
+  `/media/<user>` or `/run/media/<user>`, where the decoy's desktop reaches the hidden files, and on
+  Debian and Ubuntu that directory, named after the volume's label or UUID, is made on the decoy's
+  root filesystem. The `hidden-volume` check counts every mount with the device number of the mount
+  at the root, a bind of a folder of the volume and another btrfs subvolume of it included, names
+  each, says a desktop may have mounted it by itself, and gives the `sudo umount` line and the
+  advice to turn the automatic mounting of removable media off long before the next use. No flag
+  lifts it. A bind of the volume at the root itself passes, and so does a root on a filesystem the
+  decoy uses that `--allow-decoy-storage` accepted. A directory of a disk bound at the root now
+  needs the disk's own mount gone. `docs/decoy-requirements.md` says where GNOME, KDE Plasma and
+  udiskie keep the setting, which is not verified for every release. A VM test records whether
+  udiskie mounts a drive that cryptsetup unlocked, and in it udiskie did.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the

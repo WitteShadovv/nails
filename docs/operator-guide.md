@@ -1075,6 +1075,9 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
 [ ] Hidden volume mounted and writable at its own mount point (e.g. under /mnt),
     on storage of its own (see "Where setup happens"), with nothing mounted
     over it
+[ ] The desktop's automatic mounting of removable media turned off long before,
+    and the hidden volume mounted nowhere else, no /media or /run/media mount
+    of it (see "Attaching the drive" in decoy-requirements.md)
 [ ] No line in the decoy's /etc/crypttab or /etc/fstab opens or mounts it
 [ ] Neither the outer nor the hidden volume opened with cryptsetup's --allow-discards
 [ ] Hidden backend is a local Linux filesystem that can host an overlayfs upper
