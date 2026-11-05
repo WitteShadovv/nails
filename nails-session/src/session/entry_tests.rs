@@ -74,28 +74,46 @@ impl EntryHost for TimeoutHost {
     }
 }
 
-/// The entry goes on only when the switch powers off at its job timeout with
-/// every drop-in loaded: any other action, a plain `poweroff` included (which
-/// systemd skips during a switch), refuses it and names the guard.
+/// The entry goes on only when the switch powers off by force at its job
+/// timeout with every drop-in loaded: any other action refuses it and names
+/// the guard, a plain `poweroff` (which systemd skips during a switch) and
+/// the forced or immediate actions that are no switch included.
 #[test]
 fn a_switch_that_would_not_power_off_at_its_timeout_refuses_the_entry() {
     assert!(check_switch_timeout(&TimeoutHost("poweroff-force\n")).is_ok());
-    for action in ["soft-reboot-force", "poweroff", "none", ""] {
+    for action in [
+        "soft-reboot-force",
+        "poweroff",
+        "none",
+        "reboot-force",
+        "poweroff-immediate",
+        "",
+    ] {
         let error = check_switch_timeout(&TimeoutHost(action)).unwrap_err();
         let text = error.to_string();
         assert!(
             matches!(error, NailsError::PreFlightCheckFailed(_)),
             "{text}"
         );
-        assert!(text.contains("soft-reboot.target"), "{text}");
+        // It says what PID 1 reports and which drop-in sets the guard's
+        // action, and gives the forced switch only as what the unit's own
+        // action would do: the others do not switch by force.
         assert!(
-            text.contains(&format!("(JobTimeoutAction={action})")),
+            text.contains(&format!(
+                "soft-reboot.target has JobTimeoutAction={action} with every drop-in loaded, \
+                 not the poweroff-force that \
+                 /run/systemd/system/soft-reboot.target.d/zz-overlay-runtime.conf sets"
+            )),
             "{text}"
         );
         assert!(
-            text.contains("/run/systemd/system/soft-reboot.target.d/zz-overlay-runtime.conf"),
+            text.contains(
+                "With soft-reboot-force, the unit's own action, a switch that hung until the \
+                 job timeout would go on by force without its last step"
+            ),
             "{text}"
         );
+        assert!(text.contains("fix: Remove the JobTimeoutAction="), "{text}");
     }
 }
 
