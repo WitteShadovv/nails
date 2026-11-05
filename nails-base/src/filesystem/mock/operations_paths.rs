@@ -7,13 +7,80 @@ use crate::filesystem::DiskUsage;
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
 
+/// The error of a lookup of `path` that fails with an error of `kind`.
+fn lookup_failure(path: &Path, kind: std::io::ErrorKind) -> NailsError {
+    NailsError::io(
+        path,
+        std::io::Error::new(kind, "Mock: the lookup fails here"),
+    )
+}
+
+/// What a lookup that asks whether something is at `path` answers when it
+/// fails with an error of `kind`: no where the error says nothing is there,
+/// as the real lookups answer, and the error otherwise.
+fn absent_or_failure(path: &Path, kind: std::io::ErrorKind) -> Result<bool> {
+    match kind {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => Ok(false),
+        kind => Err(lookup_failure(path, kind)),
+    }
+}
+
+/// Why the mock's links lead `path` nowhere ([`MockFilesystem::resolve`]).
+pub(super) enum Unresolved {
+    /// A lookup on the way fails with an error of this kind
+    /// ([`MockFilesystem::mock_set_lookup_error`]).
+    Fails(std::io::ErrorKind),
+    /// The links make a loop, or are more than the kernel follows.
+    Loop,
+}
+
 impl MockFilesystem {
+    /// The kind of error a lookup of `path` fails with, when
+    /// [`mock_set_lookup_error`](Self::mock_set_lookup_error) set one on it or
+    /// on a directory on its way: the one nearest the root, where a real
+    /// lookup stops.
+    fn lookup_error_kind(&self, path: &Path) -> Option<std::io::ErrorKind> {
+        let errors = self
+            .lookup_errors
+            .lock()
+            .expect("MockFilesystem mutex poisoned");
+        if errors.is_empty() {
+            return None;
+        }
+        let ancestors: Vec<&Path> = path.ancestors().collect();
+        ancestors
+            .into_iter()
+            .rev()
+            .find_map(|prefix| errors.get(prefix).copied())
+    }
+
+    /// The error a lookup of `path` fails with, naming `path`, when one was
+    /// set on it or on a directory on its way.
+    pub(super) fn lookup_error(&self, path: &Path) -> Option<NailsError> {
+        self.lookup_error_kind(path)
+            .map(|kind| lookup_failure(path, kind))
+    }
+
+    /// The answer of a lookup that asks whether something is at `path`, when
+    /// a lookup error was set on its way: no where the error says nothing is
+    /// there (`NotFound`, `NotADirectory`), the error otherwise.
+    fn looked_up(&self, path: &Path) -> Option<Result<bool>> {
+        self.lookup_error_kind(path)
+            .map(|kind| absent_or_failure(path, kind))
+    }
+
     pub(super) fn path_exists_impl(&self, path: &Path) -> Result<bool> {
+        if let Some(answer) = self.looked_up(path) {
+            return answer;
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(path).map(|info| info.exists).unwrap_or(false))
     }
 
     pub(super) fn device_id_impl(&self, path: &Path) -> Result<u64> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         if let Some(id) = self
             .device_ids
             .lock()
@@ -35,6 +102,13 @@ impl MockFilesystem {
     }
 
     pub(super) fn inode_impl(&self, path: &Path) -> Result<Option<u64>> {
+        // Only a path that does not exist is none here: a lookup through a
+        // file is an error, as for the real call.
+        match self.lookup_error_kind(path) {
+            Some(std::io::ErrorKind::NotFound) => return Ok(None),
+            Some(kind) => return Err(lookup_failure(path, kind)),
+            None => {}
+        }
         if let Some(answer) = self
             .inodes
             .lock()
@@ -59,6 +133,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn record_lock_holder_impl(&self, path: &Path) -> Result<Option<i32>> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         if let Some(answer) = self
             .record_locks
             .lock()
@@ -97,6 +174,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn is_directory_impl(&self, path: &Path) -> Result<bool> {
+        if let Some(answer) = self.looked_up(path) {
+            return answer;
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths
             .get(path)
@@ -108,10 +188,13 @@ impl MockFilesystem {
     /// once the links `create_symlink` recorded are followed. A link the mock
     /// cannot follow (one marked with `mock_set_path_type` alone, or a loop)
     /// is no regular file, as a dangling link is none to `stat`; a whiteout is
-    /// the character device it is on a real overlay's upper.
+    /// the character device it is on a real overlay's upper. A lookup error
+    /// set on the way, or where a link leads, fails it.
     pub(super) fn is_regular_file_impl(&self, path: &Path) -> Result<bool> {
-        let Ok(target) = self.canonicalize_impl(path) else {
-            return Ok(false);
+        let target = match self.resolve(path) {
+            Ok(target) => target,
+            Err(Unresolved::Fails(kind)) => return absent_or_failure(path, kind),
+            Err(Unresolved::Loop) => return Ok(false),
         };
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(&target).is_some_and(|info| {
@@ -120,6 +203,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn is_symlink_impl(&self, path: &Path) -> Result<bool> {
+        if let Some(answer) = self.looked_up(path) {
+            return answer;
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(path).map(|info| info.is_symlink).unwrap_or(false))
     }
@@ -127,6 +213,9 @@ impl MockFilesystem {
     /// The target `create_symlink` recorded for `path`. Any other path is no
     /// link the mock can read, as `readlink` fails on what is no link.
     pub(super) fn read_link_impl(&self, path: &Path) -> Result<PathBuf> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         self.symlink_targets
             .lock()
             .expect("MockFilesystem mutex poisoned")
@@ -138,6 +227,10 @@ impl MockFilesystem {
     }
 
     pub(super) fn is_overlay_whiteout_impl(&self, path: &Path) -> Result<bool> {
+        // A path that cannot be inspected is none, as for the real call.
+        if self.lookup_error_kind(path).is_some() {
+            return Ok(false);
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(path).is_some_and(|info| info.is_whiteout))
     }
@@ -145,8 +238,25 @@ impl MockFilesystem {
     /// Resolve the symlinks recorded by `create_symlink`, component by
     /// component. Unlike the real call this never reports a missing path: the
     /// mock does not track existence for most paths, and resolving to the
-    /// lexical path is what a fully existing, link-free path does anyway.
+    /// lexical path is what a fully existing, link-free path does anyway. A
+    /// lookup error set on a path the resolution looks up fails it.
     pub(super) fn canonicalize_impl(&self, path: &Path) -> Result<PathBuf> {
+        self.resolve(path).map_err(|unresolved| match unresolved {
+            Unresolved::Fails(kind) => lookup_failure(path, kind),
+            Unresolved::Loop => NailsError::io(
+                path,
+                std::io::Error::other(format!(
+                    "too many levels of symbolic links: {}",
+                    path.display()
+                )),
+            ),
+        })
+    }
+
+    /// Where `path` leads once the links `create_symlink` recorded are
+    /// followed, component by component, as
+    /// [`canonicalize_impl`](Self::canonicalize_impl) gives it.
+    pub(super) fn resolve(&self, path: &Path) -> std::result::Result<PathBuf, Unresolved> {
         // The kernel's own limit on links followed during one lookup.
         const MAX_HOPS: usize = 40;
 
@@ -162,6 +272,11 @@ impl MockFilesystem {
             for (i, component) in components.iter().enumerate() {
                 prefix.push(component);
                 if let Some(target) = links.get(&prefix) {
+                    // The lookup reached the link, and every directory on
+                    // its way.
+                    if let Some(kind) = self.lookup_error_kind(&prefix) {
+                        return Err(Unresolved::Fails(kind));
+                    }
                     let base = prefix.parent().unwrap_or(Path::new("/"));
                     let mut resolved = base.join(target);
                     resolved.extend(&components[i + 1..]);
@@ -171,16 +286,15 @@ impl MockFilesystem {
             }
             match next {
                 Some(resolved) => current = resolved,
-                None => return Ok(current),
+                None => {
+                    return match self.lookup_error_kind(&current) {
+                        Some(kind) => Err(Unresolved::Fails(kind)),
+                        None => Ok(current),
+                    };
+                }
             }
         }
-        Err(NailsError::io(
-            path,
-            std::io::Error::other(format!(
-                "too many levels of symbolic links: {}",
-                path.display()
-            )),
-        ))
+        Err(Unresolved::Loop)
     }
 
     pub(super) fn supports_symlinks_impl(&self, dir: &Path) -> Result<bool> {
@@ -247,6 +361,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn disk_usage_impl(&self, path: &Path) -> Result<DiskUsage> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         let info = paths.get(path);
         Ok(DiskUsage {
@@ -349,6 +466,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn get_permissions_impl(&self, path: &Path) -> Result<u32> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         if let Some(info) = paths.get(path)
             && !info.exists
@@ -373,6 +493,10 @@ impl MockFilesystem {
     }
 
     pub(super) fn is_readable_impl(&self, path: &Path) -> Result<bool> {
+        // The real call answers no when the path cannot be opened at all.
+        if self.lookup_error_kind(path).is_some() {
+            return Ok(false);
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths
             .get(path)
@@ -387,6 +511,10 @@ impl MockFilesystem {
             .push(MockOp::WritableProbe {
                 path: path.to_path_buf(),
             });
+        // The real probe answers no when it cannot open or create there.
+        if self.lookup_error_kind(path).is_some() {
+            return Ok(false);
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths
             .get(path)
