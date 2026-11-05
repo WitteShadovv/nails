@@ -1423,7 +1423,13 @@ fn discards_over_a_loop_over_zram_alone_are_excepted() {
 fn a_mapping_the_veracrypt_application_made_is_named_and_its_discards_refused() {
     // No uuid up to VeraCrypt 1.26.29, VERACRYPT-<serial>-<name> from 1.26.30
     // on.
-    for uuid in ["", "VERACRYPT-1762101445123456-veracrypt1"] {
+    for (form, uuid) in [
+        ("no uuid", ""),
+        (
+            "the uuid of 1.26.30",
+            "VERACRYPT-1762101445123456-veracrypt1",
+        ),
+    ] {
         let host = super::tests_host::Host::new("254:9", "ext4", "/dev/mapper/veracrypt1")
             .disk("sdb", "8:16")
             .mapping("dm-9", "254:9", "veracrypt1", uuid, &["sdb"]);
@@ -1434,13 +1440,13 @@ fn a_mapping_the_veracrypt_application_made_is_named_and_its_discards_refused() 
                  sdb; no backend-specific hazards detected"
                     .into()
             ),
-            "{uuid}"
+            "{form}"
         );
         host.fs.mock_set_file_content(
             "/sys/devices/virtual/block/dm-9/queue/discard_max_bytes",
             "4096\n",
         );
-        assert!(detect_on(&host).is_fail(), "{uuid}");
+        assert!(detect_on(&host).is_fail(), "{form}");
     }
 }
 
