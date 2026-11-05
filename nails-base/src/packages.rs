@@ -15,6 +15,9 @@
 //!   reads with its own reader ([`sqlite`]): each package's name, version,
 //!   architecture and files ([`rpm::read_packages`]).
 //!
+//! [`apt_conf`] reads apt's configuration files, where unattended-upgrades
+//! takes its settings from, the way apt reads them.
+//!
 //! Each of them holds whatever the decoy's disk holds, or what a hidden
 //! session wrote, so the parsers take any input: a line, a stanza or an entry
 //! they cannot read is left out, never an error. rpm's database is read
@@ -36,6 +39,7 @@
 //! decoy's database at all: the cryptsetup advice and the `package-drift`
 //! check skip what they would read instead.
 
+pub mod apt_conf;
 pub mod dpkg;
 pub mod pacman;
 pub mod rpm;

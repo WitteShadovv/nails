@@ -1,0 +1,5 @@
+#include "/etc/apt/other.conf";
+#x-apt-configure-index "/usr/share/doc/apt/examples/configure-index";
+Foo "a" "b";
+Bar::Baz%3a%3aQux "x";
+Unattended-Upgrade::InstallOnShutdown "false"
