@@ -297,9 +297,10 @@ let
     init = namesWithTag "init";
     security = namesWithTag "security";
     performance = namesWithTag "performance";
-    # Long prototypes of the setup routine. They are leaf tests like any
-    # other, in `all`, but the shards of a pull request leave them out (see
-    # e2e.yml): they run on pushes, nightly and with the `full-e2e` label.
+    # Tests that record what software outside NAILS does. They are leaf
+    # tests like any other, in `all`, but the affected selection of a pull
+    # request leaves them out (see e2e.yml): they run on pushes, nightly and
+    # with the `full-e2e` label.
     heavy = namesWithTag "heavy";
     preflight = namesWithTag "preflight";
     nixos = namesWithTag "nixos";
