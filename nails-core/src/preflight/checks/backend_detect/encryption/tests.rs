@@ -97,7 +97,7 @@ fn a_cascade_passes_on_its_topmost_layer() {
 #[test]
 fn a_mapping_the_veracrypt_application_made_passes() {
     // The application names its mappings veracrypt<N>, and veracrypt<N>_<k>
-    // for the further ciphers of a cascade, with no uuid.
+    // for the further ciphers of a cascade, with no uuid up to 1.26.29.
     let result = Host::new("254:9", "ext4", "/dev/mapper/veracrypt1")
         .disk("sdb", "8:16")
         .mapping("dm-8", "254:8", "veracrypt1_0", "", &["sdb"])

@@ -217,16 +217,17 @@ neither.
 
 | Result | When |
 |---|---|
-| Warns | Such a mapping is writable: the kernel does not hold it read-only (`ro` is `0`). The warning names its topmost mapping (`outer (dm-4)`), the device it is opened from and where it is mounted, read-write or read-only. A mapping the VeraCrypt application made stays writable even when the application mounted the volume read-only. |
+| Warns | Such a mapping is writable: the kernel does not hold it read-only (`ro` is `0`). The warning names its topmost mapping (`outer (dm-4)`), the device it is opened from and where it is mounted, read-write or read-only. A mapping that VeraCrypt 1.26.29 or earlier made stays writable even when it mounted the volume read-only. |
 | Warns: cannot check | The mount table cannot be read, the hidden root's filesystem shows no block device, or sysfs does not let the check list the devices below the hidden root, or those built on its storage (`slaves/`, `holders/`, `/sys/class/block`). |
-| Passes | Every such mapping is read-only, as `cryptsetup open --readonly` makes it; there is none; or the hidden root is in no VeraCrypt or TrueCrypt volume. |
+| Passes | Every such mapping is read-only, as `cryptsetup open --readonly` makes it, and as VeraCrypt 1.26.30 and later make theirs for a volume they mount read-only (`veracrypt --mount-options=ro`); there is none; or the hidden root is in no VeraCrypt or TrueCrypt volume. |
 
-Close the outer volume before activating, or open it with
-`cryptsetup open --readonly` when it has to be shown. The check reads sysfs
-and the mount table only, never a mapping's table. It does not see a volume
-the VeraCrypt application opened through FUSE (as it does with hidden-volume
-protection), which holds no kernel link to the device, nor a mapping of
-another kind over the same device.
+Close the outer volume before activating, or, when it has to be shown, open
+it read-only, with `cryptsetup open --readonly` or, from VeraCrypt 1.26.30
+on, `veracrypt --mount-options=ro`. The check reads sysfs and the mount table
+only, never a mapping's table. It does not see a volume the VeraCrypt
+application opened through FUSE (as it does with hidden-volume protection),
+which holds no kernel link to the device, nor a mapping of another kind over
+the same device.
 
 ## Partition type in preflight
 
