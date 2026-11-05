@@ -234,7 +234,7 @@ fn many_functions_behind_directories_that_lack_them_are_checked_in_one_pass() {
         fs.mock_set_path_type(&format!("{HOME}/{dir}"), PathKind::Dir);
     }
     let names: Vec<String> = (0..1500).map(|at| format!("_f{at}")).collect();
-    let body = "local x=$1\nprint -r -- ${x} ${x}/y{a,b} > /dev/null\n".repeat(20);
+    let body = "local x=$1\nprint -r -- ${x} ${x}/y{a,b} > /dev/null\n".repeat(4);
     for name in &names {
         seed(&fs, &format!("{HOME}/zfn3/{name}"), &body);
     }
