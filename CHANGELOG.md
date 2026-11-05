@@ -554,11 +554,12 @@ of this changelog for that version becomes the release notes word for word, and
   brings it in. Its tests are held to a line-coverage floor of 85%, the file size and orphan module
   checks now cover it and the `setup/` workspace, and `nix build .#nails-gui` builds its binary,
   still a placeholder that draws no window.
-- Development: Kani, a model checker, proves every week that the steps an activation shows are
-  numbered from 1 to the number of phases it runs, in their run order and none skipped, and that
-  the run order keeps the runtime first, the mount policy before the build and the arming of the
-  switch last (docs/testing-strategy.md). It runs in the scheduled lane, never on a pull request,
-  and `just kani` runs the proofs where Kani is installed.
+- Development: Kani, a model checker, proves every week that the table of activation phases lists
+  each phase once, with the runtime first, the mount policy before the build and the arming of the
+  switch last, and that the step numbers taken from it run from 1 to the number of phases an
+  activation runs, in its order and none skipped (docs/testing-strategy.md). That an activation
+  reports each phase once and in that order is not proven. It runs in the scheduled lane, never on
+  a pull request, and `just kani` runs the proofs where Kani is installed, whose setup needs rustup.
 - `check` and the `inherited-autostart` warning list the autologin of Plasma Login Manager, KDE's
   display manager: `User=` under `[Autologin]`, or under the first seat's `[Autologin][seat0]`, in
   `/etc/plasmalogin.conf` and the drop-ins of `/etc/plasmalogin.conf.d` and

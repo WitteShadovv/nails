@@ -78,7 +78,7 @@ The suite runs in tiers, each with its own command, runtime and prerequisites. E
 | Format, lint, the tests and a three-seed shuffle sweep (pre-push gate) | `just check` | about 2 min | dev shell |
 | CI's `lint`, `rust` (with coverage), `shuffle` (three seeds) and `side-tests` jobs | `just ci-rust` | a few minutes | dev shell |
 | One fuzz target (see [docs/testing-strategy.md](docs/testing-strategy.md#fuzzing)) | `just fuzz-run mountinfo` | a minute of fuzzing, after a first build of several minutes | dev shell |
-| Kani's proofs (see [docs/testing-strategy.md](docs/testing-strategy.md#model-checking)) | `just kani` | a few minutes | Kani, installed apart from the dev shell |
+| Kani's proofs (see [docs/testing-strategy.md](docs/testing-strategy.md#model-checking)) | `just kani` | under a minute | Kani and rustup, installed apart from the dev shell |
 | Real-kernel tests (rootless) | `just kernel-tests` | seconds | dev shell, unprivileged user namespaces |
 | The one root-only overlay test | see `docs/development-guide.md` | seconds | root, an overlayfs-capable kernel |
 | One E2E test | `just e2e session-lifecycle` | minutes | KVM (`/dev/kvm`), Nix |
