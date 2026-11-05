@@ -122,9 +122,9 @@ pub(in super::super) enum Event {
     /// completion functions the check does not read).
     HookDoubt { function: String, doubt: String },
     /// A global alias is defined, named `name` as written, by the word
-    /// `text` (`G=| grep`). zsh puts its value in place of any word of code
-    /// that is its name, a redirection's target among them (`/dev/tty`), as
-    /// it reads the code.
+    /// `text` (`G=| grep`). zsh puts its value in place of any token of code
+    /// that is its name, a redirection's target (`/dev/tty`) or an operator
+    /// (`>`) among them, as it reads the code.
     GlobalAlias { name: String, text: String },
     /// An element given `fpath` that the walk reads as the directories an
     /// expansion holds, each as it is (`$fpath`, `$p`), as written: one

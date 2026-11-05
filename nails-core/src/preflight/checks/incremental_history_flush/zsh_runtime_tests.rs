@@ -1124,6 +1124,193 @@ fn a_global_alias_the_code_uses_is_a_doubt() {
     }
 }
 
+/// The doubt a global alias whose uses the check cannot count is, as `text`
+/// in the file at `place` defines it.
+fn uncountable(text: &str, place: &str) -> String {
+    format!(
+        "it cannot tell what code the global alias `{text}` in {place} runs, as zsh puts its \
+         value in place of each token that is its name, which the check cannot count where the \
+         name holds an operator, a brace or a blank, or is empty"
+    )
+}
+
+/// The doubt a hook's output to the device `target` is where the file at
+/// `place` defines the global alias `text`.
+fn under_alias(hook: &str, target: &str, text: &str, place: &str) -> String {
+    format!(
+        "it cannot tell where the output that `{hook}` in /home/alice/.zshrc redirects to \
+         `{target}` goes, as {place} defines the global alias `{text}`, which zsh may put in \
+         place of a word or an operator of it"
+    )
+}
+
+#[test]
+fn a_global_alias_named_like_an_operator_or_a_brace_is_a_doubt_wherever_it_stands() {
+    // zsh 5.9.2 looks a global alias up for each token it reads, and splits
+    // an operator off a word with no blank beside it, as it does the `}` that
+    // ends a word: with each of these it puts the alias's value in place of
+    // the `>`, `>>`, `&>`, `;` or `}` of the hook and appends each command
+    // line to ~/.zl, the history file, before it runs it.
+    for (text, hook, target) in [
+        (">=>>~/.zl;:", "{ print -r -- $1>$TTY }", Some("$TTY")),
+        (">>=>>~/.zl;:", "{ print -r -- $1>>$TTY }", Some("$TTY")),
+        (
+            ">=>>~/.zl;:",
+            "{ print -r -- \"$1\" -->$TTY }",
+            Some("$TTY"),
+        ),
+        (">=>>~/.zl;:", "{ print -r -- $1>${TTY} }", Some("${TTY}")),
+        (
+            ">=>>~/.zl;:",
+            "{ print -Pn -- \"\\e]0;$1\\a\"-->$TTY }",
+            Some("$TTY"),
+        ),
+        (
+            ">=>>~/.zl;:",
+            "{ print -r -- $1>/dev/null }",
+            Some("/dev/null"),
+        ),
+        (
+            ">=>>~/.zl;:",
+            "{ print -r -- $1>/dev/tty }",
+            Some("/dev/tty"),
+        ),
+        (
+            ">>=>>~/.zl;:",
+            "{ print -r -- $1>>/dev/null }",
+            Some("/dev/null"),
+        ),
+        (
+            "&>=>>~/.zl;:",
+            "{ print -r -- $1&>/dev/null }",
+            Some("/dev/null"),
+        ),
+        (";=>>~/.zl;", "{ print -r -- $1; }", None),
+        ("}=>>~/.zl; }", "{ print -r -- $1}", None),
+    ] {
+        let (name, value) = text.split_once('=').expect("a definition");
+        let alias = format!("alias -g '{name}'='{value}'\n");
+        let hooked = format!("HISTFILE=~/.zl\npreexec() {hook}\n");
+        // Defined in ~/.zshrc above the hook, and in ~/.zshenv.
+        for file in ["/home/alice/.zshrc", "/home/alice/.zshenv"] {
+            let fs = MockFilesystem::new();
+            if file == "/home/alice/.zshrc" {
+                seed(&fs, file, &format!("{alias}{hooked}"));
+            } else {
+                seed(&fs, file, &alias);
+                seed(&fs, "/home/alice/.zshrc", &hooked);
+            }
+            let doubts = scan(&fs, UNKNOWN).doubts;
+            assert!(
+                doubts.contains(&uncountable(text, file)),
+                "{text} {hook}: {doubts:?}"
+            );
+            if let Some(target) = target {
+                assert!(
+                    doubts.contains(&under_alias("preexec", target, text, file)),
+                    "{text} {hook}: {doubts:?}"
+                );
+            }
+        }
+    }
+    // An empty name, which the check could not read, is such a doubt too.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "galiases[]='>> ~/.zl'\n");
+    assert!(
+        scan(&fs, UNKNOWN)
+            .doubts
+            .contains(&uncountable("galiases[]=>> ~/.zl", "/home/alice/.zshrc")),
+        "{:?}",
+        scan(&fs, UNKNOWN)
+    );
+}
+
+#[test]
+fn a_hook_s_output_to_a_device_is_a_doubt_where_a_file_defines_any_global_alias() {
+    // zsh may put a global alias's value in place of any token of the
+    // redirection as it reads it, so with one of any name, used or not, the
+    // check takes no target for a device.
+    for (rc, hook, target, text) in [
+        (
+            "alias -g G='| grep'\nprecmd() { print -Pn '\\e]0;%~\\a' > $TTY }\n",
+            "precmd",
+            "$TTY",
+            "G=| grep",
+        ),
+        (
+            "alias -g ...='../..'\npreexec() { print -r -- $1 >/dev/null 2>&1 }\n",
+            "preexec",
+            "/dev/null",
+            "...=../..",
+        ),
+        (
+            "galiases[L]='| less'\nprecmd() { print -n x > /dev/tty }\n",
+            "precmd",
+            "/dev/tty",
+            "galiases[L]=| less",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(
+            scan(&fs, UNKNOWN).doubts,
+            [under_alias(hook, target, text, "/home/alice/.zshrc")],
+            "{rc}"
+        );
+    }
+    // One an `exec` keeps open, and a global alias in another file.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshenv", "alias -g G='| grep'\n");
+    seed(&fs, "/home/alice/.zshrc", "exec 2>/dev/null\n");
+    assert_eq!(
+        scan(&fs, UNKNOWN).doubts,
+        [
+            "it cannot tell where the output that `exec` in /home/alice/.zshrc redirects to \
+          `/dev/null` goes, as /home/alice/.zshenv defines the global alias `G=| grep`, which \
+          zsh may put in place of a word or an operator of it"
+        ]
+    );
+    // Without one, each is none.
+    for rc in [
+        "precmd() { print -Pn '\\e]0;%~\\a' > $TTY }\n",
+        "preexec() { print -r -- $1 >/dev/null 2>&1 }\n",
+        "exec 2>/dev/null\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn an_alias_word_an_expansion_makes_is_a_doubt() {
+    // zsh 5.9.2 takes `$g` for `-g` here and makes `>` a global alias, which
+    // then writes each command line to ~/.zl; a function that hands its
+    // words to `alias` may do the same.
+    for (rc, word) in [
+        (
+            "g=-g\nalias $g '>'='>>~/.zl;:'\npreexec() { print -r -- $1>$TTY }\n",
+            "$g",
+        ),
+        ("ga() { alias -g \"$@\" }\nga '>=>>~/.zl;:'\n", "$@"),
+        ("alias -$x '>=>>~/.zl;:'\n", "-$x"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        let doubts = scan(&fs, UNKNOWN).doubts;
+        assert!(
+            doubts.iter().any(|doubt| {
+                doubt.starts_with("it cannot tell which aliases `alias ")
+                && doubt.ends_with(&format!(
+                    "` in /home/alice/.zshrc defines, as an expansion makes `{word}`, which may \
+                     make them global"
+                ))
+            }),
+            "{rc}: {doubts:?}"
+        );
+    }
+}
+
 #[test]
 fn arithmetic_that_may_set_a_name_the_check_cannot_read_is_a_doubt() {
     // zsh 5.9.2 sets TTY to `5` with each, as it reads `${n}TY` in arithmetic
