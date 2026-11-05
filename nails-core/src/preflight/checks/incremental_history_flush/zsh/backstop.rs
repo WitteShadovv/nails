@@ -471,8 +471,8 @@ pub(super) fn is_fc_flag(word: &str) -> bool {
 
 /// How often an `fc`, or a `history`, which takes its flags, stands in
 /// `line` as a word of its own with a flag after it that writes the history
-/// file ([`FC_WRITES`]), or an expansion that may be one, before its options
-/// end or the command does.
+/// file ([`FC_WRITES`]), or an expansion, brace expansion or a glob that may
+/// make one, before its options end or the command does.
 fn fc_writes(line: &str) -> usize {
     let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
     ["fc", "history"]
@@ -497,7 +497,8 @@ fn fc_writes(line: &str) -> usize {
                 .unwrap_or_default();
             for word in command.split_whitespace() {
                 let word = word.replace(['\'', '"', '\\'], "");
-                if word.contains('$') {
+                // An expansion, brace expansion or a glob may make a flag.
+                if word.contains(['$', '{', '*', '?', '[']) {
                     return true;
                 }
                 if !is_fc_flag(&word) {
@@ -726,7 +727,7 @@ const BRACE_LIMIT: usize = 1024;
 
 /// What stands for the `{` and the `}` of a group that brace expansion
 /// leaves as written, so that it is not expanded again.
-const KEPT: (char, char) = ('\u{1}', '\u{2}');
+pub(super) const KEPT: (char, char) = ('\u{1}', '\u{2}');
 
 /// The words that brace expansion may make of `word`, a word of zsh code as
 /// written, as far as they may name an option, and more: each alternative of

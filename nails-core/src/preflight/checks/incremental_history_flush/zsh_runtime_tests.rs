@@ -188,8 +188,8 @@ fn emulate_r_ksh_turns_share_history_on() {
     for rc in [
         "emulate ksh\n",
         "emulate -R sh\n",
-        "emulate -R csh\n",
         "emulate -LR zsh\n",
+        "emulate -R zsh\nemulate -R r\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
@@ -732,8 +732,8 @@ fn a_function_named_like_a_builtin_is_a_hook() {
     // line is entered, once zsh/zle is loaded, and zsh 5.9.2 writes it to
     // HISTFILE with each then.
     for rc in [
-        "zstyle() { print -r -- \"$BUFFER\" >> $log; builtin zstyle \"$@\" }\n",
-        "zle() { print -r -- \"$BUFFER\" >> $log; builtin zle \"$@\" }\n",
+        "zstyle() { print -r -- \"$BUFFER\" >> $log; builtin zstyle ':x' y z }\n",
+        "zle() { print -r -- \"$BUFFER\" >> $log; builtin zle -R }\n",
     ] {
         let fs = MockFilesystem::new();
         seed(
@@ -1485,8 +1485,8 @@ fn an_alias_word_an_expansion_makes_is_a_doubt() {
             doubts.iter().any(|doubt| {
                 doubt.starts_with("it cannot tell which aliases `alias ")
                 && doubt.ends_with(&format!(
-                    "` in /home/alice/.zshrc defines, as an expansion makes `{word}`, which may \
-                     make them global"
+                    "` in /home/alice/.zshrc defines, as an expansion, brace expansion or a glob \
+                     may make `{word}` other words, which may be a flag that makes them global"
                 ))
             }),
             "{rc}: {doubts:?}"
