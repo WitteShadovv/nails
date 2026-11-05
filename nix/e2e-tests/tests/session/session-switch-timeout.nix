@@ -55,10 +55,9 @@ in
     "security"
     "session"
   ];
-  # About 470 s on a hosted runner (369 s measured before the forced way
-  # back): five waits for the one-minute timeout (one in a 90-second hold),
-  # two power-offs and a crash with their cold boots and seven soft-reboots,
-  # which a slower runner stretches.
+  # 439 s on a hosted runner: five waits for the one-minute timeout (one in a
+  # 90-second hold), two power-offs and a crash with their cold boots and
+  # seven soft-reboots, which a slower runner stretches.
   globalTimeout = 1200;
 
   nodes.machine =
