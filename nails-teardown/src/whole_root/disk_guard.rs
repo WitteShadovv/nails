@@ -501,7 +501,11 @@ mod tests {
         plan.hidden_dev = Some("253:0".to_string());
         plan.decoy_root.source = PathBuf::from("/nonexistent/root");
         plan.backend = Vec::new();
-        plan.policy_mounts = Vec::new();
+        // The hidden volume's bind at the root, as entry records it.
+        plan.policy_mounts = vec![PolicyMount {
+            target: PathBuf::from("/mnt"),
+            kind: PolicyMountKind::HiddenVolume,
+        }];
         plan.carried = vec![crate::whole_root::plan::CarriedMount {
             target: PathBuf::from("/boot"),
             at: PathBuf::from("/mnt/root/decoy/boot"),
@@ -509,22 +513,31 @@ mod tests {
             dev: Some("8:1".to_string()),
             root: Some(PathBuf::from("/")),
         }];
-        // The hidden volume, the carried ESP, and a USB disk at /mnt/usb.
+        // The hidden volume, the carried ESP, a USB disk at /mnt/usb, and a
+        // disk mounted over the root itself.
         let mounts = parse_mountinfo(
             "1 0 0:30 / / rw - overlay overlay rw,upperdir=/u,workdir=/w\n\
              2 1 253:0 / /mnt rw - ext4 /nonexistent/mapper/data rw\n\
              3 2 8:1 / /mnt/root/decoy/boot ro - vfat /nonexistent/vda1 ro\n\
-             4 2 8:32 / /mnt/usb rw - ext4 /nonexistent/sdc rw\n",
+             4 2 8:32 / /mnt/usb rw - ext4 /nonexistent/sdc rw\n\
+             5 2 8:48 / /mnt rw - ext4 /nonexistent/sdd rw\n",
         );
         let kept = protected(&plan, &mounts, &sys);
         for want in ["253:0", "8:17", "8:16", "8:1", "8:0"] {
             assert!(kept.contains(&dev(want)), "{want}: {kept:?}");
         }
-        assert!(!kept.contains(&dev("8:32")), "{kept:?}");
-        // A plan written before the device was recorded keeps everything below
-        // the root writable, as before.
+        // Neither the disk below the root nor the one over it is the
+        // session's: the guard may set both read-only.
+        for foreign in ["8:32", "8:48"] {
+            assert!(!kept.contains(&dev(foreign)), "{foreign}: {kept:?}");
+        }
+        // A plan written before the device was recorded keeps everything at or
+        // below the root writable, as before.
         plan.hidden_dev = None;
-        assert!(protected(&plan, &mounts, &sys).contains(&dev("8:32")));
+        let kept = protected(&plan, &mounts, &sys);
+        for path_only in ["8:32", "8:48"] {
+            assert!(kept.contains(&dev(path_only)), "{path_only}: {kept:?}");
+        }
     }
 
     #[test]
