@@ -1404,7 +1404,7 @@ of this changelog for that version becomes the release notes word for word, and
   `JobTimeoutAction=poweroff-force`, and the timeout itself stays the unit's own. It covers the way
   in, run by the decoy's PID 1, and the way back, run by the hidden session's, and it goes wherever
   the transition drop-in goes: on the way back, and in a cancelled, failed or refused activation,
-  `recover` and an emergency on the decoy. Until then it covers every other soft-reboot as well,
+  `recover` and an emergency on the decoy. Until it goes it covers every other soft-reboot as well,
   such as one started by hand in the hidden session. A plain `poweroff` would not do: systemd
   skips that action while `shutdown.target` is active or queued, as it is during a switch. The
   activation refuses when, once the drop-ins are loaded, the action is another one, which a later
