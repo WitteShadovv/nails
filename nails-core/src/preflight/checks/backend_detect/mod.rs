@@ -53,7 +53,8 @@ enum CryptType {
     /// Headerless plain dm-crypt.
     Plain,
     /// A mapping the VeraCrypt application made through the kernel
-    /// (`veracrypt<N>`, with no uuid).
+    /// (`veracrypt<N>`, with no uuid up to VeraCrypt 1.26.29 and the uuid
+    /// `VERACRYPT-<serial>-<name>` from 1.26.30 on).
     VeraCrypt,
     /// Any other cryptsetup type (BITLK, FVAULT2, an integrity sub-device, ...).
     Other(String),

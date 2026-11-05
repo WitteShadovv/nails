@@ -104,6 +104,41 @@ fn a_mapping_the_veracrypt_application_made_passes() {
         .mapping("dm-9", "254:9", "veracrypt1", "", &["dm-8"])
         .run();
     assert_pass(&result, "VeraCrypt mapping dm-9");
+    // From 1.26.30 on, each carries the uuid VERACRYPT-<serial>-<name>.
+    let result = Host::new("254:9", "ext4", "/dev/mapper/veracrypt1")
+        .disk("sdb", "8:16")
+        .mapping(
+            "dm-8",
+            "254:8",
+            "veracrypt1_0",
+            "VERACRYPT-1762101445123456-veracrypt1_0",
+            &["sdb"],
+        )
+        .mapping(
+            "dm-9",
+            "254:9",
+            "veracrypt1",
+            "VERACRYPT-1762101445123456-veracrypt1",
+            &["dm-8"],
+        )
+        .run();
+    assert_pass(&result, "VeraCrypt mapping dm-9");
+    // A uuid of that form under another name is no mapping of the
+    // application's.
+    let result = Host::new("254:9", "ext4", "/dev/mapper/data")
+        .disk("sdb", "8:16")
+        .mapping(
+            "dm-9",
+            "254:9",
+            "data",
+            "VERACRYPT-1762101445123456-veracrypt1",
+            &["sdb"],
+        )
+        .run();
+    assert!(
+        warning(&result).contains("dm-9 is a device-mapper device of a kind"),
+        "{result:?}"
+    );
 }
 
 #[test]

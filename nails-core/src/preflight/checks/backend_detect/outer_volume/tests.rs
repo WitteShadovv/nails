@@ -172,6 +172,73 @@ fn a_mapping_the_veracrypt_application_made_warns_even_mounted_read_only() {
 }
 
 #[test]
+fn a_mapping_veracrypt_1_26_30_or_later_made_is_known_by_its_uuid() {
+    // From 1.26.30 on, the application gives each mapping it makes the uuid
+    // VERACRYPT-<serial>-<name>.
+    let host =
+        hidden("50 1 254:4 / /media/veracrypt1 rw,relatime - exfat /dev/mapper/veracrypt1 rw\n")
+            .mapping(
+                "dm-4",
+                "254:4",
+                "veracrypt1",
+                "VERACRYPT-1762101445123456-veracrypt1",
+                &["sdb2"],
+            );
+    assert!(
+        warning(&run(&host)).contains(
+            ": veracrypt1 (dm-4), on sdb2, mounted read-write at /media/veracrypt1. A mapping \
+             the VeraCrypt application makes in the kernel has no hidden-volume protection"
+        ),
+        "{:?}",
+        run(&host)
+    );
+
+    // A hidden volume the application mounted is in a VeraCrypt volume too.
+    let mounted_by_the_application = || {
+        drive(Host::new("254:9", "ext4", "/dev/mapper/veracrypt2")).mapping(
+            "dm-9",
+            "254:9",
+            "veracrypt2",
+            "VERACRYPT-1762101445654321-veracrypt2",
+            &["sdb2"],
+        )
+    };
+    assert_eq!(
+        run(&mounted_by_the_application()),
+        CheckResult::Pass(format!(
+            "No other VeraCrypt or TrueCrypt mapping is open on the storage the hidden root's \
+             volume at {ROOT} is opened from (sdb2)."
+        ))
+    );
+    let host = mounted_by_the_application().mapping(
+        "dm-4",
+        "254:4",
+        "outer",
+        "CRYPT-TCRYPT-outer",
+        &["sdb2"],
+    );
+    assert_eq!(
+        warning(&run(&host)),
+        format!(
+            "Another VeraCrypt or TrueCrypt mapping is open read-write on the storage the hidden \
+             root's volume at {ROOT} is opened from: outer (dm-4), on sdb2, not mounted. \
+             {CRYPTSETUP}"
+        )
+    );
+
+    // A uuid of that form under another name is no mapping of the
+    // application's, and so no VeraCrypt or TrueCrypt one to the check.
+    let host = hidden("").mapping(
+        "dm-4",
+        "254:4",
+        "fence",
+        "VERACRYPT-1762101445123456-veracrypt1",
+        &["sdb2"],
+    );
+    assert!(run(&host).is_pass(), "{:?}", run(&host));
+}
+
+#[test]
 fn an_outer_volume_opened_from_another_loop_device_warns() {
     // The hidden volume on the partition, the outer one on a loop device
     // over it.
