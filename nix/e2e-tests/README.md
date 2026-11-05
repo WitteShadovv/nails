@@ -138,6 +138,12 @@ serial port.
   the stop cannot unmount the volume itself there; a decoy filesystem on LVM
   shows the loss instead (`session-fstab-policy`). The distribution tier
   covers the volume itself.
+- `external-disk.nix`: an xHCI controller for the node and `plug_usb_drive`
+  and `unplug_usb_drive` for the test script, which attach a usb-storage
+  drive with removable media through the QEMU monitor and detach it again.
+  The drive's image is a sparse file in the machine's state directory that
+  lasts from one plug to the next, so a drive prepared once can be attached
+  again, as the daily routine attaches it (`routine-automount`).
 
 ## Tag taxonomy
 
@@ -149,9 +155,9 @@ Use only:
 - `lifecycle`
 - `security`
 - `performance`
-- `heavy` (long prototypes of the setup routine: leaf tests in `all`, which the
-  shards of a pull request leave out; they run on pushes to `main` and `next`,
-  nightly and with the `full-e2e` label)
+- `heavy` (long prototypes of the setup routine, such as `routine-automount`:
+  leaf tests in `all`, which the shards of a pull request leave out; they run
+  on pushes to `main` and `next`, nightly and with the `full-e2e` label)
 - `preflight`
 - `nixos`
 - `session` (the whole-root session, `tests/session/`)

@@ -103,10 +103,12 @@ Debian also after a Nix install inside the session), and
 the time budgets in `performance` (the `trigger_to_settled` time of activate and
 deactivate and the `trigger_to_backdoor` time of emergency). A time budget turns
 a slow regression into a failing test; budgets need generous headroom on shared
-runners. The long prototypes of the setup routine form the `heavy` group. The
-group runs where the whole suite runs (pushes, nightly, the `full-e2e` label)
-and in no pull request's shards, so a behaviour a pull request must prove needs
-a test outside it as well. On Fedora and Arch, which NAILS does not admit yet, a refusal scenario
+runners. The long prototypes of the setup routine form the `heavy` group. One
+is `routine-automount`, which attaches a USB drive to a VM where udiskie mounts
+drives by itself and records whether it mounts one unlocked from a terminal.
+The group runs where the whole suite runs (pushes, nightly, the `full-e2e`
+label) and in no pull request's shards, so a behaviour a pull request must
+prove needs a test outside it as well. On Fedora and Arch, which NAILS does not admit yet, a refusal scenario
 checks that NAILS refuses them, that a refused `activate` changes nothing on the
 hidden root, and that nothing on the decoy's disk filesystems or in its journal
 names the refused run. On Debian 13 and Ubuntu 24.04, a records scenario checks
