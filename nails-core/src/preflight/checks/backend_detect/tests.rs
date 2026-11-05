@@ -1013,6 +1013,47 @@ fn a_header_of_another_volume_warns_and_its_flags_are_not_the_mappings() {
     );
 }
 
+#[test]
+fn a_luks2_volume_on_a_self_encrypting_drive_has_its_header_told_from_another() {
+    // cryptsetup gives a LUKS2 volume that uses the drive's own encryption
+    // the type LUKS2-OPAL, `CRYPT-LUKS2-OPAL-<hex>-<name>`.
+    let fs = luks_on_partition_fixture();
+    let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":[]}}"#);
+    fs.mock_set_file_content(
+        "/sys/dev/block/253:2/dm/uuid",
+        "CRYPT-LUKS2-OPAL-ffffffffffffffffffffffffffffffff-data\n",
+    );
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(&format!(
+            "The device below LUKS mapping dm-2, sdb2, starts with a LUKS2 header of another \
+             volume (uuid {}) than the one the mapping was opened with",
+            luks2::TEST_UUID
+        )),
+        "{result:?}"
+    );
+    // Its own header is named in the pass line, as for any LUKS2 volume.
+    fs.mock_set_file_content(
+        "/sys/dev/block/253:2/dm/uuid",
+        &format!(
+            "CRYPT-LUKS2-OPAL-{}-data\n",
+            luks2::TEST_UUID.replace('-', "")
+        ),
+    );
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
+    assert_eq!(
+        result,
+        CheckResult::Pass(
+            "Hidden root backend: ext4 on LUKS mapping dm-2 on block device sdb2; no \
+             backend-specific hazards detected. The LUKS2 header at the start of sdb2 shows \
+             anyone who reads the disk that an encrypted volume is there (cryptsetup isLuks, \
+             blkid), though not what it holds."
+                .into()
+        )
+    );
+}
+
 /// A mock host with the hidden root on a LUKS2 volume with authenticated
 /// encryption: the LUKS mapping `dm-9` on its integrity layer `dm-8`, whose
 /// device-mapper uuid has the type `integrity` (`SUBDEV` from cryptsetup 2.8

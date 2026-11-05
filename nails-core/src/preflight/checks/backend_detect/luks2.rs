@@ -164,13 +164,15 @@ pub fn same_volume(header: &str, dm_uuid: &str) -> bool {
 /// volume that has a uuid (a LUKS volume, and the sub-devices it builds
 /// below a LUKS2 volume, see [`names_a_volume`]) and none for a volume
 /// without one (`CRYPT-TCRYPT-<name>`, and `CRYPT-SUBDEV-<name>_<n>` for
-/// the further cipher layers below it).
+/// the further cipher layers below it). The type is one word but for
+/// `LUKS2-OPAL`, which cryptsetup gives a LUKS2 volume that uses a
+/// self-encrypting drive's own encryption (`CRYPT_LUKS2_HW_OPAL`).
 pub fn volume_uuid_of(dm_uuid: &str) -> Option<&str> {
-    dm_uuid
-        .trim()
-        .strip_prefix("CRYPT-")
-        .and_then(|rest| rest.split_once('-'))
-        .and_then(|(_, rest)| rest.split_once('-'))
+    let rest = dm_uuid.trim().strip_prefix("CRYPT-")?;
+    let rest = rest
+        .strip_prefix("LUKS2-OPAL-")
+        .or_else(|| rest.split_once('-').map(|(_, rest)| rest))?;
+    rest.split_once('-')
         .map(|(hex, _)| hex)
         .filter(|hex| !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()))
 }
@@ -371,6 +373,24 @@ mod tests {
         for dm in ["", "CRYPT-LUKS2-", "CRYPT-LUKS2-data", "LVM-x-y"] {
             assert!(same_volume("ffffffff", dm), "{dm}");
         }
+    }
+
+    #[test]
+    fn a_luks2_volume_on_a_self_encrypting_drive_names_its_uuid_too() {
+        // CRYPT_LUKS2_HW_OPAL in cryptsetup's lib/internal.h, the type
+        // dm_prepare_uuid writes between CRYPT- and the uuid.
+        let hex = TEST_UUID.replace('-', "");
+        let dm = format!("CRYPT-LUKS2-OPAL-{hex}-data");
+        assert_eq!(volume_uuid_of(&dm), Some(hex.as_str()));
+        assert!(same_volume(TEST_UUID, &dm));
+        assert!(!same_volume("ffffffff-89ab-cdef-0123-456789abcdef", &dm));
+        // A name with dashes of its own, and one without a uuid.
+        assert_eq!(
+            volume_uuid_of(&format!("CRYPT-LUKS2-OPAL-{hex}-my-data")),
+            Some(hex.as_str())
+        );
+        assert_eq!(volume_uuid_of("CRYPT-LUKS2-OPAL-data"), None);
+        assert_eq!(volume_uuid_of("CRYPT-LUKS2-OPAL-"), None);
     }
 
     #[test]
