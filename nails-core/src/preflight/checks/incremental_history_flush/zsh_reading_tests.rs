@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What may make zsh read a builtin's words otherwise than as they are
-//! written: the words that brace expansion or a glob may make flags or names
-//! of, and the options of the builtins the check reads, as zsh reads them.
+//! What may make zsh read the files' code or a builtin's words otherwise
+//! than as they are written: the options that change how zsh reads code,
+//! the words that brace expansion or a glob may make flags or names of, and
+//! the options of the builtins the check reads, as zsh reads them.
 
 use super::*;
 
@@ -18,6 +19,154 @@ fn read(rc: &str) -> Scan {
 fn warns(rc: &str) -> bool {
     let found = read(rc);
     !found.doubts.is_empty() || !found.writes.is_empty()
+}
+
+#[test]
+fn a_histchars_set_makes_the_files_comment_lines_a_doubt() {
+    // zsh 5.9.2 starts a comment only at histchars' third character: with
+    // each of these the line after it runs, and zsh writes each command line
+    // to the history file in the extended form SHARE_HISTORY writes.
+    let doubt = |place: &str| {
+        format!(
+            "it cannot tell which lines of the files zsh runs, as {place} sets histchars, whose \
+             third character starts a comment in place of `#`"
+        )
+    };
+    for set in [
+        "histchars='!^'",
+        "HISTCHARS='!^%'",
+        "typeset histchars='!^'",
+        "histchars=",
+        ": ${histchars::=!^}",
+    ] {
+        assert_eq!(
+            read(&format!("{set}\n# x; setopt share_history\n")).doubts,
+            [doubt("/home/alice/.zshrc")],
+            "{set}"
+        );
+    }
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshenv", "histchars='!^'\n");
+    seed(&fs, "/home/alice/.zshrc", "# x; setopt share_history\n");
+    assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt("/home/alice/.zshenv")]);
+    // A comment is none where nothing sets it.
+    assert_eq!(read("# x; setopt share_history\n"), Scan::default());
+}
+
+#[test]
+fn quotes_zsh_may_read_otherwise_are_a_doubt() {
+    // zsh 5.9.2 reads `''` in a quoted string as a quote with RC_QUOTES, so
+    // that this `eval` defines preexec, which appends each command line to
+    // ~/.zl before it runs; without the option it prints a string.
+    let eval = "eval 'print '\\''a'';preexec() { print -r -- $1 >>~/.zl };''b'\\'\n";
+    let doubt = "it cannot read the quotes of the files as zsh may, as /home/alice/.zshrc may turn \
+                 RC_QUOTES or CSH_JUNKIE_QUOTES on, which change what a quote holds";
+    for set in [
+        "setopt rcquotes",
+        "setopt RC_QUOTES",
+        "setopt cshjunkiequotes",
+        "emulate csh",
+        "emulate -R csh",
+    ] {
+        assert!(
+            read(&format!("HISTFILE=~/.zl\n{set}\n{eval}"))
+                .doubts
+                .contains(&doubt.to_string()),
+            "{set}"
+        );
+    }
+    assert_eq!(read(&format!("HISTFILE=~/.zl\n{eval}")), Scan::default());
+}
+
+#[test]
+fn a_close_brace_after_words_is_a_doubt_where_braces_may_be_ignored() {
+    // zsh 5.9.2 reads the `}` after `:` as a word of it with each of these,
+    // so that preexec runs the print line after it, which appends each
+    // command line to ~/.zl before it runs.
+    let doubt = "it cannot tell where the code that `: }` in /home/alice/.zshrc ends with its `}` \
+                 ends, as /home/alice/.zshrc may turn IGNORE_BRACES or IGNORE_CLOSE_BRACES on, \
+                 with which that `}` is a word of the command";
+    for set in [
+        "setopt ignore_close_braces",
+        "setopt ignorebraces",
+        "setopt nobraceexpand",
+        "unsetopt brace_expand",
+        "set -I",
+        "emulate sh",
+        "emulate -L sh",
+        "emulate bash",
+    ] {
+        let rc =
+            format!("HISTFILE=~/.zl\n{set}\npreexec() {{ : }}\nprint -r -- \"$1\" >>~/.zl\n}}\n");
+        assert!(
+            read(&rc).doubts.contains(&doubt.to_string()),
+            "{set}: {:?}",
+            read(&rc)
+        );
+    }
+    // Where no file names them a `}` closes after words, and where one
+    // does, one in a command's place closes as in zsh's default.
+    for rc in [
+        "HISTFILE=~/.zl\npreexec() { : }\n",
+        "HISTFILE=~/.zl\nsetopt ignorebraces\npreexec() { :; }\nprecmd() {\n  :\n}\n",
+        "emulate ksh\npreexec() { : }\n",
+    ] {
+        assert_eq!(read(rc), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_function_an_alias_may_rename_is_a_doubt_where_alias_func_def_may_be_on() {
+    // zsh 5.9.2 defines preexec or zshaddhistory with each of these, which
+    // appends each command line to ~/.zl before it runs.
+    let doubt = "it cannot tell which function `foo ()` in /home/alice/.zshrc defines, as \
+                 /home/alice/.zshrc may turn ALIAS_FUNC_DEF on, with which zsh puts the value of \
+                 the alias `foo` in place of its name";
+    for (set, alias) in [
+        ("setopt aliasfuncdef", "alias foo=preexec"),
+        ("setopt ALIAS_FUNC_DEF", "alias foo='bar preexec'"),
+        ("setopt aliasfuncdef", "alias foo=zshaddhistory"),
+        ("emulate ksh", "aliases[foo]=preexec"),
+    ] {
+        let rc = format!("HISTFILE=~/.zl\n{set}\n{alias}\nfoo() {{ print -r -- $1 >>~/.zl; }}\n");
+        assert!(
+            read(&rc).doubts.contains(&doubt.to_string()),
+            "{set} {alias}: {:?}",
+            read(&rc)
+        );
+    }
+    // Without the option zsh refuses such a definition, and one no alias
+    // names or made with `function` takes no alias's value.
+    for rc in [
+        "alias foo=preexec\nfoo() { print -r -- $1 >>~/.zl; }\n",
+        "setopt aliasfuncdef\nalias bar=preexec\nfoo() { print -r -- $1 >>~/.zl; }\n",
+        "setopt aliasfuncdef\nalias foo=preexec\nfunction foo { print -r -- $1 >>~/.zl; }\n",
+    ] {
+        assert_eq!(read(rc), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn prompt_vars_turns_prompt_subst_on() {
+    // zsh 5.9.2 runs the prompt's command substitution with each, as
+    // PROMPT_VARS is its other name for PROMPT_SUBST.
+    for set in [
+        "setopt promptvars",
+        "setopt PROMPT_VARS",
+        "set -o prompt_vars",
+        "options[promptvars]=on",
+    ] {
+        let found = read(&format!("{set}\nPS1='$(fc -ln -1 >>~/.zl)%# '\n"));
+        assert_eq!(
+            found.doubts,
+            [
+                "it cannot follow the code that `PS1=$(fc -ln -1 >>~/.zl)%# ` in \
+                 /home/alice/.zshrc runs as zsh shows the prompt, as PROMPT_SUBST may be on"
+            ],
+            "{set}"
+        );
+    }
+    assert!(read("PS1='$(fc -ln -1 >>~/.zl)%# '\n").doubts.is_empty());
 }
 
 #[test]

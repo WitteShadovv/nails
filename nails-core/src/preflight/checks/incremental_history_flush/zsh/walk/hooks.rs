@@ -134,15 +134,19 @@ fn zle_options(args: &[Word]) -> Result<Option<ZleOptions<'_>>, &Word> {
 
 impl Walker<'_> {
     /// The events of a function's definition by the words `names` (`function
-    /// a b`, `a b ()`): each defines it, the first one's code is its body, and
-    /// each other runs it, so that it counts as a hook where any is one. A
-    /// name zsh may expand into another may be a hook's, so its code counts
-    /// as a hook's ([`computed_name`]).
-    pub(super) fn define(&mut self, names: Vec<Word>) {
+    /// a b`, `a b ()`, `paren` for the second form): each defines it, the
+    /// first one's code is its body, and each other runs it, so that it
+    /// counts as a hook where any is one. A name zsh may expand into another
+    /// may be a hook's, so its code counts as a hook's ([`computed_name`]),
+    /// and so may an alias's in the second form ([`Event::NamedBody`]).
+    pub(super) fn define(&mut self, names: Vec<Word>, paren: bool) {
         let mut first: Option<String> = None;
         for name in names {
             self.mention(&name.text);
             self.events.push(Event::Define(name.text.clone()));
+            if paren {
+                self.events.push(Event::NamedBody(name.text.clone()));
+            }
             if computed_name(&name) {
                 self.events.push(Event::Hook(name.text.clone()));
             }

@@ -115,10 +115,16 @@ fn an_option_the_command_line_turns_on_counts() {
     }
     // One that emulates sh or ksh reads their startup files, and an `-o`
     // that names nothing is a doubt.
+    // zsh 5.9.2 picks sh's emulation by a `b` too: started under the name
+    // bash, it reads $ENV, which wrote each command line to the history file.
     for (words, doubt) in [
         (&["sh", "-i"][..], "sh"),
         (&["-ksh"], "-ksh"),
         (&["/bin/rsh"], "/bin/rsh"),
+        (&["bash", "-i"], "bash"),
+        (&["-bash"], "-bash"),
+        (&["rbash"], "rbash"),
+        (&["/usr/bin/bsh"], "/usr/bin/bsh"),
         (&["zsh", "--emulate", "sh"], "--emulate"),
         (&["zsh", "--emulate=ksh"], "--emulate=ksh"),
     ] {
@@ -131,9 +137,63 @@ fn an_option_the_command_line_turns_on_counts() {
             "{words:?}"
         );
     }
+    // Started as csh it reads zsh's files with csh's quotes, and as su it
+    // takes the name of the shell it emulates from SHELL.
+    assert_eq!(
+        line(&["-csh"]).doubts,
+        [
+            "it cannot read the files as a zsh started under the name `-csh` does, as zsh then \
+          emulates csh, whose quotes differ"
+        ]
+    );
+    assert_eq!(
+        line(&["-su"]).doubts,
+        [
+            "it cannot tell what a zsh started under the name `-su` reads, as zsh then takes the \
+          name of the shell it emulates from SHELL"
+        ]
+    );
+    for words in [
+        &["rzsh"][..],
+        &["-zsh"],
+        &["/run/current-system/sw/bin/zsh", "-l"],
+    ] {
+        assert_eq!(line(words).doubts, Vec::<String>::new(), "{words:?}");
+    }
     assert_eq!(
         line(&["zsh", "-o"]).doubts,
         ["it cannot tell what `-o` on its command line turns on"]
+    );
+    // PROMPT_VARS is zsh's other name for PROMPT_SUBST.
+    for words in [
+        &["zsh", "-o", "promptvars"][..],
+        &["zsh", "--promptvars"],
+        &["zsh", "--prompt-subst"],
+    ] {
+        assert!(line(words).prompt_subst, "{words:?}");
+    }
+    // The options that change how zsh reads code.
+    for (words, name) in [
+        (&["zsh", "-I"][..], "IGNORE_BRACES"),
+        (&["zsh", "-o", "ignore_close_braces"], "IGNORE_CLOSE_BRACES"),
+        (&["zsh", "--rc-quotes"], "RC_QUOTES"),
+        (&["zsh", "-o", "aliasfuncdef"], "ALIAS_FUNC_DEF"),
+    ] {
+        assert_eq!(
+            line(words).doubts,
+            [format!(
+                "it cannot read the files as zsh may, as its command line turns {name} on, \
+                 which changes how zsh reads code"
+            )],
+            "{words:?}"
+        );
+    }
+    assert_eq!(
+        line(&["zsh", "-o", "nobraceexpand"]).doubts,
+        [
+            "it cannot read the files as zsh may, as its command line turns BRACE_EXPAND off, \
+          which changes how zsh reads code"
+        ]
     );
     assert_eq!(
         line(&["zsh", "--emulate", "zsh"]).doubts,
