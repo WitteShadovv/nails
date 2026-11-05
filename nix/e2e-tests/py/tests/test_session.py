@@ -290,6 +290,98 @@ class RealPowerOffTest(unittest.TestCase):
         self.assertEqual(reader.joined, [30])
 
 
+class FollowPowerOffTest(unittest.TestCase):
+    """A switch that is to power the machine off instead of switching."""
+
+    class Exited:
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float) -> int:
+            return 0
+
+    class Running:
+        def poll(self) -> None:
+            return None
+
+        def wait(self, timeout: float) -> int:
+            raise subprocess.TimeoutExpired("qemu", timeout)
+
+    def test_a_switch_that_powers_off_is_followed_to_its_end(self) -> None:
+        machine = FakeMachine(
+            [
+                "  !!  Forcibly powering off: job timed out",
+                "[   71.3] reboot: Power down",
+            ]
+        )
+        machine.process = self.Exited()
+        with mock.patch.object(session, "time", NoPolling):
+            session.follow_power_off(machine, "nails activate -y", "hang-in")
+        self.assertFalse(machine.connected)
+        self.assertEqual(machine.connects, 0)
+
+    def test_a_switch_that_goes_through_fails_at_once(self) -> None:
+        machine = FakeMachine(
+            [
+                "  !!  Forcibly soft-rebooting: job timed out",
+                "backdoor: connecting to host...",
+            ]
+        )
+        machine.process = self.Running()
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_power_off(machine, "nails activate -y", "hang-in")
+        self.assertEqual(
+            str(raised.exception),
+            "hang-in: the machine did not power off: it switched",
+        )
+        self.assertEqual(machine.connects, 0)
+
+    def test_a_stuck_userspace_fails_at_once(self) -> None:
+        machine = FakeMachine(["Reached target Emergency Mode"])
+        machine.process = self.Running()
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_power_off(machine, "true", "hang-back")
+        self.assertIn("the new userspace is stuck", str(raised.exception))
+
+    def test_a_failed_trigger_fails_at_once(self) -> None:
+        machine = FakeMachine(["activation failed", "nails-trigger-exit=4 running"])
+        machine.process = self.Running()
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_power_off(machine, "nails activate -y", "hang-in")
+        self.assertIn("the trigger failed (exit status 4", str(raised.exception))
+
+    def test_a_reboot_instead_is_no_power_off(self) -> None:
+        machine = FakeMachine(["[   12.0] reboot: Restarting system"])
+        machine.process = self.Exited()
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_power_off(machine, "true", "hang-in")
+        self.assertIn("the machine rebooted", str(raised.exception))
+
+    def test_a_switch_that_never_ends_says_what_pid1_waits_on(self) -> None:
+        machine = FakeMachine(["Stopping hold-switch.service..."])
+        machine.process = self.Running()
+        with self.assertRaises(AssertionError) as raised:
+            session.follow_power_off(machine, "true", "hang-in", deadline_s=0)
+        failure = str(raised.exception)
+        self.assertIn(
+            "hang-in: neither a power-off nor a switch 0 s after the trigger (", failure
+        )
+        self.assertIn("QMP is not connected", failure)
+        self.assertIn("what PID 1 waits on", machine.logged[-1])
+
+
 class TriggerFailureTest(unittest.TestCase):
     def test_a_failed_trigger_stops_the_wait_at_once(self) -> None:
         machine = FakeMachine(["activation failed", "nails-trigger-exit=1"])
