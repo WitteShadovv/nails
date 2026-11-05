@@ -253,6 +253,10 @@ fn capitalized(text: &str) -> String {
 /// only under some conditions. systemd 254 and 255 look for fstab lines
 /// that mount `/boot` or `/efi` themselves; from systemd 256 on, a line that
 /// mounts anything at or below either, such as `/boot/efi`, stops it too.
+/// It also leaves an EFI system partition alone that an fstab line names,
+/// at any folder from systemd 255 on, at `/boot` in 254. The texts leave
+/// that out: they are about the hidden root's partition, and
+/// `backend-entries` refuses a decoy fstab line that names it.
 fn rare_use(role: AutoRole) -> &'static str {
     match role {
         AutoRole::Esp => {

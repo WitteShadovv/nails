@@ -16,10 +16,12 @@
 //! partition at `/boot` and the first EFI system partition at `/boot` or
 //! `/efi` on first access, when no fstab line mounts that folder (from
 //! systemd 256 on, no line mounts anything at or below either folder) and
-//! the folder is empty or missing, on a UEFI boot only when the boot loader
-//! says it started from that disk; and at boot, when the kernel command line
-//! names no root, it takes a root partition of the machine's architecture
-//! from the disk of the EFI system partition the boot loader started from.
+//! the folder is empty or missing, the EFI system partition only when no
+//! fstab line names it (at any folder from systemd 255 on, at `/boot` in
+//! 254), on a UEFI boot only when the boot loader says it started from that
+//! disk; and at boot, when the kernel command line names no root, it takes a
+//! root partition of the machine's architecture from the disk of the EFI
+//! system partition the boot loader started from.
 //! The no-auto attribute flag ([`NO_AUTO`]) keeps it from using a partition
 //! of any of these types but the EFI system partition, and a partition it
 //! leaves alone for the flag is not the first of its type.

@@ -246,14 +246,16 @@ the partition table for anyone who reads it.
 The generator acts on three more types under some conditions. It mounts the
 first extended boot loader partition of the disk at `/boot`, and the first EFI
 system partition at `/boot` or `/efi`, on first access, when no fstab line
-mounts that folder and the folder is empty or missing. From systemd 256 on, it
-mounts neither when an fstab line mounts anything at or below `/boot` or
-`/efi`, such as `/boot/efi`. systemd 254 and 255, as on Ubuntu 24.04, look
-only for lines for `/boot` and `/efi` themselves, so there a `/boot/efi` line
-does not keep the EFI system partition from `/efi`. On a UEFI boot the
-generator mounts them only when the boot loader says it started from that
-disk, but on a BIOS boot it skips that condition: there the first EFI system
-partition gets an automount whenever one of the two folders meets the
+mounts that folder and the folder is empty or missing. It leaves the EFI
+system partition alone when an fstab line names that partition, at any folder
+from systemd 255 on, at `/boot` in 254. From systemd 256 on, it mounts neither
+when an fstab line mounts anything at or below `/boot` or `/efi`, such as
+`/boot/efi`, where 254 and 255 look at lines for `/boot` and `/efi`
+themselves, not below them. So on 254 and 255 a `/boot/efi` line for another
+partition does not keep the first EFI system partition from `/efi`. On a UEFI
+boot the generator mounts them only when the boot loader says it started from
+that disk, but on a BIOS boot it skips that condition: there the first EFI
+system partition gets an automount whenever one of the two folders meets the
 conditions above, as `/efi` usually does. At boot, when the kernel command
 line names no root, it takes a root partition from the disk of the EFI system
 partition the boot loader started from.
