@@ -821,13 +821,16 @@ of this changelog for that version becomes the release notes word for word, and
 ### Fixed
 
 - The check that the state file lies on the hidden volume follows every symlink and `..` on the
-  way as the kernel does, and refuses a symlink that leads nowhere, a hidden volume root that is
-  not absolute and a symlinked root also when it is written with a trailing `/`. It looked only at
-  whether the nearest existing directory of the path was itself a symlink, after cleaning `..`
-  away, so a symlink higher up that leads out of the volume (`<root>/link/sub/state.json`), a `..`
-  after a symlink (`<root>/link/../state.json`), a dangling symlink at the file or on the way to
-  it, an empty root and a symlinked root ending in `/` all passed it. The state file never landed
-  outside the volume for that, since its write follows no symlink and stays below the root.
+  way as the kernel does, and refuses what it cannot settle so: a symlink that leads nowhere, a
+  part of the path it may not look at, a `..` after a directory that does not exist yet, and a
+  hidden volume root that is not absolute, does not exist, is a symlink (also when it is written
+  with a trailing `/`) or is `/`. It looked only at whether the nearest existing directory of the
+  path was itself a symlink, after cleaning `..` away, and compared the paths as text when the root
+  did not exist, so among others a symlink higher up that leads out of the volume
+  (`<root>/link/sub/state.json`), a `..` after a symlink (`<root>/link/../state.json`), a dangling
+  symlink at the file or on the way to it, an empty root and a symlinked root ending in `/` passed
+  it. Below the root the state file's write follows no symlink, and a hidden volume root with a
+  symlink in it is refused when the configuration is loaded.
 - The attach gate refuses a partition of a loop device whose image file lies on the decoy's disk,
   as it refuses the loop device itself. A partition the kernel made on a loop device (`losetup -P`,
   or a disk image opened in a file manager) shows no device below it, so the image file behind it

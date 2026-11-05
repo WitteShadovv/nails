@@ -36,56 +36,43 @@ fn test_save_valid_path_in_hidden_volume() {
 
 #[test]
 fn test_hidden_volume_validation_valid_path() {
-    // Test that paths within hidden volume are accepted
-    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-    assert!(is_on_hidden_volume(
-        Path::new("/mnt/data/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
-    assert!(is_on_hidden_volume(
-        Path::new("/mnt/data/subdir/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
-    assert!(is_on_hidden_volume(
-        Path::new("/mnt/data/a/b/c/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
+    // Paths within the hidden volume are accepted, also below directories
+    // that do not exist yet.
+    let (_dir, hv, _outside) = volume_with_outside();
+    let root = hv.to_str().unwrap();
+    assert!(is_on_hidden_volume(&hv.join("state.json"), root));
+    assert!(is_on_hidden_volume(&hv.join("subdir/state.json"), root));
+    assert!(is_on_hidden_volume(&hv.join("a/b/c/state.json"), root));
 }
 
 #[test]
 fn test_hidden_volume_validation_invalid_paths() {
-    // Test that paths outside hidden volume are rejected
-    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
+    // Paths outside the hidden volume are rejected, also one beside it whose
+    // name starts with the root's.
+    let (_dir, hv, outside) = volume_with_outside();
+    let root = hv.to_str().unwrap();
     assert!(!is_on_hidden_volume(
         Path::new("/etc/nails/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
+        root
     ));
     assert!(!is_on_hidden_volume(
         Path::new("/home/user/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
+        root
     ));
     assert!(!is_on_hidden_volume(
-        Path::new("/mnt/data-fake/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
+        &hv.with_file_name("hv-fake/state.json"),
+        root
     ));
-    assert!(!is_on_hidden_volume(
-        Path::new("/tmp/test-hidden-volume/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
+    assert!(!is_on_hidden_volume(&outside.join("state.json"), root));
 }
 
 #[test]
 fn test_hidden_volume_validation_traversal_attack() {
     // Test that path traversal attacks are rejected
-    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-    assert!(!is_on_hidden_volume(
-        Path::new("/mnt/data/../etc/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
-    assert!(!is_on_hidden_volume(
-        Path::new("/mnt/data/../../tmp/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
+    let (_dir, hv, _outside) = volume_with_outside();
+    let root = hv.to_str().unwrap();
+    assert!(!is_on_hidden_volume(&hv.join("../etc/state.json"), root));
+    assert!(!is_on_hidden_volume(&hv.join("../../tmp/state.json"), root));
 }
 
 #[test]
@@ -262,52 +249,39 @@ fn test_checksum_field_present_when_set() {
 #[test]
 fn test_path_validation_with_relative_path() {
     // Test that relative paths are rejected (not on hidden volume)
-    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-    assert!(!is_on_hidden_volume(
-        Path::new("relative/path/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
-    assert!(!is_on_hidden_volume(
-        Path::new("./state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
-    assert!(!is_on_hidden_volume(
-        Path::new("../state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
+    let (_dir, hv, _outside) = volume_with_outside();
+    let root = hv.to_str().unwrap();
+    for relative in ["relative/path/state.json", "./state.json", "../state.json"] {
+        assert!(
+            !is_on_hidden_volume(Path::new(relative), root),
+            "{relative}"
+        );
+    }
 }
 
 #[test]
 fn test_path_validation_with_non_canonical_paths() {
-    // Test paths that need to be cleaned before checking
-    // These test the non-canonical path logic (line 70-111)
-    use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-    assert!(!is_on_hidden_volume(
-        Path::new("/mnt/data/../etc/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
+    // `.` and a `..` after a directory that exists resolve as the kernel
+    // resolves them.
+    let (_dir, hv, _outside) = volume_with_outside();
+    let root = hv.to_str().unwrap();
+    std::fs::create_dir(hv.join("nested")).unwrap();
+    std::fs::create_dir(hv.join("subdir")).unwrap();
+    assert!(!is_on_hidden_volume(&hv.join("../etc/state.json"), root));
     assert!(!is_on_hidden_volume(
         Path::new("/etc/../home/user/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
+        root
     ));
-    assert!(!is_on_hidden_volume(
-        Path::new("/mnt/./other/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
+    let beside = format!("{}/./other/state.json", hv.parent().unwrap().display());
+    assert!(!is_on_hidden_volume(Path::new(&beside), root));
 
     // Valid path with redundant components should still work
+    assert!(is_on_hidden_volume(&hv.join("./subdir/state.json"), root));
     assert!(is_on_hidden_volume(
-        Path::new("/mnt/data/./subdir/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
+        &hv.join("nested/../other/state.json"),
+        root
     ));
-    assert!(is_on_hidden_volume(
-        Path::new("/mnt/data/nested/../other/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
-    assert!(is_on_hidden_volume(
-        Path::new("/mnt/data/subdir/../state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
+    assert!(is_on_hidden_volume(&hv.join("subdir/../state.json"), root));
 }
 
 #[test]
@@ -326,13 +300,7 @@ fn test_custom_hidden_volume_root_tmp_validation() {
         "/tmp"
     ));
 
-    // Test 3: Validate default behavior still works
-    assert!(is_on_hidden_volume(
-        Path::new("/mnt/data/state.json"),
-        DEFAULT_HIDDEN_VOLUME_ROOT
-    ));
-
-    // Test 4: /tmp should fail with default root
+    // Test 3: /tmp should fail with default root
     assert!(!is_on_hidden_volume(
         Path::new("/tmp/state.json"),
         DEFAULT_HIDDEN_VOLUME_ROOT
@@ -645,38 +613,135 @@ fn test_traversal_escape_rejected() {
 }
 
 #[test]
-fn test_nonexistent_root_rejected() {
-    // When root doesn't exist, string-based fallback is used.
-    // Paths that don't match the root prefix are rejected.
-    let nonexistent_root = "/tmp/nails-test-nonexistent-root-12345";
-    assert!(
-        !Path::new(nonexistent_root).exists(),
-        "Test precondition: root must not exist"
-    );
+#[cfg(unix)]
+fn a_root_that_does_not_exist_holds_no_path() {
+    // No volume is mounted at a root that does not exist, and what is made
+    // below it lands on the filesystem that holds the root's parent.
+    let (_dir, hv, outside) = volume_with_outside();
+    let base = hv.parent().unwrap();
+    let missing = base.join("missing-root");
+    let root = missing.to_str().unwrap();
 
-    // An existing path outside the non-existent root should be rejected
-    assert!(
-        !is_on_hidden_volume(Path::new("/tmp"), nonexistent_root),
-        "Existing path should be rejected when it doesn't match root prefix"
-    );
+    assert!(!is_on_hidden_volume(&missing.join("state.json"), root));
+    assert!(!is_on_hidden_volume(&missing, root));
+    assert!(!is_on_hidden_volume(base, root));
+    assert!(!is_on_hidden_volume(
+        &missing.join("../../../etc/shadow"),
+        root
+    ));
 
-    // Traversal escapes are still caught with non-existent roots
-    assert!(
-        !is_on_hidden_volume(
-            Path::new("/tmp/nails-test-nonexistent-root-12345/../../../etc/shadow"),
-            nonexistent_root
-        ),
-        "Traversal escape should be rejected even with non-existent root"
-    );
+    // Read as text, base/link/../missing-root/state.json lies below the root,
+    // but the kernel takes link/.. to `outside`, where it would land.
+    std::fs::create_dir_all(outside.join("inner")).unwrap();
+    std::fs::create_dir_all(outside.join("missing-root")).unwrap();
+    std::os::unix::fs::symlink(outside.join("inner"), base.join("link")).unwrap();
+    assert!(!is_on_hidden_volume(
+        &base.join("link/../missing-root/state.json"),
+        root
+    ));
+}
 
-    // Matching string prefix still passes (config validation scenario)
-    assert!(
-        is_on_hidden_volume(
-            Path::new("/tmp/nails-test-nonexistent-root-12345/state.json"),
-            nonexistent_root
-        ),
-        "Matching path should pass string-based check for config validation"
-    );
+#[test]
+fn a_root_that_is_no_directory_is_refused() {
+    let (_dir, hv, _outside) = volume_with_outside();
+    let file = hv.join("file");
+    std::fs::write(&file, b"x").unwrap();
+    let root = file.to_str().unwrap();
+
+    assert!(!is_on_hidden_volume(&file.join("state.json"), root));
+    assert!(!is_on_hidden_volume(&file, root));
+}
+
+#[test]
+fn a_root_that_is_or_resolves_to_slash_holds_no_path() {
+    // `/` holds every path, however the root spells it.
+    let (_dir, hv, _outside) = volume_with_outside();
+    let up = format!("{}{}", hv.display(), "/..".repeat(hv.components().count()));
+    for root in ["/", "//", "/.", up.as_str()] {
+        assert!(
+            !is_on_hidden_volume(Path::new("/etc/shadow"), root),
+            "root {root:?}"
+        );
+        assert!(
+            !is_on_hidden_volume(Path::new("/etc/new/state.json"), root),
+            "root {root:?}"
+        );
+    }
+}
+
+/// `body`'s result while `dir` may not be searched (mode 0), with its mode
+/// set back to 0o700 after. `None` when running as root, which searches any
+/// directory.
+#[cfg(unix)]
+fn while_unsearchable<T>(dir: &Path, body: impl FnOnce() -> T) -> Option<T> {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        return None;
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let result = body();
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    Some(result)
+}
+
+#[test]
+#[cfg(unix)]
+fn what_the_check_cannot_look_at_is_refused() {
+    // hv/locked/out leads outside, where `sub` exists. Once hv/locked may not
+    // be searched, lstat cannot tell that `out` is a symlink, nor that `new`
+    // is not there: neither is taken for a directory still to be made.
+    let (_dir, hv, outside) = volume_with_outside();
+    std::fs::create_dir(outside.join("sub")).unwrap();
+    let locked = hv.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::os::unix::fs::symlink(&outside, locked.join("out")).unwrap();
+    let root = hv.to_str().unwrap();
+    assert!(!is_on_hidden_volume(
+        &locked.join("out/sub/state.json"),
+        root
+    ));
+    assert!(is_on_hidden_volume(&locked.join("new/state.json"), root));
+
+    let answers = while_unsearchable(&locked, || {
+        [
+            is_on_hidden_volume(&locked.join("out/sub/state.json"), root),
+            is_on_hidden_volume(&locked.join("new/state.json"), root),
+        ]
+    });
+    if let Some(answers) = answers {
+        assert_eq!(answers, [false, false]);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_root_the_check_cannot_look_at_is_refused() {
+    // The root hv/locked/linked is a symlink. Once hv/locked may not be
+    // searched, lstat cannot tell, and the root is refused all the same.
+    let (_dir, hv, outside) = volume_with_outside();
+    let locked = hv.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    let linked = locked.join("linked");
+    std::os::unix::fs::symlink(&outside, &linked).unwrap();
+    let root = linked.to_str().unwrap();
+    assert!(!is_on_hidden_volume(&linked.join("state.json"), root));
+
+    let answer = while_unsearchable(&locked, || {
+        is_on_hidden_volume(&linked.join("state.json"), root)
+    });
+    assert_ne!(answer, Some(true));
+}
+
+#[test]
+fn a_path_through_a_file_is_refused() {
+    // The kernel refuses a component below a file, and a `..` after one.
+    let (_dir, hv, _outside) = volume_with_outside();
+    std::fs::write(hv.join("file"), b"x").unwrap();
+    let root = hv.to_str().unwrap();
+
+    assert!(!is_on_hidden_volume(&hv.join("file/state.json"), root));
+    assert!(!is_on_hidden_volume(&hv.join("file/../state.json"), root));
+    assert!(is_on_hidden_volume(&hv.join("file"), root));
 }
 
 /// A temporary hidden volume `hv` and a directory `outside` beside it, both
@@ -750,7 +815,7 @@ fn a_symlink_that_leads_nowhere_is_refused() {
 #[cfg(unix)]
 fn a_symlink_inside_the_volume_may_lead_inside_it() {
     // hv/inner leads to hv/real, inside the volume, so the check passes the
-    // path; the write itself follows no symlink at all
+    // path; below the root the write itself follows no symlink
     // (test_save_refuses_a_symlinked_path_component).
     let (_dir, hv, _outside) = volume_with_outside();
     std::fs::create_dir(hv.join("real")).unwrap();
@@ -768,9 +833,30 @@ fn missing_directories_resolve_as_they_would_be_made() {
     let root = hv.to_str().unwrap();
 
     assert!(is_on_hidden_volume(&hv.join("new/deeper/state.json"), root));
-    // hv/new is made first, and the `..` leaves it again.
-    assert!(is_on_hidden_volume(&hv.join("new/../state.json"), root));
-    // The second `..` goes above the root.
+    assert!(is_on_hidden_volume(
+        &hv.join("new/./deeper/state.json"),
+        root
+    ));
+}
+
+#[test]
+fn a_dotdot_after_a_missing_directory_is_refused() {
+    // `mkdir -p` makes the missing directory before the `..` leaves it again:
+    // hv/../new/../hv/state.json ends on the volume, but makes `new` beside it.
+    let (_dir, hv, _outside) = volume_with_outside();
+    std::fs::create_dir(hv.join("sub")).unwrap();
+    let root = hv.to_str().unwrap();
+
+    assert!(!is_on_hidden_volume(
+        &hv.join("../new/../hv/state.json"),
+        root
+    ));
+    // Also where the directory it makes would lie on the volume.
+    assert!(!is_on_hidden_volume(&hv.join("new/../state.json"), root));
+    assert!(!is_on_hidden_volume(
+        &hv.join("sub/new/../state.json"),
+        root
+    ));
     assert!(!is_on_hidden_volume(&hv.join("new/../../state.json"), root));
 }
 
@@ -787,7 +873,8 @@ fn below_a_missing_directory_every_component_is_new() {
         &hv.join("missing/link/state.json"),
         root
     ));
-    // A `..` back up to hv reaches the symlink again.
+    // A `..` back up to hv would reach the symlink again, and is refused after
+    // a directory that does not exist yet.
     assert!(!is_on_hidden_volume(
         &hv.join("missing/../link/state.json"),
         root
