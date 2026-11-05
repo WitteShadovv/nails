@@ -30,6 +30,7 @@ pub mod state;
 pub mod storage_readiness;
 pub mod symlink_support;
 pub mod systemd_conf;
+pub mod upgrade_run;
 pub mod upper_fs_probe;
 
 // Re-exports for convenient access
@@ -58,6 +59,7 @@ pub use space::{OverlayDirs, SpaceCheck};
 pub use state::StateCheck;
 pub use storage_readiness::StorageReadinessCheck;
 pub use symlink_support::SymlinkSupportCheck;
+pub use upgrade_run::UpgradeRunCheck;
 pub use upper_fs_probe::UpperFsCapabilityCheck;
 
 // The NixOS configuration layer's checks live with the layer.
