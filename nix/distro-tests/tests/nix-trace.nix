@@ -611,18 +611,17 @@ distroVm.buildVmTest {
             "/etc/systemd/system/nix-daemon.socket",
             "/etc/systemd/system/sockets.target.wants/nix-daemon.socket",
             "/etc/tmpfiles.d/nix-daemon.conf",
-            "the nixbld group (in /etc/group",
-            "32 Nix build users (nixbld1, nixbld2 and 30 more, in /etc/passwd",
+            # The group and the build users in each account file and in its
+            # copy: shadow-utils keeps each as it was before the last useradd,
+            # which held the group and 31 of the build users.
+            "the nixbld group (in /etc/group, /etc/gshadow, /etc/group- and /etc/gshadow-)",
+            "32 Nix build users (nixbld1, nixbld2 and 30 more, in /etc/passwd, /etc/shadow, "
+            + "/etc/passwd- and /etc/shadow-)",
             "/etc/profile.d/nix.sh",
             "the Nix lines in /etc/bash.bashrc",
             "/etc/bash.bashrc.backup-before-nix",
         ):
             assert trace in named, f"the row does not name {trace}: {named}"
-        # The copies of the account files name them too: shadow-utils keeps
-        # each as it was before the last useradd, which held the group and 31
-        # of the build users.
-        for copy in ("/etc/group-", "/etc/passwd-"):
-            assert copy in named, f"the row does not name {copy}: {named}"
         # The store's database keeps its last writes in its write-ahead log
         # until the last connection to it closes, and the store scan reads the
         # database alone: stop the daemon, then let a query of root's on the
