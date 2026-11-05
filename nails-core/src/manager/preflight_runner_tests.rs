@@ -1109,6 +1109,22 @@ fn the_systemd_version_row_judges_the_version_it_is_given() {
 }
 
 #[test]
+fn unattended_upgrade_run_runs_right_after_shutdown_inhibitors() {
+    // Both refuse while something is in the middle of its work that the
+    // switch would cut short, and say to try again once it is done.
+    let manager = manager_with(MockFilesystem::new());
+    let names = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .names();
+    let at = names
+        .iter()
+        .position(|name| *name == "shutdown-inhibitors")
+        .expect("a shutdown-inhibitors row");
+    assert_eq!(names[at + 1], "unattended-upgrade-run", "{names:?}");
+}
+
+#[test]
 fn locate_database_runs_right_after_decoy_persistence() {
     let manager = manager_with(MockFilesystem::new());
     let names = manager

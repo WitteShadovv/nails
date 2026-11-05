@@ -731,6 +731,43 @@ fn a_program_that_blocks_shutdown_refuses_the_entry_before_its_soft_reboot() {
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
 
+/// A daily unattended-upgrade run that started after the pre-flight checks
+/// refuses the entry at its last look, before its soft-reboot is asked for:
+/// nothing is started, and the entry is rolled back.
+#[test]
+fn a_daily_upgrade_run_refuses_the_entry_before_its_soft_reboot() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let machine = machine(dir.path(), DECOY_TABLE);
+    write_plan(&machine, &plan(&hidden));
+    // systemd's marker of the active unit: a link to its invocation id.
+    let units = machine.paths.root.join("run/systemd/units");
+    std::fs::create_dir_all(&units).unwrap();
+    std::os::unix::fs::symlink(
+        "8028a17235414b4e80c950b24a7487d7", // pragma: allowlist secret
+        units.join("invocation:apt-daily-upgrade.service"),
+    )
+    .unwrap();
+    let mut m = manager(&hidden);
+    let target = FakeTarget::default();
+    let host = FakeEntryHost::default();
+
+    let error = m.trigger_entry_on(&machine, &target, &host).unwrap_err();
+
+    let error = error.to_string();
+    assert!(
+        error.contains("a daily unattended-upgrade run is in progress"),
+        "{error}"
+    );
+    assert!(error.contains("Try again in a few minutes"), "{error}");
+    assert!(target.started.borrow().is_empty());
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 1);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
+}
+
 // ---------------------------------------------------------------------------
 // enter
 // ---------------------------------------------------------------------------
