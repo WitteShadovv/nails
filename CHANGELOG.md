@@ -715,6 +715,10 @@ of this changelog for that version becomes the release notes word for word, and
   `/var/log/apport.log` and writes a report to `/var/crash` for a program a package installed.
   A pipe to `/bin/false` or `/bin/true`, which keeps nothing, passes, and the warning names
   `kernel.core_pattern=|/bin/false` as the way to discard the dumps.
+- The checks that need the hidden volume, which are skipped once the `hidden-volume` check fails,
+  now give the reason `requires the hidden-volume check to pass` instead of
+  `requires mounted hidden volume`: that check also refuses a volume that is mounted, one mounted a
+  second time among them.
 - `backend-detect` reads the start of the device below a LUKS mapping read-only and without
   changing its access time, as before only as root, and tells what it holds. A LUKS1 header is
   read as well as a LUKS2 one, and the mapping's own header is named in the pass line as showing
@@ -2086,20 +2090,21 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Security
 
-- `check` and activation refuse a hidden volume whose filesystem is mounted a second time anywhere
-  but at the hidden root. A desktop that mounts drives by itself (gnome-shell through gvfs and
+- `check` and activation refuse a hidden volume whose filesystem is also mounted at another place in
+  the decoy's mount table. A desktop that mounts drives by itself (gnome-shell through gvfs and
   udisks2, KDE Plasma, udiskie) can mount a volume unlocked from a terminal again under
   `/media/<user>` or `/run/media/<user>`, where the decoy's desktop reaches the hidden files, and on
   Debian and Ubuntu that directory, named after the volume's label or UUID, is made on the decoy's
-  root filesystem. The `hidden-volume` check counts every mount with the device number of the mount
-  at the root, a bind of a folder of the volume and another btrfs subvolume of it included, names
-  each, says a desktop may have mounted it by itself, and gives the `sudo umount` line and the
-  advice to turn the automatic mounting of removable media off long before the next use. No flag
-  lifts it. A bind of the volume at the root itself passes, and so does a root on a filesystem the
-  decoy uses that `--allow-decoy-storage` accepted. A directory of a disk bound at the root now
-  needs the disk's own mount gone. `docs/decoy-requirements.md` says where GNOME, KDE Plasma and
-  udiskie keep the setting, which is not verified for every release. A VM test records whether
-  udiskie mounts a drive that cryptsetup unlocked, and in it udiskie did.
+  root filesystem. The `hidden-volume` check counts every mount there with the device number of the
+  mount at the root, a bind of a folder of the volume and another btrfs subvolume of it included,
+  names each, says a desktop may have mounted it by itself, and gives the `sudo umount` line, the
+  mount over one that this line cannot reach, and the advice to turn the automatic mounting of
+  removable media off long before the next use. No flag lifts it. A bind of the volume at the root
+  itself passes, and so does a root on a filesystem the decoy uses that `--allow-decoy-storage`
+  accepted. A directory of a disk bound at the root now needs the disk's own mount gone.
+  `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the setting, which is
+  not verified for every release. A VM test records whether udiskie mounts a drive that cryptsetup
+  unlocked, and in it udiskie did.
 - A switch into or out of a hidden session that hangs until `soft-reboot.target`'s job timeout
   (30 minutes) now powers the machine off. systemd ended such a switch by force
   (`JobTimeoutAction=soft-reboot-force` in every series from 254 to 262), which never runs
