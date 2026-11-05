@@ -511,13 +511,14 @@ of this changelog for that version becomes the release notes word for word, and
 - `check` and activation refuse (`backend-partition-type`) a hidden root stored on a partition of
   a disk the decoy boots from whose GPT type systemd-gpt-auto-generator acts on at boot: a
   `/home`, `/srv`, `/var` or `/var/tmp` partition, which it mounts when no fstab line mounts the
-  folder and the folder is empty, and a swap partition, the first of which it uses as swap when
-  no fstab line names a swap, asking first for the passphrase of such a partition that is a LUKS
-  volume. Where the generator runs, a failed mount, a failed swap or a passphrase prompt would
-  show the partition at the decoy's next boot, and the type shows in the partition table either
-  way. Ubuntu 24.04 and 26.04 mask the generator by default; the check reads no mask and judges a
-  partition there as on any other decoy. The no-auto flag, which systemd honours, turns the first
-  four into a warning; a swap partition is refused with or without it.
+  folder and the folder is empty (`/var` only with the uuid the machine ID gives it), and a swap
+  partition, the first of which it uses as swap when no fstab line names a swap, asking first for
+  the passphrase of such a partition that is a LUKS volume. Where the generator runs, a failed
+  mount, a failed swap or a passphrase prompt can show the partition at the decoy's next boot,
+  and the type shows in the partition table either way. Ubuntu 24.04 and 26.04 mask the
+  generator by default; the check reads no mask and judges a partition there as on any other
+  decoy. The no-auto flag, which systemd honours, turns the first four into a warning; a swap
+  partition is refused with or without it.
   The type of a root, EFI system or extended boot loader partition warns, as systemd acts on it
   under some conditions, such as a BIOS boot for an EFI system partition, and so do a table that
   does not list the partition where the kernel has it, a damaged table, and a partition neither
