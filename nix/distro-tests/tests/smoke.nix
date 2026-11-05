@@ -43,7 +43,10 @@
 # signal on the hidden volume. Each entry ends the decoy's unattended-upgrades
 # shutdown helper on logind's signal, as an ordinary shutdown does: the unit
 # does not fail at the switch, and neither its log on the decoy disk nor the
-# session's copy gains a stop line.
+# session's copy gains a stop line. In each session the hidden PID 1 has the
+# session's timeout guard for soft-reboot.target (a switch that hangs until its
+# job timeout powers off), and after each way back the decoy's PID 1 has its
+# own unit again.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -462,6 +465,26 @@ distroVm.buildVmTest {
                     f"{where}: {checker} ran on the decoy disk: {props}"
                 )
                 assert props.get("ActiveState") != "failed", f"{where}: {checker}: {props}"
+
+
+    def assert_timeout_guard(where, loaded):
+        # In a session PID 1 has the session's timeout guard loaded: a switch
+        # that hangs until soft-reboot.target's job timeout powers off. On the
+        # decoy it is gone, and the decoy's own unit forces such a switch
+        # through. The activation itself refuses unless the decoy's PID 1
+        # reports the guard's action once it is loaded.
+        guard = "/run/systemd/system/soft-reboot.target.d/zz-overlay-runtime.conf"
+        action = vm.succeed(
+            "systemctl show -P JobTimeoutAction soft-reboot.target"
+        ).strip()
+        dropins = vm.succeed("systemctl show -P DropInPaths soft-reboot.target").split()
+        if loaded:
+            assert action == "poweroff-force", f"{where}: {action}"
+            assert guard in dropins, f"{where}: {dropins}"
+        else:
+            assert action == "soft-reboot-force", f"{where}: {action}"
+            assert guard not in dropins, f"{where}: {dropins}"
+            vm.fail(f"test -e {guard}")
 
 
     def assert_gpt_auto_masked(where, masked):
@@ -913,6 +936,7 @@ distroVm.buildVmTest {
             if decoy_masked_units[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden root: {state}"
         assert_gpt_auto_masked("the first session", masked=True)
+        assert_timeout_guard("the first session", loaded=True)
         vm.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
         probe_report("the first hidden session")
         # The hidden volume is still at its path, with the binary's log and
@@ -998,6 +1022,7 @@ distroVm.buildVmTest {
             "the decoy's own units again"
         )
         assert_gpt_auto_masked("after the emergency", masked=False)
+        assert_timeout_guard("after the emergency", loaded=False)
         assert_quiet_kernel_log("after the emergency")
         assert uu_stop_lines() == decoy_uu_stops, (
             f"the first entry wrote a stop line to {uu_log} on the decoy disk"
@@ -1032,6 +1057,7 @@ distroVm.buildVmTest {
             assert_guarded_blk_availability("the second session")
         probe_report("the second hidden session")
         assert_gpt_auto_masked("the second session", masked=True)
+        assert_timeout_guard("the second session", loaded=True)
         assert_local_fs_reached("the second session")
         assert_skipped_off_the_disk("the second session", boot_mounts, entered_after)
         # The rehearsal's first step, and the refusal of a scan in the
@@ -1078,6 +1104,7 @@ distroVm.buildVmTest {
                 vm.fail(f"test -e /run/systemd/system/{shlex.quote(unit)}.d")
         probe_report("after deactivate")
         assert_gpt_auto_masked("after deactivate", masked=False)
+        assert_timeout_guard("after deactivate", loaded=False)
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
 

@@ -1545,7 +1545,12 @@ of this changelog for that version becomes the release notes word for word, and
   module text for `soft-reboot.target` that `nails check` prints stays as it is: a drop-in under
   `/run` overrides the unit file wherever that lies. A plain `emergency` in the hidden session
   returns through the same switch, so the drop-in covers it too, and `deactivate --poweroff` and
-  `emergency --poweroff` power off as before.
+  `emergency --poweroff` power off as before. A NixOS VM test holds up each switch with a unit
+  whose stop never ends and a timeout of a minute: the machine powers off, the next boot is the
+  plain decoy, and without the drop-in the same hold forces a plain soft-reboot through. With a
+  plain `poweroff` set for the timeout instead, PID 1 skips the action and a switch held up for
+  90 seconds goes on when the hold ends. The distribution smoke tests check that the hidden PID 1
+  has the drop-in loaded and that the decoy has its own unit again after each way back.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the

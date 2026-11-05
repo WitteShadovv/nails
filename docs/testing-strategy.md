@@ -135,6 +135,19 @@ nothing on the console that says why or names the decoy, with PID 1's status
 lines turned on, after `deactivate` and after a plain `emergency`, while a
 session whose dummy link the way back deletes still returns.
 
+A switch that hangs until `soft-reboot.target`'s job timeout powers the
+machine off instead of being forced through without the transition step. The
+drop-in that sets this, its removal on every path and the entry's check that
+it holds once loaded are unit tests and real-kernel tests; the whole path is
+tested in a VM, by `session-switch-timeout`: a test-only unit whose stop never
+ends holds up the switch, and a test-only drop-in shortens the timeout to a
+minute. The way back and the way in each power the machine off, with PID 1's
+own line for it on the console and no userspace coming up first, while on the
+decoy without the drop-in the same hold forces a plain soft-reboot through.
+With a plain `poweroff` set for the timeout instead, PID 1 skips that action
+during the switch ("Shutdown is already active"), and a switch held up for 90
+seconds goes on only when the hold ends: why the drop-in powers off by force.
+
 ### (d) Contract tests: one body, mock and real
 
 `nails-core/tests/filesystem_contract.rs` runs the same contract against both

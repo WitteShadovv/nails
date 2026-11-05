@@ -20,6 +20,12 @@
 #      hidden volume while nothing was written to the decoy disk.
 #   4. `nails emergency` during the build detaches the next root, removes
 #      the runtime files and reloads PID 1, which forgets the drop-in.
+#
+# From the drop-in's reload on, PID 1 also has the session's timeout guard: a
+# switch that hangs until soft-reboot.target's job timeout powers off instead
+# of being forced through (session-switch-timeout). A killed activation leaves
+# it with the other leftovers, where a forced switch would enter the unarmed
+# next root; every path above removes it, and PID 1 forgets it.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -96,6 +102,14 @@ in
         machine.succeed(
             "test -s /run/systemd/system/systemd-soft-reboot.service.d/50-overlay-runtime.conf"
         )
+        assert timeout_action() == "poweroff-force", f"{label}: {timeout_action()}"
+
+
+    def timeout_action():
+        """What PID 1 does when soft-reboot.target's job times out."""
+        return machine.succeed(
+            "systemctl show -P JobTimeoutAction soft-reboot.target"
+        ).strip()
 
 
     def kill_activation():
@@ -110,6 +124,10 @@ in
             "plan": machine.execute("test -e /run/overlay-runtime")[0] == 0,
             "dropin": machine.execute(
                 "test -e /run/systemd/system/systemd-soft-reboot.service.d"
+            )[0]
+            == 0,
+            "guard": machine.execute(
+                "test -e /run/systemd/system/soft-reboot.target.d"
             )[0]
             == 0,
         }
@@ -153,7 +171,15 @@ in
     with subtest("a killed activation leaves an interrupted entry that status reports"):
         start_activation("killed-1")
         kill_activation()
-        assert leftovers() == {"nextroot": True, "plan": True, "dropin": True}, leftovers()
+        assert leftovers() == {
+            "nextroot": True,
+            "plan": True,
+            "dropin": True,
+            "guard": True,
+        }, leftovers()
+        # Until the leftovers go, a hang of a switch still powers off: forced
+        # through, it would enter the unarmed next root.
+        assert timeout_action() == "poweroff-force", timeout_action()
         rc, out = machine.execute(f"nails --config {CONFIG} status --json")
         machine.log(out)
         assert rc == 7, f"status exit {rc} for an interrupted entry"
@@ -165,7 +191,13 @@ in
         timings = session.follow_soft_reboot(machine, "systemctl reboot", "stray-reboot")
         machine.log(f"stray reboot timings: {timings}")
         session.assert_decoy_root(machine)
-        assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
+        assert leftovers() == {
+            "nextroot": False,
+            "plan": False,
+            "dropin": False,
+            "guard": False,
+        }, leftovers()
+        assert timeout_action() == "soft-reboot-force", timeout_action()
         # The guard closes the hidden backend too, as a real reboot would.
         machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
 
@@ -178,7 +210,13 @@ in
         # The volume holding the configuration is mounted: recover leaves the
         # backend open and says so.
         assert "still open and in use" in out, out
-        assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
+        assert leftovers() == {
+            "nextroot": False,
+            "plan": False,
+            "dropin": False,
+            "guard": False,
+        }, leftovers()
+        assert timeout_action() == "soft-reboot-force", timeout_action()
         session.assert_decoy_root(machine)
         machine.succeed(f"nails --config {CONFIG} status")
 
@@ -188,7 +226,13 @@ in
         machine.succeed(f"kill -INT -- -{pgid}")
         machine.wait_until_fails("pgrep -x nails", timeout=60)
         machine.execute("pkill -9 -f 'sleep [6]000'")
-        assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
+        assert leftovers() == {
+            "nextroot": False,
+            "plan": False,
+            "dropin": False,
+            "guard": False,
+        }, leftovers()
+        assert timeout_action() == "soft-reboot-force", timeout_action()
         session.assert_decoy_root(machine)
         # The notice says what the cancel left: nothing on the decoy disk, and
         # what the hidden system's build had finished on the hidden volume.
@@ -214,11 +258,13 @@ in
         kill_activation()
         # The emergency reloads PID 1, which would otherwise keep the removed
         # transition drop-in loaded until its next reload.
-        unit = "systemd-soft-reboot.service"
-        need = machine.succeed(f"systemctl show -P NeedDaemonReload {unit}").strip()
-        dropins = machine.succeed(f"systemctl show -P DropInPaths {unit}").strip()
-        assert need == "no", need
-        assert "/run/systemd/system/" not in dropins, dropins
+        for unit in ("systemd-soft-reboot.service", "soft-reboot.target"):
+            need = machine.succeed(f"systemctl show -P NeedDaemonReload {unit}").strip()
+            dropins = machine.succeed(f"systemctl show -P DropInPaths {unit}").strip()
+            assert need == "no", f"{unit}: {need}"
+            assert "/run/systemd/system/" not in dropins, f"{unit}: {dropins}"
+        machine.fail("test -e /run/systemd/system/soft-reboot.target.d")
+        assert timeout_action() == "soft-reboot-force", timeout_action()
         session.assert_decoy_root(machine)
   '';
 }

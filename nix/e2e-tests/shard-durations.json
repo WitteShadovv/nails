@@ -56,6 +56,7 @@
   "session-readme-captures": 20,
   "session-refused-switch": 45,
   "session-sleep-guard": 72,
+  "session-switch-timeout": 500,
   "session-wayback-poweroff": 120,
   "session-window-emergency": 75,
   "session-window-launcher": 90,
