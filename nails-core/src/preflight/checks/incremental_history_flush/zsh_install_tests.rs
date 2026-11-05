@@ -582,6 +582,21 @@ fn a_prompt_the_shell_s_environment_holds_is_code_where_prompt_subst_may_be_on()
         let known = install(&fs, &[("PS1", value)]);
         assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{value}");
     }
+    // zsh 5.9.2 runs the function `log` the environment's NULLCMD names for
+    // `>/dev/null` alone in a hook, and READNULLCMD's for `</dev/null`.
+    seed(&fs, "/home/alice/.zshrc", "");
+    for name in ["NULLCMD", "READNULLCMD"] {
+        let known = install(&fs, &[(name, "log")]);
+        assert_eq!(
+            scan_with(&fs, UNKNOWN, &known).doubts,
+            [format!(
+                "it cannot tell what code the command that {name} in the shell's environment \
+                 names runs, which zsh runs for a redirection that has none"
+            )],
+            "{name}"
+        );
+        assert!(ENVIRONMENT.contains(&name), "{name}");
+    }
 }
 
 #[test]

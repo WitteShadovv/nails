@@ -1321,7 +1321,10 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
     // or MAILPATH's value that is no UTF-8 with it replaced, as the check
     // reads it only for an expansion in it.
     assert_eq!(
-        environment(b"PS1=%# \0RPROMPT=$(x)\0PROMPT_EOL_MARK=%\0PS4=\xff$(y)\0MAILPATH=\xff\0"),
+        environment(
+            b"PS1=%# \0RPROMPT=$(x)\0PROMPT_EOL_MARK=%\0PS4=\xff$(y)\0MAILPATH=\xff\0\
+              NULLCMD=log\0READNULLCMD=\xff\0"
+        ),
         Some(
             [
                 ("PS1", "%# "),
@@ -1329,6 +1332,8 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
                 ("PROMPT_EOL_MARK", "%"),
                 ("PS4", "\u{fffd}$(y)"),
                 ("MAILPATH", "\u{fffd}"),
+                ("NULLCMD", "log"),
+                ("READNULLCMD", "\u{fffd}"),
             ]
             .map(|(name, value)| (name.to_string(), value.to_string()))
             .to_vec()
