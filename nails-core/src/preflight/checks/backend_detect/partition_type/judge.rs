@@ -242,7 +242,7 @@ impl Finding {
 /// default, with a link from
 /// `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
 /// `/dev/null`, and systemd runs no generator masked so
-/// (systemd.generator(5)). The check reads no mask: its verdicts are the
+/// (systemd.generator(7)). The check reads no mask: its verdicts are the
 /// same on a decoy that masks the generator, where the type still shows in
 /// the partition table.
 const UNLESS_MASKED: &str =
@@ -265,8 +265,9 @@ fn capitalized(text: &str) -> String {
 /// that mount `/boot` or `/efi` themselves; from systemd 256 on, a line that
 /// mounts anything at or below either, such as `/boot/efi`, stops it too.
 /// It also leaves an EFI system partition alone that an fstab line names,
-/// at any folder from systemd 255 on, at `/boot` in 254. The texts leave
-/// that out: they are about the hidden root's partition, and
+/// at any folder from systemd 255 on, and in 254 only at `/boot`, when
+/// `/boot` exists and the disk has no extended boot loader partition. The
+/// texts leave that out: they are about the hidden root's partition, and
 /// `backend-entries` refuses a decoy fstab line that names it.
 fn rare_use(role: AutoRole) -> &'static str {
     match role {

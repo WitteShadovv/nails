@@ -248,7 +248,7 @@ reads it.
 Ubuntu 24.04 and 26.04 mask the generator by default: their systemd package
 links `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
 `/dev/null`, and systemd runs no generator masked so (see
-systemd.generator(5)). Debian 13 and NixOS do not mask it by default. On a
+systemd.generator(7)). Debian 13 and NixOS do not mask it by default. On a
 decoy that masks it, a partition of these types shows nothing at boot, but
 its type is in the partition table all the same.
 
@@ -257,9 +257,10 @@ first extended boot loader partition of the disk at `/boot`, and the first EFI
 system partition at `/boot` or `/efi`, on first access, when no fstab line
 mounts that folder and the folder is empty or missing. It leaves the EFI
 system partition alone when an fstab line names that partition, at any folder
-from systemd 255 on, at `/boot` in 254. From systemd 256 on, it mounts neither
-when an fstab line mounts anything at or below `/boot` or `/efi`, such as
-`/boot/efi`, where 254 and 255 look at lines for `/boot` and `/efi`
+from systemd 255 on, and in 254 only at `/boot`, when `/boot` exists and the
+disk has no extended boot loader partition. From systemd 256 on, it mounts
+neither when an fstab line mounts anything at or below `/boot` or `/efi`, such
+as `/boot/efi`, where 254 and 255 look at lines for `/boot` and `/efi`
 themselves, not below them. So on 254 and 255 a `/boot/efi` line for another
 partition does not keep the first EFI system partition from `/efi`. On a UEFI
 boot the generator mounts them only when the boot loader says it started from

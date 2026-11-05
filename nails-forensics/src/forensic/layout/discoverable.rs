@@ -18,7 +18,8 @@
 //! no fstab line mounts that folder (from systemd 256 on, no line mounts
 //! anything at or below either folder) and the folder is empty or missing,
 //! the EFI system partition only when no fstab line names it (at any folder
-//! from systemd 255 on, at `/boot` in 254), on a UEFI boot only when the
+//! from systemd 255 on; in 254 only at `/boot`, when `/boot` exists and the
+//! disk has no extended boot loader partition), on a UEFI boot only when the
 //! boot loader says it started from that disk; and at boot, when the kernel
 //! command line names no root, it takes a root partition of the machine's
 //! architecture from the disk of the EFI system partition the boot loader
@@ -27,7 +28,7 @@
 //! and a partition it leaves alone for the flag is not the first of its
 //! type. Ubuntu 24.04 and 26.04 mask the generator by default, with a link
 //! from `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
-//! `/dev/null` (systemd.generator(5)); Debian 13 and NixOS do not mask it
+//! `/dev/null` (systemd.generator(7)); Debian 13 and NixOS do not mask it
 //! by default.
 
 use serde::Serialize;
