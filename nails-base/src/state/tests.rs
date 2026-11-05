@@ -679,6 +679,146 @@ fn test_nonexistent_root_rejected() {
     );
 }
 
+/// A temporary hidden volume `hv` and a directory `outside` beside it, both
+/// canonical. The returned guard removes them.
+fn volume_with_outside() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let base = temp_dir
+        .path()
+        .canonicalize()
+        .expect("Should resolve temp dir");
+    let hv = base.join("hv");
+    let outside = base.join("outside");
+    std::fs::create_dir(&hv).expect("Should create hv dir");
+    std::fs::create_dir(&outside).expect("Should create outside dir");
+    (temp_dir, hv, outside)
+}
+
+#[test]
+#[cfg(unix)]
+fn a_symlink_above_the_nearest_existing_directory_cannot_lead_out() {
+    // hv/link leads outside, where `sub` exists. The nearest existing
+    // directory of hv/link/sub/state.json is no symlink itself, but it lies
+    // outside the hidden volume, and so would the file.
+    let (_dir, hv, outside) = volume_with_outside();
+    std::fs::create_dir(outside.join("sub")).unwrap();
+    std::os::unix::fs::symlink(&outside, hv.join("link")).unwrap();
+    let root = hv.to_str().unwrap();
+
+    assert!(!is_on_hidden_volume(&hv.join("link/sub/state.json"), root));
+    assert!(!is_on_hidden_volume(
+        &hv.join("link/sub/new/state.json"),
+        root
+    ));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_dotdot_after_a_symlink_leaves_from_where_the_symlink_leads() {
+    // The kernel takes hv/link/.. to the parent of outside/inner, not to hv.
+    let (_dir, hv, outside) = volume_with_outside();
+    std::fs::create_dir(outside.join("inner")).unwrap();
+    std::os::unix::fs::symlink(outside.join("inner"), hv.join("link")).unwrap();
+    std::fs::create_dir(hv.join("dir")).unwrap();
+    let root = hv.to_str().unwrap();
+
+    assert!(!is_on_hidden_volume(&hv.join("link/../state.json"), root));
+    // After a real directory, `..` comes back to the root.
+    assert!(is_on_hidden_volume(&hv.join("dir/../state.json"), root));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_symlink_that_leads_nowhere_is_refused() {
+    // A file created through a dangling symlink lands where the symlink
+    // points, here outside the hidden volume.
+    let (_dir, hv, outside) = volume_with_outside();
+    std::os::unix::fs::symlink(outside.join("missing"), hv.join("state.json")).unwrap();
+    // On the way to the file too, and even pointing inside: where it leads is
+    // not there to be checked.
+    std::os::unix::fs::symlink(hv.join("missing"), hv.join("logs")).unwrap();
+    // A symlink to itself never leads anywhere.
+    std::os::unix::fs::symlink(hv.join("loop"), hv.join("loop")).unwrap();
+    let root = hv.to_str().unwrap();
+
+    assert!(!is_on_hidden_volume(&hv.join("state.json"), root));
+    assert!(!is_on_hidden_volume(&hv.join("logs/state.json"), root));
+    assert!(!is_on_hidden_volume(&hv.join("loop/state.json"), root));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_symlink_inside_the_volume_may_lead_inside_it() {
+    // hv/inner leads to hv/real, inside the volume, so the check passes the
+    // path; the write itself follows no symlink at all
+    // (test_save_refuses_a_symlinked_path_component).
+    let (_dir, hv, _outside) = volume_with_outside();
+    std::fs::create_dir(hv.join("real")).unwrap();
+    std::os::unix::fs::symlink(hv.join("real"), hv.join("inner")).unwrap();
+
+    assert!(is_on_hidden_volume(
+        &hv.join("inner/state.json"),
+        hv.to_str().unwrap()
+    ));
+}
+
+#[test]
+fn missing_directories_resolve_as_they_would_be_made() {
+    let (_dir, hv, _outside) = volume_with_outside();
+    let root = hv.to_str().unwrap();
+
+    assert!(is_on_hidden_volume(&hv.join("new/deeper/state.json"), root));
+    // hv/new is made first, and the `..` leaves it again.
+    assert!(is_on_hidden_volume(&hv.join("new/../state.json"), root));
+    // The second `..` goes above the root.
+    assert!(!is_on_hidden_volume(&hv.join("new/../../state.json"), root));
+}
+
+#[test]
+#[cfg(unix)]
+fn below_a_missing_directory_every_component_is_new() {
+    // hv/missing/link/state.json makes hv/missing/link, a new directory: the
+    // symlink hv/link that leads outside plays no part.
+    let (_dir, hv, outside) = volume_with_outside();
+    std::os::unix::fs::symlink(&outside, hv.join("link")).unwrap();
+    let root = hv.to_str().unwrap();
+
+    assert!(is_on_hidden_volume(
+        &hv.join("missing/link/state.json"),
+        root
+    ));
+    // A `..` back up to hv reaches the symlink again.
+    assert!(!is_on_hidden_volume(
+        &hv.join("missing/../link/state.json"),
+        root
+    ));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_symlinked_root_is_refused_with_a_trailing_slash_too() {
+    // With a trailing `/`, lstat follows a symlink: the root is checked as its
+    // components give it.
+    let (_dir, hv, _outside) = volume_with_outside();
+    let link = hv.with_file_name("linked-hv");
+    std::os::unix::fs::symlink(&hv, &link).unwrap();
+    let root = format!("{}/", link.display());
+
+    assert!(!is_on_hidden_volume(&link.join("state.json"), &root));
+    assert!(!is_on_hidden_volume(&hv.join("state.json"), &root));
+}
+
+#[test]
+fn a_relative_or_empty_root_is_refused() {
+    // Cleaned, the first two shrink to nothing, which every path starts with.
+    for root in ["", "missing/..", "relative-root", "."] {
+        assert!(
+            !is_on_hidden_volume(Path::new("/etc/shadow"), root),
+            "root {root:?}"
+        );
+    }
+}
+
 /// Helper: given a state file path, change the version string and recompute the checksum
 /// using the same method as save_internal (serialize StateFile with checksum=None).
 fn rewrite_version_and_recompute_checksum(state_path: &Path, new_version: &str) {
