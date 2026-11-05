@@ -48,8 +48,9 @@ in
     "security"
     "session"
   ];
-  # Four waits for the one-minute timeout (one in a 90-second hold), two
-  # power-offs with their cold boots and five soft-reboots.
+  # 369 s on a hosted runner: four waits for the one-minute timeout (one in a
+  # 90-second hold), two power-offs with their cold boots and five
+  # soft-reboots, which a slower runner stretches.
   globalTimeout = 1200;
 
   nodes.machine =
