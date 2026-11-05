@@ -809,6 +809,47 @@ fn a_root_on_btrfs_of_two_disks_has_the_disk_below_usr_read() {
 }
 
 #[test]
+fn a_root_on_btrfs_of_two_disks_with_usr_on_it_has_no_disk_read() {
+    // The decoy's root on a btrfs filesystem of nvme0n1p3 and sda2, with
+    // /usr on that filesystem too: neither / nor /usr is on a single block
+    // device, so systemd reads the table of no disk.
+    let host = on_the_decoys_disk()
+        .disk("sda", "8:0")
+        .partition_at("sda2", "8:2", "sda", 2, 4096)
+        .disk("nvme1n1", "259:16")
+        .partition_at("nvme1n1p5", "259:21", "nvme1n1", 5, P5_START)
+        .luks("dm-10", "254:10", "data2", &["nvme1n1p5"])
+        .btrfs(&["nvme0n1p3", "sda2"]);
+    let mounts = |dev: &str, source: &str| {
+        format!(
+            "1 0 0:31 / / rw,relatime - btrfs /dev/nvme0n1p3 rw\n\
+             40 1 {dev} / {ROOT} rw,relatime - ext4 {source} rw\n"
+        )
+    };
+    host.fs
+        .mock_set_mount_table(&mounts("254:9", "/dev/mapper/data"));
+    let result = judged(&host, "nvme0n1", SRV);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        past_lead(&result).starts_with(&format!(
+            "Partition 5 of nvme0n1 (nvme0n1p5) has the GPT type of a /srv partition. \
+             {ELSEWHERE}, so systemd does not mount the partition"
+        )),
+        "{result:?}"
+    );
+    // No disk below /usr joins the disks the decoy boots from.
+    host.fs
+        .mock_set_mount_table(&mounts("254:10", "/dev/mapper/data2"));
+    assert_eq!(
+        judged(&host, "nvme1n1", SRV),
+        CheckResult::Pass(format!(
+            "The hidden root at {ROOT} is on no partition of a disk the decoy boots from \
+             (nvme0n1, sda)."
+        ))
+    );
+}
+
+#[test]
 fn a_root_whose_devices_below_cannot_be_listed_leaves_open_which_disk_is_read() {
     // The decoy's EFI system partition on nvme0n1 makes it a disk the decoy
     // boots from, but sysfs does not list the devices below its root.

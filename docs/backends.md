@@ -233,7 +233,8 @@ systemd-gpt-auto-generator runs at every boot, unless it is masked, and looks
 at the partitions of one disk at most: the one it finds below the root file
 system. It starts at the block device the root file system reports, or at the
 only device of a btrfs filesystem, and where there is none, as for a btrfs
-filesystem of several devices, at that of `/usr`. From there it follows the
+filesystem of several devices, at that of `/usr`, so at no disk where `/usr`
+is on that filesystem too. From there it follows the
 devices below (`slaves/` in sysfs) one layer down before systemd 259.1, as
 from a LUKS volume to its partition, and every layer down from 259.1 on, as
 through LVM on LUKS. Where the devices one layer down are not all on one whole
