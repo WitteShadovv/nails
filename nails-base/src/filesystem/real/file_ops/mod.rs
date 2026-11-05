@@ -17,18 +17,43 @@ pub(super) use record_lock::record_lock_holder;
 pub(super) use secure_delete::{secure_delete, secure_delete_dir_all};
 pub(super) use user_write::write_user_file;
 
+/// Whether a lookup that failed with `error` says that nothing is there: no
+/// entry on the way (`ENOENT`), or a component on the way that is no
+/// directory (`ENOTDIR`), below which nothing can be.
+fn nothing_there(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// What a lookup of `path` that read `metadata` answers: `is` of what it
+/// found, no where nothing is there, and an error naming `path` for any other
+/// failure.
+fn looked_up(
+    path: &Path,
+    metadata: std::io::Result<std::fs::Metadata>,
+    is: impl FnOnce(&std::fs::Metadata) -> bool,
+) -> Result<bool> {
+    match metadata {
+        Ok(metadata) => Ok(is(&metadata)),
+        Err(error) if nothing_there(&error) => Ok(false),
+        Err(error) => Err(NailsError::io(path, error)),
+    }
+}
+
 pub(super) fn path_exists(path: &Path) -> Result<bool> {
-    Ok(path.exists())
+    looked_up(path, std::fs::metadata(path), |_| true)
 }
 
 pub(super) fn is_directory(path: &Path) -> Result<bool> {
-    Ok(path.is_dir())
+    looked_up(path, std::fs::metadata(path), std::fs::Metadata::is_dir)
 }
 
 pub(super) fn is_regular_file(path: &Path) -> Result<bool> {
     // `stat` reads the type without opening the file: a FIFO cannot block
     // it, and no device is opened.
-    Ok(path.is_file())
+    looked_up(path, std::fs::metadata(path), std::fs::Metadata::is_file)
 }
 
 pub(super) fn device_id(path: &Path) -> Result<u64> {
@@ -79,7 +104,9 @@ pub(super) fn inode(path: &Path) -> Result<Option<u64>> {
 }
 
 pub(super) fn is_symlink(path: &Path) -> Result<bool> {
-    Ok(path.is_symlink())
+    looked_up(path, std::fs::symlink_metadata(path), |metadata| {
+        metadata.file_type().is_symlink()
+    })
 }
 
 pub(super) fn change_time(path: &Path) -> Result<std::time::SystemTime> {

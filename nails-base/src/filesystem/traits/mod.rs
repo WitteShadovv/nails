@@ -125,6 +125,18 @@ pub struct ProcessMatch {
 /// - **'static:** Implementations own their state (no borrowed filesystems), so
 ///   platform backends, config layers and progress reporters can be handed out
 ///   as trait objects that outlive a borrow of the manager
+///
+/// # Whether something is there
+///
+/// [`path_exists`](Self::path_exists), [`is_directory`](Self::is_directory),
+/// [`is_regular_file`](Self::is_regular_file) and
+/// [`is_symlink`](Self::is_symlink) answer `Ok(false)` only where nothing is
+/// there: no entry on the way (`ENOENT`), or a component on the way that is no
+/// directory (`ENOTDIR`), below which nothing can be. Any other failure, such
+/// as no permission to search a directory on the way, an I/O error, a loop of
+/// links or a name too long, is an error that names the path, so a caller can
+/// tell "not there" from "cannot tell". The first three follow links, so a
+/// link to nothing is no entry to them; `is_symlink` looks at the link itself.
 pub trait Filesystem: Send + Sync + Clone + 'static {
     // ------------------------------------------------------------------------
     // Mount Queries
@@ -180,16 +192,22 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     // File System Operations
     // ------------------------------------------------------------------------
 
-    /// Check if a path exists.
+    /// Whether anything is at `path` once its symlinks are followed, as
+    /// `stat(2)` sees it. `Ok(false)` only where nothing is there; any other
+    /// failed lookup is an error that names the path (see
+    /// [whether something is there](Filesystem#whether-something-is-there)).
     fn path_exists(&self, path: &Path) -> Result<bool>;
 
-    /// Check if a path is a directory.
+    /// Whether `path` is a directory once its symlinks are followed, as
+    /// `stat(2)` sees it, with the errors of
+    /// [`path_exists`](Self::path_exists).
     fn is_directory(&self, path: &Path) -> Result<bool>;
 
     /// Whether `path` is a regular file once its symlinks are followed, as
-    /// `stat(2)` sees it. A directory, a FIFO, a socket or a device node is
-    /// not one, nor is a path that is missing or cannot be inspected: reading
-    /// a FIFO can block, and reading a device can go on without end.
+    /// `stat(2)` sees it, with the errors of
+    /// [`path_exists`](Self::path_exists). A directory, a FIFO, a socket or a
+    /// device node is not one: reading a FIFO can block, and reading a device
+    /// can go on without end.
     fn is_regular_file(&self, path: &Path) -> Result<bool>;
 
     /// The id of the device that holds `path` (the `st_dev` of its inode).
@@ -203,11 +221,11 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// The inode number of the file `path` names, its symlinks followed as
     /// `stat` follows them, or `None` when nothing is there.
     ///
-    /// Unlike [`path_exists`](Self::path_exists), a lookup that fails for any
-    /// reason but a missing path is an error, so a caller that must fail
-    /// closed can tell "not there" from "cannot tell". The namespace files of
-    /// two processes, such as `/proc/<pid>/ns/mnt`, give one inode exactly
-    /// when the two share that namespace.
+    /// A lookup that fails for any reason but a missing path is an error, one
+    /// through a file among them, so a caller that must fail closed can tell
+    /// "not there" from "cannot tell". The namespace files of two processes,
+    /// such as `/proc/<pid>/ns/mnt`, give one inode exactly when the two
+    /// share that namespace.
     fn inode(&self, path: &Path) -> Result<Option<u64>>;
 
     /// Who holds a record lock (`fcntl(2)`, a POSIX or an open file
@@ -249,7 +267,10 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// on the way first.
     fn mount_root(&self, path: &Path) -> Result<MountRoot>;
 
-    /// Check if a path is a symbolic link.
+    /// Whether `path` itself is a symbolic link, as `lstat(2)` sees it: a link
+    /// on the way is followed, the last one is not. `Ok(false)` only where
+    /// nothing is there; any other failed lookup is an error that names the
+    /// path (see [whether something is there](Filesystem#whether-something-is-there)).
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
     /// Whether anything is at `path` itself, a link to nothing included.
