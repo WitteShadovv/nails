@@ -195,6 +195,36 @@ fn active() -> SystemState {
     }
 }
 
+/// Install the transition drop-in and the runtime guards below the machine's
+/// `/run`, as the entry does before its reload.
+fn install_dropins(machine: &Machine) {
+    nails_teardown::whole_root::transition::install_dropin(
+        &machine.paths.run,
+        Path::new("/run/overlay-runtime/control"),
+    )
+    .unwrap();
+}
+
+/// The transition drop-in and every runtime guard, the switch's timeout guard
+/// among them, are gone with their directories.
+fn assert_no_dropins(machine: &Machine) {
+    use nails_teardown::whole_root::transition;
+
+    assert!(
+        !machine.paths.run.join(transition::DROPIN_DIR).exists(),
+        "the drop-in is left"
+    );
+    let units: Vec<_> = transition::runtime_guards().map(|(unit, _)| unit).collect();
+    assert!(
+        units.contains(&transition::SWITCH_TIMEOUT_UNIT),
+        "{units:?}"
+    );
+    for unit in units {
+        let dir = machine.paths.run.join(transition::stop_guard_dir(unit));
+        assert!(!dir.exists(), "{} is left", dir.display());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // recover
 // ---------------------------------------------------------------------------
@@ -283,6 +313,9 @@ fn recovering_the_plain_decoy_leaves_an_inactive_record_unwritten() {
     );
 }
 
+/// `recover` removes what a killed activation left: the runtime directory,
+/// and the drop-in and the runtime guards, the switch's timeout guard among
+/// them, which the reload then drops from PID 1.
 #[test]
 fn an_interrupted_entry_is_rolled_back_and_the_record_reset() {
     let dir = tempfile::tempdir().unwrap();
@@ -295,6 +328,7 @@ fn an_interrupted_entry_is_rolled_back_and_the_record_reset() {
     leftover.backend = vec!["nails-test-never-open".into()];
     write_plan(&machine, &leftover);
     std::fs::write(machine.paths.runtime().join("nails"), b"binary copy").unwrap();
+    install_dropins(&machine);
     let mut m = manager(&hidden);
     let host = FakeEntryHost::default();
 
@@ -311,6 +345,7 @@ fn an_interrupted_entry_is_rolled_back_and_the_record_reset() {
         !machine.paths.runtime().exists(),
         "the runtime directory with the plan and the binary copy is removed"
     );
+    assert_no_dropins(&machine);
     assert_eq!(host.reloads.get(), 1);
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
@@ -566,6 +601,7 @@ fn a_refused_soft_reboot_rolls_the_entry_back_and_resets_the_record() {
     record(&hidden, active());
     let machine = machine(dir.path(), DECOY_TABLE);
     write_plan(&machine, &plan(&hidden));
+    install_dropins(&machine);
     let mut m = manager(&hidden);
     let target = FakeTarget {
         refuse: true,
@@ -584,6 +620,7 @@ fn a_refused_soft_reboot_rolls_the_entry_back_and_resets_the_record() {
         NailsError::InvalidState("soft-reboot.target refused".into()).to_string()
     );
     assert!(!machine.paths.runtime().exists());
+    assert_no_dropins(&machine);
     assert_eq!(host.reloads.get(), 1);
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
     assert_eq!(
@@ -603,6 +640,7 @@ fn a_program_that_blocks_shutdown_refuses_the_entry_before_its_soft_reboot() {
     record(&hidden, active());
     let machine = machine(dir.path(), DECOY_TABLE);
     write_plan(&machine, &plan(&hidden));
+    install_dropins(&machine);
     let mut m = manager(&hidden);
     let target = FakeTarget {
         blocked: true,
@@ -615,6 +653,7 @@ fn a_program_that_blocks_shutdown_refuses_the_entry_before_its_soft_reboot() {
     assert!(error.to_string().contains("apt blocks shutdown"), "{error}");
     assert!(target.started.borrow().is_empty());
     assert!(!machine.paths.runtime().exists());
+    assert_no_dropins(&machine);
     assert_eq!(host.reloads.get(), 1);
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
