@@ -223,8 +223,9 @@ Keep all of it `root`-owned on the hidden volume.
    volume's storage, such as its outer volume, is open read-write; it only
    warns, see [the backends](backends.md#outer-volume-in-preflight)),
    `backend-partition-type` (on a disk the decoy boots from, the hidden
-   volume's partition has no type the decoy's systemd mounts or uses as swap,
-   see [the backends](backends.md#partition-type-in-preflight)),
+   volume's partition has no type systemd mounts or uses as swap, even where
+   the decoy masks the generator that does, see [the
+   backends](backends.md#partition-type-in-preflight)),
    `storage-readiness`, `swap`,
    `memory-wipe`, `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
    `incremental-history-flush` and `space`. `nails check` runs the same checks

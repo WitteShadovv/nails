@@ -263,10 +263,11 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(OuterVolumeCheck::new(hidden_root.clone())));
 
     // Refuses a hidden root stored on a partition of a disk the decoy boots
-    // from whose GPT type systemd mounts or uses as swap at every later boot
-    // of the decoy (/home, /srv, /var, /var/tmp, swap); the no-auto flag, and
-    // the root and boot types systemd rarely acts on, only warn. Reads the
-    // disk's partition table, or udev's record of the partition. Read-only.
+    // from whose GPT type systemd mounts or uses as swap at boot (/home, /srv,
+    // /var, /var/tmp, swap), also where a mask keeps systemd-gpt-auto-generator
+    // from running, as it reads no mask; the no-auto flag, and the root and
+    // boot types systemd rarely acts on, only warn. Reads the disk's
+    // partition table, or udev's record of the partition. Read-only.
     registry.add_check(Box::new(BackendPartitionTypeCheck::new(
         hidden_root.clone(),
     )));

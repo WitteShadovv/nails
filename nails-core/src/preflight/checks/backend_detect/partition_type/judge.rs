@@ -197,11 +197,11 @@ impl Finding {
                 };
                 Finding::Fail(
                     format!(
-                        "{typed}. At every later boot of the decoy, systemd mounts the first \
-                         such partition of that disk at {point} when no fstab line mounts \
-                         {point} and that folder is empty{var}, and asks for its passphrase \
-                         first when it is a LUKS volume: a failed mount or a passphrase prompt \
-                         shows that the partition is there. {SPARED}"
+                        "{typed}. {UNLESS_MASKED}, systemd mounts the first such partition of \
+                         that disk at {point} at every later boot of the decoy when no fstab \
+                         line mounts {point} and that folder is empty{var}, and asks for its \
+                         passphrase first when it is a LUKS volume: a failed mount or a \
+                         passphrase prompt shows that the partition is there. {SPARED}"
                     ),
                     place,
                 )
@@ -217,18 +217,18 @@ impl Finding {
             ),
             AutoRole::Swap => Finding::Fail(
                 format!(
-                    "{typed}. At every later boot of the decoy, systemd uses the first swap \
-                     partition of that disk without the no-auto flag as swap, unless an fstab \
-                     line names a swap, and asks for its passphrase first when it is a LUKS \
-                     volume: a failed swap or a passphrase prompt shows that the partition is \
-                     there. {SPARED}"
+                    "{typed}. {UNLESS_MASKED}, systemd uses the first swap partition of that \
+                     disk without the no-auto flag as swap at every later boot of the decoy when \
+                     no fstab line names a swap, and asks for its passphrase first when it is a \
+                     LUKS volume: a failed swap or a passphrase prompt shows that the partition \
+                     is there. {SPARED}"
                 ),
                 place,
             ),
             AutoRole::Esp | AutoRole::Xbootldr | AutoRole::Root => Finding::Warn(
                 format!(
-                    "{typed}. systemd {}. Anyone who reads the partition table sees a type the \
-                     partition's use does not explain.",
+                    "{typed}. {UNLESS_MASKED}, systemd {}. Anyone who reads the partition table \
+                     sees a type the partition's use does not explain.",
                     rare_use(role)
                 ),
                 Some(place),
@@ -237,9 +237,20 @@ impl Finding {
     }
 }
 
+/// The condition on everything systemd does with a partition by its type:
+/// systemd-gpt-auto-generator runs. Ubuntu 24.04 and 26.04 mask it by
+/// default, with a link from
+/// `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
+/// `/dev/null`, and systemd runs no generator masked so
+/// (systemd.generator(5)). The check reads no mask: its verdicts are the
+/// same on a decoy that masks the generator, where the type still shows in
+/// the partition table.
+const UNLESS_MASKED: &str =
+    "Unless the decoy masks systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default";
+
 /// What the decoy's boot does not touch, and what it leaves.
 const SPARED: &str = "The hidden session, whose root is an overlay, is spared, but anyone who \
-     reads the partition table sees the type.";
+     reads the partition table sees the type, whether or not the generator is masked.";
 
 /// `text` with its first letter in upper case.
 fn capitalized(text: &str) -> String {
