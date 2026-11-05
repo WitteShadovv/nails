@@ -134,6 +134,16 @@ pub(super) fn computed(word: &Word) -> bool {
         )
 }
 
+/// Whether `text`, a value zsh takes from its environment as it is, holds
+/// an expansion ([`computed`]), which zsh runs as it shows it as a prompt
+/// where `PROMPT_SUBST` is on.
+pub(in super::super) fn expands(text: &str) -> bool {
+    computed(&Word {
+        text: text.to_string(),
+        ..Word::default()
+    })
+}
+
 /// Whether `command`, the last command of an alias's value as written, is
 /// an `fc` that writes nothing: `fc`, past the precommands that run it, with
 /// words that hold no expansion and no flag that writes the history file

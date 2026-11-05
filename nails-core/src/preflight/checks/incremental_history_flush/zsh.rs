@@ -59,7 +59,8 @@
 //! expansion that reads a parameter's value again (`${(e)x}`, `${~x}`,
 //! `GLOB_SUBST`), code in a string zsh runs that an expansion makes (an alias's
 //! value, a trap's, a `sched`'s, a `zstyle -e`'s, a prompt's where
-//! `PROMPT_SUBST` may be on), an alias that hands the words it is used with to
+//! `PROMPT_SUBST` may be on, one the shell's environment holds among them),
+//! an alias that hands the words it is used with to
 //! a command that reads them as code, options, names or paths
 //! (`alias so=setopt`), a `source` without a path or with one it cannot resolve
 //! (a process substitution among them), a `ZDOTDIR` it cannot follow, one set
@@ -100,7 +101,7 @@ use backstop::Forms;
 pub(super) use command_line::{CommandLine, Start};
 #[cfg(test)]
 pub(super) use install::tests::seed_coreutils;
-pub(super) use install::{ENVIRONMENT, Install, LOADER};
+pub(super) use install::{ENVIRONMENT, Install, LOADER, lossy};
 use install::{dircolors_split, profile_words};
 use lexer::Word;
 #[cfg(test)]
@@ -1039,6 +1040,16 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         fpath_splits: Vec::new(),
         keys_splits: Vec::new(),
     };
+    // The prompts zsh takes from its environment, which it shows as they
+    // are unless a file sets them: code where PROMPT_SUBST may be on.
+    for (name, value) in env.map(|env| env.prompts.as_slice()).unwrap_or_default() {
+        if walk::expands(value) {
+            reader.prompts.push(format!(
+                "it cannot follow the code that `{name}` in the shell's environment holds, which \
+                 zsh runs as it shows the prompt unless a file sets it, as PROMPT_SUBST may be on"
+            ));
+        }
+    }
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
         if login_stage && start.login == Some(false) {
