@@ -184,7 +184,7 @@ fn the_volume_let_run(results: &[(String, CheckResult)], needing: &[&str]) {
     }
     let skipped: Vec<&str> = results
         .iter()
-        .filter(|(_, result)| result.message() == crate::preflight::SKIPPED_NO_HIDDEN_VOLUME)
+        .filter(|(_, result)| result.message() == crate::preflight::SKIPPED_HIDDEN_VOLUME_FAILED)
         .map(|(name, _)| name.as_str())
         .collect();
     assert!(skipped.is_empty(), "{skipped:?}");
