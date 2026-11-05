@@ -337,18 +337,24 @@ pub fn build_registry<F: Filesystem>(
 
     // Refuses a persistent decoy posture (a persistent journald journal or an
     // active rsyslog/syslog-ng/auditd, where hidden-session records logged before
-    // the overlays are mounted would survive on the decoy disk, or an armed
+    // the overlays are mounted would survive on the decoy disk, an armed
     // kdump, whose crash kernel writes the memory of a session that crashed to
-    // the decoy disk) unless the operator allows the risk for this run with
+    // the decoy disk, or unattended-upgrades set to install at shutdown, which
+    // a switch is to it) unless the operator allows the risk for this run with
     // --allow-persistent-decoy. Lower-severity findings (atime, a disk
     // core_pattern, a systemd-coredump that keeps cores, pstore records, sudo
-    // logging, sssd in use, maintenance timers) are always warnings. The check
-    // performs no writes, and its maintenance-timer sub-check applies only on a
-    // NixOS host.
-    registry.add_check(Box::new(DecoyPersistenceCheck::new(
-        inputs.options.allow_persistent_decoy,
-        config_layer.is_some(),
-    )));
+    // logging, sssd in use, maintenance timers, unattended-upgrades installing
+    // only in a hidden session) are always warnings. The check performs no
+    // writes, and its maintenance-timer sub-check applies only on a NixOS
+    // host. It reads what hidden sessions see through the root overlay's
+    // upper.
+    registry.add_check(Box::new(
+        DecoyPersistenceCheck::new(
+            inputs.options.allow_persistent_decoy,
+            config_layer.is_some(),
+        )
+        .with_upper(layout.upper()),
+    ));
 
     // Refuses an updatedb (plocate, mlocate, NixOS's update-locatedb) that
     // runs now, or that a timer or cron job schedules, and that does not skip

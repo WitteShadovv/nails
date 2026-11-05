@@ -6,8 +6,8 @@
 # tables, the kernel's compressed config, a decoy's fstab, crypttab, os-release,
 # package databases, the rows of its Nix store database the forensic oracle
 # reads, systemd units and configuration, display-manager, updatedb and NixOS
-# configuration, udev's records, raw disks, and the requests a window sends the
-# engine's root helper.
+# configuration, apt's configuration, udev's records, raw disks, and the
+# requests a window sends the engine's root helper.
 # docs/testing-strategy.md says how to run a target; .clusterfuzzlite/ builds
 # them for CI.
 #
@@ -152,6 +152,13 @@ bench = false
 [[bin]]
 name = "dpkg_status"
 path = "fuzz_targets/dpkg_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "apt_conf"
+path = "fuzz_targets/apt_conf.rs"
 test = false
 doc = false
 bench = false

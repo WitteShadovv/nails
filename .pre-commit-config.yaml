@@ -9,13 +9,15 @@ repos:
     hooks:
       # Kernel fixtures are verbatim /proc captures (the kernel writes trailing
       # tabs and spaces), the screenshots are generated CLI output, checked
-      # against a fresh generation, fuzz seeds are inputs byte for byte, and
-      # the released state files are what shipped releases wrote (no final
-      # newline), pinned by their SHA-256: none may be normalised.
+      # against a fresh generation, fuzz seeds are inputs byte for byte, the
+      # released state files are what shipped releases wrote (no final
+      # newline), pinned by their SHA-256, and the apt configuration files
+      # are copied unchanged from the packages that ship them: none may be
+      # normalised.
       - id: trailing-whitespace
-        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/|fuzz/seeds/|nails-base/src/state/golden/released/)
+        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/|fuzz/seeds/|nails-base/src/state/golden/released/|nails-base/src/packages/fixtures/apt/)
       - id: end-of-file-fixer
-        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/|fuzz/seeds/|nails-base/src/state/golden/released/)
+        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/|fuzz/seeds/|nails-base/src/state/golden/released/|nails-base/src/packages/fixtures/apt/)
       - id: check-yaml
       - id: check-json
       - id: check-toml
