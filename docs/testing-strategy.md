@@ -246,11 +246,12 @@ checks the inputs it names. The proofs sit next to the code they check, in
 build, the tests and the coverage figure leave them out. They run weekly and
 when dispatched, never on a pull request: the `kani` task of `scheduled.yml`
 runs `just kani` with the Kani release the workflow pins
-([ci.md](ci.md#important-gate-behavior)). `just kani` fails when a proof fails,
-when Kani verified fewer proofs than `nails-base/src` holds, and when fewer
-cover properties (`kani::cover!`) were satisfied than `nails-base/src` holds:
-Kani counts a proof as verified though a cover in it is never satisfied, and
-the branch that cover marks then goes unchecked.
+([ci.md](ci.md#important-gate-behavior)). `just kani` fails when
+`nails-base/src` holds no proof, when a proof fails, when Kani verified fewer
+proofs than `nails-base/src` holds, and when fewer cover properties
+(`kani::cover!`) were satisfied than `nails-base/src` holds: Kani counts a
+proof as verified though a cover in it is never satisfied, and the branch that
+cover marks then goes unchecked.
 
 - **The activation step order**, in `nails-base/src/reporter/progress/proofs.rs`.
   The run order lists every phase once. It puts the runtime first, the overlay

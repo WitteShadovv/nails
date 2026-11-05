@@ -201,8 +201,9 @@ in
   # advisory-ignore configs), docs/ci.md plus .github/workflows (the
   # workflow-documentation check), the root Cargo.toml (the workspace members
   # the path filters must cover), the justfile (the in-diff mutation lane's
-  # plan must list with the cargo-mutants options its shards test with, and its
-  # shards take their time box), and the E2E metadata sources the shard
+  # plan must list with the cargo-mutants options its shards test with, its
+  # shards take their time box, and the kani recipe must judge what Kani
+  # reports as its docs say), and the E2E metadata sources the shard
   # planner's tests scan (default.nix, the tests tree and the checked-in
   # weights) and the helper library and batched scenarios the E2E
   # synchronisation lint scans, and the distribution tier, whose Nix files say

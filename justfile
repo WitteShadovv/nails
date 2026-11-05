@@ -611,17 +611,23 @@ mutants-in-diff-plan diff:
 # Kani's proofs of nails-base (docs/testing-strategy.md#model-checking), each
 # for every input within the bounds it states. Kani is not in the dev shell, and
 # its setup needs rustup: install the version that the weekly `kani` task of
-# scheduled.yml pins, as testing-strategy.md shows. The recipe fails when a
-# proof fails, when Kani verified fewer proofs than nails-base/src holds, as
-# when a cfg or a filter left one out, and when it satisfied fewer cover
-# properties (`kani::cover!`) than nails-base/src holds: Kani counts a proof as
-# verified though a cover in it is never satisfied. The log goes to
-# target/kani/kani.log.
+# scheduled.yml pins, as testing-strategy.md shows. The recipe fails when
+# nails-base/src holds no proof, when a proof fails, when Kani verified fewer
+# proofs than nails-base/src holds, as when a cfg or a filter left one out, and
+# when it satisfied fewer cover properties (`kani::cover!`) than nails-base/src
+# holds: Kani counts a proof as verified though a cover in it is never
+# satisfied. ci/tests/test_kani_recipe.py runs it on Kani reports it makes up.
+# The log goes to target/kani/kani.log.
 kani:
     #!/usr/bin/env bash
     set -euo pipefail
-    expected=$(grep -rhE '^[[:space:]]*#\[kani::proof\]' nails-base/src | wc -l)
-    covers=$(grep -rhE '^[[:space:]]*kani::cover!' nails-base/src | wc -l)
+    # grep ends with 1 when it finds none, which is no error here.
+    expected=$({ grep -rhE '^[[:space:]]*#\[kani::proof\]' nails-base/src || [ $? -eq 1 ]; } | wc -l)
+    covers=$({ grep -rhE '^[[:space:]]*kani::cover!' nails-base/src || [ $? -eq 1 ]; } | wc -l)
+    if [ "$expected" -eq 0 ]; then
+        echo "nails-base/src holds no #[kani::proof] for Kani to verify" >&2
+        exit 1
+    fi
     mkdir -p target/kani
     cargo kani -p nails-base --output-format terse 2>&1 | tee target/kani/kani.log
     verified=$(sed -n 's/^Complete - \([0-9]*\) successfully verified harnesses, 0 failures, .*/\1/p' target/kani/kani.log)
