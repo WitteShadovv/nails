@@ -7,8 +7,9 @@
 //! copy as a runtime unit of the hidden session (installed in `/run` by the
 //! entry transition) for the life of the session, polling the hidden backend
 //! and alerting the operator the moment it fails, alerting on every disk
-//! mounted read-write outside the hidden volume (`[session_mounts] alert`) and
-//! on every mount stacked on the hidden root, and sweeping unused disks
+//! mounted read-write that is not the session's own storage, one below the
+//! hidden root included (`[session_mounts] alert`), and on every mount
+//! stacked on the hidden root, and sweeping unused disks
 //! read-only when that is opted into. It is marked
 //! `hide = true` so it never appears in help, and it keeps all of its state in the
 //! `/run` copy so it keeps working even after the hidden volume is gone.
@@ -147,9 +148,10 @@ fn storage_plan(mut plan: Plan, hidden_root: &Path) -> Plan {
 ///
 /// A mount stacked on the hidden root takes every file saved there from now
 /// on: the gate refuses NAILS' own writes, and the operator is told once per
-/// mount. Then, with `alert_mounts`, each disk newly mounted read-write
-/// outside the session; a cover on a parent of the root lies outside it, and
-/// its own alert already names it.
+/// mount. Then, with `alert_mounts`, each disk newly mounted read-write that
+/// is not the session's own storage ([`Plan::is_hidden_storage`]); a cover on
+/// the root or on one of its parents is not the session's either, and its own
+/// alert already names it, so it raises no second one.
 fn tick_alerts(
     mounts: &[MountEntry],
     cover_watch: &mut watcher::CoverWatch,
