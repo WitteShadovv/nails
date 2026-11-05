@@ -36,6 +36,7 @@ on:
           - stress
           - benchmarks
           - mutants
+          - kani
           - distro-images
           - lockfile
 
@@ -75,7 +76,7 @@ jobs:
             # The Cargo.lock refresh is opt-in: it runs only on its monthly
             # schedule or when dispatched by name, because it opens a pull
             # request.
-            run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks","mutants","distro-images"]'
+            run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks","mutants","kani","distro-images"]'
           else
             run=$(jq -cn --arg task "$TASK" '[$task]')
           fi
@@ -414,6 +415,54 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Kani's proofs of a few pure invariants, each for every input within the
+  # bounds it states (docs/testing-strategy.md#model-checking). They run weekly
+  # and on dispatch, never on a pull request. A red run is a proof that no
+  # longer holds, or fewer proofs verified than the sources hold.
+  kani:
+    name: Kani proofs
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'kani')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install just
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+        with:
+          tool: just@1.58.0
+          fallback: none
+
+      # The Kani release the proofs are checked with, and the SHA-256 that its
+      # release page gives for the x86_64 Linux bundle: `cargo kani setup`
+      # checks no hash of what it downloads, so the bundle is fetched and
+      # checked here and handed to it. --locked builds the driver with the
+      # dependency versions it was released with. Setup unpacks the bundle and
+      # installs, with rustup, the nightly toolchain the release was built
+      # against.
+      - name: Install Kani
+        env:
+          KANI_VERSION: 0.68.0
+          KANI_BUNDLE_SHA256: 32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3 # pragma: allowlist secret
+        run: |
+          set -euo pipefail
+          cargo install --locked kani-verifier --version "=$KANI_VERSION"
+          bundle="$RUNNER_TEMP/kani-$KANI_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          curl -sSfL -o "$bundle" "https://github.com/model-checking/kani/releases/download/kani-$KANI_VERSION/kani-$KANI_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$KANI_BUNDLE_SHA256  $bundle" | sha256sum --check --strict -
+          cargo kani setup --use-local-bundle "$bundle"
+
+      - name: Run the proofs
+        run: just kani
+
   # Watches the pinned upstream cloud images the distro tests boot. It fails
   # before an entry's pin is due to lapse from its download mirror, so there
   # is time to repin, and when an entry's image URL stops resolving: an
@@ -568,7 +617,7 @@ jobs:
   # broken build or a missing result.
   report-ci:
     name: Report CI status
-    needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks, mutants, distro-images-link-check]
+    needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks, mutants, kani, distro-images-link-check]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5

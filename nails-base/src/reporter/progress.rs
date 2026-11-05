@@ -204,6 +204,7 @@ pub fn finish(success: bool) {
 /// a hidden NixOS system, so [`activation_step`] takes whether a build will run
 /// and numbers the steps that will actually happen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum ActivationPhase {
     /// Stage the runtime directory, the plan and the transition drop-in.
     Runtime,
@@ -286,6 +287,20 @@ impl ActivationPhase {
 /// the three build phases are counted only then, so a decoy-only activation is
 /// numbered out of its own, smaller total.
 pub fn activation_step(phase: ActivationPhase, building: bool) {
+    let (index, total) = numbering(phase, building);
+    step(Step {
+        index,
+        total,
+        phase: phase.id(),
+        label: phase.label(),
+    });
+}
+
+/// The number [`activation_step`] shows for `phase` and the number of phases
+/// the activation runs, as `(index, total)`: the phases in run order, less the
+/// build phases when no build runs, counted from 1. A build phase of an
+/// activation that builds nothing is not among them and gets 0.
+fn numbering(phase: ActivationPhase, building: bool) -> (u32, u32) {
     let mut index = 0;
     let mut total = 0;
     for candidate in ACTIVATION_PHASES {
@@ -297,12 +312,7 @@ pub fn activation_step(phase: ActivationPhase, building: bool) {
             index = total;
         }
     }
-    step(Step {
-        index,
-        total,
-        phase: phase.id(),
-        label: phase.label(),
-    });
+    (index, total)
 }
 
 // ---------------------------------------------------------------------------
@@ -919,3 +929,8 @@ impl Drop for TtyReporter {
 
 #[cfg(test)]
 mod tests;
+
+// Kani's proofs of the numbering and the run order; only `cargo kani` (`just
+// kani`) compiles them.
+#[cfg(kani)]
+mod proofs;

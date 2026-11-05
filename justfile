@@ -605,3 +605,23 @@ mutants-in-diff-plan diff:
     cargo mutants --list --json \
         --in-diff '{{ diff }}' {{ mutants_in_diff_options }} > "$listed"
     python3 -m ci.mutants_plan "$listed"
+
+# --- Model checking ---
+
+# Kani's proofs of nails-base (docs/testing-strategy.md#model-checking), each
+# for every input within the bounds it states. Kani is not in the dev shell:
+# install the version that the weekly `kani` task of scheduled.yml pins. The
+# recipe fails when a proof fails, and when Kani verified fewer proofs than
+# nails-base/src holds, as when a cfg or a filter left one out. The log goes to
+# target/kani/kani.log.
+kani:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    expected=$(grep -rhE '^[[:space:]]*#\[kani::proof\]' nails-base/src | wc -l)
+    mkdir -p target/kani
+    cargo kani -p nails-base --output-format terse 2>&1 | tee target/kani/kani.log
+    verified=$(sed -n 's/^Complete - \([0-9]*\) successfully verified harnesses, 0 failures, .*/\1/p' target/kani/kani.log)
+    if [ "$verified" != "$expected" ]; then
+        echo "Kani verified ${verified:-none} of the $expected proofs in nails-base/src" >&2
+        exit 1
+    fi
