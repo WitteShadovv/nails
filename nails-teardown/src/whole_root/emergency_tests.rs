@@ -213,8 +213,9 @@ impl Interrupted {
         report
     }
 
-    /// The masks are gone, the kernel paths are back, the runtime directory
-    /// and the drop-in are removed.
+    /// The masks are gone, the kernel paths are back, the runtime directory,
+    /// the drop-in and the runtime guards (the switch's timeout guard among
+    /// them) are removed, each guard with its directory.
     fn assert_cleaned(&self) {
         assert_eq!(
             std::fs::read_to_string(self.dir.path().join("modprobe")).unwrap(),
@@ -232,6 +233,15 @@ impl Interrupted {
                 .join(transition::DROPIN_NAME)
                 .exists()
         );
+        let units: Vec<_> = transition::runtime_guards().map(|(unit, _)| unit).collect();
+        assert!(
+            units.contains(&transition::SWITCH_TIMEOUT_UNIT),
+            "{units:?}"
+        );
+        for unit in units {
+            let dir = self.host.run.join(transition::stop_guard_dir(unit));
+            assert!(!dir.exists(), "{} stays", dir.display());
+        }
     }
 
     /// The `systemctl` calls made, one per line.
