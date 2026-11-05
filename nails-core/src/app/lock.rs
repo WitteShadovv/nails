@@ -136,6 +136,34 @@ mod tests {
         ));
     }
 
+    /// A hidden root the attach gate cannot look up never holds up an
+    /// emergency teardown: it goes on without the lock, and no lock file is
+    /// made. Skipped as root, who may search any directory.
+    #[test]
+    fn acquire_for_emergency_goes_on_without_a_root_it_cannot_look_up() {
+        use std::os::unix::fs::PermissionsExt;
+        if nix::unistd::geteuid().is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        let root = locked.join("data");
+        std::fs::create_dir_all(&root).unwrap();
+        let _gate = crate::hidden_root::state_attach_probe::enforce();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = crate::HiddenRoot::assess(&RealFilesystem, &root);
+        let lock = acquire_for_emergency(&root, &root.join("state.json"));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(
+            matches!(&refused, Ok(Assessment::Refused(refusal))
+                if matches!(refusal.kind, crate::hidden_root::RefusalKind::LookupFailed { .. })),
+            "{refused:?}"
+        );
+        assert!(lock.is_none());
+        assert!(!StateLock::lock_path(&root).exists());
+    }
+
     #[test]
     fn acquire_for_emergency_takes_the_lock_when_the_volume_is_attached_and_free() {
         // The hidden volume is attached (a library unit-test build skips the

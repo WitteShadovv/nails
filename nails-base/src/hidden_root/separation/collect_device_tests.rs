@@ -686,6 +686,32 @@ fn a_zram_device_is_judged_with_the_device_it_writes_back_to() {
     assert_unjudged("an attribute it cannot read", &unread, input);
 }
 
+/// A zram device whose writeback attribute cannot be looked up may write
+/// its pages anywhere: a root on it cannot be judged. One without the
+/// attribute keeps its pages in RAM.
+#[test]
+fn a_zram_writeback_whose_lookup_fails_cannot_be_judged() {
+    let zram = "/sys/devices/virtual/block/zram0";
+    let input = "/sys/devices/virtual/block/zram0/backing_dev";
+    let on_zram = |kind| {
+        let decoy = decoy("5 1 252:0 / /mnt rw - ext4 /dev/zram0 rw\n")
+            .device(zram, "zram0", "252:0", &[])
+            .device(SDB, "sdb", "8:16", &[]);
+        decoy.attr(zram, "backing_dev", "/dev/sdb");
+        decoy.fs.mock_set_lookup_error(input, kind);
+        decoy
+    };
+    assert_unjudged(
+        "a writeback attribute it cannot look up",
+        &on_zram(std::io::ErrorKind::PermissionDenied),
+        input,
+    );
+    assert_eq!(
+        on_zram(std::io::ErrorKind::NotFound).assess(),
+        Assessment::Attached
+    );
+}
+
 #[test]
 fn what_sysfs_cannot_list_on_the_way_down_cannot_be_judged() {
     // The devices below the root's mapping.
