@@ -559,10 +559,10 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
             "{unit}"
         );
     }
-    assert_eq!(runtime_guards().count(), 4);
+    assert_eq!(runtime_guards().count(), 5);
 
     remove_dropin(run, &Snapshot::default());
-    for unit in ["dbus.service", "dbus.socket"] {
+    for unit in ["dbus.service", "dbus.socket", "soft-reboot.target"] {
         assert!(!run.join(stop_guard_dir(unit)).exists(), "{unit}");
     }
     assert!(
@@ -574,6 +574,91 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
             .exists()
     );
     assert!(!run.join(DROPIN_DIR).exists());
+}
+
+/// The timeout guard: a switch that hangs until `soft-reboot.target`'s job
+/// timeout powers off, by force, as a plain `poweroff` is skipped while
+/// `shutdown.target` is active or queued. The timeout stays the unit's own,
+/// and the guard goes with the other drop-ins.
+#[test]
+fn the_timeout_guard_powers_off_a_switch_that_hangs_and_goes_with_the_dropin() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path();
+    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    let guard = run.join("systemd/system/soft-reboot.target.d/zz-overlay-runtime.conf");
+    assert_eq!(
+        fs::read_to_string(&guard).unwrap(),
+        "[Unit]\nJobTimeoutAction=poweroff-force\n"
+    );
+    assert_eq!(SWITCH_TIMEOUT_ACTION, "poweroff-force");
+    assert!(
+        SWITCH_TIMEOUT_TEXT
+            .lines()
+            .any(|line| line == format!("JobTimeoutAction={SWITCH_TIMEOUT_ACTION}"))
+    );
+    assert!(!SWITCH_TIMEOUT_TEXT.contains("JobTimeoutSec"));
+    assert!(!SWITCH_TIMEOUT_TEXT.to_lowercase().contains("nails"));
+    assert!(
+        runtime_guards()
+            .any(|(unit, text)| unit == SWITCH_TIMEOUT_UNIT && text == SWITCH_TIMEOUT_TEXT)
+    );
+
+    assert!(remove_dropin(run, &Snapshot::default()));
+    assert!(!guard.exists());
+    assert!(!run.join(stop_guard_dir(SWITCH_TIMEOUT_UNIT)).exists());
+}
+
+/// The timeout guard lives from the entry to the way back: the switch into
+/// the session keeps it for the hidden PID 1, whose way back it covers too, a
+/// switch the hidden session refuses keeps it for the session that goes on,
+/// and the way back removes it. A switch refused on the decoy removes it too.
+#[test]
+fn the_timeout_guard_covers_both_switches_and_goes_with_the_way_back() {
+    let world = World::new();
+    let r = world.run();
+    let guard = r
+        .join(stop_guard_dir(SWITCH_TIMEOUT_UNIT))
+        .join(STOP_GUARD_NAME);
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&r).to_text(),
+    )
+    .unwrap();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    assert!(guard.exists(), "the hidden PID 1 loads it for the way back");
+
+    // A plain soft-reboot in the session that meets a next root nobody
+    // armed: the session goes on, its guard with it.
+    let mut plan = world.plan();
+    plan.armed = None;
+    world.write_plan(&plan);
+    assert!(matches!(run(&world.env(true, 1_015)), Outcome::Disarmed(_)));
+    assert!(guard.exists());
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+    assert!(!r.join(stop_guard_dir(SWITCH_TIMEOUT_UNIT)).exists());
+
+    // On the decoy, a reboot that meets an entry nobody armed.
+    let world = World::new();
+    let r = world.run();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.armed = None;
+    world.write_plan(&plan);
+    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
+    assert!(!r.join(stop_guard_dir(SWITCH_TIMEOUT_UNIT)).exists());
 }
 
 #[test]

@@ -1661,6 +1661,31 @@ fn session_leftovers_are_critical_on_the_decoy() {
     assert_eq!(result.status, VerifyStatus::Critical);
 }
 
+/// The timeout guard left on the decoy makes its next hung soft-reboot power
+/// off instead of switching by force: a session leftover like the others.
+#[test]
+fn a_timeout_guard_left_on_the_decoy_is_critical() {
+    let (fs, verifier) = overlay_verifier("");
+    let guard = "/run/systemd/system/soft-reboot.target.d/zz-overlay-runtime.conf";
+    fs.mock_set_path_exists(guard, true);
+    let result = verifier.run(false).unwrap();
+    let session: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "session")
+        .collect();
+    assert_eq!(session.len(), 1, "{session:?}");
+    assert_eq!(
+        session[0].message,
+        format!(
+            "the session's runtime guard {guard} is left: soft-reboot.target runs changed \
+             until the next boot"
+        )
+    );
+    assert_eq!(session[0].severity, Severity::Critical);
+    assert!(session[0].fix_guidance.is_some());
+}
+
 #[test]
 fn a_skip_drop_in_left_on_the_decoy_is_critical() {
     use nails_teardown::whole_root::skips::{SKIP_DROPIN_NAME, SKIP_TEXT};

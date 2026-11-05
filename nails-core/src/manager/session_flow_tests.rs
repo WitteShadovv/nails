@@ -64,6 +64,9 @@ impl EntryHost for FakeEntryHost {
     fn unit_stop_commands(&self, _: &str) -> Result<String> {
         Ok(String::new())
     }
+    fn job_timeout_action(&self, _: &str) -> Result<String> {
+        Ok(nails_teardown::whole_root::transition::SWITCH_TIMEOUT_ACTION.to_string())
+    }
     fn drop_pending_switch(&self) -> bool {
         !self.switch_coming
     }

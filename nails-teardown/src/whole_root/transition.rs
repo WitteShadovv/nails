@@ -48,6 +48,17 @@
 //! the arming expired), this step detaches `/run/nextroot` instead of letting
 //! PID 1 enter it.
 //!
+//! **The timeout guard.** systemd gives a switch 30 minutes: from 254 to 262
+//! `soft-reboot.target` sets `JobTimeoutSec=30min` and
+//! `JobTimeoutAction=soft-reboot-force`. A switch that hangs that long (a unit
+//! whose stop never ends, or PID 1 asleep with work queued, as in systemd
+//! issue #44107) would then go on by force without
+//! `systemd-soft-reboot.service`, and so without this step: the hidden session
+//! would start without its masks, or the decoy with the hidden session's
+//! files in `/run`. A runtime guard installed and removed with the drop-in
+//! ([`SWITCH_TIMEOUT_TEXT`]) powers the machine off at that timeout instead,
+//! on the way in and on the way back alike.
+//!
 //! It never writes to the decoy disk and never logs: its output goes nowhere,
 //! and a name sent to `/dev/kmsg` would reach the decoy's ring buffer. The one
 //! thing it does keep is the reason a switch was refused ([`disarm`]), never on
@@ -135,11 +146,13 @@ fn stop_guard_text(unit: &str) -> &'static str {
     }
 }
 
-/// The stop guards' file name. systemd applies a unit's drop-ins in the order
-/// of their file names across every directory, and an `ExecStop=` in a later
-/// one adds its commands back: `zz-` sorts after the `override.conf` that
-/// `systemctl edit` writes, NixOS's `overrides.conf` and numbered drop-ins.
-/// The entry checks the result after the reload all the same.
+/// The runtime guards' file name. systemd applies a unit's drop-ins in the
+/// order of their file names across every directory, after the unit file
+/// wherever that lies, and an `ExecStop=` in a later one adds its commands
+/// back, a `JobTimeoutAction=` there sets the action again: `zz-` sorts after
+/// the `override.conf` that `systemctl edit` writes, NixOS's `overrides.conf`
+/// and numbered drop-ins. The entry checks the result after the reload all the
+/// same.
 pub const STOP_GUARD_NAME: &str = "zz-overlay-runtime.conf";
 
 /// The drop-in directory for `unit`, below `/run`.
@@ -167,6 +180,31 @@ pub const SHUTDOWN_BOUND_UNITS: [&str; 2] = ["dbus.service", "dbus.socket"];
 /// The drop-in text that stops a unit at `shutdown.target`.
 pub const SHUTDOWN_BOUND_TEXT: &str = "[Unit]\nConflicts=shutdown.target\nBefore=shutdown.target\n";
 
+/// The unit whose job is the switch, in both directions: its job timeout ends
+/// a switch that hangs.
+pub const SWITCH_TIMEOUT_UNIT: &str = "soft-reboot.target";
+
+/// What the switch's job timeout does while a session is staged or running,
+/// as `systemctl show --property=JobTimeoutAction` prints it.
+///
+/// `poweroff-force` makes PID 1 leave its main loop (systemd 258 and newer
+/// wait five seconds first) and hand the machine to `systemd-shutdown`, which
+/// ends every process left, unmounts every filesystem, removes the
+/// device-mapper devices and powers off, as at the end of every power-off. It
+/// starts no new job, so the units that hold up the switch cannot hold up the
+/// power-off. A plain `poweroff` would do nothing here: systemd skips that
+/// action while `shutdown.target` is active or has a start job queued
+/// ("Shutdown is already active. Skipping emergency action request
+/// poweroff."), and during a switch it always is, as
+/// `systemd-soft-reboot.service` requires it. Were it not skipped, the
+/// `poweroff.target` it starts would have to stop the very units that hold up
+/// the switch.
+pub const SWITCH_TIMEOUT_ACTION: &str = "poweroff-force";
+
+/// The timeout guard's text ([`SWITCH_TIMEOUT_ACTION`]). The timeout itself,
+/// `JobTimeoutSec=`, stays the unit's own.
+pub const SWITCH_TIMEOUT_TEXT: &str = "[Unit]\nJobTimeoutAction=poweroff-force\n";
+
 /// Every runtime guard the session installs, as (unit, drop-in text), each
 /// written as [`STOP_GUARD_NAME`] in [`stop_guard_dir`] of its unit.
 pub fn runtime_guards() -> impl Iterator<Item = (&'static str, &'static str)> {
@@ -178,10 +216,12 @@ pub fn runtime_guards() -> impl Iterator<Item = (&'static str, &'static str)> {
                 .into_iter()
                 .map(|unit| (unit, SHUTDOWN_BOUND_TEXT)),
         )
+        .chain(std::iter::once((SWITCH_TIMEOUT_UNIT, SWITCH_TIMEOUT_TEXT)))
 }
 
-/// Install the drop-in, and the stop guards, under `run`, readable by all
-/// ([`plan::SERVICE_CONFIG_MODE`]). The caller reloads the service manager.
+/// Install the drop-in, and the runtime guards ([`runtime_guards`]), under
+/// `run`, readable by all ([`plan::SERVICE_CONFIG_MODE`]). The caller reloads
+/// the service manager.
 pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     for (unit, text) in runtime_guards() {
         let dir = run.join(stop_guard_dir(unit));
@@ -264,12 +304,12 @@ fn quiet_mount_dirs(run: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Remove the drop-in, the stop guards and the quieted mount units' drop-in
-/// under `run`, with each of their directories that is left empty, unless
-/// `kept` (the `/run` snapshot taken before the entry) lists it: a drop-in
-/// directory the decoy had already keeps whatever else it holds, and only
-/// the files NAILS wrote go. Returns whether a file went, which PID 1 keeps
-/// loaded until its next reload.
+/// Remove the drop-in, the runtime guards (the timeout guard among them) and
+/// the quieted mount units' drop-in under `run`, with each of their
+/// directories that is left empty, unless `kept` (the `/run` snapshot taken
+/// before the entry) lists it: a drop-in directory the decoy had already
+/// keeps whatever else it holds, and only the files NAILS wrote go. Returns
+/// whether a file went, which PID 1 keeps loaded until its next reload.
 pub fn remove_dropin(run: &Path, kept: &Snapshot) -> bool {
     let files = runtime_guards()
         .map(|(unit, _)| (stop_guard_dir(unit), STOP_GUARD_NAME))
