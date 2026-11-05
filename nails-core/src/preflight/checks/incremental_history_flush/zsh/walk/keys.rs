@@ -7,10 +7,11 @@
 //! line ends alone, and so is what `print -z` puts in the line (`zle -U` is
 //! read in [`super::hooks`]); what they type counts for the names the files
 //! use too ([`Event::Typed`]). A widget that completes a word bound to a key
-//! a line is typed with, alone or in a range (`bindkey -R`), runs completion
-//! functions the check does not read, and past a word an expansion makes
-//! that zsh may drop or make several of, the check cannot tell keys from
-//! widgets.
+//! the operator may press as a line is typed, any but Tab, `^D` and those
+//! zsh's own completion functions bind ([`COMPLETION_KEYS`]), alone or in a
+//! range (`bindkey -R`), runs completion functions the check does not read,
+//! and past a word an expansion makes that zsh may drop or make several of,
+//! the check cannot tell keys from widgets.
 
 use super::super::lexer::Word;
 use super::hooks::completes;
@@ -54,18 +55,76 @@ fn typed_line(text: &str) -> Option<String> {
     Some(line)
 }
 
+/// The keys the check takes the operator to press only to complete a word,
+/// as the bytes of each: Tab, `^D` (which zsh binds to
+/// `delete-char-or-list`), and the 15 sequences zsh's own completion
+/// functions bind theirs to as their first lines say (`^Xh`, `^X^R`, `\e/`,
+/// `\e,`, ...). Any other sequence after `^X` or an escape may be a key a line
+/// is typed with: an arrow, Home, End, Delete, an Alt key that moves by a
+/// word, or a pasted text's start.
+const COMPLETION_KEYS: [&[u8]; 17] = [
+    b"\t",
+    b"\x04",
+    b"\x18\x12",
+    b"\x18n",
+    b"\x18m",
+    b"\x18e",
+    b"\x18d",
+    b"\x18a",
+    b"\x18c",
+    b"\x18C",
+    b"\x18t",
+    b"\x18h",
+    b"\x18?",
+    b"\x18~",
+    b"\x1b/",
+    b"\x1b,",
+    b"\x1b~",
+];
+
+/// The bytes of `keys`, a key sequence as `bindkey` is given it, as zsh reads
+/// it: `^` and a character, or `\C-` and one, for that control character
+/// (`^?` for Delete), `\e` and `\E` for an escape, `\t`, `\n` and `\r`, a
+/// backslash before any other character but a letter or a digit for that
+/// character, and any other printable ASCII character for itself. `None` for
+/// what the check does not read so (`\M-`, a character given by its number).
+fn key_bytes(keys: &str) -> Option<Vec<u8>> {
+    let control = |c: char| {
+        c.is_ascii()
+            .then_some(if c == '?' { 0x7f } else { (c as u8) & 0x9f })
+    };
+    let mut bytes = Vec::new();
+    let mut chars = keys.chars();
+    while let Some(c) = chars.next() {
+        let byte = match c {
+            '^' => control(chars.next()?)?,
+            '\\' => match chars.next()? {
+                'e' | 'E' => 0x1b,
+                't' => b'\t',
+                'n' => b'\n',
+                'r' => b'\r',
+                'C' => {
+                    if chars.next()? != '-' {
+                        return None;
+                    }
+                    control(chars.next()?)?
+                }
+                c if c.is_ascii_graphic() && !c.is_ascii_alphanumeric() => c as u8,
+                _ => return None,
+            },
+            c if c.is_ascii_graphic() || c == ' ' || c == '\t' => c as u8,
+            _ => return None,
+        };
+        bytes.push(byte);
+    }
+    Some(bytes)
+}
+
 /// Whether `keys`, a key sequence as `bindkey` is given it, is one the
-/// check takes the operator to press only to complete a word, as zsh binds
-/// such keys: Tab, `^D` (which zsh binds to `delete-char-or-list`), or a
-/// sequence that starts with `^X` or an escape (`^[`, `\e`, `\M-`), past
-/// which no key types a command line.
+/// check takes the operator to press only to complete a word
+/// ([`COMPLETION_KEYS`]).
 fn completion_keys(keys: &str) -> bool {
-    matches!(
-        keys,
-        "^I" | "^i" | "\\t" | "\t" | "\\C-i" | "\\C-I" | "^D" | "^d" | "\\C-d" | "\\C-D"
-    ) || ["^X", "^x", "\\C-x", "\\C-X", "^[", "\\e", "\\E", "\\M-"]
-        .iter()
-        .any(|prefix| keys.len() > prefix.len() && keys.starts_with(prefix))
+    key_bytes(keys).is_some_and(|bytes| COMPLETION_KEYS.contains(&bytes.as_slice()))
 }
 
 /// Whether `keys`, a key sequence as `bindkey` is given it, starts with a
@@ -316,9 +375,10 @@ impl Walker<'_> {
     /// widgets, each key a range of keys with `ranges` (`-R`): a key a line
     /// is typed with bound to another widget than `self-insert` may change
     /// what typed keys do ([`Event::Rebind`]), and a widget that completes a
-    /// word bound to such a key (Space, a letter, Enter, any key of a range)
-    /// runs completion functions the check does not read as each line is
-    /// typed, a doubt. zsh drops a word an expansion outside quotes makes
+    /// word bound to a key the operator may press as a line is typed (Space,
+    /// a letter, Enter, an arrow, any key of a range: all but those of
+    /// [`COMPLETION_KEYS`]) runs completion functions the check does not
+    /// read as each line is typed, a doubt. zsh drops a word an expansion outside quotes makes
     /// when it is empty, so past one the check cannot tell keys from widgets:
     /// a widget that completes is a doubt there wherever it stands, and so is
     /// a word an expansion may make several words of ([`Count`]), as it may
@@ -437,7 +497,54 @@ impl Walker<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::typed_line;
+    use super::{completion_keys, typed_line};
+
+    #[test]
+    fn only_tab_ctrl_d_and_zsh_s_own_completion_keys_are_pressed_only_to_complete() {
+        for keys in [
+            "^I",
+            "^i",
+            "\\t",
+            "\t",
+            "\\C-i",
+            "\\C-I",
+            "^D",
+            "^d",
+            "\\C-d",
+            "^X^R",
+            "^x^r",
+            "\\C-x\\C-r",
+            "^Xh",
+            "\\C-xh",
+            "^X?",
+            "^X~",
+            "^Xc",
+            "^XC",
+            "^Xa",
+            "^Xd",
+            "^Xe",
+            "^Xm",
+            "^Xn",
+            "^Xt",
+            "\\e/",
+            "^[/",
+            "\\E,",
+            "^[~",
+            "\\e~",
+        ] {
+            assert!(completion_keys(keys), "{keys}");
+        }
+        // An arrow, Home, Delete, a paste's start, an Alt key that moves by a
+        // word, Shift-Tab and any other sequence after `^X` or an escape, a
+        // key a line is typed with, and one the check does not read.
+        for keys in [
+            "^[[D", "^[[A", "^[OD", "^[[H", "^[[3~", "^[[200~", "^[b", "^[f", "^[x", "\\ex",
+            "^[[Z", "^X^Z", "^Xx", "^XH", "\\M-x", " ", "a", "^M", "^J", "^H", "^?", "\\x09",
+            "\\011", "^", "\\",
+        ] {
+            assert!(!completion_keys(keys), "{keys}");
+        }
+    }
 
     #[test]
     fn a_bindkey_string_types_printable_characters_and_line_ends_alone() {

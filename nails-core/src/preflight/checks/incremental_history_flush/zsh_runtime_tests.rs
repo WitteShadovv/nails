@@ -929,17 +929,28 @@ fn a_widget_s_function_and_completion_a_hook_runs_are_read_as_a_hook_s() {
         "bindkey -s '^M' '^I^J'\n",
         "bindkey -s ' ' ' \\t'\n",
         "zstyle -e zle-line-init widgets 'reply=(1:x)'\n",
+        // An arrow, an Alt key that moves by a word and any other key after
+        // `^X` or an escape but those zsh's own completion functions bind:
+        // zsh 5.9.2 writes the line as the Left arrow is pressed with the
+        // first and a completer that appends $BUFFER to HISTFILE.
+        "bindkey '^[[D' complete-word\n",
+        "bindkey '^[f' expand-or-complete\n",
+        "bindkey '^X^Z' _my-widget\n",
+        "bindkey '^[x' menu-complete\n",
+        "bindkey '^[[Z' reverse-menu-complete\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
         assert!(warns(&fs), "{rc}");
     }
-    // Tab and the keys of a prefix or an escape, and a widget that does not
-    // complete, are none.
+    // Tab, `^D`, the keys zsh's own completion functions bind, and a widget
+    // that does not complete, are none.
     for rc in [
         "bindkey '^I' complete-word\n",
-        "bindkey '^X^Z' _my-widget\n",
-        "bindkey '^[x' menu-complete\n",
+        "bindkey '^D' delete-char-or-list\n",
+        "bindkey '^Xh' _complete_help\n",
+        "bindkey '\\e/' _history-complete-older\n",
+        "bindkey '^[[D' backward-char\n",
         "precmd() { zle && zle reset-prompt }\n",
         "bindkey -s '^o' 'lfcd^M'\n",
     ] {
