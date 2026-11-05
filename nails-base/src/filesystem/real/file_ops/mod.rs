@@ -80,6 +80,10 @@ pub(super) fn is_symlink(path: &Path) -> Result<bool> {
     Ok(path.is_symlink())
 }
 
+pub(super) fn read_link(path: &Path) -> Result<PathBuf> {
+    std::fs::read_link(path).at_path(path)
+}
+
 pub(super) fn is_overlay_whiteout(path: &Path) -> Result<bool> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     Ok(std::fs::symlink_metadata(path)

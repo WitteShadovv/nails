@@ -1063,10 +1063,10 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   runs some of the decoy's own tools to ask what they report, such as
   `systemctl` for the systemd version. On a decoy root mounted without
   `noatime`, a read or a program start can update an access time.
-  `decoy-nix-trace` looks into every home `/etc/passwd` names, but not into
-  one that the mount table shows behind an automount point nothing is mounted
-  on yet, which the lookup would mount. A link onto such a point is followed
-  all the same, and the lookup mounts it
+  `decoy-nix-trace` looks into every home `/etc/passwd` names, but it makes
+  no lookup that the mount table shows would pass an automount point nothing
+  is mounted on yet, which the lookup would mount, whether a link on the way
+  leads there or not: it names that path or home instead
   ([Nix on the decoy](decoy-requirements.md#nix-on-the-decoy)).
 
 ### Pre-activation checklist

@@ -100,6 +100,19 @@ impl MockFilesystem {
         Ok(paths.get(path).map(|info| info.is_symlink).unwrap_or(false))
     }
 
+    /// The target `create_symlink` recorded for `path`. Any other path is no
+    /// link the mock can read, as `readlink` fails on what is no link.
+    pub(super) fn read_link_impl(&self, path: &Path) -> Result<PathBuf> {
+        self.symlink_targets
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .cloned()
+            .ok_or_else(|| {
+                NailsError::io(path, std::io::Error::from(std::io::ErrorKind::InvalidInput))
+            })
+    }
+
     pub(super) fn is_overlay_whiteout_impl(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(path).is_some_and(|info| info.is_whiteout))

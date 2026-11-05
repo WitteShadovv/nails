@@ -235,6 +235,12 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
+    /// What the symbolic link `path` names, as `readlink(2)` reads it: the
+    /// link is not followed, so nothing it leads to is looked up. As in any
+    /// lookup, a link on the way to it is followed. An error when `path` is
+    /// no link or cannot be looked up.
+    fn read_link(&self, path: &Path) -> Result<PathBuf>;
+
     /// Whether `path` itself (never a symlink's target) is an overlayfs
     /// whiteout: a character device with device number 0:0, which an overlay's
     /// upper holds where the merged view deleted a file of a lower layer. A path

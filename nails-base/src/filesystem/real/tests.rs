@@ -1122,6 +1122,34 @@ fn the_kernel_says_a_plain_directory_is_no_mount_point() {
 }
 
 #[test]
+fn read_link_gives_the_target_without_following_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("home");
+    // A target that does not exist reads as well: nothing is looked up.
+    std::os::unix::fs::symlink("../net/missing/bob", &link).unwrap();
+    assert_eq!(
+        RealFilesystem.read_link(&link).unwrap(),
+        Path::new("../net/missing/bob")
+    );
+    let file = dir.path().join("file");
+    fs::write(&file, "text").unwrap();
+    let error = RealFilesystem.read_link(&file).unwrap_err();
+    assert_eq!(
+        error.io_kind(),
+        Some(std::io::ErrorKind::InvalidInput),
+        "{error}"
+    );
+    let error = RealFilesystem
+        .read_link(&dir.path().join("missing"))
+        .unwrap_err();
+    assert_eq!(
+        error.io_kind(),
+        Some(std::io::ErrorKind::NotFound),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_link_to_a_mount_point_is_no_mount_point_itself() {
     let dir = tempfile::tempdir().unwrap();
     let link = dir.path().join("root");
