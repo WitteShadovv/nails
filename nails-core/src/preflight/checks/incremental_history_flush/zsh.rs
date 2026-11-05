@@ -62,7 +62,9 @@
 //! `PROMPT_SUBST` may be on, one the shell's environment holds among them),
 //! an alias that hands the words it is used with to
 //! a command that reads them as code, options, names or paths
-//! (`alias so=setopt`), a `source` without a path or with one it cannot resolve
+//! (`alias so=setopt`), one named like a reserved word (`alias '{'=...`),
+//! which zsh expands in place of that word, a `source` without a path or with
+//! one it cannot resolve
 //! (a process substitution among them), a `ZDOTDIR` it cannot follow, one set
 //! otherwise than by an assignment (`${ZDOTDIR:=...}`), a quote, an expansion
 //! or a here-document that runs to the end of the file without closing, and an
