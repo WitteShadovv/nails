@@ -139,17 +139,27 @@ in
         )
 
 
+    def joined(places):
+        """`places` as the refusal names them: `a`, `a and b`, `a, b and c`."""
+        if len(places) < 2:
+            return "".join(places)
+        return ", ".join(places[:-1]) + " and " + places[-1]
+
+
     def assert_refused_naming(result, places):
+        """`check` refused, naming every one of `places`, in the order of the
+        mount table, and the line that unmounts them, the deepest first."""
         assert_exit_code(result, 4)
-        for place in places:
-            assert_result_contains(
-                result,
-                [
-                    f"the volume at /mnt/data is also mounted at {place}",
-                    "a desktop may have mounted it there by itself",
-                ],
-                stream="stdout",
-            )
+        deepest_first = sorted(places, key=lambda place: -place.count("/"))
+        assert_result_contains(
+            result,
+            [
+                f"the volume at /mnt/data is also mounted at {joined(places)}: "
+                "a desktop may have mounted it there by itself",
+                f"Run `sudo umount {' '.join(deepest_first)}`, then run the command again.",
+            ],
+            stream="stdout",
+        )
 
 
     machine.start()
@@ -190,8 +200,6 @@ in
         result = check()
         if mounted:
             assert_refused_naming(result, mounted)
-            for place in mounted:
-                assert_result_contains(result, [f"sudo umount {place}"], stream="stdout")
         else:
             assert_exit_code(result, 0)
 
