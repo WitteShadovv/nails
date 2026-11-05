@@ -13,23 +13,30 @@
 # (hold-switch@infinity.service: its stop never ends; shutdown.target waits
 # for its stop, and the transition's service waits for shutdown.target), and a
 # drop-in that shortens soft-reboot.target's job timeout to a minute. NixOS
-# writes that one as soft-reboot.target.d/overrides.conf, which sorts before
-# the session's drop-in, so the session's action holds and the timeout stays
-# the test's. Nothing in the product knows about either.
+# writes that one as soft-reboot.target.d/overrides.conf. It sets only the
+# timeout and the session's drop-in only the action, so both hold. Nothing in
+# the product knows about either.
 #
 #   1. A session loads the drop-in in the hidden PID 1, which keeps the
 #      test's timeout, and the way back leaves the decoy's own unit.
 #   2. The positive control, on the decoy after that session: a plain
 #      soft-reboot held up by the unit is forced through at the timeout, and
 #      the machine comes back up.
-#   3. Why the drop-in powers off by force: with a test-only runtime drop-in
+#   3. The positive control for the session's own switch: once the test has
+#      removed the drop-in in the hidden session, a way back held up by the
+#      unit is forced through at the timeout into the decoy, which comes up
+#      with the session's files still in /run (its runtime directory and the
+#      transition's drop-in), as the way back's last step never ran. A cold
+#      boot clears them. The way in has no such control: the entry refuses
+#      unless PID 1 reports the drop-in's action.
+#   4. Why the drop-in powers off by force: with a test-only runtime drop-in
 #      that sets a plain poweroff for the timeout, PID 1 skips that action
 #      while the switch's shutdown runs, and a switch held up for 90 seconds
 #      goes on only when the hold ends.
-#   4. A way back held up by the unit powers the machine off at the timeout,
+#   5. A way back held up by the unit powers the machine off at the timeout,
 #      with no userspace coming up first, and the next cold boot is the plain
 #      decoy.
-#   5. An entry held up the same way powers off too, without the hidden
+#   6. An entry held up the same way powers off too, without the hidden
 #      session ever coming up; the next cold boot is the plain decoy, the
 #      record still says active, and `recover` resets it.
 #
@@ -48,9 +55,10 @@ in
     "security"
     "session"
   ];
-  # 369 s on a hosted runner: four waits for the one-minute timeout (one in a
-  # 90-second hold), two power-offs with their cold boots and five
-  # soft-reboots, which a slower runner stretches.
+  # About 470 s on a hosted runner (369 s measured before the forced way
+  # back): five waits for the one-minute timeout (one in a 90-second hold),
+  # two power-offs and a crash with their cold boots and seven soft-reboots,
+  # which a slower runner stretches.
   globalTimeout = 1200;
 
   nodes.machine =
@@ -98,6 +106,10 @@ in
     FORCED = "Forcibly soft-rebooting: job timed out"
     #: Test only: a plain poweroff for the switch's job timeout.
     PLAIN = "/run/systemd/system/soft-reboot.target.d/90-plain-poweroff.conf"
+    #: The session's plan in its runtime directory, and the transition's
+    #: drop-in: the way back's last step removes both.
+    PLAN = "/run/overlay-runtime/plan.json"
+    TRANSITION = "/run/systemd/system/systemd-soft-reboot.service.d/50-overlay-runtime.conf"
     #: What PID 1 logs when the switch's job times out, and when it skips a
     #: plain poweroff because a shutdown is under way.
     TIMED_OUT = "Job soft-reboot.target/start timed out."
@@ -182,6 +194,36 @@ in
         assert not said(since, POWERING_OFF), "the decoy powered off"
         machine.fail("systemctl is-active hold-switch@infinity.service")
         session.assert_decoy_root(machine)
+
+    with subtest("without the drop-in a held way back is forced through without its last step"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        canonical_activate(CONFIG, "--overlay-only", "activate-forced-back")
+        assert_guard("the session whose drop-in the test removes")
+        # Test only: the hidden PID 1 forgets the session's drop-in, so the
+        # unit's own action holds for the way back.
+        machine.succeed(f"rm {GUARD} && systemctl daemon-reload")
+        assert unit("JobTimeoutAction") == "soft-reboot-force", unit("JobTimeoutAction")
+        hold_switch()
+        since = len(machine.full_console_log)
+        session.follow_soft_reboot(
+            machine,
+            f"nails --config {CONFIG} deactivate -y > {session.SERIAL_CONSOLE} 2>&1",
+            "forced-back",
+            deadline_s=DEADLINE_S,
+        )
+        assert said(since, FORCED), f"PID 1 never said {FORCED!r}"
+        assert not said(since, POWERING_OFF), "the way back powered off"
+        # The decoy's root, with the session's files still in /run.
+        fstype = session.root_fstype(machine)
+        assert fstype != "overlay", f"/ is {fstype}: the switch stayed in the session"
+        machine.succeed(f"test -e {PLAN}")
+        machine.succeed(f"test -e {TRANSITION}")
+        machine.log(
+            "the forced way back left: "
+            + machine.succeed(f"ls -A /run/overlay-runtime $(dirname {TRANSITION})")
+        )
+        machine.crash()
+        assert_cold_decoy("after the forced way back")
 
     with subtest("a plain poweroff at the timeout does nothing during a switch"):
         machine.succeed(
