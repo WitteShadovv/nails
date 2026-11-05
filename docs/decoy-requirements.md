@@ -1178,24 +1178,27 @@ the decoy.
 ### Partition types systemd acts on
 
 Unless the decoy masks it, systemd-gpt-auto-generator acts on the partitions
-of the disk the decoy's root file system is on by their GPT type alone, at
-every boot: it mounts the first `/home`, `/srv`, `/var` or `/var/tmp`
-partition without the no-auto flag at that folder when no fstab line mounts
-the folder and the folder is empty (`/var` only with the uuid the machine ID
-gives it), uses the first swap partition without that flag as swap when no
-fstab line names a swap, and asks for the passphrase first when such a
+of one disk by their GPT type alone, at every boot: the disk it finds below
+the decoy's root file system, one layer of devices down before systemd 259.1,
+as from a LUKS volume to its partition, and every layer down from 259.1 on, as
+through LVM on LUKS. There it mounts the first `/home`, `/srv`, `/var` or
+`/var/tmp` partition without the no-auto flag at that folder when no fstab
+line mounts the folder and the folder is empty (`/var` only with the uuid the
+machine ID gives it), uses the first swap partition without that flag as swap
+when no fstab line names a swap, and asks for the passphrase first when such a
 partition is a LUKS volume. Ubuntu 24.04 and 26.04 mask it by default; Debian
-13 and NixOS do not. Where it runs, a hidden volume on such a partition can
-show itself at the decoy's next boot, and on any decoy an examiner who reads
-the partition table sees a partition typed for a use the decoy does not have.
-The `backend-partition-type` pre-flight check, which reads no mask, refuses a
-partition of these types on a disk the decoy boots from and gives the command
-that changes its type to the generic Linux type, to run from a live system or
-where setup happens. With the no-auto flag, a `/home`, `/srv`, `/var` or
-`/var/tmp` partition only warns, and a swap partition is refused all the same
-(see [Partition type in preflight](backends.md#partition-type-in-preflight)).
-A hidden volume on a disk of its own, such as an external drive, is not
-affected.
+13 and NixOS do not. Where it runs, a hidden volume on such a partition of
+that disk can show itself at the decoy's next boot, and on any decoy and any
+disk an examiner who reads the partition table sees a partition typed for a
+use the decoy does not have. The `backend-partition-type` pre-flight check,
+which reads no mask, refuses a partition of these types on a disk the decoy
+boots from, whether or not the generator reads that disk, says whether it
+does, and gives the command that changes the type to the generic Linux type,
+to run from a live system or where setup happens. With the no-auto flag, a
+`/home`, `/srv`, `/var` or `/var/tmp` partition only warns, and a swap
+partition is refused all the same (see [Partition type in
+preflight](backends.md#partition-type-in-preflight)). A hidden volume on a
+disk of its own, such as an external drive, is not affected.
 
 ### Backend tooling and history
 

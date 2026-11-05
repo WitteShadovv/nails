@@ -108,6 +108,51 @@ impl Damage {
     }
 }
 
+/// Whether systemd-gpt-auto-generator reads the partition table of a
+/// partition's disk at boot. It reads that of one disk at most: the whole
+/// disk of the device it finds below the decoy's root file system, or below
+/// `/usr` where the root file system has no single block device, as a btrfs
+/// filesystem of several. It follows `slaves/` one layer down before systemd
+/// 259.1, as from a LUKS volume to its partition, and every layer from 259.1
+/// on, as through LVM on LUKS. Where the devices one layer down are not all
+/// on one whole disk, as with an md mirror (a device-mapper or md device is
+/// a whole disk of its own), it stays at the root file system's own device,
+/// which holds no partition table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Discovery {
+    /// Every systemd from 254 on reads the disk's table.
+    Every,
+    /// systemd 259.1 and later read it; older versions stop one layer
+    /// below the root file system, at a device that is not this disk.
+    Recent,
+    /// No systemd reads it.
+    Elsewhere,
+    /// sysfs did not let the check follow the devices below the root file
+    /// system, so it cannot tell.
+    Unknown,
+}
+
+impl Discovery {
+    /// The condition a sentence on what systemd does with a partition of
+    /// the disk by its type starts with.
+    fn condition(self) -> &'static str {
+        match self {
+            Discovery::Recent => FROM_259_1,
+            Discovery::Unknown => IF_READ,
+            Discovery::Every | Discovery::Elsewhere => UNLESS_MASKED,
+        }
+    }
+
+    /// The sentence on what older systemd does, with a space before it,
+    /// for a disk only systemd 259.1 and later read; empty for any other.
+    fn older(self) -> &'static str {
+        match self {
+            Discovery::Recent => OLDER,
+            Discovery::Every | Discovery::Elsewhere | Discovery::Unknown => "",
+        }
+    }
+}
+
 /// What the check found for one partition, the least serious first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Finding {
@@ -122,8 +167,9 @@ pub(super) enum Finding {
 
 impl Finding {
     /// The finding for `entry`, the table's entry of the partition at
-    /// `place`, as sentences that start with the partition.
-    pub(super) fn of(place: Place, entry: Entry) -> Self {
+    /// `place`, as sentences that start with the partition. `read` says
+    /// whether systemd-gpt-auto-generator reads the table of its disk.
+    pub(super) fn of(place: Place, entry: Entry, read: Discovery) -> Self {
         let shown = capitalized(&place.shown());
         let (type_id, flags, damage) = match entry {
             Entry::Gpt {
@@ -195,16 +241,24 @@ impl Finding {
                 } else {
                     ""
                 };
-                Finding::Fail(
-                    format!(
-                        "{typed}. {UNLESS_MASKED}, systemd mounts the first such partition of \
-                         that disk at {point} at every later boot of the decoy when no fstab \
-                         line mounts {point} and that folder is empty{var}, and asks for its \
-                         passphrase first when it is a LUKS volume: a failed mount or a \
-                         passphrase prompt shows that the partition is there. {SPARED}"
+                let text = match read {
+                    Discovery::Elsewhere => format!(
+                        "{typed}. {ELSEWHERE}, so systemd does not mount the partition, but \
+                         anyone who reads the partition table sees a partition typed for \
+                         {point} that the decoy never mounts, and the check refuses the type on \
+                         any disk the decoy boots from."
                     ),
-                    place,
-                )
+                    _ => format!(
+                        "{typed}. {}, systemd mounts the first such partition of that disk at \
+                         {point} at every later boot of the decoy when no fstab line mounts \
+                         {point} and that folder is empty{var}, and asks for its passphrase \
+                         first when it is a LUKS volume: a failed mount or a passphrase prompt \
+                         shows that the partition is there.{} {SPARED}",
+                        read.condition(),
+                        read.older()
+                    ),
+                };
+                Finding::Fail(text, place)
             }
             AutoRole::Swap if no_auto => Finding::Fail(
                 format!(
@@ -215,22 +269,45 @@ impl Finding {
                 ),
                 place,
             ),
-            AutoRole::Swap => Finding::Fail(
-                format!(
-                    "{typed}. {UNLESS_MASKED}, systemd uses the first swap partition of that \
-                     disk without the no-auto flag as swap at every later boot of the decoy when \
-                     no fstab line names a swap, and asks for its passphrase first when it is a \
-                     LUKS volume: a failed swap or a passphrase prompt shows that the partition \
-                     is there. {SPARED}"
-                ),
-                place,
-            ),
-            AutoRole::Esp | AutoRole::Xbootldr | AutoRole::Root => Finding::Warn(
-                format!(
-                    "{typed}. {UNLESS_MASKED}, systemd {}. Anyone who reads the partition table \
-                     sees a type the partition's use does not explain.",
-                    rare_use(role)
-                ),
+            AutoRole::Swap => {
+                let text = match read {
+                    Discovery::Elsewhere => format!(
+                        "{typed}. {ELSEWHERE}, so systemd does not use the partition as swap, \
+                         but anyone who reads the partition table sees a swap partition that \
+                         the decoy never uses, and the check refuses the type on any disk the \
+                         decoy boots from."
+                    ),
+                    _ => format!(
+                        "{typed}. {}, systemd uses the first swap partition of that disk \
+                         without the no-auto flag as swap at every later boot of the decoy when \
+                         no fstab line names a swap, and asks for its passphrase first when it \
+                         is a LUKS volume: a failed swap or a passphrase prompt shows that the \
+                         partition is there.{} {SPARED}",
+                        read.condition(),
+                        read.older()
+                    ),
+                };
+                Finding::Fail(text, place)
+            }
+            AutoRole::Esp | AutoRole::Xbootldr => {
+                let text = match read {
+                    Discovery::Elsewhere => format!(
+                        "{typed}. {ELSEWHERE}, so systemd does not mount the partition. \
+                         {UNEXPLAINED}"
+                    ),
+                    _ => format!(
+                        "{typed}. {}, systemd {}.{} {UNEXPLAINED}",
+                        read.condition(),
+                        loader_use(role),
+                        read.older()
+                    ),
+                };
+                Finding::Warn(text, Some(place))
+            }
+            // Root discovery takes its disk from the boot loader, not from
+            // the root file system: the same text on every disk.
+            AutoRole::Root => Finding::Warn(
+                format!("{typed}. {UNLESS_MASKED}, systemd {ROOT_USE}. {UNEXPLAINED}"),
                 Some(place),
             ),
         }
@@ -248,6 +325,35 @@ impl Finding {
 const UNLESS_MASKED: &str =
     "Unless the decoy masks systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default";
 
+/// The same condition on a disk only systemd 259.1 and later read.
+const FROM_259_1: &str = "From systemd 259.1 on, unless the decoy masks \
+     systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default";
+
+/// What systemd before 259.1 does with such a disk.
+const OLDER: &str = " Older versions follow the devices below the decoy's root file system \
+     only one layer down, as from a LUKS volume to its partition, so they leave this disk alone.";
+
+/// The same condition where sysfs does not show whether the generator
+/// reads the disk.
+const IF_READ: &str = "If that disk is the one systemd-gpt-auto-generator reads at boot, \
+     which sysfs did not let the check tell, and unless the decoy masks the generator, as Ubuntu \
+     24.04 and 26.04 do by default";
+
+/// Why systemd leaves a partition alone on a disk the generator does not
+/// read.
+const ELSEWHERE: &str = "systemd-gpt-auto-generator reads the partition table of one disk at \
+     most at boot, and that is not this disk";
+
+/// What any type systemd discovers leaves on a partition without that use.
+const UNEXPLAINED: &str =
+    "Anyone who reads the partition table sees a type the partition's use does not explain.";
+
+/// When systemd takes a partition of the root type as its root: on the
+/// disk the boot loader names, through udev's `find_gpt_root`, whatever
+/// disk the root file system is on later.
+const ROOT_USE: &str = "takes a root partition at boot from the disk the boot loader says it \
+     started from, on a UEFI boot only, and only when the kernel command line names no root";
+
 /// What the decoy's boot does not touch, and what it leaves.
 const SPARED: &str = "The hidden session, whose root is an overlay, is spared, but anyone who \
      reads the partition table sees the type, whether or not the generator is masked.";
@@ -260,8 +366,9 @@ fn capitalized(text: &str) -> String {
     })
 }
 
-/// When systemd acts on a partition of `role`, one of the types it uses
-/// only under some conditions. systemd 254 and 255 look for fstab lines
+/// When systemd acts on a partition of `role`, an EFI system or extended
+/// boot loader partition, on a disk the generator reads: under some
+/// conditions only. systemd 254 and 255 look for fstab lines
 /// that mount `/boot` or `/efi` themselves; from systemd 256 on, a line that
 /// mounts anything at or below either, such as `/boot/efi`, stops it too.
 /// It also leaves an EFI system partition alone that an fstab line names,
@@ -269,7 +376,7 @@ fn capitalized(text: &str) -> String {
 /// `/boot` exists and the disk has no extended boot loader partition. The
 /// texts leave that out: they are about the hidden root's partition, and
 /// `backend-entries` refuses a decoy fstab line that names it.
-fn rare_use(role: AutoRole) -> &'static str {
+fn loader_use(role: AutoRole) -> &'static str {
     match role {
         AutoRole::Esp => {
             "mounts the first EFI system partition of that disk at /boot or /efi when no fstab \
@@ -277,15 +384,11 @@ fn rare_use(role: AutoRole) -> &'static str {
              is empty or missing, on a UEFI boot only when the boot loader says it started from \
              that disk, on a BIOS boot without that condition"
         }
-        AutoRole::Xbootldr => {
+        _ => {
             "mounts the first extended boot loader partition of that disk at /boot when no \
              fstab line mounts /boot (from systemd 256 on, anything at or below /boot or /efi) \
              and /boot is empty or missing, on a UEFI boot only when the boot loader says it \
              started from that disk"
-        }
-        _ => {
-            "takes a root partition from that disk at boot only when the kernel command line \
-             names no root"
         }
     }
 }

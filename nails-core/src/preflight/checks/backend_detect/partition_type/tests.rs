@@ -234,8 +234,8 @@ fn the_boot_and_root_types_only_warn() {
         (
             ROOT_X86_64,
             "a root partition",
-            "takes a root partition from that disk at boot only when the kernel command line \
-             names no root",
+            "takes a root partition at boot from the disk the boot loader says it started from, \
+             on a UEFI boot only, and only when the kernel command line names no root",
         ),
     ] {
         let result = typed(type_id, 0);
@@ -375,8 +375,7 @@ fn a_partition_below_a_logical_volume_or_a_loop_device_is_judged() {
 #[test]
 fn a_root_on_no_partition_of_a_boot_disk_passes() {
     let expected = format!(
-        "The hidden root at {ROOT} is on no partition of a disk the decoy boots from (nvme0n1), \
-         where systemd discovers partitions by their type."
+        "The hidden root at {ROOT} is on no partition of a disk the decoy boots from (nvme0n1)."
     );
     // A partition of an external disk, whatever its type.
     let host = Host::new("254:9", "ext4", "/dev/mapper/data")
@@ -435,14 +434,15 @@ fn a_decoy_root_on_a_whole_disk_makes_that_disk_its_boot_disk() {
     assert_eq!(
         check(&host.fs, &devices("sdb", &gpt(SRV, 0))),
         CheckResult::Pass(format!(
-            "The hidden root at {ROOT} is on no partition of a disk the decoy boots from (vda), \
-             where systemd discovers partitions by their type."
+            "The hidden root at {ROOT} is on no partition of a disk the decoy boots from (vda)."
         ))
     );
 }
 
 #[test]
 fn a_disk_under_the_efi_system_partition_is_a_boot_disk_too() {
+    // The decoy's root on nvme0n1, its EFI system partition sda1 at
+    // /boot/efi, the hidden root on sda5.
     let host = Host::with_mounts(
         "3 1 8:1 / /boot/efi rw,relatime - vfat /dev/sda1 rw\n\
          40 1 254:9 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
@@ -471,6 +471,375 @@ fn a_disk_under_the_efi_system_partition_is_a_boot_disk_too() {
         check(&host.fs, &devices("sda", &gpt(SRV, 0))).is_pass(),
         "only nvme0n1 is a boot disk"
     );
+}
+
+// ------------------------------------------------------------------------
+// Which disk systemd-gpt-auto-generator reads
+// ------------------------------------------------------------------------
+
+/// The sentence that says systemd-gpt-auto-generator leaves a partition
+/// alone on a disk it does not read.
+const ELSEWHERE: &str = "systemd-gpt-auto-generator reads the partition table of one disk at most at boot, and \
+     that is not this disk";
+
+/// The check on `host` when partition 5 of `disk`, the hidden root's, has
+/// the type `type_id`.
+fn judged(host: &Host, disk: &str, type_id: &str) -> CheckResult {
+    check(&host.fs, &devices(disk, &gpt(type_id, 0)))
+}
+
+/// The message of `result` past the lead sentence of a root stored on a
+/// disk the decoy boots from.
+fn past_lead(result: &CheckResult) -> &str {
+    let lead = format!("The hidden root at {ROOT} is stored on a disk the decoy boots from. ");
+    let message = result.message();
+    message
+        .strip_prefix(lead.as_str())
+        .unwrap_or_else(|| panic!("{result:?}"))
+        .lines()
+        .next()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_partition_on_a_disk_the_generator_does_not_read_is_judged_the_same_but_told_so() {
+    // The decoy's root on nvme0n1, its EFI system partition sda1 at
+    // /boot/efi, the hidden root on sda5: the generator reads nvme0n1 only.
+    let host = Host::with_mounts(
+        "3 1 8:1 / /boot/efi rw,relatime - vfat /dev/sda1 rw\n\
+         40 1 254:9 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
+    )
+    .disk("sda", "8:0")
+    .partition_at("sda1", "8:1", "sda", 1, 2048)
+    .partition_at("sda5", "8:5", "sda", 5, P5_START)
+    .luks("dm-9", "254:9", "data", &["sda5"]);
+    for (type_id, point) in [
+        (HOME, "/home"),
+        (SRV, "/srv"),
+        (VAR, "/var"),
+        (VAR_TMP, "/var/tmp"),
+    ] {
+        let result = judged(&host, "sda", type_id);
+        assert!(result.is_fail(), "{type_id}: {result:?}");
+        assert_eq!(
+            past_lead(&result),
+            format!(
+                "Partition 5 of sda (sda5) has the GPT type of a {point} partition. {ELSEWHERE}, \
+                 so systemd does not mount the partition, but anyone who reads the partition \
+                 table sees a partition typed for {point} that the decoy never mounts, and the \
+                 check refuses the type on any disk the decoy boots from."
+            )
+        );
+        assert!(
+            result
+                .remediation()
+                .unwrap_or_default()
+                .contains(&sgdisk("/dev/sda")),
+            "{result:?}"
+        );
+    }
+    let result = judged(&host, "sda", SWAP);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        past_lead(&result),
+        format!(
+            "Partition 5 of sda (sda5) has the GPT type of a swap partition. {ELSEWHERE}, so \
+             systemd does not use the partition as swap, but anyone who reads the partition \
+             table sees a swap partition that the decoy never uses, and the check refuses the \
+             type on any disk the decoy boots from."
+        )
+    );
+    for (type_id, kind) in [
+        (ESP, "an EFI system partition"),
+        (XBOOTLDR, "an extended boot loader partition"),
+    ] {
+        let result = judged(&host, "sda", type_id);
+        assert_eq!(
+            past_lead(&result),
+            format!(
+                "Partition 5 of sda (sda5) has the GPT type of {kind}. {ELSEWHERE}, so systemd \
+                 does not mount the partition. Anyone who reads the partition table sees a type \
+                 the partition's use does not explain."
+            )
+        );
+        assert!(result.is_warn(), "{type_id}: {result:?}");
+    }
+    // Root discovery takes the disk the boot loader names, which may be
+    // this one: the same text as on the root's disk.
+    let result = judged(&host, "sda", ROOT_X86_64);
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        past_lead(&result),
+        "Partition 5 of sda (sda5) has the GPT type of a root partition. Unless the decoy masks \
+         systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default, systemd takes a \
+         root partition at boot from the disk the boot loader says it started from, on a UEFI \
+         boot only, and only when the kernel command line names no root. Anyone who reads the \
+         partition table sees a type the partition's use does not explain."
+    );
+    // The no-auto flag gives the texts it gives on any disk.
+    let result = check(&host.fs, &devices("sda", &gpt(SRV, NO_AUTO)));
+    assert!(warning(&result).ends_with(
+        "Partition 5 of sda (sda5) has the GPT type of a /srv partition, with the no-auto flag, \
+         which tells systemd not to mount it. systemd leaves it alone, but anyone who reads the \
+         partition table sees a partition typed for /srv that the decoy never mounts."
+    ));
+    assert!(check(&host.fs, &devices("sda", &gpt(SWAP, NO_AUTO))).is_fail());
+}
+
+#[test]
+fn a_root_two_layers_above_its_disk_has_it_read_from_systemd_259_1_on() {
+    // The decoy's root on a logical volume of the LUKS volume dm-0 on
+    // nvme0n1p3: systemd before 259.1 goes one layer down, to dm-0, which
+    // holds no partition table.
+    let host = on_the_decoys_disk().mapping("dm-2", "254:2", "vg-root", "LVM-a1b2-root", &["dm-0"]);
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 254:2 / / rw,relatime - ext4 /dev/mapper/vg-root rw\n\
+         40 1 254:9 / {ROOT} rw,relatime - ext4 /dev/mapper/data rw\n"
+    ));
+    let older = " Older versions follow the devices below the decoy's root file system only one \
+                 layer down, as from a LUKS volume to its partition, so they leave this disk \
+                 alone. ";
+    let result = judged(&host, "nvme0n1", SRV);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        past_lead(&result),
+        format!(
+            "Partition 5 of nvme0n1 (nvme0n1p5) has the GPT type of a /srv partition. From \
+             systemd 259.1 on, unless the decoy masks systemd-gpt-auto-generator, as Ubuntu \
+             24.04 and 26.04 do by default, systemd mounts the first such partition of that disk \
+             at /srv at every later boot of the decoy when no fstab line mounts /srv and that \
+             folder is empty, and asks for its passphrase first when it is a LUKS volume: a \
+             failed mount or a passphrase prompt shows that the partition is there.{older}The \
+             hidden session, whose root is an overlay, is spared, but anyone who reads the \
+             partition table sees the type, whether or not the generator is masked."
+        )
+    );
+    let result = judged(&host, "nvme0n1", SWAP);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        past_lead(&result).contains(&format!(
+            "From systemd 259.1 on, unless the decoy masks systemd-gpt-auto-generator, as Ubuntu \
+             24.04 and 26.04 do by default, systemd uses the first swap partition of that disk \
+             without the no-auto flag as swap at every later boot of the decoy when no fstab line \
+             names a swap, and asks for its passphrase first when it is a LUKS volume: a failed \
+             swap or a passphrase prompt shows that the partition is there.{older}"
+        )),
+        "{result:?}"
+    );
+    let result = judged(&host, "nvme0n1", ESP);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        past_lead(&result).starts_with(
+            "Partition 5 of nvme0n1 (nvme0n1p5) has the GPT type of an EFI system partition. \
+             From systemd 259.1 on, unless the decoy masks systemd-gpt-auto-generator, as Ubuntu \
+             24.04 and 26.04 do by default, systemd mounts the first EFI system partition of that \
+             disk at /boot or /efi"
+        ) && past_lead(&result).ends_with(&format!(
+            "on a BIOS boot without that condition.{older}Anyone who reads the partition table \
+             sees a type the partition's use does not explain."
+        )),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_root_on_a_mirror_of_two_disks_has_neither_read() {
+    // The decoy's root on the md mirror md0 of nvme0n1p3 and nvme1n1p3:
+    // systemd stays at md0, which holds the filesystem and no table.
+    let host = on_the_decoys_disk()
+        .disk("nvme1n1", "259:16")
+        .partition_at("nvme1n1p3", "259:19", "nvme1n1", 3, 1_050_624)
+        .partition_at("nvme1n1p5", "259:21", "nvme1n1", 5, P5_START)
+        .device(
+            "/sys/devices/virtual/block/md0",
+            "md0",
+            "9:0",
+            &["nvme0n1p3", "nvme1n1p3"],
+        )
+        .luks("dm-10", "254:10", "data2", &["nvme1n1p5"]);
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 9:0 / / rw,relatime - ext4 /dev/md0 rw\n\
+         40 1 254:9 / {ROOT} rw,relatime - ext4 /dev/mapper/data rw\n"
+    ));
+    let result = judged(&host, "nvme0n1", SRV);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        past_lead(&result).starts_with(&format!(
+            "Partition 5 of nvme0n1 (nvme0n1p5) has the GPT type of a /srv partition. \
+             {ELSEWHERE}, so systemd does not mount the partition"
+        )),
+        "{result:?}"
+    );
+    // The hidden root on the second disk: the same.
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 9:0 / / rw,relatime - ext4 /dev/md0 rw\n\
+         40 1 254:10 / {ROOT} rw,relatime - ext4 /dev/mapper/data2 rw\n"
+    ));
+    let result = judged(&host, "nvme1n1", SWAP);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        past_lead(&result).starts_with(&format!(
+            "Partition 5 of nvme1n1 (nvme1n1p5) has the GPT type of a swap partition. \
+             {ELSEWHERE}, so systemd does not use the partition as swap"
+        )),
+        "{result:?}"
+    );
+    // md0, where systemd stays, is no disk the decoy boots from.
+    let host = on_the_decoys_disk()
+        .disk("nvme1n1", "259:16")
+        .partition_at("nvme1n1p3", "259:19", "nvme1n1", 3, 1_050_624)
+        .device(
+            "/sys/devices/virtual/block/md0",
+            "md0",
+            "9:0",
+            &["nvme0n1p3", "nvme1n1p3"],
+        )
+        .disk("sdb", "8:16")
+        .partition_at("sdb2", "8:18", "sdb", 2, P5_START)
+        .luks("dm-10", "254:10", "data2", &["sdb2"]);
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 9:0 / / rw,relatime - ext4 /dev/md0 rw\n\
+         40 1 254:10 / {ROOT} rw,relatime - ext4 /dev/mapper/data2 rw\n"
+    ));
+    assert_eq!(
+        judged(&host, "sdb", SRV),
+        CheckResult::Pass(format!(
+            "The hidden root at {ROOT} is on no partition of a disk the decoy boots from \
+             (nvme0n1, nvme1n1)."
+        ))
+    );
+}
+
+#[test]
+fn a_root_on_a_loop_device_has_no_disk_read() {
+    // The decoy's root on loop0 over nvme0n1p3: systemd stops at the loop
+    // device, whose own table holds nothing.
+    let host = on_the_decoys_disk().loop_device("loop0", "7:0", "/dev/nvme0n1p3");
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 7:0 / / rw,relatime - ext4 /dev/loop0 rw\n\
+         40 1 254:9 / {ROOT} rw,relatime - ext4 /dev/mapper/data rw\n"
+    ));
+    let result = judged(&host, "nvme0n1", HOME);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        past_lead(&result).starts_with(&format!(
+            "Partition 5 of nvme0n1 (nvme0n1p5) has the GPT type of a /home partition. \
+             {ELSEWHERE}, so"
+        )),
+        "{result:?}"
+    );
+    // The loop device is no disk the decoy boots from.
+    let host = host
+        .disk("sdb", "8:16")
+        .partition_at("sdb2", "8:18", "sdb", 2, P5_START)
+        .luks("dm-10", "254:10", "data2", &["sdb2"]);
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 7:0 / / rw,relatime - ext4 /dev/loop0 rw\n\
+         40 1 254:10 / {ROOT} rw,relatime - ext4 /dev/mapper/data2 rw\n"
+    ));
+    assert_eq!(
+        judged(&host, "sdb", HOME),
+        CheckResult::Pass(format!(
+            "The hidden root at {ROOT} is on no partition of a disk the decoy boots from \
+             (nvme0n1)."
+        ))
+    );
+}
+
+#[test]
+fn a_root_straight_on_a_partition_has_its_disk_read_by_every_systemd() {
+    let host = on_the_decoys_disk().partition_at("nvme0n1p2", "259:2", "nvme0n1", 2, 4096);
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+         40 1 254:9 / {ROOT} rw,relatime - ext4 /dev/mapper/data rw\n"
+    ));
+    assert_eq!(judged(&host, "nvme0n1", VAR), typed(VAR, 0));
+    // A btrfs filesystem of one device, which systemd asks btrfs for.
+    let host = host.btrfs(&["nvme0n1p2"]);
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 0:31 / / rw,relatime - btrfs /dev/nvme0n1p2 rw\n\
+         40 1 254:9 / {ROOT} rw,relatime - ext4 /dev/mapper/data rw\n"
+    ));
+    assert_eq!(judged(&host, "nvme0n1", VAR), typed(VAR, 0));
+}
+
+#[test]
+fn a_root_on_btrfs_of_two_disks_has_the_disk_below_usr_read() {
+    // The decoy's root on a btrfs filesystem of nvme0n1p3 and sda2, /usr on
+    // nvme1n1p2: systemd reads the table of the disk below /usr, which is a
+    // disk the decoy boots from then too.
+    let host = on_the_decoys_disk()
+        .disk("sda", "8:0")
+        .partition_at("sda2", "8:2", "sda", 2, 4096)
+        .disk("nvme1n1", "259:16")
+        .partition_at("nvme1n1p2", "259:18", "nvme1n1", 2, 4096)
+        .partition_at("nvme1n1p5", "259:21", "nvme1n1", 5, P5_START)
+        .luks("dm-10", "254:10", "data2", &["nvme1n1p5"])
+        .btrfs(&["nvme0n1p3", "sda2"]);
+    let mounts = |dev: &str, source: &str| {
+        format!(
+            "1 0 0:31 / / rw,relatime - btrfs /dev/nvme0n1p3 rw\n\
+             5 1 259:18 / /usr rw,relatime - ext4 /dev/nvme1n1p2 rw\n\
+             40 1 {dev} / {ROOT} rw,relatime - ext4 {source} rw\n"
+        )
+    };
+    host.fs
+        .mock_set_mount_table(&mounts("254:10", "/dev/mapper/data2"));
+    let result = judged(&host, "nvme1n1", SRV);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        past_lead(&result).starts_with(
+            "Partition 5 of nvme1n1 (nvme1n1p5) has the GPT type of a /srv partition. Unless the \
+             decoy masks systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default, \
+             systemd mounts the first such partition of that disk at /srv"
+        ),
+        "{result:?}"
+    );
+    // A disk of the root's btrfs filesystem: not read.
+    host.fs
+        .mock_set_mount_table(&mounts("254:9", "/dev/mapper/data"));
+    let result = judged(&host, "nvme0n1", SRV);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        past_lead(&result).contains(&format!(
+            "(nvme0n1p5) has the GPT type of a /srv partition. {ELSEWHERE}"
+        )),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_root_whose_devices_below_cannot_be_listed_leaves_open_which_disk_is_read() {
+    // The decoy's EFI system partition on nvme0n1 makes it a disk the decoy
+    // boots from, but sysfs does not list the devices below its root.
+    let host = Host::with_mounts(
+        "3 1 259:1 / /boot/efi rw,relatime - vfat /dev/nvme0n1p1 rw\n\
+         40 1 254:9 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
+    )
+    .partition_at("nvme0n1p1", "259:1", "nvme0n1", 1, 2048)
+    .partition_at("nvme0n1p5", "259:5", "nvme0n1", 5, P5_START)
+    .luks("dm-9", "254:9", "data", &["nvme0n1p5"]);
+    host.fs
+        .mock_set_unreadable_dir(&format!("{}/slaves", host.dir("dm-0")));
+    let unknown = "Partition 5 of nvme0n1 (nvme0n1p5) has the GPT type of a /srv partition. If \
+                   that disk is the one systemd-gpt-auto-generator reads at boot, which sysfs \
+                   did not let the check tell, and unless the decoy masks the generator, as \
+                   Ubuntu 24.04 and 26.04 do by default, systemd mounts the first such partition \
+                   of that disk at /srv";
+    let result = judged(&host, "nvme0n1", SRV);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(past_lead(&result).starts_with(unknown), "{result:?}");
+    // The root on a logical volume of dm-0: systemd before 259.1 stops at
+    // dm-0, which holds no table, but how far 259.1 goes is not shown.
+    let host = host.mapping("dm-2", "254:2", "vg-root", "LVM-a1b2-root", &["dm-0"]);
+    host.fs.mock_set_mount_table(&format!(
+        "1 0 254:2 / / rw,relatime - ext4 /dev/mapper/vg-root rw\n\
+         3 1 259:1 / /boot/efi rw,relatime - vfat /dev/nvme0n1p1 rw\n\
+         40 1 254:9 / {ROOT} rw,relatime - ext4 /dev/mapper/data rw\n"
+    ));
+    let result = judged(&host, "nvme0n1", SRV);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(past_lead(&result).starts_with(unknown), "{result:?}");
 }
 
 // ------------------------------------------------------------------------
@@ -612,7 +981,7 @@ fn a_table_whose_entries_could_not_all_be_checked_warns() {
         damage: Some(Damage::Unchecked),
     };
     assert_eq!(
-        Finding::of(place, entry),
+        Finding::of(place, entry, judge::Discovery::Every),
         Finding::Warn(
             "Not every entry of the partition table on nvme0n1 could be checked against the \
              checksum the table keeps of them, so the type read for partition 5 of nvme0n1 \

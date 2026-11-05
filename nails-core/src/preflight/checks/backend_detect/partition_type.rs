@@ -5,16 +5,18 @@
 //! systemd acts on by that type alone.
 //!
 //! Unless the decoy masks it, systemd-gpt-auto-generator runs at every boot
-//! of the decoy and acts on the partitions of the disk its root file system
-//! is on by their GPT type alone (see [`discoverable`]): it mounts a
-//! `/home`, `/srv`, `/var` or `/var/tmp` partition at that folder, uses a
-//! swap partition as swap, and asks for the passphrase of such a partition
-//! that is a LUKS volume. Where it runs, a hidden volume on a partition of
-//! that type shows up at the decoy's next boot, as a failed mount, a failed
-//! swap or a passphrase prompt. Nothing of it happens in the hidden session,
-//! whose root is an overlay, which the generator skips, but the type stays
-//! in the partition table for anyone who reads it. Ubuntu 24.04 and 26.04
-//! mask the generator by default, with a link from
+//! of the decoy and acts on the partitions of one disk by their GPT type
+//! alone (see [`discoverable`]): the disk it finds below the root file
+//! system, through one layer of devices before systemd 259.1 and through all
+//! of them from 259.1 on (module `generator` says which). There it mounts the
+//! first `/home`, `/srv`, `/var` or `/var/tmp` partition at that folder, uses
+//! the first swap partition as swap, and asks for the passphrase of such a
+//! partition that is a LUKS volume. Where it runs, a hidden volume on such a
+//! partition can show up at the decoy's next boot, as a failed mount, a
+//! failed swap or a passphrase prompt. Nothing of it happens in the hidden
+//! session, whose root is an overlay, which the generator skips, but the type
+//! stays in the partition table for anyone who reads it. Ubuntu 24.04 and
+//! 26.04 mask the generator by default, with a link from
 //! `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
 //! `/dev/null`. The check reads no mask, so it judges a partition on such a
 //! decoy as on any other: the type shows in the table there too.
@@ -23,12 +25,14 @@
 //! its own storage goes (through `slaves/` and loops over block devices,
 //! never into the filesystem that holds a container file) and judges each
 //! partition on a disk the decoy boots from: a disk under its root file
-//! system or its EFI system partition. A partition the decoy claims as its
-//! own storage is the decoy's business, and the attach gate's. It reads the
-//! disk's partition table read-only and without changing an access time,
-//! and matches the entry by its number and its start; where the disk cannot
-//! be read, as without root, it takes the entry from udev's record of the
-//! partition.
+//! system or its EFI system partition, and the disk the generator reads. It
+//! judges a partition the same on each of them, as the type shows in the
+//! table on all, and its texts say whether the generator reads the disk. A
+//! partition the decoy claims as its own storage is the decoy's business,
+//! and the attach gate's. It reads the disk's partition table read-only and
+//! without changing an access time, and matches the entry by its number and
+//! its start; where the disk cannot be read, as without root, it takes the
+//! entry from udev's record of the partition.
 //!
 //! [`discoverable`]: crate::forensic::layout::discoverable
 
@@ -45,10 +49,12 @@ use crate::{Filesystem, Result};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+mod generator;
 mod judge;
 #[cfg(test)]
 mod tests;
 
+use generator::GeneratorDisk;
 use judge::{DOC, Damage, Entry, Finding, Place, verdict};
 
 /// Where the device nodes the partition tables are read from live.
@@ -67,12 +73,13 @@ const BOOT_MOUNTS: &[&str] = &["/boot", "/boot/efi", "/efi"];
 ///
 /// For each partition of the hidden root's storage on a disk the decoy
 /// boots from, its type, read from the disk's GPT, whether or not the decoy
-/// masks systemd-gpt-auto-generator:
+/// masks systemd-gpt-auto-generator and whether or not the generator reads
+/// that disk:
 ///
 /// - fails for the `/home`, `/srv`, `/var`, `/var/tmp` and swap types, which
 ///   systemd mounts or uses at every later boot of the decoy where the
-///   generator runs, and for the swap type with the no-auto flag as well,
-///   though systemd leaves such a partition alone;
+///   generator runs and reads the disk, and for the swap type with the
+///   no-auto flag as well, though systemd leaves such a partition alone;
 /// - warns for one of the first four with the no-auto flag, which systemd
 ///   honours, and for the root, EFI system partition and extended boot
 ///   loader types, which it acts on only under some conditions: the type
@@ -184,12 +191,17 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
                 "its storage holds more devices than the check reads",
             ));
         }
-        let Some(boot) = boot_disks(fs, &table, &collected.devices) else {
+        let Some(mut boot) = boot_disks(fs, &table, &collected.devices) else {
             return Ok(unchecked(
                 root,
                 "the disk the decoy's root file system is on cannot be found",
             ));
         };
+        // The disk the generator reads is one the decoy boots from, also
+        // where the root file system lies on several devices and the
+        // generator reads the disk below /usr.
+        let generator = GeneratorDisk::read(fs, &table);
+        boot.extend(generator.disks().map(str::to_string));
 
         let (decoys, on_boot): (Vec<_>, Vec<_>) = graph
             .layers
@@ -205,7 +217,7 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
             return Ok(CheckResult::Pass(if decoys.is_empty() {
                 format!(
                     "The hidden root at {} is on no partition of a disk the decoy boots from \
-                     ({}), where systemd discovers partitions by their type.",
+                     ({}).",
                     root.display(),
                     boot.iter().cloned().collect::<Vec<_>>().join(", ")
                 )
@@ -228,7 +240,7 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
                     node: disk_node(fs, disk),
                 };
                 let entry = self.entry(fs, layer, partition, disk);
-                Finding::of(place, entry)
+                Finding::of(place, entry, generator.discovery(disk))
             })
             .collect();
         Ok(verdict(root, &findings))
@@ -303,8 +315,9 @@ fn boot_disks<F: Filesystem>(
 ) -> Option<BTreeSet<String>> {
     let mut roots = filesystem_devices(fs, top_mount_at(mounts, Path::new("/"))?)?;
     for point in BOOT_MOUNTS {
-        // An automount not yet used shows no device: the partition it mounts
-        // is on the root's disk, where systemd mounts it from.
+        // An automount not yet used shows no device, and adds no disk. One
+        // that systemd-gpt-auto-generator made mounts a partition of the
+        // disk it reads, which the check counts in any case.
         if let Some(devices) =
             top_mount_at(mounts, Path::new(point)).and_then(|mount| filesystem_devices(fs, mount))
         {

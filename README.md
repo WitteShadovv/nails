@@ -185,13 +185,13 @@ Also refused by the pre-flight checks:
   cannot be judged (`hidden-volume`);
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
   volume (`backend-entries`);
-- a hidden volume on a partition of a disk the decoy boots from that has
-  the GPT type of a swap partition, or of a `/home`, `/srv`, `/var` or
-  `/var/tmp` partition without the no-auto flag, which turns those four into
-  a warning (`backend-partition-type`): systemd can mount it or use it as
-  swap at boot unless the decoy masks systemd-gpt-auto-generator, as Ubuntu
-  24.04 and 26.04 do by default, and the partition table shows its type
-  either way;
+- a hidden volume on a partition of a disk the decoy boots from that has the
+  GPT type of a swap partition, or of a `/home`, `/srv`, `/var` or `/var/tmp`
+  partition without the no-auto flag, which turns those four into a warning
+  (`backend-partition-type`): on the one disk systemd-gpt-auto-generator
+  reads, below the root file system, systemd can mount it or use it as swap at
+  boot unless the decoy masks the generator, as Ubuntu 24.04 and 26.04 do by
+  default, and on any disk the partition table shows its type;
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
 - running inside a container or another mount namespace than PID 1's
