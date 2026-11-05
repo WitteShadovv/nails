@@ -145,7 +145,7 @@ pub(super) fn named(text: &str) -> Named {
 
 /// The lines of `text` that are no comment: whose first character that is
 /// not a blank is not `#`.
-fn code_lines(text: &str) -> impl Iterator<Item = &str> {
+pub(super) fn code_lines(text: &str) -> impl Iterator<Item = &str> {
     text.lines()
         .filter(|line| !line.trim_start().starts_with('#'))
 }
@@ -515,7 +515,7 @@ fn fc_writes(line: &str) -> usize {
 
 /// How often `word` stands in `line` as a word of its own: with no letter,
 /// digit, `_`, `.`, `/` or `-` beside it.
-fn whole_words(line: &str, word: &str) -> usize {
+pub(super) fn whole_words(line: &str, word: &str) -> usize {
     let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
     line.match_indices(word)
         .filter(|&(at, found)| {
@@ -664,10 +664,11 @@ pub(super) fn names_any(text: &str, wanted: &[&str]) -> bool {
 }
 
 /// Whether `text`, zsh code, may turn `PROMPT_SUBST` on, which makes zsh run
-/// what a prompt holds as it shows it: it names the option, or runs an
-/// `emulate`, as sh's and ksh's emulation turn it on.
+/// what a prompt holds as it shows it: it names the option, or its other name
+/// `PROMPT_VARS` (zsh's alias for bash's), or runs an `emulate`, as sh's and
+/// ksh's emulation turn it on.
 pub(super) fn names_prompt_subst(text: &str) -> bool {
-    names_any(text, &["promptsubst"])
+    names_any(text, &["promptsubst", "promptvars"])
         || text
             .lines()
             .filter(|line| !line.trim_start().starts_with('#'))

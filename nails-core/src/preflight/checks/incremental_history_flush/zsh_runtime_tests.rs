@@ -195,12 +195,17 @@ fn emulate_r_ksh_turns_share_history_on() {
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
     }
-    // One whose mode an expansion makes is a doubt.
+    // One whose mode an expansion makes is a doubt, and it may be csh's,
+    // whose quotes differ.
     let fs = MockFilesystem::new();
     seed(&fs, "/home/alice/.zshrc", "emulate -R $mode\n");
     assert_eq!(
         scan(&fs, UNKNOWN).doubts,
-        ["it cannot tell what `emulate $mode` in /home/alice/.zshrc turns on"]
+        [
+            "it cannot read the quotes of the files as zsh may, as /home/alice/.zshrc may turn \
+             RC_QUOTES or CSH_JUNKIE_QUOTES on, which change what a quote holds",
+            "it cannot tell what `emulate $mode` in /home/alice/.zshrc turns on"
+        ]
     );
 }
 

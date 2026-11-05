@@ -77,7 +77,8 @@
 //! the code uses, which zsh puts in place of that word, one named like an
 //! operator or a brace, whose uses the check cannot count, an `alias` with a
 //! word an expansion, brace expansion or a glob may make, which may make it
-//! global, a builtin's flag or name such a word may make, a file the code may
+//! global, a builtin's flag or name such a word may make, an option that
+//! changes how zsh reads code ([`reading`]), a file the code may
 //! make or write before zsh reads it, and a program a hook runs where a hook
 //! may give it the command line in its environment ([`made`]). Beside the
 //! code, the lines of each
@@ -96,6 +97,7 @@ mod functions;
 mod install;
 mod lexer;
 mod made;
+mod reading;
 mod runs;
 mod shadows;
 mod stock;
@@ -302,6 +304,8 @@ struct Reader<'a, F: Filesystem> {
     /// `SH_WORD_SPLIT` or `KSH_ARRAYS` may split ([`Event::KeysSplit`]):
     /// each as written, the word and where.
     keys_splits: Vec<(String, String, String)>,
+    /// What the files read may change of how zsh reads code ([`reading`]).
+    reading: reading::Reading,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -531,6 +535,7 @@ impl<F: Filesystem> Reader<'_, F> {
         self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
         let forms = self.lines(text, &place);
+        self.reading(text, &forms, &place);
         self.shadows(&forms, &place, outer.as_deref());
         if backstop::names_any(text, &["globsubst"]) {
             self.doubt(format!(
@@ -641,6 +646,9 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
             }
             Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
+            event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
+                self.reading_event(event, place);
+            }
             event @ (Event::GlobalAlias { .. }
             | Event::FpathSplits(_)
             | Event::KeysSplit { .. }
@@ -1051,6 +1059,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         word_split: None,
         fpath_splits: Vec::new(),
         keys_splits: Vec::new(),
+        reading: reading::Reading::default(),
     };
     // The prompts zsh takes from its environment, which it shows as they
     // are unless a file sets them: code where PROMPT_SUBST may be on.
@@ -1109,6 +1118,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
     reader.startup_changers = reader.changers.len();
     reader.autoloaded();
     reader.runs();
+    reader.reading_doubts();
     reader.arithmetic();
     reader.made();
     // A prompt's code runs only when PROMPT_SUBST is on; whether a command

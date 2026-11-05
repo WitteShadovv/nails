@@ -98,6 +98,16 @@ pub(in super::super) enum Event {
     },
     /// The files define a function, or a regular alias, named `name`.
     Define(String),
+    /// A function is defined as `name ()`, where zsh puts the value of an
+    /// alias named `name` in place of the name when `ALIAS_FUNC_DEF` is on.
+    NamedBody(String),
+    /// A regular alias named `name` is defined.
+    RegularAlias(String),
+    /// A `}` that follows a command's words closes a function's body, a
+    /// group or a loop's, as zsh reads it unless `IGNORE_BRACES` or
+    /// `IGNORE_CLOSE_BRACES` is on, which make it a word of that command: the
+    /// command, as written.
+    WordBrace(String),
     /// A word in the function `function` names the history file, as a
     /// command that writes it by its name may (`tee -a ~/.zsh_history`).
     Names { word: String, function: String },

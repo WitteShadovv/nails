@@ -477,6 +477,9 @@ impl Walker<'_> {
         }
         if !self.pending.words.is_empty() {
             if word.text == "}" {
+                let words: Vec<&str> = self.pending.words.iter().map(|w| w.text.as_str()).collect();
+                let command = format!("{} }}", words.join(" "));
+                self.events.push(Event::WordBrace(command));
                 self.finish(false);
                 self.close_brace();
                 return;
@@ -579,7 +582,7 @@ impl Walker<'_> {
                 if self.tokens.next_if_eq(&Token::Open).is_some() {
                     self.tokens.next_if_eq(&Token::Close);
                 }
-                self.define(names);
+                self.define(names, false);
                 self.pending.function_next = true;
             }
             _ if self.pending.function_next => {
@@ -736,7 +739,7 @@ impl Walker<'_> {
             // `emulate -L`).
             self.tokens.next();
             let names = std::mem::take(&mut self.pending.words);
-            self.define(names);
+            self.define(names, true);
             self.pending.function_next = true;
             return;
         }

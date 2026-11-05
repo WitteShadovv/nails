@@ -54,9 +54,11 @@ impl CommandLine {
     /// `--no-global-rcs`, `-o noglobalrcs` or `+o globalrcs`; an option by
     /// `-o name`, `+o name`, `-oname`, `-xo name`, `--long-name` or
     /// `+-long-name`. A zsh that emulates sh or ksh, as it does when the name
-    /// it runs under starts with `s` or `k` (past a `-` and an `r`) or with
-    /// `--emulate sh`, reads other startup files, which is a doubt, and so is
-    /// an `-o` that names no option.
+    /// it runs under starts with `s`, `b` or `k` (past a `-` and an `r`,
+    /// Src/options.c's `emulate`) or with `--emulate sh`, reads other startup
+    /// files, which is a doubt; so is one that emulates csh (`c`), whose
+    /// quotes differ, one started under the name `su`, which takes the name
+    /// it emulates by from `SHELL`, and an `-o` that names no option.
     pub(in super::super) fn of(argv: &[String]) -> Self {
         let mut line = Self {
             start: Start {
@@ -74,12 +76,19 @@ impl CommandLine {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let name = name.trim_start_matches('-');
-            if name
-                .strip_prefix('r')
-                .unwrap_or(name)
-                .starts_with(['s', 'k'])
-            {
+            let mode = name.strip_prefix('r').unwrap_or(name);
+            if name == "su" {
+                line.doubts.push(format!(
+                    "it cannot tell what a zsh started under the name `{zero}` reads, as zsh then \
+                     takes the name of the shell it emulates from SHELL"
+                ));
+            } else if mode.starts_with(['s', 'k', 'b']) {
                 line.emulated(zero);
+            } else if mode.starts_with('c') {
+                line.doubts.push(format!(
+                    "it cannot read the files as a zsh started under the name `{zero}` does, as \
+                     zsh then emulates csh, whose quotes differ"
+                ));
             }
         }
         let mut args = argv.iter().skip(1).map(String::as_str);
@@ -108,6 +117,7 @@ impl CommandLine {
                         'f' => line.start.rcs = !on,
                         'd' => line.start.global_rcs = !on,
                         'y' if on => line.option("shwordsplit", true),
+                        'I' if on => line.option("ignorebraces", true),
                         'o' => {
                             let rest = &arg[at + 1..];
                             match if rest.is_empty() {
@@ -144,7 +154,8 @@ impl CommandLine {
     fn option(&mut self, name: &str, on: bool) {
         let name = name.replace(['-', '_'], "").to_lowercase();
         let known = |name: &str| {
-            matches!(name, "rcs" | "globalrcs" | "login") || walk::option(name).is_some()
+            matches!(name, "rcs" | "globalrcs" | "login" | "braceexpand")
+                || walk::option(name).is_some()
         };
         let (name, on) = match name.strip_prefix("no") {
             Some(rest) if known(rest) => (rest.to_string(), !on),
@@ -154,7 +165,29 @@ impl CommandLine {
             "login" => self.start.login = Some(on),
             "rcs" => self.start.rcs = on,
             "globalrcs" => self.start.global_rcs = on,
-            "promptsubst" => self.prompt_subst |= on,
+            // `PROMPT_VARS` is zsh's other name for it.
+            "promptsubst" | "promptvars" => self.prompt_subst |= on,
+            "ignorebraces" | "ignoreclosebraces" | "aliasfuncdef" | "rcquotes"
+            | "cshjunkiequotes"
+                if on =>
+            {
+                let shown = match name.as_str() {
+                    "ignorebraces" => "IGNORE_BRACES",
+                    "ignoreclosebraces" => "IGNORE_CLOSE_BRACES",
+                    "aliasfuncdef" => "ALIAS_FUNC_DEF",
+                    "rcquotes" => "RC_QUOTES",
+                    _ => "CSH_JUNKIE_QUOTES",
+                };
+                self.doubts.push(format!(
+                    "it cannot read the files as zsh may, as its command line turns {shown} on, \
+                     which changes how zsh reads code"
+                ));
+            }
+            "braceexpand" if !on => self.doubts.push(
+                "it cannot read the files as zsh may, as its command line turns BRACE_EXPAND \
+                 off, which changes how zsh reads code"
+                    .to_string(),
+            ),
             "globsubst" if on => self.doubts.push(
                 "it cannot tell what code zsh runs from the values it expands as patterns, as its \
                  command line turns GLOB_SUBST on, which makes a glob qualifier in a value run"
