@@ -93,13 +93,17 @@ pub fn device_of_mount<F: Filesystem>(fs: &F, mount: &MountEntry) -> Option<Path
 }
 
 /// What a device-mapper uuid says a mapping is; `name` decides only for a
-/// device without a uuid.
+/// device without a uuid or with one the VeraCrypt application gave it.
 ///
 /// cryptsetup names its mappings `CRYPT-<TYPE>-[<uuid>-]<name>`, e.g.
 /// `CRYPT-LUKS2-<hex>-hidden` or `CRYPT-TCRYPT-hidden`, LVM `LVM-<uuids>`.
-/// The VeraCrypt application creates its mappings with `dmsetup` and no uuid.
+/// The VeraCrypt application creates its mappings with `dmsetup`: up to
+/// 1.26.29 with no uuid, from 1.26.30 on with the uuid
+/// `VERACRYPT-<serial>-<name>`, the serial being the number it gives the
+/// mount.
 pub fn classify_dm(uuid: &str, name: &str) -> DmKind {
     let uuid = uuid.trim();
+    let name = name.trim();
     if let Some(rest) = uuid.strip_prefix("CRYPT-") {
         return match rest.split('-').next().unwrap_or_default() {
             "" => DmKind::Other,
@@ -112,7 +116,7 @@ pub fn classify_dm(uuid: &str, name: &str) -> DmKind {
     if uuid.starts_with("LVM-") {
         return DmKind::Lvm;
     }
-    if uuid.is_empty() && is_veracrypt_name(name.trim()) {
+    if is_veracrypt_name(name) && (uuid.is_empty() || is_veracrypt_uuid(uuid, name)) {
         return DmKind::VeraCrypt;
     }
     DmKind::Other
@@ -120,12 +124,25 @@ pub fn classify_dm(uuid: &str, name: &str) -> DmKind {
 
 /// `veracrypt<N>`, or `veracrypt<N>_<k>` for an inner cipher of a cascade.
 fn is_veracrypt_name(name: &str) -> bool {
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     name.strip_prefix("veracrypt")
         .is_some_and(|rest| match rest.split_once('_') {
             Some((slot, layer)) => digits(slot) && digits(layer),
             None => digits(rest),
         })
+}
+
+/// `VERACRYPT-<serial>-<name>`, the uuid VeraCrypt 1.26.30 and later give
+/// their mapping `name`, the serial a decimal number.
+fn is_veracrypt_uuid(uuid: &str, name: &str) -> bool {
+    uuid.strip_prefix("VERACRYPT-")
+        .and_then(|rest| rest.strip_suffix(name))
+        .and_then(|rest| rest.strip_suffix('-'))
+        .is_some_and(digits)
+}
+
+/// Whether `s` is a decimal number, no sign and at least one digit.
+fn digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The sysfs directory of the block device a `/dev` path names: `/dev/sdb2`,

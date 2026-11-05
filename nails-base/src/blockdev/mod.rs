@@ -100,7 +100,8 @@ pub struct DeviceMapper {
     pub kind: DmKind,
 }
 
-/// What a device-mapper uuid (and, without one, the name) says a mapping is.
+/// What a device-mapper uuid (and, without one or with one the VeraCrypt
+/// application gave, the name) says a mapping is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DmKind {
     /// A cryptsetup mapping, `CRYPT-<TYPE>-…`, with its type: `LUKS1`,
@@ -115,9 +116,10 @@ pub enum DmKind {
     Integrity,
     /// dm-verity (`CRYPT-VERITY-…`). It encrypts nothing.
     Verity,
-    /// A mapping the VeraCrypt application made with `dmsetup`: no uuid, and
-    /// the name `veracrypt<N>`, or `veracrypt<N>_<k>` for an inner cipher of a
-    /// cascade.
+    /// A mapping the VeraCrypt application made with `dmsetup`: the name
+    /// `veracrypt<N>`, or `veracrypt<N>_<k>` for an inner cipher of a
+    /// cascade, with no uuid up to VeraCrypt 1.26.29 and from 1.26.30 on the
+    /// uuid `VERACRYPT-<serial>-<name>`.
     VeraCrypt,
     /// An LVM logical volume (`LVM-…`).
     Lvm,

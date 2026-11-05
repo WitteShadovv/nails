@@ -422,6 +422,21 @@ fn the_gate_warns_for_a_container_file_on_the_decoys_home() {
 }
 
 #[test]
+fn a_container_veracrypt_1_26_30_or_later_opened_counts_as_encrypted() {
+    // From 1.26.30 on, the application gives its mapping a uuid of its own.
+    let decoy = container_on_home("");
+    decoy.attr(
+        "/sys/devices/virtual/block/dm-8",
+        "dm/uuid",
+        "VERACRYPT-1762101445123456-veracrypt1",
+    );
+    decoy
+        .fs
+        .mock_set_loop_backing_device(Path::new(LOOP0_NODE), rustix::fs::makedev(259, 4));
+    assert_container_warning(&decoy);
+}
+
+#[test]
 fn a_mount_over_the_containers_folder_does_not_hide_where_it_lives() {
     // A tmpfs mounted over /home/op later leads the path elsewhere; the loop
     // driver's device still names /home's filesystem.

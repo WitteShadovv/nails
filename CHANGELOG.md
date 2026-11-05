@@ -481,7 +481,8 @@ of this changelog for that version becomes the release notes word for word, and
   the filesystem the loop driver recorded for the file, or, where only root could read that
   record, the one the file's path leads to. Every way down to a disk has to pass a cryptsetup
   mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK, FVAULT2 or SUBDEV, or a mapping
-  named as the VeraCrypt application names its own, that is not the decoy's: not its storage as
+  the VeraCrypt application made (named `veracrypt<N>`, with no uuid up to VeraCrypt 1.26.29 and
+  the uuid `VERACRYPT-<serial>-<name>` from 1.26.30 on), that is not the decoy's: not its storage as
   the attach gate counts it, with every device below a partition of it on a disk that keeps its
   data elsewhere (the devices of the md array the decoy's root is on, which its boot opens), nor a
   volume its crypttab opens from a device or an image file, under whatever name it was opened. A

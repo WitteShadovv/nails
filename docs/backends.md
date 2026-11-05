@@ -107,9 +107,10 @@ reads the disk that an encrypted volume is there, and the pass line says so. A
 device that starts with no LUKS header belongs to a mapping opened with a
 detached header, which the description names; the flags and tokens of such a
 header are in its file. An unreadable device leaves the description as it is.
-A mapping the VeraCrypt application made (`veracrypt<N>`, with no uuid) is
-named as such, the further cipher layers of a cascade cryptsetup opened
-(`SUBDEV`) as cascade layers, and dm-integrity and dm-verity mappings as
+A mapping the VeraCrypt application made (`veracrypt<N>`, with no uuid up to
+VeraCrypt 1.26.29 and with the uuid `VERACRYPT-<serial>-veracrypt<N>` from
+1.26.30 on) is named as such, the further cipher layers of a cascade cryptsetup
+opened (`SUBDEV`) as cascade layers, and dm-integrity and dm-verity mappings as
 mappings that encrypt nothing. cryptsetup also builds sub-devices of its own
 below a LUKS2 volume, of the type `SUBDEV` too but with the volume's uuid,
 which no cascade layer carries: from cryptsetup 2.8 on, the integrity layer of
@@ -176,7 +177,7 @@ or a btrfs filesystem with one plain device warns about the plain disk.
 
 | Result | When |
 |---|---|
-| Passes | Each way down passes a layer that is not the decoy's: a cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK or FVAULT2 (`dm/uuid` starts with `CRYPT-<type>-`), a SUBDEV mapping (cryptsetup's name for the layers it puts below such a mapping, such as the further ciphers of a VeraCrypt cascade), or a mapping named as the VeraCrypt application names its own (`veracrypt<N>`, with no uuid). |
+| Passes | Each way down passes a layer that is not the decoy's: a cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK or FVAULT2 (`dm/uuid` starts with `CRYPT-<type>-`), a SUBDEV mapping (cryptsetup's name for the layers it puts below such a mapping, such as the further ciphers of a VeraCrypt cascade), or a mapping named as the VeraCrypt application names its own (`veracrypt<N>`, with no uuid up to VeraCrypt 1.26.29 and with the uuid `VERACRYPT-<serial>-veracrypt<N>` from 1.26.30 on). |
 | Warns: nothing encrypts it | A way down reaches a device, which the warning names, with no encrypting layer above it. Anyone who reads that device, or a copy of it, reads the hidden root's files. dm-integrity and dm-verity encrypt nothing. |
 | Warns: only the decoy's own encryption | The only encryption on a way down is a layer of the decoy's own storage, such as the LUKS volume under its `/home` for an image file kept there, the LUKS devices of the md array its root lies on for another partition of that array, or a volume the decoy's crypttab opens, from a device or an image file, that was opened under another name. Whoever unlocks the decoy reads the hidden root's files, and the threat model counts on an adversary who gets the decoy's credentials (see [Compelled disclosure of the decoy](threat-model.md#compelled-disclosure-of-the-decoy)). |
 | Warns: encryption cannot be confirmed | A way down passes a device-mapper device of a kind the check does not know, a cryptsetup type it does not know, a loop device whose file it cannot follow to a disk, whose path and recorded filesystem disagree or whose recorded filesystem is not mounted here, or a ZFS volume, a network block device (`nbd`), a userspace block device (`ublk`) or a `zram` device, which keep their data where sysfs does not show; or the stack holds more devices than the check reads (16 below any one device, 64 in all); or the filesystem shows no block device at all, as a ZFS dataset or a network filesystem. A pass also needs `/etc/fstab` and `/etc/crypttab` read, since either may name the encryption found as the decoy's. |
