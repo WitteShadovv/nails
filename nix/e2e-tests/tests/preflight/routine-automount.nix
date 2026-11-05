@@ -25,8 +25,9 @@
 #      mounts it nowhere, and `check` passes.
 #
 # The deterministic proof of the refusal is the preflight-hidden-root batch,
-# which runs in every pull request's shards; this test is in the `heavy`
-# group, which they leave out.
+# which runs in the shards of every pull request that changes nails or the
+# batch; this test is in the `heavy` group, which the affected selection of a
+# pull request leaves out.
 { self, pkgs, ... }:
 let
   externalDisk = import ./../../lib/external-disk.nix;
