@@ -202,6 +202,32 @@ fn test_init_returns_none_when_root_shares_device_with_root_filesystem() {
     );
 }
 
+/// A hidden root that cannot be looked up is the gate's refusal: file
+/// logging stays off with its reason, which the caller shows only on request,
+/// and no log directory is made.
+#[test]
+fn a_root_that_cannot_be_looked_up_turns_file_logging_off_with_the_refusal() {
+    let manager = LoggingManager::new(
+        PathBuf::from("/mnt/data/logs"),
+        PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT),
+    );
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
+    fs.mock_set_lookup_error(
+        DEFAULT_HIDDEN_VOLUME_ROOT,
+        std::io::ErrorKind::PermissionDenied,
+    );
+
+    let reason = manager
+        .init_or_explain(&fs)
+        .expect("a refused root is no error")
+        .expect_err("file logging stays off");
+    assert!(reason.contains("it cannot be looked up"), "{reason}");
+    assert!(fs.mock_written_paths().is_empty());
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+}
+
 #[test]
 fn test_init_fails_when_path_outside_hidden_volume() {
     let manager = LoggingManager::new(

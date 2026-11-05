@@ -72,6 +72,22 @@ pub const GUIDE_SECTION: &str = "Where setup happens";
 pub const OVERRIDE_CONSEQUENCE: &str = "everything written there lands on that storage";
 
 impl RefusalKind {
+    /// A root whose lookup failed with `error` for another reason than that
+    /// nothing is there. An I/O error is named by what failed, as the root is
+    /// named beside it.
+    pub fn lookup_failed(error: &crate::NailsError) -> Self {
+        match error {
+            crate::NailsError::IoError { source, .. } => RefusalKind::LookupFailed {
+                error: source.to_string(),
+                denied: source.kind() == std::io::ErrorKind::PermissionDenied,
+            },
+            other => RefusalKind::LookupFailed {
+                error: other.to_string(),
+                denied: false,
+            },
+        }
+    }
+
     /// The stable code a caller can branch on.
     pub fn code(&self) -> &'static str {
         match self {
@@ -81,6 +97,7 @@ impl RefusalKind {
             }
             RefusalKind::NotConfigured
             | RefusalKind::Missing
+            | RefusalKind::LookupFailed { .. }
             | RefusalKind::MountTableUnreadable { .. }
             | RefusalKind::NotAMountPoint { .. }
             | RefusalKind::DecoyStorage { .. }
@@ -108,6 +125,9 @@ impl RefusalKind {
         match self {
             RefusalKind::NotConfigured => "no root folder is configured".to_string(),
             RefusalKind::Missing => format!("{root} does not exist"),
+            RefusalKind::LookupFailed { error, .. } => format!(
+                "nothing shows that {root} is a volume of its own: it cannot be looked up ({error})"
+            ),
             RefusalKind::MountTableUnreadable { error } => format!(
                 "nothing shows that {root} is a volume of its own: the mount table cannot be \
                  read ({error})"
@@ -278,6 +298,13 @@ impl Refusal {
             RefusalKind::MountTableUnreadable { .. } => {
                 vec!["Run the command where /proc is mounted and readable.".into()]
             }
+            RefusalKind::LookupFailed { denied: true, .. } => {
+                vec!["Run the command again with sudo.".into()]
+            }
+            RefusalKind::LookupFailed { denied: false, .. } => vec![format!(
+                "Find out why {} cannot be looked up, then run the command again.",
+                self.root.display()
+            )],
             RefusalKind::Missing | RefusalKind::NotAMountPoint { .. } => {
                 // Most often the volume is simply not unlocked yet, or the
                 // path has a typo.
@@ -368,6 +395,14 @@ mod tests {
             RefusalKind::Missing,
             RefusalKind::MountTableUnreadable {
                 error: "permission denied".into(),
+            },
+            RefusalKind::LookupFailed {
+                error: "Permission denied (os error 13)".into(),
+                denied: true,
+            },
+            RefusalKind::LookupFailed {
+                error: "Input/output error (os error 5)".into(),
+                denied: false,
             },
             RefusalKind::NotAMountPoint {
                 mount_point: PathBuf::from("/"),
@@ -537,9 +572,9 @@ mod tests {
             .iter()
             .map(Refusal::code)
             .collect();
-        assert_eq!(&codes[..15], &[NOT_SEPARATE_VOLUME; 15]);
-        assert_eq!(&codes[15..17], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[17..], &[STORAGE_UNJUDGED; 18]);
+        assert_eq!(&codes[..17], &[NOT_SEPARATE_VOLUME; 17]);
+        assert_eq!(&codes[17..19], &[ROOT_COVERED; 2]);
+        assert_eq!(&codes[19..], &[STORAGE_UNJUDGED; 18]);
     }
 
     #[test]
@@ -865,6 +900,7 @@ mod tests {
                     | RefusalKind::StorageUnjudged { .. }
                     | RefusalKind::StorageUntraced { .. }
                     | RefusalKind::NotConfigured
+                    | RefusalKind::LookupFailed { .. }
                     | RefusalKind::MountTableUnreadable { .. }
             );
             assert_eq!(redirects, expected, "{refusal:?}: {hint}");

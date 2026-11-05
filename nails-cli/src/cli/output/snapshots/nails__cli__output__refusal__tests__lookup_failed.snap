@@ -1,0 +1,6 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&refusal(kind), None)"
+---
+error: nothing shows that /mnt is a volume of its own: it cannot be looked up (Input/output error (os error 5)). Nothing was written.
+  Find out why /mnt cannot be looked up, then run the command again.
