@@ -3,13 +3,14 @@
 
 //! The GPT partition types that systemd acts on by their type alone.
 //!
-//! systemd-gpt-auto-generator runs at every boot, unless it is masked, and
-//! looks at the partitions of one disk at most, the one it finds below the
-//! root file system: one layer of devices down before systemd 259.1, as from
-//! a LUKS volume to its partition, and every layer down from 259.1 on, as
-//! through LVM on LUKS (systemd-gpt-auto-generator(8), the UAPI.2
-//! Discoverable Partitions Specification, systemd's `blockdev-util.c`, which
-//! finds the disk, and `dissect-image.c`, which picks the partitions). There,
+//! After the initrd, systemd-gpt-auto-generator runs at every boot, unless
+//! it is masked, and looks at the partitions of one disk at most, the one it
+//! finds below the root file system: one layer of devices down before
+//! systemd 259.1, as from a LUKS volume to its partition, and every layer
+//! down from 259.1 on, as through LVM on LUKS
+//! (systemd-gpt-auto-generator(8), the UAPI.2 Discoverable Partitions
+//! Specification, systemd's `blockdev-util.c`, which finds the disk, and
+//! `dissect-image.c`, which picks the partitions). There,
 //! by its GPT type, it mounts the first partition of the `/home`, `/srv`,
 //! `/var` and `/var/tmp` types at that folder, when no fstab line mounts the
 //! folder and the folder is empty (`/var` only when the partition's uuid is
@@ -23,15 +24,20 @@
 //! partition only when no fstab line names it (at any folder from systemd 255
 //! on; in 254 only at `/boot`, when `/boot` exists and the disk has no
 //! extended boot loader partition), on a UEFI boot only when the boot loader
-//! says it started from that disk; and at boot, when the kernel command line
-//! names no root, it takes a root partition of the machine's architecture
-//! from the disk of the EFI system partition the boot loader started from.
-//! The no-auto attribute flag ([`NO_AUTO`]) keeps it from using a partition
-//! of any of these types but the EFI system partition, and a partition it
-//! leaves alone for the flag is not the first of its type. Ubuntu 24.04 and
-//! 26.04 mask the generator by default, with a link from
+//! says it started from that disk. In an initrd that runs the generator, on a
+//! UEFI boot and when the kernel command line names no root, it takes a root
+//! partition of the machine's architecture from the disk of the EFI system
+//! partition the boot loader started from. The no-auto attribute flag
+//! ([`NO_AUTO`]) keeps it from using a partition of any of these types but
+//! the EFI system partition, and a partition it leaves alone for the flag is
+//! not the first of its type. Ubuntu 24.04 and 26.04 mask the generator by
+//! default, with a link from
 //! `/etc/systemd/system-generators/systemd-gpt-auto-generator` to `/dev/null`
-//! (systemd.generator(7)); Debian 13 and NixOS do not mask it by default.
+//! (systemd.generator(7)); Debian 13 and NixOS do not mask it by default. A
+//! mask in `/etc` reaches the initrd only where the tool that builds the
+//! initrd copies it: dracut, Ubuntu 26.04's default, runs systemd and the
+//! generator in the initrd and copies no such mask, and initramfs-tools, the
+//! default of Debian 13 and Ubuntu 24.04, runs no generator there.
 
 use serde::Serialize;
 

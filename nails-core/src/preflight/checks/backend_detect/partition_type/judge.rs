@@ -305,23 +305,25 @@ impl Finding {
                 Finding::Warn(text, Some(place))
             }
             // Root discovery takes its disk from the boot loader, not from
-            // the root file system: the same text on every disk.
+            // the root file system, and runs in the initrd, which a mask in
+            // the decoy's /etc need not reach: the same text on every disk.
             AutoRole::Root => Finding::Warn(
-                format!("{typed}. {UNLESS_MASKED}, systemd {ROOT_USE}. {UNEXPLAINED}"),
+                format!("{typed}. {ROOT_USE}. {ROOT_INITRD} {UNEXPLAINED}"),
                 Some(place),
             ),
         }
     }
 }
 
-/// The condition on everything systemd does with a partition by its type:
-/// systemd-gpt-auto-generator runs. Ubuntu 24.04 and 26.04 mask it by
-/// default, with a link from
+/// The condition on what systemd does with a partition by its type after
+/// the initrd: systemd-gpt-auto-generator runs. Ubuntu 24.04 and 26.04 mask
+/// it by default, with a link from
 /// `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
 /// `/dev/null`, and systemd runs no generator masked so
 /// (systemd.generator(7)). The check reads no mask: its verdicts are the
 /// same on a decoy that masks the generator, where the type still shows in
-/// the partition table.
+/// the partition table. Root discovery runs in the initrd instead, under
+/// [`ROOT_USE`].
 const UNLESS_MASKED: &str =
     "Unless the decoy masks systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default";
 
@@ -348,11 +350,25 @@ const ELSEWHERE: &str = "systemd-gpt-auto-generator reads the partition table of
 const UNEXPLAINED: &str =
     "Anyone who reads the partition table sees a type the partition's use does not explain.";
 
-/// When systemd takes a partition of the root type as its root: on the
-/// disk the boot loader names, through udev's `find_gpt_root`, whatever
-/// disk the root file system is on later.
-const ROOT_USE: &str = "takes a root partition at boot from the disk the boot loader says it \
-     started from, on a UEFI boot only, and only when the kernel command line names no root";
+/// When systemd takes a partition of the root type as its root: in the
+/// initrd, where the generator has systemd wait for the root partition udev
+/// finds on the disk the boot loader names (`find_gpt_root` reads
+/// `LoaderDevicePartUUID` there), whatever disk the root file system is on
+/// later.
+const ROOT_USE: &str = "Where the decoy's initrd runs systemd-gpt-auto-generator, systemd takes \
+     a root partition at boot from the disk the boot loader says it started from, on a UEFI boot \
+     only, and only when the kernel command line names no root";
+
+/// Which initrds run the generator by default. A mask in the decoy's `/etc`
+/// reaches the initrd only where the tool that builds the initrd copies it.
+/// dracut, Ubuntu 26.04's default, runs systemd in the initrd with the
+/// generator in it (its `systemd` and `dracut-systemd` modules) and copies
+/// nothing from `/etc/systemd/system-generators`. initramfs-tools, the
+/// default of Debian 13 and Ubuntu 24.04, runs a shell script of its own as
+/// the initrd's init, with no systemd manager and so no generator.
+const ROOT_INITRD: &str = "By default, the initrd of Ubuntu 26.04, which dracut builds, runs it \
+     even where the decoy masks it in /etc, as dracut does not copy that mask, and that of Debian \
+     13 and Ubuntu 24.04, which initramfs-tools builds, runs no generator.";
 
 /// What the decoy's boot does not touch, and what it leaves.
 const SPARED: &str = "The hidden session, whose root is an overlay, is spared, but anyone who \

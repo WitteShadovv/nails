@@ -229,12 +229,12 @@ another kind over the same device.
 
 ## Partition type in preflight
 
-systemd-gpt-auto-generator runs at every boot, unless it is masked, and looks
-at the partitions of one disk at most: the one it finds below the root file
-system. It starts at the block device the root file system reports, or at the
-only device of a btrfs filesystem, and where there is none, as for a btrfs
-filesystem of several devices, at that of `/usr`, so at no disk where `/usr`
-is on that filesystem too. From there it follows the
+After the initrd, systemd-gpt-auto-generator runs at every boot, unless it is
+masked, and looks at the partitions of one disk at most: the one it finds
+below the root file system. It starts at the block device the root file
+system reports, or at the only device of a btrfs filesystem, and where there
+is none, as for a btrfs filesystem of several devices, at that of `/usr`, so
+at no disk where `/usr` is on that filesystem too. From there it follows the
 devices below (`slaves/` in sysfs) one layer down before systemd 259.1, as
 from a LUKS volume to its partition, and every layer down from 259.1 on, as
 through LVM on LUKS. Where the devices one layer down are not all on one whole
@@ -262,7 +262,7 @@ systemd.generator(7)). Debian 13 and NixOS do not mask it by default. On a
 decoy that masks it, a partition of these types shows nothing at boot, but
 its type is in the partition table all the same.
 
-The generator acts on three more types under some conditions. It mounts the
+The generator acts on two more types under some conditions. It mounts the
 first extended boot loader partition of the disk at `/boot`, and the first EFI
 system partition at `/boot` or `/efi`, on first access, when no fstab line
 mounts that folder and the folder is empty or missing. It leaves the EFI
@@ -276,9 +276,18 @@ partition does not keep the first EFI system partition from `/efi`. On a UEFI
 boot the generator mounts them only when the boot loader says it started from
 that disk, but on a BIOS boot it skips that condition: there the first EFI
 system partition gets an automount whenever one of the two folders meets the
-conditions above, as `/efi` usually does. At boot, when the kernel command
-line names no root, it takes a root partition from the disk of the EFI system
-partition the boot loader started from.
+conditions above, as `/efi` usually does.
+
+It acts on a third, the root type, in the initrd. Where the decoy's initrd runs
+the generator, on a UEFI boot and when the kernel command line names no root,
+systemd takes a root partition there from the disk of the EFI system partition
+the boot loader started from, whatever disk the root file system is on later. A
+mask in the decoy's `/etc` reaches the initrd only where the tool that builds
+the initrd copies it. By default, Ubuntu 26.04 builds its initrd with dracut,
+which runs systemd and the generator there and copies no such mask, Debian 13
+and Ubuntu 24.04 build theirs with initramfs-tools, which runs no generator,
+and NixOS runs the generator in its initrd but names the root on the kernel
+command line (`root=fstab`).
 
 The `backend-partition-type` check follows the hidden root's own storage
 (through device-mapper layers and loops over block devices, never into the
@@ -312,9 +321,9 @@ partition. The check does not predict the generator in every detail: its
 verdict does not ask whether the generator reads the disk, whether the
 partition is the first of its type on the disk, whether the folder is empty,
 whether the kernel command line turns the generator off (`systemd.gpt_auto=0`),
-or whether the decoy masks it, as Ubuntu 24.04 and 26.04 do by default. It
-judges each of those cases the same, as the type shows in the partition table
-either way.
+whether the decoy masks it, as Ubuntu 24.04 and 26.04 do by default, or
+whether the decoy's initrd runs it. It judges each of those cases the same, as
+the type shows in the partition table either way.
 
 ## Per-backend summary
 
