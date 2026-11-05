@@ -12,8 +12,10 @@
 //! that leaves the path behind) fails here rather than only in production.
 //!
 //! The file contract covers what both implementations do without root: file
-//! read/write, size, existence, type and permission queries, disk usage,
-//! directory creation, symlinks, rename, removal and secure deletion. The
+//! read/write, size, existence, type and permission queries (what they answer
+//! where nothing is there, and that a lookup refused on the way is an error,
+//! never a missing path), disk usage, directory creation, symlinks, rename,
+//! removal and secure deletion. The
 //! mount-query contract (mount point, filesystem type, read-only flag and
 //! source, the queries the session code reads, and the mount table they agree
 //! with) runs the real filesystem as
@@ -36,9 +38,19 @@ use std::path::Path;
 /// when the backend cannot (the real filesystem as root ignores modes).
 type DenyWrites<'a> = &'a dyn Fn(&Path) -> bool;
 
+/// Run the body with every lookup below a directory refused for lack of
+/// permission, where the backend can refuse it: the real filesystem as root
+/// searches any directory, so it runs no body.
+type DenyLookups<'a> = &'a dyn Fn(&Path, &dyn Fn());
+
 /// Exercise the shared, unprivileged filesystem contract against `fs`, using
 /// `root` as a pre-existing, writable directory to work inside.
-fn filesystem_contract<F: Filesystem>(fs: &F, root: &Path, deny_writes: DenyWrites<'_>) {
+fn filesystem_contract<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    deny_writes: DenyWrites<'_>,
+    deny_lookups: DenyLookups<'_>,
+) {
     permission_behaviour(fs, root, deny_writes);
     disk_usage_is_consistent(fs, root);
     file_round_trip(fs, root);
@@ -50,6 +62,8 @@ fn filesystem_contract<F: Filesystem>(fs: &F, root: &Path, deny_writes: DenyWrit
     removal_behaviour(fs, root);
     secure_delete_behaviour(fs, root);
     write_into_missing_parent_fails(fs, root);
+    lookups_say_no_only_where_nothing_is(fs, root);
+    lookups_below_a_denied_directory_fail(fs, root, deny_lookups);
 }
 
 fn permission_behaviour<F: Filesystem>(fs: &F, root: &Path, deny_writes: DenyWrites<'_>) {
@@ -273,6 +287,75 @@ fn write_into_missing_parent_fails<F: Filesystem>(fs: &F, root: &Path) {
     );
 }
 
+/// The lookups that answer whether something is there answer no only where
+/// nothing is: a missing path, one below it, and one below a regular file. A
+/// link to nothing is no regular file; one to itself cannot be followed.
+/// Both are links, and entries.
+fn lookups_say_no_only_where_nothing_is<F: Filesystem>(fs: &F, root: &Path) {
+    let file = root.join("lookup_file.txt");
+    fs.write_file_content(&file, "x").unwrap();
+    for path in [
+        root.join("lookup_missing"),
+        root.join("lookup_missing/below"),
+        file.join("below"),
+    ] {
+        let shown = path.display();
+        assert!(!fs.path_exists(&path).unwrap(), "{shown}");
+        assert!(!fs.is_directory(&path).unwrap(), "{shown}");
+        assert!(!fs.is_regular_file(&path).unwrap(), "{shown}");
+        assert!(!fs.is_symlink(&path).unwrap(), "{shown}");
+        assert!(!fs.entry_exists(&path).unwrap(), "{shown}");
+    }
+
+    let dangling = root.join("lookup_dangling");
+    fs.create_symlink(&root.join("lookup_nowhere"), &dangling)
+        .unwrap();
+    assert!(!fs.is_regular_file(&dangling).unwrap());
+    assert!(fs.is_symlink(&dangling).unwrap());
+    assert!(fs.entry_exists(&dangling).unwrap());
+
+    let looped = root.join("lookup_looped");
+    fs.create_symlink(&looped, &looped).unwrap();
+    assert!(
+        fs.is_regular_file(&looped).is_err(),
+        "a link that leads to itself cannot be followed"
+    );
+    assert!(fs.is_symlink(&looped).unwrap());
+    assert!(fs.entry_exists(&looped).unwrap());
+}
+
+/// A lookup below a directory that may not be searched is no missing path:
+/// each of the four lookups fails, naming the path.
+fn lookups_below_a_denied_directory_fail<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    deny_lookups: DenyLookups<'_>,
+) {
+    let dir = root.join("lookup_denied");
+    fs.create_directory(&dir).unwrap();
+    let inside = dir.join("file.txt");
+    fs.write_file_content(&inside, "x").unwrap();
+    deny_lookups(&dir, &|| {
+        for (lookup, answer) in [
+            ("path_exists", fs.path_exists(&inside)),
+            ("is_directory", fs.is_directory(&inside)),
+            ("is_regular_file", fs.is_regular_file(&inside)),
+            ("is_symlink", fs.is_symlink(&inside)),
+        ] {
+            let error = answer.expect_err(lookup);
+            assert_eq!(
+                error.io_kind(),
+                Some(std::io::ErrorKind::PermissionDenied),
+                "{lookup}"
+            );
+            assert!(
+                error.to_string().contains(&inside.display().to_string()),
+                "{lookup}: {error}"
+            );
+        }
+    });
+}
+
 // ============================================================================
 // Contract harnesses
 // ============================================================================
@@ -290,8 +373,13 @@ fn mock_filesystem_satisfies_contract() {
         seed_fs.mock_set_writable(dir.to_str().unwrap(), false);
         true
     };
+    let seed_fs = fs.clone();
+    let deny_lookups = move |dir: &Path, body: &dyn Fn()| {
+        seed_fs.mock_set_lookup_error(dir.to_str().unwrap(), std::io::ErrorKind::PermissionDenied);
+        body();
+    };
 
-    filesystem_contract(&fs, root, &deny_writes);
+    filesystem_contract(&fs, root, &deny_writes, &deny_lookups);
 }
 
 #[test]
@@ -302,8 +390,24 @@ fn real_filesystem_satisfies_contract() {
         fs.set_permissions(dir, 0o555).unwrap();
         !nix::unistd::geteuid().is_root()
     };
+    let deny_lookups = |dir: &Path, body: &dyn Fn()| {
+        /// Search permission back on drop, so the temporary directory can
+        /// go whatever the body does.
+        struct Searchable<'a>(&'a Path);
+        impl Drop for Searchable<'_> {
+            fn drop(&mut self) {
+                let _ = RealFilesystem.set_permissions(self.0, 0o700);
+            }
+        }
+        if nix::unistd::geteuid().is_root() {
+            return;
+        }
+        fs.set_permissions(dir, 0o000).unwrap();
+        let _searchable = Searchable(dir);
+        body();
+    };
 
-    filesystem_contract(&fs, temp.path(), &deny_writes);
+    filesystem_contract(&fs, temp.path(), &deny_writes, &deny_lookups);
 }
 
 // ============================================================================
