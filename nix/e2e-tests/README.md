@@ -149,6 +149,9 @@ Use only:
 - `lifecycle`
 - `security`
 - `performance`
+- `heavy` (long prototypes of the setup routine: leaf tests in `all`, which the
+  shards of a pull request leave out; they run on pushes to `main` and `next`,
+  nightly and with the `full-e2e` label)
 - `preflight`
 - `nixos`
 - `session` (the whole-root session, `tests/session/`)

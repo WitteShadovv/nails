@@ -4,7 +4,8 @@ name: E2E
 # serves every lane; only the selection and the runner differ:
 #
 #   pull request to main  affected: the ci group plus every test whose
-#   or next               derivation changed ('full-e2e' label: all)
+#   or next               derivation changed, but the heavy group
+#                         ('full-e2e' label: all)
 #   push to main or next  all; tests unchanged since a passed run are
 #                         substituted from the binary cache
 #   nightly schedule      execute: every test driver runs, cache or not,
@@ -23,7 +24,10 @@ name: E2E
 # fails the shard.
 #
 # Only the nightly (or a dispatched 'execute') run times anything: every other
-# lane leaves the performance group out, unless `tests` names it.
+# lane leaves the performance group out, unless `tests` names it. The heavy
+# group, long prototypes of the setup routine, stays out of a pull request's
+# affected selection; the runs of the whole suite (pushes, the nightly run, the
+# full-e2e label) include it.
 #
 # No secret reaches code that nobody vetted: fork and Dependabot pull requests
 # run like any other, with a read-only cache. `e2e-result` is the one status
@@ -273,7 +277,10 @@ jobs:
             read -ra targets <<< "$TESTS"
           else
             case "$MODE" in
-              affected) targets=(--affected "$BASE") ;;
+              # The heavy group would lengthen every pull request's
+              # pipeline; pushes, the nightly run and the full-e2e label
+              # (mode all) run it.
+              affected) targets=(--affected "$BASE" --exclude heavy) ;;
               ci) targets=(ci) ;;
               all | execute) targets=(all) ;;
             esac
