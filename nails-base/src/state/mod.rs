@@ -13,7 +13,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 
 mod file;
 mod lock;
@@ -54,15 +55,25 @@ fn is_symlink_path(path: &Path) -> bool {
 
 /// Internal implementation of hidden volume path checking
 ///
-/// Fail-closed: rejects symlinked roots and paths that escape the hidden
-/// volume boundary via symlinks or traversal. When the root doesn't exist
-/// on disk (e.g., during config validation before mount), falls back to
-/// cleaned string-prefix comparison.
+/// Fail-closed: rejects a root that is not absolute or is a symlink, and a
+/// path whose real location ([`real_location`]) is not below the root's: the
+/// place it lies, or would be created with the directories it lacks, every
+/// symlink and `..` on the way resolved as the kernel resolves them. When the
+/// root doesn't exist on disk (e.g., during config validation before mount),
+/// falls back to cleaned string-prefix comparison.
 fn is_on_hidden_volume_internal(path: &Path, hidden_volume_root: &str) -> bool {
-    let root_path = Path::new(hidden_volume_root);
+    // The root as its components give it: lstat follows a symlinked root
+    // written with a trailing `/`.
+    let root_path: PathBuf = Path::new(hidden_volume_root).components().collect();
+
+    // A relative or empty root is no hidden volume: cleaned, it can shrink to
+    // nothing, and every path starts with that.
+    if !root_path.is_absolute() {
+        return false;
+    }
 
     // Reject symlinked hidden-volume roots
-    if is_symlink_path(root_path) {
+    if is_symlink_path(&root_path) {
         return false;
     }
 
@@ -73,7 +84,7 @@ fn is_on_hidden_volume_internal(path: &Path, hidden_volume_root: &str) -> bool {
             // Root doesn't exist — can't do filesystem-level checks.
             // Fall through to string-based validation for config-time checks.
             // Clean both paths to prevent traversal attacks.
-            let cleaned_root = clean_path_components(root_path);
+            let cleaned_root = clean_path_components(&root_path);
             let cleaned_path = if path.is_absolute() {
                 clean_path_components(path)
             } else {
@@ -84,48 +95,51 @@ fn is_on_hidden_volume_internal(path: &Path, hidden_volume_root: &str) -> bool {
         }
     };
 
-    // Try to canonicalize the target path to resolve symlinks
-    match path.canonicalize() {
-        Ok(canonical) => canonical.starts_with(&canonical_root),
-        // If path doesn't exist yet, we need to clean it manually
-        Err(_) => {
-            let absolute = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|cwd| cwd.join(path).canonicalize().ok())
-                    .unwrap_or_else(|| path.to_path_buf())
-            };
+    real_location(path).is_some_and(|real| real.starts_with(&canonical_root))
+}
 
-            let cleaned = clean_path_components(&absolute);
-
-            // Check if the nearest existing ancestor is a symlink
-            // pointing outside the hidden volume
-            let mut check = cleaned.clone();
-            while let Some(parent) = check.parent() {
-                if parent.exists() {
-                    if is_symlink_path(parent) {
-                        match parent.canonicalize() {
-                            Ok(real_parent) => {
-                                if !real_parent.starts_with(&canonical_root) {
-                                    return false;
-                                }
-                            }
-                            Err(_) => return false,
-                        }
-                    }
-                    break;
+/// Where `path` lies, or would be created together with the directories it
+/// lacks, as the kernel resolves it. From `/`, each component that exists is
+/// followed to its real place: a symlink to where it leads, a `..` to the
+/// parent of the real directory reached. The components that do not exist yet
+/// are added below the last one that does, and a `..` among them takes back
+/// the one before it, as it does once the directories are made.
+///
+/// `None`, which the check refuses, for a relative path that does not exist
+/// and for a symlink on the way that leads nowhere (to nothing, or round in a
+/// loop): the kernel follows a dangling symlink when it creates the file, so
+/// what it would create could lie anywhere.
+fn real_location(path: &Path) -> Option<PathBuf> {
+    if let Ok(real) = path.canonicalize() {
+        return Some(real);
+    }
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut real = PathBuf::from("/");
+    // The components below `real` that do not exist yet.
+    let mut missing: Vec<&OsStr> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(name) if missing.is_empty() => {
+                let next = real.join(name);
+                match next.canonicalize() {
+                    Ok(resolved) => real = resolved,
+                    Err(_) if is_symlink_path(&next) => return None,
+                    Err(_) => missing.push(name),
                 }
-                if parent == Path::new("/") {
-                    break;
-                }
-                check = parent.to_path_buf();
             }
-
-            cleaned.starts_with(&canonical_root)
+            Component::Normal(name) => missing.push(name),
+            Component::ParentDir => {
+                if missing.pop().is_none() {
+                    real.pop();
+                }
+            }
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
         }
     }
+    real.extend(missing);
+    Some(real)
 }
 
 /// Clean a path by resolving ".." and "." components without filesystem access
