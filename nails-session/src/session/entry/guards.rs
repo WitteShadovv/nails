@@ -27,12 +27,15 @@ pub(super) fn show_property(unit: &str, property: &str) -> Result<String> {
     .ok_or_else(|| NailsError::InvalidState(format!("systemctl show {unit} failed")))
 }
 
-/// Refuse the entry when the switch would not power off at its job timeout
-/// once the drop-ins are loaded ([`transition::SWITCH_TIMEOUT_ACTION`]): a
+/// Refuse the entry when the switch's job timeout has any other action than
+/// [`transition::SWITCH_TIMEOUT_ACTION`] once the drop-ins are loaded: a
 /// drop-in that sorts after the timeout guard sets `JobTimeoutAction=` again.
-/// A switch that hung that long would then go on by force without the
-/// transition step, and the hidden session would start without the masks that
-/// keep its systemd off the decoy's disks.
+/// With the unit's own `soft-reboot-force` a switch that hung that long would
+/// go on by force without the transition step, and the hidden session would
+/// start without the masks that keep its systemd off the decoy's disks.
+/// `none`, and the plain actions that systemd skips while a shutdown runs,
+/// would leave the switch hung with the session's key in RAM. The entry
+/// accepts only the guard's own action and refuses every other one.
 pub(super) fn check_switch_timeout(host: &dyn EntryHost) -> Result<()> {
     let unit = transition::SWITCH_TIMEOUT_UNIT;
     let action = host.job_timeout_action(unit)?;
@@ -43,11 +46,12 @@ pub(super) fn check_switch_timeout(host: &dyn EntryHost) -> Result<()> {
     Err(NailsError::PreFlightCheckFailed(vec![(
         "switch-timeout".to_string(),
         format!(
-            "{unit} would not power off if the switch hung until its job timeout \
-             (JobTimeoutAction={action}): a drop-in that sorts after \
-             /run/systemd/system/{unit}.d/{} sets JobTimeoutAction= again, and the switch \
-             would then go on by force without its last step, which keeps the hidden \
-             session's systemd off the decoy's disks",
+            "{unit} has JobTimeoutAction={action} with every drop-in loaded, not the {} \
+             that /run/systemd/system/{unit}.d/{} sets: a drop-in that sorts after it sets \
+             the action again. With soft-reboot-force, the unit's own action, a switch \
+             that hung until the job timeout would go on by force without its last step, \
+             which keeps the hidden session's systemd off the decoy's disks",
+            transition::SWITCH_TIMEOUT_ACTION,
             transition::STOP_GUARD_NAME
         ),
         Some(format!(
