@@ -4,10 +4,11 @@
 //! Property tests for the containment-critical helper that decides what counts
 //! as "on the hidden volume".
 //!
-//! `is_on_hidden_volume` guards every path nails writes for the hidden
-//! environment. These suites drive it over generated inputs, reusing the adversarial component alphabet in `tests/common` (plain
-//! names, `.`, `..` and in-tree symlinks that point at themselves, their parent,
-//! outside the volume, or in a loop) so they exercise the same traversal and
+//! `is_on_hidden_volume` guards the state file nails writes on the hidden
+//! volume. These suites drive it over generated inputs, reusing the
+//! adversarial component alphabet in `tests/common` (plain names, `.`, `..`
+//! and in-tree symlinks that point at themselves, their parent, outside the
+//! volume, or in a loop) so they exercise the same traversal and
 //! planted-symlink inputs as the configured-path and `SafeRoot` suites.
 //!
 //! Two kinds of root are covered:
@@ -17,7 +18,8 @@
 //!   below it;
 //! - a root that exists: a tempdir with planted symlinks, asserting that plain
 //!   in-tree paths are accepted and that the check fails closed on anything
-//!   below the symlink that leads out of the volume.
+//!   below the symlink that leads out of the volume and on a symlink at the
+//!   last name.
 //!
 //! Case counts are bounded so the suites run inside the normal `cargo test` gate.
 
@@ -26,7 +28,7 @@ use proptest::prelude::*;
 use std::path::Path;
 
 mod common;
-use common::{components, fixture, join, resolve};
+use common::{SYMLINKS, components, fixture, join, resolve};
 
 /// Cases per property: enough to mix every component kind while staying fast.
 const CASES: u32 = 64;
@@ -60,11 +62,10 @@ proptest! {
         );
     }
 
-    /// Filesystem branch, accept side: with a real root on disk, a path built
-    /// only from plain, in-tree components stays inside the volume and must be
-    /// accepted.
+    /// A root that exists, accept side: a path built only from plain, in-tree
+    /// components stays inside the volume and must be accepted.
     #[test]
-    fn filesystem_branch_accepts_plain_in_tree_paths(
+    fn existing_root_accepts_plain_in_tree_paths(
         parts in prop::collection::vec(prop::sample::select(&["a", "b", "new"][..]), 0..4),
     ) {
         let fx = fixture();
@@ -76,13 +77,13 @@ proptest! {
         );
     }
 
-    /// Filesystem branch, fail-closed side: below the `out` symlink, planted to
-    /// point outside the volume, the check must reject the path whatever
+    /// A root that exists, fail-closed side: below the `out` symlink, planted
+    /// to point outside the volume, the check must reject the path whatever
     /// components follow. The kernel takes a `..` after `out` from where `out`
     /// leads, a `..` after a directory that does not exist yet is refused, and
     /// none of the alphabet's names leads back into the volume from outside it.
     #[test]
-    fn filesystem_branch_rejects_paths_under_an_escaping_symlink(
+    fn existing_root_rejects_paths_under_an_escaping_symlink(
         tail in components(4),
     ) {
         let fx = fixture();
@@ -96,6 +97,26 @@ proptest! {
         prop_assert!(
             !is_on_hidden_volume(Path::new(&path), &root),
             "path under an escaping symlink accepted: {}", path
+        );
+    }
+
+    /// A root that exists, fail-closed side: the state file's write renames
+    /// its file over the last name, which replaces a symlink there where it
+    /// lies, so a path whose last name is a symlink is refused, wherever the
+    /// components before it lead and wherever the symlink itself leads.
+    #[test]
+    fn existing_root_rejects_a_symlink_at_the_last_name(
+        tail in components(4),
+        leaf in prop::sample::select(SYMLINKS),
+    ) {
+        let fx = fixture();
+        let root = fx.vol().to_string_lossy().into_owned();
+        let path = join(&root, &tail, leaf);
+        let is_symlink = std::fs::symlink_metadata(&path)
+            .is_ok_and(|meta| meta.file_type().is_symlink());
+        prop_assert!(
+            !(is_symlink && is_on_hidden_volume(Path::new(&path), &root)),
+            "a symlink at the last name accepted: {}", path
         );
     }
 }

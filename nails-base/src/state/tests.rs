@@ -260,6 +260,31 @@ fn test_path_validation_with_relative_path() {
 }
 
 #[test]
+fn a_relative_path_is_read_from_the_working_directory() {
+    // As the kernel reads it. Without its leading `/`, hv's path names hv's
+    // state file only when read from `/`. Read from the working directory, it
+    // does once it first climbs up to `/`.
+    let (_dir, hv, _outside) = volume_with_outside();
+    std::fs::write(hv.join("state.json"), b"x").unwrap();
+    let root = hv.to_str().unwrap();
+    let below_slash = hv.strip_prefix("/").unwrap().join("state.json");
+    let cwd = std::env::current_dir().unwrap();
+    let up = "../".repeat(cwd.components().count() - 1);
+
+    assert!(is_on_hidden_volume(
+        &Path::new(&up).join(&below_slash),
+        root
+    ));
+    if cwd != Path::new("/") {
+        assert!(!is_on_hidden_volume(&below_slash, root));
+        assert!(!is_on_hidden_volume(
+            &below_slash.with_file_name("new/state.json"),
+            root
+        ));
+    }
+}
+
+#[test]
 fn test_path_validation_with_non_canonical_paths() {
     // `.` and a `..` after a directory that exists resolve as the kernel
     // resolves them.
@@ -779,6 +804,36 @@ fn a_symlink_above_the_nearest_existing_directory_cannot_lead_out() {
 
 #[test]
 #[cfg(unix)]
+fn a_symlink_at_the_last_name_is_refused_wherever_it_leads() {
+    // The state file's write renames its file over the last name, which
+    // replaces a symlink there where it lies. hv/link leads outside, and
+    // outside/back back to hv/file: hv/link/back leads into the volume, but
+    // lies outside it, where the write would put the file.
+    let (_dir, hv, outside) = volume_with_outside();
+    std::fs::write(hv.join("file"), b"x").unwrap();
+    std::os::unix::fs::symlink(&outside, hv.join("link")).unwrap();
+    std::os::unix::fs::symlink(hv.join("file"), outside.join("back")).unwrap();
+    // Ones that lie on the volume and lead into it too: no state file is a
+    // symlink.
+    std::os::unix::fs::symlink(hv.join("file"), hv.join("state.json")).unwrap();
+    std::fs::create_dir(hv.join("dir")).unwrap();
+    std::os::unix::fs::symlink(hv.join("dir"), hv.join("dirlink")).unwrap();
+    let root = hv.to_str().unwrap();
+
+    assert!(!is_on_hidden_volume(&hv.join("link/back"), root));
+    assert!(!is_on_hidden_volume(&outside.join("back"), root));
+    assert!(!is_on_hidden_volume(&hv.join("state.json"), root));
+    assert!(!is_on_hidden_volume(&hv.join("dirlink"), root));
+    // Also with a trailing `/`, after which lstat would follow it.
+    let trailing = format!("{}/", hv.join("dirlink").display());
+    assert!(!is_on_hidden_volume(Path::new(&trailing), root));
+    // What they lead to is no symlink.
+    assert!(is_on_hidden_volume(&hv.join("file"), root));
+    assert!(is_on_hidden_volume(&hv.join("dir"), root));
+}
+
+#[test]
+#[cfg(unix)]
 fn a_dotdot_after_a_symlink_leaves_from_where_the_symlink_leads() {
     // The kernel takes hv/link/.. to the parent of outside/inner, not to hv.
     let (_dir, hv, outside) = volume_with_outside();
@@ -825,6 +880,89 @@ fn a_symlink_inside_the_volume_may_lead_inside_it() {
         &hv.join("inner/state.json"),
         hv.to_str().unwrap()
     ));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn a_magic_link_counts_where_it_leads_not_where_its_text_says() {
+    use std::os::fd::AsRawFd;
+    // /proc/self/fd/<n> leads to the directory the handle holds open, hv/gone.
+    // Once that is removed, the link's text names hv/gone with " (deleted)"
+    // added, where another directory is made: canonicalize, which reads the
+    // text, finds that one, and the kernel does not.
+    let (_dir, hv, _outside) = volume_with_outside();
+    let gone = hv.join("gone");
+    std::fs::create_dir(&gone).unwrap();
+    let handle = std::fs::File::open(&gone).unwrap();
+    std::fs::remove_dir(&gone).unwrap();
+    let magic = PathBuf::from(format!("/proc/self/fd/{}", handle.as_raw_fd()));
+    let namesake = std::fs::read_link(&magic).unwrap();
+    assert!(namesake.starts_with(&hv), "{}", namesake.display());
+    std::fs::create_dir(&namesake).unwrap();
+    std::fs::write(namesake.join("state.json"), b"x").unwrap();
+    let root = hv.to_str().unwrap();
+
+    assert!(!is_on_hidden_volume(&magic.join("state.json"), root));
+    assert!(!is_on_hidden_volume(&magic.join("new/state.json"), root));
+    assert!(is_on_hidden_volume(&namesake.join("state.json"), root));
+    assert!(is_on_hidden_volume(&namesake.join("new/state.json"), root));
+}
+
+/// The check on the real kernel, in an unprivileged user + mount namespace.
+mod kernel_tests {
+    use super::super::is_on_hidden_volume;
+    use crate::test_support::{Rerun, ScratchTmpfs};
+    use std::os::fd::AsRawFd;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_magic_link_into_the_directory_a_volume_covers_is_refused() {
+        let _ = Rerun::new(crate::test_path!(
+            a_magic_link_into_the_directory_a_volume_covers_is_refused
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            // A handle on `vol` taken before a volume is mounted over it. The
+            // text of its magic link names `vol`, where the volume now lies,
+            // but the link leads to the directory below the volume. Both are
+            // the root of a tmpfs, and their files are made in the same order:
+            // their inode numbers can be the same, and only the device tells
+            // them apart.
+            let below = ScratchTmpfs::new("");
+            let vol = below.path().canonicalize().unwrap();
+            let covered = std::fs::File::open(&vol).unwrap();
+            nix::mount::mount(
+                Some("volume"),
+                &vol,
+                Some("tmpfs"),
+                nix::mount::MsFlags::empty(),
+                Some("mode=0755"),
+            )
+            .expect("mount a volume over vol");
+            let magic = PathBuf::from(format!("/proc/self/fd/{}", covered.as_raw_fd()));
+            assert_eq!(std::fs::read_link(&magic).unwrap(), vol);
+            let root = vol.to_str().unwrap();
+
+            assert!(is_on_hidden_volume(&vol.join("state.json"), root));
+            assert!(!is_on_hidden_volume(&magic.join("state.json"), root));
+            assert!(!is_on_hidden_volume(&magic.join("new/state.json"), root));
+
+            // Also once each holds a state file, and with the root written
+            // through the link: it leads below the volume too.
+            for dir in [&vol, &magic] {
+                std::fs::write(dir.join("state.json"), b"x").unwrap();
+                std::fs::create_dir(dir.join("sub")).unwrap();
+            }
+            assert!(!is_on_hidden_volume(&magic.join("state.json"), root));
+            let linked_root = magic.join("sub");
+            let linked_root = linked_root.to_str().unwrap();
+            assert!(!is_on_hidden_volume(
+                &vol.join("sub/state.json"),
+                linked_root
+            ));
+            assert!(is_on_hidden_volume(&vol.join("sub/state.json"), root));
+        });
+    }
 }
 
 #[test]
@@ -896,8 +1034,29 @@ fn a_symlinked_root_is_refused_with_a_trailing_slash_too() {
 }
 
 #[test]
+#[cfg(unix)]
+fn a_root_below_a_symlink_holds_its_paths() {
+    // base/here leads to base, so the root base/here/hv is hv: no symlink
+    // itself, it is compared where it lies, as the path is.
+    let (_dir, hv, _outside) = volume_with_outside();
+    let base = hv.parent().unwrap();
+    std::os::unix::fs::symlink(base, base.join("here")).unwrap();
+    let root = base.join("here/hv");
+    let root = root.to_str().unwrap();
+
+    assert!(is_on_hidden_volume(&base.join("here/hv/state.json"), root));
+    assert!(is_on_hidden_volume(&hv.join("new/state.json"), root));
+    assert!(!is_on_hidden_volume(
+        &base.join("here/outside/state.json"),
+        root
+    ));
+}
+
+#[test]
 fn a_relative_or_empty_root_is_refused() {
-    // Cleaned, the first two shrink to nothing, which every path starts with.
+    // A relative root would be read from the working directory, whichever
+    // that is, and `.` would hold every path below it. Cleaned as text, the
+    // first two shrink to nothing, which every path starts with.
     for root in ["", "missing/..", "relative-root", "."] {
         assert!(
             !is_on_hidden_volume(Path::new("/etc/shadow"), root),
