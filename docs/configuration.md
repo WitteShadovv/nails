@@ -203,11 +203,13 @@ read-write among the hidden files. A `noauto` line is no exception, as any unit
 that pulls it in, or a plain `mount` of its mount point, mounts it; nor is a
 tmpfs, which would hide what lies below it. `nails check` fails `fstab-policy`
 for such an entry of the decoy's fstab, and activation refuses it there and in
-the fstab of a hidden NixOS generation. A mount or automount unit outside the
-fstab (see below) at such a path is refused the same way. Mount the hidden
-volume where the decoy mounts nothing, or move that mount out from below it.
-With `hidden_volume_root = "/mnt"`, a decoy whose fstab mounts a disk at
-`/mnt/backup` is refused.
+the fstab of a hidden NixOS generation. A mount or automount unit that a boot
+target links outside the fstab (see below) at such a path is refused the same
+way. Mount the hidden volume where the decoy mounts nothing, or move that mount
+out from below it. With `hidden_volume_root = "/mnt"`, a decoy whose fstab
+mounts a disk at `/mnt/backup` is refused. For an entry of a hidden NixOS
+generation's fstab, the refusal says to change the hidden configuration, in a
+session entered with `nails activate --overlay-only`.
 
 A unit kept off is masked in `/run`, or skipped where a boot target requires it:
 `local-fs.target` requires the mount of an entry without `nofail` (or its

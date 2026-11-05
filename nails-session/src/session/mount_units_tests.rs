@@ -5,6 +5,7 @@
 //! fstab.
 
 use super::*;
+use crate::session::policy::Whose;
 use nails_teardown::mountinfo::parse_mountinfo;
 use nails_teardown::whole_root::plan::RequiredMask;
 use std::os::unix::fs::symlink;
@@ -247,7 +248,7 @@ fn a_native_mount_or_automount_below_the_hidden_root_refuses_the_entry() {
         .iter()
         .filter(|decision| {
             decision
-                .remedy()
+                .remedy(Whose::Decoy)
                 .is_some_and(|r| r.contains("below /mnt/data"))
         })
         .map(Decision::describe)
