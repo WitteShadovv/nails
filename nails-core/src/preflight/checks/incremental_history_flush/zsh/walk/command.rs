@@ -535,10 +535,19 @@ impl Walker<'_> {
             self.assignment(&word, unconditional);
             assignments.push(word);
         }
-        while words
-            .next_if(|word| PRECOMMANDS.contains(&word.text.as_str()))
-            .is_some()
-        {}
+        while let Some(word) = words.next_if(|word| PRECOMMANDS.contains(&word.text.as_str())) {
+            // zsh expands an alias named like a precommand that is no builtin
+            // in its place (`alias -- -=...`), as the code of a function of
+            // that name the command runs.
+            if matches!(word.text.as_str(), "-" | "nocorrect" | "time" | "!") {
+                self.events.push(Event::Call {
+                    name: word.text,
+                    args: Vec::new(),
+                    function: self.function(),
+                    input: Input::None,
+                });
+            }
+        }
         let Some(command) = words.next() else {
             self.computed_assignments(&assignments);
             return;

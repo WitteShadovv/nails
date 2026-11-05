@@ -80,6 +80,17 @@ const OPEN: &[&str] = &[
     "coproc",
 ];
 
+/// zsh's reserved words that the walk reads as the structure of the code:
+/// zsh expands an alias of such a name before it reads the word as one,
+/// wherever the word starts a command (`alias '{'=...` in a function's body,
+/// `alias do=...` in a loop), which the walk takes for no command it runs.
+/// The precommands among the reserved words (`!`, `nocorrect`, `time`) and
+/// `-` it reads as calls where they stand ([`super::command`]).
+const RESERVED: &[&str] = &[
+    "{", "}", "case", "coproc", "do", "done", "elif", "else", "end", "esac", "fi", "for",
+    "foreach", "function", "if", "repeat", "select", "then", "until", "while",
+];
+
 /// The name of the alias that `text` defines: `name` of `name=value`, or of
 /// `aliases[name]=value`; `None` for a suffix or global alias, which zsh
 /// expands elsewhere than as a command's name, and for a name that holds
@@ -175,7 +186,9 @@ impl Walker<'_> {
     /// value of an alias zsh expands only as a command's name
     /// ([`Event::FcAlias`]). A word an expansion makes that is no definition
     /// as written is a doubt too: it may be a flag (`-g`) that makes the
-    /// aliases after it global, or definitions.
+    /// aliases after it global, or definitions. So is a regular alias named
+    /// like a reserved word ([`RESERVED`]), which runs wherever that word
+    /// starts a command.
     pub(super) fn alias(&mut self, args: &[Word], unconditional: bool) {
         // `-g` and `-s` make an alias zsh expands elsewhere than as a
         // command's name; `-r` is the default, and `--` ends the flags.
@@ -234,6 +247,14 @@ impl Walker<'_> {
             return;
         }
         let name = alias_name(text);
+        if let Some(reserved) = name.filter(|name| regular && RESERVED.contains(name)) {
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell what the alias `{text}` in {} runs where it is used, as zsh \
+                 expands it in place of the reserved word `{reserved}` wherever that starts a \
+                 command",
+                self.place
+            )));
+        }
         // A regular alias's value runs where its name is used, as a function
         // of that name would; a global alias's where a word is its name, which
         // the check counts where the files are read ([`Event::GlobalAlias`]);
