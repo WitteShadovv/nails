@@ -936,7 +936,9 @@ of this changelog for that version becomes the release notes word for word, and
   `-g`, but for a list of words that start with no `-` or `+` (`alias -s {jpg,png}=feh`), which it
   reads as those words, at an alias named like a reserved word of the code's structure
   (`alias '{'=...`, `alias do=...`), which zsh expands in place of that word wherever it starts a
-  command, while one named like a precommand that is no builtin (`!`, `time`, `nocorrect`, `-`) runs
+  command, at an alias whose value leaves a function's definition or a structure open
+  (`alias f=function`, `alias b='{'`), which zsh closes with the words where it is used, while one
+  named like a precommand that is no builtin (`!`, `time`, `nocorrect`, `-`) runs
   where the precommand stands, as a function of its name would, at a `bindkey -s` string with a key
   that edits the line (`^A`, `^H`) and
   at any such string where a file binds a key a line is typed with or makes a widget, at a write in

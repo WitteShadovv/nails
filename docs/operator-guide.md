@@ -1605,8 +1605,11 @@ afterwards:
   (`alias '{'=...`, `alias do=...`), which zsh expands in place of that word
   wherever it starts a command (one named like a precommand that is no builtin,
   `!`, `time`, `nocorrect` or `-`, runs where the precommand stands, as a
-  function of its name would), when a prompt holds code (`$(...)`, `${...}`) or
-  is set in a form it does not read (`print -v PS1`, `${PS1::=...}`, `read PS1`;
+  function of its name would), when an alias's value leaves a function's
+  definition or a structure open (`alias f=function`, `alias b='{'`), which zsh
+  closes with the words where it is used, when a prompt holds code (`$(...)`,
+  `${...}`) or is set in a form it does not read (`print -v PS1`,
+  `${PS1::=...}`, `read PS1`;
   `prompt`, `SPROMPT` and `PROMPT_EOL_MARK` count as prompts too, and so does
   one in the environment of the shell you typed the command into) and a file or
   the command line may turn `PROMPT_SUBST` on (or `PROMPT_VARS`, its other
