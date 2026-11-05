@@ -112,6 +112,7 @@ impl Walker<'_> {
                         text: text.clone(),
                         expands: false,
                         quoted: false,
+                        bare: false,
                     }),
                     first,
                 })
@@ -203,6 +204,7 @@ impl Walker<'_> {
                 text: part.to_string(),
                 expands: part.contains(['$', '`']),
                 quoted: word.quoted,
+                bare: word.bare && part.contains(['$', '`']),
             })
             .collect();
         // `fpath+=dir` appends; `fpath[1,0]=dir` and `fpath[1]=dir` put it

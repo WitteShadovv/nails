@@ -1439,16 +1439,19 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                         text: "x".to_string(),
                         expands: false,
                         quoted: false,
+                        bare: false,
                     },
                     Word {
                         text: "y".to_string(),
                         expands: false,
                         quoted: false,
+                        bare: false,
                     },
                     Word {
                         text: "z".to_string(),
                         expands: false,
                         quoted: false,
+                        bare: false,
                     },
                 ]
             ),
@@ -1496,6 +1499,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 text: "c".to_string(),
                 expands: false,
                 quoted: false,
+                bare: false,
             }),
         ]
     );
@@ -1506,6 +1510,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 text: "f".to_string(),
                 expands: false,
                 quoted: false,
+                bare: false,
             }),
             Token::Open,
             Token::Close,
@@ -1513,34 +1518,40 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 text: "{".to_string(),
                 expands: false,
                 quoted: false,
+                bare: false,
             }),
             Token::Word(Word {
                 text: "x".to_string(),
                 expands: false,
                 quoted: false,
+                bare: false,
             }),
             Token::Word(Word {
                 text: "}".to_string(),
                 expands: false,
                 quoted: false,
+                bare: false,
             }),
             Token::End(End::Condition),
             Token::Word(Word {
                 text: "y".to_string(),
                 expands: false,
                 quoted: false,
+                bare: false,
             }),
             Token::End(End::Condition),
             Token::Word(Word {
                 text: "z".to_string(),
                 expands: false,
                 quoted: false,
+                bare: false,
             }),
             Token::End(End::Pipe),
             Token::Word(Word {
                 text: "w".to_string(),
                 expands: false,
                 quoted: false,
+                bare: false,
             }),
             Token::End(End::Background),
         ]

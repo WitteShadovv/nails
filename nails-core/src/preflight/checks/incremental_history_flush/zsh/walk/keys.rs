@@ -7,7 +7,10 @@
 //! line ends alone, and so is what `print -z` puts in the line (`zle -U` is
 //! read in [`super::hooks`]); what they type counts for the names the files
 //! use too ([`Event::Typed`]). A widget that completes a word bound to a key
-//! a line is typed with runs completion functions the check does not read.
+//! a line is typed with, alone or in a range (`bindkey -R`), runs completion
+//! functions the check does not read, and past a word an expansion makes
+//! that zsh may drop or make several of, the check cannot tell keys from
+//! widgets.
 
 use super::super::lexer::Word;
 use super::hooks::completes;
@@ -80,6 +83,124 @@ fn typed_key(keys: &Word) -> bool {
         }
 }
 
+/// The options of a `bindkey` of `args`, as zsh reads them, and the words
+/// past them, keys and what they are bound to.
+struct Options<'a> {
+    /// The letters of the options (`-RM main` holds `R` and `M`).
+    letters: String,
+    /// The keymap `-M` names, the rest of its word or the next word.
+    keymap: Option<Word>,
+    /// The words past the options.
+    words: &'a [Word],
+    /// A word of the options an expansion makes, which may hold any.
+    computed: Option<&'a Word>,
+    /// Whether `--` or `-` ended the options, so that no word past them is
+    /// one.
+    ended: bool,
+}
+
+/// The options of a `bindkey` of `args`, as zsh reads them: from each word
+/// that starts with `-` up to the first that does not, or that is a `-` and
+/// a digit; `--` and `-` end them and are dropped, and `-M` takes the rest of
+/// its word, or the next word, as the keymap.
+fn options(args: &[Word]) -> Options<'_> {
+    let mut letters = String::new();
+    let mut keymap = None;
+    let mut computed_word = None;
+    let mut ended = false;
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        let Some(flags) = arg.text.strip_prefix('-') else {
+            break;
+        };
+        if flags.starts_with(|c: char| c.is_ascii_digit()) {
+            break;
+        }
+        at += 1;
+        if flags.is_empty() || flags == "-" {
+            ended = true;
+            break;
+        }
+        if computed(arg) {
+            computed_word.get_or_insert(arg);
+        }
+        match flags.split_once('M') {
+            Some((before, rest)) => {
+                letters.push_str(before);
+                letters.push('M');
+                keymap = if rest.is_empty() {
+                    at += 1;
+                    args.get(at - 1).cloned()
+                } else {
+                    Some(Word {
+                        text: rest.to_string(),
+                        expands: computed(arg),
+                        quoted: arg.quoted,
+                        bare: arg.bare,
+                    })
+                };
+            }
+            None => letters.push_str(flags),
+        }
+    }
+    Options {
+        letters,
+        keymap,
+        words: args.get(at..).unwrap_or_default(),
+        computed: computed_word,
+        ended,
+    }
+}
+
+/// How many words zsh may make of a word of a command as it expands it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Count {
+    /// One: one with no expansion, or whose expansions stand in double
+    /// quotes with nothing that splits them there (`"$terminfo[kcuu1]"`).
+    One,
+    /// None or one: an element of a parameter outside quotes
+    /// (`$terminfo[kcuu1]`, `${key[Up]}`), which zsh drops when it is empty,
+    /// unless `SH_WORD_SPLIT` or `KSH_ARRAYS` split it or read it otherwise.
+    AtMostOne,
+    /// Any number: another expansion outside quotes (`$k`, `$k""`, `$(...)`),
+    /// which may be an array or split, one that splits in quotes too
+    /// (`"$@"`, `"${(f)x}"`, `"${=x}"`), and a glob or brace expansion
+    /// outside quotes (`{' ',x}`, `*`).
+    Any,
+}
+
+/// How many words zsh may make of `word` ([`Count`]).
+fn count(word: &Word) -> Count {
+    let text = word.text.as_str();
+    let splits = word.expands
+        && (text.contains('@')
+            || text.contains("${(")
+            || text.contains("${=")
+            || text.contains("$="));
+    if !word.bare && !splits {
+        return Count::One;
+    }
+    // `$name[key]` or `${name[key]}`, its key a literal word.
+    let element = |inner: &str| {
+        inner
+            .strip_suffix(']')
+            .and_then(|inner| inner.split_once('['))
+            .is_some_and(|(name, key)| {
+                super::super::lexer::is_name(name)
+                    && !key.is_empty()
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+    };
+    let braced = text
+        .strip_prefix("${")
+        .and_then(|inner| inner.strip_suffix('}'));
+    if !splits && (text.strip_prefix('$').is_some_and(element) || braced.is_some_and(element)) {
+        Count::AtMostOne
+    } else {
+        Count::Any
+    }
+}
+
 impl Walker<'_> {
     /// The events of a `bindkey` of `args`. With `-s`, the keys each string
     /// after a key types, which zsh reads as the line typed when the key is
@@ -88,52 +209,52 @@ impl Walker<'_> {
     /// in another keymap (`-a`, `-M vicmd`), is a doubt. A key a line is typed
     /// with bound otherwise than to `self-insert`, a key unbound, and a keymap
     /// made, linked or reset may change what such a string types
-    /// ([`Event::Rebind`]).
+    /// ([`Event::Rebind`]). Options an expansion makes, which may be any, are
+    /// a doubt; past `-l`, which lists keymaps, and the options that make,
+    /// link, reset or unbind, no word binds a key to a widget, and with any
+    /// other the words bind keys (a range of them with `-R`) to widgets
+    /// ([`Walker::bind_widgets`]).
     pub(super) fn bindkey(&mut self, args: &[Word], unconditional: bool) {
-        let mut flags = Vec::new();
-        let mut keymap = None;
-        let mut strings = Vec::new();
-        let mut words = args.iter();
-        while let Some(arg) = words.next() {
-            if strings.is_empty() && arg.text.starts_with('-') && arg.text.len() > 1 {
-                if arg.text.contains('M') {
-                    // The keymap it binds in.
-                    keymap = words.next();
-                }
-                flags.push(arg.text.as_str());
-                continue;
-            }
-            strings.push(arg);
+        let options = options(args);
+        if let Some(word) = options.computed {
+            let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell what `bindkey {}` in {} binds, as an expansion makes its options \
+                 `{}`",
+                words.join(" "),
+                self.place,
+                word.text
+            )));
+            return;
         }
-        let macros = flags.iter().any(|flag| flag.contains('s'));
-        let keymaps = flags
-            .iter()
-            .any(|flag| flag.contains(['A', 'N', 'r', 'R', 'd', 'D']));
-        if keymaps {
+        let letters = options.letters.as_str();
+        let macros = letters.contains('s');
+        let keymaps = letters.contains(['A', 'N', 'r', 'd', 'D']);
+        if keymaps || letters.contains('R') {
             self.events.push(Event::Rebind);
         }
         if !macros {
             for arg in args {
                 self.mention(&arg.text);
             }
-            // A widget that completes a word bound to a key typed as a line
-            // is (Space, a letter, Enter) runs completion functions the check
-            // does not read as each line is typed.
-            let keymaps = keymaps || flags.iter().any(|flag| flag.contains(['l', 'L']));
-            for pair in strings.chunks(2) {
-                let [keys, widget] = pair else {
-                    continue;
-                };
-                if !keymaps && typed_key(keys) && widget.text != "self-insert" {
-                    self.events.push(Event::Rebind);
-                }
-                if !keymaps && completes(widget) && (computed(keys) || !completion_keys(&keys.text))
-                {
-                    self.events.push(Event::Doubt(format!(
-                        "it cannot tell what the completion functions that `bindkey {} {}` in {} \
-                         runs as a line is typed write",
-                        keys.text, widget.text, self.place
-                    )));
+            if !keymaps && !letters.contains('l') {
+                match options.words {
+                    // zsh reads the options from the words an expansion makes
+                    // too: `"$o"` may be `-R`, `-s` or `-`, which make the
+                    // words after it ranges, strings that keys type, or keys
+                    // and widgets in each other's places.
+                    [first, _, _, ..] if !options.ended && computed(first) => {
+                        let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+                        self.events.push(Event::Rebind);
+                        self.events.push(Event::Doubt(format!(
+                            "it cannot tell what `bindkey {}` in {} binds, as `{}` may expand \
+                             to its options",
+                            words.join(" "),
+                            self.place,
+                            first.text
+                        )));
+                    }
+                    words => self.bind_widgets(words, letters.contains('R')),
                 }
             }
             return;
@@ -146,9 +267,26 @@ impl Walker<'_> {
         };
         // A string bound in a keymap other than the one a line is typed in,
         // where keys are commands (vicmd).
-        let other = flags.iter().any(|flag| flag.contains('a'))
-            || keymap
+        let other = letters.contains('a')
+            || options
+                .keymap
+                .as_ref()
                 .is_some_and(|keymap| !matches!(keymap.text.as_str(), "main" | "emacs" | "viins"));
+        let strings: Vec<&Word> = options.words.iter().collect();
+        // A word zsh may drop or make several of (`{x,'...^M'}`) may move a
+        // string into a key's place or a key into a string's.
+        if let Some(word) = strings.iter().find(|word| count(word) != Count::One) {
+            let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+            self.events.push(Event::Rebind);
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which keys `bindkey {}` in {} binds to which strings, as `{}` may \
+                 expand to no word or to several",
+                words.join(" "),
+                self.place,
+                word.text
+            )));
+            return;
+        }
         for pair in strings.chunks(2) {
             let [keys, typed] = pair else {
                 continue;
@@ -170,6 +308,88 @@ impl Walker<'_> {
                     self.hooked(&code, unconditional, hook);
                 }
                 None => self.events.push(doubt(&typed.text)),
+            }
+        }
+    }
+
+    /// The events of the words `words` of a `bindkey` that binds keys to
+    /// widgets, each key a range of keys with `ranges` (`-R`): a key a line
+    /// is typed with bound to another widget than `self-insert` may change
+    /// what typed keys do ([`Event::Rebind`]), and a widget that completes a
+    /// word bound to such a key (Space, a letter, Enter, any key of a range)
+    /// runs completion functions the check does not read as each line is
+    /// typed, a doubt. zsh drops a word an expansion outside quotes makes
+    /// when it is empty, so past one the check cannot tell keys from widgets:
+    /// a widget that completes is a doubt there wherever it stands, and so is
+    /// a word an expansion may make several words of ([`Count`]), as it may
+    /// hold one. `SH_WORD_SPLIT` and `KSH_ARRAYS` may make several of an
+    /// element too ([`Event::KeysSplit`]).
+    fn bind_widgets(&mut self, words: &[Word], ranges: bool) {
+        let all: Vec<&str> = words.iter().map(|word| word.text.as_str()).collect();
+        let shown = || {
+            format!(
+                "bindkey{} {}",
+                if ranges { " -R" } else { "" },
+                all.join(" ")
+            )
+        };
+        // The word an expansion makes that may be dropped, past which the
+        // check cannot tell keys from widgets.
+        let mut dropped: Option<&Word> = None;
+        for (at, word) in words.iter().enumerate() {
+            let count = count(word);
+            if count == Count::Any {
+                self.events.push(Event::Rebind);
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell which keys `{}` in {} binds to which widgets, as `{}` may \
+                     expand to no word or to several, a widget that completes a word among them",
+                    shown(),
+                    self.place,
+                    word.text
+                )));
+                return;
+            }
+            if count == Count::AtMostOne {
+                self.events.push(Event::KeysSplit {
+                    bindkey: shown(),
+                    word: word.text.clone(),
+                });
+            }
+            match dropped {
+                Some(before) => {
+                    self.events.push(Event::Rebind);
+                    if completes(word) {
+                        self.events.push(Event::Doubt(format!(
+                            "it cannot tell which keys `{}` in {} binds `{}`, which completes a \
+                             word, to, as `{}` before it may expand to no word",
+                            shown(),
+                            self.place,
+                            word.text,
+                            before.text
+                        )));
+                    }
+                }
+                None if at % 2 == 1 => {
+                    let keys = &words[at - 1];
+                    if (ranges || typed_key(keys)) && word.text != "self-insert" {
+                        self.events.push(Event::Rebind);
+                    }
+                    if completes(word) && (ranges || computed(keys) || !completion_keys(&keys.text))
+                    {
+                        self.events.push(Event::Doubt(format!(
+                            "it cannot tell what the completion functions that `bindkey{} {} {}` \
+                             in {} runs as a line is typed write",
+                            if ranges { " -R" } else { "" },
+                            keys.text,
+                            word.text,
+                            self.place
+                        )));
+                    }
+                }
+                None => {}
+            }
+            if count == Count::AtMostOne && dropped.is_none() {
+                dropped = Some(word);
             }
         }
     }
