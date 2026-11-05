@@ -23,6 +23,7 @@ mod hooks;
 mod keys;
 mod loops;
 mod names;
+mod options;
 mod sets;
 mod strings;
 
