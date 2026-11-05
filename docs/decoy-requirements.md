@@ -555,13 +555,14 @@ history yourself so an interactive shell has nowhere to write:
   `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, Home
   Manager's `programs.zsh` through `history.share`, which is on by default,
   and so does Oh My Zsh), keep `fc -A`, `fc -W` and `fc -p`, and a write to
-  any file but a device, out of zsh's hooks and `history -a` and `history -w`
-  out of bash's `PROMPT_COMMAND`, and type the decoy commands in fish only as
-  `fish --private`. For zsh, the check counts any mention of the three options
-  in a file zsh reads as on, an `unsetopt` too, as no reading of the files can
-  show that a turn-off holds: leave them out of every startup file (on NixOS,
-  out of `programs.zsh.setOptions`), or type the decoy commands in a zsh
-  started as `zsh -f`, which reads no startup file but `/etc/zshenv` (and on
+  any file but a device, out of zsh's hooks (and a write to a device or to
+  `$TTY` too where your files define a global alias) and `history -a` and
+  `history -w` out of bash's `PROMPT_COMMAND`, and type the decoy commands in
+  fish only as `fish --private`. For zsh, the check counts any mention of the
+  three options in a file zsh reads as on, an `unsetopt` too, as no reading of
+  the files can show that a turn-off holds: leave them out of every startup file
+  (on NixOS, out of `programs.zsh.setOptions`), or type the decoy commands in a
+  zsh started as `zsh -f`, which reads no startup file but `/etc/zshenv` (and on
   NixOS `/etc/zshenv.local`). With NixOS's `programs.zsh`, `SHARE_HISTORY`
   taken out of `programs.zsh.setOptions`, the zsh you type `nails activate`
   into passes with the files `programs.zsh` generates by default: the check
@@ -575,7 +576,12 @@ history yourself so an interactive shell has nowhere to write:
   `ARGV0` or a variable of the dynamic loader (`LD_...`) in the environment you
   start the shell from, arithmetic in your files that names a parameter that
   holds no number (`(( i++ ))` before `i` is set in it), a global alias your
-  files use, and a file your startup files write before zsh reads it. It
+  files use or one named like an operator (`alias -g '>'=...`), any global
+  alias where a hook writes to `$TTY` or a device, a key bound to completion
+  in a range (`bindkey -R`) or past a word an expansion makes, an alias named
+  like a reserved word (`alias do=...`), a prompt with code where
+  `PROMPT_SUBST` may be on or a `NULLCMD` in the environment you start the
+  shell from, and a file your startup files write before zsh reads it. It
   follows `compinit` for a `.zshrc` that autoloads it too, when that zsh is
   one from the Nix store. For any other zsh, and when the check finds no shell
   you typed into, it cannot tell where zsh finds `compinit`, and `zsh -f` is

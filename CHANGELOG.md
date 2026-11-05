@@ -808,17 +808,24 @@ of this changelog for that version becomes the release notes word for word, and
 - The `incremental-history-flush` check no longer warns that it cannot tell for what most zsh setups
   hold, each by a rule for the form it knows. A hook's output to `$TTY`
   (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`) goes to the terminal zsh sets it to as it starts,
-  while no file it reads names `TTY` otherwise than to read it, in any form zsh reads a name in, and
-  no arithmetic it reads may set a parameter by a name it cannot read, and so does one to a device
-  (`/dev/null`, `/dev/tty`, `/dev/stderr`) while no global alias stands for it. An alias for an `fc`
-  with no `-A`, `-W`, `-P` or `-p` (`alias h='fc -l'`) given as written is no doubt until a file
+  while no file it reads names `TTY` otherwise than to read it, in any form zsh reads a name in, no
+  arithmetic it reads may set a parameter by a name it cannot read and no file defines a global
+  alias, and so does one to a device (`/dev/null`, `/dev/tty`, `/dev/stderr`) while no file defines
+  a global alias, of any name: zsh looks a global alias up for every token it reads, so with
+  `alias -g '>'='>>~/.zl;:'` it reads `print -r -- $1>$TTY` as a write to `~/.zl`. An alias for an
+  `fc` with no `-A`, `-W`, `-P` or `-p` (`alias h='fc -l'`) given as written is no doubt until a file
   uses its name, in any form zsh reads it in, which would hand that `fc` the words after it
   (`h -W`). Of the shell the command was typed into, the check now reads from `/proc` the program it
   runs and the variables of its environment that tell where zsh finds the functions it autoloads and
   the user's startup files (`FPATH`, `_compdir`, `HOME`, `ZDOTDIR`, and the `NIX_PROFILES`, `USER`
-  and `XDG_STATE_HOME` that NixOS's `/etc/zshenv` reads the Nix profiles with), and `ARGV0`,
-  `MAILPATH` and whether a variable of the dynamic loader is set; an environment that holds one of
-  them as no UTF-8 is one it cannot read. For a zsh from the Nix store as nixpkgs builds it, whose
+  and `XDG_STATE_HOME` that NixOS's `/etc/zshenv` reads the Nix profiles with), `ARGV0`, `MAILPATH`,
+  `NULLCMD`, `READNULLCMD`, whether a variable of the dynamic loader is set, and the prompts zsh
+  takes from its environment
+  (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`, `RPS2`, `RPROMPT2`, `PS3`,
+  `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and `PROMPT_EOL_MARK`); an environment that holds one of
+  them but a prompt, `MAILPATH`, `NULLCMD` or `READNULLCMD` as no UTF-8 is one it cannot read. For a
+  zsh from the Nix store as
+  nixpkgs builds it, whose
   program names one directory of zsh's own and no path a nixpkgs build does not name, `fpath` starts
   there, or in the directories an `FPATH` in its environment names, so a function that no directory
   holds is none zsh can run, as an element of `fpath` the check cannot follow is a doubt of its own
@@ -875,7 +882,8 @@ of this changelog for that version becomes the release notes word for word, and
   `functions=(...)` or `aliases=(...)` array and an alias or a function's body given otherwise than
   by an element as written (`aliases[h]+=...`, `${aliases[h]::=...}`, `print -v 'aliases[h]'`,
   `read`, `set -A aliases`), at a hook's redirection to any file but a device, which may be the one
-  `HISTFILE` names (`>> ~/.zlog`, a glob, a link), at a command a hook runs that is no function,
+  `HISTFILE` names (`>> ~/.zlog`, a glob, a link), and to a device or to `$TTY` where a file defines
+  a global alias, at a command a hook runs that is no function,
   alias or builtin that writes no file when an expansion makes a word it is given (`tee -a $f`) or
   it reads what the shell's code may make the command line (`print -r -- "$1" | tee -a ~/.zlog`,
   `tee -a ~/.zlog <<< "$1"`, `LINE=$1 logger`), at an `exec` that keeps a descriptor open on any
@@ -883,8 +891,15 @@ of this changelog for that version becomes the release notes word for word, and
   for a hook, a widget that completes a word run as each line is entered or a hook runs
   (`zle complete-word` in a hook, `add-zle-hook-widget line-finish complete-word`, a `widgets`
   style, `zle -A complete-word accept-line`) or bound to a key a line is typed with
-  (`bindkey ' ' complete-word`, or in the dump file `bindkey '^m'` or any key zsh's own completion
-  functions do not bind), a `bindkey -s` or `zle -U` that types Tab, `^D` or `^X`, an `fpath`
+  (`bindkey ' ' complete-word`, a range of keys with `bindkey -R`, a binding past `-L`, a lone `-`
+  or a keymap glued to `-M`, which zsh binds as it does without them, or in the dump file
+  `bindkey '^m'` or any key zsh's own completion functions do not bind), at such a widget among the
+  words of a `bindkey` past one an expansion makes that zsh drops when it is empty (`${key[x]}`), at
+  a `bindkey` word an expansion may make several words or the options of (`$k`, `"$@"`, `{' ',x}`,
+  `-$o`, a `"$o"` before two more words), and
+  at such an element where a file may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, at a `bindkey -s`
+  with such a word (`{q,'...^M'}`), at a `bindkey -s` or `zle -U` that types Tab, `^D` or `^X`, an
+  `fpath`
   element that an expansion changes (`${(s:/:)fpath}`), an empty one (`fpath+=`, `FPATH=:$FPATH`),
   one an expansion gives an array where a file may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, which
   split it or keep its first, and `SH_WORD_SPLIT` (`zsh -y`) or `KSH_ARRAYS` on the command line, an
@@ -897,18 +912,30 @@ of this changelog for that version becomes the release notes word for word, and
   `(( ${n}TY = 5 ))`, `a[n]=x`, `a=([n]=x)`, `printf %d n`, `[[ n -eq 5 ]]`, `integer n`), at a
   function or a hook made by a name zsh expands into another (`function {preexec,x}`, `function $n`,
   `add-zsh-hook {preexec,w}`), at a global alias the code uses, which zsh puts in place of that word
-  (`function X`, `read X`), at a `bindkey -s` string with a key that edits the line (`^A`, `^H`) and
+  (`function X`, `read X`), at one whose name holds an operator, a brace or a blank, or is empty,
+  wherever it is defined, as zsh splits such a token off a word with no blank beside it
+  (`alias -g '>'=...` stands for the `>` of `$1>$TTY`, `alias -g '}'=...` for the `}` of `$1}`) and
+  the check cannot count its uses, at an `alias` with a word an expansion makes (`alias $g ...`),
+  which may be `-g`, at an alias named like a reserved word (`alias '{'=...`, `alias do=...`), which
+  zsh expands in place of that word wherever it starts a command, at a `bindkey -s` string with a
+  key that edits the line (`^A`, `^H`) and
   at any such string where a file binds a key a line is typed with or makes a widget, at a write in
   a hook to a descriptor above 2 (`print -u 7`, `>&7`, `/dev/fd/7`), a `zsystem flock`, a `zsocket`
   or a `ztcp`, at a program a hook runs where a hook sets a parameter to what an expansion makes,
   but of parameters zsh keeps a number in alone (`preexec() { LINE=$1; logger }`), at a `MAILPATH`,
-  `NULLCMD` or `module_path` a file sets and a `MAILPATH` in the environment, at a file the startup
+  `NULLCMD` or `module_path` a file sets and a `MAILPATH`, `NULLCMD` or `READNULLCMD` in the
+  environment, at a prompt in the environment that holds an expansion where `PROMPT_SUBST` may be on
+  (`PS1='$(fc -AI)%# '`), at a file the startup
   code may make or write before zsh reads it (`cp ~/.src ~/.gen; . ~/.gen`, `>> $log`), at an
   `fpath` element quotes join into one, at a dump file with a carriage return or a count that is no
   number, and at a `#compdef -kn` first line. It reads every name of a function's definition
   (`function a b`, `a b ()`), counts what a `bindkey -s` string types for the names the files use,
-  and reads what `print -z` puts in the line as a hook's code. A global alias the code does not use
-  is no doubt, so the commands the check took as filters for one (`| grep`) are gone.
+  and reads what `print -z` puts in the line as a hook's code, and a redirection with no command
+  (`preexec() { >/dev/null }`) as a run of `cat`, or of `more` for an input alone, which `NULLCMD`
+  and `READNULLCMD` name by default, so a function of either name runs as a hook's code where a hook
+  holds one. A global alias named by a word that
+  the code does not use is no doubt where no hook writes to a device, so the commands the check took
+  as filters for one (`| grep`) are gone.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

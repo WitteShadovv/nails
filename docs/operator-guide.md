@@ -1352,51 +1352,70 @@ afterwards:
     hook a word that names that file (`tee -a ~/.zsh_history`) counts as a
     write too, and a redirection there to any other file is a doubt, as it may
     be the one `HISTFILE` names or a link to it (`>> ~/.zlog`, a glob), but for
-    a device (`/dev/null`, `/dev/tty`, `/dev/stderr`, `/dev/fd/2`) or standard
-    output or error (`>&2`) while no global alias stands for it, and for a
-    redirection to `$TTY` alone (`$TTY`, `"$TTY"`, `${TTY}`), the terminal zsh
-    sets it to as it starts, while no file it reads names `TTY` otherwise than
-    to read it, in any form zsh reads a name in (`TTY=...`, `local TTY`,
-    `read T''TY`, `print -vTTY`), and no arithmetic it reads may set a
-    parameter by a name it cannot read (see below). A write to a descriptor
-    above 2 (`>&7`, `print -u 7`, `/dev/fd/7`) is a doubt there, as it may be
-    any file the shell has open. A command a hook runs that is no function or
-    alias the files define or autoload nor a builtin that writes no file is a
-    doubt when an expansion makes a word it is given (`tee -a $f`), or when it
-    reads what the shell's code may make the command line: a here-string, a
-    here-document or a file an expansion makes, a value an expansion makes in
-    its environment (`LINE=$1 logger`), or a pipe from a command given an
-    expansion, an `fc`, a `history`, a group, or a function or an alias the
-    files define (`print -r -- "$1" | tee -a ~/.zlog`), and so is any program a
-    hook runs where a hook sets a parameter that is not the function's own to
-    what an expansion makes (`preexec() { LINE=$1; logger }`), which zsh gives
-    the program in its environment once it is exported, but for a value of
-    parameters zsh keeps a number in alone (`start=$SECONDS`). A global alias
-    is a doubt where a word of the code the check reads holds its name beyond
-    its definition, as zsh puts its value in place of that word (`function X`,
-    `set -A X w`, `read X`, `print -r -- "$1" G`). An `exec` that keeps a
-    descriptor open on any file but a device (`exec 3>>~/.zlog`,
-    `exec >~/.zlog`, `exec >&3`), a `sysopen` that opens one to write, a
-    `zsystem flock`, a `zsocket` or `ztcp` connection, a `coproc`, and a
-    `zle -A` that makes a widget named for a hook run another one are doubts. A
-    widget that completes a word, which runs completion functions the check
-    does not read, is a doubt where it runs as each line is entered or a hook
-    runs (`zle complete-word` in a hook,
+    standard output or error (`>&2`), for a device (`/dev/null`, `/dev/tty`,
+    `/dev/stderr`, `/dev/fd/2`) and for a redirection to `$TTY` alone (`$TTY`,
+    `"$TTY"`, `${TTY}`), the terminal zsh sets it to as it starts. A device and
+    `$TTY` count so only while no file it reads defines a global alias, of any
+    name, as zsh looks a global alias up for every token it reads, an
+    operator's too (with `alias -g '>'='>>~/.zl;:'` it reads
+    `print -r -- $1>$TTY` as a write to `~/.zl`), and `$TTY` only while no file
+    it reads names `TTY` otherwise than to read it, in any form zsh reads a
+    name in (`TTY=...`, `local TTY`, `read T''TY`, `print -vTTY`), and no
+    arithmetic it reads may set a parameter by a name it cannot read (see
+    below). A write to a descriptor above 2 (`>&7`, `print -u 7`, `/dev/fd/7`)
+    is a doubt there, as it may be any file the shell has open. A redirection
+    with no command (`>/dev/null` alone) runs `cat`, or `more` for an input
+    alone, the commands `NULLCMD` and `READNULLCMD` name by default, so a
+    function of either name the files define runs as the hook's code there. A
+    command a hook runs that is no function or alias the files define or
+    autoload nor a builtin that writes no file is a doubt when an expansion
+    makes a word it is given (`tee -a $f`), or when it reads what the shell's
+    code may make the command line: a here-string, a here-document or a file an
+    expansion makes, a value an expansion makes in its environment
+    (`LINE=$1 logger`), or a pipe from a command given an expansion, an `fc`, a
+    `history`, a group, or a function or an alias the files define
+    (`print -r -- "$1" | tee -a ~/.zlog`), and so is any program a hook runs
+    where a hook sets a parameter that is not the function's own to what an
+    expansion makes (`preexec() { LINE=$1; logger }`), which zsh gives the
+    program in its environment once it is exported, but for a value of
+    parameters zsh keeps a number in alone (`start=$SECONDS`). A global alias is
+    a doubt where a word of the code the check reads holds its name beyond its
+    definition, as zsh puts its value in place of that word (`function X`,
+    `set -A X w`, `read X`, `print -r -- "$1" G`), and one whose name holds an
+    operator, a brace or a blank, or is empty, is a doubt wherever it is
+    defined, as zsh splits such a token off a word with no blank beside it
+    (`$1>$TTY`, `$1;`, `$1}`) and the check cannot count its uses. So is an
+    `alias` with a word an expansion makes (`alias $g ...`), which may be
+    `-g`. An `exec` that keeps a descriptor open on any file but a device
+    (`exec 3>>~/.zlog`, `exec >~/.zlog`, `exec >&3`), a `sysopen` that opens one
+    to write, a `zsystem flock`, a `zsocket` or `ztcp` connection, a `coproc`,
+    and a `zle -A` that makes a widget named for a hook run another one are
+    doubts. A widget that completes a word, which runs completion functions the
+    check does not read, is a doubt where it runs as each line is entered or a
+    hook runs (`zle complete-word` in a hook,
     `add-zle-hook-widget line-finish complete-word`, a `zstyle` of the
     `widgets` style that dispatcher reads, `zle -A complete-word accept-line`)
     and where a key a line is typed with is bound to it
     (`bindkey ' ' complete-word`: any key but Tab, `^D` and a sequence after
-    `^X` or an escape). A `bindkey -s` string is read as the keys it types when
-    it holds printable characters and line ends alone; one with any other key
+    `^X` or an escape, any key of a range bound with `-R`, and a binding past
+    `-L`, a lone `-` or a keymap glued to `-M`, as zsh reads its options). Past
+    a word of a `bindkey` that an expansion makes outside quotes and zsh drops
+    when it is empty (`${key[x]}`), such a widget is a doubt wherever it
+    stands, and so is a word an expansion may make several words or the
+    options of (`$k`, `"$@"`, `${=k}`, `{' ',x}`, `-$o`, a `"$o"` before two
+    more words), and such an element where a file may turn `SH_WORD_SPLIT` or
+    `KSH_ARRAYS` on. A `bindkey -s` string is read as the keys it types when it
+    holds printable characters and line ends alone; one with any other key
     (`^A`, `^H`, Tab, an escape), one bound in a keymap where keys are commands
-    (`bindkey -a -s`, `-M vicmd`), and a `print -z` with an escape `print`
-    decodes are doubts, and so is any such string, and a `zle -U`, where a file
-    binds a key a line is typed with, unbinds one, makes a widget or changes a
-    keymap, which may change what its keys type. What they type counts for the
-    names the check counts (an `fc` alias, `TTY` and the rest, see below). A
-    history tool that keeps its own record elsewhere, such as atuin, it does
-    not see as one, though the command its hook runs with the line you typed is
-    such a doubt;
+    (`bindkey -a -s`, `-M vicmd`), a `bindkey -s` with a word zsh may drop or
+    make several words of (`{q,'...^M'}`), and a `print -z` with an escape
+    `print` decodes are doubts, and so is any such string, and a `zle -U`, where
+    a file binds a key a line is typed with, unbinds one, makes a widget or
+    changes a keymap, which may change what its keys type. What they type counts
+    for the names the check counts (an `fc` alias, `TTY` and the rest, see
+    below). A history tool that keeps its own record elsewhere, such as atuin,
+    it does not see as one, though the command its hook runs with the line you
+    typed is such a doubt;
   - an `emulate -R ksh`, whose reset to ksh's defaults turns `SHARE_HISTORY`
     on, as `-R` sets every option to the mode's defaults (sh's, csh's and
     zsh's hold none of the three); an `emulate` whose mode an expansion makes
@@ -1431,10 +1450,17 @@ afterwards:
     directory it was built with, or in one that an `FPATH` from its environment
     names, which the check does not read. Of that environment it keeps `FPATH`,
     `NIX_PROFILES`, `USER`, `XDG_STATE_HOME`, `_compdir`, `HOME`, `ZDOTDIR`,
-    `ARGV0` and `MAILPATH`, and whether a variable of the dynamic loader
-    (`LD_...`) is set, without its value; when one of them is no UTF-8, it
-    reads the shell as one whose environment it does not know, and a `MAILPATH`
-    there, whose messages zsh expands before a prompt, is a doubt;
+    `ARGV0`, `MAILPATH`, `NULLCMD`, `READNULLCMD` and the prompts zsh takes
+    from it (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`,
+    `RPS2`, `RPROMPT2`, `PS3`, `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and
+    `PROMPT_EOL_MARK`), and whether a variable of the dynamic loader (`LD_...`)
+    is set, without its value; when one of them but a prompt, `MAILPATH`,
+    `NULLCMD` or `READNULLCMD` is no UTF-8, it reads the shell as one whose
+    environment it does not know. A `MAILPATH` there, whose messages zsh expands
+    before a prompt, is a doubt, and so are a `NULLCMD` and a `READNULLCMD`,
+    which name the command zsh runs for a redirection with none, and a prompt
+    there that holds an expansion holds code where `PROMPT_SUBST` may be on, as
+    zsh shows it unless a file sets it;
   - zsh's own `compinit` and `promptinit`, and the `compaudit`, `compdump`,
     `add-zsh-hook` and `add-zle-hook-widget` they run, it knows by their bytes
     as zsh 5.9, 5.9.1 and 5.9.2 ship them, and reads for what that code does,
@@ -1546,9 +1572,12 @@ afterwards:
   for an `fc` with no `-A`, `-W` or `-P`, as `alias h='fc -l'`, only when a
   file it reads uses its name, which hands that `fc` the words after it, as
   `h -W` would, and so only where the check reads how the alias is given), when
-  a prompt holds code (`$(...)`, `${...}`) or is set in a form it does not read
+  an alias is named like a reserved word (`alias '{'=...`, `alias do=...`),
+  which zsh expands in place of that word wherever it starts a command, when a
+  prompt holds code (`$(...)`, `${...}`) or is set in a form it does not read
   (`print -v PS1`, `${PS1::=...}`, `read PS1`; `prompt`, `SPROMPT` and
-  `PROMPT_EOL_MARK` count as prompts too) and a file or the command line may
+  `PROMPT_EOL_MARK` count as prompts too, and so does one in the environment
+  of the shell you typed the command into) and a file or the command line may
   turn `PROMPT_SUBST` on, when a sourced file's path or a `ZDOTDIR` does not
   resolve (as for `source <(tool init zsh)`) or zsh expands it into others (a
   glob, `{a,b}`), when a function they autoload may be in a directory added to
@@ -1587,15 +1616,16 @@ afterwards:
   in: as written, with each backslash-newline joined, with quotes and
   backslashes taken off and `$'...'` decoded, and in the words of the code as
   it reads them, in which a line that starts with `#` inside a quote is code.
-  The names of `TTY`, of an `fc` alias, of a global alias and of `_compdir`,
-  `HOME`, `ZSH_VERSION`, `ARGV0`, `MAILPATH`, `NULLCMD` and `module_path` it
-  counts the same way. What a line names beyond what it read as code it follows
-  makes it fail closed, in case it read the code otherwise than zsh does: such
-  an option counts as on, an `fpath` setting adds a directory it cannot follow,
-  a prompt holds code it cannot follow, and the rest makes it warn that it
-  cannot tell. So a `source` or `eval` anywhere but in a command it follows, in
-  an `echo`, a string, an alias or a here-document, makes it warn, and so does
-  an `eval` of what a command prints (`eval "$(tool init zsh)"`).
+  The names of `TTY`, of an `fc` alias, of a global alias that is a word and
+  of `_compdir`, `HOME`, `ZSH_VERSION`, `ARGV0`, `MAILPATH`, `NULLCMD` and
+  `module_path` it counts the same way. What a line names beyond what it read
+  as code it follows makes it fail closed, in case it read the code otherwise
+  than zsh does: such an option counts as on, an `fpath` setting adds a
+  directory it cannot follow, a prompt holds code it cannot follow, and the rest
+  makes it warn that it cannot tell. So a `source` or `eval` anywhere but in a
+  command it follows, in an `echo`, a string, an alias or a here-document, makes
+  it warn, and so does an `eval` of what a command prints
+  (`eval "$(tool init zsh)"`).
 
   So zsh passes only when no file it reads names the three options and nothing
   is left the check cannot tell: zsh's default, under which a zsh writes its
