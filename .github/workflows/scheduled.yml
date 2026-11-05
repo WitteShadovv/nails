@@ -418,8 +418,9 @@ jobs:
   # Kani's proofs of a few pure invariants, each for every input within the
   # bounds it states (docs/testing-strategy.md#model-checking). They run weekly
   # and on dispatch, never on a pull request. A red run is a proof that no
-  # longer holds, fewer proofs verified or cover properties satisfied than the
-  # sources hold, or a Kani install or build that failed.
+  # longer holds, sources that hold no proof, fewer proofs verified or cover
+  # properties satisfied than the sources hold, or a Kani install or build that
+  # failed.
   kani:
     name: Kani proofs
     needs: tasks
@@ -445,10 +446,11 @@ jobs:
       # The Kani release the proofs are checked with, and the SHA-256 that its
       # release page gives for the x86_64 Linux bundle: `cargo kani setup`
       # checks no hash of what it downloads, so the bundle is fetched and
-      # checked here and handed to it. --locked builds the driver with the
-      # dependency versions it was released with. Setup unpacks the bundle and
-      # installs, with rustup, the nightly toolchain the release was built
-      # against.
+      # checked here and handed to it. cargo install builds only the front
+      # end, the cargo-kani and kani commands, and --locked builds it with the
+      # dependency versions it was released with. The driver and the compiler
+      # come in the bundle. Setup unpacks the bundle and installs, with rustup,
+      # the nightly toolchain the release was built against.
       - name: Install Kani
         env:
           KANI_VERSION: 0.68.0
