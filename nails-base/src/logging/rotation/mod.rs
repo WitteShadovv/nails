@@ -83,8 +83,10 @@ pub fn should_rotate<F: Filesystem>(log_path: &Path, max_log_size_mb: u64, fs: &
 ///
 /// # Errors
 ///
-/// Returns `NailsError::IoError` only if critical operations fail.
-/// Individual rename/remove failures are logged but don't abort rotation.
+/// Returns `NailsError::IoError` only if critical operations fail, a
+/// numbered log that cannot be looked up among them, before any log is
+/// renamed. Individual rename/remove failures are logged but don't abort
+/// rotation.
 ///
 /// # AC Compliance
 ///
@@ -115,32 +117,44 @@ pub fn rotate_logs<F: Filesystem>(
     #[allow(unused_assignments)]
     let mut new_log_created = false;
 
-    // Rotate numbered logs in REVERSE order (highest to lowest)
-    // This prevents overwriting: .6 -> .7, .5 -> .6, etc.
+    // Look up every numbered log before any is renamed: one that cannot be
+    // looked up may be there, and renaming the one below it would replace
+    // it, so the rotation stops there, naming it.
+    let mut numbered = Vec::new();
     for i in (1..retention_days).rev() {
         let from = log_path.join(format!("{}.{}", LOG_FILE_NAME, i));
         let to = log_path.join(format!("{}.{}", LOG_FILE_NAME, i + 1));
+        match fs.path_exists(&from) {
+            Ok(true) => numbered.push((from, to)),
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!("Log rotation stopped: {}", e);
+                return Err(e);
+            }
+        }
+    }
 
-        if fs.path_exists(&from).unwrap_or(false) {
-            match fs.rename_file(&from, &to) {
-                Ok(_) => {}
-                Err(e) => {
-                    // Check if this is a permission denied error
-                    if is_permission_denied(&e) {
-                        tracing::warn!(
-                            "Log rotation failed: permission denied renaming {}",
-                            from.display()
-                        );
-                    } else {
-                        tracing::warn!(
-                            "Failed to rename {} to {}: {}",
-                            from.display(),
-                            to.display(),
-                            e
-                        );
-                    }
-                    // Continue with other files (degraded but functional)
+    // Rotate numbered logs in REVERSE order (highest to lowest)
+    // This prevents overwriting: .6 -> .7, .5 -> .6, etc.
+    for (from, to) in numbered {
+        match fs.rename_file(&from, &to) {
+            Ok(_) => {}
+            Err(e) => {
+                // Check if this is a permission denied error
+                if is_permission_denied(&e) {
+                    tracing::warn!(
+                        "Log rotation failed: permission denied renaming {}",
+                        from.display()
+                    );
+                } else {
+                    tracing::warn!(
+                        "Failed to rename {} to {}: {}",
+                        from.display(),
+                        to.display(),
+                        e
+                    );
                 }
+                // Continue with other files (degraded but functional)
             }
         }
     }
