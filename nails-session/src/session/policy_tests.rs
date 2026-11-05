@@ -248,13 +248,12 @@ fn a_unit_no_boot_target_requires_stays_masked() {
 }
 
 #[test]
-fn ram_kernel_noauto_root_and_hidden_entries_are_left_alone() {
+fn ram_kernel_noauto_and_root_entries_are_left_alone() {
     for line in [
         "/dev/vda2 / ext4 defaults 0 1",
         "tmpfs /tmp tmpfs defaults 0 0",
         "share /mnt/share virtiofs defaults 0 0",
         "/dev/sdb1 /mnt/usb vfat noauto 0 0",
-        "/dev/mapper/data /mnt/data ext4 noauto 0 0",
         "overlay /var/cache overlay lowerdir=/usr,upperdir=/tmp/up,workdir=/tmp/w 0 0",
     ] {
         assert!(
@@ -263,6 +262,95 @@ fn ram_kernel_noauto_root_and_hidden_entries_are_left_alone() {
             decide_line(line)
         );
     }
+}
+
+/// The decision for the first entry of `line` with the hidden volume at
+/// `root`, mounted there, and every device there.
+fn decide_below(root: &str, line: &str) -> Decision {
+    let mounts = parse_mountinfo(&format!(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+         2 1 253:0 / {root} rw - ext4 /dev/mapper/data rw\n\
+         3 2 8:17 / {root}/backup rw - ext4 /dev/vdb1 rw\n"
+    ));
+    decide(&parse_fstab(line)[0], &mounts, Path::new(root), &present)
+}
+
+#[test]
+fn every_entry_at_or_below_the_hidden_root_is_refused() {
+    // The hidden volume is bound at /mnt in the hidden root: the hidden
+    // systemd would mount each of these over it or inside it. The decoy's own
+    // disk mounted there now, a RAM filesystem, a noauto line that a unit or a
+    // plain mount pulls in, an automount and a line for the hidden volume
+    // itself alike.
+    for line in [
+        "/dev/mapper/data /mnt ext4 noauto 0 0",
+        "/dev/vdb1 /mnt/backup ext4 defaults 0 2",
+        "tmpfs /mnt/ram tmpfs defaults 0 0",
+        "/dev/sdb1 /mnt/usb vfat noauto 0 0",
+        "/dev/sdb2 /mnt/archive ext4 noauto,x-systemd.automount 0 2",
+        "/dev/sdb3 /mnt/media/disk ext4 defaults,nofail 0 2",
+    ] {
+        let decision = decide_below("/mnt", line);
+        let Decision::Refuse { reason, .. } = &decision else {
+            panic!("{line}: {decision:?}");
+        };
+        assert!(
+            reason.contains("at or below /mnt, where the hidden volume is mounted"),
+            "{line}: {reason}"
+        );
+        // What to do names the root: mount the volume elsewhere, or move the
+        // decoy's mount.
+        let remedy = decision.remedy().unwrap_or_default();
+        assert!(
+            remedy.starts_with("Mount the hidden volume where the decoy mounts nothing")
+                && remedy.contains("out from below /mnt"),
+            "{line}: {remedy}"
+        );
+        assert!(decision.masked_units().is_empty(), "{line}: {decision:?}");
+    }
+    // Swap has no mount point, and is kept off as always.
+    assert_eq!(
+        skipped(&decide_below("/mnt", "/dev/vdb2 none swap sw 0 0")),
+        (vec!["dev-vdb2.swap".to_string()], vec![])
+    );
+    // A path that only begins with the root's name is not below it.
+    assert!(matches!(
+        decide_below("/mnt", "/dev/sdb4 /mnt2 ext4 noauto 0 0"),
+        Decision::Leave { .. }
+    ));
+    assert_eq!(
+        decide_below("/mnt", "/dev/sdb4 /mnt2 ext4 defaults,nofail 0 2").masked_units(),
+        ["mnt2.mount"]
+    );
+    // An odd mount point is refused as before, with no remedy of its own.
+    assert_eq!(
+        decide_below("/mnt", "/dev/sdb5 mnt/x ext4 defaults 0 2").remedy(),
+        None
+    );
+}
+
+#[test]
+fn an_entry_at_a_parent_of_the_hidden_root_is_decided_as_before() {
+    // The hidden volume at /mnt/data, on a decoy disk mounted at /mnt: that
+    // disk is overlaid like any other, and the hidden volume bound again over
+    // it at entry.
+    let mounts = parse_mountinfo(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+         2 1 8:17 / /mnt rw - ext4 /dev/vdb1 rw\n\
+         3 2 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    let entry = &parse_fstab("/dev/vdb1 /mnt ext4 defaults 0 2")[0];
+    assert_eq!(
+        decide(entry, &mounts, Path::new("/mnt/data"), &present),
+        Decision::Overlay {
+            target: "/mnt".into()
+        }
+    );
+    // Not mounted now: kept off, as before.
+    assert_eq!(
+        decide_line("/dev/vdb1 /mnt ext4 defaults,nofail 0 2").masked_units(),
+        ["mnt.mount"]
+    );
 }
 
 #[test]
@@ -342,14 +430,21 @@ fn a_redirected_entry_inside_the_hidden_volume_is_masked() {
         skipped(&automount),
         (vec!["mnt-data.automount".into()], vec![])
     );
-    // Where the hidden volume's own rule leaves it: the bind is there.
+    // A line of the decoy's own at that path is refused instead: the decoy
+    // itself would mount it there. Led there by a link of the hidden root's,
+    // the line names a path outside the hidden volume, and is kept off.
     assert!(matches!(
         decide_line("UUID=X /mnt/data/data ext4 defaults,nofail 0 2"),
+        Decision::Refuse { .. }
+    ));
+    // A RAM filesystem a link leads there is left to the hidden systemd.
+    assert!(matches!(
+        decide_redirected_line("tmpfs /mnt/data/tmp tmpfs defaults 0 0"),
         Decision::Leave { .. }
     ));
     // Elsewhere, and for RAM or the root, the same decisions as decide.
     for line in [
-        "tmpfs /mnt/data/tmp tmpfs defaults 0 0",
+        "tmpfs /tmp tmpfs defaults 0 0",
         "/dev/vda2 / ext4 defaults 0 1",
         "LABEL=home /home ext4 defaults 0 2",
         "/dev/sdb1 /data ext4 defaults 0 2",

@@ -15,8 +15,8 @@
 //! | --- | --- |
 //! | `/` | the root overlay itself |
 //! | swap | kept off: never activated |
+//! | a mount point at or below the hidden root: the hidden volume itself, a disk, a `noauto`, automount or RAM entry | refused: the hidden session could mount it over or inside the hidden volume |
 //! | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
-//! | the hidden volume, or a path inside it | left alone: it is bound at its own path |
 //! | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
 //! | a VM host share not mounted now | left to the hidden systemd |
 //! | `/boot`, `/boot/efi`, `/efi` (the ESP and boot partitions) | read-only bind of the decoy mount |
@@ -64,14 +64,25 @@
 //!
 //! An entry of the decoy's fstab that the next root resolves to another path
 //! than the decoy root does (a symlink on the way that a session replaced or
-//! added) is decided at that path as well ([`decide_redirected`]). There the
-//! hidden-volume rule does not apply: a link that leads the entry into the
-//! hidden volume still names a decoy filesystem, which the hidden systemd
-//! would mount read-write inside the hidden volume, so it is masked.
+//! added) is decided at that path as well ([`decide_redirected`]). A link that
+//! leads the entry into the hidden volume is not refused: the decoy's line
+//! names a path outside it, and only a link in the hidden root leads it
+//! there. It still names a decoy filesystem, which the hidden systemd would
+//! mount read-write inside the hidden volume, so it is kept off.
 //!
-//! Nothing is refused outright today: every entry has a safe decision. The
-//! `Refuse` decision exists for entries whose target cannot be mounted inside
-//! the next root (a relative or odd mount point).
+//! Two kinds of entry are refused outright, and activation with them: one
+//! whose mount point is not a plain absolute path, which cannot be mounted
+//! inside the next root, and one whose mount point lies at or below the hidden
+//! root (unless that root is `/`). The hidden volume is bound at its own path
+//! in the hidden root, so the hidden systemd would mount such an entry's
+//! filesystem over the hidden volume or inside it, a decoy disk read-write
+//! among the hidden files. That holds for a `noauto` line too, which any unit
+//! or a plain `mount` can pull in, for an automount, for a RAM filesystem,
+//! which would hide what lies below it, and for a line that names the hidden
+//! volume itself. The hidden volume has to be mounted where the decoy mounts
+//! nothing ([`Decision::remedy`]). The same holds for a hidden NixOS
+//! generation's fstab and for the mount and automount units outside the
+//! fstab, which are decided as fstab lines ([`super::mount_units`]).
 
 use super::fstab::{
     FstabEntry, automount_unit, checkers, escape_path, mount_unit, required_by, swap_unit,
@@ -165,6 +176,9 @@ pub enum Decision {
         target: PathBuf,
         /// Why.
         reason: String,
+        /// What the operator can do, where fixing or removing the entry is
+        /// not the whole answer ([`Decision::remedy`]).
+        remedy: Option<String>,
     },
 }
 
@@ -227,6 +241,25 @@ impl Decision {
         }
     }
 
+    /// What the operator can do about a refusal, where fixing or removing
+    /// the entry is not the whole answer: for an entry at or below the hidden
+    /// root, mounting the hidden volume elsewhere is the other.
+    pub fn remedy(&self) -> Option<&str> {
+        match self {
+            Decision::Refuse { remedy, .. } => remedy.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// `refusal`, a refusal of this decision's entry in words, followed by
+    /// what to do about it where the decision says ([`Decision::remedy`]).
+    pub fn with_remedy(&self, refusal: String) -> String {
+        match self.remedy() {
+            Some(remedy) => format!("{refusal}. {remedy}"),
+            None => refusal,
+        }
+    }
+
     /// A one-line description for `check` and the activation log.
     pub fn describe(&self) -> String {
         match self {
@@ -241,7 +274,7 @@ impl Decision {
             Decision::Leave { target, reason } => {
                 format!("{}: left as is ({reason})", target.display())
             }
-            Decision::Refuse { target, reason } => {
+            Decision::Refuse { target, reason, .. } => {
                 format!("{}: refused ({reason})", target.display())
             }
         }
@@ -373,8 +406,9 @@ pub fn decide(
 
 /// Decide an entry of the decoy's fstab at the path the next root resolves
 /// it to, where that differs from the decoy root's (see the module docs): as
-/// [`decide`], except that a path inside the hidden volume is kept unmounted
-/// rather than left to the bind of the hidden volume.
+/// [`decide`], except that a path at or below the hidden root is kept
+/// unmounted rather than refused, and a RAM or kernel filesystem there is
+/// left to the hidden systemd.
 pub fn decide_redirected(
     entry: &FstabEntry,
     mounts: &[MountEntry],
@@ -509,7 +543,12 @@ fn decide_entry(
         return Decision::Refuse {
             reason: "the mount point is not a plain absolute path".to_string(),
             target,
+            remedy: None,
         };
+    }
+    let below_hidden_root = hidden_root != Path::new("/") && target.starts_with(hidden_root);
+    if below_hidden_root && !redirected {
+        return below_the_hidden_root(target, hidden_root);
     }
     if target == Path::new("/") {
         return Decision::Leave {
@@ -523,20 +562,14 @@ fn decide_entry(
             reason: "RAM or kernel filesystem",
         };
     }
-    if target.starts_with(hidden_root) {
-        if redirected {
-            return keep_off(
-                entry,
-                units,
-                "a link leads it into the hidden volume, where the hidden session would mount \
-                 a decoy filesystem read-write",
-                present,
-            );
-        }
-        return Decision::Leave {
-            target,
-            reason: "the hidden volume is bound at its own path",
-        };
+    if below_hidden_root {
+        return keep_off(
+            entry,
+            units,
+            "a link leads it into the hidden volume, where the hidden session would mount \
+             a decoy filesystem read-write",
+            present,
+        );
     }
     let mounted = mounted_at(mounts, &target).is_some();
     if (entry.is_host_share() || entry.vfstype == "overlay") && mounted {
@@ -591,6 +624,23 @@ fn decide_entry(
             "not mounted now; the hidden session would mount it read-write",
             present,
         ),
+    }
+}
+
+/// The refusal of an entry whose mount point `target` lies at or below the
+/// hidden root (see the module docs).
+fn below_the_hidden_root(target: PathBuf, hidden_root: &Path) -> Decision {
+    let root = hidden_root.display();
+    Decision::Refuse {
+        reason: format!(
+            "it lies at or below {root}, where the hidden volume is mounted: the hidden \
+             session could mount it over the hidden volume or inside it"
+        ),
+        remedy: Some(format!(
+            "Mount the hidden volume where the decoy mounts nothing, or move this mount out \
+             from below {root} or remove it, before activating."
+        )),
+        target,
     }
 }
 

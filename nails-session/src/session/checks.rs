@@ -16,9 +16,11 @@
 //! - `fstab-policy`: every line of the decoy's fstab, and every mount, swap
 //!   and automount unit linked in a target's `.wants` or `.requires`
 //!   directory of the decoy root and of `/run` (the initrd's targets aside),
-//!   has a safe decision ([`super::policy`], [`super::mount_units`]); it
-//!   warns when a filesystem is kept from the hidden session, and names a
-//!   boot target a mask keeps from being reached. A mount the hidden systemd
+//!   has a safe decision ([`super::policy`], [`super::mount_units`]); one
+//!   whose mount point lies at or below the hidden root has none, and the
+//!   check names the root in what to do about it. It warns when a filesystem
+//!   is kept from the hidden session, and names a boot target a mask keeps
+//!   from being reached. A mount the hidden systemd
 //!   starts otherwise (a unit only another unit pulls in) is not decided.
 //!   Activation decides again on the hidden root, whose own units the check
 //!   does not see;
@@ -299,7 +301,8 @@ impl<F: Filesystem> PreFlightCheck<F> for ShutdownInhibitorsCheck {
 }
 
 /// Judge the fstab decisions, with `unskipped`, the warnings for the skips
-/// masked instead ([`mount_units::kept_off`]).
+/// masked instead ([`mount_units::kept_off`]). A refusal names what to do
+/// about it ([`Decision::remedy`]).
 pub fn judge_fstab(decisions: &[Decision], unskipped: &[String]) -> CheckResult {
     if let Some(refused) = decisions
         .iter()
@@ -307,7 +310,12 @@ pub fn judge_fstab(decisions: &[Decision], unskipped: &[String]) -> CheckResult 
     {
         return CheckResult::fail_with(
             refused.describe(),
-            "Fix the fstab entry or the unit directory it names, or remove it, before activating."
+            refused
+                .remedy()
+                .unwrap_or(
+                    "Fix the fstab entry or the unit directory it names, or remove it, before \
+                     activating.",
+                )
                 .to_string(),
         );
     }
