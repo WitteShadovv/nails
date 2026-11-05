@@ -28,11 +28,12 @@ use std::path::{Path, PathBuf};
 /// whose own the stock `compaudit` puts in `fpath` (`_compdir`), where zsh
 /// reads the user's startup files (`HOME`, `ZDOTDIR`), the name zsh gives
 /// every program it runs (`ARGV0`), the mail messages it expands before a
-/// prompt (`MAILPATH`), as `LD_` without a value, whether a variable of
-/// the dynamic loader is set (`LD_PRELOAD`), and the prompts zsh takes from
-/// its environment and expands as it shows them (`PS1`, `RPROMPT`, ...,
+/// prompt (`MAILPATH`), the commands it runs for a redirection that has none
+/// (`NULLCMD`, `READNULLCMD`), as `LD_` without a value, whether a variable
+/// of the dynamic loader is set (`LD_PRELOAD`), and the prompts zsh takes
+/// from its environment and expands as it shows them (`PS1`, `RPROMPT`, ...,
 /// [`PROMPTS`]), which run code where `PROMPT_SUBST` is on.
-pub(in super::super) const ENVIRONMENT: [&str; 25] = [
+pub(in super::super) const ENVIRONMENT: [&str; 27] = [
     "FPATH",
     "NIX_PROFILES",
     "USER",
@@ -42,6 +43,8 @@ pub(in super::super) const ENVIRONMENT: [&str; 25] = [
     "ZDOTDIR",
     "ARGV0",
     "MAILPATH",
+    "NULLCMD",
+    "READNULLCMD",
     LOADER,
     "PS1",
     "PROMPT",
@@ -61,11 +64,11 @@ pub(in super::super) const ENVIRONMENT: [&str; 25] = [
 ];
 
 /// Whether the check reads the value of the variable `name` of
-/// [`ENVIRONMENT`] only for an expansion in it, as it does `MAILPATH`'s and
-/// the prompts' ([`PROMPTS`]), so that what is no UTF-8 in it may be
-/// replaced.
+/// [`ENVIRONMENT`] only for an expansion in it or not at all, as it does
+/// `MAILPATH`'s, `NULLCMD`'s, `READNULLCMD`'s and the prompts' ([`PROMPTS`]),
+/// so that what is no UTF-8 in it may be replaced.
 pub(in super::super) fn lossy(name: &str) -> bool {
-    name == "MAILPATH" || PROMPTS.contains(&name)
+    matches!(name, "MAILPATH" | "NULLCMD" | "READNULLCMD") || PROMPTS.contains(&name)
 }
 
 /// The name the check keeps, without a value, for any variable of the
@@ -112,6 +115,8 @@ pub(in super::super) struct Env {
     pub loader: bool,
     /// The prompts it holds ([`PROMPTS`]), each one's name and value.
     pub prompts: Vec<(String, String)>,
+    /// Which of `NULLCMD` and `READNULLCMD` it sets.
+    pub nullcmds: Vec<String>,
 }
 
 impl Install {
@@ -155,6 +160,11 @@ impl Install {
                 prompts: PROMPTS
                     .iter()
                     .filter_map(|name| get(name).map(|value| ((*name).to_string(), value)))
+                    .collect(),
+                nullcmds: ["NULLCMD", "READNULLCMD"]
+                    .into_iter()
+                    .filter(|name| get(name).is_some())
+                    .map(str::to_string)
                     .collect(),
             }),
         }

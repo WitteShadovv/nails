@@ -1099,6 +1099,40 @@ fn completion_bound_to_a_range_of_keys_or_past_a_word_zsh_may_drop_is_a_doubt() 
 }
 
 #[test]
+fn a_redirection_with_no_command_runs_what_nullcmd_names() {
+    // zsh 5.9.2 runs `cat`, NULLCMD's default, for a redirection alone, and
+    // `more`, READNULLCMD's, for an input alone, a function the files define
+    // by that name among them: with each the hook appends each command line
+    // to ~/.zl, the history file.
+    for (name, redirection) in [("cat", ">/dev/null"), ("more", "</dev/null")] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!(
+                "HISTFILE=~/.zl\n{name}() {{ fc -ln -1 >> ~/.zl }}\npreexec() {{ {redirection} }}\n"
+            ),
+        );
+        assert_eq!(
+            scan(&fs, UNKNOWN).doubts,
+            [format!(
+                "it cannot tell whether `~/.zl`, which `{name}` in /home/alice/.zshrc redirects \
+                 output to, is the history file (a file HISTFILE names, or a link to it)"
+            )],
+            "{name}"
+        );
+    }
+    // With none of those names defined, it runs no code of the files.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "preexec() { >/dev/null }\nprecmd() { </dev/null }\n",
+    );
+    assert_eq!(scan(&fs, UNKNOWN), Scan::default());
+}
+
+#[test]
 fn a_hook_s_write_to_a_descriptor_the_shell_keeps_open_is_a_doubt() {
     // zsh 5.9.2 writes each command line to the history file with each:
     // `zsystem flock -f` keeps a descriptor open on it, and a socket or a
