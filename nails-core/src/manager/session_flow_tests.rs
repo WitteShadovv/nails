@@ -579,6 +579,38 @@ fn a_return_without_its_guards_keeps_the_session_and_a_power_off_goes_on() {
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
 
+/// A way back whose record cannot be written starts nothing, and the
+/// session goes on: an invalid state that says so and why, which the front
+/// end answers with the emergency.
+#[test]
+fn a_way_back_whose_record_fails_does_not_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let target = FakeTarget::default();
+    // The state gate refuses the scratch directory, which is no mount point.
+    let _gate = crate::hidden_root::state_attach_probe::enforce();
+
+    let error = m
+        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, NailsError::InvalidState(why) if why.starts_with(
+            "the way back did not start: refusing to write state outside the mounted hidden \
+             volume: "
+        )),
+        "{error}"
+    );
+    assert!(target.started.borrow().is_empty());
+    assert!(recorded(&hidden).state.is_active(), "the session goes on");
+}
+
 #[test]
 fn powering_off_from_the_hidden_root_records_inactive_first() {
     let dir = tempfile::tempdir().unwrap();

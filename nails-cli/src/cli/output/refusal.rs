@@ -161,6 +161,20 @@ mod tests {
                     error: "permission denied".into(),
                 },
             ),
+            (
+                "lookup_denied",
+                RefusalKind::LookupFailed {
+                    error: "Permission denied (os error 13)".into(),
+                    denied: true,
+                },
+            ),
+            (
+                "lookup_failed",
+                RefusalKind::LookupFailed {
+                    error: "Input/output error (os error 5)".into(),
+                    denied: false,
+                },
+            ),
             ("same_device_as_root", RefusalKind::SameDeviceAsRoot),
             (
                 "covered",
