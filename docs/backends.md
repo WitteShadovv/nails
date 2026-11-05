@@ -230,20 +230,29 @@ another kind over the same device.
 ## Partition type in preflight
 
 systemd-gpt-auto-generator runs at every boot, unless it is masked, and looks
-at the partitions of the disk the root file system is on. By a partition's GPT
-type alone it mounts the first partition of the `/home`, `/srv`, `/var` or
-`/var/tmp` type at that folder, when no fstab line mounts the folder and the
-folder is empty (`/var` only when the partition's uuid is the one the machine
-ID gives it); it uses the first partition of the swap type as swap, unless an
-fstab line names a swap; and it asks for the passphrase first when such a
-partition is a LUKS volume. It leaves a partition with the no-auto flag (bit
-63 of its attributes) alone, and the next one of its type is then the first.
-Where the generator runs, a hidden volume on a partition of one of these types
-shows itself at the decoy's next boot: a failed mount, a failed swap or a
-passphrase prompt for a partition the decoy knows nothing of. Nothing of this
-happens in the hidden session, whose root is an overlay, which the generator
-does not act on, but the type stays in the partition table for anyone who
-reads it.
+at the partitions of one disk at most: the one it finds below the root file
+system. It starts at the block device the root file system reports, or at the
+only device of a btrfs filesystem, and where there is none, as for a btrfs
+filesystem of several devices, at that of `/usr`. From there it follows the
+devices below (`slaves/` in sysfs) one layer down before systemd 259.1, as
+from a LUKS volume to its partition, and every layer down from 259.1 on, as
+through LVM on LUKS. Where the devices one layer down are not all on one whole
+disk, as with an md mirror (a device-mapper or md device is a whole disk of
+its own), it stays at the root file system's own device, which holds no
+partition table. It reads the partition table of the whole disk it ends on.
+There, by a partition's GPT type alone, it mounts the first partition of the
+`/home`, `/srv`, `/var` or `/var/tmp` type at that folder, when no fstab line
+mounts the folder and the folder is empty (`/var` only when the partition's
+uuid is the one the machine ID gives it); it uses the first partition of the
+swap type as swap, unless an fstab line names a swap; and it asks for the
+passphrase first when such a partition is a LUKS volume. It leaves a partition
+with the no-auto flag (bit 63 of its attributes) alone, and the next one of
+its type is then the first. Where the generator runs, a hidden volume on such
+a partition of that disk can show itself at the decoy's next boot: a failed
+mount, a failed swap or a passphrase prompt for a partition the decoy knows
+nothing of. Nothing of this happens in the hidden session, whose root is an
+overlay, which the generator does not act on, but the type stays in the
+partition table for anyone who reads it.
 
 Ubuntu 24.04 and 26.04 mask the generator by default: their systemd package
 links `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
@@ -274,7 +283,14 @@ The `backend-partition-type` check follows the hidden root's own storage
 (through device-mapper layers and loops over block devices, never into the
 filesystem that holds a container file) and judges each of its partitions on a
 disk the decoy boots from: a disk below its root file system, or below the
-filesystem mounted at `/boot`, `/boot/efi` or `/efi`. It reads the disk's
+filesystem mounted at `/boot`, `/boot/efi` or `/efi`, and the disk the
+generator reads. It judges a partition the same way on each of these disks, as
+its type shows in the partition table on all of them, and its texts say
+whether the generator reads the disk in every systemd from 254 on, only from
+259.1 on, or in none, as for a disk below only the EFI system partition. Where
+sysfs does not list the devices below the root file system, they say the check
+cannot tell. Root discovery takes its disk from the boot loader, so the text
+for a root partition is the same on every disk. The check reads the disk's
 partition table read-only and without changing an access time, and finds the
 partition's entry by its number and its start. Without root, where the disk
 cannot be read, it takes the entry from udev's record of the partition. A
@@ -291,13 +307,13 @@ happens, never on the decoy:
 `sgdisk --typecode=<number>:0FC63DAF-8483-4772-8E79-3D69D8477DE4 <disk>`, with
 the number and the disk the check names, by its `/dev/disk/by-id` link where
 there is one. Retyping changes the partition table, not the data on the
-partition. The check does not predict the generator in every detail: it does
-not ask whether the partition is the first of its type on the disk, whether the
-folder is empty, whether the root lies on several disks, where the generator
-does nothing, whether the kernel command line turns the generator off
-(`systemd.gpt_auto=0`), or whether the decoy masks it, as Ubuntu 24.04 and
-26.04 do by default. It judges each of those cases the same, as the type
-shows in the partition table either way.
+partition. The check does not predict the generator in every detail: its
+verdict does not ask whether the generator reads the disk, whether the
+partition is the first of its type on the disk, whether the folder is empty,
+whether the kernel command line turns the generator off (`systemd.gpt_auto=0`),
+or whether the decoy masks it, as Ubuntu 24.04 and 26.04 do by default. It
+judges each of those cases the same, as the type shows in the partition table
+either way.
 
 ## Per-backend summary
 
