@@ -720,19 +720,30 @@ fn every_other_mount_is_named_and_unmounted_deepest_first_and_quoted() {
     );
 }
 
-#[test]
-fn a_second_mount_that_holds_the_root_is_unmounted_after_the_root() {
-    // The volume at /mnt, a folder of it bound at /mnt/data: /mnt cannot be
-    // unmounted while the root is mounted below it.
+/// The check's result for the root at `/mnt/data` in `table`.
+fn run_on(table: &str) -> CheckResult {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(NEUTRAL_ROOT, true);
     fs.mock_set_writable(NEUTRAL_ROOT, true);
-    fs.mock_set_mount_table(
+    fs.mock_set_mount_table(table);
+    run_allowing(&fs, Allow::Nothing)
+}
+
+/// The two lines every fix for a second mount ends with.
+const ADVICE: &str = "Long before the next use, turn off the automatic mounting of removable \
+                      media.\n\
+                      Read \"Attaching the drive\" in the decoy requirements on another device.";
+
+#[test]
+fn a_second_mount_that_holds_the_root_is_unmounted_after_the_root() {
+    // The volume at /mnt and again at /mnt/data: /mnt cannot be unmounted
+    // while the root is mounted below it, and the root is mounted again
+    // alone afterwards.
+    let result = run_on(
         "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
          29 1 253:0 / /mnt rw - ext4 /dev/mapper/data rw\n\
-         30 29 253:0 /vol /mnt/data rw - ext4 /dev/mapper/data rw\n",
+         30 29 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n",
     );
-    let result = run_allowing(&fs, Allow::Nothing);
     assert!(result.is_fail(), "got {result:?}");
     assert_eq!(
         result.message(),
@@ -740,14 +751,111 @@ fn a_second_mount_that_holds_the_root_is_unmounted_after_the_root() {
          by itself when it was unlocked"
     );
     assert_eq!(
-        result.remediation(),
-        Some(
+        result.remediation().unwrap(),
+        format!(
             "Run `sudo umount /mnt/data /mnt`, mount the volume at /mnt/data alone, then run \
-             the command again.\n\
-             Long before the next use, turn off the automatic mounting of removable media.\n\
-             Read \"Attaching the drive\" in the decoy requirements on another device."
+             the command again.\n{ADVICE}"
         )
     );
+}
+
+#[test]
+fn a_folder_bound_at_the_root_below_the_volume_is_bound_again_not_replaced_by_the_volume() {
+    // The volume at /mnt and its folder /vol bound at /mnt/data: the layout
+    // is in /vol, so mounting the volume itself at the root would show its
+    // top instead.
+    let result = run_on(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         29 1 253:0 / /mnt rw - ext4 /dev/mapper/data rw\n\
+         30 29 253:0 /vol /mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(
+        result.remediation().unwrap(),
+        format!(
+            "Run `sudo umount /mnt/data /mnt`. Then mount the volume at another folder, bind \
+             its folder /vol at /mnt/data, unmount that other folder and run the command \
+             again.\n{ADVICE}"
+        )
+    );
+    // While the volume's own mount does not hold the root, unmounting it
+    // leaves the bind of the folder at the root alone.
+    let result = run_on(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         29 1 253:0 / /mnt/backing rw - ext4 /dev/mapper/data rw\n\
+         30 1 253:0 /vol /mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    assert_eq!(
+        result.remediation().unwrap(),
+        format!("Run `sudo umount /mnt/backing`, then run the command again.\n{ADVICE}")
+    );
+}
+
+#[test]
+fn a_btrfs_subvolume_at_the_root_below_the_volume_is_mounted_again_by_its_option() {
+    // The volume's top at /mnt and its subvolume /data at /mnt/data: mounted
+    // without the option, the volume would show its default subvolume.
+    let result = run_on(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         29 1 0:45 / /mnt rw - btrfs /dev/mapper/data rw,subvolid=5,subvol=/\n\
+         30 29 0:45 /data /mnt/data rw - btrfs /dev/mapper/data rw,subvolid=256,subvol=/data\n",
+    );
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(
+        result.remediation().unwrap(),
+        format!(
+            "Run `sudo umount /mnt/data /mnt`, mount the btrfs subvolume /data of the volume at \
+             /mnt/data alone (mount option subvol=/data), then run the command again.\n{ADVICE}"
+        )
+    );
+}
+
+#[test]
+fn a_hidden_second_mount_is_named_with_the_mount_over_it_not_given_to_umount() {
+    // A tmpfs over /media hides the desktop's mount: umount given its path
+    // would end in the tmpfs. The mount at /srv/x is reached by its path.
+    let result = run_on(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         40 1 253:0 / /media/u/X rw - ext4 /dev/mapper/data rw\n\
+         41 1 0:50 / /media rw - tmpfs tmpfs rw\n\
+         42 1 253:0 / /srv/x rw - ext4 /dev/mapper/data rw\n",
+    );
+    assert!(result.is_fail(), "got {result:?}");
+    assert!(
+        result
+            .message()
+            .contains("also mounted at /media/u/X and /srv/x: a desktop"),
+        "{}",
+        result.message()
+    );
+    assert_eq!(
+        result.remediation().unwrap(),
+        format!(
+            "Run `sudo umount /srv/x`, then run the command again.\n\
+             The mount at /media/u/X is hidden under another mount at /media, so umount cannot \
+             reach it by that path: unmount that one first, then /media/u/X, and mount it again \
+             if it is needed.\n{ADVICE}"
+        )
+    );
+    // When every other mount is hidden there is no umount line; one the root's
+    // own mount hides, mounted below /mnt/data before the volume was, names
+    // the root.
+    let result = run_on(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         29 1 253:0 /a /mnt/data/b rw - ext4 /dev/mapper/data rw\n\
+         30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    assert_eq!(
+        result.remediation().unwrap(),
+        format!(
+            "The mount at /mnt/data/b is hidden under another mount at /mnt/data, so umount \
+             cannot reach it by that path: unmount that one first, then /mnt/data/b, and mount \
+             it again if it is needed.\n{ADVICE}"
+        )
+    );
+    let text = format!("{} {}", result.message(), result.remediation().unwrap());
+    assert!(!text.contains("/dev/"), "{text}");
 }
 
 #[test]

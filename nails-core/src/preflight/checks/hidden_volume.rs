@@ -7,8 +7,8 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::filesystem::MountSource;
-use crate::hidden_root::separation::Verdict;
-use crate::hidden_root::{Allow, Assessment, HiddenRoot, Refusal, RefusalKind};
+use crate::hidden_root::separation::{Sharing, Verdict};
+use crate::hidden_root::{Allow, Assessment, HiddenRoot, MountedElsewhere, Refusal, RefusalKind};
 use crate::naming::suspicious_token;
 use crate::{Filesystem, Result, config::get_default_hidden_volume_root};
 use nails_api::Allowable;
@@ -21,11 +21,11 @@ use std::path::{Component, Path, PathBuf};
 /// 2. **The attach gate**: a volume of its own must be mounted at the path
 ///    ([`HiddenRoot::assess`]): not a folder, not a root covered by a second
 ///    filesystem, not storage the decoy uses, and storage that can be judged.
-///    On the decoy its filesystem must be mounted nowhere else
-///    ([`HiddenRoot::mounted_elsewhere`]): a desktop that mounts a drive by
-///    itself mounts the unlocked volume again under `/media` or `/run/media`,
-///    where the decoy's desktop reaches its files. No flag lifts that, and a
-///    root on a filesystem the decoy uses, accepted with
+///    On the decoy its filesystem must be mounted nowhere else in the mount
+///    table ([`HiddenRoot::mounted_elsewhere`]): a desktop that mounts a drive
+///    by itself mounts the unlocked volume again under `/media` or
+///    `/run/media`, where the decoy's desktop reaches its files. No flag lifts
+///    that, and a root on a filesystem the decoy uses, accepted with
 ///    `--allow-decoy-storage`, is let be: the decoy mounts that filesystem
 ///    wherever it does. Nothing is probed before both pass, so `check` writes
 ///    no probe file onto the decoy's storage.
@@ -49,8 +49,9 @@ use std::path::{Component, Path, PathBuf};
 ///   volume, prepare it where nothing reaches this disk, unmount the second
 ///   filesystem, run with sudo)
 /// - **Mounted elsewhere too**: the `sudo umount` line for the other mounts,
-///   and turning the desktop's automatic mounting of removable media off long
-///   before the next use
+///   what hides one that `umount` cannot reach by its path, and turning the
+///   desktop's automatic mounting of removable media off long before the next
+///   use
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example
@@ -154,11 +155,10 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
         // a filesystem the decoy uses, which the operator accepted, is mounted
         // where the decoy mounts that filesystem: the gate's warning is about
         // exactly that.
-        if !decoy_filesystem {
-            let elsewhere = HiddenRoot::mounted_elsewhere(fs, &self.hidden_volume_root)?;
-            if !elsewhere.is_empty() {
-                return Ok(mounted_twice(fs, &self.hidden_volume_root, &elsewhere));
-            }
+        if !decoy_filesystem
+            && let Some(elsewhere) = HiddenRoot::mounted_elsewhere(fs, &self.hidden_volume_root)?
+        {
+            return Ok(mounted_twice(fs, &self.hidden_volume_root, &elsewhere));
         }
 
         // Step 3: Check path is writable
@@ -214,23 +214,68 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
     }
 }
 
-/// The failure of a root whose filesystem is mounted at `elsewhere` too
-/// ([`HiddenRoot::mounted_elsewhere`]): it names every other mount point and
-/// how to unmount them, the deepest first, so a mount inside another goes
-/// before it. One that holds the root can only go once the root is unmounted
-/// too, so the root joins them and is mounted again alone afterwards. No flag
-/// lifts it.
-fn mounted_twice<F: Filesystem>(fs: &F, root: &Path, elsewhere: &[PathBuf]) -> CheckResult {
+/// The failure of a root whose filesystem is mounted at other places too
+/// ([`HiddenRoot::mounted_elsewhere`]): it names every other mount point, then
+/// says how to unmount them. No flag lifts it.
+///
+/// The `umount` line names the mounts a lookup of their path reaches (see
+/// [`unmount_line`]). One that another mount hides gets a line of its own,
+/// which names the mount over it: `umount` given its path would reach that
+/// one, or none.
+fn mounted_twice<F: Filesystem>(fs: &F, root: &Path, elsewhere: &MountedElsewhere) -> CheckResult {
     use crate::catalog::{
-        CHECK_MOUNTED_TWICE, CHECK_MOUNTED_TWICE_FIX, CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT,
+        CHECK_MOUNTED_TWICE, CHECK_MOUNTED_TWICE_ADVICE, CHECK_MOUNTED_TWICE_HIDDEN,
     };
     let shown_root = root.display().to_string();
+    let others: Vec<&Path> = elsewhere
+        .mounts
+        .iter()
+        .map(|mount| mount.mount_point.as_path())
+        .collect();
     let message =
-        CHECK_MOUNTED_TWICE.render(&[("root", &shown_root), ("places", &places(elsewhere))]);
+        CHECK_MOUNTED_TWICE.render(&[("root", &shown_root), ("places", &places(&others))]);
 
+    let mut fix = Vec::new();
+    let reachable: Vec<&Path> = elsewhere
+        .mounts
+        .iter()
+        .filter(|mount| mount.hidden_under.is_none())
+        .map(|mount| mount.mount_point.as_path())
+        .collect();
+    if !reachable.is_empty() {
+        fix.push(unmount_line(fs, root, &reachable, elsewhere));
+    }
+    for mount in &elsewhere.mounts {
+        if let Some(cover) = &mount.hidden_under {
+            fix.push(CHECK_MOUNTED_TWICE_HIDDEN.render(&[
+                ("place", &mount.mount_point.display().to_string()),
+                ("cover", &cover.display().to_string()),
+            ]));
+        }
+    }
+    fix.push(CHECK_MOUNTED_TWICE_ADVICE.render(&[]));
+    CheckResult::fail_with(message, fix.join("\n"))
+}
+
+/// The `sudo umount` line for the other mounts at `reachable`, the deepest
+/// first, so a mount inside another goes before it, each quoted for the shell.
+/// One that holds the root can only go once the root is unmounted too, so the
+/// root joins them, and the line says how to mount it again alone, as its
+/// mount showed the volume: all of it, a folder of it bound there, or a btrfs
+/// subvolume.
+fn unmount_line<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    reachable: &[&Path],
+    elsewhere: &MountedElsewhere,
+) -> String {
+    use crate::catalog::{
+        CHECK_MOUNTED_TWICE_FIX, CHECK_MOUNTED_TWICE_FIX_HOLDING_FOLDER,
+        CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT, CHECK_MOUNTED_TWICE_FIX_HOLDING_SUBVOLUME,
+    };
     let canonical = fs.canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let holding_root = elsewhere.iter().any(|place| canonical.starts_with(place));
-    let mut unmount: Vec<&Path> = elsewhere.iter().map(PathBuf::as_path).collect();
+    let holding_root = reachable.iter().any(|place| canonical.starts_with(place));
+    let mut unmount = reachable.to_vec();
     if holding_root {
         unmount.push(&canonical);
     }
@@ -240,17 +285,29 @@ fn mounted_twice<F: Filesystem>(fs: &F, root: &Path, elsewhere: &[PathBuf]) -> C
         .map(|place| crate::next_step::shell_word(place.as_os_str()))
         .collect::<Vec<_>>()
         .join(" ");
-    let fix = if holding_root {
-        CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT
-            .render(&[("mount_points", &mount_points), ("root", &shown_root)])
-    } else {
-        CHECK_MOUNTED_TWICE_FIX.render(&[("mount_points", &mount_points)])
-    };
-    CheckResult::fail_with(message, fix)
+    if !holding_root {
+        return CHECK_MOUNTED_TWICE_FIX.render(&[("mount_points", &mount_points)]);
+    }
+    let shown_root = root.display().to_string();
+    let folder = elsewhere.root_folder.display().to_string();
+    match elsewhere.root_shows {
+        Sharing::Filesystem => CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT
+            .render(&[("mount_points", &mount_points), ("root", &shown_root)]),
+        Sharing::Bind => CHECK_MOUNTED_TWICE_FIX_HOLDING_FOLDER.render(&[
+            ("mount_points", &mount_points),
+            ("folder", &folder),
+            ("root", &shown_root),
+        ]),
+        Sharing::Subvolume => CHECK_MOUNTED_TWICE_FIX_HOLDING_SUBVOLUME.render(&[
+            ("mount_points", &mount_points),
+            ("subvolume", &folder),
+            ("root", &shown_root),
+        ]),
+    }
 }
 
 /// `places` for a sentence: `a`, `a and b`, `a, b and c`.
-fn places(places: &[PathBuf]) -> String {
+fn places(places: &[&Path]) -> String {
     let shown: Vec<String> = places.iter().map(|p| p.display().to_string()).collect();
     match shown.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),

@@ -270,10 +270,35 @@ fn a_bind_of_the_same_volume_stacked_on_the_root_is_one_filesystem() {
     );
 }
 
+/// What [`HiddenRoot::mounted_elsewhere`] finds for the volume at
+/// `/mnt/data`, in `table`.
+fn mounted_elsewhere(table: &str) -> Option<MountedElsewhere> {
+    HiddenRoot::mounted_elsewhere(&fs_with(table), Path::new("/mnt/data")).unwrap()
+}
+
 /// Where else [`HiddenRoot::mounted_elsewhere`] finds the volume at
 /// `/mnt/data` mounted, in `table`.
 fn elsewhere(table: &str) -> Vec<PathBuf> {
-    HiddenRoot::mounted_elsewhere(&fs_with(table), Path::new("/mnt/data")).unwrap()
+    mounted_elsewhere(table)
+        .map(|found| {
+            assert!(!found.mounts.is_empty(), "{found:?}");
+            found.mounts.into_iter().map(|m| m.mount_point).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The mounts that hide the volume's other mounts in `table`, by the other
+/// mount's mount point: `None` for one a lookup of its path reaches.
+fn hidden_under(table: &str) -> Vec<(PathBuf, Option<PathBuf>)> {
+    mounted_elsewhere(table)
+        .map(|found| {
+            found
+                .mounts
+                .into_iter()
+                .map(|m| (m.mount_point, m.hidden_under))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[test]
@@ -351,6 +376,82 @@ fn a_hidden_second_mount_and_one_inside_the_root_count_too() {
         elsewhere(&table),
         vec![PathBuf::from("/media/u/X"), PathBuf::from("/mnt/data/b")]
     );
+    // umount given /media/u/X would end in the tmpfs; the bind below the root
+    // is reached by its path.
+    assert_eq!(
+        hidden_under(&table),
+        vec![
+            (PathBuf::from("/media/u/X"), Some(PathBuf::from("/media"))),
+            (PathBuf::from("/mnt/data/b"), None),
+        ]
+    );
+}
+
+#[test]
+fn what_hides_a_second_mount_is_the_mount_a_lookup_of_its_path_ends_in() {
+    // Another filesystem stacked on it at its own mount point.
+    let stacked = decoy_table(
+        "20 1 253:0 / /media/u/X rw - ext4 /dev/mapper/data rw\n\
+         21 20 8:16 / /media/u/X rw - vfat /dev/sdb1 rw\n",
+    );
+    assert_eq!(
+        hidden_under(&stacked),
+        vec![(
+            PathBuf::from("/media/u/X"),
+            Some(PathBuf::from("/media/u/X"))
+        )]
+    );
+    // One the root's own mount hides: mounted below /mnt/data before the
+    // volume was mounted there.
+    let under_the_root = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                          9 1 253:0 /a /mnt/data/b rw - ext4 /dev/mapper/data rw\n\
+                          10 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n";
+    assert_eq!(
+        hidden_under(under_the_root),
+        vec![(
+            PathBuf::from("/mnt/data/b"),
+            Some(PathBuf::from("/mnt/data"))
+        )]
+    );
+    // A second mount of the volume stacked under the root's own mount point
+    // is the root, hidden or not.
+    let below_the_root = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                          9 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+                          10 9 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n";
+    assert!(mounted_elsewhere(below_the_root).is_none());
+}
+
+#[test]
+fn what_the_mount_at_the_root_shows_of_the_volume() {
+    let shown = |table: &str| {
+        let found = mounted_elsewhere(table).expect("mounted elsewhere");
+        (found.root_shows, found.root_folder)
+    };
+    // All of it.
+    assert_eq!(
+        shown(&decoy_table(
+            "20 1 253:0 / /media/u/X rw - ext4 /dev/mapper/data rw\n"
+        )),
+        (separation::Sharing::Filesystem, PathBuf::from("/"))
+    );
+    // A folder of it, bound at the root.
+    assert_eq!(
+        shown(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             29 1 253:0 / /mnt rw - ext4 /dev/mapper/data rw\n\
+             30 29 253:0 /vol /mnt/data rw - ext4 /dev/mapper/data rw\n"
+        ),
+        (separation::Sharing::Bind, PathBuf::from("/vol"))
+    );
+    // A btrfs subvolume of it.
+    assert_eq!(
+        shown(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             29 1 0:45 / /mnt rw - btrfs /dev/mapper/data rw,subvolid=5,subvol=/\n\
+             30 29 0:45 /data /mnt/data rw - btrfs /dev/mapper/data rw,subvolid=256,subvol=/data\n"
+        ),
+        (separation::Sharing::Subvolume, PathBuf::from("/data"))
+    );
 }
 
 #[test]
@@ -399,7 +500,7 @@ fn the_sessions_own_mounts_are_no_second_mount() {
     assert!(
         HiddenRoot::mounted_elsewhere(&fs, Path::new("/mnt/data"))
             .unwrap()
-            .is_empty()
+            .is_none()
     );
     // Not one of them is a second mount by the rule itself either.
     let mounts = crate::filesystem::mountinfo::parse_mountinfo(&session);
@@ -415,7 +516,7 @@ fn the_sessions_own_mounts_are_no_second_mount() {
     assert!(
         HiddenRoot::mounted_elsewhere(&fs, Path::new("/mnt/data"))
             .unwrap()
-            .is_empty()
+            .is_none()
     );
 }
 
@@ -737,7 +838,18 @@ mod kernel_tests {
         .run(|| {
             let volume = ScratchTmpfs::new("");
             let root = volume.path().canonicalize().unwrap();
-            let elsewhere = || HiddenRoot::mounted_elsewhere(&RealFilesystem, &root).unwrap();
+            let elsewhere = || {
+                HiddenRoot::mounted_elsewhere(&RealFilesystem, &root)
+                    .unwrap()
+                    .map(|found| {
+                        found
+                            .mounts
+                            .into_iter()
+                            .map(|m| m.mount_point)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
             assert!(elsewhere().is_empty());
 
             // The volume bound again at its own mount point is the root.

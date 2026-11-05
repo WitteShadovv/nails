@@ -90,7 +90,7 @@ mod judge;
 mod tests;
 
 pub use collect::{Collected, collect, judge_storage};
-pub use judge::{claimed_devices, judge, shown_fstype};
+pub use judge::{claimed_devices, judge, sharing, shown_fstype};
 
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;
