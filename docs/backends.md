@@ -70,10 +70,11 @@ Whatever the backend, the filesystem at the hidden root must:
   switch. A kernel mount survives it: the decoy's shutdown unmounts the hidden
   volume's own mount unit, but the bind NAILS places inside the next root keeps
   it alive, and it appears at the same path in the hidden session;
-- **lie on a partition whose type the decoy's systemd leaves alone**, when it
-  is on a disk the decoy boots from (`backend-partition-type`): the generic
-  Linux type, never that of a `/home`, `/srv`, `/var`, `/var/tmp` or swap
-  partition (see [Partition type in preflight](#partition-type-in-preflight)).
+- **lie on a partition whose type systemd leaves alone**, when it is on a
+  disk the decoy boots from (`backend-partition-type`): the generic Linux
+  type, never that of a `/home`, `/srv`, `/var`, `/var/tmp` or swap
+  partition, even on a decoy that masks the systemd generator that acts on
+  those (see [Partition type in preflight](#partition-type-in-preflight)).
 
 `sudo /mnt/data/nails check` (or `activate --dry-run`) prints every preflight
 result, including the backend detection below.
@@ -228,20 +229,28 @@ another kind over the same device.
 
 ## Partition type in preflight
 
-systemd-gpt-auto-generator runs at every boot and looks at the partitions of
-the disk the root file system is on. By a partition's GPT type alone it mounts
-the first partition of the `/home`, `/srv`, `/var` or `/var/tmp` type at that
-folder, when no fstab line mounts the folder and the folder is empty (`/var`
-only when the partition's uuid is the one the machine ID gives it); it uses
-the first partition of the swap type as swap, unless an fstab line names a
-swap; and it asks for the passphrase first when such a partition is a LUKS
-volume. It leaves a partition with the no-auto flag (bit 63 of its
-attributes) alone, and the next one of its type is then the first. A hidden
-volume on a partition of one of these types shows itself at the decoy's next
-boot: a failed mount, a failed swap or a passphrase prompt for a partition the
-decoy knows nothing of. Nothing of this happens in the hidden session, whose
-root is an overlay, which the generator does not act on, but the type stays in
-the partition table for anyone who reads it.
+systemd-gpt-auto-generator runs at every boot, unless it is masked, and looks
+at the partitions of the disk the root file system is on. By a partition's GPT
+type alone it mounts the first partition of the `/home`, `/srv`, `/var` or
+`/var/tmp` type at that folder, when no fstab line mounts the folder and the
+folder is empty (`/var` only when the partition's uuid is the one the machine
+ID gives it); it uses the first partition of the swap type as swap, unless an
+fstab line names a swap; and it asks for the passphrase first when such a
+partition is a LUKS volume. It leaves a partition with the no-auto flag (bit
+63 of its attributes) alone, and the next one of its type is then the first.
+Where the generator runs, a hidden volume on a partition of one of these types
+shows itself at the decoy's next boot: a failed mount, a failed swap or a
+passphrase prompt for a partition the decoy knows nothing of. Nothing of this
+happens in the hidden session, whose root is an overlay, which the generator
+does not act on, but the type stays in the partition table for anyone who
+reads it.
+
+Ubuntu 24.04 and 26.04 mask the generator by default: their systemd package
+links `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
+`/dev/null`, and systemd runs no generator masked so (see
+systemd.generator(5)). Debian 13 and NixOS do not mask it by default. On a
+decoy that masks it, a partition of these types shows nothing at boot, but
+its type is in the partition table all the same.
 
 The generator acts on three more types under some conditions. It mounts the
 first extended boot loader partition of the disk at `/boot`, and the first EFI
@@ -284,8 +293,10 @@ there is one. Retyping changes the partition table, not the data on the
 partition. The check does not predict the generator in every detail: it does
 not ask whether the partition is the first of its type on the disk, whether the
 folder is empty, whether the root lies on several disks, where the generator
-does nothing, or whether the kernel command line turns the generator off
-(`systemd.gpt_auto=0`), and it refuses in each of those cases too.
+does nothing, whether the kernel command line turns the generator off
+(`systemd.gpt_auto=0`), or whether the decoy masks it, as Ubuntu 24.04 and
+26.04 do by default. It judges each of those cases the same, as the type
+shows in the partition table either way.
 
 ## Per-backend summary
 

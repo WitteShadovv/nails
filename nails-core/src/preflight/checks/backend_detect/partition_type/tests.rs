@@ -105,15 +105,15 @@ fn each_type_systemd_mounts_or_swaps_on_refuses_with_the_retype_command() {
         assert!(
             result.message().starts_with(&format!(
                 "The hidden root at {ROOT} is stored on a disk the decoy boots from. Partition 5 \
-                 of nvme0n1 (nvme0n1p5) has the GPT type of {kind}. At every later boot of the \
-                 decoy, systemd "
+                 of nvme0n1 (nvme0n1p5) has the GPT type of {kind}. Unless the decoy masks \
+                 systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default, systemd "
             )),
             "{type_id}: {result:?}"
         );
         assert!(
             result.message().ends_with(
                 "The hidden session, whose root is an overlay, is spared, but anyone who reads \
-                 the partition table sees the type."
+                 the partition table sees the type, whether or not the generator is masked."
             ),
             "{type_id}: {result:?}"
         );
@@ -137,9 +137,10 @@ fn a_mount_type_says_when_systemd_mounts_it() {
     let result = typed(SRV, 0);
     assert!(
         result.message().contains(
-            "systemd mounts the first such partition of that disk at /srv when no fstab line \
-             mounts /srv and that folder is empty, and asks for its passphrase first when it is a \
-             LUKS volume: a failed mount or a passphrase prompt shows that the partition is there."
+            "systemd mounts the first such partition of that disk at /srv at every later boot of \
+             the decoy when no fstab line mounts /srv and that folder is empty, and asks for its \
+             passphrase first when it is a LUKS volume: a failed mount or a passphrase prompt \
+             shows that the partition is there."
         ),
         "{result:?}"
     );
@@ -147,8 +148,9 @@ fn a_mount_type_says_when_systemd_mounts_it() {
     let result = typed(VAR, 0);
     assert!(
         result.message().contains(
-            "at /var when no fstab line mounts /var and that folder is empty, and only when its \
-             partition uuid is the one this machine's ID gives it, and asks"
+            "at /var at every later boot of the decoy when no fstab line mounts /var and that \
+             folder is empty, and only when its partition uuid is the one this machine's ID gives \
+             it, and asks"
         ),
         "{result:?}"
     );
@@ -156,9 +158,9 @@ fn a_mount_type_says_when_systemd_mounts_it() {
     assert!(
         result.message().contains(
             "systemd uses the first swap partition of that disk without the no-auto flag as \
-             swap, unless an fstab line names a swap, and asks for its passphrase first when it \
-             is a LUKS volume: a failed swap or a passphrase prompt shows that the partition is \
-             there."
+             swap at every later boot of the decoy when no fstab line names a swap, and asks for \
+             its passphrase first when it is a LUKS volume: a failed swap or a passphrase prompt \
+             shows that the partition is there."
         ),
         "{result:?}"
     );
@@ -241,14 +243,65 @@ fn the_boot_and_root_types_only_warn() {
             warning(&result),
             format!(
                 "The hidden root at {ROOT} is stored on a disk the decoy boots from. Partition 5 \
-                 of nvme0n1 (nvme0n1p5) has the GPT type of {kind}. systemd {when}. Anyone who \
-                 reads the partition table sees a type the partition's use does not explain."
+                 of nvme0n1 (nvme0n1p5) has the GPT type of {kind}. Unless the decoy masks \
+                 systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default, systemd \
+                 {when}. Anyone who reads the partition table sees a type the partition's use \
+                 does not explain."
             )
         );
         assert!(fix(&result).contains(&sgdisk("/dev/nvme0n1")), "{result:?}");
         // The no-auto flag changes nothing about a warning.
         assert!(typed(type_id, NO_AUTO).is_warn(), "{type_id}");
     }
+}
+
+#[test]
+fn a_decoy_that_masks_the_generator_gets_the_same_verdicts() {
+    // Ubuntu 24.04 and 26.04 ship this link, which keeps systemd from running
+    // the generator. The check reads no mask: the type shows in the
+    // partition table either way, and the texts say what systemd does unless
+    // the generator is masked.
+    const MASK: &str = "/etc/systemd/system-generators/systemd-gpt-auto-generator";
+    for type_id in [
+        HOME,
+        SRV,
+        VAR,
+        VAR_TMP,
+        SWAP,
+        ESP,
+        XBOOTLDR,
+        ROOT_X86_64,
+        LINUX_FILESYSTEM,
+    ] {
+        for flags in [0, NO_AUTO] {
+            let host = on_the_decoys_disk();
+            host.link(MASK, "/dev/null");
+            assert_eq!(
+                host.fs.mock_get_symlink_target(Path::new(MASK)),
+                Some(PathBuf::from("/dev/null"))
+            );
+            let dev = devices("nvme0n1", &gpt(type_id, flags));
+            assert_eq!(
+                check(&host.fs, &dev),
+                typed(type_id, flags),
+                "{type_id} {flags:#x}"
+            );
+        }
+    }
+    // A refusal says when systemd mounts the partition, and that the type
+    // shows where the generator is masked too.
+    let host = on_the_decoys_disk();
+    host.link(MASK, "/dev/null");
+    let result = check(&host.fs, &devices("nvme0n1", &gpt(HOME, 0)));
+    assert!(result.is_fail(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.contains(
+            "Unless the decoy masks systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by \
+             default, systemd mounts the first such partition of that disk at /home"
+        ) && message.contains("whether or not the generator is masked"),
+        "{result:?}"
+    );
 }
 
 #[test]
@@ -807,8 +860,7 @@ fn the_check_names_itself_and_needs_the_hidden_volume() {
     );
     assert_eq!(
         <BackendPartitionTypeCheck as PreFlightCheck<MockFilesystem>>::description(&check),
-        "Refuses a hidden root on a partition whose type the decoy's systemd mounts or uses at \
-         boot"
+        "Refuses a hidden root on a partition whose type systemd mounts or uses at boot"
     );
     assert!(<BackendPartitionTypeCheck as PreFlightCheck<
         MockFilesystem,

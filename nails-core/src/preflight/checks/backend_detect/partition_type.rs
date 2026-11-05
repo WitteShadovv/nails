@@ -2,18 +2,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Whether the partition the hidden root is stored on has a GPT type that
-//! the decoy's systemd acts on.
+//! systemd acts on by that type alone.
 //!
-//! systemd-gpt-auto-generator runs at every boot of the decoy and acts on
-//! the partitions of the disk its root file system is on by their GPT type
-//! alone (see [`discoverable`]): it mounts a `/home`, `/srv`, `/var` or
-//! `/var/tmp` partition at that folder, uses a swap partition as swap, and
-//! asks for the passphrase of such a partition that is a LUKS volume. A
-//! hidden volume on a partition of that type shows up at the decoy's next
-//! boot, as a failed mount, a failed swap or a passphrase prompt. Nothing of
-//! it happens in the hidden session, whose root is an overlay, which the
-//! generator skips, but the type stays in the partition table for anyone who
-//! reads it.
+//! Unless the decoy masks it, systemd-gpt-auto-generator runs at every boot
+//! of the decoy and acts on the partitions of the disk its root file system
+//! is on by their GPT type alone (see [`discoverable`]): it mounts a
+//! `/home`, `/srv`, `/var` or `/var/tmp` partition at that folder, uses a
+//! swap partition as swap, and asks for the passphrase of such a partition
+//! that is a LUKS volume. Where it runs, a hidden volume on a partition of
+//! that type shows up at the decoy's next boot, as a failed mount, a failed
+//! swap or a passphrase prompt. Nothing of it happens in the hidden session,
+//! whose root is an overlay, which the generator skips, but the type stays
+//! in the partition table for anyone who reads it. Ubuntu 24.04 and 26.04
+//! mask the generator by default, with a link from
+//! `/etc/systemd/system-generators/systemd-gpt-auto-generator` to
+//! `/dev/null`. The check reads no mask, so it judges a partition on such a
+//! decoy as on any other: the type shows in the table there too.
 //!
 //! The check walks the devices under the hidden root's filesystem as far as
 //! its own storage goes (through `slaves/` and loops over block devices,
@@ -57,17 +61,18 @@ const BY_ID: &str = "/dev/disk/by-id";
 const BOOT_MOUNTS: &[&str] = &["/boot", "/boot/efi", "/efi"];
 
 /// Pre-flight check that refuses a hidden root stored on a partition whose
-/// GPT type the decoy's systemd mounts or uses at boot.
+/// GPT type systemd mounts or uses at boot.
 ///
 /// # Pass, warn and fail
 ///
 /// For each partition of the hidden root's storage on a disk the decoy
-/// boots from, its type, read from the disk's GPT:
+/// boots from, its type, read from the disk's GPT, whether or not the decoy
+/// masks systemd-gpt-auto-generator:
 ///
 /// - fails for the `/home`, `/srv`, `/var`, `/var/tmp` and swap types, which
-///   systemd mounts or uses at every later boot of the decoy, and for the
-///   swap type with the no-auto flag as well, though systemd leaves such a
-///   partition alone;
+///   systemd mounts or uses at every later boot of the decoy where the
+///   generator runs, and for the swap type with the no-auto flag as well,
+///   though systemd leaves such a partition alone;
 /// - warns for one of the first four with the no-auto flag, which systemd
 ///   honours, and for the root, EFI system partition and extended boot
 ///   loader types, which it acts on only under some conditions: the type
@@ -121,7 +126,7 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
     }
 
     fn description(&self) -> &'static str {
-        "Refuses a hidden root on a partition whose type the decoy's systemd mounts or uses at boot"
+        "Refuses a hidden root on a partition whose type systemd mounts or uses at boot"
     }
 
     fn requires_hidden_volume(&self) -> bool {

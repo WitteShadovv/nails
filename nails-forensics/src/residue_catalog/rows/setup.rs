@@ -88,20 +88,20 @@ pub(super) const ROWS: &[ResidueClass] = &[
     },
     ResidueClass {
         id: "auto-discovered-partition-type",
-        title: "Partition types the decoy's systemd acts on",
+        title: "Partition types systemd acts on",
         kind: ResidueKind::Setup,
         channel: Channel::Mechanism(
             "the GPT type of the hidden volume's partition on a disk the decoy boots from",
         ),
         platforms: Platforms::ALL,
-        risk: "systemd-gpt-auto-generator mounts the first /home, /srv, /var or /var/tmp partition and uses the first swap partition of the root's disk at every boot of the decoy, passing over those with the no-auto flag and asking first for the passphrase of one that is a LUKS volume, so a hidden volume of such a type shows a failed mount, a failed swap or a passphrase prompt; anyone who reads the partition table sees the type.",
+        risk: "Unless the decoy masks it, as Ubuntu 24.04 and 26.04 do by default, systemd-gpt-auto-generator acts on the root's disk at every boot of the decoy: it mounts the first /home, /srv, /var or /var/tmp partition at that folder when no fstab line mounts the folder and the folder is empty (/var only with the uuid the machine ID gives it), and uses the first swap partition as swap when no fstab line names a swap, passing over those with the no-auto flag and asking first for the passphrase of one that is a LUKS volume, so a hidden volume of such a type shows a failed mount, a failed swap or a passphrase prompt; masked or not, anyone who reads the partition table sees the type.",
         preflight: Probe::Check("backend-partition-type"),
         preflight_blocks: true,
         verify: Probe::None(
             "verify judges no partition type, and its examiner audit of a raw disk shows one only beside a trace it finds in that partition; the pre-flight check reads the table of the disk the hidden volume is on",
         ),
         mitigation: "Give the hidden volume's partition the generic Linux type from a live system or where setup happens, or keep the hidden volume on a disk of its own.",
-        doc_anchor: "decoy-requirements.md#partition-types-the-decoys-systemd-acts-on",
+        doc_anchor: "decoy-requirements.md#partition-types-systemd-acts-on",
         e2e: E2e::None(
             "the check is unit tested on GPT images; no VM test boots a decoy from a disk with such a partition yet",
         ),
