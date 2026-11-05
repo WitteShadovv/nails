@@ -47,7 +47,8 @@
 //! run it after every command, and so does a redirection to the history file
 //! and, in a hook, a word that names it, while a redirection there to any other
 //! file but a device, which may be the one `HISTFILE` names, or whose target an
-//! expansion makes, is a doubt ([`runs`]). An `emulate -R ksh` turns `SHARE_HISTORY` on,
+//! expansion makes, is a doubt, and so is one to a device where a file defines a
+//! global alias ([`runs`]). An `emulate -R ksh` turns `SHARE_HISTORY` on,
 //! as ksh's defaults hold it. No turn-off counts: zsh can end with the option
 //! on after one, through a redefined `unsetopt`, a trap or a hook, a plugin
 //! loaded later or an error that stops the file before the line, and no reading
@@ -67,7 +68,9 @@
 //! expansion that holds what the check cannot read as zsh does (a `case` in a
 //! `$(...)`, a `${ command }`) are doubts, and so are arithmetic that may set
 //! a parameter by a name the check cannot read ([`arith`]), a global alias
-//! the code uses, which zsh puts in place of that word, a file the code may
+//! the code uses, which zsh puts in place of that word, one named like an
+//! operator or a brace, whose uses the check cannot count, an `alias` with a
+//! word an expansion makes, which may make it global, a file the code may
 //! make or write before zsh reads it, and a program a hook runs where a hook
 //! may give it the command line in its environment ([`made`]). Beside the
 //! code, the lines of each
@@ -197,13 +200,12 @@ struct Reader<'a, F: Filesystem> {
     expanding: Vec<String>,
     /// The redirections to a device or the terminal (`/dev/tty`, `$TTY`):
     /// the function they are in, or none for an `exec` that keeps one open,
-    /// the target as written, and where. Each writes no file while no global
-    /// alias may stand for it and no file sets `TTY`.
+    /// the target as written, and where. Each writes no file while no file
+    /// defines a global alias, and, to `$TTY`, while no file sets `TTY`.
     devices: Vec<(Option<String>, String, String)>,
-    /// The words the global aliases the files define stand for, as written,
-    /// and each one's definition (its name, the word that defines it and
-    /// where), which runs where a word of the code is its name.
-    global_aliases: Vec<String>,
+    /// The definitions of the global aliases the files define: each one's
+    /// name, the word that defines it and where, whose value runs where a
+    /// token of the code is its name.
     global_alias_defs: Vec<(String, String, String)>,
     /// The forms of the dump files read as data, whose words but the quoted
     /// ones a global alias may stand for.
@@ -772,9 +774,6 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
                 // It stands for any word of a later command, as zsh reads it.
                 self.shadow(format!("{place} defines the global alias `{name}`"));
-                if !self.global_aliases.contains(&name) {
-                    self.global_aliases.push(name);
-                }
             }
             Event::FpathSplits(text) => self.fpath_splits.push((text, place.to_string())),
             Event::Typed { text, keys } => {
@@ -993,7 +992,6 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         profile_vars_set: false,
         expanding: Vec::new(),
         devices: Vec::new(),
-        global_aliases: Vec::new(),
         global_alias_defs: Vec::new(),
         dump_texts: Vec::new(),
         typed_keys: Vec::new(),
