@@ -113,6 +113,10 @@ impl Filesystem for MockFilesystem {
     }
 
     fn mount_root(&self, path: &Path) -> Result<crate::filesystem::MountRoot> {
+        // A path that does not exist is an error here too, as for `statx`.
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         if self.is_symlink_impl(path)? {
             return Ok(crate::filesystem::MountRoot::Link);
         }

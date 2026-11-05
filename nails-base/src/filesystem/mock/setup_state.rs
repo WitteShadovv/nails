@@ -95,6 +95,38 @@ impl MockFilesystem {
         self.mock_add_file("/proc/swaps", content);
     }
 
+    /// Make every lookup of `path`, and of each path below it, fail with an
+    /// error of `kind`, as a real lookup fails where a directory on the way
+    /// may not be searched (`PermissionDenied`), a device fails (an I/O
+    /// error) or an automount cannot mount what it should.
+    ///
+    /// Every read that looks such a path up gives the error, which names the
+    /// path asked: [`path_exists`](crate::Filesystem::path_exists),
+    /// [`is_directory`](crate::Filesystem::is_directory),
+    /// [`is_regular_file`](crate::Filesystem::is_regular_file),
+    /// [`is_symlink`](crate::Filesystem::is_symlink),
+    /// [`inode`](crate::Filesystem::inode),
+    /// [`mount_root`](crate::Filesystem::mount_root),
+    /// [`canonicalize`](crate::Filesystem::canonicalize),
+    /// [`read_link`](crate::Filesystem::read_link), the file reads, the
+    /// listing, [`file_size`](crate::Filesystem::file_size),
+    /// [`modified_time`](crate::Filesystem::modified_time),
+    /// [`device_id`](crate::Filesystem::device_id),
+    /// [`get_permissions`](crate::Filesystem::get_permissions) and
+    /// [`disk_usage`](crate::Filesystem::disk_usage). A lookup the mock
+    /// follows through its links (`is_regular_file`, `canonicalize`) fails
+    /// where a link leads it there too. `NotFound` and `NotADirectory` say
+    /// that nothing is there: the four lookups that answer whether something
+    /// is there answer no, as the real ones do, and `inode` answers none for
+    /// `NotFound`. `is_overlay_whiteout`, `is_readable` and `is_writable`
+    /// answer no, as the real ones do on any error. Writes are not affected.
+    pub fn mock_set_lookup_error(&self, path: &str, kind: std::io::ErrorKind) {
+        self.lookup_errors
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(PathBuf::from(path), kind);
+    }
+
     /// Set whether a path exists
     pub fn mock_set_path_exists(&self, path: &str, exists: bool) {
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
