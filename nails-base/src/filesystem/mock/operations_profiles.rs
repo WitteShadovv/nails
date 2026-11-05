@@ -38,6 +38,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn read_file_bytes_impl(&self, path: &Path) -> Result<Vec<u8>> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         let bytes = self
             .file_bytes
             .lock()
@@ -51,6 +54,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn read_file_content_impl(&self, path: &Path) -> Result<String> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         if self
             .file_bytes
             .lock()
@@ -358,6 +364,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn list_directory_impl(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        if let Some(error) = self.lookup_error(dir) {
+            return Err(error);
+        }
         if self
             .unreadable_dirs
             .lock()
