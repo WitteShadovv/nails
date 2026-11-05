@@ -3,21 +3,29 @@
 #
 # The fstab policy covers every filesystem the decoy knows about at entry. A
 # disk the hidden session mounts itself is a real disk. Here a second disk
-# (serial "extra", formatted and used by the decoy, absent from its fstab) and
+# (serial "extra", formatted and used by the decoy, absent from its fstab), a
+# third (serial "inner"), which the session mounts below the hidden root, and
 # a disk hot-plugged during the session stand in for a USB drive.
 #
 #   1. Without the opt-in: mounting the disk read-write in the hidden session
 #      raises the watcher's neutral desktop alert on the desktop of the
-#      operator logged in on the console. The disk is left mounted and busy;
-#      `nails deactivate` still returns to the decoy, nothing holds the disk
-#      afterwards, and the decoy mounts it read-write as usual.
+#      operator logged in on the console, and so does mounting the third disk
+#      at /mnt/data/inner, below the hidden root: the session tells its own
+#      storage by device, not by path. The disk is left mounted and busy;
+#      `nails deactivate` still returns to the decoy, and its own record on
+#      the hidden volume shows that it unmounted both disks before the way
+#      back, and neither the hidden volume nor a filesystem the session
+#      carries. Nothing holds either disk afterwards, and the decoy mounts
+#      them read-write as usual.
 #   2. With `[session_mounts] read_only = true`: the disk is read-only at the
 #      block layer from the hidden boot on, a disk hot-plugged during the
 #      session is made read-only by the udev rule alone (the watcher, the
 #      fallback, is stopped first), a mount comes up read-only and every write
-#      fails, and the decoy root and the hidden backend stay writable. After
-#      the way back both disks are writable again, the second disk is byte for
-#      byte as before the session, and the decoy mounts it read-write.
+#      fails, and the decoy root and the hidden backend stay writable. The
+#      third disk, set writable again by hand and mounted below the hidden
+#      root, is set read-only again by the watcher's sweep. After the way back
+#      every disk is writable again, the second disk is byte for byte as before
+#      the session, and the decoy mounts it read-write.
 #
 # A notification server on testuser's session bus (lib/notification-server.nix)
 # records the alert, as in faults-backend-watch-alert.
@@ -45,6 +53,10 @@ in
         size = 64;
         driveConfig.deviceExtraOpts.serial = "extra";
       }
+      {
+        size = 64;
+        driveConfig.deviceExtraOpts.serial = "inner";
+      }
     ];
     # The test VMs are q35 machines, whose root bus takes no hot-plugged
     # device: the disk attached during the session goes into this port.
@@ -53,6 +65,8 @@ in
   };
 
   testScript = _: ''
+    import json
+
     from nails_e2e import desktop
 
     ${testHelpers.canonicalActivateFn}
@@ -60,6 +74,10 @@ in
 
     CONFIG = "/mnt/data/config/nails.toml"
     EXTRA = "/dev/disk/by-id/virtio-extra"
+    INNER = "/dev/disk/by-id/virtio-inner"
+    # Below the hidden root, on a disk of its own.
+    BELOW = "/mnt/data/inner"
+    LOGS = "/mnt/data/logs/*.log"
     HOTPLUG = "/dev/disk/by-id/virtio-hotplug"
     WATCH_UNIT = "overlay-runtime-monitor.service"
     RULE = "/run/udev/rules.d/60-overlay-runtime.rules"
@@ -89,6 +107,19 @@ in
         return machine.succeed("findmnt -no SOURCE /").strip()
 
 
+    def unmounted_before_the_way_back():
+        # The disks the last way back unmounted before it soft-rebooted, as
+        # deactivate records them in its log on the hidden volume.
+        lines = machine.succeed(f"cat {LOGS}").splitlines()
+        enqueued = [
+            json.loads(line)["fields"]
+            for line in lines
+            if '"the way back is enqueued"' in line
+        ]
+        assert enqueued, f"no way back in {LOGS}"
+        return enqueued[-1]["unmounted"]
+
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -97,6 +128,7 @@ in
         f"mkdir -p /mnt/extra && mount {EXTRA} /mnt/extra "
         "&& echo decoy > /mnt/extra/decoy-file && umount /mnt/extra"
     )
+    machine.succeed(f"mkfs.ext4 -q {INNER}")
     root_device = decoy_root_device()
 
     with subtest("without the opt-in, a read-write disk mount raises the alert"):
@@ -122,6 +154,21 @@ in
             "-E PATH=/run/current-system/sw/bin \"$(command -v sleep)\" infinity"
         )
 
+    with subtest("a disk mounted below the hidden root alerts as well"):
+        # Below the hidden root, but a disk of its own: not the hidden volume.
+        machine.succeed(f"mkdir -p {BELOW} && mount {INNER} {BELOW}")
+        machine.wait_until_succeeds(
+            f"grep -qF -- {BELOW} {desktop.records_path(uid)}", timeout=30
+        )
+        calls = [
+            call
+            for call in desktop.received(machine, uid)
+            if call["summary"] == "Disk mounted with write access" and BELOW in call["body"]
+        ]
+        assert len(calls) == 1, f"one alert per mount: {calls}"
+        assert "nails" not in (calls[0]["summary"] + calls[0]["body"]).lower(), calls
+        machine.succeed(f"echo session-1 > {BELOW}/hidden-1 && sync")
+
     with subtest("the way back leaves the busy disk free for the decoy"):
         canonical_deactivate(CONFIG, "deactivate-1")
         machine.fail(f"findmnt -S \"$(readlink -f {EXTRA})\"")
@@ -130,6 +177,18 @@ in
         machine.succeed("grep -Fx decoy /mnt/extra/decoy-file && grep -Fx session-1 /mnt/extra/hidden-1")
         machine.succeed("echo decoy-2 > /mnt/extra/decoy-2 && umount /mnt/extra")
         extra_before = machine.succeed(f"sha256sum < {EXTRA}")
+
+    with subtest("the way back unmounted the disk below the hidden root, and only the disks"):
+        machine.fail(f"findmnt -S \"$(readlink -f {INNER})\"")
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        unmounted = unmounted_before_the_way_back()
+        machine.log(f"unmounted before the way back: {unmounted}")
+        for disk in (BELOW, "/mnt/extra"):
+            assert f'"{disk}"' in unmounted, unmounted
+        assert '"/mnt/data"' not in unmounted, unmounted
+        assert "/mnt/data/root/" not in unmounted, unmounted
+        machine.succeed(f"mkdir -p /mnt/inner && mount {INNER} /mnt/inner")
+        machine.succeed("grep -Fx session-1 /mnt/inner/hidden-1 && umount /mnt/inner")
 
     with subtest("with the opt-in, unused disks are read-only from the hidden boot on"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -153,6 +212,18 @@ in
         machine.fail("mount -o remount,rw /mnt/extra")
         machine.fail(f"dd if=/dev/zero of={EXTRA} bs=512 count=1 seek=1 conv=notrunc oflag=direct")
 
+    with subtest("a disk below the hidden root is swept read-only like any other"):
+        # Set writable again by hand, which raises no uevent, and mounted
+        # read-only below the hidden root: only the watcher's sweep sets it
+        # read-only again, as the guard keeps no disk below the root writable
+        # that is not the session's own.
+        machine.wait_until_succeeds(f"test \"$(blockdev --getro {INNER})\" = 1", timeout=30)
+        machine.succeed(f"blockdev --setrw {INNER}")
+        assert not is_read_only(INNER)
+        machine.succeed(f"mkdir -p {BELOW} && mount -o ro {INNER} {BELOW}")
+        machine.wait_until_succeeds(f"test \"$(blockdev --getro {INNER})\" = 1", timeout=30)
+        machine.succeed(f"umount {BELOW}")
+
     with subtest("a disk attached during the session is read-only through udev alone"):
         # Stop the watcher, so only the udev rule can set the new disk read-only.
         machine.succeed(f"systemctl stop {WATCH_UNIT}")
@@ -175,6 +246,7 @@ in
         machine.fail(f"findmnt -S \"$(readlink -f {EXTRA})\"")
         machine.fail(f"test -e {RULE}")
         assert not is_read_only(EXTRA), "the disk must be writable again on the decoy"
+        assert not is_read_only(INNER), "the disk swept below the root must be writable again"
         assert not is_read_only(HOTPLUG), "the hot-plugged disk must be writable again"
         assert machine.succeed(f"sha256sum < {EXTRA}") == extra_before, (
             "the read-only session wrote to the disk"

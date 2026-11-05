@@ -559,11 +559,14 @@ soft-reboots with `py/nails_e2e/session.py`:
   decoy with `notify-send` and once on one without it, where `busctl` carries
   them;
 - `session-disk-mounts`: a second disk mounted read-write in the hidden session
-  raising the watcher's alert, `deactivate` freeing it while busy, and with
+  raising the watcher's alert, and a third mounted below the hidden root
+  raising it too, `deactivate` freeing the first while busy and unmounting
+  both before the way back, as its log on the hidden volume records, and with
   `[session_mounts] read_only` the disk read-only from the hidden boot on, a
   disk hot-plugged during the session made read-only by the udev rule alone,
-  every write failing, and both disks writable again and unchanged after the
-  way back;
+  every write failing, the third disk, set writable by hand and mounted below
+  the hidden root, swept read-only again, and every disk writable again after
+  the way back, the second unchanged;
 - `session-readme-captures`: the source of the README's `check`, `activate`
   and `status --json` captures (`docs/assets/screenshots/`). The standard VM
   is set up as `docs/decoy-requirements.md` recommends for a clean decoy (a
