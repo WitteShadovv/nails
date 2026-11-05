@@ -7,7 +7,8 @@
 # into an overlay of its own root, every hidden write (including /usr) lands on
 # the hidden root, every mounted boot filesystem stays read-only, and
 # deactivation and emergency soft-reboot back to the plain decoy without a trace
-# on the decoy disk. The
+# on the decoy disk. Before the first entry, check refuses a noauto line of the
+# decoy's fstab below the hidden root (fstab-policy, exit 4). The
 # decoy runs blk-availability.service as Debian's and Ubuntu's lvm2 ships it
 # (the image's own unit where lvm2 is installed, a copy where only dmsetup
 # is), and the second session, entered without /boot or the ESP mounted, keeps
@@ -723,6 +724,27 @@ distroVm.buildVmTest {
         # Accepting the risk explicitly, or making the decoy amnesic, both make
         # the check pass; the suite exercises the real fix.
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
+        vm.succeed(f"{nails_cmd} check --overlay-only")
+
+    with subtest("check refuses a decoy fstab entry below the hidden root"):
+        # A noauto line below the hidden root: the hidden volume is bound at
+        # its own path in the hidden session, where any unit or a plain mount
+        # could mount that disk inside it. fstab-policy refuses the line, and
+        # check with it (exit 4), naming the root in what to do. The decoy's
+        # fstab is put back as it was.
+        vm.succeed("cp /etc/fstab /run/fstab.orig")
+        vm.succeed("echo 'LABEL=archive /mnt/data/archive ext4 noauto 0 0' >> /etc/fstab")
+        rc, out = vm.execute(f"{nails_cmd} check --overlay-only --json")
+        print(out)
+        assert rc == 4, f"check exited {rc}, not 4"
+        rows = json.loads(out)["data"]["checks"]
+        row = next((r for r in rows if r["name"] == "fstab-policy"), None)
+        assert row is not None and row["status"] == "fail", row
+        assert "/mnt/data/archive: refused" in row["message"], row
+        assert "out from below /mnt/data" in row["remediation"], row
+        failed = [r["name"] for r in rows if r["status"] == "fail"]
+        assert failed == ["fstab-policy"], failed
+        vm.succeed("cp /run/fstab.orig /etc/fstab && rm /run/fstab.orig")
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
     with subtest("the platform row warns about every unit the image is known to fail"):
