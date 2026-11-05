@@ -246,8 +246,11 @@ checks the inputs it names. The proofs sit next to the code they check, in
 build, the tests and the coverage figure leave them out. They run weekly and
 when dispatched, never on a pull request: the `kani` task of `scheduled.yml`
 runs `just kani` with the Kani release the workflow pins
-([ci.md](ci.md#important-gate-behavior)). `just kani` fails when a proof fails
-and when Kani verified fewer proofs than `nails-base/src` holds.
+([ci.md](ci.md#important-gate-behavior)). `just kani` fails when a proof fails,
+when Kani verified fewer proofs than `nails-base/src` holds, and when fewer
+cover properties (`kani::cover!`) were satisfied than `nails-base/src` holds:
+Kani counts a proof as verified though a cover in it is never satisfied, and
+the branch that cover marks then goes unchecked.
 
 - **The activation step order**, in `nails-base/src/reporter/progress/proofs.rs`.
   The run order lists every phase once. It puts the runtime first, the overlay
@@ -256,17 +259,31 @@ and when Kani verified fewer proofs than `nails-base/src` holds.
   the build, and the arming of the switch last. The steps an activation shows are
   numbered from 1 to the number of phases it runs, in that order, none skipped
   or repeated, and a build phase of an activation that builds nothing gets no
-  number. Each proof takes every phase and both kinds of activation, one that
-  builds a hidden NixOS system and one that does not; nothing is stubbed. The
-  proofs check the table and the numbering only: that the entry reports each
-  phase once, and in this order, when it starts it is not proven.
+  number. The numbering proof takes any two phases and both kinds of
+  activation, one that builds a hidden NixOS system and one that does not. The
+  proof that every phase is listed once takes any phase, and the order proof
+  reads the table as it stands. Nothing is stubbed. The proofs check the table
+  and the numbering only: that the entry reports each phase once, and in this
+  order, when it starts it is not proven.
 
-Kani is not in the development shell. To run the proofs, install the release
-that `scheduled.yml` pins, then run the recipe:
+Kani is not in the development shell, and its setup needs rustup, which
+installs the nightly toolchain the Kani release was built against. On NixOS
+without a working loader at `/lib64` (as `nix-ld` gives), the setup also
+patches the binaries it unpacks, and needs `patchelf`, `NIX_CC` and a
+`<nixpkgs>` that `nix-instantiate` finds. `cargo kani setup` on its own
+downloads the release bundle and checks no hash, so install the release that
+the `kani` job of `scheduled.yml` pins as that job does, with the bundle
+checked against the SHA-256 it pins, then run the recipe:
 
 ```bash
-cargo install --locked kani-verifier --version 0.68.0
-cargo kani setup
+workflow=.github/workflows/scheduled.yml
+version=$(sed -n 's/^ *KANI_VERSION: *\([0-9.]*\).*/\1/p' "$workflow")
+sha256=$(sed -n 's/^ *KANI_BUNDLE_SHA256: *\([0-9a-f]*\).*/\1/p' "$workflow")
+bundle="kani-$version-x86_64-unknown-linux-gnu.tar.gz"
+cargo install --locked kani-verifier --version "=$version"
+curl -sSfL -o "$bundle" "https://github.com/model-checking/kani/releases/download/kani-$version/$bundle"
+echo "$sha256  $bundle" | sha256sum --check --strict -
+cargo kani setup --use-local-bundle "$bundle"
 just kani
 ```
 

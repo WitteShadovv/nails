@@ -609,19 +609,30 @@ mutants-in-diff-plan diff:
 # --- Model checking ---
 
 # Kani's proofs of nails-base (docs/testing-strategy.md#model-checking), each
-# for every input within the bounds it states. Kani is not in the dev shell:
-# install the version that the weekly `kani` task of scheduled.yml pins. The
-# recipe fails when a proof fails, and when Kani verified fewer proofs than
-# nails-base/src holds, as when a cfg or a filter left one out. The log goes to
+# for every input within the bounds it states. Kani is not in the dev shell, and
+# its setup needs rustup: install the version that the weekly `kani` task of
+# scheduled.yml pins, as testing-strategy.md shows. The recipe fails when a
+# proof fails, when Kani verified fewer proofs than nails-base/src holds, as
+# when a cfg or a filter left one out, and when it satisfied fewer cover
+# properties (`kani::cover!`) than nails-base/src holds: Kani counts a proof as
+# verified though a cover in it is never satisfied. The log goes to
 # target/kani/kani.log.
 kani:
     #!/usr/bin/env bash
     set -euo pipefail
     expected=$(grep -rhE '^[[:space:]]*#\[kani::proof\]' nails-base/src | wc -l)
+    covers=$(grep -rhE '^[[:space:]]*kani::cover!' nails-base/src | wc -l)
     mkdir -p target/kani
     cargo kani -p nails-base --output-format terse 2>&1 | tee target/kani/kani.log
     verified=$(sed -n 's/^Complete - \([0-9]*\) successfully verified harnesses, 0 failures, .*/\1/p' target/kani/kani.log)
     if [ "$verified" != "$expected" ]; then
         echo "Kani verified ${verified:-none} of the $expected proofs in nails-base/src" >&2
+        exit 1
+    fi
+    # Each proof with a cover reports " ** <satisfied> of <total> cover
+    # properties satisfied", the total with those unreachable among it.
+    read -r satisfied reported < <(sed -n 's/^ \*\* \([0-9]*\) of \([0-9]*\) cover properties satisfied.*/\1 \2/p' target/kani/kani.log | awk '{ s += $1; n += $2 } END { print s + 0, n + 0 }')
+    if [ "$satisfied" != "$covers" ] || [ "$reported" != "$covers" ]; then
+        echo "Kani satisfied $satisfied of the $reported cover properties it reported, of the $covers in nails-base/src" >&2
         exit 1
     fi

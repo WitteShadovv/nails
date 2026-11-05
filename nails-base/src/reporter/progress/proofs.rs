@@ -6,11 +6,13 @@
 //! activation shows (`[3/6] Applying the mount policy...`).
 //!
 //! Only `cargo kani` compiles this file (`just kani`, weekly in CI); the normal
-//! build and test leave it out. A proof takes every phase, as `kani::any()`
-//! makes any value of the enum and not only the values the table lists, and
+//! build and test leave it out. The numbering proof takes any two phases and
 //! both kinds of activation, one that builds a hidden NixOS system and one that
-//! does not. Nothing is stubbed. The loops run over the nine phases, and Kani
-//! checks that ten unwindings are enough for each of them.
+//! does not, and the proof that the run order lists every phase once takes any
+//! phase: `kani::any()` makes any value of the enum, not only the values the
+//! table lists. The order proof reads the table as it stands. Nothing is
+//! stubbed. The loops run over the nine phases, and Kani checks that ten
+//! unwindings are enough for each of them.
 //!
 //! Not covered: that the entry (`nails_session::session::entry`) reports each
 //! phase once, in this order, when it starts it, and what a reporter does with

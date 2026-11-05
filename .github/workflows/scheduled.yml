@@ -418,7 +418,8 @@ jobs:
   # Kani's proofs of a few pure invariants, each for every input within the
   # bounds it states (docs/testing-strategy.md#model-checking). They run weekly
   # and on dispatch, never on a pull request. A red run is a proof that no
-  # longer holds, or fewer proofs verified than the sources hold.
+  # longer holds, fewer proofs verified or cover properties satisfied than the
+  # sources hold, or a Kani install or build that failed.
   kani:
     name: Kani proofs
     needs: tasks
