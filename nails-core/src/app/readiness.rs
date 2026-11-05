@@ -759,6 +759,24 @@ mod tests {
         assert_eq!(body.allowable, None);
     }
 
+    /// A root that cannot be looked up is a refusal `check` leads with, as
+    /// for a missing one, naming the error and no override.
+    #[test]
+    fn attach_refusal_surfaces_a_root_that_cannot_be_looked_up() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/vault", true);
+        fs.mock_set_lookup_error("/mnt/vault", std::io::ErrorKind::PermissionDenied);
+        let body = attach_refusal(&fs, Path::new("/mnt/vault"), &PreflightOptions::default())
+            .expect("a root that cannot be looked up is refused");
+        assert_eq!(body.code, "not_separate_volume");
+        assert_eq!(
+            body.message,
+            "nothing shows that /mnt/vault is a volume of its own: it cannot be looked up (Mock: \
+             the lookup fails here). Nothing was written.\nRun the command again with sudo."
+        );
+        assert_eq!(body.allowable, None);
+    }
+
     /// A root on the decoy's storage is the refusal `check
     /// --allow-decoy-storage` turns into a warning: the body names that
     /// override, as the hidden-volume row does.

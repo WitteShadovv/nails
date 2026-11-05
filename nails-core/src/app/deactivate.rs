@@ -32,6 +32,18 @@ use crate::session::leave::NetworkTool;
 use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView, TargetHost};
 use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv, StateLock};
 
+/// What ends the session where `deactivate` takes no lock or records no way
+/// back before the switch, as a person reads it: the emergency, which needs
+/// neither, so no failure there strands the session.
+pub fn emergency_needs_no_lock() -> String {
+    use crate::next_step::{NextStep, sudo_line};
+    format!(
+        "`{}` ends the session without the lock: it returns to the decoy where it can prepare \
+         the return and powers off where it cannot",
+        sudo_line(NextStep::Emergency)
+    )
+}
+
 /// The result of preparing a deactivation.
 pub enum Prepared {
     /// Not in a hidden session, so there is nothing to deactivate.

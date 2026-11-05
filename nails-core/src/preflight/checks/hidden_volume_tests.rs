@@ -90,6 +90,30 @@ fn test_hidden_volume_check_fail_when_path_does_not_exist() {
     );
 }
 
+/// A root that cannot be looked up fails with the gate's sentence, naming the
+/// error, and its fix, before any probe; it is no missing root.
+#[test]
+fn a_root_that_cannot_be_looked_up_fails_naming_the_error() {
+    let fs = MockFilesystem::new();
+    mount_ok(&fs, NEUTRAL_ROOT);
+    fs.mock_set_lookup_error(NEUTRAL_ROOT, std::io::ErrorKind::PermissionDenied);
+    let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_fail());
+    assert_eq!(
+        result.message(),
+        "nothing shows that /mnt/data is a volume of its own: it cannot be looked up (Mock: the \
+         lookup fails here)"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some("Run the command again with sudo.")
+    );
+    assert_eq!(result.allowable(), None);
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+}
+
 #[test]
 fn test_hidden_volume_check_fail_when_not_mounted() {
     let fs = MockFilesystem::new();

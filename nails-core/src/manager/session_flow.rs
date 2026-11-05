@@ -598,7 +598,18 @@ impl<F: Filesystem> NailsManager<F> {
         // Leaving is a new switch: supersede the last one's refusal, if any.
         self.forget_refused_switch(&machine.paths);
         let before = crate::StateFile::load(&self.state_file_path).ok();
-        self.force_state(SystemState::Inactive)?;
+        // Nothing has started when the record fails, and the session goes
+        // on: an invalid state, which a front end answers with the
+        // emergency, which needs no record.
+        if let Err(error) = self.force_state(SystemState::Inactive) {
+            let why = match error {
+                NailsError::InvalidState(why) => why,
+                other => format!("the state could not be recorded ({other})"),
+            };
+            return Err(NailsError::InvalidState(format!(
+                "the way back did not start: {why}"
+            )));
+        }
         rustix::fs::sync();
         let left = crate::session::leave(&machine.paths, &mut plan, to, host);
         if left.is_err()

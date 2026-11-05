@@ -138,23 +138,41 @@ pub(crate) fn report_lock_error(
 
 /// The exit status and error body of a lock step that handed out no handle
 /// ([`report_lock_error`] reports them; the window's helper answers with them).
+///
+/// A `deactivate` that takes no lock has not started the way back, and the
+/// session goes on: its body names the emergency, which needs no lock, as
+/// the next step, so no failure there strands the session.
 pub(crate) fn lock_error_body(
     error: nails_core::app::lock::LockError,
     command: &'static str,
 ) -> (ExitStatus, ErrorBody) {
     use nails_core::app::lock::LockError;
     use nails_core::next_step::{NextStep, sudo_line};
+    let way_back = |body: ErrorBody| {
+        if command == "deactivate" {
+            body.with_hint(nails_core::app::deactivate::emergency_needs_no_lock())
+                .with_next(crate::cli::output::envelope::NextStep::new(
+                    NextStep::Emergency.command(),
+                ))
+        } else {
+            body
+        }
+    };
     match error {
         LockError::Refused(refusal) => {
             let exe = std::env::current_exe().ok();
             (
                 ExitStatus::PreflightRefused,
-                crate::cli::output::refusal::refusal_error_of(command, &refusal, exe.as_deref()),
+                way_back(crate::cli::output::refusal::refusal_error_of(
+                    command,
+                    &refusal,
+                    exe.as_deref(),
+                )),
             )
         }
         LockError::Unavailable(error) => (
             ExitStatus::Failed,
-            ErrorBody::new("state_locked", error.to_string()),
+            way_back(ErrorBody::new("state_locked", error.to_string())),
         ),
         LockError::UntrustedState => (
             ExitStatus::InvalidState,
@@ -198,6 +216,73 @@ mod tests {
             report_lock_error(LockError::UntrustedState, "activate", true),
             ExitStatus::InvalidState
         );
+        // A root that cannot be looked up is the gate's refusal, exit 4.
+        let unseen = LockError::Refused(Box::new(Refusal::new(
+            RefusalKind::LookupFailed {
+                error: "Permission denied (os error 13)".into(),
+                denied: true,
+            },
+            Path::new("/mnt/data"),
+        )));
+        assert_eq!(
+            report_lock_error(unseen, "deactivate", true),
+            ExitStatus::PreflightRefused
+        );
+    }
+
+    /// A deactivation that takes no lock started no way back: it names the
+    /// emergency, which needs no lock, as the next step. The other commands
+    /// do not.
+    #[test]
+    fn a_deactivation_without_its_lock_names_the_emergency() {
+        use super::lock_error_body;
+        use crate::cli::output::ExitStatus;
+        use nails_core::app::lock::LockError;
+        use nails_core::hidden_root::{Refusal, RefusalKind};
+        use nails_core::next_step::{NextStep, sudo_line};
+        let refused = || {
+            LockError::Refused(Box::new(Refusal::new(
+                RefusalKind::LookupFailed {
+                    error: "Input/output error (os error 5)".into(),
+                    denied: false,
+                },
+                Path::new("/mnt/data"),
+            )))
+        };
+        let held = || LockError::Unavailable(NailsError::OperationInProgress { pid: 42 });
+        let emergency = format!(
+            "`{}` ends the session without the lock: it returns to the decoy where it can \
+             prepare the return and powers off where it cannot",
+            sudo_line(NextStep::Emergency)
+        );
+        for (error, status, code) in [
+            (
+                refused(),
+                ExitStatus::PreflightRefused,
+                "not_separate_volume",
+            ),
+            (held(), ExitStatus::Failed, "state_locked"),
+        ] {
+            let (exit, body) = lock_error_body(error, "deactivate");
+            assert_eq!((exit, body.code), (status, code));
+            assert_eq!(
+                body.message.lines().last(),
+                Some(emergency.as_str()),
+                "{}",
+                body.message
+            );
+            assert_eq!(
+                body.next.map(|next| next.command).as_deref(),
+                Some("emergency")
+            );
+        }
+        for command in ["discard", "activate"] {
+            for error in [refused(), held()] {
+                let (_, body) = lock_error_body(error, command);
+                assert!(!body.message.contains("emergency"), "{command}");
+                assert!(body.next.is_none(), "{command}");
+            }
+        }
     }
 
     fn unreadable(kind: std::io::ErrorKind) -> NailsError {
