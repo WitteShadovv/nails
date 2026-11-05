@@ -368,7 +368,13 @@ impl Walker<'_> {
     /// or not.
     fn finish(&mut self, piped_after: bool) {
         let words = std::mem::take(&mut self.pending.words);
-        if std::mem::take(&mut self.pending.redirected) && words.is_empty() {
+        // Words that may all expand to none, with no assignment before them
+        // (`/no/such*(N)`, `$x`), leave a command with none too.
+        let vanish = words
+            .first()
+            .is_some_and(|first| !command::is_assignment(&first.text))
+            && words.iter().all(|word| word.bare);
+        if std::mem::take(&mut self.pending.redirected) && (words.is_empty() || vanish) {
             // A redirection with no command runs the command NULLCMD names
             // (`cat`) or, for an input alone, READNULLCMD (`more`), a function
             // the files define by that name among them.
