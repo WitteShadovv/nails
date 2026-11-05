@@ -855,6 +855,8 @@ struct Walked {
     /// How many `((` and `$[` the texts of its tokens hold
     /// ([`arith::marks`]).
     marks: usize,
+    /// It ends with a function's names and no body (`function f`, `f()`).
+    unfinished: bool,
 }
 
 /// What a startup file's code does, as [`events`] reads it.
@@ -933,6 +935,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         function_params: walker.function_params,
         may_stop: walker.may_stop,
         marks,
+        unfinished: walker.pending.function_next,
     }
 }
 

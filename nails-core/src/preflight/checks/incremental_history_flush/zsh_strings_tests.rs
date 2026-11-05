@@ -510,3 +510,38 @@ fn what_print_z_puts_in_the_line_is_read_as_a_hook_s_code() {
     assert_eq!(read("print -z 'ls -l'\n"), Scan::default());
     assert_eq!(read("print -rz -- 'cd ~/src'\n"), Scan::default());
 }
+
+#[test]
+fn an_alias_whose_value_leaves_a_definition_or_a_structure_open_is_a_doubt() {
+    // zsh 5.9.2 reads an alias's value with the words where it is used: with
+    // each of these it defines preexec, which appends each command line to
+    // ~/.zl before it runs.
+    for (rc, text) in [
+        (
+            "alias f=function\nf preexec { print -r -- $1 >>~/.zl }\n",
+            "f=function",
+        ),
+        (
+            "alias f='function preexec'\nf { print -r -- $1 >>~/.zl }\n",
+            "f=function preexec",
+        ),
+        (
+            "alias b='{'\npreexec() b print -r -- $1 >>~/.zl; }\n",
+            "b={",
+        ),
+    ] {
+        assert!(
+            read(rc).doubts.contains(&alias(text)),
+            "{rc}: {:?}",
+            read(rc)
+        );
+    }
+    // One that closes what it opens is read as code.
+    for rc in [
+        "alias x='if true; then :; fi'\n",
+        "alias -g G='| grep'\n",
+        "alias x='for i in 1; do :; done'\n",
+    ] {
+        assert_eq!(read(rc), Scan::default(), "{rc}");
+    }
+}

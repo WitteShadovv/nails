@@ -12,7 +12,7 @@
 
 use super::super::backstop::{FC_WRITES, KEPT, braces, history_path, is_fc_flag};
 use super::super::lexer::{Token, Word, lex};
-use super::{Event, Walker};
+use super::{Event, Walker, walk_text_in};
 
 /// The commands that take the words after them as options, code, names or
 /// paths, so that an alias whose value ends with one hands them the words it
@@ -336,6 +336,13 @@ impl Walker<'_> {
             self.events.push(Event::Fc(format!("alias {text}")));
         }
         self.nested_in(value, unconditional, Some(outer));
+        // zsh reads the value with the words where it is used, so one that
+        // leaves a function's definition or a structure open (`function`,
+        // `function preexec`, `{`) makes them its body or part of it.
+        let walked = walk_text_in(value, self.place, None);
+        if walked.confused || walked.unfinished {
+            self.events.push(doubt(self.place));
+        }
         // The command the words the alias is used with go to: its value's
         // last, past its assignments and precommands.
         let last = value
