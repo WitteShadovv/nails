@@ -20,6 +20,9 @@
 //! - a skip waits for a device only while that device is there, and a mask
 //!   that leaves a boot target unreached names a device that is not;
 //! - an entry bound or overlaid in the next root has a plain absolute path;
+//! - an entry whose plain absolute mount point lies at or below the hidden
+//!   root is refused, whatever its type and options, a `noauto`, automount or
+//!   tmpfs line among them;
 //! - an entry that a link the hidden session left leads into the hidden
 //!   volume (decided as redirected) is kept off under those same names, never
 //!   left to the bind of the volume;
@@ -76,6 +79,12 @@ fuzz_target!(|data: &[u8]| {
         for entry in &fstab {
             let decision = decide(entry, &mounts, hidden, &present);
             check(entry, &decision, there);
+            if entry.file.starts_with(hidden) && plain_absolute(&entry.file) && !entry.is_swap() {
+                assert!(
+                    matches!(decision, Decision::Refuse { .. }),
+                    "{entry:?} lies at or below the hidden root: {decision:?}"
+                );
+            }
             for unit in decision.masked_units() {
                 assert!(kept.masks.contains(unit), "{unit}");
             }
