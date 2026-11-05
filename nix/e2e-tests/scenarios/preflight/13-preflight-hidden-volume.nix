@@ -9,7 +9,10 @@
 # an immutable hidden root (exit 4, named in the readiness report); an
 # unmounted hidden root (a directory on the decoy disk) is never written to by
 # status, verify, a dry run or a refused activation; the log file on an
-# attached volume is 0600; and none of this leaves the plain decoy.
+# attached volume is 0600; a volume mounted a second time under /run/media, as
+# a desktop that mounts drives by itself would, fails check and activation
+# (exit 4) naming that mount until it is unmounted, after which check passes;
+# and none of this leaves the plain decoy.
 
 _:
 let
@@ -33,6 +36,8 @@ in
 
   script = ''
     def scenario_preflight_hidden_volume() -> None:
+        import json
+
         def write_hidden_volume_config(path, hidden_root):
             write_text_file(path, f"""
     hidden_volume_root = "{hidden_root}"
@@ -139,6 +144,66 @@ in
             machine.succeed("test -f /mnt/data/logs/nails.log")
             log_mode = machine.succeed("stat -c %a /mnt/data/logs/nails.log").strip()
             assert log_mode == "600", f"log file mode is {log_mode}, expected 600"
+
+        with subtest("a second mount of the volume fails check and activation until it is gone"):
+            # A desktop that mounts a drive by itself mounts the unlocked
+            # volume again, under /run/media/<user> (/media/<user> on Debian
+            # and Ubuntu). Here the mount is made by hand, so the refusal does
+            # not depend on whether an automounter acts.
+            machine.succeed("nails init /mnt/data")
+            second = "/run/media/testuser/data"
+            machine.succeed(f"mkdir -p {second} && mount /dev/mapper/data {second}")
+            assert machine.succeed(f"findmnt -no MAJ:MIN {second}") == machine.succeed(
+                "findmnt -no MAJ:MIN /mnt/data"
+            )
+            config = "/tmp/preflight-readonly.toml"
+            result = run_command_capture(
+                "preflight-hidden-second-mount",
+                f"nails --config {config} check --overlay-only --ascii",
+            )
+            assert_exit_code(result, 4)
+            assert_result_contains(
+                result,
+                [
+                    "hidden-volume: the volume at /mnt/data is also mounted at "
+                    f"{second}: a desktop may have mounted it there by itself when it was "
+                    "unlocked",
+                    f"Run `sudo umount {second}`, then run the command again.",
+                    "Long before the next use, turn off the automatic mounting of removable media.",
+                ],
+                stream="stdout",
+            )
+            result = run_command_capture(
+                "preflight-hidden-second-mount-json",
+                f"nails --config {config} --json check --overlay-only",
+            )
+            assert_exit_code(result, 4)
+            report = json.loads(result["stdout"].strip().splitlines()[-1])
+            [row] = [row for row in report["data"]["checks"] if row["name"] == "hidden-volume"]
+            assert row["status"] == "fail", row
+            assert second in row["message"], row
+            # No flag lifts it, and it names no device-mapper node.
+            assert "allowable" not in row or row["allowable"] is None, row
+            assert "/dev/" not in row["message"] + row["remediation"], row
+            # Activation runs the same check and refuses before anything is
+            # prepared.
+            result = run_command_capture(
+                "preflight-hidden-second-mount-activate",
+                f"nails --config {config} --json activate -y --overlay-only",
+            )
+            assert_exit_code(result, 4)
+            failed = json.loads(result["stdout"].strip().splitlines()[-1])["data"]["failed_checks"]
+            assert [c["name"] for c in failed] == ["hidden-volume"], failed
+            assert second in failed[0]["reason"], failed
+            machine.fail("mountpoint -q /run/nextroot")
+
+            machine.succeed(f"umount {second}")
+            result = run_command_capture(
+                "preflight-hidden-second-mount-gone",
+                f"nails --config {config} check --overlay-only --ascii",
+            )
+            assert_exit_code(result, 0)
+            assert_result_contains(result, ["Ready to activate"], stream="stdout")
 
         with subtest("the machine is still the plain decoy after all hidden volume failures"):
             from nails_e2e import session
