@@ -79,6 +79,52 @@ fn test_rotate_logs_rotates_when_exceeds_size_limit() {
     assert_eq!(content, "");
 }
 
+/// A numbered log that cannot be looked up may be there: the rotation stops
+/// before any log is renamed, naming it, so none is renamed over it.
+#[test]
+fn a_numbered_log_that_cannot_be_looked_up_stops_the_rotation_before_any_rename() {
+    let log_path = PathBuf::from("/mnt/hidden/logs");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden/logs/nails.log", true);
+    fs.mock_set_file_size("/mnt/hidden/logs/nails.log", 11_000_000);
+    fs.mock_set_file_content("/mnt/hidden/logs/nails.log", "current");
+    for (n, content) in [(1, "old1"), (3, "old3")] {
+        let name = format!("/mnt/hidden/logs/nails.log.{n}");
+        fs.mock_set_path_exists(&name, true);
+        fs.mock_set_file_content(&name, content);
+    }
+    fs.mock_set_lookup_error(
+        "/mnt/hidden/logs/nails.log.2",
+        std::io::ErrorKind::PermissionDenied,
+    );
+
+    let error = rotate_logs(
+        &log_path,
+        DEFAULT_MAX_LOG_SIZE_MB,
+        DEFAULT_RETENTION_DAYS,
+        &fs,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(&error, crate::NailsError::IoError { path, .. }
+            if path == Path::new("/mnt/hidden/logs/nails.log.2")),
+        "{error}"
+    );
+    for (name, content) in [
+        ("nails.log", "current"),
+        ("nails.log.1", "old1"),
+        ("nails.log.3", "old3"),
+    ] {
+        assert_eq!(
+            fs.read_file_content(&log_path.join(name)).unwrap(),
+            content,
+            "{name}"
+        );
+    }
+    assert!(!fs.path_exists(&log_path.join("nails.log.4")).unwrap());
+}
+
 #[test]
 fn test_rotate_logs_shifts_existing_numbered_logs() {
     let log_path = PathBuf::from("/mnt/hidden/logs");

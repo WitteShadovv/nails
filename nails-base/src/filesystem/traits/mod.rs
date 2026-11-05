@@ -235,6 +235,14 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
+    /// Whether anything is at `path` itself, a link to nothing included.
+    /// [`is_symlink`](Self::is_symlink) is asked first, so a link counts
+    /// whatever it leads to: one whose target is missing, or cannot be looked
+    /// up (a loop of links), counts without an error.
+    fn entry_exists(&self, path: &Path) -> Result<bool> {
+        Ok(self.is_symlink(path)? || self.path_exists(path)?)
+    }
+
     /// What the symbolic link `path` names, as `readlink(2)` reads it: the
     /// link is not followed, so nothing it leads to is looked up. As in any
     /// lookup, a link on the way to it is followed. An error when `path` is

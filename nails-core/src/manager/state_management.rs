@@ -159,8 +159,10 @@ impl<F: Filesystem> NailsManager<F> {
         for candidate in candidates {
             // A symlink counts whatever it points at: in the upper it names a
             // path of the hidden root, which the decoy may well not have (a
-            // staged update's `/system-update`).
-            if self.filesystem.path_exists(&candidate)? || self.filesystem.is_symlink(&candidate)? {
+            // staged update's `/system-update`), or one that cannot be
+            // followed (a loop). A lookup that fails otherwise stops the
+            // plan, naming the path.
+            if self.filesystem.entry_exists(&candidate)? {
                 removals.push(candidate);
             }
         }
@@ -235,6 +237,51 @@ mod tests {
             .plan_reset_upper_on(Path::new("/home"), &SessionView::Decoy)
             .unwrap();
         assert!(again.is_empty());
+    }
+
+    /// A link in the upper that leads to itself is planned and removed: it
+    /// is there, whatever it cannot be followed to.
+    #[test]
+    fn discard_removes_a_looping_link_in_the_upper() {
+        let root = tempfile::tempdir().unwrap();
+        let upper = root.path().join("root/upper");
+        std::fs::create_dir_all(&upper).unwrap();
+        let looped = upper.join("system-update");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+
+        let m = manager(root.path());
+        let plan = m
+            .plan_reset_upper_on(Path::new("/system-update"), &SessionView::Decoy)
+            .unwrap();
+        assert_eq!(plan.removals, std::slice::from_ref(&looped));
+        m.apply_reset_upper(&plan).unwrap();
+        assert!(std::fs::symlink_metadata(&looped).is_err());
+    }
+
+    /// A path in the upper that cannot be looked up stops the plan, naming
+    /// it: nothing is planned on a guess.
+    #[test]
+    fn discard_stops_at_a_path_it_cannot_look_up() {
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_lookup_error(
+            "/mnt/data/root/upper/home",
+            std::io::ErrorKind::PermissionDenied,
+        );
+        let config = Config {
+            hidden_volume_root: PathBuf::from("/mnt/data"),
+            state_file_path: PathBuf::from("/mnt/data/state.json"),
+            log_path: PathBuf::from("/mnt/data/logs"),
+            ..Config::test_default()
+        };
+        let m = NailsManager::new(fs, config, PathBuf::from("/mnt/data/state.json"));
+        let error = m
+            .plan_reset_upper_on(Path::new("/home"), &SessionView::Decoy)
+            .unwrap_err();
+        assert!(
+            matches!(&error, NailsError::IoError { path, .. }
+                if path == Path::new("/mnt/data/root/upper/home")),
+            "{error}"
+        );
     }
 
     #[test]
