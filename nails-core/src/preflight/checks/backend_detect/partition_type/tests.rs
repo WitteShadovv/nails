@@ -23,6 +23,18 @@ const ESP: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
 const XBOOTLDR: &str = "BC13C2FF-59E6-4262-A352-B275FD6F7172";
 const ROOT_X86_64: &str = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709";
 
+/// What the warning for a partition of the root type says after naming it:
+/// the same on every disk, as systemd takes a root partition in the initrd,
+/// from the disk the boot loader names, where a mask in the decoy's /etc
+/// need not reach.
+const ROOT_TYPE_TEXT: &str = "Where the decoy's initrd runs systemd-gpt-auto-generator, systemd \
+     takes a root partition at boot from the disk the boot loader says it started from, on a \
+     UEFI boot only, and only when the kernel command line names no root. By default, the initrd \
+     of Ubuntu 26.04, which dracut builds, runs it even where the decoy masks it in /etc, as \
+     dracut does not copy that mask, and that of Debian 13 and Ubuntu 24.04, which \
+     initramfs-tools builds, runs no generator. Anyone who reads the partition table sees a type \
+     the partition's use does not explain.";
+
 /// The size of every disk image, in 512-byte blocks (4 GiB).
 const BLOCKS: u64 = 1 << 23;
 /// Where partition 5 starts and ends, in blocks.
@@ -231,12 +243,6 @@ fn the_boot_and_root_types_only_warn() {
              and /boot is empty or missing, on a UEFI boot only when the boot loader says it \
              started from that disk",
         ),
-        (
-            ROOT_X86_64,
-            "a root partition",
-            "takes a root partition at boot from the disk the boot loader says it started from, \
-             on a UEFI boot only, and only when the kernel command line names no root",
-        ),
     ] {
         let result = typed(type_id, 0);
         assert_eq!(
@@ -253,14 +259,27 @@ fn the_boot_and_root_types_only_warn() {
         // The no-auto flag changes nothing about a warning.
         assert!(typed(type_id, NO_AUTO).is_warn(), "{type_id}");
     }
+    // systemd takes a root partition in the initrd, which the decoy's mask
+    // in /etc does not reach where dracut builds it: no mask condition.
+    let result = typed(ROOT_X86_64, 0);
+    assert_eq!(
+        warning(&result),
+        format!(
+            "The hidden root at {ROOT} is stored on a disk the decoy boots from. Partition 5 of \
+             nvme0n1 (nvme0n1p5) has the GPT type of a root partition. {ROOT_TYPE_TEXT}"
+        )
+    );
+    assert!(fix(&result).contains(&sgdisk("/dev/nvme0n1")), "{result:?}");
+    assert!(typed(ROOT_X86_64, NO_AUTO).is_warn());
 }
 
 #[test]
 fn a_decoy_that_masks_the_generator_gets_the_same_verdicts() {
     // Ubuntu 24.04 and 26.04 ship this link, which keeps systemd from running
-    // the generator. The check reads no mask: the type shows in the
-    // partition table either way, and the texts say what systemd does unless
-    // the generator is masked.
+    // the generator after the initrd. The check reads no mask: the type
+    // shows in the partition table either way, and the texts say what
+    // systemd does unless the generator is masked, and for the root type
+    // what the initrd does whether or not it is.
     const MASK: &str = "/etc/systemd/system-generators/systemd-gpt-auto-generator";
     for type_id in [
         HOME,
@@ -300,6 +319,14 @@ fn a_decoy_that_masks_the_generator_gets_the_same_verdicts() {
             "Unless the decoy masks systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by \
              default, systemd mounts the first such partition of that disk at /home"
         ) && message.contains("whether or not the generator is masked"),
+        "{result:?}"
+    );
+    // The root type's warning makes no exception for the mask.
+    let result = check(&host.fs, &devices("nvme0n1", &gpt(ROOT_X86_64, 0)));
+    assert!(
+        warning(&result).ends_with(&format!(
+            "has the GPT type of a root partition. {ROOT_TYPE_TEXT}"
+        )),
         "{result:?}"
     );
 }
@@ -570,11 +597,7 @@ fn a_partition_on_a_disk_the_generator_does_not_read_is_judged_the_same_but_told
     assert!(result.is_warn(), "{result:?}");
     assert_eq!(
         past_lead(&result),
-        "Partition 5 of sda (sda5) has the GPT type of a root partition. Unless the decoy masks \
-         systemd-gpt-auto-generator, as Ubuntu 24.04 and 26.04 do by default, systemd takes a \
-         root partition at boot from the disk the boot loader says it started from, on a UEFI \
-         boot only, and only when the kernel command line names no root. Anyone who reads the \
-         partition table sees a type the partition's use does not explain."
+        format!("Partition 5 of sda (sda5) has the GPT type of a root partition. {ROOT_TYPE_TEXT}")
     );
     // The no-auto flag gives the texts it gives on any disk.
     let result = check(&host.fs, &devices("sda", &gpt(SRV, NO_AUTO)));
@@ -639,6 +662,16 @@ fn a_root_two_layers_above_its_disk_has_it_read_from_systemd_259_1_on() {
              sees a type the partition's use does not explain."
         )),
         "{result:?}"
+    );
+    // The root type gets the text it gets on every disk.
+    let result = judged(&host, "nvme0n1", ROOT_X86_64);
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        past_lead(&result),
+        format!(
+            "Partition 5 of nvme0n1 (nvme0n1p5) has the GPT type of a root partition. \
+             {ROOT_TYPE_TEXT}"
+        )
     );
 }
 
@@ -870,6 +903,14 @@ fn a_root_whose_devices_below_cannot_be_listed_leaves_open_which_disk_is_read() 
     let result = judged(&host, "nvme0n1", SRV);
     assert!(result.is_fail(), "{result:?}");
     assert!(past_lead(&result).starts_with(unknown), "{result:?}");
+    // The root type gets the text it gets on every disk.
+    assert_eq!(
+        past_lead(&judged(&host, "nvme0n1", ROOT_X86_64)),
+        format!(
+            "Partition 5 of nvme0n1 (nvme0n1p5) has the GPT type of a root partition. \
+             {ROOT_TYPE_TEXT}"
+        )
+    );
     // The root on a logical volume of dm-0: systemd before 259.1 stops at
     // dm-0, which holds no table, but how far 259.1 goes is not shown.
     let host = host.mapping("dm-2", "254:2", "vg-root", "LVM-a1b2-root", &["dm-0"]);

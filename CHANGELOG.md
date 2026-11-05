@@ -528,14 +528,16 @@ of this changelog for that version becomes the release notes word for word, and
   The type of a root, EFI system or extended boot loader partition warns, as systemd acts on it
   under some conditions, such as a BIOS boot for an EFI system partition, and so do a table that
   does not list the partition where the kernel has it, a damaged table, and a partition neither
-  the disk nor udev's record of it lets the check read. The check reads the disk's table
-  read-only, without root from udev's record of the partition, follows the hidden root's own
-  storage through device-mapper layers and loops over block devices, and leaves a partition the
-  decoy uses itself to `hidden-volume`. The refusal gives the `sgdisk --typecode` command that
-  gives the partition the generic Linux type, to run from a live system or where setup happens.
-  A hidden volume on a disk of its own passes. See docs/backends.md. A new fuzz target,
-  `udev_partition_entry`, reads the partition entries of udev's records, and `disk_layout` checks
-  the flags and names the GPT parser now reads.
+  the disk nor udev's record of it lets the check read. systemd takes a root partition in the
+  initrd, which a mask in `/etc` does not reach where dracut builds it, as Ubuntu 26.04 does by
+  default; the initrd that initramfs-tools builds, the default of Debian 13 and Ubuntu 24.04, runs
+  no generator. The check reads the disk's table read-only, without root from udev's record of the
+  partition, follows the hidden root's own storage through device-mapper layers and loops over
+  block devices, and leaves a partition the decoy uses itself to `hidden-volume`. The refusal gives
+  the `sgdisk --typecode` command that gives the partition the generic Linux type, to run from a
+  live system or where setup happens. A hidden volume on a disk of its own passes. See
+  docs/backends.md. A new fuzz target, `udev_partition_entry`, reads the partition entries of
+  udev's records, and `disk_layout` checks the flags and names the GPT parser now reads.
 - docs/backends.md weighs VeraCrypt's rule that on Linux a hidden volume be mounted only from a
   live system writing to a RAM disk: a NAILS setup does not meet it, since you unlock and mount the
   hidden volume with cryptsetup on the running decoy before every session. It also passes on
