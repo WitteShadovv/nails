@@ -208,38 +208,101 @@ pub const CHECK_MOUNTED_TWICE: Message = Message {
 /// What to do about [`CHECK_MOUNTED_TWICE`]: unmount the other mounts.
 pub const CHECK_MOUNTED_TWICE_FIX: Message = Message {
     id: "check.mounted-twice-fix",
-    text: "Run `sudo umount {mount_points}`, then run the command again.\n\
-           Long before the next use, turn off the automatic mounting of removable media.\n\
-           Read \"Attaching the drive\" in the decoy requirements on another device.",
-    note: "The fix shown below check.mounted-twice, three lines. {mount_points} is every other \
-           mount point, each quoted for the shell where it needs it, the deepest first, so the \
-           line pastes as it is. \"The command\" is the one that failed (check or activate). \
-           The second line is about the desktop's setting that mounts a drive once it is \
-           attached or unlocked (GNOME, KDE, udiskie); \"long before\" because a setting changed \
-           just before a session dates it. The third names the section of the documentation \
-           (docs/decoy-requirements.md) that says where those settings are; it is read on \
-           another device, as opening it on this computer leaves traces. The same text is the \
-           --json fix of that check.",
+    text: "Run `sudo umount {mount_points}`, then run the command again.",
+    note: "The first line of the fix shown below check.mounted-twice. {mount_points} is every \
+           other mount point that umount reaches by its path, each quoted for the shell where \
+           it needs it, the deepest first, so the line pastes as it is. \"The command\" is the \
+           one that failed (check or activate). A line of check.mounted-twice-hidden for each \
+           mount another one hides, then the two lines of check.mounted-twice-advice, follow \
+           it. All of them together are the --json fix of that check.",
     placeholders: &["mount_points"],
     surface: Surface::Cli,
 };
 
 /// What to do about [`CHECK_MOUNTED_TWICE`] when another mount of the volume
-/// holds the root folder: it can only go once the root is unmounted too.
+/// holds the root folder, and the mount at the root shows all of the volume:
+/// the other mount can only go once the root is unmounted too.
 pub const CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT: Message = Message {
     id: "check.mounted-twice-fix-holding-root",
     text: "Run `sudo umount {mount_points}`, mount the volume at {root} alone, then run the \
-           command again.\n\
-           Long before the next use, turn off the automatic mounting of removable media.\n\
-           Read \"Attaching the drive\" in the decoy requirements on another device.",
+           command again.",
     note: "Shown instead of check.mounted-twice-fix when one of the other mounts of the volume \
-           is a parent folder of the root folder (the volume mounted at /mnt and a folder of it \
-           bound at /mnt/data, say), which cannot be unmounted while the root is mounted below \
-           it. {mount_points} is the root folder and every other mount point, each quoted for \
-           the shell where it needs it, the deepest first; {root} is the root folder as \
-           configured. The other two lines are those of check.mounted-twice-fix. The same text \
-           is the --json fix of that check.",
+           is on a parent folder of the root folder (the volume mounted at /mnt and again at \
+           /mnt/data, say), which cannot be unmounted while the root is mounted below it, and \
+           the mount at the root shows the whole volume. {mount_points} is the root folder and \
+           every other mount point that umount reaches by its path, each quoted for the shell \
+           where it needs it, the deepest first; {root} is the root folder as configured. The \
+           lines that follow are those of check.mounted-twice-fix.",
     placeholders: &["mount_points", "root"],
+    surface: Surface::Cli,
+};
+
+/// What to do about [`CHECK_MOUNTED_TWICE`] when another mount of the volume
+/// holds the root folder, and the mount at the root is a folder of the volume
+/// bound there: mounting the volume itself there would show its top instead.
+pub const CHECK_MOUNTED_TWICE_FIX_HOLDING_FOLDER: Message = Message {
+    id: "check.mounted-twice-fix-holding-folder",
+    text: "Run `sudo umount {mount_points}`. Then mount the volume at another folder, bind its \
+           folder {folder} at {root}, unmount that other folder and run the command again.",
+    note: "Shown instead of check.mounted-twice-fix-holding-root when the mount at the root is \
+           a bind of a folder of the volume (the volume mounted at /mnt and its folder /vol \
+           bound at /mnt/data, say): the folder holds what NAILS keeps, so mounting the volume \
+           itself at the root would show the wrong folder. {folder} is the path of that folder \
+           inside the volume, such as /vol. \"Another folder\" is any empty folder the \
+           volume is mounted at only until the bind is made. The other placeholders and lines \
+           are those of check.mounted-twice-fix-holding-root.",
+    placeholders: &["mount_points", "folder", "root"],
+    surface: Surface::Cli,
+};
+
+/// What to do about [`CHECK_MOUNTED_TWICE`] when another mount of the volume
+/// holds the root folder, and the mount at the root is a btrfs subvolume of
+/// the volume: mounting the volume itself there would show another one.
+pub const CHECK_MOUNTED_TWICE_FIX_HOLDING_SUBVOLUME: Message = Message {
+    id: "check.mounted-twice-fix-holding-subvolume",
+    text: "Run `sudo umount {mount_points}`, mount the btrfs subvolume {subvolume} of the volume \
+           at {root} alone (mount option subvol={subvolume}), then run the command again.",
+    note: "Shown instead of check.mounted-twice-fix-holding-root when the mount at the root is \
+           a btrfs subvolume of the volume (the volume's top mounted at /mnt and its subvolume \
+           /data at /mnt/data, say): mounting the volume without that option would show its \
+           default subvolume instead. {subvolume} is the subvolume's path inside the volume, \
+           such as /data, and the option is written as the mount command takes it. The other \
+           placeholders and lines are those of check.mounted-twice-fix-holding-root.",
+    placeholders: &["mount_points", "subvolume", "root"],
+    surface: Surface::Cli,
+};
+
+/// A line of the fix for [`CHECK_MOUNTED_TWICE`] about another mount of the
+/// volume that a later mount hides, which `umount` cannot reach by its path.
+pub const CHECK_MOUNTED_TWICE_HIDDEN: Message = Message {
+    id: "check.mounted-twice-hidden",
+    text: "The mount at {place} is hidden under another mount at {cover}, so umount cannot \
+           reach it by that path: unmount that one first, then {place}, and mount it again if \
+           it is needed.",
+    note: "One line below the unmount line of check.mounted-twice-fix (or in its place, when \
+           every other mount is hidden), for each other mount of the volume that a later mount \
+           hides: one mounted at the same folder over it, or at a folder above it, the root \
+           folder included. umount given that path unmounts the mount over it, or fails. \
+           {place} is where the hidden mount is; {cover} is where the mount over it is, the \
+           same folder as {place} when the two are stacked there. \"It\" in \"mount it \
+           again\" is the mount over it.",
+    placeholders: &["place", "cover"],
+    surface: Surface::Cli,
+};
+
+/// The last lines of the fix for [`CHECK_MOUNTED_TWICE`]: keep a desktop from
+/// mounting the drive next time.
+pub const CHECK_MOUNTED_TWICE_ADVICE: Message = Message {
+    id: "check.mounted-twice-advice",
+    text: "Long before the next use, turn off the automatic mounting of removable media.\n\
+           Read \"Attaching the drive\" in the decoy requirements on another device.",
+    note: "The last two lines of the fix shown below check.mounted-twice, after its unmount \
+           lines. The first is about the desktop's setting that mounts a drive once it is \
+           attached or unlocked (GNOME, KDE, udiskie); \"long before\" because a setting \
+           changed just before a session dates it. The second names the section of the \
+           documentation (docs/decoy-requirements.md) that says where those settings are; it \
+           is read on another device, as opening it on this computer leaves traces.",
+    placeholders: &[],
     surface: Surface::Cli,
 };
 
@@ -262,4 +325,8 @@ pub const CATALOG: &[Message] = &[
     CHECK_MOUNTED_TWICE,
     CHECK_MOUNTED_TWICE_FIX,
     CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT,
+    CHECK_MOUNTED_TWICE_FIX_HOLDING_FOLDER,
+    CHECK_MOUNTED_TWICE_FIX_HOLDING_SUBVOLUME,
+    CHECK_MOUNTED_TWICE_HIDDEN,
+    CHECK_MOUNTED_TWICE_ADVICE,
 ];
