@@ -670,6 +670,34 @@ fn the_gate_refuses_a_partition_of_an_md_array_of_images_on_the_decoys_home() {
     }
 }
 
+/// A table whose lookup fails is one the gate cannot read either: a disk
+/// root is refused as storage it cannot judge, naming the table. A lookup
+/// that finds no table finds an empty one, and the root attaches.
+#[test]
+fn a_table_whose_lookup_fails_refuses_a_disk_root() {
+    for table in ["/etc/fstab", "/etc/crypttab"] {
+        let decoy = external_veracrypt();
+        decoy
+            .fs
+            .mock_set_lookup_error(table, std::io::ErrorKind::PermissionDenied);
+        match decoy.assess() {
+            Assessment::Refused(refusal) => assert_eq!(
+                refusal.kind,
+                RefusalKind::StorageUnjudged {
+                    unreadable: vec![PathBuf::from(table)]
+                },
+                "{table}"
+            ),
+            other => panic!("{table}: {other:?}"),
+        }
+        let decoy = external_veracrypt();
+        decoy
+            .fs
+            .mock_set_lookup_error(table, std::io::ErrorKind::NotFound);
+        assert_eq!(decoy.assess(), Assessment::Attached, "{table}");
+    }
+}
+
 #[test]
 fn an_unreadable_crypttab_refuses_a_disk_root_but_not_a_tmpfs() {
     let decoy = external_veracrypt().unreadable("/etc/crypttab");
