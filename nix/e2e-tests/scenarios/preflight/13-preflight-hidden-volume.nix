@@ -185,8 +185,8 @@ in
             # No flag lifts it, and it names no device-mapper node.
             assert "allowable" not in row or row["allowable"] is None, row
             assert "/dev/" not in row["message"] + row["remediation"], row
-            # Activation runs the same check and refuses before anything is
-            # prepared.
+            # Activation runs the same check and refuses before it prepares
+            # a next root.
             result = run_command_capture(
                 "preflight-hidden-second-mount-activate",
                 f"nails --config {config} --json activate -y --overlay-only",

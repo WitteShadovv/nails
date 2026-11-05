@@ -25,9 +25,9 @@ name: E2E
 #
 # Only the nightly (or a dispatched 'execute') run times anything: every other
 # lane leaves the performance group out, unless `tests` names it. The heavy
-# group, long prototypes of the setup routine, stays out of a pull request's
-# affected selection; the runs of the whole suite (pushes, the nightly run, the
-# full-e2e label) include it.
+# group, tests that record what software outside NAILS does, stays out of a
+# pull request's affected selection; the runs of the whole suite (pushes, the
+# nightly run, the full-e2e label) include it.
 #
 # No secret reaches code that nobody vetted: fork and Dependabot pull requests
 # run like any other, with a read-only cache. `e2e-result` is the one status

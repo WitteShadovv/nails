@@ -155,9 +155,10 @@ Use only:
 - `lifecycle`
 - `security`
 - `performance`
-- `heavy` (long prototypes of the setup routine, such as `routine-automount`:
-  leaf tests in `all`, which the shards of a pull request leave out; they run
-  on pushes to `main` and `next`, nightly and with the `full-e2e` label)
+- `heavy` (tests that record what software outside NAILS does, such as
+  `routine-automount`: leaf tests in `all`, which the `affected` selection of a
+  pull request leaves out; they run on pushes to `main` and `next`, nightly
+  and with the `full-e2e` label)
 - `preflight`
 - `nixos`
 - `session` (the whole-root session, `tests/session/`)
