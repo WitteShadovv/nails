@@ -5,15 +5,18 @@
 //!
 //! Every file write goes through [`redirect_for`] first: the directory must sit
 //! on an overlay whose upper is on the hidden volume, or on the hidden volume
-//! itself, according to the live mount table. A directory on the decoy disk is
-//! refused, so the rehearsal can never put its own token on the decoy. After a
-//! file is written, its copy in the upper is checked, so a channel is recorded
-//! as planted only when the write is known to have been redirected.
+//! itself, according to the live mount table. The hidden volume is told by
+//! its device, not by its path: a disk mounted below the hidden root is not
+//! it. A directory on the decoy disk is refused, so the rehearsal can never
+//! put its own token on the decoy. After a file is written, its copy in the
+//! upper is checked, so a channel is recorded as planted only when the write
+//! is known to have been redirected.
 
 use super::{ChannelKind, ChannelRecord, FILE_PREFIX};
 use crate::filesystem::MountEntry;
 use crate::filesystem::real::{OpenKind, open_noatime};
 use crate::{RuntimeEnv, TargetUser};
+use nails_teardown::whole_root::plan::{LoopFile, shows_hidden_volume};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -35,6 +38,9 @@ pub struct PlantContext<'a> {
     /// process, a notification). Tests that only exercise the file channels
     /// leave it off.
     pub host_channels: bool,
+    /// What tells the filesystem that holds a loop device's backing file, so
+    /// a loop device on the hidden volume counts as the hidden volume.
+    pub loop_file: LoopFile,
 }
 
 /// Where a write to a directory really lands.
@@ -56,49 +62,75 @@ fn hidden_device<'a>(mounts: &'a [MountEntry], hidden_root: &Path) -> Option<&'a
         .map(|entry| entry.dev.as_str())
 }
 
+/// The deepest mount in `mounts` that holds `path`.
+fn mount_holding<'a>(mounts: &'a [MountEntry], path: &Path) -> Option<&'a MountEntry> {
+    mounts
+        .iter()
+        .filter(|entry| path.starts_with(&entry.mount_point))
+        .max_by_key(|entry| entry.mount_point.components().count())
+}
+
+/// Whether `entry` shows the hidden volume mounted at `hidden_root`: a mount
+/// of its device wherever it is (the volume itself, a bind from it), or of a
+/// loop device whose backing file lies on it. A disk mounted below the hidden
+/// root is not the hidden volume.
+fn on_hidden_volume(
+    entry: &MountEntry,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    loop_file: LoopFile,
+) -> bool {
+    hidden_device(mounts, hidden_root).is_some_and(|dev| shows_hidden_volume(entry, dev, loop_file))
+}
+
+/// The upper of the overlay `entry` when that lies on the hidden volume: the
+/// deepest mount holding it shows the hidden volume ([`on_hidden_volume`]).
+fn hidden_upper(
+    entry: &MountEntry,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    loop_file: LoopFile,
+) -> Option<PathBuf> {
+    let upper = crate::filesystem::parse_overlay_opts(&entry.super_opts).upperdir?;
+    mount_holding(mounts, &upper)
+        .is_some_and(|holder| on_hidden_volume(holder, mounts, hidden_root, loop_file))
+        .then_some(upper)
+}
+
 /// Where a write to `dir` lands, or `None` when it would reach the decoy.
 ///
 /// `dir` must be absolute and canonical. The deepest mount containing it
 /// decides: an overlay whose upperdir is on the hidden volume redirects into
-/// that upper; a mount of the hidden volume's own device (the volume itself, a
-/// persona bind from it) is the hidden volume; anything else is the decoy.
+/// that upper; a mount that shows the hidden volume (the volume itself, a bind
+/// from it, a loop device on it: [`on_hidden_volume`]) is the hidden volume;
+/// anything else is the decoy, a disk mounted below the hidden root included.
 pub(crate) fn redirect_for(
     dir: &Path,
     mounts: &[MountEntry],
     hidden_root: &Path,
+    loop_file: LoopFile,
 ) -> Option<Redirect> {
-    let entry = mounts
-        .iter()
-        .filter(|entry| dir.starts_with(&entry.mount_point))
-        .max_by_key(|entry| entry.mount_point.components().count())?;
+    let entry = mount_holding(mounts, dir)?;
     let relative = dir.strip_prefix(&entry.mount_point).ok()?;
     if entry.fstype == "overlay" {
-        let upper = crate::filesystem::parse_overlay_opts(&entry.super_opts).upperdir?;
-        if upper.starts_with(hidden_root) {
-            return Some(Redirect {
-                mount_point: entry.mount_point.clone(),
-                hidden_dir: upper.join(relative),
-            });
-        }
-        return None;
+        let upper = hidden_upper(entry, mounts, hidden_root, loop_file)?;
+        return Some(Redirect {
+            mount_point: entry.mount_point.clone(),
+            hidden_dir: upper.join(relative),
+        });
     }
-    let on_hidden_device = hidden_device(mounts, hidden_root) == Some(entry.dev.as_str());
-    (on_hidden_device || entry.mount_point.starts_with(hidden_root)).then(|| Redirect {
+    on_hidden_volume(entry, mounts, hidden_root, loop_file).then(|| Redirect {
         mount_point: entry.mount_point.clone(),
         hidden_dir: dir.to_path_buf(),
     })
 }
 
 /// The overlay targets whose upper is on the hidden volume.
-fn overlay_targets(mounts: &[MountEntry], hidden_root: &Path) -> Vec<PathBuf> {
+fn overlay_targets(mounts: &[MountEntry], hidden_root: &Path, loop_file: LoopFile) -> Vec<PathBuf> {
     let mut targets: Vec<PathBuf> = mounts
         .iter()
         .filter(|entry| entry.fstype == "overlay")
-        .filter(|entry| {
-            crate::filesystem::parse_overlay_opts(&entry.super_opts)
-                .upperdir
-                .is_some_and(|upper| upper.starts_with(hidden_root))
-        })
+        .filter(|entry| hidden_upper(entry, mounts, hidden_root, loop_file).is_some())
         .map(|entry| entry.mount_point.clone())
         .collect();
     targets.sort();
@@ -134,7 +166,8 @@ fn plant_file(
     let Ok(canonical) = dir.canonicalize() else {
         return skipped(kind, location, "the directory does not exist");
     };
-    let Some(redirect) = redirect_for(&canonical, ctx.mounts, ctx.hidden_root) else {
+    let Some(redirect) = redirect_for(&canonical, ctx.mounts, ctx.hidden_root, ctx.loop_file)
+    else {
         return skipped(
             kind,
             location,
@@ -210,7 +243,7 @@ fn plant_recent_files(ctx: &PlantContext<'_>, user: &TargetUser, home: &Path) ->
     let ancestor = dir.ancestors().find(|p| p.exists()).map(Path::to_path_buf);
     let redirected = ancestor
         .and_then(|p| p.canonicalize().ok())
-        .and_then(|p| redirect_for(&p, ctx.mounts, ctx.hidden_root));
+        .and_then(|p| redirect_for(&p, ctx.mounts, ctx.hidden_root, ctx.loop_file));
     if redirected.is_none() {
         return skipped(
             kind,
@@ -233,7 +266,7 @@ fn plant_recent_files(ctx: &PlantContext<'_>, user: &TargetUser, home: &Path) ->
     let Some(redirect) = dir
         .canonicalize()
         .ok()
-        .and_then(|canonical| redirect_for(&canonical, ctx.mounts, ctx.hidden_root))
+        .and_then(|canonical| redirect_for(&canonical, ctx.mounts, ctx.hidden_root, ctx.loop_file))
     else {
         return skipped(
             kind,
@@ -360,7 +393,7 @@ pub fn plant(ctx: &PlantContext<'_>) -> Vec<ChannelRecord> {
     let content = format!("{FILE_PREFIX}{}\n", ctx.token);
     let mut records = Vec::new();
 
-    let targets = overlay_targets(ctx.mounts, ctx.hidden_root);
+    let targets = overlay_targets(ctx.mounts, ctx.hidden_root, ctx.loop_file);
     if targets.is_empty() {
         records.push(skipped(
             ChannelKind::OverlayFile,

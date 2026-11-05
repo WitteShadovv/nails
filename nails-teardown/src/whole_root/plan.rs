@@ -16,6 +16,7 @@
 //! field guards the format: a plan of another version is refused, never guessed
 //! at.
 
+use crate::mountinfo::MountEntry;
 use crate::whole_root::runtime_units::RuntimeUnit;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -495,6 +496,63 @@ impl Plan {
         self.armed
             .is_some_and(|arm| arm.direction == direction && arm.valid_at(now))
     }
+
+    /// Whether `mount` is the session's own storage at or below the hidden
+    /// root, rather than a disk mounted during the session, which the session
+    /// watcher alerts on, the read-only guard sets read-only and the way back
+    /// unmounts. What counts is told by device, not by path: a disk someone
+    /// mounts at `<root>/usb` lies below the root but is a real disk of its
+    /// own.
+    ///
+    /// The session's own storage is the hidden volume, a mount of the device
+    /// [`hidden_dev`](Self::hidden_dev) records (the volume, a bind of a
+    /// folder of it) or of a loop device whose backing file lies on it
+    /// ([`shows_hidden_volume`]), and NAILS's own mounts in the volume: a
+    /// carried decoy filesystem at its place ([`CarriedMount::at`]) and
+    /// anything below `<root>/root`, where NAILS keeps its layers and carries
+    /// the decoy's filesystems. A mount outside the hidden root is never
+    /// counted, a bind of the volume or a loop on it there included: the
+    /// device a root accepted with `--allow-decoy-storage` records can be one
+    /// the decoy's own filesystems share. A plan written before the device
+    /// was recorded has only the path to go by: every mount at or below the
+    /// root counts.
+    pub fn is_hidden_storage(&self, mount: &MountEntry) -> bool {
+        self.is_hidden_storage_with(mount, crate::loop_device::backing_filesystem)
+    }
+
+    /// [`is_hidden_storage`](Self::is_hidden_storage), with `loop_file`
+    /// telling the filesystem that holds a loop device's backing file.
+    pub fn is_hidden_storage_with(&self, mount: &MountEntry, loop_file: LoopFile) -> bool {
+        let point = &mount.mount_point;
+        if !point.starts_with(&self.hidden_root) {
+            return false;
+        }
+        let Some(dev) = self.hidden_dev.as_deref() else {
+            return true;
+        };
+        let layers = self.hidden_root.join(LAYERS_DIR);
+        shows_hidden_volume(mount, dev, loop_file)
+            || self.carried.iter().any(|carried| &carried.at == point)
+            || (point.starts_with(&layers) && point != &layers)
+    }
+}
+
+/// The directory below the hidden root that holds NAILS's own layers: the
+/// root overlay's upper and work directories, the uppers of the other
+/// overlays and the carried decoy filesystems (`<root>/root`).
+const LAYERS_DIR: &str = "root";
+
+/// What tells the filesystem (`major:minor`) that holds the backing file of
+/// the loop device a mount's filesystem is on, `None` for a mount on any
+/// other device: [`crate::loop_device::backing_filesystem`], or a stand-in.
+pub type LoopFile = fn(&MountEntry) -> Option<String>;
+
+/// Whether `mount` shows the hidden volume whose filesystem is `dev`
+/// (`major:minor`): a mount of that filesystem, wherever it is mounted (the
+/// volume itself, a bind of a folder of it), or of a loop device whose
+/// backing file lies on it, as `loop_file` tells.
+pub fn shows_hidden_volume(mount: &MountEntry, dev: &str, loop_file: LoopFile) -> bool {
+    mount.dev == dev || loop_file(mount).is_some_and(|holder| holder == dev)
 }
 
 /// The mode of the files the session writes for the service manager and udev
@@ -591,6 +649,10 @@ pub(crate) fn sample() -> Plan {
         pids: Default::default(),
     }
 }
+
+#[cfg(test)]
+#[path = "hidden_storage_tests.rs"]
+mod hidden_storage_tests;
 
 #[cfg(test)]
 mod tests {

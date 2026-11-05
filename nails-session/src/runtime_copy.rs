@@ -70,14 +70,22 @@ impl RuntimeManifest {
 /// `Ok(None)` when no plan exists (no activation wrote one, or it was already
 /// torn down); an error only on a present-but-unusable plan.
 pub fn read_manifest<F: Filesystem>(filesystem: &F) -> Result<Option<RuntimeManifest>> {
+    Ok(read_plan(filesystem)?.map(|plan| RuntimeManifest::from_plan(&plan)))
+}
+
+/// Read the session plan in the runtime copy, if one is present, as
+/// [`read_manifest`] does.
+pub fn read_plan<F: Filesystem>(
+    filesystem: &F,
+) -> Result<Option<nails_teardown::whole_root::plan::Plan>> {
     let path = plan_path();
     if !filesystem.path_exists(&path)? {
         return Ok(None);
     }
     let content = filesystem.read_file_content(&path)?;
-    let plan = nails_teardown::whole_root::plan::Plan::from_json(&content)
-        .map_err(|e| NailsError::io(&path, std::io::Error::other(e.to_string())))?;
-    Ok(Some(RuntimeManifest::from_plan(&plan)))
+    nails_teardown::whole_root::plan::Plan::from_json(&content)
+        .map(Some)
+        .map_err(|e| NailsError::io(&path, std::io::Error::other(e.to_string())))
 }
 
 /// Load the mirrored configuration from the runtime copy, if one is present.

@@ -602,14 +602,21 @@ writes.
 - **Alert** (`session_mounts.alert`, on by default). The session watcher checks
   the mount table every `backend_watch.poll_interval_secs` seconds and raises a
   desktop alert ("Disk mounted with write access") once for every read-write
-  mount of a block device outside the hidden volume. The session's own mounts
-  never alert: the root and the decoy filesystems are overlays, the ESP is a
-  read-only bind, and the carried decoy filesystems are inside the hidden
-  volume. A mount made inside another mount namespace (a service with private
-  mounts) is not in the watcher's table. A disk mounted over the hidden root
-  itself, or over one of its parents, always raises its own alert ("Disk
-  mounted over a folder in use") instead, whatever this setting, while the
-  watcher runs.
+  mount of a block device that is not the session's own storage, one mounted
+  below the hidden root (at `<hidden_volume_root>/usb`, say) included. The
+  session's own mounts never alert: the root and the decoy filesystems are
+  overlays, the ESP is a read-only bind, and below the hidden root the session
+  owns the hidden volume, told by its device (the volume, a bind of a folder of
+  it, a disk image on it through its loop device), and its own mounts below
+  `<hidden_volume_root>/root`, where it carries the decoy filesystems the way
+  back needs. A mount outside the hidden root alerts even when it shows the
+  hidden volume. In a session that an older release entered, whose plan does
+  not record the hidden volume's device, every mount below the hidden root
+  still counts as the session's own. A mount made inside another mount
+  namespace (a service with private mounts) is not in the watcher's table. A
+  disk mounted over the hidden root itself, or over one of its parents, always
+  raises its own alert ("Disk mounted over a folder in use") instead, whatever
+  this setting, while the watcher runs.
 - **Read-only** (`session_mounts.read_only`, opt-in). Every disk the session
   does not use is made read-only at the block layer for the session. The kernel
   then refuses a read-write mount: `mount` falls back to read-only with a
@@ -621,13 +628,15 @@ writes.
   disks present at entry; the watcher checks all disks on every poll as a
   fallback. The decoy root's disk, the hidden backend and everything it sits
   on, the ESP and the decoy filesystems the session carries stay writable, as
-  do virtual devices (loop, device mapper, zram). The way back, `deactivate` and
+  do virtual devices (loop, device mapper, zram); a disk mounted below the
+  hidden root does not. The way back, `deactivate` and
   `emergency` alike, makes exactly the disks the session set read-only writable
   again before the switch, so the decoy finds them as it left them.
 - **The way back.** `nails deactivate` unmounts every disk mounted during the
   session before it soft-reboots (a busy one is detached; the soft-reboot ends
-  its users), so the decoy can mount it again normally. After an emergency, the
-  soft-reboot's own shutdown unmounts them.
+  its users), so the decoy can mount it again normally. That includes a disk
+  mounted below the hidden root, but not the session's own storage there. After
+  an emergency, the soft-reboot's own shutdown unmounts them.
 
 **Limits.** A root user in the hidden session can always mount a disk: setting
 it writable again (`blockdev --setrw`) and mounting it is a deliberate act, and

@@ -375,6 +375,7 @@ impl Rehearsal {
             operator: operator.as_ref(),
             env: Some(&operator_env),
             host_channels: true,
+            loop_file: nails_teardown::loop_device::backing_filesystem,
         });
         if nothing_planted(&channels) {
             return Err(PlantError::Fail(RehearseFailure::new(
@@ -569,7 +570,12 @@ impl Rehearsal {
         let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();
         let root = &self.config.hidden_volume_root;
         let hidden = root.canonicalize().unwrap_or_else(|_| root.clone());
-        Ok(rehearse::default_scan_targets(&mounts, &swaps, &hidden))
+        Ok(rehearse::default_scan_targets(
+            &mounts,
+            &swaps,
+            &hidden,
+            nails_teardown::loop_device::backing_filesystem,
+        ))
     }
 }
 

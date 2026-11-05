@@ -13,6 +13,11 @@ use std::io::{Seek, SeekFrom, Write};
 
 pub(super) const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"; // pragma: allowlist secret
 
+/// No mount is on a loop device.
+pub(super) fn no_loop(_: &crate::filesystem::MountEntry) -> Option<String> {
+    None
+}
+
 fn state(token: &str) -> RehearsalState {
     RehearsalState {
         schema_version: STATE_SCHEMA_VERSION,
@@ -132,15 +137,86 @@ fn a_write_is_redirected_only_onto_the_hidden_volume() {
     let mounts = mounts();
     let hidden = Path::new("/mnt/data");
 
-    let home = redirect_for(Path::new("/home/bob/docs"), &mounts, hidden).unwrap();
+    let home = redirect_for(Path::new("/home/bob/docs"), &mounts, hidden, no_loop).unwrap();
     assert_eq!(home.hidden_dir, Path::new("/mnt/data/home/bob/docs"));
     // A persona bind from the hidden volume is the hidden volume.
-    let persona = redirect_for(Path::new("/home/alice"), &mounts, hidden).unwrap();
+    let persona = redirect_for(Path::new("/home/alice"), &mounts, hidden, no_loop).unwrap();
     assert_eq!(persona.hidden_dir, Path::new("/home/alice"));
     // The decoy root, a foreign overlay and another disk are refused.
-    assert!(redirect_for(Path::new("/etc"), &mounts, hidden).is_none());
-    assert!(redirect_for(Path::new("/opt/x"), &mounts, hidden).is_none());
-    assert!(redirect_for(Path::new("/media/usb"), &mounts, hidden).is_none());
+    assert!(redirect_for(Path::new("/etc"), &mounts, hidden, no_loop).is_none());
+    assert!(redirect_for(Path::new("/opt/x"), &mounts, hidden, no_loop).is_none());
+    assert!(redirect_for(Path::new("/media/usb"), &mounts, hidden, no_loop).is_none());
+}
+
+/// The loop device 7:0's backing file lies on the hidden volume (253:0).
+fn loop_on_hidden(mount: &crate::filesystem::MountEntry) -> Option<String> {
+    (mount.dev == "7:0").then(|| "253:0".to_string())
+}
+
+/// A session with the hidden volume at /mnt, a USB disk mounted at /mnt/usb,
+/// an overlay whose upper is on that disk, the decoy's /home carried at
+/// /mnt/root/decoy/home, and a disk image on the hidden volume mounted
+/// through a loop device at /mnt/vm.
+fn below_root_mounts() -> Vec<crate::filesystem::MountEntry> {
+    parse_mountinfo(
+        "1 0 0:30 / / rw - overlay overlay rw,lowerdir=/run/x,upperdir=/mnt/root/upper,workdir=/mnt/root/work\n\
+         2 1 253:0 / /mnt rw,relatime - ext4 /dev/mapper/data rw\n\
+         3 2 8:33 / /mnt/usb rw,relatime - ext4 /dev/sdc1 rw\n\
+         4 1 0:41 / /srv rw,relatime - overlay overlay rw,lowerdir=/srv,upperdir=/mnt/usb/up,workdir=/mnt/usb/work\n\
+         5 2 8:3 / /mnt/root/decoy/home ro,relatime - ext4 /dev/vda3 rw\n\
+         6 2 7:0 / /mnt/vm rw,relatime - ext4 /dev/loop0 rw\n",
+    )
+}
+
+#[test]
+fn a_disk_mounted_below_the_hidden_root_takes_no_canary() {
+    let mounts = below_root_mounts();
+    let hidden = Path::new("/mnt");
+    // The root overlay's upper is on the hidden volume.
+    let root = redirect_for(Path::new("/etc"), &mounts, hidden, no_loop).unwrap();
+    assert_eq!(root.hidden_dir, Path::new("/mnt/root/upper/etc"));
+    // A USB disk below the root is no part of the hidden volume, nor is an
+    // overlay whose upper is on it, nor a decoy filesystem carried there.
+    for dir in ["/mnt/usb", "/mnt/usb/x", "/srv/x", "/mnt/root/decoy/home"] {
+        assert!(
+            redirect_for(Path::new(dir), &mounts, hidden, no_loop).is_none(),
+            "{dir}"
+        );
+    }
+    // A disk image on the hidden volume is, through its loop device.
+    let vm = redirect_for(Path::new("/mnt/vm"), &mounts, hidden, loop_on_hidden).unwrap();
+    assert_eq!(vm.hidden_dir, Path::new("/mnt/vm"));
+    assert!(redirect_for(Path::new("/mnt/vm"), &mounts, hidden, no_loop).is_none());
+}
+
+#[test]
+fn a_disk_mounted_below_the_hidden_root_is_scanned_and_the_hidden_volume_is_not() {
+    // The USB disk and the carried decoy /home are read; the hidden volume and
+    // the disk image on it, through its loop device, are not.
+    let targets = default_scan_targets(&below_root_mounts(), "", Path::new("/mnt"), loop_on_hidden);
+    assert_eq!(
+        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
+        vec![PathBuf::from("/dev/sdc1"), PathBuf::from("/dev/vda3")]
+    );
+    // Without the loop driver's record the image is read too.
+    let targets = default_scan_targets(&below_root_mounts(), "", Path::new("/mnt"), no_loop);
+    assert_eq!(
+        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
+        vec![
+            PathBuf::from("/dev/sdc1"),
+            PathBuf::from("/dev/vda3"),
+            PathBuf::from("/dev/loop0")
+        ]
+    );
+    // Without the hidden volume mounted, every disk is read.
+    let unmounted: Vec<_> = below_root_mounts()
+        .into_iter()
+        .filter(|m| m.mount_point != Path::new("/mnt"))
+        .collect();
+    assert_eq!(
+        default_scan_targets(&unmounted, "", Path::new("/mnt"), loop_on_hidden).len(),
+        3
+    );
 }
 
 /// The notification canary is an ordinary notification under a neutral
@@ -158,7 +234,7 @@ fn the_notification_canary_has_normal_urgency() {
 #[test]
 fn default_targets_are_the_writable_decoy_devices_and_swap() {
     let swaps = "Filename\tType\tSize\tUsed\tPriority\n/dev/sdc2 partition 1024 0 -2\n/swapfile file 10 0 -3\n";
-    let targets = default_scan_targets(&mounts(), swaps, Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts(), swaps, Path::new("/mnt/data"), no_loop);
     assert_eq!(
         targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
         vec![
@@ -200,7 +276,7 @@ fn a_zfs_dataset_is_listed_unread_and_not_checked() {
          4 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n\
          5 1 0:32 / /tmp rw - tmpfs tmpfs rw\n",
     );
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"), no_loop);
     assert_eq!(
         targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
         vec![
@@ -240,7 +316,7 @@ fn a_copy_on_write_decoy_root_is_marked_a_blind_spot() {
          2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n\
          3 1 8:0 / /boot/efi rw,relatime - vfat /dev/sda1 rw\n",
     );
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"), no_loop);
     let root = targets
         .iter()
         .find(|t| t.device.as_path() == Path::new("/dev/sda2"))
@@ -272,7 +348,7 @@ fn a_mounted_f2fs_is_judged_by_its_mount_options() {
          flush_merge,extent_cache,mode=adaptive,alloc_mode=default\n\
          3 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
     );
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"), no_loop);
     let target = |device: &str| {
         targets
             .iter()
@@ -390,7 +466,7 @@ fn an_ntfs_or_fuseblk_mount_is_a_blind_spot_and_each_target_keeps_its_type() {
          rw,user_id=0,group_id=0,default_permissions,allow_other,blksize=4096\n",
     );
     let swaps = "Filename\tType\tSize\tUsed\tPriority\n/dev/sdd2 partition 1024 0 -2\n";
-    let targets = default_scan_targets(&mounts, swaps, Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts, swaps, Path::new("/mnt/data"), no_loop);
     let found: Vec<(&str, Option<&str>, bool)> = targets
         .iter()
         .map(|t| {
@@ -1377,6 +1453,7 @@ fn planting_writes_only_into_the_overlay_upper() {
             operator: Some(&user),
             env: None,
             host_channels: false,
+            loop_file: no_loop,
         };
 
         let records = plant(&ctx);

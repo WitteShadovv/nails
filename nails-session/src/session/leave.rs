@@ -187,8 +187,10 @@ impl LeaveReport {
 
 /// The disks mounted during the session, deepest first: every mount under
 /// `paths.root` backed by a block device (`is_block`) that is not the
-/// session's own (inside the hidden volume, the decoy root at
-/// `/run/nextroot`, or a policy target such as the read-only ESP).
+/// session's own: its storage below the hidden root (the hidden volume, the
+/// carried decoy filesystems: [`Plan::is_hidden_storage`]), the decoy root at
+/// `/run/nextroot`, or a policy target such as the read-only ESP. A disk
+/// mounted below the hidden root, at `<root>/usb`, is one of them.
 pub fn session_disk_mounts(
     paths: &Paths,
     plan: &Plan,
@@ -206,10 +208,10 @@ pub fn session_disk_mounts(
         .filter(|m| {
             m.mount_point.starts_with(&paths.root)
                 && m.mount_point != paths.root
-                && !m.mount_point.starts_with(&plan.hidden_root)
                 && !m.mount_point.starts_with(&nextroot)
                 && !policy.contains(&m.mount_point)
                 && is_block(m)
+                && !plan.is_hidden_storage(m)
         })
         .map(|m| m.mount_point.clone())
         .collect();
@@ -598,6 +600,40 @@ mod tests {
             session_disk_mounts(&Paths::system(), &plan(), &mounts, &is_block),
             vec![PathBuf::from("/mnt/usb/inner"), PathBuf::from("/mnt/usb")]
         );
+    }
+
+    #[test]
+    fn a_disk_mounted_below_the_hidden_root_is_unmounted_and_the_session_s_own_are_not() {
+        // The hidden volume at /mnt, recorded by its device, the decoy's
+        // /home carried below it, a folder of the volume bound below it, and
+        // a USB disk at /mnt/usb.
+        let mut session = plan();
+        session.hidden_root = PathBuf::from("/mnt");
+        session.hidden_dev = Some("253:0".to_string());
+        session.carried = vec![nails_teardown::whole_root::plan::CarriedMount {
+            target: PathBuf::from("/home"),
+            at: PathBuf::from("/mnt/root/decoy/home"),
+            read_only: false,
+            dev: Some("8:3".to_string()),
+            root: Some(PathBuf::from("/")),
+        }];
+        let mounts = parse_mountinfo(
+            "1 0 0:30 / / rw - overlay overlay rw\n\
+             2 1 253:0 / /mnt rw - ext4 /dev/mapper/data rw\n\
+             3 2 8:3 / /mnt/root/decoy/home ro - ext4 /dev/vda3 rw\n\
+             4 2 253:0 /photos /mnt/photos rw - ext4 /dev/mapper/data rw\n\
+             5 2 8:33 / /mnt/usb rw - vfat /dev/sdc1 rw\n\
+             6 1 8:2 / /run/nextroot rw - ext4 /dev/vda2 rw\n",
+        );
+        let is_block = |m: &MountEntry| m.source.starts_with("/dev/");
+        assert_eq!(
+            session_disk_mounts(&Paths::system(), &session, &mounts, &is_block),
+            vec![PathBuf::from("/mnt/usb")]
+        );
+        // A plan written before the device was recorded leaves everything
+        // below the root mounted, as before.
+        session.hidden_dev = None;
+        assert!(session_disk_mounts(&Paths::system(), &session, &mounts, &is_block).is_empty());
     }
 
     #[test]

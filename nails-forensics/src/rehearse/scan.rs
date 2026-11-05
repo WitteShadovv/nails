@@ -6,6 +6,7 @@
 use crate::filesystem::MountEntry;
 use crate::forensic::{Hit, RawSource, TokenScan};
 use crate::{Filesystem, NailsError, Result};
+use nails_teardown::whole_root::plan::{LoopFile, shows_hidden_volume};
 use serde::Serialize;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -198,8 +199,12 @@ fn push_target(
 
 /// The devices a scan reads by default: every block device mounted read-write
 /// with a writable filesystem, plus active swap partitions, minus the hidden
-/// volume and anything mounted under it. Duplicates (by canonical path) are
-/// listed once. Each filesystem-backed device carries the blind spot its
+/// volume. The hidden volume is the device mounted at `hidden_root`, wherever
+/// else it is mounted, and a loop device whose backing file lies on it, as
+/// `loop_file` tells; a disk mounted below the hidden root is read like any
+/// other, and so is a decoy filesystem a session carries there. Duplicates (by
+/// canonical path) are listed once. Each filesystem-backed device carries the
+/// blind spot its
 /// storage gives a raw plaintext scan, so a scan of a compressed,
 /// copy-on-write or NTFS decoy reports "not checked" rather than clean, and so
 /// does one of a filesystem an eCryptfs mount keeps its encrypted files on. A
@@ -212,6 +217,7 @@ pub fn default_scan_targets(
     mounts: &[MountEntry],
     swaps: &str,
     hidden_root: &Path,
+    loop_file: LoopFile,
 ) -> Vec<ScanTarget> {
     let hidden_dev = mounts
         .iter()
@@ -222,8 +228,9 @@ pub fn default_scan_targets(
     let mut targets: Vec<ScanTarget> = Vec::new();
     for entry in mounts {
         if READ_ONLY_FORMATS.contains(&entry.fstype.as_str())
-            || entry.mount_point.starts_with(hidden_root)
-            || hidden_dev.as_deref() == Some(entry.dev.as_str())
+            || hidden_dev
+                .as_deref()
+                .is_some_and(|dev| shows_hidden_volume(entry, dev, loop_file))
         {
             continue;
         }

@@ -761,6 +761,20 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- A disk mounted below the hidden root during a session (one at `/mnt/data/usb` with the hidden root
+  at `/mnt/data`) counted as part of the hidden volume, since that was told by path: it raised no
+  "Disk mounted with write access" alert, the read-only guard (`[session_mounts] read_only`) took it
+  for a disk the session uses and never set it read-only once it was mounted there,
+  `nails deactivate` left it mounted for the way back, `rehearse scan` did not read it, and
+  `rehearse plant` counted a write to it, or to an overlay whose upper lies on it, as one onto the
+  hidden volume. The session now tells its own storage by device: the hidden volume, by the device
+  the session plan records (a bind of a folder of it and a disk image on it through its loop device
+  included), and its own mounts below `<hidden-root>/root`, where it carries the decoy's filesystems
+  for the way back. Any other mount below the hidden root is a disk mounted during the session, and
+  a mount outside the hidden root is one as before, also where it shows the hidden volume.
+  `rehearse` tells the hidden volume by the device mounted at the root, so a scan reads every other
+  disk below it, a decoy filesystem a session carries there too. A session that an older release
+  entered, whose plan does not record the device, keeps the rule by path.
 - The attach gate refuses a partition of a loop device whose image file lies on the decoy's disk,
   as it refuses the loop device itself. A partition the kernel made on a loop device (`losetup -P`,
   or a disk image opened in a file manager) shows no device below it, so the image file behind it
