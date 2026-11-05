@@ -17,6 +17,13 @@ pub(super) struct Word {
     /// Whether quotes are in it (`"$fpath"`, `'x'`, `$'x'`), which keep what
     /// an expansion gives in one word.
     pub(super) quoted: bool,
+    /// Whether an expansion in it stands outside double quotes (`$x`,
+    /// `$x""`, `"$a"$b`), where zsh drops the word when what it gives is
+    /// empty and may make several words of it (an array, `${=x}`, a command
+    /// substitution), or a glob or brace expansion outside quotes (`*`, `?`,
+    /// `[`, `(`, `{`), which may make several or none; `$'...'` is a quote,
+    /// not an expansion.
+    pub(super) bare: bool,
 }
 
 /// Where a command ends, and how.
@@ -276,12 +283,20 @@ impl Lexer<'_> {
             '$' | '`' => self.expansion(c, false),
             '(' => {
                 // A glob qualifier or the like, inside a word.
+                self.word().bare = true;
                 self.word().text.push('(');
                 if !self.balanced(&[Nest::Group], "`(`") {
                     self.unclosed("`(`");
                 }
             }
-            c => self.word().text.push(c),
+            c => {
+                // A glob or brace expansion outside quotes may make several
+                // words of it, or none.
+                if matches!(c, '*' | '?' | '[' | '{') {
+                    self.word().bare = true;
+                }
+                self.word().text.push(c);
+            }
         }
     }
 
@@ -305,6 +320,7 @@ impl Lexer<'_> {
         word.expands = true;
         word.text.push(c);
         if c == '`' {
+            self.word().bare |= !quoted;
             if !self.balanced(&[Nest::Back], "backquote") {
                 self.unclosed("backquote");
             }
@@ -318,6 +334,7 @@ impl Lexer<'_> {
             }
             return;
         }
+        self.word().bare |= !quoted;
         match self.chars.peek().copied() {
             Some(open @ ('(' | '{')) => {
                 self.chars.next();
@@ -702,6 +719,7 @@ impl Lexer<'_> {
             text: "((".to_string(),
             expands: true,
             quoted: false,
+            bare: true,
         });
         if self.balanced(&[Nest::Arith], "`((`") && self.chars.next_if_eq(&')').is_some() {
             let mut text = self.word.take().expect("the arithmetic command").text;
@@ -819,6 +837,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
                     text: c.to_string(),
                     expands: false,
                     quoted: false,
+                    bare: false,
                 }));
             }
             '<' | '>' if lexer.chars.peek() == Some(&'(') => {

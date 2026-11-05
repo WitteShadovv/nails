@@ -292,6 +292,7 @@ impl Walker<'_> {
                         text: std::mem::take(written),
                         expands: true,
                         quoted: false,
+                        bare: true,
                     }),
                     first: *first,
                 };

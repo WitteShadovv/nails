@@ -291,6 +291,10 @@ struct Reader<'a, F: Filesystem> {
     /// written and where.
     word_split: Option<String>,
     fpath_splits: Vec<(String, String)>,
+    /// The `bindkey`s with a word the walk reads as one word or none, which
+    /// `SH_WORD_SPLIT` or `KSH_ARRAYS` may split ([`Event::KeysSplit`]):
+    /// each as written, the word and where.
+    keys_splits: Vec<(String, String, String)>,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -632,6 +636,7 @@ impl<F: Filesystem> Reader<'_, F> {
             Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
             event @ (Event::GlobalAlias { .. }
             | Event::FpathSplits(_)
+            | Event::KeysSplit { .. }
             | Event::Typed { .. }
             | Event::Rebind
             | Event::Arith { .. }
@@ -776,6 +781,9 @@ impl<F: Filesystem> Reader<'_, F> {
                 self.shadow(format!("{place} defines the global alias `{name}`"));
             }
             Event::FpathSplits(text) => self.fpath_splits.push((text, place.to_string())),
+            Event::KeysSplit { bindkey, word } => {
+                self.keys_splits.push((bindkey, word, place.to_string()));
+            }
             Event::Typed { text, keys } => {
                 // What it types counts for the names the files use.
                 self.lines(&text, place);
@@ -1029,6 +1037,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         autoloaded_by: Vec::new(),
         word_split: None,
         fpath_splits: Vec::new(),
+        keys_splits: Vec::new(),
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");

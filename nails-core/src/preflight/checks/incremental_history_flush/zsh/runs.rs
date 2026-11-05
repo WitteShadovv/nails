@@ -128,7 +128,8 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// Note what runs as zsh runs: a redirection to a device where a file
     /// defines a global alias, or to `$TTY` where a file may set `TTY`; an
-    /// alias for an `fc` that writes nothing where a file uses it; what the
+    /// alias for an `fc` that writes nothing where a file uses it; keys that
+    /// may type others or that `SH_WORD_SPLIT` may bind otherwise; what the
     /// functions zsh runs as hooks write or may write; and what may change
     /// NixOS's dircolors line ([`Reader::dircolors_doubts`]).
     pub(super) fn runs(&mut self) {
@@ -194,6 +195,17 @@ impl<F: Filesystem> Reader<'_, F> {
                     "it cannot tell what the keys that type `{}` in {place} run, as {rebound} \
                      binds a key a line is typed with or changes a widget or a keymap",
                     text.trim()
+                ));
+            }
+        }
+        // A word of a bindkey read as one word or none, which SH_WORD_SPLIT
+        // or KSH_ARRAYS may make several of.
+        if let Some(split) = self.word_split.clone() {
+            for (bindkey, word, place) in std::mem::take(&mut self.keys_splits) {
+                self.doubt(format!(
+                    "it cannot tell which keys `{bindkey}` in {place} binds to which widgets, as \
+                     {split} may turn SH_WORD_SPLIT or KSH_ARRAYS on, with which `{word}` may \
+                     expand to several words, a widget that completes a word among them"
                 ));
             }
         }

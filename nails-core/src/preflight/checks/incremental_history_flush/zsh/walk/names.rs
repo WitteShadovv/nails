@@ -52,6 +52,7 @@ pub(super) fn option_arguments(args: &[Word], takes: &str, wanted: &str) -> Vec<
                 text: flags.to_string(),
                 expands: true,
                 quoted: false,
+                bare: word.bare,
             });
             found.extend(words.peek().map(|next| (*next).clone()));
             continue;
@@ -68,6 +69,7 @@ pub(super) fn option_arguments(args: &[Word], takes: &str, wanted: &str) -> Vec<
                     text: rest.to_string(),
                     expands: false,
                     quoted: false,
+                    bare: false,
                 })
             };
             if wanted.contains(letter) {
@@ -94,6 +96,7 @@ fn every_name(args: &[Word]) -> Vec<Word> {
                             text: rest.to_string(),
                             expands: computed(word),
                             quoted: false,
+                            bare: word.bare,
                         });
                     }
                 }

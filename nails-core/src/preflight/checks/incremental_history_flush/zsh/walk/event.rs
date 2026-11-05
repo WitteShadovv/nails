@@ -131,6 +131,11 @@ pub(in super::super) enum Event {
     /// `SH_WORD_SPLIT` splits, or `KSH_ARRAYS` cuts to its first, may hold
     /// others.
     FpathSplits(String),
+    /// A `bindkey` as written (`bindkey $terminfo[kcuu1] w`) whose word
+    /// `word`, an element of a parameter outside quotes, the walk reads as
+    /// one word or none: one `SH_WORD_SPLIT` or `KSH_ARRAYS` may make several
+    /// words of, a key and a widget that completes a word among them.
+    KeysSplit { bindkey: String, word: String },
     /// A directory is added to `fpath` under each Nix profile that
     /// `NIX_PROFILES` names, as NixOS's `/etc/zshenv` adds them: written as
     /// `written`, `rest` past the profile (`/share/zsh/site-functions`).

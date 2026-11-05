@@ -240,6 +240,7 @@ impl Walker<'_> {
                         text: base.to_string(),
                         expands: name.expands,
                         quoted: false,
+                        bare: name.bare,
                     })
                 })
                 .collect();
@@ -890,6 +891,7 @@ impl Walker<'_> {
                     text: value.to_string(),
                     expands: word.expands,
                     quoted: false,
+                    bare: word.bare,
                 };
                 self.hook_value(&value);
             }
@@ -923,6 +925,7 @@ impl Walker<'_> {
                     text: value.to_string(),
                     expands: word.expands,
                     quoted: false,
+                    bare: word.bare,
                 };
                 self.prompt(&word.text, &value);
             }
@@ -952,6 +955,7 @@ impl Walker<'_> {
                 text: value,
                 expands: word.expands,
                 quoted: false,
+                bare: word.bare,
             },
             unconditional,
         });
