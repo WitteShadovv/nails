@@ -548,6 +548,43 @@ fn what_compaudit_may_put_in_fpath_is_read_too() {
 }
 
 #[test]
+fn a_prompt_the_shell_s_environment_holds_is_code_where_prompt_subst_may_be_on() {
+    // zsh 5.9.2 takes each of these from its environment and, with `setopt
+    // prompt_subst` in ~/.zshrc, runs `fc -AI` as it shows the prompt, which
+    // appends each command line to HISTFILE.
+    let doubt = |name: &str| {
+        format!(
+            "it cannot follow the code that `{name}` in the shell's environment holds, which zsh \
+             runs as it shows the prompt unless a file sets it, as PROMPT_SUBST may be on"
+        )
+    };
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &[]);
+    seed(&fs, "/home/alice/.zshrc", "setopt prompt_subst\n");
+    for name in walk::PROMPTS.iter().copied() {
+        let known = install(&fs, &[(name, "$(fc -AI)%# ")]);
+        assert_eq!(
+            scan_with(&fs, UNKNOWN, &known).doubts,
+            [doubt(name)],
+            "{name}"
+        );
+        assert!(ENVIRONMENT.contains(&name), "{name}");
+    }
+    // Where no file may turn PROMPT_SUBST on, it is one the command line may
+    // make a doubt.
+    seed(&fs, "/home/alice/.zshrc", "");
+    let found = scan_with(&fs, UNKNOWN, &install(&fs, &[("PS1", "`fc -AI`")]));
+    assert_eq!(found.doubts, Vec::<String>::new());
+    assert_eq!(found.prompts, [doubt("PS1")]);
+    // One without an expansion, and a `$` that starts none, are none.
+    seed(&fs, "/home/alice/.zshrc", "setopt prompt_subst\n");
+    for value in ["%n@%m %# ", "[\\u@\\h \\W]\\$ ", "$ "] {
+        let known = install(&fs, &[("PS1", value)]);
+        assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{value}");
+    }
+}
+
+#[test]
 fn the_stock_promptinit_runs_the_theme_prompt_names() {
     let fs = MockFilesystem::new();
     nix_zsh(

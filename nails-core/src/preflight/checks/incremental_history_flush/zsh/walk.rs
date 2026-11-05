@@ -29,7 +29,7 @@ mod strings;
 pub(super) use super::builtins::HOOKS;
 pub(super) use event::{Arith, Event, Input};
 pub(super) use hooks::may_expand;
-pub(super) use strings::PROMPTS;
+pub(super) use strings::{PROMPTS, expands};
 
 /// The option that `word` names, by its place in [`OPTIONS`], and whether the
 /// name turns it on (`false` for its `no` form); `None` for any other word.

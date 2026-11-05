@@ -31,7 +31,8 @@
 //! change. It never reads a history file. Of the shell the command was typed
 //! into it also reads, from `/proc`, the program it runs and the few
 //! variables of its environment that tell where zsh finds the functions it
-//! autoloads and the user's startup files ([`zsh::Install`]). What it cannot
+//! autoloads and the user's startup files, and the prompts zsh takes from it
+//! ([`zsh::Install`]). What it cannot
 //! read or follow makes it warn that it cannot tell. Of zsh, any mention of an
 //! option counts as on, a turn-off too, as no reading of the files shows that
 //! one holds, so the fix it gives is one it can see: a zsh started as
@@ -43,7 +44,8 @@
 //! into the shell, one a plugin manager's function makes, one an `eval` in
 //! bash's files makes (zsh's it reads, or warns of), or one in the files of a
 //! shell started with others (`--rcfile`, or a `ZDOTDIR` from the environment
-//! of a shell that does not run yet).
+//! of a shell that does not run yet), nor a prompt the environment of such a
+//! shell may hold.
 
 mod startup;
 mod zsh;
@@ -159,7 +161,8 @@ impl InspectedShell {
 /// it, as zsh takes it; no other is kept, but that a variable of the dynamic
 /// loader is set, kept as [`zsh::LOADER`] without its value. `None` when one
 /// of them holds what is no UTF-8, a path the check cannot name as zsh reads
-/// it.
+/// it; a prompt's or `MAILPATH`'s value, which the check reads only for an
+/// expansion in it, is kept with what is no UTF-8 replaced.
 fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
     let mut found: Vec<(String, String)> = Vec::new();
     for entry in bytes.split(|byte| *byte == 0) {
@@ -182,7 +185,12 @@ fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
         if found.iter().any(|(known, _)| known == name) {
             continue;
         }
-        found.push((name.to_string(), String::from_utf8(value.to_vec()).ok()?));
+        let value = if zsh::lossy(name) {
+            String::from_utf8_lossy(value).into_owned()
+        } else {
+            String::from_utf8(value.to_vec()).ok()?
+        };
+        found.push((name.to_string(), value));
     }
     Some(found)
 }

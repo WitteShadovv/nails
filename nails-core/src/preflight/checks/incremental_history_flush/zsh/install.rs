@@ -16,6 +16,7 @@
 //! zsh built otherwise counts as one it cannot tell. It reads the environment
 //! of a shell that runs now; of one that may run later it knows neither.
 
+use super::walk::PROMPTS;
 use super::{Reader, Word};
 use crate::Filesystem;
 use std::path::{Path, PathBuf};
@@ -27,9 +28,11 @@ use std::path::{Path, PathBuf};
 /// whose own the stock `compaudit` puts in `fpath` (`_compdir`), where zsh
 /// reads the user's startup files (`HOME`, `ZDOTDIR`), the name zsh gives
 /// every program it runs (`ARGV0`), the mail messages it expands before a
-/// prompt (`MAILPATH`), and, as `LD_` without a value, whether a variable of
-/// the dynamic loader is set (`LD_PRELOAD`).
-pub(in super::super) const ENVIRONMENT: [&str; 10] = [
+/// prompt (`MAILPATH`), as `LD_` without a value, whether a variable of
+/// the dynamic loader is set (`LD_PRELOAD`), and the prompts zsh takes from
+/// its environment and expands as it shows them (`PS1`, `RPROMPT`, ...,
+/// [`PROMPTS`]), which run code where `PROMPT_SUBST` is on.
+pub(in super::super) const ENVIRONMENT: [&str; 25] = [
     "FPATH",
     "NIX_PROFILES",
     "USER",
@@ -40,7 +43,30 @@ pub(in super::super) const ENVIRONMENT: [&str; 10] = [
     "ARGV0",
     "MAILPATH",
     LOADER,
+    "PS1",
+    "PROMPT",
+    "prompt",
+    "RPS1",
+    "RPROMPT",
+    "PS2",
+    "PROMPT2",
+    "RPS2",
+    "RPROMPT2",
+    "PS3",
+    "PROMPT3",
+    "PS4",
+    "PROMPT4",
+    "SPROMPT",
+    "PROMPT_EOL_MARK",
 ];
+
+/// Whether the check reads the value of the variable `name` of
+/// [`ENVIRONMENT`] only for an expansion in it, as it does `MAILPATH`'s and
+/// the prompts' ([`PROMPTS`]), so that what is no UTF-8 in it may be
+/// replaced.
+pub(in super::super) fn lossy(name: &str) -> bool {
+    name == "MAILPATH" || PROMPTS.contains(&name)
+}
 
 /// The name the check keeps, without a value, for any variable of the
 /// dynamic loader a shell's environment holds (`LD_PRELOAD`,
@@ -84,6 +110,8 @@ pub(in super::super) struct Env {
     pub mailpath: Option<String>,
     /// Whether a variable of the dynamic loader is set ([`LOADER`]).
     pub loader: bool,
+    /// The prompts it holds ([`PROMPTS`]), each one's name and value.
+    pub prompts: Vec<(String, String)>,
 }
 
 impl Install {
@@ -124,6 +152,10 @@ impl Install {
                 argv0: get("ARGV0"),
                 mailpath: get("MAILPATH"),
                 loader: get(LOADER).is_some(),
+                prompts: PROMPTS
+                    .iter()
+                    .filter_map(|name| get(name).map(|value| ((*name).to_string(), value)))
+                    .collect(),
             }),
         }
     }

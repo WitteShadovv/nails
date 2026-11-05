@@ -1194,6 +1194,37 @@ fn a_prompt_s_code_is_a_doubt_where_the_command_line_turns_prompt_subst_on() {
 }
 
 #[test]
+fn a_prompt_in_a_typed_zsh_s_environment_is_code_where_prompt_subst_may_be_on() {
+    // zsh 5.9.2 takes PS1 from its environment and runs `fc -AI` as it shows
+    // it with `setopt prompt_subst` in ~/.zshrc, which appends each command
+    // line to HISTFILE; one that is no UTF-8 holds the same code.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "setopt prompt_subst\n");
+    for bytes in [&b"PS1=$(fc -AI)%# \0"[..], &b"PS1=\xff$(fc -AI)%# \0"[..]] {
+        let shell = InspectedShell {
+            environment: environment(bytes),
+            ..typed("zsh", &["-zsh"])
+        };
+        let message = warning(run(&fs, shell));
+        assert!(
+            message.contains(
+                "it cannot follow the code that `PS1` in the shell's environment holds, which zsh \
+                 runs as it shows the prompt unless a file sets it, as PROMPT_SUBST may be on"
+            ),
+            "{message}"
+        );
+    }
+    // Without PROMPT_SUBST, it is a doubt where the command line turns it on.
+    seed(&fs, "/home/alice/.zshrc", "");
+    let shell = |argv: &[&str]| InspectedShell {
+        environment: environment(b"RPROMPT=$(fc -AI)\0"),
+        ..typed("zsh", argv)
+    };
+    assert!(matches!(run(&fs, shell(&["-zsh"])), CheckResult::Pass(_)));
+    assert!(warning(run(&fs, shell(&["zsh", "-o", "promptsubst"]))).contains("`RPROMPT`"));
+}
+
+#[test]
 fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
     let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/bash");
     let fs = MockFilesystem::new();
@@ -1286,6 +1317,23 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
         )
     );
     assert_eq!(environment(b"OLD_PATH=/x\0").map(|env| env.len()), Some(0));
+    // The prompts zsh takes from its environment are kept, and a prompt's
+    // or MAILPATH's value that is no UTF-8 with it replaced, as the check
+    // reads it only for an expansion in it.
+    assert_eq!(
+        environment(b"PS1=%# \0RPROMPT=$(x)\0PROMPT_EOL_MARK=%\0PS4=\xff$(y)\0MAILPATH=\xff\0"),
+        Some(
+            [
+                ("PS1", "%# "),
+                ("RPROMPT", "$(x)"),
+                ("PROMPT_EOL_MARK", "%"),
+                ("PS4", "\u{fffd}$(y)"),
+                ("MAILPATH", "\u{fffd}"),
+            ]
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .to_vec()
+        )
+    );
     // A value that is no UTF-8 names a path the check cannot name, so the
     // environment counts as unknown; one of a variable it does not keep
     // does not count.
