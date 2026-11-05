@@ -183,9 +183,11 @@ Also refused by the pre-flight checks:
   turns the refusal of the decoy's storage, and of an `nbd` or `ublk` device,
   into a warning, and never covers a folder, a covered root or storage that
   cannot be judged (`hidden-volume`);
-- a hidden volume whose filesystem is mounted a second time anywhere else, as
-  a desktop that mounts drives by itself can mount it once it is unlocked; no
-  flag lifts this refusal (`hidden-volume`, see
+- a hidden volume whose filesystem is also mounted at another place in the
+  decoy's mount table, as a desktop that mounts drives by itself can mount it
+  once it is unlocked; no flag lifts this refusal, and a root on a filesystem
+  the decoy uses that `--allow-decoy-storage` accepted is not judged this way
+  (`hidden-volume`, see
   [Attaching the drive](docs/decoy-requirements.md#attaching-the-drive));
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
   volume (`backend-entries`);

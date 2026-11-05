@@ -135,9 +135,11 @@ write the name of every file on the volume into the decoy's locate database
 does not read).
 
 The `hidden-volume` check refuses too, and no flag lifts that refusal either,
-while the hidden volume's filesystem is mounted anywhere but at the hidden
-root, as a desktop that mounts drives by itself can mount it once the volume
-is unlocked (see [Attaching the drive](#attaching-the-drive)).
+while the hidden volume's filesystem is mounted at another place in the
+decoy's mount table as well, as a desktop that mounts drives by itself can
+mount it once the volume is unlocked (see
+[Attaching the drive](#attaching-the-drive), which also says what the check
+leaves out).
 
 kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
 kernel is loaded), or when `kdump-tools.service` (Ubuntu, Debian) or
@@ -1136,16 +1138,26 @@ records what udiskie does in each run.
 
 NAILS cannot keep a desktop from doing this, and it changes no setting of the
 decoy. Instead `check` and activation refuse, with no flag to lift it, while
-the volume's filesystem is mounted anywhere but at the hidden root
-(`hidden-volume`, exit 4). Every mount of the same filesystem counts, a bind of
-a folder of it and another btrfs subvolume of it included. The refusal names
-each other mount point and the line that unmounts it, such as
-`sudo umount /media/alice/data`. A bind of the volume at the hidden root itself
-is no second mount, and neither is one below a next root mounted at
+the volume's filesystem is also mounted at another place in the decoy's mount
+table, the one `findmnt` lists (`hidden-volume`, exit 4). Every mount of the
+same filesystem there counts, a bind of a folder of it and another btrfs
+subvolume of it included. A mount made in another mount namespace, such as a
+container's, is not in that table and is not seen. The refusal names each
+other mount point and how to unmount it, such as
+`sudo umount /media/alice/data`, and for a mount that a later mount hides, the
+mount over it, which has to go first. A bind of the volume at the hidden root
+itself is no second mount, and neither is one below a next root mounted at
 `/run/nextroot`, where an activation binds the volume (`session-state` refuses
 while one is mounted). A hidden root on a filesystem the decoy uses,
 accepted with `--allow-decoy-storage`, is not judged this way: the decoy mounts
 that filesystem wherever it does.
+
+Choose a hidden root that does not lie below a bind of a folder. systemd makes
+the mounts shared, so a bind that it mounts from fstab, or that a person makes
+later, can pass a mount made below one of its two places on to the other: with
+`/persist/mnt` bound at `/mnt`, the volume mounted at `/mnt/data` is also
+mounted at `/persist/mnt/data`. That copy is a second mount, and unmounting it
+unmounts the root as well.
 
 Turn the automatic mounting of removable media off long before the next use,
 so that the change is not dated next to a session, and unlock the drive from a
@@ -1154,8 +1166,7 @@ state behind (see [udisks2 state](#udisks2-state)). The settings, which are not
 verified for every release:
 
 - **GNOME:** `gsettings set org.gnome.desktop.media-handling automount false`,
-  run as the desktop user. `automount-open false` keeps it from opening a
-  window for a drive it mounts.
+  run as the desktop user.
 - **KDE Plasma:** System Settings, Device Auto-Mount: leave the automatic
   mounting of removable media off (Plasma's own default), for all devices and
   for each device it lists, on login and on attach. The device notifier then
