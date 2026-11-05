@@ -75,6 +75,34 @@ path = "nails-core/src/preflight/checks/locate_database/fixtures/arch-updatedb.c
 SPDX-FileCopyrightText = "Arch Linux Contributors"
 SPDX-License-Identifier = "0BSD"
 
+# The apt configuration files the apt_conf reader's and the
+# decoy-persistence check's unit tests read, and the apt_conf fuzz target's
+# seeds, copied unchanged from the packages that install them in
+# /etc/apt/apt.conf.d: unattended-upgrades' data/50unattended-upgrades.Debian
+# and .Ubuntu and its data/20auto-upgrades, and apt's
+# debian/apt.conf.autoremove. Each stays under the licence of its package.
+[[annotations]]
+path = [
+    "nails-base/src/packages/fixtures/apt/*-50unattended-upgrades",
+    "nails-base/src/packages/fixtures/apt/20auto-upgrades",
+    "fuzz/seeds/apt_conf/*-50unattended-upgrades",
+    "fuzz/seeds/apt_conf/20auto-upgrades",
+]
+SPDX-FileCopyrightText = [
+    "2005-2018 Michael Vogt",
+    "2017-2018 Balint Reczey",
+    "2005-2018 Canonical Ltd",
+]
+SPDX-License-Identifier = "GPL-2.0-or-later"
+
+[[annotations]]
+path = [
+    "nails-base/src/packages/fixtures/apt/01autoremove",
+    "fuzz/seeds/apt_conf/01autoremove",
+]
+SPDX-FileCopyrightText = "1997-1999 Jason Gunthorpe and others"
+SPDX-License-Identifier = "GPL-2.0-or-later"
+
 # The EFF "large" diceware word list is third-party data under its own licence,
 # not the project's. The last matching table wins, so this one must stay below
 # the catch-all.

@@ -1,0 +1,8 @@
+Unattended-Upgrade {
+  InstallOnShutdown "true"; /* on
+  at shutdown */
+};
+#clear Unattended-Upgrade::InstallOnShutdown;
+unattended-upgrade::installonshutdown 0x1; // a comment
+# another comment
+Dir::Etc::main "apt.conf";

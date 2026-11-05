@@ -28,7 +28,13 @@
 //!   and the session's kernel log to `/var/crash` on the decoy disk. When
 //!   `kexec_crash_loaded` exists but cannot be read, or holds anything but `0`
 //!   or `1`, the check cannot tell and refuses as if kdump were armed. A kernel
-//!   without the file has no crash kernel support, so nothing is loaded.
+//!   without the file has no crash kernel support, so nothing is loaded,
+//! - unattended-upgrades' shutdown helper running with
+//!   `Unattended-Upgrade::InstallOnShutdown` on: a switch is a shutdown to it,
+//!   so at activation it installs the pending updates on the decoy disk and
+//!   logs that run there. An apt configuration NAILS
+//!   cannot read leaves the setting unknown, which is refused as if it were on
+//!   (see [`install_on_shutdown`]).
 //!
 //! Warn (surface the hazard, never block):
 //! - an atime policy that records read access on the decoy (`strictatime` /
@@ -46,7 +52,11 @@
 //! - sssd in use on the decoy, the service through which a decoy joins a
 //!   domain: NAILS is not tested on a decoy joined to a domain, whose domain
 //!   controller records the hidden session's logins out of NAILS's reach (see
-//!   [`sssd`]).
+//!   [`sssd`]),
+//! - unattended-upgrades in the hidden session alone installing at the way
+//!   back: the decoy's helper stopped but enabled, so the session starts its
+//!   own copy, or the session's overlay turning the setting on. At the way
+//!   back that copy installs the pending updates into the session's overlay.
 //!
 //! # No writes
 //!
@@ -63,6 +73,7 @@ use nails_api::Allowable;
 use std::path::{Path, PathBuf};
 
 mod coredump;
+mod install_on_shutdown;
 mod loggers;
 mod sssd;
 mod sudo_logging;
@@ -103,6 +114,10 @@ pub struct DecoyPersistenceCheck {
     /// Root of the system tree whose configuration is inspected; `/` outside
     /// tests.
     root: PathBuf,
+    /// The root overlay's upper on the hidden volume, through which hidden
+    /// sessions see the decoy: what unattended-upgrades does at the way back
+    /// is read through it.
+    upper: Option<PathBuf>,
 }
 
 impl DecoyPersistenceCheck {
@@ -113,7 +128,15 @@ impl DecoyPersistenceCheck {
             allow_persistent_decoy,
             is_nixos,
             root: PathBuf::from("/"),
+            upper: None,
         }
+    }
+
+    /// The check that reads what hidden sessions see through the root
+    /// overlay's `upper` too.
+    pub fn with_upper(mut self, upper: PathBuf) -> Self {
+        self.upper = Some(upper);
+        self
     }
 
     /// Inspect the system tree rooted at `root` instead of `/` (tests).
@@ -348,7 +371,13 @@ impl DecoyPersistenceCheck {
 /// only once an enabling link was found, so on a decoy without one no unit
 /// link is followed.
 fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
-    let linked = loggers::UNIT_DIRS.iter().any(|dir| {
+    unit_linked(fs, root, unit) && !masked(fs, root, unit)
+}
+
+/// Whether a link to `unit` sits in a dependency directory of a unit
+/// directory under `root`, a mask aside (see [`unit_enabled`]).
+fn unit_linked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+    loggers::UNIT_DIRS.iter().any(|dir| {
         fs.list_directory(&root.join(dir)).is_ok_and(|entries| {
             entries.iter().any(|entry| {
                 let dependency_dir = entry
@@ -362,8 +391,7 @@ fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
                 dependency_dir && fs.is_symlink(&entry.join(unit)).unwrap_or(false)
             })
         })
-    });
-    linked && !masked(fs, root, unit)
+    })
 }
 
 /// Whether `/etc/systemd/system` under `root` masks `unit`: a link there that
@@ -388,14 +416,19 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let log_blockers = Self::log_blockers(fs, &self.root);
         let kdump_blocker = Self::kdump_finding(fs, &self.root);
-        let warnings = Self::warnings(fs, &self.root, self.is_nixos);
+        let upgrades = install_on_shutdown::finding(fs, &self.root, self.upper.as_deref());
+        let mut warnings = Self::warnings(fs, &self.root, self.is_nixos);
+        warnings.extend(upgrades.warning);
+        let (upgrade_blocker, upgrade_fix) = upgrades.blocker.unzip();
         let logs = !log_blockers.is_empty();
         let kdump = kdump_blocker.is_some();
+        let upgrade = upgrade_blocker.is_some();
 
-        if logs || kdump {
+        if logs || kdump || upgrade {
             let findings = log_blockers
                 .into_iter()
                 .chain(kdump_blocker)
+                .chain(upgrade_blocker)
                 .collect::<Vec<_>>()
                 .join("; ");
             if self.allow_persistent_decoy {
@@ -414,6 +447,12 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
                          /var/crash on the decoy disk.",
                     );
                 }
+                if upgrade {
+                    msg.push_str(
+                        " At the switch unattended-upgrades installs the pending updates on the \
+                         decoy disk and logs that run there.",
+                    );
+                }
                 if !warnings.is_empty() {
                     msg.push_str(&format!(" Also: {}.", warnings.join("; ")));
                 }
@@ -424,15 +463,18 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
                 fixes.push(
                     "make the decoy amnesic (Storage=volatile for journald, set in journald.conf \
                      or a journald.conf.d/*.conf drop-in; no active syslog or audit daemon, such \
-                     as rsyslog, syslog-ng, a syslogd or auditd)",
+                     as rsyslog, syslog-ng, a syslogd or auditd)"
+                        .to_string(),
                 );
             }
             if kdump {
                 fixes.push(
                     "disarm kdump on the decoy (Ubuntu: systemctl disable --now kdump-tools; \
-                     Fedora: systemctl disable --now kdump)",
+                     Fedora: systemctl disable --now kdump)"
+                        .to_string(),
                 );
             }
+            fixes.extend(upgrade_fix);
             let mut remediation = fixes.join(", and ");
             if let Some(first) = remediation.get_mut(..1) {
                 first.make_ascii_uppercase();
