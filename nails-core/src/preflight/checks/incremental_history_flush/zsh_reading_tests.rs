@@ -175,6 +175,34 @@ fn command_s_and_exec_s_options_are_read_as_zsh_reads_them() {
 }
 
 #[test]
+fn a_command_whose_words_all_vanish_runs_what_nullcmd_names() {
+    // zsh 5.9.2 runs `cat` or `more` for a redirection whose command's words
+    // all expand to none: with each the hook appends each command line to
+    // ~/.zl, the history file.
+    for (name, hook) in [
+        ("cat", "/no/such*(N) >/dev/null"),
+        ("more", "/no/such*(N) </dev/null"),
+        ("cat", "$empty >/dev/null"),
+    ] {
+        let rc =
+            format!("HISTFILE=~/.zl\n{name}() {{ fc -ln -1 >> ~/.zl }}\npreexec() {{ {hook} }}\n");
+        assert!(
+            read(&rc).doubts.contains(&format!(
+                "it cannot tell whether `~/.zl`, which `{name}` in /home/alice/.zshrc redirects \
+                 output to, is the history file (a file HISTFILE names, or a link to it)"
+            )),
+            "{hook}: {:?}",
+            read(&rc)
+        );
+    }
+    // A word that stays leaves a command, and an assignment alone runs none.
+    for hook in ["print x >/dev/null", "x=1 >/dev/null"] {
+        let rc = format!("cat() {{ fc -ln -1 >> ~/.zl }}\npreexec() {{ {hook} }}\n");
+        assert_eq!(read(&rc), Scan::default(), "{hook}");
+    }
+}
+
+#[test]
 fn a_global_alias_named_with_any_operator_character_or_a_blank_is_a_doubt() {
     // zsh splits a word at each of these, and at a blank, so the check
     // cannot count where it expands such an alias.
