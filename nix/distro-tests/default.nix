@@ -6,7 +6,8 @@
 # `distro-images` check evaluates and the next package can boot, but it stays
 # out of the smoke set and the CI matrix, so staging a distribution changes
 # nothing that runs today; enabling it is a single flip in images.json. Debian
-# 13 runs the Nix scenario among its smokes. Beside the smokes are the host
+# 13 runs the Nix scenario among its smokes, and Debian 13 and both Ubuntu
+# images the unattended-upgrades scenario. Beside the smokes are the host
 # drivers: the records scenarios, the refusals of the families the family table
 # does not admit, the probes and the oracle images.
 {
@@ -23,6 +24,7 @@ let
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   makeSmoke = import ./tests/smoke.nix { inherit self pkgs nix-vm-test; };
   makeNixTrace = import ./tests/nix-trace.nix { inherit self pkgs nix-vm-test; };
+  makeAptShutdown = import ./tests/apt-shutdown.nix { inherit self pkgs nix-vm-test; };
 
   # Distribution boot plus repeated disk-image conversions make a distro VM
   # slower than a single-boot NixOS test; this leaves margin on a shared runner.
@@ -47,6 +49,24 @@ let
     map (
       name: lib.nameValuePair (nixTraceName name) (makeNixTrace name enabledImages.${name})
     ) nixTraceDistros
+  );
+
+  # The unattended-upgrades scenario, keyed "<distro>-apt-shutdown": an
+  # activation during a daily unattended-upgrade run (tests/apt-shutdown.nix).
+  # The images with unattended-upgrades run it, beside their smokes, in the
+  # same CI matrix.
+  aptShutdownDistros = lib.filter (name: enabledImages ? ${name}) [
+    "debian-13"
+    "ubuntu-24.04"
+    "ubuntu-26.04"
+  ];
+  aptShutdownName = name: "${name}-apt-shutdown";
+  # One boot and a few switches, each waiting out a held run.
+  aptShutdownTimeout = 2400;
+  aptShutdowns = lib.listToAttrs (
+    map (
+      name: lib.nameValuePair (aptShutdownName name) (makeAptShutdown name enabledImages.${name})
+    ) aptShutdownDistros
   );
 
   # The login- and boot-record regression scenarios, keyed "<distro>-records".
@@ -90,7 +110,9 @@ let
       map (
         name:
         lib.nameValuePair name (
-          [ (scenarioName name) ] ++ lib.optional (builtins.elem name nixTraceDistros) (nixTraceName name)
+          [ (scenarioName name) ]
+          ++ lib.optional (builtins.elem name nixTraceDistros) (nixTraceName name)
+          ++ lib.optional (builtins.elem name aptShutdownDistros) (aptShutdownName name)
         )
       ) distros
     );
@@ -98,6 +120,9 @@ let
       lib.listToAttrs (map (name: lib.nameValuePair (scenarioName name) smokeTimeout) distros)
       // lib.listToAttrs (
         map (name: lib.nameValuePair (nixTraceName name) nixTraceTimeout) nixTraceDistros
+      )
+      // lib.listToAttrs (
+        map (name: lib.nameValuePair (aptShutdownName name) aptShutdownTimeout) aptShutdownDistros
       )
       // driverTimeouts probeSet probeName
       // driverTimeouts recordsSet recordsName
@@ -133,6 +158,7 @@ let
 in
 tests
 // nixTraces
+// aptShutdowns
 // records
 // probes
 // refusals
