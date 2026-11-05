@@ -45,8 +45,9 @@ const DOC: &str = "docs/backends.md";
 
 /// What the operator does about an outer volume open read-write.
 const FIX: &str = "Unmount it and close it before activating (cryptsetup close <name>, or \
-     veracrypt --dismount for a volume the VeraCrypt application mounted), or open it read-only \
-     with cryptsetup open --readonly when it has to be shown. See docs/backends.md.";
+     veracrypt --dismount for a volume the VeraCrypt application mounted), or, when it has to be \
+     shown, open it read-only: cryptsetup open --readonly, or veracrypt --mount-options=ro with \
+     VeraCrypt 1.26.30 or later. See docs/backends.md.";
 
 /// Pre-flight check that warns when another VeraCrypt or TrueCrypt mapping
 /// of the device the hidden root's volume is opened from is open read-write.
@@ -55,8 +56,9 @@ const FIX: &str = "Unmount it and close it before activating (cryptsetup close <
 ///
 /// It warns, naming the other mapping, the device it is opened from and
 /// where it is mounted, read-write or read-only, when the kernel holds it
-/// writable; a mapping the VeraCrypt application made is writable even for
-/// a volume it mounted read-only. It warns as well when it cannot look:
+/// writable. VeraCrypt 1.26.29 and earlier leave the mappings they make
+/// writable even for a volume they mount read-only, and 1.26.30 and later
+/// make those read-only. It warns as well when it cannot look:
 /// when the hidden root's filesystem shows no block device, or sysfs does
 /// not let it list the devices below the hidden root or built on its
 /// storage. It passes when every such mapping is read-only, when there is
@@ -412,9 +414,9 @@ fn verdict(root: &Path, below: &BTreeSet<String>, others: &BTreeMap<String, Othe
                     }
                     OuterKind::VeraCrypt => {
                         "A mapping the VeraCrypt application makes in the kernel has no \
-                         hidden-volume protection, and the application leaves it writable even \
-                         for a volume it mounts read-only, so a write to it can overwrite the \
-                         hidden root."
+                         hidden-volume protection, so a write to it can overwrite the hidden \
+                         root. VeraCrypt 1.26.29 and earlier leave such a mapping writable even \
+                         for a volume they mount read-only."
                     }
                 };
                 format!(

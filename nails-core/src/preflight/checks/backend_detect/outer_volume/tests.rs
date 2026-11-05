@@ -45,6 +45,10 @@ fn fix(result: &CheckResult) -> &str {
 const CRYPTSETUP: &str = "cryptsetup offers no hidden-volume protection, so a write to it can \
      overwrite the hidden root.";
 
+const VERACRYPT: &str = "A mapping the VeraCrypt application makes in the kernel has no \
+     hidden-volume protection, so a write to it can overwrite the hidden root. VeraCrypt 1.26.29 \
+     and earlier leave such a mapping writable even for a volume they mount read-only.";
+
 // ------------------------------------------------------------------------
 // An outer volume open beside the hidden one
 // ------------------------------------------------------------------------
@@ -64,8 +68,9 @@ fn an_outer_volume_open_read_write_warns() {
     assert_eq!(
         fix(&result),
         "Unmount it and close it before activating (cryptsetup close <name>, or veracrypt \
-         --dismount for a volume the VeraCrypt application mounted), or open it read-only with \
-         cryptsetup open --readonly when it has to be shown. See docs/backends.md."
+         --dismount for a volume the VeraCrypt application mounted), or, when it has to be shown, \
+         open it read-only: cryptsetup open --readonly, or veracrypt --mount-options=ro with \
+         VeraCrypt 1.26.30 or later. See docs/backends.md."
     );
 }
 
@@ -155,7 +160,8 @@ fn a_cascade_is_followed_up_to_its_topmost_mapping() {
 }
 
 #[test]
-fn a_mapping_the_veracrypt_application_made_warns_even_mounted_read_only() {
+fn a_mapping_veracrypt_1_26_29_or_earlier_made_warns_even_mounted_read_only() {
+    // Those releases give the mapping no uuid and leave it writable.
     let host =
         hidden("50 1 254:4 / /media/veracrypt1 ro,relatime - exfat /dev/mapper/veracrypt1 ro\n")
             .mapping("dm-4", "254:4", "veracrypt1", "", &["sdb2"]);
@@ -164,10 +170,32 @@ fn a_mapping_the_veracrypt_application_made_warns_even_mounted_read_only() {
         format!(
             "Another VeraCrypt or TrueCrypt mapping is open read-write on the storage the hidden \
              root's volume at {ROOT} is opened from: veracrypt1 (dm-4), on sdb2, mounted \
-             read-only at /media/veracrypt1. A mapping the VeraCrypt application makes in the \
-             kernel has no hidden-volume protection, and the application leaves it writable even \
-             for a volume it mounts read-only, so a write to it can overwrite the hidden root."
+             read-only at /media/veracrypt1. {VERACRYPT}"
         )
+    );
+}
+
+#[test]
+fn a_volume_veracrypt_1_26_30_or_later_mounted_read_only_passes() {
+    // Those releases make the mapping of a volume they mount read-only
+    // read-only too (dmsetup create --readonly).
+    let host =
+        hidden("50 1 254:4 / /media/veracrypt1 ro,relatime - exfat /dev/mapper/veracrypt1 ro\n")
+            .mapping(
+                "dm-4",
+                "254:4",
+                "veracrypt1",
+                "VERACRYPT-1762101445123456-veracrypt1",
+                &["sdb2"],
+            )
+            .read_only("dm-4");
+    assert_eq!(
+        run(&host),
+        CheckResult::Pass(format!(
+            "Other VeraCrypt or TrueCrypt mappings are open on the storage the hidden root's \
+             volume at {ROOT} is opened from, all of them read-only, so no write through them \
+             reaches it: veracrypt1 (dm-4), on sdb2."
+        ))
     );
 }
 
@@ -184,13 +212,13 @@ fn a_mapping_veracrypt_1_26_30_or_later_made_is_known_by_its_uuid() {
                 "VERACRYPT-1762101445123456-veracrypt1",
                 &["sdb2"],
             );
-    assert!(
-        warning(&run(&host)).contains(
-            ": veracrypt1 (dm-4), on sdb2, mounted read-write at /media/veracrypt1. A mapping \
-             the VeraCrypt application makes in the kernel has no hidden-volume protection"
-        ),
-        "{:?}",
-        run(&host)
+    assert_eq!(
+        warning(&run(&host)),
+        format!(
+            "Another VeraCrypt or TrueCrypt mapping is open read-write on the storage the hidden \
+             root's volume at {ROOT} is opened from: veracrypt1 (dm-4), on sdb2, mounted \
+             read-write at /media/veracrypt1. {VERACRYPT}"
+        )
     );
 
     // A hidden volume the application mounted is in a VeraCrypt volume too.

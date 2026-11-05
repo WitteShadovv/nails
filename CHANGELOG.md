@@ -505,10 +505,11 @@ of this changelog for that version becomes the release notes word for word, and
   mapping with a volume uuid, a LUKS2 volume's own sub-device such as the integrity layer
   cryptsetup 2.8 and later put below a volume with authenticated encryption, is no VeraCrypt or
   TrueCrypt mapping to it. It passes when that mapping is read-only, as
-  `cryptsetup open --readonly` makes it; one the VeraCrypt application made warns even when the
-  application mounted it read-only, as it leaves its mapping writable. It reads sysfs and the
-  mount table, never a mapping's table, warns when sysfs does not let it list the devices below
-  the hidden root or built on its storage, and never fails. See docs/backends.md.
+  `cryptsetup open --readonly` makes it, and as VeraCrypt 1.26.30 and later make theirs for a volume
+  they mount read-only; one that VeraCrypt 1.26.29 or earlier made warns even for a volume mounted
+  read-only, as those releases leave their mapping writable. It reads sysfs and the mount table,
+  never a mapping's table, warns when sysfs does not let it list the devices below the hidden root
+  or built on its storage, and never fails. See docs/backends.md.
 - `check` and activation refuse (`backend-partition-type`) a hidden root stored on a partition of
   a disk the decoy boots from whose GPT type systemd-gpt-auto-generator acts on at boot: a
   `/home`, `/srv`, `/var` or `/var/tmp` partition, which it mounts when no fstab line mounts the
