@@ -38,6 +38,9 @@ pub(crate) struct FakeHost {
     pids: fresh_pids::Record,
     /// The devices that are there; no other is, whatever the test host has.
     pub(crate) devices: Vec<PathBuf>,
+    /// What the switch's job timeout does once the drop-ins are loaded, when
+    /// a later drop-in sets it again; else the timeout guard's action.
+    timeout_action: Option<&'static str>,
 }
 
 impl FakeHost {
@@ -53,6 +56,13 @@ impl FakeHost {
 impl EntryHost for FakeHost {
     fn unit_stop_commands(&self, _: &str) -> nails_core::Result<String> {
         Ok(String::new())
+    }
+    fn job_timeout_action(&self, unit: &str) -> nails_core::Result<String> {
+        assert_eq!(unit, transition::SWITCH_TIMEOUT_UNIT);
+        Ok(self
+            .timeout_action
+            .unwrap_or(transition::SWITCH_TIMEOUT_ACTION)
+            .to_string())
     }
     fn daemon_reload(&self) -> nails_core::Result<()> {
         if self.cancel_at_reload && self.reloads.get() == 0 {
@@ -781,10 +791,12 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
         assert!(kinds.contains(&PolicyMountKind::Overlay));
         assert!(kinds.contains(&PolicyMountKind::HiddenVolume));
 
-        // The runtime directory, the drop-in and the armed plan.
+        // The runtime directory, the drop-in, the timeout guard and the armed
+        // plan.
         assert!(paths.runtime().join(SNAPSHOT_NAME).exists());
         assert!(paths.binary_copy().is_file());
         assert!(world.run.path().join(DROPIN_DIR).join(DROPIN_NAME).exists());
+        assert_timeout_guard(&world, true);
         assert_eq!(host.reloads.get(), 1);
         let plan = Plan::load(&paths.plan()).unwrap();
         assert!(plan.armed_for(Direction::Enter, unix_now()));
@@ -828,7 +840,11 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
         );
         assert!(Plan::load(&paths.plan()).unwrap().entered_at.is_some());
         assert_utab(&world, &carried);
+        // The timeout guard stays for the hidden PID 1, whose way back it
+        // covers too.
+        assert_timeout_guard(&world, true);
         entry::rollback(&paths);
+        assert_timeout_guard(&world, false);
     });
 }
 
@@ -1491,7 +1507,66 @@ fn a_failed_entry_leaves_no_next_root_and_no_runtime_pieces() {
         );
         assert!(!paths.runtime().exists());
         assert!(!world.run.path().join(DROPIN_DIR).join(DROPIN_NAME).exists());
+        assert_timeout_guard(&world, false);
         // One reload installs the drop-in, one removes it again.
+        assert_eq!(host.reloads.get(), 2);
+    });
+}
+
+/// Whether the timeout guard lies below the world's `/run` with its text, or
+/// is gone with its directory.
+fn assert_timeout_guard(world: &World, present: bool) {
+    let dir = world
+        .run
+        .path()
+        .join(transition::stop_guard_dir(transition::SWITCH_TIMEOUT_UNIT));
+    if present {
+        assert_eq!(
+            std::fs::read_to_string(dir.join(transition::STOP_GUARD_NAME)).unwrap(),
+            "[Unit]\nJobTimeoutAction=poweroff-force\n"
+        );
+    } else {
+        assert!(!dir.exists(), "{} is left", dir.display());
+    }
+}
+
+#[test]
+fn an_entry_whose_switch_would_not_power_off_at_its_timeout_is_refused() {
+    let _ = Rerun::new(test_path!(
+        an_entry_whose_switch_would_not_power_off_at_its_timeout_is_refused
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let paths = world.paths();
+        // A drop-in of the decoy's that sorts after the guard sets the
+        // action again.
+        let host = FakeHost {
+            timeout_action: Some("soft-reboot-force\n"),
+            ..FakeHost::default()
+        };
+        let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
+        assert!(
+            matches!(error, NailsError::PreFlightCheckFailed(_)),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("JobTimeoutAction=soft-reboot-force"),
+            "{error}"
+        );
+        let entries = read_mountinfo().unwrap();
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.mount_point.starts_with(paths.nextroot())),
+            "nothing was mounted at the next root"
+        );
+        assert!(!paths.runtime().exists());
+        assert!(!world.run.path().join(DROPIN_DIR).exists());
+        assert_timeout_guard(&world, false);
+        // One reload loads the guards, one forgets them again.
         assert_eq!(host.reloads.get(), 2);
     });
 }
@@ -1522,6 +1597,7 @@ fn a_cancel_stops_the_entry_at_its_next_step_and_undoes_it() {
         );
         assert!(!paths.runtime().exists());
         assert!(!world.run.path().join(DROPIN_DIR).exists());
+        assert_timeout_guard(&world, false);
         assert_eq!(host.reloads.get(), 2);
     });
 }
