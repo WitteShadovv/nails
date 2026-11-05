@@ -716,6 +716,103 @@ fn with_mode<T>(dir: &Path, mode: u32, body: impl FnOnce() -> T) -> Option<T> {
     Some(result)
 }
 
+// ========================================================================
+// Whether something is there: the four lookups that answer it
+// ========================================================================
+
+/// What `path_exists`, `is_directory`, `is_regular_file` and `is_symlink`
+/// answer for `path`, in that order.
+fn lookups(path: &Path) -> [crate::Result<bool>; 4] {
+    let fs = RealFilesystem;
+    [
+        fs.path_exists(path),
+        fs.is_directory(path),
+        fs.is_regular_file(path),
+        fs.is_symlink(path),
+    ]
+}
+
+/// A missing path, one below it, and one below a regular file (`ENOTDIR`)
+/// are not there: no from all four, no error.
+#[test]
+fn nothing_there_is_no_from_all_four_lookups() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("file");
+    fs::write(&file, "x").unwrap();
+    for path in [
+        temp_dir.path().join("missing"),
+        temp_dir.path().join("missing/below"),
+        file.join("below"),
+    ] {
+        for answer in lookups(&path) {
+            assert!(!answer.unwrap(), "{}", path.display());
+        }
+    }
+}
+
+/// A lookup through a directory that may not be searched fails, for all
+/// four, naming the path: it is no missing path. Skipped as root, who may
+/// search any directory.
+#[test]
+fn a_lookup_the_caller_may_not_make_is_an_error_naming_the_path() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let locked = temp_dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    let inside = locked.join("file");
+    fs::write(&inside, "x").unwrap();
+
+    let Some(answers) = with_mode(&locked, 0o000, || lookups(&inside)) else {
+        return;
+    };
+
+    for answer in answers {
+        let (path, err) = io_error(answer);
+        assert_eq!(path, inside);
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+}
+
+/// A link to itself cannot be followed: the three lookups that follow links
+/// fail with `ELOOP`, and `is_symlink`, which looks at the link itself, finds
+/// it; a lookup below it fails for all four. A link to nothing is no entry
+/// to the three, and a link to `is_symlink`.
+#[test]
+fn a_link_that_cannot_be_followed_fails_the_lookups_that_follow_it() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let looped = temp_dir.path().join("looped");
+    std::os::unix::fs::symlink(&looped, &looped).unwrap();
+
+    let [exists, directory, regular, link] = lookups(&looped);
+    for answer in [exists, directory, regular] {
+        let (path, err) = io_error(answer);
+        assert_eq!(path, looped);
+        assert_eq!(err.raw_os_error(), Some(nix::libc::ELOOP));
+    }
+    assert!(link.unwrap());
+    for answer in lookups(&looped.join("below")) {
+        assert_eq!(io_error(answer).1.raw_os_error(), Some(nix::libc::ELOOP));
+    }
+
+    let dangling = temp_dir.path().join("dangling");
+    std::os::unix::fs::symlink(temp_dir.path().join("missing"), &dangling).unwrap();
+    let [exists, directory, regular, link] = lookups(&dangling);
+    assert!(!exists.unwrap() && !directory.unwrap() && !regular.unwrap());
+    assert!(link.unwrap());
+}
+
+/// A name longer than a filesystem keeps fails all four: it is no missing
+/// path.
+#[test]
+fn a_name_too_long_is_an_error_naming_the_path() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let long = temp_dir.path().join("x".repeat(4096));
+    for answer in lookups(&long) {
+        let (path, err) = io_error(answer);
+        assert_eq!(path, long);
+        assert_eq!(err.raw_os_error(), Some(nix::libc::ENAMETOOLONG));
+    }
+}
+
 #[test]
 fn device_id_names_the_filesystem_of_the_resolved_path() {
     use std::os::unix::fs::MetadataExt;
