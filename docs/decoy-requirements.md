@@ -576,12 +576,23 @@ history yourself so an interactive shell has nowhere to write:
   `ARGV0` or a variable of the dynamic loader (`LD_...`) in the environment you
   start the shell from, arithmetic in your files that names a parameter that
   holds no number (`(( i++ ))` before `i` is set in it), a global alias your
-  files use or one named like an operator (`alias -g '>'=...`), any global
-  alias where a hook writes to `$TTY` or a device, a key bound to completion
-  in a range (`bindkey -R`) or past a word an expansion makes, an alias named
-  like a reserved word of the code's structure (`alias do=...`), a prompt with
-  code where `PROMPT_SUBST` may be on or a `NULLCMD` in the environment you
-  start the shell from, and a file your startup files write before zsh reads it.
+  files use or one named like an operator (`alias -g '>'=...`), any global alias
+  where a hook writes to `$TTY` or a device, an `alias` word an expansion, brace
+  expansion or a glob may make a flag of (`alias $g`, `alias {-g,-g}`), a key
+  bound to completion that you may press as you type a line (any but Tab, `^D`
+  and the keys zsh's own completion functions bind, so an arrow, an Alt key or
+  Shift-Tab bound to `complete-word` or `reverse-menu-complete`), in a range
+  (`bindkey -R`) or past a word an expansion makes, a `bindkey` word with a glob
+  or a brace outside quotes, or an expansion there that may make several words
+  of it (`bindkey ^[[A up-line-or-search` written without quotes, `bindkey $k`),
+  an alias named like a reserved word of the code's structure (`alias do=...`),
+  a builtin's word brace expansion or a glob may make a flag or a name of
+  (`setopt {-m,...}`, `functions {-c,f} preexec`), a `histchars` your files set,
+  `RC_QUOTES`, `IGNORE_BRACES` or `IGNORE_CLOSE_BRACES` where a function's `}`
+  follows a command's words, `ALIAS_FUNC_DEF` where an alias shares a function's
+  name, a prompt with code where `PROMPT_SUBST` (or `PROMPT_VARS`) may be on, a
+  `NULLCMD` or `READNULLCMD` of any value in the environment you start the shell
+  from, and a file your startup files write before zsh reads it.
   It follows `compinit` for a `.zshrc` that autoloads it too, when that zsh is
   one from the Nix store. For any other zsh, and when the check finds no shell
   you typed into, it cannot tell where zsh finds `compinit`, and `zsh -f` is

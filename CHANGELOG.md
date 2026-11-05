@@ -748,8 +748,10 @@ of this changelog for that version becomes the release notes word for word, and
   line once its command ends. An `fc` that writes the history file (`fc -A`, `fc -W`, `fc -P`, with
   other flags too, as in `fc -AI`) counts as such a write wherever it stands, as a hook (`precmd`,
   `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs it after each command the way bash's `history -a`
-  runs from `PROMPT_COMMAND`, and one with an expansion among its words is a doubt. An option counts
-  as on wherever a file zsh reads names it, outside a line that is a comment, an `unsetopt` as much
+  runs from `PROMPT_COMMAND`, and one with an expansion among its words, or a word brace expansion
+  or a glob may make a flag of (`fc {-AI,-AI}`), is a doubt. An option counts as on wherever a file
+  zsh reads names it, outside a line that is a comment (where a file sets `histchars`, whose third
+  character starts a comment in place of `#`, such a line may run, a doubt), an `unsetopt` as much
   as a `setopt`: zsh can still end with the option on after a turn-off, through a redefined
   `unsetopt`, a trap or a hook that sets it again, a plugin loaded after the first prompt or an
   error that stops the file before the line, and no reading of the files can show that a turn-off
@@ -760,26 +762,35 @@ of this changelog for that version becomes the release notes word for word, and
   check names out of `/etc/zshenv`. That is the fix with Home Manager too, which names the options
   whether it turns them on or off. The options the command line of the shell turns on count too: one
   of the three (`zsh -o sharehistory`, `zsh --share-history`, `zsh -fo share_history`) is on, and a
-  zsh that runs as sh or ksh, by the name it was started under or `--emulate sh`, which reads their
-  startup files, is a doubt. A redirection to the history file, `$HISTFILE` or a path whose last
-  part holds `hist` (`preexec() { print -r -- "$1" >> ~/.zsh_history }`), counts as a write wherever
+  zsh that runs as sh or ksh, by the name it was started under (one whose first letter past a `-`
+  and one `r` is `s`, `b` or `k`, as for `sh`, `bash` and `ksh`) or `--emulate sh`, which reads
+  their startup files, is a doubt, and so are one started as `csh`, which reads zsh's files with
+  csh's quotes, and one started as `su`, which takes the name of the shell it emulates from `SHELL`.
+  A redirection to the history file, `$HISTFILE` or a path whose last part holds `hist`
+  (`preexec() { print -r -- "$1" >> ~/.zsh_history }`), counts as a write wherever
   it stands, and so does a word in a hook that names that file (`tee -a ~/.zsh_history`), a hook
   being a function by its name, a `TRAP...` function, or one that `add-zsh-hook`, a `*_functions`
   array or `zle -N` makes one. A redirection in a hook whose target an expansion makes is a doubt.
-  An `emulate -R ksh` turns `SHARE_HISTORY` on, as its reset to ksh's defaults does, and an
-  `emulate` whose mode an expansion makes is a doubt. A zsh started with `-f` whose `/etc/zshenv`
-  runs an `exec`, which may start another zsh, or a `set`, `setopt` or `unsetopt` with an expansion
+  An `emulate -R` of ksh's mode turns `SHARE_HISTORY` on, as its reset to ksh's defaults does, zsh
+  picking the mode by its first letter past one `r` (`ksh`, `rksh`, `korn`), and an `emulate` whose
+  flags or mode an expansion, brace expansion or a glob makes is a doubt. A zsh started with `-f`
+  whose `/etc/zshenv` runs an `exec`, which may start another zsh, or a `set`, `setopt` or
+  `unsetopt` with an expansion
   among its words (`set +$x`) is read on as any zsh. An alias's value, a trap's code, a `sched`'s
   command and a `zstyle -e`'s strings are read as an `eval`'s words are, and a doubt where an
   expansion is in them, and so are an alias that hands the words it is used with to a command that
   reads them as options, code, names or paths (`alias so=setopt`), a prompt that holds code
-  (`$(...)`, `${...}`) where a file or the command line may turn `PROMPT_SUBST` on, an expansion
-  that reads a parameter's value again (`${(e)x}`, `${(%%)x}`, `${~x}`), and a file that names
+  (`$(...)`, `${...}`) where a file or the command line may turn `PROMPT_SUBST` on (or
+  `PROMPT_VARS`, its other name), an expansion that reads a parameter's value again (`${(e)x}`,
+  `${(%%)x}`, `${~x}`), and a file that names
   `GLOB_SUBST`. An option counts as on in a word as brace expansion may make it too
   (`setopt {share,inc_append}_history`, a `{y}` group as `BRACE_CCL` reads it), and after an `o`
-  among flags (`set -oshare_history`). The check warns that it cannot tell at a `setopt` with an
-  expansion it cannot list, an option whose name an expansion makes (`options[$o]=on`,
-  `emulate zsh -o $o`, `read -A options`, a `typeset` or `print -v` of a parameter whose name an
+  among flags (`set -oshare_history`), and a word of a `setopt` or a `set` that brace expansion may
+  make a flag of (`setopt {-m,'*hare*'}`), or that holds a glob, which a file's name where zsh runs
+  may turn into an option's (`setopt shar?_history`), is a doubt. The check warns that it cannot
+  tell at a `setopt` with an expansion it cannot list, an option whose name an expansion makes
+  (`options[$o]=on`, `emulate zsh -o $o`, `read -A options`, a `typeset` or `print -v` of a
+  parameter whose name an
   expansion makes), a glob qualifier that runs code as zsh expands a word (`*(e:'...':)`,
   `*(+func)`), a sourced file or a `ZDOTDIR` it cannot follow (a process substitution,
   `: ${ZDOTDIR:=...}`), a path zsh expands into others (a glob, `{a,b}`), a function the files
@@ -787,9 +798,10 @@ of this changelog for that version becomes the release notes word for word, and
   `$p/share/zsh/site-functions`), compiled code that zsh may run in place of a file (a `.zwc` beside
   it or for an `fpath` directory), a `source` without a file, a quote, an expansion or a
   here-document that runs to the end of the file, an expansion that holds what it cannot read as
-  zsh does (a `case` in a `$(...)`, a `${ command }`), a command whose name an expansion makes
-  (`$cmd`), a startup file that is there but cannot be read, which it passed over before, and a
-  shell other than bash, zsh, fish and dash. The lexer reads zsh's code as zsh does where that
+  zsh does (a `case` in a `$(...)`, a `${ command }`), a command whose name an expansion, brace
+  expansion or a glob makes or may make (`$cmd`, `ali$s`), a startup file that is there but cannot
+  be read, which it passed over before, and a shell other than bash, zsh, fish and dash. The lexer
+  reads zsh's code as zsh does where that
   matters for what it can hide: a `<<` in `(( ... ))` is a shift and a quote there a character, a
   `)` or `}` in quotes closes nothing, a `\'` does not end a `$'...'`, `$$` is a parameter, glob
   flags such as `(#i)` start a word, a command in an arm of a `case` starts after the pattern's `)`,
@@ -812,8 +824,11 @@ of this changelog for that version becomes the release notes word for word, and
   arithmetic it reads may set a parameter by a name it cannot read and no file defines a global
   alias, and so does one to a device (`/dev/null`, `/dev/tty`, `/dev/stderr`) while no file defines
   a global alias, of any name: zsh looks a global alias up for every token it reads, so with
-  `alias -g '>'='>>~/.zl;:'` it reads `print -r -- $1>$TTY` as a write to `~/.zl`. An alias for an
-  `fc` with no `-A`, `-W`, `-P` or `-p` (`alias h='fc -l'`) given as written is no doubt until a file
+  `alias -g '>'='>>~/.zl;:'` it reads `print -r -- $1>$TTY` as a write to `~/.zl`. It reads an
+  `alias` where zsh runs it past a precommand and its options too (`command -p alias -g ...`), and
+  an `alias` word, a command's name or a line it cannot read as zsh may is a doubt of its own. An
+  alias for an `fc` with no `-A`, `-W`, `-P` or `-p` (`alias h='fc -l'`) given as written is no
+  doubt until a file
   uses its name, in any form zsh reads it in, which would hand that `fc` the words after it
   (`h -W`). Of the shell the command was typed into, the check now reads from `/proc` the program it
   runs and the variables of its environment that tell where zsh finds the functions it autoloads and
@@ -837,9 +852,10 @@ of this changelog for that version becomes the release notes word for word, and
   for the first lines of the completion functions it marks (an `#autoload` with a word other than
   `+X`, and a `#compdef` whose first word binds keys, `-k`, `-kn`, `-K` or `-Kn`, other than zsh's
   own, are doubts), and for the completion functions, which zsh runs as you complete a word (with
-  Tab, `^D` or a key after `^X` or an escape) and which the check reads when a file runs one by
-  name, makes one a hook or runs one in a command substitution. `promptinit` is read for the themes
-  it marks, the one `prompt` runs (`prompt suse`) and the `prompt_default_setup` that
+  Tab, `^D` or one of the keys zsh's own completion functions bind) and which the check reads when a
+  file runs one by name, makes one a hook or runs one in a command substitution. `promptinit` is
+  read for the themes it marks, the one `prompt` runs (`prompt suse`) and the `prompt_default_setup`
+  that
   `prompt restore` runs, as a hook's code where a hook runs `prompt`, and may turn `PROMPT_SUBST`
   on. On NixOS the `eval` of what coreutils' `dircolors` prints in the generated `/etc/zshrc`, when
   the store path it names holds coreutils' program and nothing that runs before the line may change
@@ -887,10 +903,13 @@ of this changelog for that version becomes the release notes word for word, and
   `tee -a ~/.zlog <<< "$1"`, `LINE=$1 logger`), at an `exec` that keeps a descriptor open on any
   file but a device, a `sysopen` that opens one to write, a `coproc`, a `zle -A` to a widget named
   for a hook, a widget that completes a word run as each line is entered or a hook runs
-  (`zle complete-word` in a hook, `add-zle-hook-widget line-finish complete-word`, a `widgets`
-  style, `zle -A complete-word accept-line`) or bound to a key a line is typed with
-  (`bindkey ' ' complete-word`, a range of keys with `bindkey -R`, a binding past `-L`, a lone `-`
-  or a keymap glued to `-M`, which zsh binds as it does without them, or in the dump file
+  (`zle complete-word` or `zle -w complete-word` in a hook, `zle`'s options read as zsh reads them,
+  `add-zle-hook-widget line-finish complete-word`, a `widgets` style, past a first `--` or `-` too,
+  `zle -A complete-word accept-line`) or bound to a key you may press as you type a line, any but
+  Tab, `^D` and the keys zsh's own completion functions bind (`bindkey ' ' complete-word`, an arrow,
+  `bindkey '^[[D' complete-word`, an Alt key, a range of keys with `bindkey -R`, a binding past
+  `-L`, a lone `-` or a keymap glued to `-M`, which zsh binds as it does without them, or in the
+  dump file
   `bindkey '^m'` or any key zsh's own completion functions do not bind), at such a widget among the
   words of a `bindkey` past one an expansion makes that zsh drops when it is empty (`${key[x]}`), at
   a `bindkey` word an expansion may make several words or the options of (`$k`, `"$@"`, `{' ',x}`,
@@ -912,8 +931,10 @@ of this changelog for that version becomes the release notes word for word, and
   (`function X`, `read X`), at one whose name holds an operator, a brace or a blank, or is empty,
   wherever it is defined, as zsh splits such a token off a word with no blank beside it
   (`alias -g '>'=...` stands for the `>` of `$1>$TTY`, `alias -g '}'=...` for the `}` of `$1}`) and
-  the check cannot count its uses, at an `alias` with a word an expansion makes (`alias $g ...`),
-  which may be `-g`, at an alias named like a reserved word of the code's structure
+  the check cannot count its uses, at an `alias` with a word an expansion, brace expansion or a glob
+  may make other words of (`alias $g ...`, `alias {-g,-g} ...`, `alias -[g] ...`), which may be
+  `-g`, but for a list of words that start with no `-` or `+` (`alias -s {jpg,png}=feh`), which it
+  reads as those words, at an alias named like a reserved word of the code's structure
   (`alias '{'=...`, `alias do=...`), which zsh expands in place of that word wherever it starts a
   command, while one named like a precommand that is no builtin (`!`, `time`, `nocorrect`, `-`) runs
   where the precommand stands, as a function of its name would, at a `bindkey -s` string with a key
@@ -930,10 +951,25 @@ of this changelog for that version becomes the release notes word for word, and
   number, and at a `#compdef -kn` first line. It reads every name of a function's definition
   (`function a b`, `a b ()`), counts what a `bindkey -s` string types for the names the files use,
   and reads what `print -z` puts in the line as a hook's code, and a redirection with no command
-  (`preexec() { >/dev/null }`) as a run of `cat`, or of `more` for an input alone, which `NULLCMD`
+  (`preexec() { >/dev/null }`), or with only words that may all expand to none
+  (`/no/such*(N) >/dev/null`), as a run of `cat`, or of `more` for an input alone, which `NULLCMD`
   and `READNULLCMD` name by default, so a function of either name runs as a hook's code where a hook
-  holds one. A global alias named by a word that the code does not use is no doubt where no hook
-  writes to a device, so the commands the check took as filters for one (`| grep`) are gone.
+  holds one. It warns that it cannot tell, too, where a file may change how zsh reads code: at a
+  `histchars` a file sets (`histchars='!^'` leaves zsh no comment character), at `RC_QUOTES` or
+  csh's quotes, which change what a quote holds and so what an `eval` or an alias's value runs
+  (`CSH_JUNKIE_QUOTES`, `emulate csh`), at a `}` after a command's words (`f() { : }`) where a file
+  may turn `IGNORE_BRACES` or `IGNORE_CLOSE_BRACES` on (`set -I`, `NO_BRACE_EXPAND`, `emulate sh`),
+  which zsh then reads as a word of that command, so that the function's body runs on to a later
+  `}`, and at a function defined as `name ()` where an alias of that name is defined and a file may
+  turn `ALIAS_FUNC_DEF` on (`emulate sh` and `emulate ksh` too), whose value zsh then puts in place
+  of the name. It warns as well at a word that a `functions`, a `zle`, a `zstyle`, a `trap`, a
+  `sched`, an `eval`, a `compdef`, a `compinit` or a `prompt` takes as a flag, a name or code where
+  brace expansion or a glob may make other words of it (`functions {-c,f} preexec`,
+  `zle {-N,zle-line-finish} w`), at a copy of a function of zsh's own whose work the check reads by
+  its name (`functions -c add-zsh-hook azh`), and, on the command line, at an option that changes
+  how zsh reads code (`-I`, `--rc-quotes`). A global alias named by a word that the code does not
+  use is no doubt where no hook writes to a device, so the commands the check took as filters for
+  one (`| grep`) are gone.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
