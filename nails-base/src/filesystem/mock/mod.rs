@@ -20,6 +20,8 @@ mod sysfs;
 #[cfg(test)]
 mod tests_basic;
 #[cfg(test)]
+mod tests_lookup;
+#[cfg(test)]
 mod tests_mounts;
 
 pub use setup_state::PathKind;

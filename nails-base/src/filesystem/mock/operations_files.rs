@@ -7,6 +7,9 @@ use std::path::Path;
 
 impl MockFilesystem {
     pub(super) fn file_size_impl(&self, path: &Path) -> Result<u64> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         if let Some(info) = paths.get(path) {
             if !info.exists {
@@ -254,6 +257,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn modified_time_impl(&self, path: &Path) -> Result<std::time::SystemTime> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         let times = self
             .modified_times
             .lock()
@@ -266,6 +272,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn change_time_impl(&self, path: &Path) -> Result<std::time::SystemTime> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
         Ok(self
             .change_times
             .lock()
