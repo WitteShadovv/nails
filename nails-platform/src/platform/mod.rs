@@ -109,8 +109,11 @@ pub struct HostProfile {
     /// Whether PID 1 is systemd.
     pub is_systemd: bool,
     /// Whether `/run/ostree-booted` is present (ostree / image-based host).
+    /// False where it cannot be looked up, which refuses the host.
     pub is_ostree: bool,
     /// Whether `/run/current-system` is present (a live NixOS generation).
+    /// False where it cannot be looked up, which refuses a host that does not
+    /// say it is NixOS.
     pub has_current_system: bool,
     /// When [`kind`](Self::kind) is [`PlatformKind::Unsupported`], why.
     pub unsupported_reason: Option<String>,
