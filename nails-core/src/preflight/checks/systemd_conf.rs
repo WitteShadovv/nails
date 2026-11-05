@@ -202,19 +202,33 @@ enum Entry {
 }
 
 /// Classify `path` without opening it: a FIFO would block the open, and a
-/// device can be read without end.
+/// device can be read without end. A lookup that fails for another reason
+/// than that nothing is there leaves the configuration unread: one NAILS may
+/// not make as a file it cannot read, any other (a loop of links among them)
+/// as an entry systemd does not read alike.
 fn entry<F: Filesystem>(fs: &F, path: &Path) -> Entry {
-    if fs.is_regular_file(path).unwrap_or(false) {
-        return Entry::Regular;
+    let failed = |error: crate::NailsError| {
+        Entry::Unread(match error.io_kind() {
+            Some(std::io::ErrorKind::PermissionDenied) => UnreadCause::CannotRead,
+            _ => UnreadCause::NotRegular,
+        })
+    };
+    match fs.is_regular_file(path) {
+        Ok(true) => return Entry::Regular,
+        Ok(false) => {}
+        Err(error) => return failed(error),
     }
-    if fs.path_exists(path).unwrap_or(true) {
-        return Entry::Unread(UnreadCause::NotRegular);
+    match fs.path_exists(path) {
+        Ok(true) => return Entry::Unread(UnreadCause::NotRegular),
+        Ok(false) => {}
+        Err(error) => return failed(error),
     }
-    // Nothing that a lookup reaches: no file, a link to nothing, a link that
-    // cannot be followed (a loop), or a path NAILS may not look up. A path
-    // that resolves all the same is one the in-memory test double holds no
-    // file for (it resolves links without asking whether the target is
-    // there), or one that came into being since the lookup above.
+    // Nothing that a lookup reaches: no file, a link to nothing, or a path
+    // below a file, where systemd's open fails with another error than
+    // ENOENT, so it does not skip it. A path that resolves all the same is
+    // one the in-memory test double holds no file for (it resolves links
+    // without asking whether the target is there), or one that came into
+    // being since the lookup above.
     match fs.canonicalize(path) {
         Ok(_) => Entry::Missing,
         Err(e) => match e.io_kind() {

@@ -34,6 +34,35 @@ fn a_file_gone_before_its_read_is_absent() {
     assert_eq!(read_mock(&fs, "/etc/x"), DecoyFile::Absent);
 }
 
+/// A lookup that fails for another reason than that nothing is there is
+/// named by its error, and one NAILS may not make asks for sudo; one that
+/// finds nothing there is absent.
+#[test]
+fn a_lookup_that_fails_is_named_by_its_error() {
+    use std::io::ErrorKind;
+    let failing = |kind| {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/home/bob/.profile", "x");
+        fs.mock_set_lookup_error("/home/bob", kind);
+        read_mock(&fs, "/home/bob/.profile")
+    };
+    assert_eq!(
+        failing(ErrorKind::PermissionDenied),
+        DecoyFile::Unread(
+            "NAILS cannot look up /home/bob/.profile; run the command again with sudo".into()
+        )
+    );
+    assert_eq!(
+        failing(ErrorKind::Other),
+        DecoyFile::Unread(
+            "NAILS cannot follow /home/bob/.profile (/home/bob/.profile: Mock: the lookup fails \
+             here)"
+                .into()
+        )
+    );
+    assert_eq!(failing(ErrorKind::NotFound), DecoyFile::Absent);
+}
+
 #[test]
 fn what_the_system_does_not_show_is_named() {
     use std::os::unix::fs::PermissionsExt;
