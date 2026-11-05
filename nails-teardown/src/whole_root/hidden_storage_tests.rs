@@ -96,16 +96,25 @@ fn the_volume_wherever_a_folder_of_it_is_bound_and_a_loop_on_it_are_its_own() {
 fn a_disk_over_the_root_or_its_layers_is_not_its_own_and_one_below_them_is() {
     // A disk over the hidden root, or over the layers directory, covers the
     // volume: not the session's own. A mount further below the layers is
-    // NAILS's, whatever it is: a carried filesystem the hidden root resolved
-    // to another directory there.
+    // NAILS's, whatever it is, told by path alone: a carried filesystem the
+    // hidden root resolved to another directory there, and so also a disk
+    // someone mounts in NAILS's layers, beside them or over a carried one.
     let mounts = table(
         "4 2 8:33 / /mnt rw - vfat /dev/sdc1 rw\n\
          5 2 8:34 / /mnt/root rw - vfat /dev/sdc2 rw\n\
-         6 2 8:1 / /mnt/root/decoy/boot ro - vfat /dev/vda1 rw\n",
+         6 2 8:1 / /mnt/root/decoy/boot ro - vfat /dev/vda1 rw\n\
+         7 2 8:35 / /mnt/root/usb rw - vfat /dev/sdc3 rw\n\
+         8 3 8:36 / /mnt/root/decoy/home rw - vfat /dev/sdc4 rw\n",
     );
     assert_eq!(
         own(&session(), &mounts, no_loop),
-        ["/mnt", "/mnt/root/decoy/home", "/mnt/root/decoy/boot"]
+        [
+            "/mnt",
+            "/mnt/root/decoy/home",
+            "/mnt/root/decoy/boot",
+            "/mnt/root/usb",
+            "/mnt/root/decoy/home"
+        ]
     );
     assert!(!session().is_hidden_storage_with(&mounts[3], no_loop));
 }

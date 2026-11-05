@@ -604,12 +604,17 @@ mod tests {
 
     #[test]
     fn a_disk_mounted_below_the_hidden_root_is_unmounted_and_the_session_s_own_are_not() {
-        // The hidden volume at /mnt, recorded by its device, the decoy's
-        // /home carried below it, a folder of the volume bound below it, and
-        // a USB disk at /mnt/usb.
+        // The hidden volume at /mnt, recorded by its device and bound there
+        // as entry records it, the decoy's /home carried below it, a folder
+        // of the volume bound below it, a USB disk at /mnt/usb and another
+        // disk over the root itself.
         let mut session = plan();
         session.hidden_root = PathBuf::from("/mnt");
         session.hidden_dev = Some("253:0".to_string());
+        session.policy_mounts.push(PolicyMount {
+            target: PathBuf::from("/mnt"),
+            kind: PolicyMountKind::HiddenVolume,
+        });
         session.carried = vec![nails_teardown::whole_root::plan::CarriedMount {
             target: PathBuf::from("/home"),
             at: PathBuf::from("/mnt/root/decoy/home"),
@@ -623,9 +628,13 @@ mod tests {
              3 2 8:3 / /mnt/root/decoy/home ro - ext4 /dev/vda3 rw\n\
              4 2 253:0 /photos /mnt/photos rw - ext4 /dev/mapper/data rw\n\
              5 2 8:33 / /mnt/usb rw - vfat /dev/sdc1 rw\n\
-             6 1 8:2 / /run/nextroot rw - ext4 /dev/vda2 rw\n",
+             6 1 8:2 / /run/nextroot rw - ext4 /dev/vda2 rw\n\
+             7 2 8:34 / /mnt rw - ext4 /dev/sdc2 rw\n",
         );
         let is_block = |m: &MountEntry| m.source.starts_with("/dev/");
+        // Nothing at the root itself is unmounted, so the hidden volume never
+        // is, a disk over it neither: deactivate refuses to begin while a
+        // disk covers the root, and the operator unmounts that one first.
         assert_eq!(
             session_disk_mounts(&Paths::system(), &session, &mounts, &is_block),
             vec![PathBuf::from("/mnt/usb")]
