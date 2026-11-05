@@ -10,21 +10,20 @@
 //! outside the volume, or in a loop) so they exercise the same traversal and
 //! planted-symlink inputs as the configured-path and `SafeRoot` suites.
 //!
-//! Two branches of `is_on_hidden_volume` are covered:
+//! Two kinds of root are covered:
 //!
-//! - the string fallback taken when the root does not exist on disk (config-time
-//!   validation before the volume is mounted): a non-existent root and generated
-//!   absolute paths mixing `.`, `..` and repeated separators, asserting escapes
-//!   are rejected and in-tree cleaned paths accepted;
-//! - the filesystem branch taken when the root exists: a tempdir with planted
-//!   symlinks, asserting the check fails closed on anything that resolves outside
-//!   the real root.
+//! - a root that does not exist on disk: no generated path, absolute or
+//!   relative, however it mixes `.`, `..` and repeated separators, is accepted
+//!   below it;
+//! - a root that exists: a tempdir with planted symlinks, asserting that plain
+//!   in-tree paths are accepted and that the check fails closed on anything
+//!   below the symlink that leads out of the volume.
 //!
 //! Case counts are bounded so the suites run inside the normal `cargo test` gate.
 
 use nails_core::state::is_on_hidden_volume;
 use proptest::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod common;
 use common::{components, fixture, join, resolve};
@@ -32,61 +31,33 @@ use common::{components, fixture, join, resolve};
 /// Cases per property: enough to mix every component kind while staying fast.
 const CASES: u32 = 64;
 
-/// Resolve `..`/`.`/repeated separators the way `is_on_hidden_volume`'s string
-/// fallback does, so the oracle below predicts its answer exactly.
-fn clean(path: &str) -> PathBuf {
-    let mut out: Vec<std::ffi::OsString> = Vec::new();
-    for component in Path::new(path).components() {
-        match component {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::Normal(c) => out.push(c.to_owned()),
-            std::path::Component::RootDir => out.clear(),
-            _ => {}
-        }
-    }
-    let mut cleaned = PathBuf::from("/");
-    for c in out {
-        cleaned.push(c);
-    }
-    cleaned
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(CASES))]
 
-    /// String-fallback branch: with a root that does not exist on disk, the
-    /// decision is a cleaned string-prefix test. The predicate must accept a path
-    /// exactly when its cleaned form stays under the cleaned root and reject it
-    /// otherwise — in particular every `..` escape is rejected, however it is
-    /// spelled.
+    /// A root that does not exist holds no path: what would be made below it
+    /// lands on the filesystem that holds its parent. Every generated path is
+    /// refused, also one that reads as below the root once `..`, `.` and
+    /// repeated separators are cleaned away, and a relative one.
     #[test]
-    fn string_fallback_accepts_exactly_the_contained_paths(
+    fn a_root_that_does_not_exist_holds_no_path(
         root_parts in prop::collection::vec(prop::sample::select(&["a", "b", "c"][..]), 1..4),
         tail in components(5),
         leaf in prop::sample::select(&["x", "y", "new"][..]),
     ) {
-        // A root under a directory that cannot exist, so canonicalize() fails and
-        // the string fallback is taken deterministically.
+        // A root under a directory that cannot exist.
         let root = format!("/nails-nonexistent-{}", root_parts.join("/"));
         // Sprinkle repeated separators so the parser must collapse them too.
         let path = join(&root, &tail, leaf).replace("/a/", "/a//");
+        let relative = join("sub", &tail, leaf);
 
-        let expected = clean(&path).starts_with(clean(&root));
-        let got = is_on_hidden_volume(Path::new(&path), &root);
-        prop_assert_eq!(
-            got, expected,
-            "is_on_hidden_volume({:?}, {:?}) = {}, expected {}", path, root, got, expected
+        prop_assert!(
+            !is_on_hidden_volume(Path::new(&path), &root),
+            "{} accepted below the missing root {}", path, root
         );
-    }
-
-    /// A relative path can never sit on an absolute, non-existent hidden root.
-    #[test]
-    fn string_fallback_rejects_relative_paths(tail in components(4)) {
-        let root = "/nails-nonexistent-root";
-        let relative = join("sub", &tail, "leaf");
-        prop_assert!(!is_on_hidden_volume(Path::new(&relative), root));
+        prop_assert!(
+            !is_on_hidden_volume(Path::new(&relative), &root),
+            "relative {} accepted below the missing root {}", relative, root
+        );
     }
 
     /// Filesystem branch, accept side: with a real root on disk, a path built
@@ -105,20 +76,19 @@ proptest! {
         );
     }
 
-    /// Filesystem branch, fail-closed side: when the nearest existing ancestor of
-    /// the path is the `out` symlink (planted to point outside the volume), the
-    /// check must reject it. The tail beneath `out` is plain names only: a `..`
-    /// in it would textually cancel the symlink before the on-disk check sees it,
-    /// which is the soft spot `SafeRoot`/openat2 closes at mount time, not this
-    /// config-time helper.
+    /// Filesystem branch, fail-closed side: below the `out` symlink, planted to
+    /// point outside the volume, the check must reject the path whatever
+    /// components follow. The kernel takes a `..` after `out` from where `out`
+    /// leads, a `..` after a directory that does not exist yet is refused, and
+    /// none of the alphabet's names leads back into the volume from outside it.
     #[test]
     fn filesystem_branch_rejects_paths_under_an_escaping_symlink(
-        tail in prop::collection::vec(prop::sample::select(&["a", "b", "new"][..]), 0..4),
+        tail in components(4),
     ) {
         let fx = fixture();
         let root = fx.vol().to_string_lossy().into_owned();
-        // `out` is a symlink to a directory outside the volume; nothing exists
-        // beneath it, so `out` is the nearest existing ancestor of any such path.
+        // `out` is a symlink to a directory outside the volume, and nothing
+        // exists beneath it.
         let parts: Vec<&str> = std::iter::once("out").chain(tail.iter().copied()).collect();
         let path = join(&root, &parts, "new");
         // Sanity: the planted symlink really does leave the real root.
