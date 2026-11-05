@@ -23,11 +23,13 @@
 //!   fallback.
 //!
 //! **Never guarded** ([`protected`]): the decoy root's device (the way back
-//! mounts it read-write), the hidden backend, every device mounted inside the
-//! hidden volume or at a policy target (the carried decoy filesystems, the
-//! read-only ESP), all of their device-mapper and RAID members and the disks
-//! they sit on, and every device without hardware below it (loop, device
-//! mapper, md, zram).
+//! mounts it read-write), the hidden backend, every device of the session's
+//! own storage below the hidden root (the hidden volume, the carried decoy
+//! filesystems: [`Plan::is_hidden_storage`]) or mounted at a policy target
+//! (the read-only ESP), all of their device-mapper and RAID members and the
+//! disks they sit on, and every device without hardware below it (loop,
+//! device mapper, md, zram). A disk someone mounts below the hidden root is
+//! guarded like any other.
 //!
 //! The devices set read-only are recorded in the runtime directory, and the
 //! way back (the leave transition) makes exactly those writable again before
@@ -208,8 +210,9 @@ impl Sysfs {
 }
 
 /// The devices the session must keep writable: what backs the decoy root, the
-/// hidden backend, and every mount inside the hidden volume or at a policy
-/// target, with everything they are stacked on and the disks below.
+/// hidden backend, and every mount of the session's own storage below the
+/// hidden root ([`Plan::is_hidden_storage`]) or at a policy target, with
+/// everything they are stacked on and the disks below.
 pub fn protected(plan: &Plan, mounts: &[MountEntry], sys: &Sysfs) -> BTreeSet<DevNum> {
     let policy: Vec<&Path> = plan
         .policy_mounts
@@ -219,10 +222,7 @@ pub fn protected(plan: &Plan, mounts: &[MountEntry], sys: &Sysfs) -> BTreeSet<De
         .collect();
     let mut seeds: Vec<DevNum> = mounts
         .iter()
-        .filter(|m| {
-            m.mount_point.starts_with(&plan.hidden_root)
-                || policy.contains(&m.mount_point.as_path())
-        })
+        .filter(|m| plan.is_hidden_storage(m) || policy.contains(&m.mount_point.as_path()))
         .filter_map(mount_device)
         .collect();
     seeds.extend(block_device(&plan.decoy_root.source));
@@ -491,6 +491,40 @@ mod tests {
         // A disk mounted elsewhere, and a sibling partition, are not.
         assert!(!protected.contains(&dev("8:32")));
         assert!(!protected.contains(&dev("8:2")));
+    }
+
+    #[test]
+    fn a_disk_below_the_hidden_root_is_guarded_and_a_carried_filesystem_is_not() {
+        let (_dir, sys) = sysfs();
+        let mut plan = sample();
+        plan.hidden_root = PathBuf::from("/mnt");
+        plan.hidden_dev = Some("253:0".to_string());
+        plan.decoy_root.source = PathBuf::from("/nonexistent/root");
+        plan.backend = Vec::new();
+        plan.policy_mounts = Vec::new();
+        plan.carried = vec![crate::whole_root::plan::CarriedMount {
+            target: PathBuf::from("/boot"),
+            at: PathBuf::from("/mnt/root/decoy/boot"),
+            read_only: true,
+            dev: Some("8:1".to_string()),
+            root: Some(PathBuf::from("/")),
+        }];
+        // The hidden volume, the carried ESP, and a USB disk at /mnt/usb.
+        let mounts = parse_mountinfo(
+            "1 0 0:30 / / rw - overlay overlay rw,upperdir=/u,workdir=/w\n\
+             2 1 253:0 / /mnt rw - ext4 /nonexistent/mapper/data rw\n\
+             3 2 8:1 / /mnt/root/decoy/boot ro - vfat /nonexistent/vda1 ro\n\
+             4 2 8:32 / /mnt/usb rw - ext4 /nonexistent/sdc rw\n",
+        );
+        let kept = protected(&plan, &mounts, &sys);
+        for want in ["253:0", "8:17", "8:16", "8:1", "8:0"] {
+            assert!(kept.contains(&dev(want)), "{want}: {kept:?}");
+        }
+        assert!(!kept.contains(&dev("8:32")), "{kept:?}");
+        // A plan written before the device was recorded keeps everything below
+        // the root writable, as before.
+        plan.hidden_dev = None;
+        assert!(protected(&plan, &mounts, &sys).contains(&dev("8:32")));
     }
 
     #[test]

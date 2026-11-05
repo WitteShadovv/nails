@@ -19,6 +19,7 @@ use nails_core::notification::{Notification, send_immediate};
 use nails_core::{RealFilesystem, runtime_copy, watcher};
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::disk_guard;
+use nails_teardown::whole_root::plan::Plan;
 
 use crate::cli::output::{ExitStatus, OutputSettings};
 
@@ -39,8 +40,11 @@ pub fn execute(
 ) -> ExitStatus {
     let filesystem = RealFilesystem;
 
-    let manifest = match runtime_copy::read_manifest(&filesystem) {
-        Ok(Some(manifest)) => manifest,
+    // The session plan: the manifest the backend probe reads, what tells the
+    // session's own storage from a disk mounted during the session, and what
+    // the read-only sweep needs.
+    let plan = match runtime_copy::read_plan(&filesystem) {
+        Ok(Some(plan)) => plan,
         Ok(None) => {
             tracing::debug!("No runtime manifest present; nothing to watch");
             return ExitStatus::Ok;
@@ -50,6 +54,7 @@ pub fn execute(
             return ExitStatus::Ok;
         }
     };
+    let manifest = runtime_copy::RuntimeManifest::from_plan(&plan);
 
     // Prefer the configuration mirrored into the runtime copy, since the real
     // config file lives on the hidden volume that may already be failing. Fall
@@ -75,17 +80,12 @@ pub fn execute(
         "Session watcher started"
     );
 
-    // The read-only sweep needs the whole plan; the udev rule is the first
-    // line, this the fallback.
-    let plan = nails_teardown::whole_root::plan::Plan::load(
-        &nails_teardown::whole_root::plan::default_plan_path(),
-    )
-    .ok()
-    .filter(|plan| mounts_config.read_only && plan.read_only_disks);
+    // The read-only sweep: the udev rule is the first line, this the fallback.
+    let sweep = (mounts_config.read_only && plan.read_only_disks).then(|| plan.clone());
     let sysfs = disk_guard::Sysfs::system();
     // The mount table names the root with its symlinks resolved.
     let hidden_root = watcher::resolved_root(&filesystem, &manifest);
-    let mut mount_watch = watcher::MountWatch::new(&hidden_root);
+    let mut mount_watch = watcher::MountWatch::new(storage_plan(plan, &hidden_root));
     let mut cover_watch = watcher::CoverWatch::new(&hidden_root, manifest.hidden_dev.as_deref());
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
@@ -108,7 +108,7 @@ pub fn execute(
         },
         || {
             let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
-            if let Some(plan) = &plan {
+            if let Some(plan) = &sweep {
                 let set = disk_guard::sweep(
                     plan,
                     &mounts,
@@ -132,6 +132,14 @@ pub fn execute(
     );
 
     ExitStatus::Ok
+}
+
+/// The session `plan` the mount watch tells the session's own storage by
+/// ([`Plan::is_hidden_storage`]), its hidden root `hidden_root` as the mount
+/// table names it.
+fn storage_plan(mut plan: Plan, hidden_root: &Path) -> Plan {
+    plan.hidden_root = hidden_root.to_path_buf();
+    plan
 }
 
 /// The alerts one round of the watch loop raises for the mount table
@@ -265,11 +273,28 @@ mod tests {
     const SESSION: &str = "1 0 0:30 / / rw - overlay overlay rw,upperdir=/u\n\
                            2 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n";
 
-    #[test]
-    fn a_round_alerts_a_cover_first_then_each_new_read_write_disk_once() {
+    /// The plan of that session: the hidden volume (253:0) at /mnt/data.
+    fn plan() -> Plan {
+        let plan = serde_json::json!({
+            "version": nails_teardown::whole_root::plan::PLAN_VERSION,
+            "hidden_root": "/mnt/data",
+            "hidden_dev": "253:0",
+            "upper": "/mnt/data/root/upper",
+            "work": "/mnt/data/root/work",
+            "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
+            "decoy": {"init": "/sbin/init"},
+            "hidden": {"init": "/sbin/init"},
+        });
+        Plan::from_json(&plan.to_string()).unwrap()
+    }
+
+    /// The titles of the alerts and their names, for each round of a watch of
+    /// that session.
+    fn rounds() -> impl FnMut(&str, bool) -> Vec<(String, &'static str)> {
         let mut cover_watch = watcher::CoverWatch::new(Path::new("/mnt/data"), Some("253:0"));
-        let mut mount_watch = watcher::MountWatch::new(Path::new("/mnt/data"));
-        let mut round = |table: &str, alert_mounts: bool| {
+        let mut mount_watch =
+            watcher::MountWatch::new(storage_plan(plan(), Path::new("/mnt/data")));
+        move |table: &str, alert_mounts: bool| {
             tick_alerts(
                 &mounts(table),
                 &mut cover_watch,
@@ -280,7 +305,29 @@ mod tests {
             .into_iter()
             .map(|(alert, what)| (alert.title, what))
             .collect::<Vec<_>>()
-        };
+        }
+    }
+
+    #[test]
+    fn a_disk_mounted_below_the_hidden_root_alerts_and_a_cover_alerts_as_one() {
+        let mut round = rounds();
+        let below = format!("{SESSION}3 2 8:33 / /mnt/data/usb rw - vfat /dev/sdc1 rw\n");
+        assert_eq!(
+            round(&below, true),
+            [("Disk mounted with write access".to_string(), "disk-mount")]
+        );
+        // A disk over the root itself is no disk below it: it raises the
+        // cover's alert alone.
+        let covered = format!("{below}4 2 8:34 / /mnt/data rw - ext4 /dev/sdc2 rw\n");
+        assert_eq!(
+            round(&covered, true),
+            [("Disk mounted over a folder in use".to_string(), "cover")]
+        );
+    }
+
+    #[test]
+    fn a_round_alerts_a_cover_first_then_each_new_read_write_disk_once() {
+        let mut round = rounds();
         assert!(round(SESSION, true).is_empty());
         let usb = format!("{SESSION}3 1 8:33 / /media/usb rw - vfat /dev/sdc1 rw\n");
         assert_eq!(

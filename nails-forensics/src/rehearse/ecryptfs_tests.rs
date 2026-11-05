@@ -6,7 +6,7 @@
 //! with `--device` every device that holds that filesystem (a whole disk, a
 //! device below a mapping, one built on it), which a mock sysfs shows here.
 
-use super::tests::{TOKEN, ext4_superblock, verdict};
+use super::tests::{TOKEN, ext4_superblock, no_loop, verdict};
 use super::*;
 use crate::filesystem::parse_mountinfo;
 
@@ -102,7 +102,7 @@ fn an_ecryptfs_mount_marks_the_device_its_folder_lies_on() {
          4 2 0:50 / /home/alice rw,nosuid,nodev,relatime - ecryptfs /home/alice/.Private \
          {ECRYPTFS_OPTS}\n"
     ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"), no_loop);
     assert_eq!(
         targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
         vec![PathBuf::from("/dev/sda1"), PathBuf::from("/dev/sda2")]
@@ -139,7 +139,7 @@ fn an_ecryptfs_folder_lies_on_the_mount_on_top_of_its_path_when_it_was_mounted()
          4 1 253:0 / /mnt/data/deeper rw,relatime - ext4 /dev/mapper/data rw\n\
          5 3 0:50 / /home/alice rw,relatime - ecryptfs /home/alice/.Private {ECRYPTFS_OPTS}\n"
     ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data/deeper"));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data/deeper"), no_loop);
     let blind = |device: &str| {
         targets
             .iter()
@@ -158,7 +158,7 @@ fn an_ecryptfs_folder_lies_on_the_mount_on_top_of_its_path_when_it_was_mounted()
 
 /// The blind spot of each device `default_scan_targets` lists under `mounts`.
 fn default_blind_spots(mounts: &[crate::filesystem::MountEntry]) -> Vec<(PathBuf, Option<String>)> {
-    default_scan_targets(mounts, "", Path::new("/mnt/data"))
+    default_scan_targets(mounts, "", Path::new("/mnt/data"), no_loop)
         .into_iter()
         .map(|target| (target.device, target.blind_spot))
         .collect()
@@ -399,7 +399,7 @@ fn an_ecryptfs_mount_the_table_cannot_place_is_not_checked() {
     let sysfs = Sysfs::two_disks();
     for table in tables {
         let mounts = parse_mountinfo(&table.replace("{opts}", ECRYPTFS_OPTS));
-        let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+        let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"), no_loop);
         let (folder, devices) = targets.split_last().unwrap();
         assert!(
             devices
@@ -440,7 +440,7 @@ fn ecryptfs_folders_that_lie_only_in_each_others_views_are_not_placed() {
          3 4 0:50 / /home/alice rw - ecryptfs /home/alice/.Private {ECRYPTFS_OPTS}\n\
          4 3 0:51 / /home/alice rw - ecryptfs /home/alice/.vault {ECRYPTFS_OPTS}\n"
     ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"), no_loop);
     assert_eq!(
         targets
             .iter()
@@ -469,7 +469,7 @@ fn an_ecryptfs_folder_on_the_hidden_volume_marks_no_decoy_device() {
          2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n\
          3 2 0:50 / /mnt/data/vault rw,relatime - ecryptfs /mnt/data/.vault {ECRYPTFS_OPTS}\n"
     ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"), no_loop);
     assert_eq!(
         targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
         vec![PathBuf::from("/dev/sda1")]
@@ -490,7 +490,7 @@ fn an_ecryptfs_folder_on_no_raw_device_is_listed_unread_and_not_checked() {
          4 1 0:62 / /srv/vault rw - ecryptfs vault {ECRYPTFS_OPTS}\n\
          5 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n"
     ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"), no_loop);
     assert_eq!(
         targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
         vec![

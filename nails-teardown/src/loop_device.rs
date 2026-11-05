@@ -11,9 +11,13 @@
 //! crate can read it too, and the base crate's filesystem seam reads its loop
 //! records through it.
 
+use crate::mountinfo::MountEntry;
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+
+/// The major number of loop devices.
+pub const LOOP_MAJOR: u32 = 7;
 
 /// What the loop driver recorded of the file a loop device is bound to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,14 +77,87 @@ pub fn record(node: &Path) -> io::Result<LoopRecord> {
     })
 }
 
+/// The filesystem (`major:minor`, as the mount table writes it) that holds
+/// the backing file of the loop device `mount` is a filesystem of, as the
+/// loop driver recorded it ([`record`]). `None` for a mount whose filesystem
+/// is on no loop device (a partition of a loop device is not recognised), and
+/// when the driver does not answer, as for a caller that may not open the
+/// node.
+pub fn backing_filesystem(mount: &MountEntry) -> Option<String> {
+    let device = record(&loop_node(mount)?).ok()?.device;
+    Some(format!(
+        "{}:{}",
+        rustix::fs::major(device),
+        rustix::fs::minor(device)
+    ))
+}
+
+/// The node of the loop device whose filesystem `mount` is: by the device
+/// number the mount table shows, its source when that is the device's node,
+/// else `/dev/block/<major>:<minor>`; for a filesystem that shows an
+/// anonymous number, as btrfs does, by its source alone. No other mount
+/// makes it look at a path.
+fn loop_node(mount: &MountEntry) -> Option<PathBuf> {
+    let (major, minor) = mount.dev.split_once(':')?;
+    let (major, minor): (u32, u32) = (major.parse().ok()?, minor.parse().ok()?);
+    let source = || {
+        mount
+            .source
+            .starts_with("/dev/")
+            .then(|| std::fs::metadata(&mount.source).ok())
+            .flatten()
+            .filter(|meta| meta.file_type().is_block_device())
+            .map(|meta| meta.rdev())
+    };
+    match major {
+        LOOP_MAJOR => {
+            let dev = rustix::fs::makedev(major, minor);
+            if source() == Some(dev) {
+                return Some(mount.source.clone());
+            }
+            Some(Path::new("/dev/block").join(format!("{major}:{minor}")))
+        }
+        0 => source()
+            .filter(|dev| rustix::fs::major(*dev) == LOOP_MAJOR)
+            .map(|_| mount.source.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mountinfo::parse_mountinfo;
 
     #[test]
     fn a_node_that_is_no_loop_device_has_no_record() {
         // /dev/null opens, but the loop driver does not answer for it.
         assert!(record(Path::new("/dev/null")).is_err());
         assert!(record(Path::new("/dev/nails-no-such-loop")).is_err());
+    }
+
+    #[test]
+    fn only_a_filesystem_on_a_loop_device_is_looked_up() {
+        // A disk's number, a table line with no number, and an anonymous
+        // number whose source is no device node: none is on a loop device,
+        // whatever the host has at these paths.
+        let mounts = parse_mountinfo(
+            "1 0 8:2 / / rw - ext4 /dev/loop9 rw\n\
+             2 1 x:1 / /odd rw - ext4 /dev/loop9 rw\n\
+             3 1 0:44 / /srv rw - btrfs /nonexistent/loop9 rw\n\
+             4 1 0:45 / /tmp rw - tmpfs tmpfs rw\n",
+        );
+        for mount in &mounts {
+            assert_eq!(loop_node(mount), None, "{mount:?}");
+            assert_eq!(backing_filesystem(mount), None, "{mount:?}");
+        }
+        // A loop device's number: its node by number when the source is not
+        // that node, and no record where no node is.
+        let image = parse_mountinfo("5 1 7:1048575 / /mnt/img rw - ext4 /nonexistent/loop rw\n");
+        assert_eq!(
+            loop_node(&image[0]),
+            Some(PathBuf::from("/dev/block/7:1048575"))
+        );
+        assert_eq!(backing_filesystem(&image[0]), None);
     }
 }
