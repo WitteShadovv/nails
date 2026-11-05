@@ -1762,3 +1762,51 @@ fn a_generator_mask_left_on_the_decoy_only_warns() {
     );
     assert!(findings[0].fix_guidance.is_some());
 }
+
+/// A Debian 13 host as detection reads it.
+fn debian_host() -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"13\"\n");
+    fs.mock_add_file("/proc/1/comm", "systemd");
+    fs
+}
+
+/// A host detection refuses runs no drift scanner, a host whose markers
+/// cannot be looked up among them, and the run says so with why: a clean
+/// result never hides a drift scan that did not run.
+#[test]
+fn drift_scanners_that_do_not_run_are_named_as_not_checked() {
+    let fs = debian_host();
+    fs.mock_set_lookup_error("/run/ostree-booted", std::io::ErrorKind::PermissionDenied);
+    let result = Verifier::new(fs).run(false).unwrap();
+    assert!(
+        result.areas_not_checked.iter().any(|area| area
+            == "platform drift scanners (not run on a host NAILS refuses: NAILS cannot tell \
+                whether this host boots an ostree image: /run/ostree-booted: Mock: the lookup \
+                fails here)"),
+        "{:?}",
+        result.areas_not_checked
+    );
+}
+
+/// A drift scanner that fails is named as not checked with its error, never
+/// dropped.
+#[test]
+fn a_drift_scanner_that_fails_is_named_as_not_checked() {
+    let fs = debian_host();
+    fs.mock_set_lookup_error("/var/lib/dpkg/status", std::io::ErrorKind::PermissionDenied);
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        ..crate::config::Config::default()
+    };
+    let result = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked)
+        .run(false)
+        .unwrap();
+    assert!(
+        result.areas_not_checked.iter().any(|area| area
+            == "platform drift scanners (failed: /var/lib/dpkg/status: Mock: the lookup fails \
+                here)"),
+        "{:?}",
+        result.areas_not_checked
+    );
+}

@@ -20,9 +20,19 @@ const CMDLINE: &str = "/proc/cmdline";
 const COMPOSEFS_RUN: &str = "/run/composefs";
 
 /// `Some(reason)` when the host boots from a sealed composefs / ostree image,
-/// `None` otherwise. Every read is tolerant of absence.
+/// or when the composefs runtime directory cannot be looked up, so NAILS
+/// cannot tell; `None` otherwise. A missing directory and a command line that
+/// cannot be read mark nothing.
 pub(crate) fn composefs_refusal<F: Filesystem>(fs: &F) -> Option<String> {
-    let marked = fs.path_exists(Path::new(COMPOSEFS_RUN)).unwrap_or(false)
+    let marked = match fs.path_exists(Path::new(COMPOSEFS_RUN)) {
+        Ok(marked) => marked,
+        Err(error) => {
+            return Some(format!(
+                "NAILS cannot tell whether this host boots a sealed composefs image: {error}"
+            ));
+        }
+    };
+    let marked = marked
         || fs
             .read_file_content(Path::new(CMDLINE))
             .ok()
@@ -74,6 +84,24 @@ mod tests {
         let fs = MockFilesystem::new();
         fs.mock_set_path_type(COMPOSEFS_RUN, PathKind::Dir);
         assert!(composefs_refusal(&fs).is_some());
+    }
+
+    /// A runtime directory that cannot be looked up refuses: NAILS cannot
+    /// tell, and says so with the error. One that is not there marks nothing.
+    #[test]
+    fn a_runtime_directory_that_cannot_be_looked_up_refuses() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error(COMPOSEFS_RUN, std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            composefs_refusal(&fs).as_deref(),
+            Some(
+                "NAILS cannot tell whether this host boots a sealed composefs image: \
+                 /run/composefs: Mock: the lookup fails here"
+            )
+        );
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error("/run", std::io::ErrorKind::NotFound);
+        assert_eq!(composefs_refusal(&fs), None);
     }
 
     #[test]
