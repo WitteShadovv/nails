@@ -4,7 +4,7 @@
 //! Real overlay and teardown behaviour against the kernel.
 //!
 //! These tests drive the overlay, bind and tmpfs mounts the session builds
-//! against a real overlayfs. All but three run in the normal test run, each as
+//! against a real overlayfs. All but four run in the normal test run, each as
 //! root of its own unprivileged user + mount namespace (`rootless`, built on
 //! `nails_core::test_support::Rerun`), so every mount is private to the child
 //! and vanishes with it, even after a panic. Each test still builds its own
@@ -12,11 +12,13 @@
 //! itself is exercised and asserted. `just kernel-tests` turns a host without
 //! user namespaces from a skip into a failure.
 //!
-//! Three tests need `trusted.*` xattrs, which a user namespace cannot set, so
-//! they alone stay `#[ignore]`d and run as real root in the privileged-mounts
-//! CI job: the whiteout and opaque-directory test, the test of the
-//! `kernel-modules` check against the kernel's own whiteouts and opaque
-//! directories, and the test of the whole upper-filesystem probe:
+//! Three tests need `trusted.*` xattrs, which a user namespace cannot set,
+//! and one binds a loop device, which only root of the initial namespace may,
+//! so they alone stay `#[ignore]`d and run as real root in the
+//! privileged-mounts CI job: the whiteout and opaque-directory test, the test
+//! of the `kernel-modules` check against the kernel's own whiteouts and opaque
+//! directories, the test of the whole upper-filesystem probe, and the test of
+//! the loop driver's record of the file behind a loop device:
 //!
 //! ```sh
 //! cargo test -p nails-core --test privileged_mounts --no-run
@@ -748,5 +750,169 @@ fn the_upper_fs_probe_as_root_passes_and_leaves_nothing() {
         .collect();
     assert!(left.is_empty(), "the probe left {left:?}");
 
+    root.teardown();
+}
+
+// ===========================================================================
+// The loop driver's record of the file behind a loop device
+// ===========================================================================
+
+/// `LOOP_CTL_GET_FREE`, `LOOP_SET_FD` and `LOOP_CLR_FD` from `<linux/loop.h>`.
+const LOOP_CTL_GET_FREE: u32 = 0x4C82;
+const LOOP_SET_FD: u32 = 0x4C00;
+const LOOP_CLR_FD: u32 = 0x4C01;
+
+/// A loop device bound to a file, unbound again when dropped.
+struct LoopDevice {
+    /// Its node, `/dev/loop<N>`.
+    node: PathBuf,
+    /// Its device number, as the mount table writes it (`7:<minor>`).
+    dev: String,
+    device: Option<std::fs::File>,
+}
+
+impl LoopDevice {
+    /// Bind a free loop device to `file`, read-write.
+    #[allow(unsafe_code)]
+    fn attach(file: &Path) -> Self {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+        let control = std::fs::File::open("/dev/loop-control").expect("open /dev/loop-control");
+        let backing = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(file)
+            .expect("open the image file");
+        // Another program can take the free device between the two calls:
+        // then ask for another.
+        for _ in 0..10 {
+            // SAFETY: LOOP_CTL_GET_FREE takes no argument and returns the
+            // number of a free loop device, or -1.
+            let number = unsafe { nix::libc::ioctl(control.as_raw_fd(), LOOP_CTL_GET_FREE as _) };
+            assert!(
+                number >= 0,
+                "LOOP_CTL_GET_FREE: {}",
+                std::io::Error::last_os_error()
+            );
+            let node = PathBuf::from(format!("/dev/loop{number}"));
+            let device = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&node)
+                .expect("open the loop device");
+            // SAFETY: LOOP_SET_FD takes the descriptor of the backing file as
+            // its argument, by value; `backing` keeps it open for the call.
+            let bound = unsafe {
+                nix::libc::ioctl(device.as_raw_fd(), LOOP_SET_FD as _, backing.as_raw_fd())
+            };
+            if bound == 0 {
+                let rdev = device.metadata().expect("stat the loop device").rdev();
+                let dev = format!("{}:{}", rustix::fs::major(rdev), rustix::fs::minor(rdev));
+                return Self {
+                    node,
+                    dev,
+                    device: Some(device),
+                };
+            }
+            let error = std::io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(nix::libc::EBUSY),
+                "LOOP_SET_FD: {error}"
+            );
+        }
+        panic!("no free loop device");
+    }
+}
+
+impl Drop for LoopDevice {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        if let Some(device) = self.device.take() {
+            // SAFETY: LOOP_CLR_FD takes no argument.
+            unsafe { nix::libc::ioctl(device.as_raw_fd(), LOOP_CLR_FD as _) };
+        }
+        // The driver lets go of the file at the device's last close, which
+        // can be that of a probe udev runs on it: wait for that, so that the
+        // file's filesystem unmounts.
+        for _ in 0..300 {
+            if nails_teardown::loop_device::record(&self.node).is_err() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
+/// The loop driver's record, read through a real loop device: it names the
+/// filesystem that holds the device's backing file by the number the mount
+/// table shows for that filesystem. A filesystem on the loop device is told
+/// by the device's own number, and one that shows an anonymous number, as
+/// btrfs does, by its source, the device's node. So a session whose hidden
+/// volume holds the file counts that filesystem, mounted below the hidden
+/// root, as its own storage, and nothing else. The mount table lines are the
+/// test's own, for the filesystems the device could hold: the driver's
+/// record is what is read.
+#[test]
+#[ignore = "root only: binding a loop device needs CAP_SYS_ADMIN in the initial namespace"]
+fn the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file() {
+    use nails_teardown::loop_device::backing_filesystem;
+    use nails_teardown::mountinfo::{parse_mountinfo, read_mountinfo, top_mount_at};
+    use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
+
+    // The tmpfs stands in for the hidden volume, with an image file on it.
+    let root = TmpfsRoot::new();
+    let at = root.root.canonicalize().expect("canonical tmpfs root");
+    let table = read_mountinfo().expect("read mountinfo");
+    let volume = top_mount_at(&table, &at).expect("the tmpfs").dev.clone();
+    let image = root.path("disk.img");
+    std::fs::File::create(&image)
+        .and_then(|file| file.set_len(1 << 20))
+        .expect("create the image file");
+    let device = LoopDevice::attach(&image);
+
+    let mounts = parse_mountinfo(&format!(
+        "1 0 {dev} / {at}/vm rw - ext4 {node} rw\n\
+         2 0 0:999 / {at}/pool rw - btrfs {node} rw\n\
+         3 0 0:998 / {at}/ram rw - tmpfs tmpfs rw\n\
+         4 0 {dev} / /media/vm rw - ext4 {node} rw\n",
+        dev = device.dev,
+        node = device.node.display(),
+        at = at.display(),
+    ));
+    let holders: Vec<Option<String>> = mounts.iter().map(backing_filesystem).collect();
+    let on_volume = Some(volume.clone());
+    assert_eq!(
+        holders,
+        [on_volume.clone(), on_volume.clone(), None, on_volume],
+        "{mounts:?}"
+    );
+
+    let plan = Plan::from_json(
+        &serde_json::json!({
+            "version": PLAN_VERSION,
+            "hidden_root": at,
+            "hidden_dev": volume,
+            "upper": at.join("root/upper"),
+            "work": at.join("root/work"),
+            "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
+            "decoy": {"init": "/sbin/init"},
+            "hidden": {"init": "/sbin/init"},
+        })
+        .to_string(),
+    )
+    .expect("a session plan");
+    let own: Vec<bool> = mounts.iter().map(|m| plan.is_hidden_storage(m)).collect();
+    assert_eq!(own, [true, true, false, false], "{mounts:?}");
+
+    // Unbound, the device has no record left to read.
+    let node = device.node.clone();
+    drop(device);
+    assert!(
+        nails_teardown::loop_device::record(&node).is_err(),
+        "{} is still bound",
+        node.display()
+    );
     root.teardown();
 }
