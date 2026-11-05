@@ -37,11 +37,25 @@ fn device(target: &str) -> bool {
         || descriptor(target.strip_prefix("/proc/self/fd/"))
 }
 
+/// Whether the check cannot count where zsh expands a global alias named
+/// `name` by the words of the code ([`Forms::uses`]): zsh looks a global alias
+/// up for every token it reads, an operator's too, and splits a token off a
+/// word at an operator (`<`, `>`, `|`, `&`, `;`, `(`, `)`), at the `{` that
+/// starts a command and at the `}` that ends a word, with no blank beside it,
+/// so a name that holds one of them, or a blank, may stand where no word is
+/// (`print -r -- $1>$TTY` uses an alias named `>`). An empty name is one the
+/// check could not read.
+fn uncountable(name: &str) -> bool {
+    name.is_empty()
+        || name.contains(['<', '>', '|', '&', ';', '(', ')', '{', '}'])
+        || name.chars().any(char::is_whitespace)
+}
+
 impl<F: Filesystem> Reader<'_, F> {
     /// Note a redirection to `target`, as written, in the function `function`
     /// when in one, by the file at `place`: one to the history file by its
-    /// name writes it; one to a device writes no file while no global alias
-    /// may stand for it, nor `$TTY` while no file sets `TTY`
+    /// name writes it; one to a device writes no file while no file defines
+    /// a global alias, nor `$TTY` while no file sets `TTY` either
     /// ([`Reader::devices`]). One whose target an expansion makes
     /// (`computed`), or that is any other file, which may be the history file
     /// (one `HISTFILE` names, a link to it), is a doubt where an `exec` keeps
@@ -112,24 +126,25 @@ impl<F: Filesystem> Reader<'_, F> {
             || hooked.iter().any(|hook| hook == function)
     }
 
-    /// Note what runs as zsh runs: a redirection to a device a global alias
-    /// may stand for, or to `$TTY` where a file may set `TTY`; an alias for an
-    /// `fc` that writes nothing where a file uses it; what the functions zsh
-    /// runs as hooks write or may write; and what may change NixOS's
-    /// dircolors line ([`Reader::dircolors_doubts`]).
+    /// Note what runs as zsh runs: a redirection to a device where a file
+    /// defines a global alias, or to `$TTY` where a file may set `TTY`; an
+    /// alias for an `fc` that writes nothing where a file uses it; what the
+    /// functions zsh runs as hooks write or may write; and what may change
+    /// NixOS's dircolors line ([`Reader::dircolors_doubts`]).
     pub(super) fn runs(&mut self) {
-        // A redirection to a device writes no file, unless a global alias
-        // stands for its target, or a file sets TTY.
+        // A redirection to a device writes no file, unless a file sets TTY,
+        // or defines a global alias: zsh may put its value in place of any
+        // token of the redirection as it reads it, the `>` glued to a word
+        // in `print -r -- $1>$TTY` among them.
         for (function, target, place) in std::mem::take(&mut self.devices) {
             let terminal = matches!(target.as_str(), "$TTY" | "${TTY}");
             let why = if let Some(set) = self.tty_set.clone().filter(|_| terminal) {
                 format!("{set} may set TTY to name the history file")
-            } else if let Some(alias) = self
-                .global_aliases
-                .iter()
-                .find(|alias| alias.is_empty() || **alias == target)
-            {
-                format!("a file defines the global alias `{alias}`, which may stand for it")
+            } else if let Some((_, text, at)) = self.global_alias_defs.first() {
+                format!(
+                    "{at} defines the global alias `{text}`, which zsh may put in place of a \
+                     word or an operator of it"
+                )
             } else {
                 continue;
             };
@@ -242,11 +257,22 @@ impl<F: Filesystem> Reader<'_, F> {
     /// in place of that word as it reads the code, which may then run, set or
     /// define anything (`set -A X w`, `function X`, `read X`, `print -r -- "$1"
     /// X`). An alias defined twice alike counts once, so the second is a use.
+    /// One whose uses the check cannot count ([`uncountable`]) is a doubt
+    /// wherever it is defined.
     fn global_alias_uses(&mut self) {
         let mut definitions = std::mem::take(&mut self.global_alias_defs);
         definitions.sort();
         definitions.dedup();
         for (name, text, place) in &definitions {
+            if uncountable(name) {
+                self.doubt(format!(
+                    "it cannot tell what code the global alias `{text}` in {place} runs, as zsh \
+                     puts its value in place of each token that is its name, which the check \
+                     cannot count where the name holds an operator, a brace or a blank, or is \
+                     empty"
+                ));
+                continue;
+            }
             let defined: usize = definitions
                 .iter()
                 .filter(|(other, ..)| other == name)

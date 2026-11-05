@@ -163,7 +163,9 @@ impl Walker<'_> {
     /// paths ([`OPEN`]), or with a blank, after which zsh expands the next
     /// word as an alias too. An `fc` that writes nothing is no doubt in the
     /// value of an alias zsh expands only as a command's name
-    /// ([`Event::FcAlias`]).
+    /// ([`Event::FcAlias`]). A word an expansion makes that is no definition
+    /// as written is a doubt too: it may be a flag (`-g`) that makes the
+    /// aliases after it global, or definitions.
     pub(super) fn alias(&mut self, args: &[Word], unconditional: bool) {
         // `-g` and `-s` make an alias zsh expands elsewhere than as a
         // command's name; `-r` is the default, and `--` ends the flags.
@@ -173,6 +175,17 @@ impl Walker<'_> {
         let mut flags = true;
         for arg in args {
             self.mention(&arg.text);
+            if !arg.text.contains('=') && computed(arg) {
+                let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell which aliases `alias {}` in {} defines, as an expansion \
+                     makes `{}`, which may make them global",
+                    words.join(" "),
+                    self.place,
+                    arg.text
+                )));
+                continue;
+            }
             if flags && arg.text.starts_with(['-', '+']) && !arg.text.contains('=') {
                 flags = arg.text != "--";
                 regular &= matches!(arg.text.as_str(), "--" | "-r");
