@@ -603,3 +603,205 @@ fn only_a_root_on_a_decoy_filesystem_carries_the_decoys_label() {
         );
     }
 }
+
+// ------------------------------------------------------------------------
+// A volume mounted a second time
+// ------------------------------------------------------------------------
+
+/// The decoy's `/` and the volume at `/mnt/data`, writable, plus `extra`
+/// mount lines.
+fn mounted_with(extra: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(&format!(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n{extra}"
+    ));
+    fs
+}
+
+/// The check's result on `fs`, with `allow`.
+fn run_allowing(fs: &MockFilesystem, allow: Allow) -> CheckResult {
+    HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+        .allowing(allow)
+        .run(fs)
+        .unwrap()
+}
+
+#[test]
+fn a_second_mount_of_the_volume_fails_naming_it_before_any_probe() {
+    // A desktop mounted the unlocked volume again under /media.
+    let fs = mounted_with("40 1 253:0 / /media/u/X rw,nosuid,nodev - ext4 /dev/mapper/data rw\n");
+    for allow in [Allow::Nothing, Allow::DecoyStorage] {
+        let result = run_allowing(&fs, allow);
+        assert!(result.is_fail(), "{allow:?}: {result:?}");
+        assert_eq!(
+            result.message(),
+            "the volume at /mnt/data is also mounted at /media/u/X: a desktop may have mounted \
+             it there by itself when it was unlocked"
+        );
+        assert_eq!(
+            result.remediation(),
+            Some(
+                "Run `sudo umount /media/u/X`, then run the command again.\n\
+                 Long before the next use, turn off the automatic mounting of removable media.\n\
+                 Read \"Attaching the drive\" in the decoy requirements on another device."
+            )
+        );
+        // No flag lifts it.
+        assert_eq!(result.allowable(), None, "{allow:?}");
+        let text = format!("{} {}", result.message(), result.remediation().unwrap());
+        assert!(!text.contains("/dev/"), "{text}");
+    }
+    // Refused before the write probe.
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+}
+
+#[test]
+fn a_bind_of_the_volume_at_the_root_alone_passes() {
+    let fs = mounted_with("31 30 253:0 / /mnt/data ro - ext4 /dev/mapper/data rw\n");
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_pass(), "got {result:?}");
+}
+
+#[test]
+fn another_device_mounted_elsewhere_passes() {
+    let fs = mounted_with(
+        "40 1 8:16 / /media/u/STICK rw - vfat /dev/sdb1 rw\n\
+         41 1 253:1 / /run/media/u/other rw - ext4 /dev/mapper/other rw\n",
+    );
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_pass(), "got {result:?}");
+}
+
+#[test]
+fn a_btrfs_subvolume_of_the_volume_mounted_elsewhere_fails() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 0:45 /data /mnt/data rw - btrfs /dev/mapper/data rw,subvol=/data\n\
+         40 1 0:45 / /run/media/u/X rw - btrfs /dev/mapper/data rw,subvol=/\n",
+    );
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_fail(), "got {result:?}");
+    assert!(
+        result.message().contains("also mounted at /run/media/u/X:"),
+        "{}",
+        result.message()
+    );
+}
+
+#[test]
+fn every_other_mount_is_named_and_unmounted_deepest_first_and_quoted() {
+    let fs = mounted_with(
+        "40 1 253:0 / /media/u/My\\040Drive rw - ext4 /dev/mapper/data rw\n\
+         41 40 253:0 /a /media/u/My\\040Drive/b rw - ext4 /dev/mapper/data rw\n\
+         42 1 253:0 / /srv/x rw - ext4 /dev/mapper/data rw\n",
+    );
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_fail(), "got {result:?}");
+    assert!(
+        result.message().contains(
+            "also mounted at /media/u/My Drive, /media/u/My Drive/b and /srv/x: a desktop"
+        ),
+        "{}",
+        result.message()
+    );
+    assert!(
+        result.remediation().unwrap().starts_with(
+            "Run `sudo umount '/media/u/My Drive/b' '/media/u/My Drive' /srv/x`, then run the \
+             command again.\n"
+        ),
+        "{:?}",
+        result.remediation()
+    );
+}
+
+#[test]
+fn a_second_mount_that_holds_the_root_is_unmounted_after_the_root() {
+    // The volume at /mnt, a folder of it bound at /mnt/data: /mnt cannot be
+    // unmounted while the root is mounted below it.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         29 1 253:0 / /mnt rw - ext4 /dev/mapper/data rw\n\
+         30 29 253:0 /vol /mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(
+        result.message(),
+        "the volume at /mnt/data is also mounted at /mnt: a desktop may have mounted it there \
+         by itself when it was unlocked"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(
+            "Run `sudo umount /mnt/data /mnt`, mount the volume at /mnt/data alone, then run \
+             the command again.\n\
+             Long before the next use, turn off the automatic mounting of removable media.\n\
+             Read \"Attaching the drive\" in the decoy requirements on another device."
+        )
+    );
+}
+
+#[test]
+fn the_sessions_own_mounts_of_the_volume_pass() {
+    // In the hidden session: the volume bound at its own path twice (again
+    // over a decoy filesystem at its parent) and the decoy's /boot carried on
+    // it; the plan records the volume's device.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(
+        "1 0 0:30 / / rw - overlay overlay rw,lowerdir=/run/overlay-runtime/lower,\
+         upperdir=/mnt/data/root/upper,workdir=/mnt/data/root/work\n\
+         10 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         11 1 0:31 / /mnt rw - overlay overlay rw,lowerdir=/run/overlay-runtime/lower-1,\
+         upperdir=/mnt/data/root/mounts/mnt/upper,workdir=/mnt/data/root/mounts/mnt/work\n\
+         12 11 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         13 12 8:3 / /mnt/data/root/decoy/boot ro - ext4 /dev/vda3 rw\n",
+    );
+    let plan = format!(
+        "{{\"version\":{version},\"hidden_root\":\"/mnt/data\",\"hidden_dev\":\"253:0\",\
+         \"upper\":\"/mnt/data/root/upper\",\"work\":\"/mnt/data/root/work\",\
+         \"decoy_root\":{{\"source\":\"/dev/vda1\",\"fstype\":\"ext4\"}},\
+         \"decoy\":{{\"init\":\"/sbin/init\"}},\"hidden\":{{\"init\":\"/sbin/init\"}}}}",
+        version = nails_teardown::whole_root::plan::PLAN_VERSION
+    );
+    let path = nails_teardown::whole_root::plan::default_plan_path();
+    fs.mock_set_file_content(path.to_str().unwrap(), &plan);
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_pass(), "got {result:?}");
+}
+
+#[test]
+fn a_root_on_a_decoy_filesystem_the_operator_accepted_is_not_mounted_twice() {
+    // A bind of a folder of /, and a btrfs subvolume of /home: the decoy
+    // mounts that filesystem, which the gate's warning names, and that is
+    // all the second mount is.
+    let subvolume = MockFilesystem::new();
+    subvolume.mock_set_path_exists(NEUTRAL_ROOT, true);
+    subvolume.mock_set_writable(NEUTRAL_ROOT, true);
+    subvolume.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         2 1 0:40 /home /home rw - btrfs /dev/vda2 rw,subvol=/home\n\
+         30 1 0:40 /vault /mnt/data rw - btrfs /dev/vda2 rw,subvol=/vault\n",
+    );
+    for fs in [bind_of_a_decoy_folder(), subvolume] {
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_warn(), "got {result:?}");
+        assert!(
+            result
+                .message()
+                .starts_with("--allow-decoy-storage: using /mnt/data although it is"),
+            "{}",
+            result.message()
+        );
+    }
+}

@@ -270,6 +270,158 @@ fn a_bind_of_the_same_volume_stacked_on_the_root_is_one_filesystem() {
     );
 }
 
+/// Where else [`HiddenRoot::mounted_elsewhere`] finds the volume at
+/// `/mnt/data` mounted, in `table`.
+fn elsewhere(table: &str) -> Vec<PathBuf> {
+    HiddenRoot::mounted_elsewhere(&fs_with(table), Path::new("/mnt/data")).unwrap()
+}
+
+#[test]
+fn the_same_device_at_another_place_is_a_second_mount() {
+    // A desktop mounted the unlocked volume by itself.
+    let table = decoy_table("20 1 253:0 / /media/u/X rw,nosuid,nodev - ext4 /dev/mapper/data rw\n");
+    assert_eq!(elsewhere(&table), vec![PathBuf::from("/media/u/X")]);
+    let mounts = crate::filesystem::mountinfo::parse_mountinfo(&table);
+    let visible = top_mount_at(&mounts, Path::new("/mnt/data")).unwrap();
+    let second: Vec<_> = second_mounts(&mounts, visible)
+        .into_iter()
+        .map(|m| m.mount_id)
+        .collect();
+    assert_eq!(second, vec![20]);
+}
+
+#[test]
+fn a_bind_of_the_volume_at_the_root_alone_is_no_second_mount() {
+    assert!(elsewhere(&decoy_table("")).is_empty());
+    assert!(
+        elsewhere(&decoy_table(
+            "11 10 253:0 / /mnt/data ro - ext4 /dev/mapper/data rw\n"
+        ))
+        .is_empty()
+    );
+}
+
+#[test]
+fn another_device_elsewhere_is_no_second_mount() {
+    assert!(
+        elsewhere(&decoy_table(
+            "20 1 8:16 / /media/u/STICK rw - vfat /dev/sdb1 rw\n\
+             21 1 253:1 / /run/media/u/other rw - ext4 /dev/mapper/other rw\n"
+        ))
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_btrfs_subvolume_of_the_volume_elsewhere_is_a_second_mount() {
+    // A btrfs filesystem shows one device for every subvolume mounted from
+    // it, though stat shows each its own.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 10 1 0:45 /data /mnt/data rw - btrfs /dev/mapper/data rw,subvol=/data\n\
+                 20 1 0:45 / /run/media/u/X rw - btrfs /dev/mapper/data rw,subvol=/\n\
+                 21 1 0:46 / /run/media/u/Y rw - btrfs /dev/sdc1 rw,subvol=/\n";
+    assert_eq!(elsewhere(table), vec![PathBuf::from("/run/media/u/X")]);
+}
+
+#[test]
+fn a_folder_of_the_volume_bound_at_the_root_while_the_volume_is_mounted_elsewhere() {
+    // The volume at /mnt/backing, a folder of it bound at the root: the
+    // filesystem is mounted twice, whichever of the two is the root.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 10 1 8:32 / /mnt/backing rw - ext4 /dev/sdc rw\n\
+                 11 1 8:32 /vol /mnt/data rw - ext4 /dev/sdc rw\n";
+    assert_eq!(elsewhere(table), vec![PathBuf::from("/mnt/backing")]);
+    // Once the volume's own mount is gone, the bind at the root alone stays.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 11 1 8:32 /vol /mnt/data rw - ext4 /dev/sdc rw\n";
+    assert!(elsewhere(table).is_empty());
+}
+
+#[test]
+fn a_hidden_second_mount_and_one_inside_the_root_count_too() {
+    // A later mount over /media hides the desktop's mount from lookups, but
+    // it is still mounted; a bind of a folder of the volume below the root
+    // is a mount of it too.
+    let table = decoy_table(
+        "20 1 253:0 / /media/u/X rw - ext4 /dev/mapper/data rw\n\
+         21 1 0:50 / /media rw - tmpfs tmpfs rw\n\
+         22 10 253:0 /a /mnt/data/b rw - ext4 /dev/mapper/data rw\n",
+    );
+    assert_eq!(
+        elsewhere(&table),
+        vec![PathBuf::from("/media/u/X"), PathBuf::from("/mnt/data/b")]
+    );
+}
+
+#[test]
+fn the_tree_of_a_mounted_next_root_is_no_second_mount() {
+    // An entry binds the volume at its own path inside the next root.
+    let entering = decoy_table(
+        "30 1 0:60 / /run/nextroot rw - overlay overlay rw,lowerdir=/run/overlay-runtime/lower,\
+         upperdir=/mnt/data/root/upper,workdir=/mnt/data/root/work\n\
+         31 30 253:0 / /run/nextroot/mnt/data rw - ext4 /dev/mapper/data rw\n\
+         32 31 253:0 / /run/nextroot/mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    assert!(elsewhere(&entering).is_empty());
+    // Without a next root mounted there, a mount below it is a mount like
+    // any other.
+    let stray = decoy_table("31 1 253:0 / /run/nextroot/mnt/data rw - ext4 /dev/mapper/data rw\n");
+    assert_eq!(
+        elsewhere(&stray),
+        vec![PathBuf::from("/run/nextroot/mnt/data")]
+    );
+}
+
+#[test]
+fn the_sessions_own_mounts_are_no_second_mount() {
+    // In the hidden session: the volume bound at its own path, bound again
+    // over a decoy filesystem mounted at its parent, the decoy filesystems
+    // the session carries on it, and the decoy root on the way back.
+    let session = session_table(&format!(
+        "{HIDDEN_MOUNT}\
+         11 1 0:31 / /mnt rw - overlay overlay rw,lowerdir=/run/overlay-runtime/lower-1,\
+         upperdir=/mnt/data/root/mounts/mnt/upper,workdir=/mnt/data/root/mounts/mnt/work\n\
+         12 11 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         13 12 8:3 / /mnt/data/root/decoy/boot ro - ext4 /dev/vda3 rw\n\
+         14 1 0:32 / /run rw - tmpfs tmpfs rw\n\
+         15 14 8:1 / /run/nextroot rw - ext4 /dev/vda1 rw\n"
+    ));
+    let fs = fs_with(&session);
+    write_plan(&fs, Some("253:0"));
+    assert!(
+        HiddenRoot::mounted_elsewhere(&fs, Path::new("/mnt/data"))
+            .unwrap()
+            .is_empty()
+    );
+    // Not one of them is a second mount by the rule itself either.
+    let mounts = crate::filesystem::mountinfo::parse_mountinfo(&session);
+    let visible = top_mount_at(&mounts, Path::new("/mnt/data")).unwrap();
+    assert_eq!(visible.mount_id, 12);
+    assert!(second_mounts(&mounts, visible).is_empty());
+    // Nothing is judged there: a mount the session makes lies in its own
+    // tree, where the decoy's desktop does not run.
+    let fs = fs_with(&session_table(&format!(
+        "{HIDDEN_MOUNT}20 1 253:0 / /run/media/u/X rw - ext4 /dev/mapper/data rw\n"
+    )));
+    write_plan(&fs, Some("253:0"));
+    assert!(
+        HiddenRoot::mounted_elsewhere(&fs, Path::new("/mnt/data"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn nothing_mounted_at_the_root_is_mounted_elsewhere_and_a_table_error_is_an_error() {
+    // No mount at the root, which the gate refuses: nothing to compare.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 20 1 253:0 / /media/u/X rw - ext4 /dev/mapper/data rw\n";
+    assert!(elsewhere(table).is_empty());
+    let fs = fs_with(&decoy_table(""));
+    fs.mock_set_mount_table_error("permission denied");
+    assert!(HiddenRoot::mounted_elsewhere(&fs, Path::new("/mnt/data")).is_err());
+}
+
 #[test]
 fn an_unreadable_mount_table_refuses() {
     let fs = fs_with(&decoy_table(""));
@@ -554,6 +706,46 @@ mod kernel_tests {
                     "{refused:?}"
                 );
             });
+    }
+
+    /// Bind `source` at `target`, inside the namespace.
+    fn bind(source: &Path, target: &Path) {
+        nix::mount::mount(
+            Some(source),
+            target,
+            None::<&str>,
+            nix::mount::MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .expect("bind inside the namespace");
+    }
+
+    #[test]
+    fn a_bind_of_the_volume_elsewhere_is_a_second_mount_and_one_at_the_root_is_not() {
+        let _ = Rerun::new(crate::test_path!(
+            a_bind_of_the_volume_elsewhere_is_a_second_mount_and_one_at_the_root_is_not
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let volume = ScratchTmpfs::new("");
+            let root = volume.path().canonicalize().unwrap();
+            let elsewhere = || HiddenRoot::mounted_elsewhere(&RealFilesystem, &root).unwrap();
+            assert!(elsewhere().is_empty());
+
+            // The volume bound again at its own mount point is the root.
+            bind(&root, &root);
+            assert_eq!(kind(&root), None);
+            assert!(elsewhere().is_empty());
+
+            // Mounted again at another place, as a desktop mounts a drive.
+            let other = tempfile::tempdir().unwrap();
+            let place = other.path().canonicalize().unwrap();
+            bind(&root, &place);
+            let found = elsewhere();
+            let _ = nix::mount::umount2(&place, nix::mount::MntFlags::MNT_DETACH);
+            assert_eq!(found, vec![place]);
+            assert!(elsewhere().is_empty());
+        });
     }
 
     /// Make `/etc/crypttab` exist but fail to read, inside the namespace: a

@@ -26,6 +26,7 @@ mod tests;
 
 use crate::filesystem::mountinfo::{MountEntry, root_is_hidden_overlay, top_mount_at};
 use crate::{Filesystem, Result};
+use nails_teardown::whole_root::nextroot::NEXTROOT;
 use std::path::{Path, PathBuf};
 
 // The marker names come from the artifact registry, the single source of what
@@ -363,6 +364,30 @@ impl HiddenRoot {
         }
         fs.path_exists(&root.join(MARKER_CONFIG_DIR).join(MARKER_CONFIG_FILE))
     }
+
+    /// Where else the filesystem at `root` is mounted on the decoy: the mount
+    /// points of its [`second_mounts`], in the order the mount table lists
+    /// them. Empty when nothing is mounted at `root`, which [`assess`]
+    /// refuses by itself, and in the hidden session, which enters with the
+    /// volume bound at its own path and where the decoy's desktop does not
+    /// run. Reads the mount table through `fs`.
+    ///
+    /// [`assess`]: Self::assess
+    pub fn mounted_elsewhere<F: Filesystem>(fs: &F, root: &Path) -> Result<Vec<PathBuf>> {
+        let table = fs.mount_table()?;
+        let canonical = fs.canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        if root_is_hidden_overlay(&table, &canonical).is_some() {
+            return Ok(Vec::new());
+        }
+        Ok(top_mount_at(&table, &canonical)
+            .map(|visible| {
+                second_mounts(&table, visible)
+                    .into_iter()
+                    .map(|mount| mount.mount_point.clone())
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
 }
 
 /// The mount a lookup of `path` ends in: the visible mount at the deepest
@@ -418,6 +443,31 @@ fn covering_parent<'a>(
         .iter()
         .find(|m| m.mount_point == root && recorded.is_none_or(|dev| m.dev == dev))?;
     mount_holding(table, root).filter(|holder| holder.dev != volume.dev)
+}
+
+/// The other mounts of the filesystem mounted at `visible`, the visible mount
+/// at the hidden root: the same superblock (`major:minor`) mounted at another
+/// place as well, in the order the mount table lists them.
+///
+/// A desktop that mounts a drive by itself (gnome-shell through gvfs and
+/// udisks2, KDE Plasma's Device Auto-Mount, udiskie) can mount the filesystem
+/// of a volume unlocked from a terminal a second time, under `/media/<user>` or
+/// `/run/media/<user>`, where the decoy's desktop reaches its files. Every
+/// mount of the superblock counts, wherever it lies and whether a later mount
+/// hides it or not: a bind of a folder of it, and on btrfs another subvolume
+/// of it, which the table shows with the same device. Two kinds do not: a
+/// mount at the root's own mount point, so a bind of the volume stacked at the
+/// root is the root, and one in the tree of the next root while one is
+/// mounted at [`NEXTROOT`], where an entry binds the volume at its own path
+/// (the session-state check refuses that tree by itself).
+pub fn second_mounts<'a>(table: &'a [MountEntry], visible: &MountEntry) -> Vec<&'a MountEntry> {
+    let nextroot = Path::new(NEXTROOT);
+    let next_root_mounted = table.iter().any(|m| m.mount_point == nextroot);
+    table
+        .iter()
+        .filter(|m| m.dev == visible.dev && m.mount_point != visible.mount_point)
+        .filter(|m| !(next_root_mounted && m.mount_point.starts_with(nextroot)))
+        .collect()
 }
 
 /// The mounts stacked under `top` at its own mount point, nearest first.

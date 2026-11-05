@@ -21,8 +21,14 @@ use std::path::{Component, Path, PathBuf};
 /// 2. **The attach gate**: a volume of its own must be mounted at the path
 ///    ([`HiddenRoot::assess`]): not a folder, not a root covered by a second
 ///    filesystem, not storage the decoy uses, and storage that can be judged.
-///    Nothing is probed before it passes, so `check` writes no probe file onto
-///    the decoy's storage.
+///    On the decoy its filesystem must be mounted nowhere else
+///    ([`HiddenRoot::mounted_elsewhere`]): a desktop that mounts a drive by
+///    itself mounts the unlocked volume again under `/media` or `/run/media`,
+///    where the decoy's desktop reaches its files. No flag lifts that, and a
+///    root on a filesystem the decoy uses, accepted with
+///    `--allow-decoy-storage`, is let be: the decoy mounts that filesystem
+///    wherever it does. Nothing is probed before both pass, so `check` writes
+///    no probe file onto the decoy's storage.
 /// 3. **Write Permission**: Path must be writable to store overlay directories
 /// 4. **Neutral naming**: once mounted and writable, the mount path, the
 ///    device-mapper name and the filesystem label are scanned for words that
@@ -42,6 +48,9 @@ use std::path::{Component, Path, PathBuf};
 /// - **Missing, or refused by the gate**: the gate's own hint (mount the
 ///   volume, prepare it where nothing reaches this disk, unmount the second
 ///   filesystem, run with sudo)
+/// - **Mounted elsewhere too**: the `sudo umount` line for the other mounts,
+///   and turning the desktop's automatic mounting of removable media off long
+///   before the next use
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example
@@ -141,6 +150,17 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
             Assessment::Refused(refusal) => return Ok(gate_failure(&refusal)),
         }
 
+        // Step 2b: mounted nowhere else, before anything is probed. A root on
+        // a filesystem the decoy uses, which the operator accepted, is mounted
+        // where the decoy mounts that filesystem: the gate's warning is about
+        // exactly that.
+        if !decoy_filesystem {
+            let elsewhere = HiddenRoot::mounted_elsewhere(fs, &self.hidden_volume_root)?;
+            if !elsewhere.is_empty() {
+                return Ok(mounted_twice(fs, &self.hidden_volume_root, &elsewhere));
+            }
+        }
+
         // Step 3: Check path is writable
         if !fs.is_writable(&self.hidden_volume_root)? {
             return Ok(CheckResult::fail(format!(
@@ -191,6 +211,50 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
             "Hidden volume mounted at {}",
             self.hidden_volume_root.display()
         )))
+    }
+}
+
+/// The failure of a root whose filesystem is mounted at `elsewhere` too
+/// ([`HiddenRoot::mounted_elsewhere`]): it names every other mount point and
+/// how to unmount them, the deepest first, so a mount inside another goes
+/// before it. One that holds the root can only go once the root is unmounted
+/// too, so the root joins them and is mounted again alone afterwards. No flag
+/// lifts it.
+fn mounted_twice<F: Filesystem>(fs: &F, root: &Path, elsewhere: &[PathBuf]) -> CheckResult {
+    use crate::catalog::{
+        CHECK_MOUNTED_TWICE, CHECK_MOUNTED_TWICE_FIX, CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT,
+    };
+    let shown_root = root.display().to_string();
+    let message =
+        CHECK_MOUNTED_TWICE.render(&[("root", &shown_root), ("places", &places(elsewhere))]);
+
+    let canonical = fs.canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let holding_root = elsewhere.iter().any(|place| canonical.starts_with(place));
+    let mut unmount: Vec<&Path> = elsewhere.iter().map(PathBuf::as_path).collect();
+    if holding_root {
+        unmount.push(&canonical);
+    }
+    unmount.sort_by_key(|place| std::cmp::Reverse(place.components().count()));
+    let mount_points = unmount
+        .iter()
+        .map(|place| crate::next_step::shell_word(place.as_os_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let fix = if holding_root {
+        CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT
+            .render(&[("mount_points", &mount_points), ("root", &shown_root)])
+    } else {
+        CHECK_MOUNTED_TWICE_FIX.render(&[("mount_points", &mount_points)])
+    };
+    CheckResult::fail_with(message, fix)
+}
+
+/// `places` for a sentence: `a`, `a and b`, `a, b and c`.
+fn places(places: &[PathBuf]) -> String {
+    let shown: Vec<String> = places.iter().map(|p| p.display().to_string()).collect();
+    match shown.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => shown.join(""),
     }
 }
 
