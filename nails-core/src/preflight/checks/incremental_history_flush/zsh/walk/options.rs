@@ -3,13 +3,36 @@
 
 //! The options a command turns on or off, as the walk reads it: a `setopt`
 //! or an `unsetopt`, a `set`'s `-o` and `+o`, and an `emulate`'s mode and
-//! its `-o`, `+o` and `-c`.
+//! its `-o`, `+o` and `-c`. zsh expands a word before the builtin reads it,
+//! so one that brace expansion or a glob may make other words of (`{-m,x}`,
+//! `s[h]are_history`, which a file of that name in the directory zsh runs
+//! in turns into one) may be a flag or name any option, a doubt.
 
 use super::super::backstop;
 use super::super::lexer::Word;
 use super::command::ALIAS_PARAMETERS;
 use super::hooks::hook_array;
 use super::{Event, Walker};
+
+/// Whether `text`, a word zsh brace-expands and globs before a `setopt`
+/// reads it, may make a flag (`-m`, with which the words are patterns) or a
+/// word that a file's name may stand for: a word brace expansion makes of
+/// it starts with `-` or `+` or holds a glob character, or it makes too many
+/// to tell ([`backstop::braces`]).
+fn flag_or_glob(text: &str) -> bool {
+    backstop::braces(text).is_none_or(|words| {
+        words.iter().any(|word| {
+            word.starts_with(['-', '+'])
+                || word.contains(['*', '?', '[', '(', '<', '|', '^', '#', '~'])
+        })
+    })
+}
+
+/// Whether `mode`, the mode an `emulate` names, is ksh's, as zsh picks a
+/// mode by its first letter past one `r` (`ksh`, `rksh`, `korn`, `ksh93`).
+fn ksh(mode: &str) -> bool {
+    mode.strip_prefix('r').unwrap_or(mode).starts_with('k')
+}
 
 impl Walker<'_> {
     /// The events of a `setopt`-like command turning the options `word`
@@ -25,7 +48,10 @@ impl Walker<'_> {
         }
     }
 
-    /// The events of a `setopt` or an `unsetopt` (`command`) of `args`.
+    /// The events of a `setopt` or an `unsetopt` (`command`) of `args`. A
+    /// flag, which may be `-m` and make the words patterns, a word an
+    /// expansion makes, and one brace expansion or a glob may make a flag of
+    /// or that may name a file ([`flag_or_glob`]) are doubts.
     pub(super) fn setopt(&mut self, command: &str, args: &[Word], unconditional: bool) {
         let on = command == "setopt";
         for arg in args {
@@ -34,19 +60,27 @@ impl Walker<'_> {
                 for item in items {
                     self.set(&item, on, unconditional);
                 }
-            } else if arg.expands || arg.text.starts_with(['-', '+']) {
+                continue;
+            }
+            if arg.expands
+                || arg.text.starts_with(['-', '+'])
+                || (arg.bare && flag_or_glob(&arg.text))
+            {
                 self.events.push(Event::Doubt(format!(
                     "it cannot tell which options `{command} {}` in {} turns on",
                     arg.text, self.place
                 )));
-            } else {
+            }
+            if !arg.expands {
                 self.set(&arg.text, on, unconditional);
             }
         }
     }
 
     /// The events of a `set` of `args`: the options `-o` and `+o` set, and
-    /// the array `-A` and `+A` set, a hook's among them.
+    /// the array `-A` and `+A` set, a hook's among them. A word before the
+    /// values that an expansion, brace expansion or a glob may make other
+    /// words of may be any flag, a doubt.
     pub(super) fn set_builtin(&mut self, args: &[Word], unconditional: bool) {
         let mut args = args.iter();
         // The values `-A` assigns an array, and the positional
@@ -57,7 +91,7 @@ impl Walker<'_> {
         while let Some(arg) = args.next() {
             if hooks {
                 self.hook_value(arg);
-            } else if arg.expands && !values {
+            } else if (arg.expands || arg.bare) && !values {
                 self.events.push(Event::Doubt(format!(
                     "it cannot tell which options `set {}` in {} turns on",
                     arg.text, self.place
@@ -67,7 +101,7 @@ impl Walker<'_> {
                 values = true;
                 // The array it sets, by a name an expansion may make.
                 if let Some(name) = args.next() {
-                    if name.expands || name.text.contains(['$', '`']) {
+                    if name.expands || name.bare || name.text.contains(['$', '`']) {
                         self.events.push(Event::Doubt(format!(
                             "it cannot tell which parameter `set {} {}` in {} sets",
                             arg.text, name.text, self.place
@@ -94,12 +128,13 @@ impl Walker<'_> {
             if matches!(arg.text.as_str(), "-o" | "+o")
                 && let Some(name) = args.next()
             {
-                if name.expands {
+                if name.expands || (name.bare && flag_or_glob(&name.text)) {
                     self.events.push(Event::Doubt(format!(
                         "it cannot tell which options `set {} {}` in {} turns on",
                         arg.text, name.text, self.place
                     )));
-                } else {
+                }
+                if !name.expands {
                     self.set(&name.text, arg.text == "-o", unconditional);
                 }
             } else {
@@ -109,8 +144,11 @@ impl Walker<'_> {
     }
 
     /// The events of an `emulate` of `args`: the options its `-o` and `+o`
-    /// set, and the code its `-c` runs. An expansion among its words, which
-    /// may be such an option or code, is a doubt.
+    /// set, and the code its `-c` runs. A word an expansion, brace expansion
+    /// or a glob may make other words of, which may be such an option, code,
+    /// a flag or the mode, is a doubt. zsh picks the mode by its first letter
+    /// past one `r`, so `emulate -R korn` resets every option to ksh's
+    /// defaults as `emulate -R ksh` does.
     pub(super) fn emulate(&mut self, args: &[Word], unconditional: bool) {
         let place = self.place;
         let doubt = |what: &str| {
@@ -124,7 +162,7 @@ impl Walker<'_> {
         let mut mode = None;
         let mut args = args.iter();
         while let Some(arg) = args.next() {
-            if arg.expands {
+            if arg.expands || arg.bare {
                 self.events.push(doubt(&arg.text));
                 continue;
             }
@@ -143,7 +181,7 @@ impl Walker<'_> {
             }
             match arg.text.as_str() {
                 "-o" | "+o" => match args.next() {
-                    Some(name) if name.expands => {
+                    Some(name) if name.expands || name.bare => {
                         let what = format!("{} {}", arg.text, name.text);
                         self.events.push(doubt(&what));
                     }
@@ -151,7 +189,7 @@ impl Walker<'_> {
                     None => {}
                 },
                 "-c" => match args.next() {
-                    Some(code) if code.expands => {
+                    Some(code) if code.expands || code.bare => {
                         let what = format!("-c {}", code.text);
                         self.events.push(doubt(&what));
                     }
@@ -161,11 +199,11 @@ impl Walker<'_> {
                 _ => self.mention(&arg.text),
             }
         }
-        if reset && mode.as_deref() == Some("ksh") {
+        if reset && let Some(mode) = mode.filter(|mode| ksh(mode)) {
             self.events.push(Event::Turns {
                 option: 1,
                 what: format!(
-                    "{} runs `emulate -R ksh`, whose reset to ksh's defaults turns on",
+                    "{} runs `emulate -R {mode}`, whose reset to ksh's defaults turns on",
                     self.place
                 ),
             });

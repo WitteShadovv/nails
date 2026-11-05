@@ -301,14 +301,19 @@ impl<F: Filesystem> Reader<'_, F> {
             .iter()
             .take_while(|arg| arg.text.starts_with('-') && arg.text != "--")
             .collect();
-        if !flags
-            .iter()
-            .any(|flag| flag.expands || flag.text.contains(['a', 'k', 'K']))
+        // A word brace expansion or a glob may make flags of (`{-k,f}`).
+        let braced = args.iter().take(flags.len() + 1).any(|arg| arg.bare);
+        if !braced
+            && !flags
+                .iter()
+                .any(|flag| flag.expands || flag.text.contains(['a', 'k', 'K']))
         {
             return;
         }
         match args.get(flags.len()) {
-            Some(function) if !function.expands && flags.iter().all(|flag| !flag.expands) => {
+            Some(function)
+                if !braced && !function.expands && flags.iter().all(|flag| !flag.expands) =>
+            {
                 self.autoload_name(&function.text, Some("compdef"));
                 if flags.iter().any(|flag| flag.text.contains(['k', 'K']))
                     && !self.hooks.contains(&function.text)
@@ -353,9 +358,11 @@ impl<F: Filesystem> Reader<'_, F> {
             // the dump file.
             let mut args = args.iter().peekable();
             while let Some(arg) = args.next_if(|arg| {
-                arg.expands || matches!(arg.text.as_str(), "-d" | "-D" | "-i" | "-u" | "-C" | "-w")
+                arg.expands
+                    || arg.bare
+                    || matches!(arg.text.as_str(), "-d" | "-D" | "-i" | "-u" | "-C" | "-w")
             }) {
-                if arg.expands {
+                if arg.expands || arg.bare {
                     self.doubt(format!(
                         "it cannot tell which dump file `compinit {}` in {place} sources",
                         arg.text
@@ -410,7 +417,7 @@ impl<F: Filesystem> Reader<'_, F> {
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
             .then(|| format!("prompt_{name}_setup"))
         };
-        if args.iter().any(|arg| arg.expands) {
+        if args.iter().any(|arg| arg.expands || arg.bare) {
             let doubt = doubt();
             self.doubt(doubt);
             return;

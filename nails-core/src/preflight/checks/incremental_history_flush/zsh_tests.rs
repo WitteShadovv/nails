@@ -27,6 +27,11 @@ mod start;
 #[path = "zsh_strings_tests.rs"]
 mod strings;
 
+// What may make zsh read the code or a builtin's words otherwise than as
+// written.
+#[path = "zsh_reading_tests.rs"]
+mod reading;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.

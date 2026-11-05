@@ -48,9 +48,10 @@
 //! and, in a hook, a word that names it, while a redirection there to any other
 //! file but a device, which may be the one `HISTFILE` names, or whose target an
 //! expansion makes, is a doubt, and so is one to a device where a file defines a
-//! global alias ([`runs`]). An `emulate -R ksh` turns `SHARE_HISTORY` on,
-//! as ksh's defaults hold it. No turn-off counts: zsh can end with the option
-//! on after one, through a redefined `unsetopt`, a trap or a hook, a plugin
+//! global alias ([`runs`]). An `emulate -R` of ksh's mode turns
+//! `SHARE_HISTORY` on, as ksh's defaults hold it. No turn-off counts: zsh can
+//! end with the option on after one, through a redefined `unsetopt`, a trap or
+//! a hook, a plugin
 //! loaded later or an error that stops the file before the line, and no reading
 //! of the files shows that it holds. A `setopt` with an expansion the check
 //! cannot list, an option whose name an expansion makes (`options[$o]=on`,
@@ -75,7 +76,8 @@
 //! a parameter by a name the check cannot read ([`arith`]), a global alias
 //! the code uses, which zsh puts in place of that word, one named like an
 //! operator or a brace, whose uses the check cannot count, an `alias` with a
-//! word an expansion makes, which may make it global, a file the code may
+//! word an expansion, brace expansion or a glob may make, which may make it
+//! global, a builtin's flag or name such a word may make, a file the code may
 //! make or write before zsh reads it, and a program a hook runs where a hook
 //! may give it the command line in its environment ([`made`]). Beside the
 //! code, the lines of each
