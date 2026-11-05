@@ -35,7 +35,7 @@
 use super::fstab::{parse_in_root, read_in_root as read_fstab};
 use super::layout::Paths;
 use super::mount_units;
-use super::policy::{self, Decision};
+use super::policy::{self, Decision, Whose};
 use super::probe::{self, SessionView};
 use super::systemd::{self, MIN_SYSTEMD};
 use crate::error::Result;
@@ -310,13 +310,11 @@ pub fn judge_fstab(decisions: &[Decision], unskipped: &[String]) -> CheckResult 
     {
         return CheckResult::fail_with(
             refused.describe(),
-            refused
-                .remedy()
-                .unwrap_or(
-                    "Fix the fstab entry or the unit directory it names, or remove it, before \
-                     activating.",
-                )
-                .to_string(),
+            refused.remedy(Whose::Decoy).unwrap_or_else(|| {
+                "Fix the fstab entry or the unit directory it names, or remove it, before \
+                 activating."
+                    .to_string()
+            }),
         );
     }
     let notable: Vec<String> = decisions
