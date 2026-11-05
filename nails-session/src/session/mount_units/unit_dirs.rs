@@ -86,6 +86,7 @@ impl Unlisted {
         Decision::Refuse {
             target: self.dir.clone(),
             reason: format!("NAILS cannot list this unit directory: {}", self.error),
+            remedy: None,
         }
     }
 }

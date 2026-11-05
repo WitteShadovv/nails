@@ -199,6 +199,27 @@ fn filesystems_kept_off_warn_and_a_refusal_fails() {
             .is_some_and(|remedy| remedy.contains("fstab entry or the unit directory")),
         "{refused:?}"
     );
+    // An entry below the hidden root, noauto or not: what to do names the
+    // root.
+    let below = judge_fstab(
+        &decide("/dev/sdb1 /mnt/data/backup ext4 noauto 0 2\n", true),
+        &[],
+    );
+    assert!(below.is_fail(), "{below:?}");
+    assert!(
+        below
+            .message()
+            .contains("/mnt/data/backup: refused (it lies at or below /mnt/data"),
+        "{below:?}"
+    );
+    assert_eq!(
+        below.remediation(),
+        Some(
+            "Mount the hidden volume where the decoy mounts nothing, or move this mount out \
+             from below /mnt/data or remove it, before activating."
+        ),
+        "{below:?}"
+    );
     // A skip masked instead, as NAILS cannot tell what it pulls in, warns.
     let unskipped = judge_fstab(
         &decide("/dev/vda1 /boot vfat defaults 0 2\n", true),
