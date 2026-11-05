@@ -331,6 +331,96 @@ fn an_alias_for_a_command_whose_words_the_check_reads_is_a_doubt() {
 }
 
 #[test]
+fn an_alias_named_like_a_reserved_word_is_a_doubt() {
+    // zsh 5.9.2 expands an alias before it reads a reserved word: with each
+    // of these the hook appends each command line to ~/.zl, the history
+    // file, where the reserved word starts a command in it.
+    let reserved = |text: &str, word: &str| {
+        format!(
+            "it cannot tell what the alias `{text}` in /home/alice/.zshrc runs where it is used, \
+             as zsh expands it in place of the reserved word `{word}` wherever that starts a \
+             command"
+        )
+    };
+    let write = "fc -ln -1 >>~/.zl;";
+    for (rc, text, word) in [
+        (
+            format!("alias '{{'='{{ {write}'\npreexec() {{ :; }}\n"),
+            format!("{{={{ {write}"),
+            "{",
+        ),
+        (
+            format!("alias do='do {write}'\npreexec() {{ for x in 1; do :; done }}\n"),
+            format!("do=do {write}"),
+            "do",
+        ),
+        (
+            format!("alias then='then {write}'\npreexec() {{ if true; then :; fi }}\n"),
+            format!("then=then {write}"),
+            "then",
+        ),
+        (
+            format!("alias fi='{write} fi'\npreexec() {{ if true; then :; fi }}\n"),
+            format!("fi={write} fi"),
+            "fi",
+        ),
+        (
+            format!("alias '}}'='{write} }}'\npreexec() {{ :\n}}\n"),
+            format!("}}={write} }}"),
+            "}",
+        ),
+        (
+            format!("aliases[end]='{write} end'\npreexec() {{ foreach x (1) : ; end }}\n"),
+            format!("aliases[end]={write} end"),
+            "end",
+        ),
+    ] {
+        assert!(
+            read(&rc).doubts.contains(&reserved(&text, word)),
+            "{rc}: {:?}",
+            read(&rc)
+        );
+    }
+    // One named like a precommand runs where a hook runs that precommand, as
+    // a function of its name would: zsh 5.9.2 appends each command line to
+    // ~/.zl with each, and runs `cd -` alone with the last.
+    for (rc, name) in [
+        (
+            format!("alias '!'='{write} :'\npreexec() {{ ! false }}\n"),
+            "!",
+        ),
+        (
+            format!("alias -- -='{write} cd -'\npreexec() {{ - : }}\n"),
+            "-",
+        ),
+        (
+            format!("alias time='{write} :'\npreexec() {{ time : }}\n"),
+            "time",
+        ),
+    ] {
+        assert!(
+            read(&rc).doubts.contains(&format!(
+                "it cannot tell whether `~/.zl`, which `{name}` in /home/alice/.zshrc redirects \
+                 output to, is the history file (a file HISTFILE names, or a link to it)"
+            )),
+            "{rc}: {:?}",
+            read(&rc)
+        );
+    }
+    assert_eq!(
+        read("alias -- -='cd -'\npreexec() { - : }\n"),
+        Scan::default()
+    );
+    // A global alias of such a name is counted where a word is its name, and
+    // an alias named like a builtin runs as a hook where the builtin does.
+    assert_eq!(read("alias -g if=x\n"), Scan::default());
+    assert_ne!(
+        read("alias print='print -r -- $1 >>~/.zl; print'\npreexec() { print }\n"),
+        Scan::default()
+    );
+}
+
+#[test]
 fn what_a_sched_a_zstyle_e_or_a_bindkey_s_runs_is_a_hook_s() {
     // zsh 5.9.2 writes each command line to HISTFILE with each: what sched
     // runs at its time, a style's code as vcs_info looks it up at each
