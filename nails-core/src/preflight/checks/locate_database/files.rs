@@ -62,10 +62,22 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
     }
 
     /// What `path` holds. A FIFO or device is never opened: the first would
-    /// block the read and the second can be read without end.
+    /// block the read and the second can be read without end. A lookup that
+    /// fails for another reason than that nothing is there is named by its
+    /// error, and one NAILS may not make asks for sudo.
     pub fn read(&self, path: &Path) -> DecoyFile {
         let shown = path.display();
-        if self.fs.is_regular_file(path).unwrap_or(false) {
+        let unseen = |error: crate::NailsError| match error.io_kind() {
+            Some(std::io::ErrorKind::PermissionDenied) => DecoyFile::Unread(format!(
+                "NAILS cannot look up {shown}; run the command again with sudo"
+            )),
+            _ => DecoyFile::Unread(format!("NAILS cannot follow {shown} ({error})")),
+        };
+        let regular = match self.fs.is_regular_file(path) {
+            Ok(regular) => regular,
+            Err(error) => return unseen(error),
+        };
+        if regular {
             if self.onto_hidden(path) {
                 return DecoyFile::Unread(format!("{shown} leads onto the hidden volume"));
             }
@@ -88,7 +100,11 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
                 },
             };
         }
-        if self.fs.path_exists(path).unwrap_or(true) {
+        let present = match self.fs.path_exists(path) {
+            Ok(present) => present,
+            Err(error) => return unseen(error),
+        };
+        if present {
             if self
                 .fs
                 .canonicalize(path)
@@ -98,6 +114,8 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
             }
             return DecoyFile::Unread(format!("{shown} is not a regular file"));
         }
+        // Nothing a lookup reaches: no file, and a link to nothing, are
+        // absent; a path below a file is one NAILS cannot follow.
         match self.fs.canonicalize(path) {
             Err(e) if e.io_kind() == Some(std::io::ErrorKind::PermissionDenied) => {
                 DecoyFile::Unread(format!(

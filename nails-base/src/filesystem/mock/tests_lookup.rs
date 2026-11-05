@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The mock's lookup errors (`mock_set_lookup_error`).
+//! The mock's lookup errors (`mock_set_lookup_error`) and
+//! `Filesystem::entry_exists`.
 
 use super::{MockFilesystem, MockOp, PathKind};
 use crate::NailsError;
@@ -55,6 +56,7 @@ fn every_read_of_the_path_or_below_it_fails_naming_the_path() {
             ("device_id", fs.device_id(path).map(drop)),
             ("get_permissions", fs.get_permissions(path).map(drop)),
             ("disk_usage", fs.disk_usage(path).map(drop)),
+            ("entry_exists", fs.entry_exists(path).map(drop)),
         ];
         for (read, result) in reads {
             assert_eq!(
@@ -93,6 +95,7 @@ fn a_kind_that_says_nothing_is_there_answers_no() {
         assert!(!fs.is_directory(path).unwrap(), "{kind:?}");
         assert!(!fs.is_regular_file(path).unwrap(), "{kind:?}");
         assert!(!fs.is_symlink(path).unwrap(), "{kind:?}");
+        assert!(!fs.entry_exists(path).unwrap(), "{kind:?}");
         assert_eq!(failure(fs.read_file_content(path)), (path.into(), kind));
         assert_eq!(failure(fs.mount_root(path)), (path.into(), kind));
     }
@@ -175,6 +178,7 @@ fn a_link_that_leads_there_fails_the_lookups_that_follow_it() {
         (link.join("x"), ErrorKind::PermissionDenied)
     );
     assert!(fs.is_symlink(link).unwrap());
+    assert!(fs.entry_exists(link).unwrap());
     assert_eq!(fs.read_link(link).unwrap(), Path::new("/srv/data/file"));
     // A link set on a failing directory is not reached at all.
     fs.create_symlink(Path::new("/etc"), Path::new("/srv/data/up"))
@@ -193,4 +197,32 @@ fn reset_clears_the_lookup_errors() {
     let fs = failing(ErrorKind::PermissionDenied);
     fs.reset();
     assert!(!fs.path_exists(Path::new("/srv/data/file")).unwrap());
+}
+
+/// An entry is there when the path itself is something, a link to nothing
+/// included, and a link counts without its target being looked up.
+#[test]
+fn an_entry_is_whatever_is_at_the_path_itself() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/file", "x");
+    fs.create_symlink(Path::new("/nowhere"), Path::new("/etc/dangling"))
+        .unwrap();
+    fs.create_symlink(Path::new("/etc/looped"), Path::new("/etc/looped"))
+        .unwrap();
+    fs.mock_set_lookup_error("/srv", ErrorKind::PermissionDenied);
+    fs.create_symlink(Path::new("/srv/x"), Path::new("/etc/unreachable"))
+        .unwrap();
+    for present in [
+        "/etc/file",
+        "/etc/dangling",
+        "/etc/looped",
+        "/etc/unreachable",
+    ] {
+        assert!(fs.entry_exists(Path::new(present)).unwrap(), "{present}");
+    }
+    assert!(!fs.entry_exists(Path::new("/etc/missing")).unwrap());
+    assert_eq!(
+        failure(fs.entry_exists(Path::new("/srv/x"))),
+        (PathBuf::from("/srv/x"), ErrorKind::PermissionDenied)
+    );
 }

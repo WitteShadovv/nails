@@ -576,6 +576,33 @@ fn a_file_nails_cannot_read_leaves_the_configuration_unread() {
     );
 }
 
+/// A lookup that fails for another reason than that nothing is there leaves
+/// the configuration unread, its cause taken from the error: one NAILS may
+/// not make as a file it cannot read, any other as an entry systemd does not
+/// read alike. A lookup that finds no file finds none, while a path below a
+/// file is not read alike either: systemd's open fails there with another
+/// error than ENOENT, which it does not skip.
+#[test]
+fn a_lookup_that_fails_leaves_the_configuration_unread_by_its_kind() {
+    use std::io::ErrorKind;
+    let main = "/etc/systemd/journald.conf";
+    for (kind, cause) in [
+        (ErrorKind::PermissionDenied, Some(UnreadCause::CannotRead)),
+        (ErrorKind::Other, Some(UnreadCause::NotRegular)),
+        (ErrorKind::NotFound, None),
+        (ErrorKind::NotADirectory, Some(UnreadCause::NotRegular)),
+    ] {
+        let fs = crate::MockFilesystem::new();
+        fs.mock_add_file(main, "[Journal]\nStorage=persistent\n");
+        fs.mock_set_lookup_error("/etc/systemd", kind);
+        let read = section_assignments(&fs, Path::new("/"), "journald.conf", "Journal", RELEASE);
+        match cause {
+            Some(cause) => assert_eq!(read, unread(PathBuf::from(main), cause), "{kind:?}"),
+            None => assert_eq!(read, Ok(vec![]), "{kind:?}"),
+        }
+    }
+}
+
 /// A file that is gone by the time it is read adds nothing, as systemd skips
 /// a file whose open fails with ENOENT, and the reading goes on: the
 /// in-memory double lists such a file and holds nothing for it.
