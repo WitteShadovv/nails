@@ -187,6 +187,62 @@ pub const CANCEL_INTERRUPTED: Message = Message {
     surface: Surface::Json,
 };
 
+/// The failure of the hidden-volume check when the volume's filesystem is
+/// mounted at another place as well, as a desktop that mounts a drive by
+/// itself does.
+pub const CHECK_MOUNTED_TWICE: Message = Message {
+    id: "check.mounted-twice",
+    text: "the volume at {root} is also mounted at {places}: a desktop may have mounted it \
+           there by itself when it was unlocked",
+    note: "The failure of the hidden-volume check, in `check` and before an activation, when \
+           the filesystem mounted at the root folder is mounted at another place too, most \
+           often by a desktop that mounts a drive by itself under /media or /run/media once it \
+           is unlocked. \"It\" is the volume. {root} is the root folder as configured, such as \
+           /mnt/data; {places} is the other mount point, or several joined by commas and a last \
+           \"and\". It starts in lower case because it follows the check's name and a colon. The \
+           same text is the --json message of that check.",
+    placeholders: &["root", "places"],
+    surface: Surface::Cli,
+};
+
+/// What to do about [`CHECK_MOUNTED_TWICE`]: unmount the other mounts.
+pub const CHECK_MOUNTED_TWICE_FIX: Message = Message {
+    id: "check.mounted-twice-fix",
+    text: "Run `sudo umount {mount_points}`, then run the command again.\n\
+           Long before the next use, turn off the automatic mounting of removable media.\n\
+           Read \"Attaching the drive\" in the decoy requirements on another device.",
+    note: "The fix shown below check.mounted-twice, three lines. {mount_points} is every other \
+           mount point, each quoted for the shell where it needs it, the deepest first, so the \
+           line pastes as it is. \"The command\" is the one that failed (check or activate). \
+           The second line is about the desktop's setting that mounts a drive once it is \
+           attached or unlocked (GNOME, KDE, udiskie); \"long before\" because a setting changed \
+           just before a session dates it. The third names the section of the documentation \
+           (docs/decoy-requirements.md) that says where those settings are; it is read on \
+           another device, as opening it on this computer leaves traces. The same text is the \
+           --json fix of that check.",
+    placeholders: &["mount_points"],
+    surface: Surface::Cli,
+};
+
+/// What to do about [`CHECK_MOUNTED_TWICE`] when another mount of the volume
+/// holds the root folder: it can only go once the root is unmounted too.
+pub const CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT: Message = Message {
+    id: "check.mounted-twice-fix-holding-root",
+    text: "Run `sudo umount {mount_points}`, mount the volume at {root} alone, then run the \
+           command again.\n\
+           Long before the next use, turn off the automatic mounting of removable media.\n\
+           Read \"Attaching the drive\" in the decoy requirements on another device.",
+    note: "Shown instead of check.mounted-twice-fix when one of the other mounts of the volume \
+           is a parent folder of the root folder (the volume mounted at /mnt and a folder of it \
+           bound at /mnt/data, say), which cannot be unmounted while the root is mounted below \
+           it. {mount_points} is the root folder and every other mount point, each quoted for \
+           the shell where it needs it, the deepest first; {root} is the root folder as \
+           configured. The other two lines are those of check.mounted-twice-fix. The same text \
+           is the --json fix of that check.",
+    placeholders: &["mount_points", "root"],
+    surface: Surface::Cli,
+};
+
 /// Every catalogue entry, for the copy lint and any front end that walks them.
 pub const CATALOG: &[Message] = &[
     REHEARSE_GUIDE_PLANT_ACTIVE,
@@ -203,4 +259,7 @@ pub const CATALOG: &[Message] = &[
     CANCEL_EMERGENCY,
     CANCEL_CONFIG,
     CANCEL_INTERRUPTED,
+    CHECK_MOUNTED_TWICE,
+    CHECK_MOUNTED_TWICE_FIX,
+    CHECK_MOUNTED_TWICE_FIX_HOLDING_ROOT,
 ];
