@@ -1,25 +1,37 @@
-# The unattended-upgrades scenario: an activation during a daily
-# unattended-upgrade run.
+# The unattended-upgrades scenario: what unattended-upgrades' shutdown helper
+# does at a switch, and the refusals that keep it off the decoy disk.
 #
 # unattended-upgrades' shutdown helper waits for logind's shutdown signal,
 # which a switch sends as `systemctl soft-reboot` does. When the signal comes
 # while a run of unattended-upgrade holds its lock, the helper sends the run
 # SIGTERM and writes `Unattended-upgrade in progress during shutdown` to its
 # log on the decoy disk, whatever `Unattended-Upgrade::InstallOnShutdown`
-# says. APT holds its shutdown block only while dpkg runs, so between two dpkg
-# runs, and before the first, nothing blocks the switch.
+# says. With that setting on, it runs an install of the pending updates on
+# the signal instead.
 #
-# The scenario starts a daily run the way apt-daily-upgrade.timer does
-# (`apt-daily-upgrade.service`) and holds it at its first step, the power
-# check, with a stand-in for powermgmt-base's `on_ac_power` that waits until
-# the test lets it go: the run then holds its lock and runs no dpkg. It
-# activates during the run, and once the switch has gone through, it finds
-# the helper's line in its log on the decoy disk.
+# The scenario, on each image with unattended-upgrades:
 #
-# It also records, without asserting them, three facts of the image: whether
-# python3-gi is installed, what the helper writes when it starts without it,
-# and what it writes at an activation while an apt configuration file has a
-# syntax error.
+#   - checks the stock decoy: both rows pass, its apt configuration read as
+#     apt reads it;
+#   - starts a daily run the way apt-daily-upgrade.timer does
+#     (`apt-daily-upgrade.service`) and holds it at its first step, the power
+#     check, with a stand-in for powermgmt-base's `on_ac_power` that waits
+#     until the test lets it go: the run holds its lock and runs no dpkg.
+#     `check` and `activate` refuse while it runs, and the helper's log and
+#     the run's gain no line. As the positive control, a plain `systemctl
+#     soft-reboot` during the same run, the call a switch makes, makes the
+#     helper write its line on the decoy disk. Once the run has ended, the
+#     row passes again;
+#   - turns the setting on in a file of `/etc/apt/apt.conf.d`: `check` and
+#     `activate` refuse, naming the file and its line. With
+#     `--allow-persistent-decoy` the activation goes through, and the decoy's
+#     helper logs its shutdown-mode run on the decoy disk at the switch, the
+#     positive control;
+#   - stops the decoy's helper and leaves it enabled, the setting still on:
+#     `check` only warns, the activation goes through, and the way back
+#     (`deactivate`, through logind) has the session's own copy of the helper
+#     log its shutdown-mode run into the upper on the hidden volume, while the
+#     decoy's log gains no such line.
 {
   self,
   pkgs,
@@ -53,6 +65,7 @@ distroVm.buildVmTest {
   memorySize = entry.memory;
 
   testScript = ''
+    import json
     import os
     import shlex
     import sys
@@ -68,14 +81,18 @@ distroVm.buildVmTest {
     # The RAM copy of the binary the session keeps in /run.
     ram_nails_cmd = f"/run/overlay-runtime/control --config {shlex.quote(config)}"
 
-    # unattended-upgrades' logs on the decoy disk: its shutdown helper's, and
-    # the one its runs write.
+    # unattended-upgrades' logs: its shutdown helper's, and the one its runs
+    # write.
     helper_log = "/var/log/unattended-upgrades/unattended-upgrades-shutdown.log"
     run_log = "/var/log/unattended-upgrades/unattended-upgrades.log"
     IN_PROGRESS = "Unattended-upgrade in progress during shutdown"
+    RUN_STOPS = "SIGTERM received, will stop"
+    SHUTDOWN_MODE = "Running unattended-upgrades in shutdown mode"
     # The lock a run holds from its start to its end, as unattended-upgrade
     # names it (/var/run is a link to /run).
     uu_lock = "/var/run/unattended-upgrades.lock"
+    # Where the session's copy of the helper logs: in the upper.
+    upper_helper_log = "/mnt/data/root/upper" + helper_log
 
     # The stand-in for on_ac_power: on its own tmpfs, as /run is mounted
     # noexec, and first in the run's PATH through a runtime drop-in, so
@@ -100,6 +117,10 @@ distroVm.buildVmTest {
             "",
         )
     )
+
+    # The setting turned on, in a file of its own.
+    setting_file = "/etc/apt/apt.conf.d/99local-install-on-shutdown"
+    setting_on = 'Unattended-Upgrade::InstallOnShutdown "true";\n'
 
     # What the package's debconf answer writes when unattended upgrades are
     # turned on (data/20auto-upgrades).
@@ -142,28 +163,42 @@ distroVm.buildVmTest {
         prepare_boot()
 
 
-    def lines(path, text):
-        _, out = vm.execute(f"grep -F {shlex.quote(text)} {path} 2>/dev/null || true")
-        return [line for line in out.splitlines() if line]
+    def count(path, text):
+        _, out = vm.execute(f"grep -c -F {shlex.quote(text)} {path} 2>/dev/null || true")
+        return int(out.strip() or "0")
 
 
-    def tail(path, count=30):
-        _, out = vm.execute(f"tail -n {count} {path} 2>&1 || true")
+    def tail(path, lines=20):
+        _, out = vm.execute(f"tail -n {lines} {path} 2>&1 || true")
         return out.rstrip()
+
+
+    def row(name):
+        # A row of `check`, read off the command's output, never written to
+        # the decoy disk.
+        _, out = vm.execute(f"{nails_cmd} check --overlay-only --json 2>/dev/null")
+        found = next(r for r in json.loads(out)["data"]["checks"] if r["name"] == name)
+        print(f"{name}: {json.dumps(found, indent=2)}")
+        return found
+
+
+    def assert_on_the_decoy():
+        vm.fail("mountpoint -q /run/nextroot")
+        vm.fail("test -e /run/overlay-runtime")
+        session.assert_decoy_root(vm)
 
 
     def lock_holders():
         # The processes /proc/locks lists as holding a lock on the run's lock
-        # file, found by the file's device and inode. Nothing is opened or
-        # taken: a stat, and a read of /proc/locks.
+        # file, found by the file's device and inode, as NAILS finds them.
         rc, out = vm.execute(f"stat -L -c '%d %i' {uu_lock}")
         if rc != 0:
             return []
         dev, ino = (int(field) for field in out.split())
-        holders = []
+        holders: list[int] = []
         for line in vm.succeed("cat /proc/locks").splitlines():
             fields = line.split()
-            if len(fields) < 6 or fields[1] == "->":
+            if len(fields) < 6 or fields[1] not in ("POSIX", "OFDLCK"):
                 continue
             for i, field in enumerate(fields):
                 parts = field.split(":")
@@ -197,10 +232,8 @@ distroVm.buildVmTest {
         vm.succeed("systemctl start --no-block apt-daily-upgrade.service")
         vm.wait_until_succeeds(f"test -e {held}", timeout=600)
         holders = lock_holders()
-        print(f"the run's lock is held by {holders}")
-        print(vm.succeed("cat /proc/locks; systemd-inhibit --list --no-pager || true"))
         state = vm.succeed("systemctl show -P ActiveState apt-daily-upgrade.service").strip()
-        print(f"apt-daily-upgrade.service is {state}")
+        print(f"the run's lock is held by {holders}; apt-daily-upgrade.service is {state}")
         assert holders, "the held run holds no lock on its lock file"
         assert state == "activating", f"apt-daily-upgrade.service is {state}"
         # No dpkg runs: nothing blocks shutdown.
@@ -209,9 +242,9 @@ distroVm.buildVmTest {
 
 
     def release_when_seen():
-        # The activation kills the driver's shell and waits for logind, so a
-        # unit lets the run go once the helper has logged that it found it:
-        # the run then stops, and the helper with it.
+        # A switch kills the driver's shell and waits for logind, so a unit
+        # lets the run go once the helper has logged that it found it: the
+        # run then stops, and the helper with it.
         release = (
             f"until grep -q -F {shlex.quote(IN_PROGRESS)} {helper_log} 2>/dev/null; "
             + f"do sleep 0.2; done; rm -f {hold}"
@@ -222,84 +255,108 @@ distroVm.buildVmTest {
     vm.wait_for_unit("multi-user.target")
     prepare_boot()
 
-    with subtest("the decoy runs unattended-upgrades' shutdown helper"):
-        print(vm.succeed("dpkg-query -W unattended-upgrades apt python3-apt systemd"))
+    with subtest("the stock decoy passes both rows"):
+        print(vm.succeed("dpkg-query -W unattended-upgrades apt systemd"))
         vm.succeed("systemctl is-active unattended-upgrades.service")
-        print(vm.succeed("systemctl cat unattended-upgrades.service"))
         print(vm.succeed("ls -la /etc/apt/apt.conf.d"))
         interval = vm.succeed(
             "apt-config shell V APT::Periodic::Unattended-Upgrade; true"
         ).strip()
-        print(f"APT::Periodic::Unattended-Upgrade on the stock image: {interval or 'unset'}")
         if interval in ("", "V='0'"):
             vm.succeed(
                 f"printf %s {shlex.quote(auto_upgrades)} > /etc/apt/apt.conf.d/20auto-upgrades"
             )
-        print(vm.succeed("apt-config dump Unattended-Upgrade::InstallOnShutdown; true"))
-        print(f"the helper's log on the stock image:\n{tail(helper_log)}")
-
-    with subtest("fact: python3-gi"):
-        _, status = vm.execute("dpkg-query -s python3-gi 2>&1 | grep -E '^(Status|Version):'")
-        print(f"python3-gi on ${entry.osId} ${entry.release}: {status.strip() or 'not installed'}")
-        rc, where = vm.execute("python3 -c 'import gi, os; print(os.path.dirname(gi.__file__))'")
-        print(f"import gi: rc {rc}, {where.strip()}")
-
-    with subtest("activation during a daily run writes the helper's line on the decoy disk"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
+        assert row("unattended-upgrade-run")["status"] == "pass"
+        persistence = row("decoy-persistence")
+        assert "unattended-upgrades" not in persistence["message"], persistence
         vm.succeed(f"{nails_cmd} check --overlay-only")
-        before = lines(helper_log, IN_PROGRESS)
+
+    with subtest("a daily unattended-upgrade run refuses check and activation"):
+        lines_before = count(helper_log, IN_PROGRESS)
+        stops_before = count(run_log, RUN_STOPS)
         start_daily_run()
+        refusal = row("unattended-upgrade-run")
+        assert refusal["status"] == "fail", refusal
+        assert "apt-daily-upgrade.service is active" in refusal["message"], refusal
+        assert "holds /run/unattended-upgrades.lock" in refusal["message"], refusal
+        rc, out = vm.execute(f"{nails_cmd} activate -y 2>&1")
+        print(out)
+        assert rc != 0, out
+        assert "a daily unattended-upgrade run is in progress" in out, out
+        assert "Try again in a few minutes" in out, out
+        assert_on_the_decoy()
+        # The refused activation sent no shutdown signal: the helper and the
+        # run logged nothing on the decoy disk.
+        assert count(helper_log, IN_PROGRESS) == lines_before, tail(helper_log)
+        assert count(run_log, RUN_STOPS) == stops_before, tail(run_log)
+
+    with subtest("positive control: a soft-reboot during the run writes the helper's line"):
+        # The call a switch makes, without NAILS, into the same root.
         release_when_seen()
-        follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
+        follow("systemctl --no-wall soft-reboot", "soft-reboot")
+        assert_on_the_decoy()
+        print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
+        print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
+        assert count(helper_log, IN_PROGRESS) > lines_before, tail(helper_log)
+        # The run ended with the old userspace: the row passes again.
+        vm.wait_until_succeeds(
+            "test -z \"$(systemctl show -P InvocationID apt-daily-upgrade.service)\"",
+            timeout=120,
+        )
+        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        assert row("unattended-upgrade-run")["status"] == "pass"
+
+    with subtest("InstallOnShutdown on refuses check and activation"):
+        vm.succeed(f"printf %s {shlex.quote(setting_on)} > {setting_file}")
+        refusal = row("decoy-persistence")
+        assert refusal["status"] == "fail", refusal
+        assert f"is on in {setting_file}:1" in refusal["message"], refusal
+        mode_before = count(helper_log, SHUTDOWN_MODE)
+        rc, out = vm.execute(f"{nails_cmd} activate -y 2>&1")
+        print(out)
+        assert rc != 0, out
+        assert f"Unattended-Upgrade::InstallOnShutdown is on in {setting_file}:1" in out, out
+        assert "--allow-persistent-decoy" in out, out
+        assert_on_the_decoy()
+        assert count(helper_log, SHUTDOWN_MODE) == mode_before, tail(helper_log)
+
+    with subtest("positive control: with the override the helper runs its install at the switch"):
+        follow(
+            f"{nails_cmd} activate -y --allow-persistent-decoy > /mnt/data/activate.log 2>&1",
+            "activate",
+        )
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         session.assert_hidden_root(vm)
         follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
-        session.assert_decoy_root(vm)
-        after = lines(helper_log, IN_PROGRESS)
+        assert_on_the_decoy()
         print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
         print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
-        assert len(after) > len(before), (
-            f"the activation during the run left no {IN_PROGRESS!r} line in {helper_log}"
-        )
+        assert count(helper_log, SHUTDOWN_MODE) > mode_before, tail(helper_log)
 
-    with subtest("fact: what the helper writes at an activation after a syntax error"):
-        # The helper read the configuration at its start, before the file was
-        # there; logind's signal makes it read it again.
+    with subtest("a helper stopped but enabled only warns, and installs at the way back"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
-        vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
-        mark = "NAILS_FACT_SYNTAX"
-        vm.succeed(f"printf '%s\\n' 'Nails::Fact \"{mark}\"' > /etc/apt/apt.conf.d/99nails-fact")
-        print(vm.succeed("apt-config dump Nails 2>&1 || true"))
-        start = len(vm.succeed(f"cat {helper_log}").splitlines())
+        vm.succeed("systemctl stop unattended-upgrades.service")
+        vm.succeed("systemctl is-enabled unattended-upgrades.service")
+        warning = row("decoy-persistence")
+        assert warning["status"] == "warn", warning
+        assert "stopped on the decoy but enabled" in warning["message"], warning
+        decoy_mode = count(helper_log, SHUTDOWN_MODE)
         follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
         session.assert_hidden_root(vm)
-        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-2")
-        session.assert_decoy_root(vm)
-        written = vm.succeed(f"cat {helper_log}").splitlines()[start:]
-        print("the helper's lines from the activation and the decoy's start after the way back:")
-        print("\n".join(written))
-        vm.succeed("rm -f /etc/apt/apt.conf.d/99nails-fact")
-
-    with subtest("fact: what the helper writes when it starts without python3-gi"):
-        rc, where = vm.execute("python3 -c 'import gi, os; print(os.path.dirname(gi.__file__))'")
-        where = where.strip()
-        if rc != 0 or not where:
-            print("gi cannot be imported here: the helper always starts without it")
-        else:
-            start = len(vm.succeed(f"cat {helper_log}").splitlines())
-            vm.succeed(f"mv {shlex.quote(where)} /run/gi-aside")
-            vm.succeed("systemctl restart unattended-upgrades.service")
-            vm.wait_until_succeeds("systemctl is-active unattended-upgrades.service", timeout=60)
-            # Its start lines, if it writes any, within a few seconds.
-            vm.execute(
-                f"timeout 15 sh -c 'until [ $(wc -l < {helper_log}) -ge {start + 3} ]; "
-                + "do sleep 0.5; done'"
-            )
-            written = vm.succeed(f"cat {helper_log}").splitlines()[start:]
-            print("the helper's lines from a restart without gi:")
-            print("\n".join(written))
-            vm.succeed(f"mv /run/gi-aside {shlex.quote(where)}")
-            vm.succeed("systemctl restart unattended-upgrades.service")
+        vm.succeed("systemctl is-active unattended-upgrades.service")
+        follow(f"{nails_cmd} deactivate -y", "deactivate")
+        assert_on_the_decoy()
+        assert count(helper_log, SHUTDOWN_MODE) == decoy_mode, tail(helper_log)
+        # As the operator would: unlock and mount the hidden volume again.
+        # The upper's copy of the log starts with what the decoy's held when
+        # the session first wrote to it, so the session's own line is one
+        # more than the decoy's.
+        vm.succeed("""${hiddenRoot.reopenHiddenRoot}""")
+        print(f"the session's helper log in the upper:\n{tail(upper_helper_log)}")
+        assert count(upper_helper_log, SHUTDOWN_MODE) > decoy_mode, tail(upper_helper_log)
+        vm.succeed("""${hiddenRoot.closeHiddenRoot}""")
+        vm.succeed(f"rm -f {setting_file}")
   '';
 }
