@@ -42,9 +42,10 @@ use crate::{Filesystem, NailsError, Result};
 use nails_api::Allowable;
 use std::fmt;
 
-/// The reason reported for every check short-circuited because the hidden volume
-/// is not mounted.
-pub const SKIPPED_NO_HIDDEN_VOLUME: &str = "requires mounted hidden volume";
+/// The reason reported for every check short-circuited because the
+/// hidden-volume check failed: the volume is not mounted, say, or it is
+/// mounted a second time.
+pub const SKIPPED_HIDDEN_VOLUME_FAILED: &str = "requires the hidden-volume check to pass";
 
 // ============================================================================
 // CheckResult Enum
@@ -85,13 +86,14 @@ pub enum CheckResult {
     },
     /// Check was not run because a prerequisite failed.
     ///
-    /// When the hidden volume is not mounted, the checks that inspect it (storage
-    /// readiness, overlay compatibility, the NixOS config layer, free space)
-    /// would all fail with cascaded, misleading errors. Instead they are reported
-    /// as `Skipped` with the reason, so the operator sees one real root failure
-    /// and a list of what it short-circuited. A skip is neither a pass nor a
-    /// failure: it never blocks activation on its own, never contributes a
-    /// remediation step, and never counts toward the exit code.
+    /// When the hidden-volume check fails (the volume is not mounted, say), the
+    /// checks that inspect it (storage readiness, overlay compatibility, the
+    /// NixOS config layer, free space) would all fail with cascaded, misleading
+    /// errors. Instead they are reported as `Skipped` with the reason, so the
+    /// operator sees one real root failure and a list of what it
+    /// short-circuited. A skip is neither a pass nor a failure: it never blocks
+    /// activation on its own, never contributes a remediation step, and never
+    /// counts toward the exit code.
     Skipped(String),
 }
 
@@ -402,7 +404,7 @@ impl<F: Filesystem> PreFlightRegistry<F> {
             // failed: running them would only cascade misleading errors, and a
             // skip never fails or contributes a remediation step.
             if hidden_volume_failed && check.requires_hidden_volume() {
-                results.push((name, CheckResult::skipped(SKIPPED_NO_HIDDEN_VOLUME)));
+                results.push((name, CheckResult::skipped(SKIPPED_HIDDEN_VOLUME_FAILED)));
                 continue;
             }
 
@@ -477,7 +479,7 @@ impl<F: Filesystem> PreFlightRegistry<F> {
             // skipped instead of running them: a skip is not a failure, so it
             // does not flip `all_passed` and keeps the cascade out of the report.
             let result = if hidden_volume_failed && check.requires_hidden_volume() {
-                CheckResult::skipped(SKIPPED_NO_HIDDEN_VOLUME)
+                CheckResult::skipped(SKIPPED_HIDDEN_VOLUME_FAILED)
             } else {
                 let result = check
                     .run(fs)
@@ -601,7 +603,10 @@ mod tests {
 
         let storage = results.iter().find(|(n, _)| n == "storage").unwrap();
         assert!(storage.1.is_skipped(), "{:?}", storage.1);
-        assert_eq!(storage.1.message(), SKIPPED_NO_HIDDEN_VOLUME);
+        assert_eq!(
+            storage.1.message(),
+            "requires the hidden-volume check to pass"
+        );
 
         // An independent check still runs after the gate fails.
         let swap = results.iter().find(|(n, _)| n == "swap").unwrap();
