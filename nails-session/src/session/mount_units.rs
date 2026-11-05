@@ -41,10 +41,12 @@
 //! systemd starts it as the decoy's would.
 //!
 //! [`decide`] gives each the decision an fstab line with its source, mount
-//! point, type and options would get ([`policy::decide_units`]): a
-//! filesystem the decoy has mounted now is bound read-only or overlaid, one
-//! not mounted now is skipped or masked, RAM and kernel filesystems are left
-//! to the hidden systemd. The mount point and a swap's device are the ones
+//! point, type and options would get ([`policy::decide_units`]): one whose
+//! mount point lies at or below the hidden root is refused, a RAM one
+//! included ([`policy`]), a filesystem the decoy has mounted now is bound
+//! read-only or overlaid, one not mounted now is skipped or masked, RAM and
+//! kernel filesystems elsewhere are left to the hidden systemd. The mount
+//! point and a swap's device are the ones
 //! the unit's name stands for, as systemd refuses a unit whose `Where=` or
 //! `What=` does not match its name; a filesystem mounted now is judged by the
 //! decoy's mount table, but a RAM or kernel filesystem mounted over the mount

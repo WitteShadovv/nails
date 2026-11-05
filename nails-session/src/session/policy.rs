@@ -81,8 +81,10 @@
 //! which would hide what lies below it, and for a line that names the hidden
 //! volume itself. The hidden volume has to be mounted where the decoy mounts
 //! nothing ([`Decision::remedy`]). The same holds for a hidden NixOS
-//! generation's fstab and for the mount and automount units outside the
-//! fstab, which are decided as fstab lines ([`super::mount_units`]).
+//! generation's fstab and for the mount and automount units a boot target
+//! links outside the fstab, which are decided as fstab lines
+//! ([`super::mount_units`]); what the refusal says to do follows whose the
+//! entry or unit is ([`Whose`]).
 
 use super::fstab::{
     FstabEntry, automount_unit, checkers, escape_path, mount_unit, required_by, swap_unit,
@@ -176,10 +178,27 @@ pub enum Decision {
         target: PathBuf,
         /// Why.
         reason: String,
-        /// What the operator can do, where fixing or removing the entry is
-        /// not the whole answer ([`Decision::remedy`]).
-        remedy: Option<String>,
+        /// The hidden root, when the mount point lies at or below it: what to
+        /// do about the refusal names it ([`Decision::remedy`]).
+        below: Option<PathBuf>,
     },
+}
+
+/// Whose mounts a decision is about, which tells what to do about a refusal
+/// ([`Decision::remedy`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Whose {
+    /// The decoy's: its fstab, and the units its boot targets link outside
+    /// it, as `check` and activation decide them.
+    Decoy,
+    /// The fstab of a hidden NixOS generation, which activation decides after
+    /// the build.
+    HiddenSystem,
+    /// The units outside the fstab that activation decides in the hidden
+    /// root ([`super::mount_units`]): the decoy's, which `check` decided
+    /// before, and those a hidden NixOS generation or an earlier hidden
+    /// session added.
+    HiddenRoot,
 }
 
 /// Why a mask keeps a boot target from being reached.
@@ -241,20 +260,62 @@ impl Decision {
         }
     }
 
-    /// What the operator can do about a refusal, where fixing or removing
-    /// the entry is not the whole answer: for an entry at or below the hidden
-    /// root, mounting the hidden volume elsewhere is the other.
-    pub fn remedy(&self) -> Option<&str> {
-        match self {
-            Decision::Refuse { remedy, .. } => remedy.as_deref(),
-            _ => None,
-        }
+    /// What the operator can do about a refusal of `whose` mounts, where
+    /// fixing or removing the entry is not the whole answer: for one at or
+    /// below the hidden root, mounting the hidden volume where nothing is
+    /// mounted below it is the other. An entry of a hidden NixOS
+    /// generation's fstab is that generation's configuration's to change,
+    /// which a hidden session entered without the build can.
+    pub fn remedy(&self, whose: Whose) -> Option<String> {
+        let Decision::Refuse {
+            below: Some(root), ..
+        } = self
+        else {
+            return None;
+        };
+        let root = root.display();
+        Some(match whose {
+            Whose::Decoy => format!(
+                "Mount the hidden volume where the decoy mounts nothing, or move this mount out \
+                 from below {root} or remove it, before activating."
+            ),
+            Whose::HiddenSystem => format!(
+                "Remove this mount from the hidden NixOS configuration, or move it out from \
+                 below {root} there, in a hidden session entered with `activate --overlay-only`."
+            ),
+            Whose::HiddenRoot => format!(
+                "Mount the hidden volume where no mount unit mounts anything, or move this mount \
+                 out from below {root} or remove its unit, before activating."
+            ),
+        })
+    }
+
+    /// The refusal of this decision's entry of `whose` fstab, with what to do
+    /// about it ([`Decision::remedy`]); `None` for any other decision. One of
+    /// a hidden NixOS generation's says whose fstab it is.
+    pub fn fstab_refusal(&self, whose: Whose) -> Option<String> {
+        let Decision::Refuse { target, reason, .. } = self else {
+            return None;
+        };
+        let of = match whose {
+            Whose::HiddenSystem => "the hidden NixOS system's ",
+            Whose::Decoy | Whose::HiddenRoot => "",
+        };
+        let refusal = format!("{of}fstab entry {}: {reason}", target.display());
+        Some(self.with_remedy(refusal, whose))
+    }
+
+    /// The refusal of a unit outside the fstab that activation decides in the
+    /// hidden root, or of a directory of unit links it cannot list there,
+    /// with what to do about it ([`Decision::remedy`]).
+    pub fn unit_refusal(&self) -> String {
+        self.with_remedy(self.describe(), Whose::HiddenRoot)
     }
 
     /// `refusal`, a refusal of this decision's entry in words, followed by
     /// what to do about it where the decision says ([`Decision::remedy`]).
-    pub fn with_remedy(&self, refusal: String) -> String {
-        match self.remedy() {
+    fn with_remedy(&self, refusal: String, whose: Whose) -> String {
+        match self.remedy(whose) {
             Some(remedy) => format!("{refusal}. {remedy}"),
             None => refusal,
         }
@@ -543,7 +604,7 @@ fn decide_entry(
         return Decision::Refuse {
             reason: "the mount point is not a plain absolute path".to_string(),
             target,
-            remedy: None,
+            below: None,
         };
     }
     let below_hidden_root = hidden_root != Path::new("/") && target.starts_with(hidden_root);
@@ -630,16 +691,13 @@ fn decide_entry(
 /// The refusal of an entry whose mount point `target` lies at or below the
 /// hidden root (see the module docs).
 fn below_the_hidden_root(target: PathBuf, hidden_root: &Path) -> Decision {
-    let root = hidden_root.display();
     Decision::Refuse {
         reason: format!(
-            "it lies at or below {root}, where the hidden volume is mounted: the hidden \
-             session could mount it over the hidden volume or inside it"
+            "it lies at or below {}, where the hidden volume is mounted: the hidden session \
+             could mount it over the hidden volume or inside it",
+            hidden_root.display()
         ),
-        remedy: Some(format!(
-            "Mount the hidden volume where the decoy mounts nothing, or move this mount out \
-             from below {root} or remove it, before activating."
-        )),
+        below: Some(hidden_root.to_path_buf()),
         target,
     }
 }

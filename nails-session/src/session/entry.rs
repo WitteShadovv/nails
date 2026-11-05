@@ -63,7 +63,7 @@ use super::layout::{Layout, Paths};
 use super::mount_units::{self, UnitDirs};
 use super::network_state;
 use super::nixos;
-use super::policy::{self, Decision};
+use super::policy::{self, Decision, Whose};
 use super::store;
 use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
@@ -589,7 +589,13 @@ fn build(
     let present = |device: &Path| host.device_present(device);
     let hidden_root = inputs.hidden_root;
     let mut decided = Decided {
-        decisions: decide_fstab(&decoy_fstab, &decoy_mounts, hidden_root, &present, "")?,
+        decisions: decide_fstab(
+            &decoy_fstab,
+            &decoy_mounts,
+            hidden_root,
+            &present,
+            Whose::Decoy,
+        )?,
         fstab: decoy_fstab.clone(),
     };
     plan.policy_mounts = apply_mounts(paths, &layout, &decided.decisions, inputs, &[])?;
@@ -656,7 +662,7 @@ fn build(
             &decoy_mounts,
             hidden_root,
             &present,
-            HIDDEN_FSTAB,
+            Whose::HiddenSystem,
         )?;
         decided.add(paths, &layout, &mut plan, hidden_fstab, more, inputs)?;
     } else if !inputs.nixos {
@@ -751,8 +757,7 @@ fn keep_units_off(
         root: &nextroot,
         run: &paths.run,
     };
-    let refused =
-        |decision: Decision| NailsError::InvalidState(decision.with_remedy(decision.describe()));
+    let refused = |decision: Decision| NailsError::InvalidState(decision.unit_refusal());
     let native = mount_units::read(dirs).map_err(|unlisted| refused(unlisted.refusal()))?;
     let more = mount_units::decide(
         dirs,
@@ -953,25 +958,22 @@ fn relative_mounts(mounts: &[MountEntry], root: &Path) -> Vec<MountEntry> {
 /// entries come resolved ([`super::fstab::parse_in_root`]), so a `/home` that
 /// the decoy keeps at `var/home` is decided, mounted and masked as `var/home`
 /// (`var-home.mount`), the way systemd mounts it. `present` tells whether a
-/// device is there now. A refusal begins with `whose`, which names the fstab
-/// unless it is the decoy's ([`HIDDEN_FSTAB`]).
+/// device is there now. A refusal names `whose` fstab it is, and says what to
+/// do about it ([`Decision::fstab_refusal`]): an entry of a hidden NixOS
+/// generation's that lies below the hidden root is the hidden configuration's
+/// to remove.
 fn decide_fstab(
     entries: &[FstabEntry],
     mounts: &[MountEntry],
     hidden_root: &Path,
     present: policy::Present<'_>,
-    whose: &str,
+    whose: Whose,
 ) -> Result<Vec<Decision>> {
     refuse_undecided(
         policy::decide_all(entries, mounts, hidden_root, present),
         whose,
     )
 }
-
-/// What a refusal of an entry of the hidden NixOS generation's fstab begins
-/// with: an entry there that lies below the hidden root is the hidden
-/// configuration's to remove.
-const HIDDEN_FSTAB: &str = "the hidden NixOS system's ";
 
 /// [`decide_fstab`] for the entries the next root resolves elsewhere
 /// ([`resolved_elsewhere`]), by [`policy::decide_redirected`]: one that a link
@@ -984,20 +986,16 @@ fn decide_elsewhere(
     present: policy::Present<'_>,
 ) -> Result<Vec<Decision>> {
     let decisions = policy::decide_all_redirected(entries, mounts, hidden_root, present);
-    refuse_undecided(decisions, "")
+    refuse_undecided(decisions, Whose::Decoy)
 }
 
 /// `decisions`, or the refusal of the first entry that has no safe decision
 /// (`whose` fstab entry), with what to do about it where the decision says.
-fn refuse_undecided(decisions: Vec<Decision>, whose: &str) -> Result<Vec<Decision>> {
-    if let Some(refused @ Decision::Refuse { target, reason, .. }) = decisions
-        .iter()
-        .find(|d| matches!(d, Decision::Refuse { .. }))
-    {
-        let refusal = format!("{whose}fstab entry {}: {reason}", target.display());
-        return Err(NailsError::InvalidState(refused.with_remedy(refusal)));
+fn refuse_undecided(decisions: Vec<Decision>, whose: Whose) -> Result<Vec<Decision>> {
+    match decisions.iter().find_map(|d| d.fstab_refusal(whose)) {
+        Some(refusal) => Err(NailsError::InvalidState(refusal)),
+        None => Ok(decisions),
     }
-    Ok(decisions)
 }
 
 /// The entries of `in_nextroot`, the fstab `decoy` came from resolved in the

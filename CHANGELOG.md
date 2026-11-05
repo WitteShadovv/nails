@@ -20,6 +20,12 @@ of this changelog for that version becomes the release notes word for word, and
   run `<hidden-root>/nails.new config validate` inside a hidden session (it checks the
   `config/nails.toml` next to it), delete the key if it is reported, and pass
   `--allow-persistent-decoy` on the activations that need the override.
+- A decoy whose fstab mounts anything at or below the hidden root, a `noauto` line or a tmpfs
+  included, can no longer activate: `check` fails `fstab-policy` (exit 4) and `activate` refuses,
+  where 0.3.0-rc.3 left the line to the hidden systemd. With the hidden root at `/mnt/data`, a
+  line for `/mnt/data/backup` is one. Before you activate with the new binary, mount the hidden
+  volume where the decoy's fstab mounts nothing, or move or remove that line. The same holds for
+  a mount or automount unit that a boot target links at such a path.
 
 ### Added
 
@@ -621,15 +627,18 @@ of this changelog for that version becomes the release notes word for word, and
   stack were its backend: the check leaves it to `hidden-volume`, but refuses discards over that
   stack, which keeps the root's data, as before. See docs/backends.md.
 - A decoy whose fstab mounts something at or below the hidden root is now refused: `check` fails
-  `fstab-policy` (exit 4) and activation refuses the entry. Such an entry was left to the hidden
-  systemd, which mounts it over the hidden volume or inside it, as the volume is bound at its own
-  path in the hidden session: a decoy disk read-write among the hidden files, at boot or, for a
-  `noauto` line, once a unit or a plain `mount` pulls it in. The refusal covers an automount, a
-  tmpfs and a line for the hidden volume itself as well, in the decoy's fstab, in a hidden NixOS
-  generation's and for a mount or automount unit outside the fstab. A decoy that ran with a line
-  below the root, `/mnt/data/backup` under `/mnt/data` say, now has to mount the hidden volume where
-  its fstab mounts nothing, or move that line; the refusal names the root. A line that a link in the
-  hidden root leads below the root is still kept unmounted rather than refused.
+  `fstab-policy` (exit 4) and activation refuses the entry (see the upgrade notes). Such an entry
+  was left to the hidden systemd, which mounts it over the hidden volume or inside it, as the
+  volume is bound at its own path in the hidden session: a decoy disk read-write among the hidden
+  files, at boot or, for a `noauto` line, once a unit or a plain `mount` pulls it in. The refusal
+  covers an automount, a tmpfs and a line for the hidden volume itself as well, in the decoy's
+  fstab and in a hidden NixOS generation's, and a mount or automount unit that a boot target links
+  outside the fstab. It names the root and what to do: for the decoy's fstab, mount the hidden
+  volume where it mounts nothing, or move that line; for a hidden NixOS generation's, change the
+  hidden configuration in a session entered with `nails activate --overlay-only`. A mount unit that
+  only another unit pulls in is still not decided, and the session watcher alerts on a disk it
+  mounts read-write. A line that a link in the hidden root leads below the root is still kept
+  unmounted rather than refused.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an

@@ -300,11 +300,13 @@ fn every_entry_at_or_below_the_hidden_root_is_refused() {
         );
         // What to do names the root: mount the volume elsewhere, or move the
         // decoy's mount.
-        let remedy = decision.remedy().unwrap_or_default();
-        assert!(
-            remedy.starts_with("Mount the hidden volume where the decoy mounts nothing")
-                && remedy.contains("out from below /mnt"),
-            "{line}: {remedy}"
+        assert_eq!(
+            decision.remedy(Whose::Decoy).as_deref(),
+            Some(
+                "Mount the hidden volume where the decoy mounts nothing, or move this mount out \
+                 from below /mnt or remove it, before activating."
+            ),
+            "{line}"
         );
         assert!(decision.masked_units().is_empty(), "{line}: {decision:?}");
     }
@@ -323,10 +325,58 @@ fn every_entry_at_or_below_the_hidden_root_is_refused() {
         ["mnt2.mount"]
     );
     // An odd mount point is refused as before, with no remedy of its own.
+    let odd = decide_below("/mnt", "/dev/sdb5 mnt/x ext4 defaults 0 2");
+    for whose in [Whose::Decoy, Whose::HiddenSystem, Whose::HiddenRoot] {
+        assert_eq!(odd.remedy(whose), None);
+    }
     assert_eq!(
-        decide_below("/mnt", "/dev/sdb5 mnt/x ext4 defaults 0 2").remedy(),
-        None
+        odd.fstab_refusal(Whose::Decoy).as_deref(),
+        Some("fstab entry mnt/x: the mount point is not a plain absolute path")
     );
+}
+
+#[test]
+fn a_refusal_below_the_hidden_root_says_what_to_do_about_whose_mount_it_is() {
+    let decision = decide_below("/mnt/data", "/dev/sdb1 /mnt/data/usb vfat noauto 0 0");
+    let reason = "it lies at or below /mnt/data, where the hidden volume is mounted: the hidden \
+                  session could mount it over the hidden volume or inside it";
+    // The decoy's fstab line: mount the volume elsewhere or move the line.
+    assert_eq!(
+        decision.fstab_refusal(Whose::Decoy),
+        Some(format!(
+            "fstab entry /mnt/data/usb: {reason}. Mount the hidden volume where the decoy mounts \
+             nothing, or move this mount out from below /mnt/data or remove it, before \
+             activating."
+        ))
+    );
+    // A hidden NixOS generation's: its configuration has the line, and a
+    // session entered without the build can change it. The decoy is not named.
+    let hidden = decision.fstab_refusal(Whose::HiddenSystem).unwrap();
+    assert_eq!(
+        hidden,
+        format!(
+            "the hidden NixOS system's fstab entry /mnt/data/usb: {reason}. Remove this mount \
+             from the hidden NixOS configuration, or move it out from below /mnt/data there, in \
+             a hidden session entered with `activate --overlay-only`."
+        )
+    );
+    // A unit activation decides in the hidden root, which may be the hidden
+    // system's: the decoy is not named either.
+    let unit = decision.unit_refusal();
+    assert_eq!(
+        unit,
+        format!(
+            "/mnt/data/usb: refused ({reason}). Mount the hidden volume where no mount unit \
+             mounts anything, or move this mount out from below /mnt/data or remove its unit, \
+             before activating."
+        )
+    );
+    for text in [&hidden, &unit] {
+        assert!(!text.contains("decoy"), "{text}");
+    }
+    // Any other decision is no refusal.
+    let overlaid = decide_below("/mnt/data", "/dev/vda3 /home ext4 defaults 0 2");
+    assert_eq!(overlaid.fstab_refusal(Whose::Decoy), None);
 }
 
 #[test]
