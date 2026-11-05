@@ -237,6 +237,39 @@ its mutant, and that mutant must still be equivalent. The files that
 `mutants_skipped` in the justfile names are another matter: the weekly sweep
 leaves them out for its time budget, not because their mutants are equivalent.
 
+## Model checking
+
+[Kani](https://model-checking.github.io/kani/) proves a few pure invariants of
+nails-base for every input within the bounds a proof states, where a test
+checks the inputs it names. The proofs sit next to the code they check, in
+`proofs.rs` files that only `cargo kani` compiles (`#[cfg(kani)]`), so the
+build, the tests and the coverage figure leave them out. They run weekly and
+when dispatched, never on a pull request: the `kani` task of `scheduled.yml`
+runs `just kani` with the Kani release the workflow pins
+([ci.md](ci.md#important-gate-behavior)). `just kani` fails when a proof fails
+and when Kani verified fewer proofs than `nails-base/src` holds.
+
+- **The activation step order**, in `nails-base/src/reporter/progress/proofs.rs`.
+  The run order lists every phase once. It puts the runtime first, the overlay
+  before the mount policy, the policy before the hidden system's build, the
+  closure kept before that system is activated, the masks and the way back after
+  the build, and the arming of the switch last. The steps an activation shows are
+  numbered from 1 to the number of phases it runs, in that order, none skipped
+  or repeated, and a build phase of an activation that builds nothing gets no
+  number. Each proof takes every phase and both kinds of activation, one that
+  builds a hidden NixOS system and one that does not; nothing is stubbed. The
+  proofs check the table and the numbering only: that the entry reports each
+  phase once, and in this order, when it starts it is not proven.
+
+Kani is not in the development shell. To run the proofs, install the release
+that `scheduled.yml` pins, then run the recipe:
+
+```bash
+cargo install --locked kani-verifier --version 0.68.0
+cargo kani setup
+just kani
+```
+
 ## Fuzzing
 
 The parsers that read what NAILS does not control are also fuzzed, with

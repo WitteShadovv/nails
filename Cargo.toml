@@ -103,6 +103,9 @@ jsonschema = { version = "0.58.4", default-features = false }
 # single screen of logic; their thresholds live in clippy.toml.
 [workspace.lints.rust]
 unsafe_code = "deny"
+# `cargo kani` sets `cfg(kani)` for the model-checking proofs (`just kani`);
+# declared, so the normal build knows the name it leaves out.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
