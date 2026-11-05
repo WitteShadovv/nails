@@ -281,12 +281,42 @@ fn a_symlinked_fstab_mount_point_is_decided_at_its_real_path() {
     // masked unit is the one systemd generates for the real mount point,
     // var-home.mount, not home.mount, so the hidden session really masks it.
     let fstab = parse_in_root(b"/dev/sdb1 /home ext4 defaults 0 2\n", root.path());
-    let decisions = decide_fstab(&fstab, &[], Path::new("/mnt/data"), &|_| false).unwrap();
+    let decisions = decide_fstab(&fstab, &[], Path::new("/mnt/data"), &|_| false, "").unwrap();
     assert_eq!(policy::masked_units(&decisions), ["var-home.mount"]);
     // With its disk there, local-fs.target's requirement is skipped under the
     // same name.
-    let decisions = decide_fstab(&fstab, &[], Path::new("/mnt/data"), &|_| true).unwrap();
+    let decisions = decide_fstab(&fstab, &[], Path::new("/mnt/data"), &|_| true, "").unwrap();
     assert_eq!(decisions[0].skip().unwrap().units, ["var-home.mount"]);
+}
+
+#[test]
+fn an_fstab_entry_below_the_hidden_root_refuses_the_entry_with_what_to_do() {
+    // The decoy's fstab, or a hidden NixOS generation's, which activation
+    // decides the same way: a noauto disk inside the hidden volume.
+    let fstab = parse_fstab("/dev/sdb1 /mnt/data/usb vfat noauto 0 0\n");
+    let error = decide_fstab(&fstab, &[], Path::new("/mnt/data"), &|_| true, "").unwrap_err();
+    let NailsError::InvalidState(message) = &error else {
+        panic!("{error:?}");
+    };
+    assert!(
+        message.starts_with("fstab entry /mnt/data/usb: it lies at or below /mnt/data"),
+        "{message}"
+    );
+    assert!(
+        message.ends_with(
+            ". Mount the hidden volume where the decoy mounts nothing, or move this mount out \
+             from below /mnt/data or remove it, before activating."
+        ),
+        "{message}"
+    );
+    // A hidden NixOS generation's says whose fstab it is.
+    let hidden = decide_fstab(&fstab, &[], Path::new("/mnt/data"), &|_| true, HIDDEN_FSTAB)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        hidden.contains("the hidden NixOS system's fstab entry /mnt/data/usb: it lies"),
+        "{hidden}"
+    );
 }
 
 #[test]
@@ -304,7 +334,7 @@ fn the_automount_of_an_overlaid_symlinked_mount_point_is_skipped_by_its_real_pat
         b"UUID=a /home ext4 defaults,x-systemd.automount 0 2\n",
         root.path(),
     );
-    let decisions = decide_fstab(&fstab, &mounts, Path::new("/mnt/data"), &|_| false).unwrap();
+    let decisions = decide_fstab(&fstab, &mounts, Path::new("/mnt/data"), &|_| false, "").unwrap();
     // The filesystem is overlaid where the decoy has it, and the automount
     // the hidden systemd generates for that path is kept off with the same
     // resolved entries: left free, it would find the mount point taken and
@@ -358,10 +388,10 @@ fn an_entry_a_link_leads_into_the_hidden_volume_is_masked_there() {
     );
     let elsewhere = resolved_elsewhere(&decoy, in_nextroot);
     assert_eq!(elsewhere.len(), 2, "{elsewhere:?}");
-    // The hidden volume's own rule would leave them to the bind of the
-    // volume, and the hidden systemd would mount the decoy's disks read-write
-    // inside it. They are kept off there: the nofail mount masked, the
-    // automount local-fs.target requires skipped, its mount masked.
+    // The decoy's lines name paths outside the hidden volume, so they are not
+    // refused, but the hidden systemd would mount the decoy's disks
+    // read-write inside it. They are kept off there: the nofail mount masked,
+    // the automount local-fs.target requires skipped, its mount masked.
     let decisions = decide_elsewhere(&elsewhere, &[], Path::new("/mnt/data"), &|_| false).unwrap();
     assert_eq!(
         policy::masked_units(&decisions),

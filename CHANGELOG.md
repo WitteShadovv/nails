@@ -550,6 +550,16 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- A decoy whose fstab mounts something at or below the hidden root is now refused: `check` fails
+  `fstab-policy` (exit 4) and activation refuses the entry. Such an entry was left to the hidden
+  systemd, which mounts it over the hidden volume or inside it, as the volume is bound at its own
+  path in the hidden session: a decoy disk read-write among the hidden files, at boot or, for a
+  `noauto` line, once a unit or a plain `mount` pulls it in. The refusal covers an automount, a
+  tmpfs and a line for the hidden volume itself as well, in the decoy's fstab, in a hidden NixOS
+  generation's and for a mount or automount unit outside the fstab. A decoy that ran with a line
+  below the root, `/mnt/data/backup` under `/mnt/data` say, now has to mount the hidden volume where
+  its fstab mounts nothing, or move that line; the refusal names the root. A line that a link in the
+  hidden root leads below the root is still kept unmounted rather than refused.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an

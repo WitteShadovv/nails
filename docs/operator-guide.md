@@ -252,7 +252,11 @@ Keep all of it `root`-owned on the hidden volume.
      are still reached. An entry a target requires whose device is not there
      is masked, and activation warns that the hidden session will not reach
      that target. In the session `nails status` lists these units, skipped or
-     masked, with why.
+     masked, with why;
+   - an entry whose mount point is the hidden root or lies below it, `noauto`
+     or not, refuses the activation: the hidden systemd would mount it over the
+     hidden volume or inside it. Mount the hidden volume where the decoy
+     mounts nothing.
 
    The decoy's own mount, swap and automount units that a boot target links
    in its `.wants` or `.requires` directory outside the fstab (a NixOS

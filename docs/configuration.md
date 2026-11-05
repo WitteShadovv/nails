@@ -194,7 +194,20 @@ gets a fixed decision before the switch:
 | an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
 | a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back | left alone: no boot target pulls it in. A skipped unit whose pulls reach it is masked instead (see below); any other unit that pulls it in, such as a service with `RequiresMountsFor=` on it, mounts it read-write, as one of the [disks mounted during the session](#disks-mounted-during-the-session) |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
-| the hidden volume, or a path inside it | bound at its own path |
+| any entry whose mount point is the hidden volume root or lies below it: the hidden volume itself, a disk, a `noauto` or automount entry, a tmpfs | refused, and the activation with it |
+
+The hidden volume is bound at its own path in the hidden session, so the hidden
+systemd would mount a filesystem the decoy's fstab names at or below
+`hidden_volume_root` over the hidden volume or inside it: a decoy disk
+read-write among the hidden files. A `noauto` line is no exception, as any unit
+that pulls it in, or a plain `mount` of its mount point, mounts it; nor is a
+tmpfs, which would hide what lies below it. `nails check` fails `fstab-policy`
+for such an entry of the decoy's fstab, and activation refuses it there and in
+the fstab of a hidden NixOS generation. A mount or automount unit outside the
+fstab (see below) at such a path is refused the same way. Mount the hidden
+volume where the decoy mounts nothing, or move that mount out from below it.
+With `hidden_volume_root = "/mnt"`, a decoy whose fstab mounts a disk at
+`/mnt/backup` is refused.
 
 A unit kept off is masked in `/run`, or skipped where a boot target requires it:
 `local-fs.target` requires the mount of an entry without `nofail` (or its

@@ -217,6 +217,53 @@ fn a_native_mount_mounted_now_is_overlaid_or_bound_read_only() {
 }
 
 #[test]
+fn a_native_mount_or_automount_below_the_hidden_root_refuses_the_entry() {
+    // A NixOS systemd.mounts unit for a disk inside the hidden volume, and a
+    // RAM filesystem behind an automount there: each would be mounted over or
+    // inside the hidden volume, as an fstab line for the same path would.
+    let decoy = Decoy::new();
+    decoy.write(
+        "/etc/systemd/system/mnt-data-scratch.mount",
+        "[Mount]\nWhat=/dev/disk/by-id/virtio-scratch\nWhere=/mnt/data/scratch\nType=ext4\n",
+    );
+    decoy.link(
+        "/etc/systemd/system/multi-user.target.wants/mnt-data-scratch.mount",
+        "../mnt-data-scratch.mount",
+    );
+    decoy.write(
+        "/etc/systemd/system/mnt-data-ram.automount",
+        "[Automount]\nWhere=/mnt/data/ram\n",
+    );
+    decoy.write(
+        "/etc/systemd/system/mnt-data-ram.mount",
+        "[Mount]\nWhat=tmpfs\nWhere=/mnt/data/ram\nType=tmpfs\n",
+    );
+    decoy.link(
+        "/etc/systemd/system/local-fs.target.wants/mnt-data-ram.automount",
+        "../mnt-data-ram.automount",
+    );
+    let decisions = decoy.decide(ROOT_ONLY, true);
+    let refused: Vec<String> = decisions
+        .iter()
+        .filter(|decision| {
+            decision
+                .remedy()
+                .is_some_and(|r| r.contains("below /mnt/data"))
+        })
+        .map(Decision::describe)
+        .collect();
+    assert_eq!(refused.len(), 2, "{decisions:?}");
+    for target in ["/mnt/data/scratch", "/mnt/data/ram"] {
+        assert!(
+            refused
+                .iter()
+                .any(|line| line.starts_with(&format!("{target}: refused (it lies at or below"))),
+            "{target}: {refused:?}"
+        );
+    }
+}
+
+#[test]
 fn ram_kernel_and_fstab_units_and_the_decoy_s_masks_are_left_to_the_hidden_systemd() {
     let decoy = Decoy::new();
     // A tmpfs and a kernel filesystem as systemd ships them.
