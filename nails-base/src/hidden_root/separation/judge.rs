@@ -450,20 +450,20 @@ pub fn shown_fstype(fstype: &str) -> String {
     }
 }
 
-/// How a mount on a claimed filesystem was made: its root inside the
-/// filesystem tells a bind of a folder from the filesystem itself, and on
-/// btrfs a subvolume (`subvol=` names the mount's root) from a bind.
-fn sharing(hidden: &MountEntry) -> Sharing {
-    let root = hidden.root.to_string_lossy();
+/// How a mount shows its filesystem: its root inside the filesystem tells a
+/// bind of a folder from the filesystem itself, and on btrfs a subvolume
+/// (`subvol=` names the mount's root) from a bind.
+pub fn sharing(mount: &MountEntry) -> Sharing {
+    let root = mount.root.to_string_lossy();
     if root == "/" {
         return Sharing::Filesystem;
     }
-    let subvol = hidden
+    let subvol = mount
         .super_opts
         .split(',')
-        .chain(hidden.mount_opts.split(','))
+        .chain(mount.mount_opts.split(','))
         .find_map(|opt| opt.strip_prefix("subvol="));
-    if hidden.fstype == "btrfs" && subvol == Some(root.as_ref()) {
+    if mount.fstype == "btrfs" && subvol == Some(root.as_ref()) {
         Sharing::Subvolume
     } else {
         Sharing::Bind
