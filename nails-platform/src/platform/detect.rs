@@ -29,7 +29,7 @@ const OS_RELEASE: &str = "/etc/os-release";
 const CORE_ROOT_DIRS: &[&str] = &["/bin", "/sbin", "/lib"];
 
 /// Whether a Debian-family host has the merged-usr layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum UsrMerge {
     /// `/bin`, `/sbin` and `/lib` are symlinks into `/usr` (or absent, so the
     /// probe cannot contradict a merged layout). Only matched hosts reach the
@@ -37,6 +37,19 @@ enum UsrMerge {
     Merged,
     /// At least one core root is a real directory outside `/usr`.
     NotMerged,
+    /// A core root cannot be looked up, so the layout cannot be told: why,
+    /// as the refusal says it.
+    Unknown(String),
+}
+
+/// What a lookup of one of the kernel's runtime markers says: whether it is
+/// there, or why NAILS cannot tell, naming the marker and the error.
+type Marker = std::result::Result<bool, String>;
+
+/// Look up the marker at `path`.
+fn marker<F: Filesystem>(fs: &F, path: &str) -> Marker {
+    fs.path_exists(Path::new(path))
+        .map_err(|error| error.to_string())
 }
 
 /// Detect the running host.
@@ -49,6 +62,10 @@ enum UsrMerge {
 ///   [`PlatformKind::Unsupported`] with an actionable reason. Detection still
 ///   succeeds — the refusal is carried on the profile and surfaced by
 ///   [`HostProfile::require_supported`] or the [`UnsupportedPlatform`] backend.
+///   So does a host whose markers (`/run/ostree-booted`, `/run/composefs`,
+///   `/run/current-system`, the core roots of a merged layout) NAILS cannot
+///   look up where its verdict depends on them: the reason says NAILS cannot
+///   tell, naming the path and the error. Detection does not fail on them.
 /// - A host whose `ID` is `nixos`, or that has a live `/run/current-system`,
 ///   resolves to [`PlatformKind::NixOs`].
 /// - Any other systemd host resolves to [`PlatformKind::Fhs`] when the
@@ -64,8 +81,8 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
         .map(parse_os_release)
         .unwrap_or_default();
 
-    let is_ostree = fs.path_exists(Path::new(OSTREE_MARKER))?;
-    let has_current_system = fs.path_exists(Path::new(CURRENT_SYSTEM))?;
+    let is_ostree = marker(fs, OSTREE_MARKER);
+    let has_current_system = marker(fs, CURRENT_SYSTEM);
     let pid1 = read_optional(fs, Path::new(PID1_COMM));
     let pid1_comm = pid1.as_deref().map(str::trim).map(str::to_string);
     let is_systemd = pid1_comm.as_deref() == Some("systemd");
@@ -75,12 +92,12 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
     let selinux = host_facts::read_selinux(fs);
 
     let verdict = classify(
-        is_ostree,
+        &is_ostree,
         composefs_refusal,
         is_systemd,
         pid1_comm.as_deref(),
         &fields,
-        has_current_system,
+        &has_current_system,
         usr_merge,
     );
 
@@ -94,8 +111,10 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
         lsms,
         selinux,
         is_systemd,
-        is_ostree,
-        has_current_system,
+        // A marker that cannot be looked up is not shown as there: the
+        // verdict refuses the host where it would decide.
+        is_ostree: is_ostree.unwrap_or(false),
+        has_current_system: has_current_system.unwrap_or(false),
         unsupported_reason: verdict.unsupported_reason,
         support_warning: verdict.support_warning,
     })
@@ -182,15 +201,23 @@ fn unquote(value: &str) -> std::borrow::Cow<'_, str> {
 ///
 /// Returns [`UsrMerge::NotMerged`] as soon as a core root (`/bin`, `/sbin`,
 /// `/lib`) is present as a real directory rather than a symlink into `/usr`. A
-/// core root that is absent or unreadable cannot prove a split layout, so it is
-/// skipped — real supported hosts always carry these as symlinks.
+/// core root that is absent cannot prove a split layout, so it is skipped —
+/// real supported hosts always carry these as symlinks. One that cannot be
+/// looked up leaves the layout [`UsrMerge::Unknown`].
 fn probe_usr_merge<F: Filesystem>(fs: &F) -> UsrMerge {
     for dir in CORE_ROOT_DIRS {
         let path = Path::new(dir);
-        let exists = fs.path_exists(path).unwrap_or(false);
-        let is_symlink = fs.is_symlink(path).unwrap_or(false);
-        if exists && !is_symlink {
-            return UsrMerge::NotMerged;
+        let looked_up = fs
+            .is_symlink(path)
+            .and_then(|link| Ok(!link && fs.path_exists(path)?));
+        match looked_up {
+            Ok(true) => return UsrMerge::NotMerged,
+            Ok(false) => {}
+            Err(error) => {
+                return UsrMerge::Unknown(format!(
+                    "NAILS cannot tell whether {dir} is a link into /usr: {error}"
+                ));
+            }
         }
     }
     UsrMerge::Merged
@@ -245,23 +272,33 @@ impl Verdict {
 /// systemd host is then resolved to NixOS, a release the family table admits
 /// (with a warning when NAILS has not been tested on that release or edition),
 /// or a documented refusal (unsupported distribution, release below the
-/// minimum, or a non-merged layout).
+/// minimum, or a non-merged layout). A marker that could not be looked up
+/// refuses the host at the point where it would decide, saying NAILS cannot
+/// tell.
 fn classify(
-    is_ostree: bool,
+    is_ostree: &Marker,
     composefs_refusal: Option<String>,
     is_systemd: bool,
     pid1_comm: Option<&str>,
     fields: &OsReleaseFields,
-    has_current_system: bool,
+    has_current_system: &Marker,
     usr_merge: UsrMerge,
 ) -> Verdict {
-    if is_ostree {
-        return Verdict::refused(
-            "this host is ostree / image-based (found /run/ostree-booted); \
-             NAILS cannot overlay an immutable system. Use a conventional \
-             mutable installation."
-                .to_string(),
-        );
+    match is_ostree {
+        Ok(false) => {}
+        Ok(true) => {
+            return Verdict::refused(
+                "this host is ostree / image-based (found /run/ostree-booted); \
+                 NAILS cannot overlay an immutable system. Use a conventional \
+                 mutable installation."
+                    .to_string(),
+            );
+        }
+        Err(error) => {
+            return Verdict::refused(format!(
+                "NAILS cannot tell whether this host boots an ostree image: {error}"
+            ));
+        }
     }
 
     // A sealed composefs image may not write /run/ostree-booted; refuse it here,
@@ -280,8 +317,17 @@ fn classify(
         ));
     }
 
-    if fields.id.as_deref() == Some("nixos") || has_current_system {
+    if fields.id.as_deref() == Some("nixos") {
         return Verdict::admitted(PlatformKind::NixOs, None);
+    }
+    match has_current_system {
+        Ok(true) => return Verdict::admitted(PlatformKind::NixOs, None),
+        Ok(false) => {}
+        Err(error) => {
+            return Verdict::refused(format!(
+                "NAILS cannot tell whether this host is NixOS: {error}"
+            ));
+        }
     }
 
     let classification = family::classify(
@@ -300,8 +346,12 @@ fn classify(
         }
         FamilySupport::Refused(reason) => return Verdict::refused(reason).with_family(family),
     };
-    if usr_merge == UsrMerge::NotMerged {
-        return Verdict::refused(family::USR_MERGE_REFUSAL.to_string()).with_family(family);
+    match usr_merge {
+        UsrMerge::Merged => {}
+        UsrMerge::NotMerged => {
+            return Verdict::refused(family::USR_MERGE_REFUSAL.to_string()).with_family(family);
+        }
+        UsrMerge::Unknown(reason) => return Verdict::refused(reason).with_family(family),
     }
     Verdict::admitted(PlatformKind::Fhs, support_warning).with_family(family)
 }
@@ -334,6 +384,80 @@ mod tests {
         "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\nPRETTY_NAME=\"Ubuntu 26.10\"\n";
     const UBUNTU2804: &str =
         "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\nPRETTY_NAME=\"Ubuntu 28.04 LTS\"\n";
+
+    /// A marker NAILS cannot look up refuses the host where its verdict
+    /// depends on it, saying NAILS cannot tell and naming the path and the
+    /// error, and detection itself does not fail.
+    #[test]
+    fn a_marker_that_cannot_be_looked_up_refuses_where_it_decides() {
+        use std::io::ErrorKind::PermissionDenied;
+        let refused = |path: &str| {
+            let fs = host(DEBIAN13, "systemd");
+            fs.mock_set_lookup_error(path, PermissionDenied);
+            let profile = detect(&fs).expect("a lookup that fails is no detection error");
+            assert_eq!(profile.kind, PlatformKind::Unsupported, "{path}");
+            assert!(profile.require_supported().is_err(), "{path}");
+            profile.unsupported_reason.unwrap()
+        };
+        let failed = |path: &str| format!("{path}: Mock: the lookup fails here");
+        assert_eq!(
+            refused(OSTREE_MARKER),
+            format!(
+                "NAILS cannot tell whether this host boots an ostree image: {}",
+                failed(OSTREE_MARKER)
+            )
+        );
+        assert_eq!(
+            refused("/run/composefs"),
+            format!(
+                "NAILS cannot tell whether this host boots a sealed composefs image: {}",
+                failed("/run/composefs")
+            )
+        );
+        assert_eq!(
+            refused(CURRENT_SYSTEM),
+            format!(
+                "NAILS cannot tell whether this host is NixOS: {}",
+                failed(CURRENT_SYSTEM)
+            )
+        );
+        for dir in CORE_ROOT_DIRS {
+            assert_eq!(
+                refused(dir),
+                format!(
+                    "NAILS cannot tell whether {dir} is a link into /usr: {}",
+                    failed(dir)
+                )
+            );
+        }
+    }
+
+    /// A marker whose answer would not change the verdict changes nothing
+    /// when it cannot be looked up: `/run/current-system` and the core roots
+    /// of a host that says it is NixOS. One that says nothing is there is no
+    /// doubt, and a core root that is a link is not looked up further.
+    #[test]
+    fn a_marker_that_does_not_decide_changes_nothing() {
+        use std::io::ErrorKind::{NotFound, PermissionDenied};
+        let fs = host(NIXOS, "systemd");
+        fs.mock_set_lookup_error(CURRENT_SYSTEM, PermissionDenied);
+        for dir in CORE_ROOT_DIRS {
+            fs.mock_set_lookup_error(dir, PermissionDenied);
+        }
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.kind, PlatformKind::NixOs);
+        assert!(!profile.has_current_system);
+
+        let fs = host(DEBIAN13, "systemd");
+        fs.mock_set_lookup_error("/run", NotFound);
+        assert_eq!(detect(&fs).unwrap().kind, PlatformKind::Fhs);
+
+        let fs = host(DEBIAN13, "systemd");
+        fs.create_symlink(Path::new("/nowhere"), Path::new("/bin"))
+            .unwrap();
+        fs.mock_set_lookup_error("/nowhere", PermissionDenied);
+        assert_eq!(detect(&fs).unwrap().kind, PlatformKind::Fhs);
+    }
 
     #[test]
     fn nixos_by_id() {
