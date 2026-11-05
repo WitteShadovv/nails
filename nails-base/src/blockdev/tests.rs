@@ -182,7 +182,7 @@ fn device_mapper_uuids_and_names_are_classified() {
     );
     // Only that uuid, for that name: another name, a serial that is no
     // number, or another prefix makes it some other mapping.
-    for (uuid, name) in [
+    for (case, (uuid, name)) in [
         ("VERACRYPT-1762101445123456-veracrypt2", "veracrypt1"),
         ("VERACRYPT-1762101445123456-veracrypt11", "veracrypt1"),
         ("VERACRYPT-1762101445123456-veracrypt1", "veracrypt11"),
@@ -194,8 +194,11 @@ fn device_mapper_uuids_and_names_are_classified() {
         ("VERACRYPT-1-data", "data"),
         ("veracrypt-1-veracrypt1", "veracrypt1"),
         ("mpath-3600508b400105e21", "veracrypt1"),
-    ] {
-        assert_eq!(kind(uuid, name), DmKind::Other, "{uuid} {name}");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(kind(uuid, name), DmKind::Other, "case {case}");
     }
     assert_eq!(
         kind(
@@ -522,7 +525,13 @@ fn a_cascade_classifies_its_veracrypt_and_subdev_layers() {
 
     // The VeraCrypt application's own mapping carries no uuid up to 1.26.29,
     // and one of its own from 1.26.30 on.
-    for uuid in ["", "VERACRYPT-1762101445123456-veracrypt1"] {
+    for (form, uuid) in [
+        ("no uuid", ""),
+        (
+            "the uuid of 1.26.30",
+            "VERACRYPT-1762101445123456-veracrypt1",
+        ),
+    ] {
         let sysfs = Sysfs::new();
         let vc = "/sys/devices/virtual/block/dm-9";
         sysfs
@@ -533,7 +542,7 @@ fn a_cascade_classifies_its_veracrypt_and_subdev_layers() {
         assert_eq!(
             layer.dm.as_ref().map(|dm| &dm.kind),
             Some(&DmKind::VeraCrypt),
-            "{uuid}"
+            "{form}"
         );
         assert_eq!(layer.dm.as_ref().map(|dm| dm.uuid.as_str()), Some(uuid));
     }
