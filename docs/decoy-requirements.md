@@ -1180,17 +1180,19 @@ the decoy.
 Unless the decoy masks it, systemd-gpt-auto-generator acts on the partitions
 of the disk the decoy's root file system is on by their GPT type alone, at
 every boot: it mounts the first `/home`, `/srv`, `/var` or `/var/tmp`
-partition at that folder when no fstab line mounts the folder and the folder
-is empty, uses the first swap partition as swap when no fstab line names a
-swap, and asks for the passphrase first when such a partition is a LUKS
-volume. Ubuntu 24.04 and 26.04 mask it by default; Debian 13 and NixOS do
-not. Where it runs, a hidden volume on a partition of one of these types shows
-itself at the decoy's next boot, and on any decoy an examiner who reads the
-partition table sees a partition typed for a use the decoy does not have. The
-`backend-partition-type` pre-flight check, which reads no mask, refuses such a
-partition on a disk the decoy boots from and gives the command that changes
-its type to the generic Linux type, to run from a live system or where setup
-happens (see [Partition type in
+partition without the no-auto flag at that folder when no fstab line mounts
+the folder and the folder is empty, uses the first swap partition without that
+flag as swap when no fstab line names a swap, and asks for the passphrase
+first when such a partition is a LUKS volume. Ubuntu 24.04 and 26.04 mask it
+by default; Debian 13 and NixOS do not. Where it runs, a hidden volume on such
+a partition can show itself at the decoy's next boot, and on any decoy an
+examiner who reads the partition table sees a partition typed for a use the
+decoy does not have. The `backend-partition-type` pre-flight check, which
+reads no mask, refuses a partition of these types on a disk the decoy boots
+from and gives the command that changes its type to the generic Linux type, to
+run from a live system or where setup happens. With the no-auto flag, a
+`/home`, `/srv`, `/var` or `/var/tmp` partition only warns, and a swap
+partition is refused all the same (see [Partition type in
 preflight](backends.md#partition-type-in-preflight)). A hidden volume on a
 disk of its own, such as an external drive, is not affected.
 
