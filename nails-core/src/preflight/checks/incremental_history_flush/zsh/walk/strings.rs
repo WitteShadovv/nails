@@ -308,6 +308,7 @@ impl Walker<'_> {
         let outer = match name.filter(|_| regular) {
             Some(name) => {
                 self.events.push(Event::Define(name.to_string()));
+                self.events.push(Event::RegularAlias(name.to_string()));
                 name.to_string()
             }
             None => {
