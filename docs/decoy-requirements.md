@@ -1193,9 +1193,10 @@ disk an examiner who reads the partition table sees a partition typed for a
 use the decoy does not have. The `backend-partition-type` pre-flight check,
 which reads no mask, refuses a partition of these types on a disk the decoy
 boots from, whether or not the generator reads that disk, says whether it
-does, and gives the command that changes the type to the generic Linux type,
-to run from a live system or where setup happens. With the no-auto flag, a
-`/home`, `/srv`, `/var` or `/var/tmp` partition only warns, and a swap
+does (or that it cannot tell, where sysfs does not list the devices below the
+root file system), and gives the command that changes the type to the generic
+Linux type, to run from a live system or where setup happens. With the no-auto
+flag, a `/home`, `/srv`, `/var` or `/var/tmp` partition only warns, and a swap
 partition is refused all the same (see [Partition type in
 preflight](backends.md#partition-type-in-preflight)). A hidden volume on a
 disk of its own, such as an external drive, is not affected.

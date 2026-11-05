@@ -168,7 +168,8 @@ pub(super) enum Finding {
 impl Finding {
     /// The finding for `entry`, the table's entry of the partition at
     /// `place`, as sentences that start with the partition. `read` says
-    /// whether systemd-gpt-auto-generator reads the table of its disk.
+    /// whether systemd-gpt-auto-generator reads the table of its disk, or
+    /// that sysfs did not let the check tell.
     pub(super) fn of(place: Place, entry: Entry, read: Discovery) -> Self {
         let shown = capitalized(&place.shown());
         let (type_id, flags, damage) = match entry {
