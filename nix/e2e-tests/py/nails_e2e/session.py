@@ -10,6 +10,8 @@ its reader thread), fail at once if the new userspace lands in emergency mode or
 PID 1 freezes, if the trigger failed without enqueueing the switch or if QEMU
 exits, and reconnect when the new backdoor announces itself. This is the
 mechanism the soft-reboot spike (now ``soft-reboot-mechanics``) proved. A
+switch that is to power the machine off instead is followed to the power-off,
+and fails as soon as a new userspace comes up (:func:`follow_power_off`). A
 switch or a power-off that never ends is reported with what PID 1 waits on and
 the SysRq dumps (:mod:`nails_e2e.stall`).
 """
@@ -172,6 +174,27 @@ def parse_pid1_timestamps(text: str) -> dict[str, float]:
     return values
 
 
+def _start_trigger(machine: Machine, trigger: str) -> None:
+    """Run ``trigger`` in the background, with its output discarded and its
+    exit status on the serial console.
+
+    The status goes there with the system's state when it is not 0: a
+    trigger that fails while nothing is stopping never switches, and a wait
+    that reads it (:func:`trigger_failure`) stops at once instead of running
+    out its deadline. The driver runs every command under `set -euo
+    pipefail`. The trigger keeps it; the subshell around it turns errexit
+    off, or a failed trigger would end it before it reports.
+    """
+    machine.execute(
+        f"(set +e; (set -e; {trigger}) </dev/null >/dev/null 2>&1; status=$?; "
+        'state=; [ "$status" = 0 ] || '
+        "state=$(systemctl is-system-running 2>/dev/null); "
+        f'echo "{TRIGGER_EXIT_MARKER}$status $state" > {SERIAL_CONSOLE}) &',
+        check_return=False,
+        check_output=False,
+    )
+
+
 def follow_soft_reboot(
     machine: Machine,
     trigger: str,
@@ -196,21 +219,7 @@ def follow_soft_reboot(
     trigger_uptime = guest_uptime(machine)
     console_index = len(machine.full_console_log)
     if start is None:
-        # The exit status goes to the serial console, with the system's
-        # state when it is not 0: a trigger that fails while nothing is
-        # stopping never soft-reboots, and the wait below stops at once
-        # instead of running out its deadline. The driver runs every command
-        # under `set -euo pipefail`. The trigger keeps it; the subshell around
-        # it turns errexit off, or a failed trigger would end it before it
-        # reports.
-        machine.execute(
-            f"(set +e; (set -e; {trigger}) </dev/null >/dev/null 2>&1; status=$?; "
-            'state=; [ "$status" = 0 ] || '
-            "state=$(systemctl is-system-running 2>/dev/null); "
-            f'echo "{TRIGGER_EXIT_MARKER}$status $state" > {SERIAL_CONSOLE}) &',
-            check_return=False,
-            check_output=False,
-        )
+        _start_trigger(machine, trigger)
     else:
         machine.log(f"{label}: starting: {trigger}")
         start()
@@ -445,3 +454,53 @@ def wait_for_power_off(machine: Machine, timeout: float = 300.0) -> None:
                 f"the VM did not power off within {timeout:.0f} s ({why})\n{tail}"
             ) from None
     machine.wait_for_shutdown()
+
+
+def follow_power_off(
+    machine: Machine,
+    trigger: str,
+    label: str,
+    deadline_s: float = 600.0,
+) -> None:
+    """Run ``trigger`` (a shell command that enqueues a switch) and follow the
+    switch until the machine powers off instead of switching: QEMU exits and
+    the kernel said it powered off, as :func:`wait_for_real_power_off` proves.
+
+    The trigger runs as :func:`follow_soft_reboot` runs it. The wait fails at
+    once when a new userspace's backdoor announces itself (the switch went
+    through), when the new userspace is stuck, and when the trigger failed
+    without enqueueing the switch. A machine that neither powers off nor
+    switches within ``deadline_s`` is reported with what PID 1 waits on.
+    """
+    console_index = len(machine.full_console_log)
+    _start_trigger(machine, trigger)
+    machine.connected = False
+    deadline = time.monotonic() + deadline_s
+    while True:
+        lines = machine.full_console_log[console_index:]
+        failed = trigger_failure(lines)
+        if failed is not None:
+            machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+            raise AssertionError(
+                f"{label}: the trigger failed ({failed}) and never switched"
+            )
+        came_up = [line for line in lines if BACKDOOR_MARKER in line]
+        stuck = stuck_lines(lines)
+        if came_up or stuck:
+            machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+            what = f"the new userspace is stuck: {stuck[0]}" if stuck else "it switched"
+            raise AssertionError(f"{label}: the machine did not power off: {what}")
+        exited = machine.process.poll() if machine.process is not None else None
+        if exited is not None:
+            break
+        if time.monotonic() > deadline:
+            machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+            why = stall.report(machine, label)
+            raise AssertionError(
+                f"{label}: neither a power-off nor a switch {deadline_s:.0f} s after "
+                f"the trigger ({why})"
+            )
+        time.sleep(
+            0.5
+        )  # sync-lint: allow sleep -- polls the console log under the deadline above
+    wait_for_real_power_off(machine, timeout=30)

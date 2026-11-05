@@ -105,6 +105,13 @@ console, never to `/dev/console`: that is the last `console=` on the kernel
 command line, `tty0` in the NixOS test VMs, and the driver records only the
 serial port.
 
+`follow_power_off(machine, trigger, label, deadline_s=600.0)` runs a trigger
+the same way for a switch that is to power the machine off instead. It returns
+once QEMU has exited and the kernel said it powered off
+(`wait_for_real_power_off`), and fails at once when a new backdoor announces
+itself (the switch went through), when the new userspace is stuck or when the
+trigger failed.
+
 ### `lib/backend-fault.nix`
 
 - `emergencyOutcomeFn` → `emergency_outcome(trigger, label, deadline_s=600, console_index=None)`: follows a teardown with a failed backend to `"decoy"` or `"off"`
@@ -501,7 +508,10 @@ soft-reboots with `py/nails_e2e/session.py`:
   with 400 idle processes around it as on a desktop;
 - `session-interrupted-entry`: a killed activation that `status` reports as an
   interrupted entry, a plain reboot that never enters the leftover next root,
-  `recover`, Ctrl+C during the build, and emergency during an entry;
+  `recover`, Ctrl+C during the build, and emergency during an entry; PID 1
+  has the timeout guard (see `session-switch-timeout`) from the activation's
+  reload on, the killed activation leaves it, and every one of the others
+  removes it and leaves PID 1 without it;
 - `session-refused-switch`: an entry the transition refuses (a unit's stop
   hides the next root's os-release during the decoy's shutdown) coming back to
   the plain decoy with nothing of the entry left and no record on the decoy's
@@ -529,6 +539,19 @@ soft-reboots with `py/nails_e2e/session.py`:
   PID 1's status lines and its lines about the carried filesystems' unmounts
   included, after `deactivate` and after a plain `emergency`; one that undoes
   everything still returns;
+- `session-switch-timeout`: a switch held up until `soft-reboot.target`'s job
+  timeout powers the machine off instead of being forced through, on the way
+  back and on the way in, with PID 1's own line for it on the console and no
+  userspace coming up first, and each next cold boot is the plain decoy (after
+  the entry with the record still active, which `recover` resets). The node's
+  test-only unit holds up the switch for as long as its instance says (for
+  good, or 90 seconds), and a test-only drop-in shortens the timeout to a
+  minute. The hidden PID 1 has the session's drop-in with that timeout, and
+  the decoy after the way back has its own unit, on which the same hold
+  forces a plain soft-reboot through (the positive control). With a test-only
+  drop-in that sets a plain `poweroff` for the timeout instead, PID 1 skips
+  that action during the switch, and a switch held up for 90 seconds goes on
+  only when the hold ends;
 - `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
   with its store on the root disk under NixOS's read-only bind, a store path
   bound after it, a read-only bind stacked on an fstab filesystem and its ESP

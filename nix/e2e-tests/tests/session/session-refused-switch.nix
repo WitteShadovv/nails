@@ -74,6 +74,13 @@ in
         session.assert_decoy_root(machine)
         machine.fail("test -e /run/overlay-runtime")
         machine.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
+        # The timeout guard went with the drop-in: the decoy's PID 1 forces a
+        # hung switch through again, as its own unit says.
+        machine.fail("test -e /run/systemd/system/soft-reboot.target.d")
+        action = machine.succeed(
+            "systemctl show -P JobTimeoutAction soft-reboot.target"
+        ).strip()
+        assert action == "soft-reboot-force", action
         # The refused entry closes the hidden backend, as a reboot would.
         machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
         # The reason went to the hidden volume, never to the decoy's disk (the
