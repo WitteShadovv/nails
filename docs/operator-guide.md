@@ -1572,16 +1572,18 @@ afterwards:
   for an `fc` with no `-A`, `-W` or `-P`, as `alias h='fc -l'`, only when a
   file it reads uses its name, which hands that `fc` the words after it, as
   `h -W` would, and so only where the check reads how the alias is given), when
-  an alias is named like a reserved word (`alias '{'=...`, `alias do=...`),
-  which zsh expands in place of that word wherever it starts a command, when a
-  prompt holds code (`$(...)`, `${...}`) or is set in a form it does not read
-  (`print -v PS1`, `${PS1::=...}`, `read PS1`; `prompt`, `SPROMPT` and
-  `PROMPT_EOL_MARK` count as prompts too, and so does one in the environment
-  of the shell you typed the command into) and a file or the command line may
-  turn `PROMPT_SUBST` on, when a sourced file's path or a `ZDOTDIR` does not
-  resolve (as for `source <(tool init zsh)`) or zsh expands it into others (a
-  glob, `{a,b}`), when a function they autoload may be in a directory added to
-  `fpath` that does not resolve (as for NixOS's profiles,
+  an alias is named like a reserved word of the code's structure
+  (`alias '{'=...`, `alias do=...`), which zsh expands in place of that word
+  wherever it starts a command (one named like a precommand that is no builtin,
+  `!`, `time`, `nocorrect` or `-`, runs where the precommand stands, as a
+  function of its name would), when a prompt holds code (`$(...)`, `${...}`) or
+  is set in a form it does not read (`print -v PS1`, `${PS1::=...}`, `read PS1`;
+  `prompt`, `SPROMPT` and `PROMPT_EOL_MARK` count as prompts too, and so does
+  one in the environment of the shell you typed the command into) and a file or
+  the command line may turn `PROMPT_SUBST` on, when a sourced file's path or a
+  `ZDOTDIR` does not resolve (as for `source <(tool init zsh)`) or zsh expands
+  it into others (a glob, `{a,b}`), when a function they autoload may be in a
+  directory added to `fpath` that does not resolve (as for NixOS's profiles,
   `$p/share/zsh/site-functions`, where it cannot tell the profiles
   `NIX_PROFILES` names), when the dump file a `compinit -d` names does not
   resolve, when zsh may run compiled code in place of a file (the `.zwc` that

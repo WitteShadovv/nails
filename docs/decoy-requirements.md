@@ -579,10 +579,10 @@ history yourself so an interactive shell has nowhere to write:
   files use or one named like an operator (`alias -g '>'=...`), any global
   alias where a hook writes to `$TTY` or a device, a key bound to completion
   in a range (`bindkey -R`) or past a word an expansion makes, an alias named
-  like a reserved word (`alias do=...`), a prompt with code where
-  `PROMPT_SUBST` may be on or a `NULLCMD` in the environment you start the
-  shell from, and a file your startup files write before zsh reads it. It
-  follows `compinit` for a `.zshrc` that autoloads it too, when that zsh is
+  like a reserved word of the code's structure (`alias do=...`), a prompt with
+  code where `PROMPT_SUBST` may be on or a `NULLCMD` in the environment you
+  start the shell from, and a file your startup files write before zsh reads it.
+  It follows `compinit` for a `.zshrc` that autoloads it too, when that zsh is
   one from the Nix store. For any other zsh, and when the check finds no shell
   you typed into, it cannot tell where zsh finds `compinit`, and `zsh -f` is
   the one that passes. With Home Manager's `programs.zsh`, only `zsh -f`

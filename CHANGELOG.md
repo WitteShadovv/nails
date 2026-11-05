@@ -820,13 +820,11 @@ of this changelog for that version becomes the release notes word for word, and
   the user's startup files (`FPATH`, `_compdir`, `HOME`, `ZDOTDIR`, and the `NIX_PROFILES`, `USER`
   and `XDG_STATE_HOME` that NixOS's `/etc/zshenv` reads the Nix profiles with), `ARGV0`, `MAILPATH`,
   `NULLCMD`, `READNULLCMD`, whether a variable of the dynamic loader is set, and the prompts zsh
-  takes from its environment
-  (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`, `RPS2`, `RPROMPT2`, `PS3`,
-  `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and `PROMPT_EOL_MARK`); an environment that holds one of
-  them but a prompt, `MAILPATH`, `NULLCMD` or `READNULLCMD` as no UTF-8 is one it cannot read. For a
-  zsh from the Nix store as
-  nixpkgs builds it, whose
-  program names one directory of zsh's own and no path a nixpkgs build does not name, `fpath` starts
+  takes from its environment (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`,
+  `RPS2`, `RPROMPT2`, `PS3`, `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and `PROMPT_EOL_MARK`); an
+  environment that holds one of them but a prompt, `MAILPATH`, `NULLCMD` or `READNULLCMD` as no
+  UTF-8 is one it cannot read. For a zsh from the Nix store as nixpkgs builds it, whose program
+  names one directory of zsh's own and no path a nixpkgs build does not name, `fpath` starts
   there, or in the directories an `FPATH` in its environment names, so a function that no directory
   holds is none zsh can run, as an element of `fpath` the check cannot follow is a doubt of its own
   (an empty one, which zsh reads as the directory it runs in, one quotes or a scalar join into one,
@@ -896,29 +894,30 @@ of this changelog for that version becomes the release notes word for word, and
   `bindkey '^m'` or any key zsh's own completion functions do not bind), at such a widget among the
   words of a `bindkey` past one an expansion makes that zsh drops when it is empty (`${key[x]}`), at
   a `bindkey` word an expansion may make several words or the options of (`$k`, `"$@"`, `{' ',x}`,
-  `-$o`, a `"$o"` before two more words), and
-  at such an element where a file may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, at a `bindkey -s`
-  with such a word (`{q,'...^M'}`), at a `bindkey -s` or `zle -U` that types Tab, `^D` or `^X`, an
-  `fpath`
-  element that an expansion changes (`${(s:/:)fpath}`), an empty one (`fpath+=`, `FPATH=:$FPATH`),
-  one an expansion gives an array where a file may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, which
-  split it or keep its first, and `SH_WORD_SPLIT` (`zsh -y`) or `KSH_ARRAYS` on the command line, an
-  alias for `compinit`, `compdef`, `prompt` or `add-zsh-hook`, a `HOME` a file sets, which moves the
-  user's files and compinit's dump file, a `_compdir` in the environment, a `NIX_PROFILES` that
-  holds what zsh splits otherwise (`;`, `&`), and what may change NixOS's dircolors line before it
-  runs. It warns that it cannot tell, too, at arithmetic that holds an expansion other than a count
-  or a test of a parameter, or names a parameter that holds no number, which zsh reads as arithmetic
-  again and which may set one by a name the check cannot read (`n='TTY=5'; (( n ))`,
-  `(( ${n}TY = 5 ))`, `a[n]=x`, `a=([n]=x)`, `printf %d n`, `[[ n -eq 5 ]]`, `integer n`), at a
-  function or a hook made by a name zsh expands into another (`function {preexec,x}`, `function $n`,
+  `-$o`, a `"$o"` before two more words), and at such an element where a file may turn
+  `SH_WORD_SPLIT` or `KSH_ARRAYS` on, at a `bindkey -s` with such a word (`{q,'...^M'}`), at a
+  `bindkey -s` or `zle -U` that types Tab, `^D` or `^X`, an `fpath` element that an expansion
+  changes (`${(s:/:)fpath}`), an empty one (`fpath+=`, `FPATH=:$FPATH`), one an expansion gives an
+  array where a file may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, which split it or keep its first,
+  and `SH_WORD_SPLIT` (`zsh -y`) or `KSH_ARRAYS` on the command line, an alias for `compinit`,
+  `compdef`, `prompt` or `add-zsh-hook`, a `HOME` a file sets, which moves the user's files and
+  compinit's dump file, a `_compdir` in the environment, a `NIX_PROFILES` that holds what zsh splits
+  otherwise (`;`, `&`), and what may change NixOS's dircolors line before it runs. It warns that it
+  cannot tell, too, at arithmetic that holds an expansion other than a count or a test of a
+  parameter, or names a parameter that holds no number, which zsh reads as arithmetic again and
+  which may set one by a name the check cannot read (`n='TTY=5'; (( n ))`, `(( ${n}TY = 5 ))`,
+  `a[n]=x`, `a=([n]=x)`, `printf %d n`, `[[ n -eq 5 ]]`, `integer n`), at a function or a hook made
+  by a name zsh expands into another (`function {preexec,x}`, `function $n`,
   `add-zsh-hook {preexec,w}`), at a global alias the code uses, which zsh puts in place of that word
   (`function X`, `read X`), at one whose name holds an operator, a brace or a blank, or is empty,
   wherever it is defined, as zsh splits such a token off a word with no blank beside it
   (`alias -g '>'=...` stands for the `>` of `$1>$TTY`, `alias -g '}'=...` for the `}` of `$1}`) and
   the check cannot count its uses, at an `alias` with a word an expansion makes (`alias $g ...`),
-  which may be `-g`, at an alias named like a reserved word (`alias '{'=...`, `alias do=...`), which
-  zsh expands in place of that word wherever it starts a command, at a `bindkey -s` string with a
-  key that edits the line (`^A`, `^H`) and
+  which may be `-g`, at an alias named like a reserved word of the code's structure
+  (`alias '{'=...`, `alias do=...`), which zsh expands in place of that word wherever it starts a
+  command, while one named like a precommand that is no builtin (`!`, `time`, `nocorrect`, `-`) runs
+  where the precommand stands, as a function of its name would, at a `bindkey -s` string with a key
+  that edits the line (`^A`, `^H`) and
   at any such string where a file binds a key a line is typed with or makes a widget, at a write in
   a hook to a descriptor above 2 (`print -u 7`, `>&7`, `/dev/fd/7`), a `zsystem flock`, a `zsocket`
   or a `ztcp`, at a program a hook runs where a hook sets a parameter to what an expansion makes,
@@ -933,9 +932,8 @@ of this changelog for that version becomes the release notes word for word, and
   and reads what `print -z` puts in the line as a hook's code, and a redirection with no command
   (`preexec() { >/dev/null }`) as a run of `cat`, or of `more` for an input alone, which `NULLCMD`
   and `READNULLCMD` name by default, so a function of either name runs as a hook's code where a hook
-  holds one. A global alias named by a word that
-  the code does not use is no doubt where no hook writes to a device, so the commands the check took
-  as filters for one (`| grep`) are gone.
+  holds one. A global alias named by a word that the code does not use is no doubt where no hook
+  writes to a device, so the commands the check took as filters for one (`| grep`) are gone.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
