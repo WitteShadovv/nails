@@ -521,7 +521,8 @@ of this changelog for that version becomes the release notes word for word, and
   The check judges a partition the same way on every disk the decoy boots from, among them the
   disk the generator reads below `/usr` where the root file system has no single block device,
   and its texts say whether the generator reads the disk: in every systemd from 254 on, only from
-  259.1 on, or in none. Ubuntu 24.04 and 26.04 mask the generator by default; the check reads no
+  259.1 on, or in none, or that the check cannot tell, where sysfs does not list the devices below
+  the root file system. Ubuntu 24.04 and 26.04 mask the generator by default; the check reads no
   mask and judges a partition there as on any other decoy. The no-auto flag, which systemd
   honours, turns the first four into a warning; a swap partition is refused with or without it.
   The type of a root, EFI system or extended boot loader partition warns, as systemd acts on it
