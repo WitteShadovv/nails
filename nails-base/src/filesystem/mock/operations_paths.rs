@@ -15,6 +15,12 @@ fn lookup_failure(path: &Path, kind: std::io::ErrorKind) -> NailsError {
     )
 }
 
+/// The error of a lookup of `path` through links that make a loop, or more
+/// than the kernel follows: `ELOOP`, as the kernel gives it.
+fn loop_failure(path: &Path) -> NailsError {
+    NailsError::io(path, std::io::Error::from_raw_os_error(nix::libc::ELOOP))
+}
+
 /// What a lookup that asks whether something is at `path` answers when it
 /// fails with an error of `kind`: no where the error says nothing is there,
 /// as the real lookups answer, and the error otherwise.
@@ -159,15 +165,16 @@ impl MockFilesystem {
 
     /// A path that exists and is neither a directory, a link nor a whiteout,
     /// once the links `create_symlink` recorded are followed. A link the mock
-    /// cannot follow (one marked with `mock_set_path_type` alone, or a loop)
-    /// is no regular file, as a dangling link is none to `stat`; a whiteout is
-    /// the character device it is on a real overlay's upper. A lookup error
-    /// set on the way, or where a link leads, fails it.
+    /// has no target for (one marked with `mock_set_path_type` alone) is no
+    /// regular file, as a dangling link is none to `stat`; a whiteout is the
+    /// character device it is on a real overlay's upper. Links that make a
+    /// loop fail it with `ELOOP`, as they fail `stat`, and so does a lookup
+    /// error set on the way or where a link leads.
     pub(super) fn is_regular_file_impl(&self, path: &Path) -> Result<bool> {
         let target = match self.resolve(path) {
             Ok(target) => target,
             Err(Unresolved::Fails(kind)) => return absent_or_failure(path, kind),
-            Err(Unresolved::Loop) => return Ok(false),
+            Err(Unresolved::Loop) => return Err(loop_failure(path)),
         };
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(&target).is_some_and(|info| {
@@ -216,13 +223,7 @@ impl MockFilesystem {
     pub(super) fn canonicalize_impl(&self, path: &Path) -> Result<PathBuf> {
         self.resolve(path).map_err(|unresolved| match unresolved {
             Unresolved::Fails(kind) => lookup_failure(path, kind),
-            Unresolved::Loop => NailsError::io(
-                path,
-                std::io::Error::other(format!(
-                    "too many levels of symbolic links: {}",
-                    path.display()
-                )),
-            ),
+            Unresolved::Loop => loop_failure(path),
         })
     }
 
