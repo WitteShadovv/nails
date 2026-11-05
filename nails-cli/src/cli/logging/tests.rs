@@ -795,3 +795,21 @@ mod kernel_tests {
         });
     }
 }
+
+/// A refused host, and one whose detection failed, write no log file; a host
+/// NAILS runs on may.
+#[test]
+fn only_a_host_nails_runs_on_admits_a_log_file() {
+    use nails_core::platform::{FakePlatform, PlatformKind};
+    let profile = |kind| Ok(FakePlatform::new(kind).host_profile());
+    assert!(super::admits_file_logging(profile(PlatformKind::NixOs)));
+    assert!(super::admits_file_logging(profile(PlatformKind::Fhs)));
+    assert!(!super::admits_file_logging(profile(
+        PlatformKind::Unsupported
+    )));
+    let failed = nails_core::NailsError::io(
+        "/run/ostree-booted",
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+    );
+    assert!(!super::admits_file_logging(Err(failed)));
+}

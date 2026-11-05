@@ -439,17 +439,23 @@ impl<F: Filesystem> Verifier<F> {
     /// Run the detected platform's read-only drift scanners, returning their
     /// findings and the areas they could not inspect.
     ///
-    /// The host is detected from the live filesystem; a detection failure (an
-    /// unreadable `/etc/os-release`, say) is not fatal — it simply means no
-    /// platform scanner runs. Scanners are dispatched by platform kind rather
-    /// than through a boxed trait object so this stays free of a `'static` bound
-    /// on the verifier.
+    /// The host is detected from the live filesystem. A detection that fails,
+    /// a host detection refuses (one whose markers NAILS cannot look up among
+    /// them) and a scanner that fails run no scanner, or none to its end, and
+    /// each says so in the areas not checked, so a clean result never hides
+    /// a drift scan that did not run. Scanners are dispatched by platform kind
+    /// rather than through a boxed trait object so this stays free of a
+    /// `'static` bound on the verifier.
     fn run_platform_scanners(&self) -> (Vec<Finding>, Vec<String>) {
         use super::scanners::{ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner};
         use crate::platform::PlatformKind;
 
-        let Ok(profile) = crate::platform::detect(&self.filesystem) else {
-            return (Vec::new(), Vec::new());
+        let not_run = |why: String| (Vec::new(), vec![format!("platform drift scanners ({why})")]);
+        let profile = match crate::platform::detect(&self.filesystem) {
+            Ok(profile) => profile,
+            Err(error) => {
+                return not_run(format!("not run: the host could not be detected: {error}"));
+            }
         };
 
         let rebase = |path: &Path| self.rebase(path);
@@ -462,11 +468,19 @@ impl<F: Filesystem> Verifier<F> {
         let result = match profile.kind {
             PlatformKind::NixOs => scan(&NixOsStateNoteScanner),
             PlatformKind::Fhs => scan(&DebianPackageDriftScanner),
-            PlatformKind::Unsupported => return (findings, not_checked),
+            PlatformKind::Unsupported => {
+                let why = profile
+                    .unsupported_reason
+                    .unwrap_or_else(|| "the host is not one NAILS supports".to_string());
+                return not_run(format!("not run on a host NAILS refuses: {why}"));
+            }
         };
-        if let Ok(outcome) = result {
-            findings.extend(outcome.findings);
-            not_checked.extend(outcome.not_checked);
+        match result {
+            Ok(outcome) => {
+                findings.extend(outcome.findings);
+                not_checked.extend(outcome.not_checked);
+            }
+            Err(error) => not_checked.push(format!("platform drift scanners (failed: {error})")),
         }
 
         (findings, not_checked)
