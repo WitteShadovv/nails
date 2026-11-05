@@ -157,7 +157,7 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `backend_watch.debounce_secs` | integer (seconds) | `15` | How long a failure must persist before an opted-in automatic emergency fires. Ignored unless `backend_watch.auto_emergency` is `true`. |
 | `backend_watch.enabled` | boolean | `true` | Run the backend watcher as a runtime unit of the hidden session. The watcher polls the hidden backend and alerts you when it fails. With `false` and `session_mounts.alert` and `session_mounts.read_only` both `false`, no watcher runs. See [Backend watcher](#backend-watcher). |
 | `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
-| `session_mounts.alert` | boolean | `true` | Alert when a disk outside the hidden volume is mounted read-write during the hidden session (a USB drive udisks automounts, a manual `mount`). The session watcher raises the alert, and runs for it even with `backend_watch.enabled = false`. See [Disks mounted during the session](#disks-mounted-during-the-session). |
+| `session_mounts.alert` | boolean | `true` | Alert when a disk that is not the session's own storage, one below the hidden root included, is mounted read-write during the hidden session (a USB drive udisks automounts, a manual `mount`). The session watcher raises the alert, and runs for it even with `backend_watch.enabled = false`. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `session_mounts.read_only` | boolean | `false` | Opt-in: make every disk the hidden session does not use read-only at the block layer for the session, the disks present at entry and every disk attached during it, so a mount comes up read-only and writes fail. The way back makes them writable again. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds sleep and idle block inhibitors for the life of the session so the host cannot suspend, and takes the lid switch from logind when a closed lid would sleep. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `lock`. See [Sleep policy](#sleep-policy). |
 | `window.emergency` | `"return"`, `"poweroff"` or `"reboot"` | `"return"` | How the window's Emergency control ends a hidden session, chosen in advance since its gesture asks nothing: `return` goes back to the decoy's login screen as `nails emergency` does, or powers off where its way back does, `poweroff` powers off as `nails emergency --poweroff` does, and `reboot` reboots fully as `nails emergency --reboot` does. Only the window reads it: the hot path of `nails emergency` acts before any configuration is read. Where the window cannot be sure the session ends so, as while Verify runs or where it cannot read the setting or reach NAILS, the control powers off. See [The window's Emergency control](#the-windows-emergency-control). |
@@ -609,16 +609,15 @@ writes.
   session's own mounts never alert: the root and the decoy filesystems are
   overlays, the ESP is a read-only bind, and below the hidden root the session
   owns the hidden volume, told by its device (the volume, a bind of a folder of
-  it, a disk image on it through its loop device), and its own mounts below
-  `<hidden_volume_root>/root`, where it carries the decoy filesystems the way
-  back needs. A mount outside the hidden root alerts even when it shows the
-  hidden volume. In a session that an older release entered, whose plan does
-  not record the hidden volume's device, every mount below the hidden root
-  still counts as the session's own. A mount made inside another mount
-  namespace (a service with private mounts) is not in the watcher's table. A
-  disk mounted over the hidden root itself, or over one of its parents, always
-  raises its own alert ("Disk mounted over a folder in use") instead, whatever
-  this setting, while the watcher runs.
+  it, and a disk image on it mounted straight from its loop device, but not a
+  partition of such a loop device or a mapping over one), and every mount
+  below `<hidden_volume_root>/root`, told by its path: there NAILS keeps its
+  layers and carries the decoy filesystems the way back needs. A mount outside
+  the hidden root alerts even when it shows the hidden volume. A mount made
+  inside another mount namespace (a service with private mounts) is not in the
+  watcher's table. A disk mounted over the hidden root itself, or over one of
+  its parents, always raises its own alert ("Disk mounted over a folder in
+  use") instead, whatever this setting, while the watcher runs.
 - **Read-only** (`session_mounts.read_only`, opt-in). Every disk the session
   does not use is made read-only at the block layer for the session. The kernel
   then refuses a read-write mount: `mount` falls back to read-only with a
@@ -631,14 +630,17 @@ writes.
   fallback. The decoy root's disk, the hidden backend and everything it sits
   on, the ESP and the decoy filesystems the session carries stay writable, as
   do virtual devices (loop, device mapper, zram); a disk mounted below the
-  hidden root does not. The way back, `deactivate` and
+  hidden root does not, unless it lies below `<hidden_volume_root>/root` (see
+  the limits below). The way back, `deactivate` and
   `emergency` alike, makes exactly the disks the session set read-only writable
   again before the switch, so the decoy finds them as it left them.
 - **The way back.** `nails deactivate` unmounts every disk mounted during the
   session before it soft-reboots (a busy one is detached; the soft-reboot ends
   its users), so the decoy can mount it again normally. That includes a disk
-  mounted below the hidden root, but not the session's own storage there. After
-  an emergency, the soft-reboot's own shutdown unmounts them.
+  mounted below the hidden root, but not the session's own storage there. A
+  disk mounted over the hidden root itself is not unmounted: `deactivate`
+  refuses while one covers the root, so unmount it first. After an emergency,
+  the soft-reboot's own shutdown unmounts them.
 
 **Limits.** A root user in the hidden session can always mount a disk: setting
 it writable again (`blockdev --setrw`) and mounting it is a deliberate act, and
@@ -646,7 +648,11 @@ the alert still fires for the read-write mount. The block-layer flag does not
 stop writes through a filesystem already mounted read-write before the flag was
 set (the watcher's fallback can be a poll late); the udev rule is not, which is
 why it is the first line. A disk that is part of the session (the one the hidden
-volume or the decoy root lives on) stays writable as a whole device.
+volume or the decoy root lives on) stays writable as a whole device. Below
+`<hidden_volume_root>/root`, where NAILS keeps its layers, every mount counts as
+the session's own, told by its path: a disk mounted there by hand raises no
+alert, the watcher does not set it read-only again once it is mounted there,
+and the way back leaves it mounted. Mount nothing there.
 
 ## Sleep policy
 

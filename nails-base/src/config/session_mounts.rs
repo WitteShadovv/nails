@@ -10,7 +10,8 @@
 //! writes. Two answers, both in the hidden session:
 //!
 //! - **alert** (default on): the session watcher raises a neutral desktop alert
-//!   for every read-write mount of a block device outside the hidden volume;
+//!   for every read-write mount of a block device that is not the session's
+//!   own storage, one mounted below the hidden root included;
 //! - **read-only** (opt-in): every disk the session does not itself use is
 //!   made read-only at the block layer for the session, the ones present at
 //!   entry and every one attached later, so a mount comes up read-only and a
@@ -30,8 +31,9 @@ fn default_alert() -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionMountsConfig {
-    /// Alert when a block device outside the hidden volume is mounted
-    /// read-write during the session. Defaults to `true`. The alert comes from
+    /// Alert when a block device that is not the session's own storage, one
+    /// below the hidden root included, is mounted read-write during the
+    /// session. Defaults to `true`. The alert comes from
     /// the session watcher, which then runs even with `backend_watch.enabled =
     /// false`.
     #[serde(default = "default_alert")]

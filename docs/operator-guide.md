@@ -1853,10 +1853,10 @@ read-write mount of it takes your writes (mounting it read-write alone already
 writes its superblock).
 
 - The session watcher raises a desktop alert ("Disk mounted with write access")
-  for every read-write mount of a disk outside the hidden volume
-  (`session_mounts.alert`, on by default). Its alerts appear on the desktop of
-  the account logged in on the machine's own screen; while nobody is logged in
-  there, none can be shown.
+  for every read-write mount of a disk that is not the session's own storage,
+  one mounted below the hidden root included (`session_mounts.alert`, on by
+  default). Its alerts appear on the desktop of the account logged in on the
+  machine's own screen; while nobody is logged in there, none can be shown.
 - A disk mounted over the hidden root itself (with `/mnt` as the root, an
   ordinary `mount /dev/sdc1 /mnt`) takes every file saved under `/mnt` from
   then on. The watcher raises "Disk mounted over a folder in use", naming the
