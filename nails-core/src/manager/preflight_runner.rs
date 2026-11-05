@@ -152,7 +152,8 @@ pub fn build_registry<F: Filesystem>(
         InspectedShell, LocateDatabaseCheck, MemoryWipeCheck, MountNamespaceCheck,
         NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck, OuterVolumeCheck,
         PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
-        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpgradeRunCheck,
+        UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
@@ -212,6 +213,11 @@ pub fn build_registry<F: Filesystem>(
         nails_teardown::whole_root::tools::find(None, nails_teardown::whole_root::logind::BUSCTL),
         nails_teardown::whole_root::tools::find(None, "systemctl"),
     )));
+    // A daily unattended-upgrade run takes no shutdown block outside its dpkg
+    // runs, but at the switch unattended-upgrades' shutdown helper stops it
+    // and logs that on the decoy disk: refused until the run ends, with no
+    // flag to lift it. The entry looks again right before the switch.
+    registry.add_check(Box::new(UpgradeRunCheck::new()));
 
     // The way back mounts the decoy root again by device.
     registry.add_check(Box::new(DecoyRootCheck::new(paths.root.clone())));

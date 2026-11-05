@@ -52,7 +52,7 @@ use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
 use crate::state::{LastActivation, SystemState};
 use chrono::Utc;
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What `activate` asked for.
 #[derive(Debug, Clone, Default)]
@@ -544,13 +544,17 @@ impl<F: Filesystem> NailsManager<F> {
         target: &dyn TargetHost,
         entry_host: &dyn EntryHost,
     ) -> Result<()> {
-        // A program that blocks shutdown refuses the switch before anything
-        // of it happens: before the decoy's shells die and before logind
-        // tells every program waiting for its signal that the system goes
-        // down.
-        let enqueued = target.may_switch().and_then(|()| {
-            target.start_target(nails_teardown::whole_root::tools::SOFT_REBOOT_TARGET)
-        });
+        // A daily unattended-upgrade run in progress, or a program that
+        // blocks shutdown, refuses the switch before anything of it happens:
+        // before the decoy's shells die and before logind tells every
+        // program waiting for its signal that the system goes down. A run
+        // can have started since the pre-flight checks.
+        let enqueued = self
+            .upgrade_run_refusal(&machine.paths.root)
+            .and_then(|()| target.may_switch())
+            .and_then(|()| {
+                target.start_target(nails_teardown::whole_root::tools::SOFT_REBOOT_TARGET)
+            });
         if enqueued.is_err() {
             entry::rollback(&machine.paths);
             let _ = entry_host.daemon_reload();
@@ -559,6 +563,17 @@ impl<F: Filesystem> NailsManager<F> {
         // The activation ends here: with the switch enqueued, or rolled back.
         crate::reporter::progress::finish(enqueued.is_ok());
         enqueued
+    }
+
+    /// Refuse the entry while a daily unattended-upgrade run is in progress
+    /// on the decoy under `root` ([`upgrade_run`](crate::preflight::upgrade_run::upgrade_run)),
+    /// the last look of the `unattended-upgrade-run` check.
+    fn upgrade_run_refusal(&self, root: &Path) -> Result<()> {
+        let run = crate::preflight::upgrade_run::upgrade_run(&self.filesystem, root);
+        match run.refusal() {
+            None => Ok(()),
+            Some(why) => Err(NailsError::InvalidState(format!("{why}. {}", run.fix()))),
+        }
     }
 
     /// Leave the hidden root: soft-reboot back to the plain decoy (or power
