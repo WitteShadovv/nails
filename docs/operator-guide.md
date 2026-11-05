@@ -324,15 +324,18 @@ Keep all of it `root`-owned on the hidden volume.
    below `/run/nextroot` during the switch, or a LUKS or LVM decoy root on the
    way back. Debian's copy of that unit has no other command, so the drop-in
    also gives it a start command that does nothing; without one, systemd would
-   refuse to load the unit. A third makes a switch that hangs until
+   refuse to load the unit. Another makes a switch that hangs until
    `soft-reboot.target`'s job timeout (30 minutes) power the machine off, in
    place of the forced switch that would skip the transition step (see "The
    switch stops halfway" under [Specific situations](#specific-situations)).
    It sets that by force, `JobTimeoutAction=poweroff-force`: systemd skips a
-   plain `poweroff` there, as the switch's shutdown is under way. The
-   activation refuses when, once loaded, a drop-in of the decoy's that sorts
-   after it sets the action again. The way back removes these drop-ins, and
-   leaves any other drop-in the decoy had for these units in place. Ctrl+C (or a
+   plain `poweroff` there, as the switch's shutdown is under way. It stays
+   until the way back, or until the activation is undone, and covers every
+   soft-reboot in that time, one you start by hand in the hidden session
+   included. The activation refuses when, once loaded, a drop-in of the
+   decoy's that sorts after it sets the action again. The way back removes
+   these drop-ins, and leaves any other drop-in the decoy had for these units
+   in place. Ctrl+C (or a
    SIGTERM) up to this point cancels the activation: it stops at the next step,
    takes down the next root and removes what it set up in `/run` (the runtime
    files, and the drop-ins and masks there), and the command exits with status
@@ -1996,16 +1999,22 @@ NAILS's NixOS VM tests 7 of about 13,000 switches stopped this way, all on the
 way in, and one on the way back in a test run set up to provoke it. Press Alt+Up
 with the left Alt key on the computer's keyboard: in the tests that woke PID 1
 and the switch went on. If nothing happens, power off. If you leave it, the
-machine powers itself off about 30 minutes after the switch began. Left to
-itself, systemd would switch by force at that point (the job timeout of
-`soft-reboot.target`) and skip NAILS's last step before the switch: on the way
-in the hidden session would start without the masks that keep its systemd from
-swapping onto a decoy disk or mounting one read-write, and on the way back the
-decoy would start with the hidden session's files in `/run`. During a switch,
-in both directions, NAILS makes that timeout power the machine off instead, and
-the hidden session never starts on the way in. The same holds for a switch
-that anything else holds up that long, such as a service whose stop never
-ends. The decoy then comes up as after a power loss (see below).
+machine powers itself off about 30 minutes after the switch began. That is the
+job timeout of `soft-reboot.target`, at which systemd's own unit switches by
+force and skips NAILS's last step before the switch: on the way in the hidden
+session would start without the masks that keep its systemd from swapping onto
+a decoy disk or mounting one read-write, and on the way back the decoy would
+start with the hidden session's files in `/run`. NAILS makes that timeout power
+the machine off instead, in both directions, from activation until the way
+back, so on the way in the hidden session never starts. The same holds for a
+switch that anything else holds up that long, such as a service whose stop
+never ends, and for any other soft-reboot in that time. Nothing happens by
+itself when service watchdogs are turned off (`systemd.service_watchdogs=0` on
+the kernel command line, or `systemctl service-watchdogs no`), as systemd then
+takes no action at a job timeout, nor when a drop-in sets
+`JobTimeoutSec=infinity` for `soft-reboot.target`. A drop-in with another value
+moves the 30 minutes. Once the machine is off, the decoy comes up as after a
+power loss (see below).
 
 systemd fixed that issue in 259.10, 260.6, 261.4 and 262.1. The releases before
 them in each series have it (259 to 259.9, 260 to 260.5, 261 to 261.3 and 262).
