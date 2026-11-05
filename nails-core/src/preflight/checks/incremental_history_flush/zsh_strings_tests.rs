@@ -378,6 +378,9 @@ fn keys_that_edit_the_line_or_a_name_glued_to_a_key_in_a_bindkey_s_count() {
         // A string bound in another keymap, where keys are commands.
         "bindkey -M vicmd -s Q 'x^M'\n",
         "bindkey -a -s Q 'x^M'\n",
+        // A brace expansion, which zsh 5.9.2 makes two words of here: `q`
+        // then types the line that defines the hook.
+        "bindkey -s {q,'preexec() { print -r -- $1 >>~/.zl }^M'}\n",
     ] {
         assert_ne!(read(rc), Scan::default(), "{rc}");
     }
