@@ -8,7 +8,8 @@
 
 > **Amnesic decoy first.** NAILS requires a decoy base that keeps no durable
 > record of the hidden session. Activation fails closed on a persistent journald
-> journal, an active syslog/audit daemon or an armed kdump. Read
+> journal, an active syslog/audit daemon, an armed kdump or unattended-upgrades
+> set to install at shutdown. Read
 > [decoy-requirements.md](decoy-requirements.md) and set the decoy up before you
 > rely on NAILS.
 
@@ -205,7 +206,10 @@ Keep all of it `root`-owned on the hidden volume.
    program blocks shutdown: one that does, such as a package or firmware
    update, is in the middle of something the switch would cut short; a logind
    that does not answer whether one does fails it too, unless PID 1 says
-   logind does not run),
+   logind does not run), `unattended-upgrade-run` (no daily unattended-upgrade
+   run is in progress, which the switch would make unattended-upgrades'
+   shutdown helper stop and log on the decoy disk; try again in a few minutes,
+   see [the decoy requirements](decoy-requirements.md#unattended-upgrades)),
    `fstab-policy`,
    `kernel-modules` (no hidden session deleted or replaced the running
    kernel's module tree or its index; it only warns, see
@@ -283,6 +287,10 @@ Keep all of it `root`-owned on the hidden volume.
    here: activation fails with the reason, takes down the next root and
    removes what it set up in `/run`, as a cancel does (below), with the
    decoy's shells and every other program left as they were.
+   It stops here too while a daily unattended-upgrade run is in progress
+   (`apt-daily-upgrade.service` active, or a process holding
+   `/run/unattended-upgrades.lock`), looked at once more right before logind
+   is asked, as one can start while the entry is prepared.
    Otherwise it kills the decoy's interactive shells and soft-reboots the way
    `systemctl soft-reboot` does, through logind. logind first tells the
    programs that wait for its shutdown signal that the system is going down
@@ -290,11 +298,12 @@ Keep all of it `root`-owned on the hidden volume.
    `InhibitDelayMaxSec=` (5 seconds by default; unattended-upgrades on Debian
    and Ubuntu raises it to 30). unattended-upgrades' shutdown helper is one of
    them: stopped without that signal, it writes a line to its log in
-   `/var/log/unattended-upgrades` that an ordinary shutdown does not. With
-   `Unattended-Upgrade::InstallOnShutdown` set, it installs the pending
-   updates on that signal, at every activation as at every shutdown, and the
-   switch waits for them, past logind's delay too
-   ([decoy requirements](decoy-requirements.md#ubuntu)). Activation stays
+   `/var/log/unattended-upgrades` that an ordinary shutdown does not. On the
+   signal it stops a run it finds in progress and logs that, and with
+   `Unattended-Upgrade::InstallOnShutdown` on it installs the pending updates,
+   at every activation as at every shutdown; the pre-flight checks refuse both
+   ([decoy requirements](decoy-requirements.md#unattended-upgrades)).
+   Activation stays
    until PID 1 holds the soft-reboot's job: until then `status` shows it
    activating and `recover` leaves it alone, and the decoy's desktop runs on,
    so activation keeps killing every interactive shell opened meanwhile

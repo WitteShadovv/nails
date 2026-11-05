@@ -12,6 +12,50 @@ use crate::residue_catalog::{Channel, E2e, Platforms, Probe, ResidueClass, Resid
 /// The decoy's services and mechanisms, in the order the catalog lists them.
 pub(super) const ROWS: &[ResidueClass] = &[
     ResidueClass {
+        id: "unattended-upgrades-install-on-shutdown",
+        title: "unattended-upgrades set to install at shutdown",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&[
+            "/var/log/unattended-upgrades",
+            "/var/log/apt",
+            "/var/log/dpkg.log",
+        ]),
+        platforms: Platforms::DEBIAN,
+        risk: "With Unattended-Upgrade::InstallOnShutdown on, unattended-upgrades' shutdown helper takes every switch for a shutdown: at activation it installs the pending updates on the decoy disk and logs that run there, so the decoy keeps the record of a shutdown at the time of the switch, and its packages change. At the way back the hidden session's own copy installs them into the session's overlay.",
+        preflight: Probe::Check("decoy-persistence"),
+        preflight_blocks: true,
+        verify: Probe::None(
+            "the logs and the packages are the decoy's own, as after any shutdown that installs updates",
+        ),
+        mitigation: "Activation refuses while the decoy's helper runs with the setting on, or when NAILS cannot read apt's configuration, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false.",
+        doc_anchor: "decoy-requirements.md#unattended-upgrades",
+        e2e: E2e::None(
+            "asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override",
+        ),
+        residual: false,
+        conclusion: None,
+    },
+    ResidueClass {
+        id: "unattended-upgrades-run-at-the-switch",
+        title: "A daily unattended-upgrade run at the switch",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/var/log/unattended-upgrades"]),
+        platforms: Platforms::DEBIAN,
+        risk: "While a run of unattended-upgrade holds its lock (a daily run planning, downloading or between its install steps, when APT blocks no shutdown), the switch makes unattended-upgrades' shutdown helper send it SIGTERM and write `Unattended-upgrade in progress during shutdown` to its log on the decoy disk, and the run logs that it stops, whatever Unattended-Upgrade::InstallOnShutdown says.",
+        preflight: Probe::Check("unattended-upgrade-run"),
+        preflight_blocks: true,
+        verify: Probe::None(
+            "the lines are the decoy's own logs, as after a shutdown during a daily run",
+        ),
+        mitigation: "Activation refuses while apt-daily-upgrade.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended.",
+        doc_anchor: "decoy-requirements.md#unattended-upgrades",
+        e2e: E2e::None(
+            "asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run",
+        ),
+        residual: false,
+        conclusion: None,
+    },
+    ResidueClass {
         id: "pending-offline-update",
         title: "Pending offline update",
         kind: ResidueKind::Session,

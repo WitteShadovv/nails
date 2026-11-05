@@ -119,13 +119,23 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 | [Classic syslog daemon](#fail-closed-activation-is-refused) | A syslog daemon (rsyslog, syslog-ng, a syslogd, metalog or socklog) writes every logged line to /var/log on the decoy disk, outside the journal. |
 | [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. |
 | [Armed kdump](#fail-closed-activation-is-refused) | If the kernel crashes during a hidden session, kdump's crash kernel mounts the decoy root by its device, outside the session's overlay, and writes a dump of kernel memory (which can hold the hidden volume's key) and the session's kernel log to /var/crash on the decoy disk. |
+| [unattended-upgrades set to install at shutdown](#unattended-upgrades) | With Unattended-Upgrade::InstallOnShutdown on, unattended-upgrades' shutdown helper takes every switch for a shutdown: at activation it installs the pending updates on the decoy disk and logs that run there, so the decoy keeps the record of a shutdown at the time of the switch, and its packages change. At the way back the hidden session's own copy installs them into the session's overlay. |
 <!-- residue-catalog:end fail-closed -->
 
 Override these per run with `--allow-persistent-decoy` on `activate`/`check`,
 only if you understand and
 accept that what the decoy logs around each soft-reboot may survive on the
-decoy disk, and that a kernel crash during the session can leave a dump of its
-memory there.
+decoy disk, that a kernel crash during the session can leave a dump of its
+memory there, and that unattended-upgrades set to install at shutdown installs
+the pending updates on the decoy disk at activation and logs that run there
+(see [Unattended upgrades](#unattended-upgrades)).
+
+The `unattended-upgrade-run` check refuses too, and no flag lifts its refusal:
+while a daily unattended-upgrade run is in progress, the switch would make
+unattended-upgrades' shutdown helper stop it and write
+`Unattended-upgrade in progress during shutdown` to its log on the decoy disk.
+Try again in a few minutes, once the run has ended (see
+[Unattended upgrades](#unattended-upgrades)).
 
 The `locate-database` check refuses as well, and no flag lifts its refusal:
 an updatedb that runs now, or that a timer, a path unit, an enabled service or
@@ -226,6 +236,12 @@ volatile can count as persistent. Run them with sudo.
   files it writes under `/var/lib/sss`. NAILS is not tested on a decoy joined
   to a domain, whose domain controller records the hidden session's logins;
   see [Decoys joined to a domain](#decoys-joined-to-a-domain).
+- **unattended-upgrades in a hidden session** — the hidden session's own copy
+  of unattended-upgrades' shutdown helper set to install at shutdown: the
+  decoy's helper is stopped but enabled, so the session starts it, or the
+  session's overlay turns the setting on. At the way back it installs the
+  pending updates into the session's overlay on the hidden volume; see
+  [Unattended upgrades](#unattended-upgrades).
 
 The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
@@ -456,12 +472,11 @@ logind.
   drop-in that sets `Storage=persistent` is caught too.
 - Remove or disable `rsyslog`, any other syslog daemon and `auditd` if
   installed.
-- Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off.
-  With it, the decoy installs its pending updates at every activation, as at
-  every shutdown: they land on the decoy disk, and the switch waits for them.
-  logind waits up to 30 seconds, then PID 1 stops the helper, which writes its
-  SIGTERM line to its log on the decoy disk after all and stops the update,
-  for which PID 1 waits up to 30 minutes.
+- Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off, or
+  set it to `false`. With it on, the decoy's shutdown helper installs the
+  pending updates on the decoy disk at every activation, as at every shutdown,
+  and `decoy-persistence` refuses it (see
+  [Unattended upgrades](#unattended-upgrades)).
 - If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
@@ -485,12 +500,11 @@ logind.
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable the syslog daemon (`rsyslog`, `syslog-ng`,
   `inetutils-syslogd`, `busybox-syslogd`, `sysklogd`) and `auditd`.
-- Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off.
-  With it, the decoy installs its pending updates at every activation, as at
-  every shutdown: they land on the decoy disk, and the switch waits for them.
-  logind waits up to 30 seconds, then PID 1 stops the helper, which writes its
-  SIGTERM line to its log on the decoy disk after all and stops the update,
-  for which PID 1 waits up to 30 minutes.
+- Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off, or
+  set it to `false`. With it on, the decoy's shutdown helper installs the
+  pending updates on the decoy disk at every activation, as at every shutdown,
+  and `decoy-persistence` refuses it (see
+  [Unattended upgrades](#unattended-upgrades)).
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
@@ -712,6 +726,85 @@ the soft-reboot, which stops the decoy's services before it switches. On NixOS,
 unless activation runs with `--overlay-only`, it also spans the build of the
 hidden system, the copy of its closure onto the hidden volume and its
 activation, which can take minutes.
+
+## Unattended upgrades
+
+unattended-upgrades (Debian, Ubuntu) runs a shutdown helper,
+`unattended-upgrades.service`, that waits for logind's shutdown signal. Every
+switch sends that signal, as `systemctl soft-reboot` does, and the helper does
+not ask what kind of shutdown comes. Two things then reach the decoy disk.
+
+**A daily run in progress.** When the signal comes while a run of
+unattended-upgrade holds its lock, `/run/unattended-upgrades.lock`, the helper
+sends the run SIGTERM and writes `Unattended-upgrade in progress during
+shutdown` to `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log`,
+and the run writes that it stops to `unattended-upgrades.log`, whatever
+`Unattended-Upgrade::InstallOnShutdown` says. A run holds the lock while it
+plans, downloads and between its install steps, but APT blocks shutdown only
+while dpkg runs, so `shutdown-inhibitors` does not see it.
+`apt-daily-upgrade.service` starts the daily run (its timer fires once a day,
+in the hour after 6:00, and after a boot that missed it), and
+`apt-daily.service` takes the lock for its download. The `unattended-upgrade-run` check refuses while
+`apt-daily-upgrade.service` is active or a process holds the lock, and
+activation looks again right before it asks logind for the switch. No flag
+lifts it: try again in a few minutes, once the run has ended
+(`systemctl status apt-daily-upgrade.service`). It tells the lock is held from
+the kernel's list of file locks, `/proc/locks`, by the lock file's device and
+inode, so the lock file is neither opened nor locked. When it cannot read
+them, it refuses as well.
+
+**An install at shutdown.** With `Unattended-Upgrade::InstallOnShutdown` on,
+the helper reads apt's configuration again on the signal and runs an install
+of the pending updates its settings allow: at activation on the decoy disk,
+the overlays already mounted on it, and it logs that run there. With
+python3-gi installed the helper holds the switch back while the install runs;
+without it the helper polls for the signal and exits right after it starts the
+install, which then runs on into the switch. At the way back
+(`nails deactivate`, which goes through logind as well) the hidden session's
+own copy of the helper installs them into the session's overlay.
+`deactivate --poweroff` and `emergency` send no such signal. `decoy-persistence` refuses while the decoy's
+helper runs with the setting on, and `--allow-persistent-decoy` turns that
+into a warning for one run. It reads the setting as apt reads it: each file of
+`/etc/apt/apt.conf.d` that apt reads, in apt's order (a name with an
+extension other than `.conf`, such as `.bak` or `.dpkg-old`, one starting with
+a dot, one with other characters than letters, digits, `_`, `-`, `:` and `.`,
+one ending with a dot, and what is not a file are skipped, as apt skips them),
+then `/etc/apt/apt.conf`,
+with apt's syntax, the last setting winning. A file NAILS cannot read or that
+apt refuses, an `#include`, and a `Dir` or `RootDir` setting, which move the
+files apt reads, leave the setting unknown, and `decoy-persistence` refuses
+that as if it were on. NAILS does not read `APT_CONFIG`, which the helper's
+unit does not set.
+
+Set it to `false` rather than deleting the line: the helper reads the files
+when it starts and again on the signal, keeping what it read first, so a
+line deleted after it started stays in effect until
+`unattended-upgrades.service` restarts or the machine reboots, while an
+explicit `false` wins on the signal. NAILS reads only the files, so it cannot
+see what the running helper still holds.
+
+When only the hidden session would install, `decoy-persistence` warns and does
+not refuse: the decoy's helper is stopped but enabled, so the session starts
+its own copy, or the session's overlay turns the setting on. It reads what the
+session sees: the decoy's files with the root overlay's upper on top. A
+directory the upper holds may be one a session deleted and made again, below
+which the decoy's files no longer show; NAILS does not read that mark, so it
+reads such a directory both ways and warns if either turns the setting on.
+Set the setting to `false`, or end the session with
+`nails deactivate --poweroff`.
+
+As for kdump, the window's launcher stays usable with the setting on, and
+`nails status` does not call the decoy persistent for it; status does not show
+the setting at all.
+
+The distribution test `<image>-apt-shutdown` shows both on Debian 13, Ubuntu
+24.04 and Ubuntu 26.04: a daily run held with its lock taken makes `check` and
+`activate` refuse and leaves no line on the decoy disk, while a plain
+`systemctl soft-reboot` during the same run writes the helper's line there;
+with the setting on, `check` and `activate` refuse, and with
+`--allow-persistent-decoy` the decoy's helper logs its shutdown-mode run at the
+switch; with the decoy's helper stopped but enabled, `check` only warns and the
+session's copy logs its shutdown-mode run into the upper at the way back.
 
 ## Decoys joined to a domain
 
@@ -1236,6 +1329,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Snapper timeline snapshots](#session-time-records) (`snapper-timeline`) | `/.snapshots`, `/var/lib/snapper` | all | path probe (info) | path probe (info) | Keep the overlay upper on the hidden volume, which NAILS enforces, so a decoy snapshot never captures a session's writes; disable the snapper timeline timer on the decoy if you want no snapshot dating the machine's activity. | none: asserted on a btrfs decoy with snapper by the cross-distro forensic probe once those images boot |
 | [Copy-on-write and compressed storage history](threat-model.md#residual-channels) (`btrfs-cow-history`) | old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs, zfs or an f2fs mount with compression | all | none: a copy-on-write or compressed decoy is a property of the decoy's own storage, not a session write | none: a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean: a mounted one (a zfs dataset included) by its mount, an image or an unmounted device by its superblock, and a whole disk partition by partition, where an encrypted partition, or one on which no filesystem is identified, is not checked either | Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean. | none: the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems |
 | [Fedora GRUB boot-success state](#session-time-records) (`grubenv-boot-success`) | `/boot/grub2/grubenv`, `/boot/efi/EFI/fedora/grubenv` | Fedora | none: Fedora's boot-success flag is written by the decoy's own boot after the switch; NAILS binds /boot and the ESP read-only during a session, so the session never writes it | path probe (info) | Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot. | none: asserted on the Fedora decoy by the cross-distro forensic probe once its image boots |
+| [unattended-upgrades set to install at shutdown](#unattended-upgrades) (`unattended-upgrades-install-on-shutdown`) | `/var/log/unattended-upgrades`, `/var/log/apt`, `/var/log/dpkg.log` | Debian | `decoy-persistence` (refuses) | none: the logs and the packages are the decoy's own, as after any shutdown that installs updates | Activation refuses while the decoy's helper runs with the setting on, or when NAILS cannot read apt's configuration, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override |
+| [A daily unattended-upgrade run at the switch](#unattended-upgrades) (`unattended-upgrades-run-at-the-switch`) | `/var/log/unattended-upgrades` | Debian | `unattended-upgrade-run` (refuses) | none: the lines are the decoy's own logs, as after a shutdown during a daily run | Activation refuses while apt-daily-upgrade.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run |
 | [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | `preflight-checks` |
 | [sssd and the domain controller's records](#decoys-joined-to-a-domain) (`sssd-domain-records`) | the domain controller's own records of the logins and account lookups sssd makes on a decoy joined to a domain, and sssd's caches under /var/lib/sss and logs under /var/log/sssd | all | `decoy-persistence` | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: no VM test runs a domain controller; the warning is unit-tested |
 <!-- residue-catalog:end session -->
