@@ -363,6 +363,14 @@ fn the_tree_of_a_mounted_next_root_is_no_second_mount() {
          32 31 253:0 / /run/nextroot/mnt/data rw - ext4 /dev/mapper/data rw\n",
     );
     assert!(elsewhere(&entering).is_empty());
+    // Only that tree is left out: a desktop's mount of the volume while a
+    // next root is mounted is still a second mount.
+    let with_a_desktop_mount =
+        format!("{entering}40 1 253:0 / /media/u/X rw,nosuid,nodev - ext4 /dev/mapper/data rw\n");
+    assert_eq!(
+        elsewhere(&with_a_desktop_mount),
+        vec![PathBuf::from("/media/u/X")]
+    );
     // Without a next root mounted there, a mount below it is a mount like
     // any other.
     let stray = decoy_table("31 1 253:0 / /run/nextroot/mnt/data rw - ext4 /dev/mapper/data rw\n");
