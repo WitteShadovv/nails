@@ -1,62 +1,20 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The loop driver's record of what a loop device is bound to.
+//! The loop driver's record of what a loop device is bound to, read by the
+//! teardown crate's reader ([`nails_teardown::loop_device::record`]).
 
 use crate::filesystem::LoopRecord;
 use crate::{IoResultExt, Result};
 use std::path::Path;
 
-/// `struct loop_info64` from `<linux/loop.h>`, which `LOOP_GET_STATUS64`
-/// fills. Only the two devices are read; the rest mirrors the kernel's
-/// layout.
-#[repr(C)]
-#[allow(dead_code)]
-struct LoopInfo64 {
-    lo_device: u64,
-    lo_inode: u64,
-    lo_rdevice: u64,
-    lo_offset: u64,
-    lo_sizelimit: u64,
-    lo_number: u32,
-    lo_encrypt_type: u32,
-    lo_encrypt_key_size: u32,
-    lo_flags: u32,
-    lo_file_name: [u8; 64],
-    lo_crypt_name: [u8; 64],
-    lo_encrypt_key: [u8; 32],
-    lo_init: [u64; 2],
-}
-
-/// `LOOP_GET_STATUS64`: a plain number, from before ioctls encoded their
-/// argument's size.
-const LOOP_GET_STATUS64: rustix::ioctl::Opcode = 0x4C05;
-
 /// The loop driver's record of the backing file of the loop device at
 /// `node`. The node is opened read-only and never written.
-#[allow(unsafe_code)]
 pub(super) fn loop_record(node: &Path) -> Result<LoopRecord> {
-    use rustix::fs::{Mode, OFlags};
-    let fd = rustix::fs::open(
-        node,
-        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(std::io::Error::from)
-    .at_path(node)?;
-    // SAFETY: LOOP_GET_STATUS64 writes one `struct loop_info64` through the
-    // pointer the Getter passes, and LoopInfo64 has that layout.
-    let info = unsafe {
-        rustix::ioctl::ioctl(
-            &fd,
-            rustix::ioctl::Getter::<LOOP_GET_STATUS64, LoopInfo64>::new(),
-        )
-    }
-    .map_err(std::io::Error::from)
-    .at_path(node)?;
+    let record = nails_teardown::loop_device::record(node).at_path(node)?;
     Ok(LoopRecord {
-        device: info.lo_device,
-        rdevice: info.lo_rdevice,
+        device: record.device,
+        rdevice: record.rdevice,
     })
 }
 
