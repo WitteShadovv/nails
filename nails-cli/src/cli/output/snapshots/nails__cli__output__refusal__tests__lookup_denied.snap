@@ -1,0 +1,6 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&refusal(kind), None)"
+---
+error: nothing shows that /mnt is a volume of its own: it cannot be looked up (Permission denied (os error 13)). Nothing was written.
+  Run the command again with sudo.

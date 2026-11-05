@@ -401,6 +401,98 @@ fn unattached_when_root_missing() {
     assert_eq!(refusal(&fs, "/mnt/data").kind, RefusalKind::Missing);
 }
 
+/// A root whose lookup fails for another reason than that nothing is there
+/// is refused naming the error, never taken for a missing root, and every
+/// consumer takes it as the refusal it is: the marker test and the state gate
+/// as well. sudo is the fix for a lookup refused for lack of permission.
+#[test]
+fn a_root_that_cannot_be_looked_up_is_refused_naming_the_error() {
+    use std::io::ErrorKind;
+    for (kind, denied) in [
+        (ErrorKind::PermissionDenied, true),
+        (ErrorKind::Other, false),
+    ] {
+        let fs = fs_with(&decoy_table(""));
+        fs.mock_set_lookup_error("/mnt/data", kind);
+        let refused = refusal(&fs, "/mnt/data");
+        assert_eq!(
+            refused.kind,
+            RefusalKind::LookupFailed {
+                error: "Mock: the lookup fails here".into(),
+                denied
+            }
+        );
+        assert_eq!(refused.code(), super::refusal::NOT_SEPARATE_VOLUME);
+        assert_eq!(
+            refused.message(),
+            "nothing shows that /mnt/data is a volume of its own: it cannot be looked up (Mock: \
+             the lookup fails here). Nothing was written."
+        );
+        let hint = if denied {
+            "Run the command again with sudo."
+        } else {
+            "Find out why /mnt/data cannot be looked up, then run the command again."
+        };
+        assert_eq!(refused.hint(Some(Path::new("/mnt/data/nails"))), [hint]);
+        assert!(!Allow::DecoyStorage.covers(&refused.kind));
+
+        let state = HiddenRoot::verify_attached(&fs, Path::new("/mnt/data"), true).unwrap();
+        assert_eq!(state.reason(), Some(refused.reason.as_str()));
+        let _gate = super::state_attach_probe::enforce();
+        let refused_write =
+            ensure_state_dir_attached(&fs, Path::new("/mnt/data"), Path::new("/mnt/data"))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            refused_write.ends_with("it cannot be looked up (Mock: the lookup fails here)"),
+            "{refused_write}"
+        );
+    }
+    // A lookup that says nothing is there finds a missing root, one below a
+    // file among them.
+    for kind in [ErrorKind::NotFound, ErrorKind::NotADirectory] {
+        let fs = fs_with(&decoy_table(""));
+        fs.mock_set_lookup_error("/mnt/data", kind);
+        assert_eq!(refusal(&fs, "/mnt/data").kind, RefusalKind::Missing);
+    }
+}
+
+/// A marker found counts beside a lookup of the other one that failed. With
+/// none found and a lookup that failed, the marker may be there: the error,
+/// never a root that needs `init`.
+#[test]
+fn a_marker_lookup_that_fails_counts_only_beside_the_other_marker() {
+    let root = PathBuf::from("/mnt/data");
+    for (failing, other) in [
+        ("/mnt/data/state.json", "/mnt/data/config/nails.toml"),
+        ("/mnt/data/config", "/mnt/data/state.json"),
+    ] {
+        let fs = attached_fs(&root);
+        fs.mock_set_lookup_error(failing, std::io::ErrorKind::PermissionDenied);
+        fs.mock_set_path_exists(other, true);
+        assert_eq!(
+            HiddenRoot::verify_attached(&fs, &root, true).unwrap(),
+            AttachState::Attached,
+            "{failing}"
+        );
+
+        let fs = attached_fs(&root);
+        fs.mock_set_lookup_error(failing, std::io::ErrorKind::PermissionDenied);
+        let error = HiddenRoot::verify_attached(&fs, &root, true).unwrap_err();
+        assert_eq!(
+            error.io_kind(),
+            Some(std::io::ErrorKind::PermissionDenied),
+            "{failing}"
+        );
+        assert!(!error.to_string().contains("init"), "{error}");
+        // Without a marker to find, nothing is looked up.
+        assert_eq!(
+            HiddenRoot::verify_attached(&fs, &root, false).unwrap(),
+            AttachState::Attached
+        );
+    }
+}
+
 #[test]
 fn unattached_when_marker_required_but_absent() {
     let root = PathBuf::from("/mnt/data");

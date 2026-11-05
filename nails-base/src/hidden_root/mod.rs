@@ -73,6 +73,16 @@ pub enum RefusalKind {
     NotConfigured,
     /// The path does not exist.
     Missing,
+    /// A lookup of the path failed for another reason than that nothing is
+    /// there (no permission to look, an I/O error, a loop of links), so
+    /// nothing shows what is at it ([`RefusalKind::lookup_failed`]).
+    LookupFailed {
+        /// Why the lookup failed.
+        error: String,
+        /// Whether it failed for lack of permission, which running the
+        /// command again with sudo lifts.
+        denied: bool,
+    },
     /// The mount table could not be read, so nothing shows what is mounted.
     MountTableUnreadable {
         /// Why it could not be read.
@@ -194,7 +204,9 @@ impl HiddenRoot {
     ///
     /// The checks, in order; the first that fails decides:
     ///
-    /// 1. **Present** — a root is configured and the path exists.
+    /// 1. **Present** — a root is configured and the path exists. A lookup of
+    ///    it that fails for another reason than that nothing is there refuses
+    ///    the root too, naming the error ([`RefusalKind::LookupFailed`]).
     /// 2. **A mount point** — the mount table is readable, and a lookup of the
     ///    resolved path ends in a mount whose mount point is that path. A folder
     ///    on a filesystem mounted elsewhere (`/`, a separate `/home`) fails,
@@ -225,8 +237,10 @@ impl HiddenRoot {
         if root.as_os_str().is_empty() {
             return refuse(RefusalKind::NotConfigured, root);
         }
-        if !fs.path_exists(root)? {
-            return refuse(RefusalKind::Missing, root);
+        match fs.path_exists(root) {
+            Ok(true) => {}
+            Ok(false) => return refuse(RefusalKind::Missing, root),
+            Err(error) => return refuse(RefusalKind::lookup_failed(&error), root),
         }
         let table = match fs.mount_table() {
             Ok(table) => table,
@@ -334,6 +348,9 @@ impl HiddenRoot {
     ///
     /// Returns [`AttachState::Attached`] only when every applicable check passes;
     /// otherwise [`AttachState::Unattached`] carrying the first failing reason.
+    /// An error when no marker is found and a lookup of one failed: that
+    /// marker may be there, so the root is neither taken for one without it
+    /// nor said to need `init`.
     pub fn verify_attached<F: Filesystem>(
         fs: &F,
         root: &Path,
@@ -356,12 +373,19 @@ impl HiddenRoot {
         Ok(AttachState::Attached)
     }
 
-    /// Whether `root` carries a NAILS marker: the state file or the config file.
+    /// Whether `root` carries a NAILS marker: the state file or the config
+    /// file. Either one found counts; with neither found, the error of a
+    /// lookup that failed, since that marker may be there.
     fn has_marker<F: Filesystem>(fs: &F, root: &Path) -> Result<bool> {
-        if fs.path_exists(&root.join(MARKER_STATE_FILE))? {
-            return Ok(true);
+        let config = || fs.path_exists(&root.join(MARKER_CONFIG_DIR).join(MARKER_CONFIG_FILE));
+        match fs.path_exists(&root.join(MARKER_STATE_FILE)) {
+            Ok(true) => Ok(true),
+            Ok(false) => config(),
+            Err(error) => match config() {
+                Ok(true) => Ok(true),
+                Ok(false) | Err(_) => Err(error),
+            },
         }
-        fs.path_exists(&root.join(MARKER_CONFIG_DIR).join(MARKER_CONFIG_FILE))
     }
 }
 
