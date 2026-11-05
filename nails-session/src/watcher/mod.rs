@@ -29,7 +29,7 @@ mod cover;
 pub use cover::CoverWatch;
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::config::BackendWatchConfig;
@@ -37,6 +37,7 @@ use crate::filesystem::Filesystem;
 use crate::runtime_copy::RuntimeManifest;
 use nails_base::hidden_root::{covered_mount, holds_the_session_volume, shadowing_mount};
 use nails_teardown::mountinfo::{MountEntry, top_mount_at};
+use nails_teardown::whole_root::plan::Plan;
 
 /// What the watcher should do in response to one probe result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,37 +215,41 @@ pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) 
 
 /// Whether a mount is a read-write mount of a disk that the session does not
 /// own: read-write, backed by a block device (`is_block` judges its source),
-/// and neither inside the hidden volume nor the decoy root mounted at
-/// `/run/nextroot` on the way back. The session's own mounts never qualify:
-/// the root and the decoy filesystems are overlays, the boot filesystems are
-/// read-only binds, and the carried decoy filesystems are inside the hidden
-/// volume.
+/// and neither the session's own storage below the hidden root
+/// ([`Plan::is_hidden_storage`]: the hidden volume and the carried decoy
+/// filesystems) nor the decoy root mounted at `/run/nextroot` on the way back.
+/// The session's other mounts never qualify: the root and the decoy
+/// filesystems are overlays, and the boot filesystems are read-only binds. A
+/// disk mounted below the hidden root, at `<root>/usb`, does.
 pub fn is_unguarded_mount(
     mount: &MountEntry,
-    hidden_root: &Path,
+    plan: &Plan,
     is_block: &dyn Fn(&MountEntry) -> bool,
 ) -> bool {
     !mount.read_only()
-        && !mount.mount_point.starts_with(hidden_root)
         && !mount
             .mount_point
             .starts_with(nails_teardown::whole_root::nextroot::NEXTROOT)
         && is_block(mount)
+        && !plan.is_hidden_storage(mount)
 }
 
 /// The watcher's view of disk mounts made during the session: each
 /// unguarded read-write mount is reported once, by mount id.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MountWatch {
-    hidden_root: PathBuf,
+    plan: Plan,
     seen: BTreeSet<i32>,
 }
 
 impl MountWatch {
-    /// Watch for mounts outside `hidden_root`.
-    pub fn new(hidden_root: &Path) -> Self {
+    /// Watch for disk mounts that are not the session's own storage, as the
+    /// session `plan` tells them apart ([`Plan::is_hidden_storage`]). Its
+    /// hidden root is the one the mount table names, with its symlinks
+    /// resolved ([`resolved_root`]).
+    pub fn new(plan: Plan) -> Self {
         Self {
-            hidden_root: hidden_root.to_path_buf(),
+            plan,
             seen: BTreeSet::new(),
         }
     }
@@ -260,7 +265,7 @@ impl MountWatch {
         self.seen.retain(|id| current.contains(id));
         mounts
             .iter()
-            .filter(|m| is_unguarded_mount(m, &self.hidden_root, is_block))
+            .filter(|m| is_unguarded_mount(m, &self.plan, is_block))
             .filter(|m| self.seen.insert(m.mount_id))
             .cloned()
             .collect()

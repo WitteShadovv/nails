@@ -412,31 +412,82 @@ fn block_sources(mount: &MountEntry) -> bool {
     mount.source.starts_with("/dev/")
 }
 
+/// A session plan with the hidden volume at `root`, its device `dev` (none
+/// for a plan written before it was recorded), and the decoy's `/home`
+/// carried at `<root>/root/decoy/home`.
+fn session_plan(root: &str, dev: Option<&str>) -> Plan {
+    let mut plan = Plan::from_json(&format!(
+        r#"{{"version":2,"hidden_root":"{root}","upper":"{root}/root/upper",
+            "work":"{root}/root/work","decoy_root":{{"source":"/dev/vda2","fstype":"ext4"}},
+            "decoy":{{"init":"/sbin/init"}},"hidden":{{"init":"/sbin/init"}}}}"#
+    ))
+    .unwrap();
+    plan.hidden_dev = dev.map(str::to_string);
+    plan.carried = vec![nails_teardown::whole_root::plan::CarriedMount {
+        target: PathBuf::from("/home"),
+        at: PathBuf::from(format!("{root}/root/decoy/home")),
+        read_only: false,
+        dev: Some("8:3".to_string()),
+        root: Some(PathBuf::from("/")),
+    }];
+    plan
+}
+
+/// The session's mount table with the hidden volume at `/mnt/data`, and
+/// `extra` lines.
+fn watched_table(extra: &str) -> Vec<MountEntry> {
+    nails_teardown::mountinfo::parse_mountinfo(&format!(
+        "1 0 0:30 / / rw - overlay overlay rw,upperdir=/u\n\
+         2 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         3 2 8:3 / /mnt/data/root/decoy/home rw - ext4 /dev/vda3 rw\n\
+         4 1 8:1 / /boot ro - vfat /dev/vda1 ro\n\
+         5 1 0:31 / /home rw - overlay overlay rw\n\
+         6 1 0:32 / /tmp rw - tmpfs tmpfs rw\n\
+         7 1 8:2 / /run/nextroot rw - ext4 /dev/vda2 rw\n{extra}"
+    ))
+}
+
 #[test]
 fn only_read_write_disk_mounts_outside_the_session_alert_once() {
-    let table = |extra: &str| {
-        nails_teardown::mountinfo::parse_mountinfo(&format!(
-            "1 0 0:30 / / rw - overlay overlay rw,upperdir=/u\n\
-             2 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
-             3 2 8:2 / /mnt/data/root/decoy/home rw - ext4 /dev/vda3 rw\n\
-             4 1 8:1 / /boot ro - vfat /dev/vda1 ro\n\
-             5 1 0:31 / /home rw - overlay overlay rw\n\
-             6 1 0:32 / /tmp rw - tmpfs tmpfs rw\n\
-             7 1 8:2 / /run/nextroot rw - ext4 /dev/vda2 rw\n{extra}"
-        ))
-    };
-    let mut watch = MountWatch::new(Path::new("/mnt/data"));
-    assert!(watch.observe(&table(""), &block_sources).is_empty());
+    let mut watch = MountWatch::new(session_plan("/mnt/data", Some("253:0")));
+    assert!(watch.observe(&watched_table(""), &block_sources).is_empty());
     let usb = "8 1 8:33 / /run/media/user/USB rw - vfat /dev/sdc1 rw\n\
                9 1 8:34 / /mnt/ro ro - ext4 /dev/sdc2 ro\n";
-    let found = watch.observe(&table(usb), &block_sources);
+    let found = watch.observe(&watched_table(usb), &block_sources);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].mount_point, Path::new("/run/media/user/USB"));
     // Reported once while it stays.
-    assert!(watch.observe(&table(usb), &block_sources).is_empty());
+    assert!(
+        watch
+            .observe(&watched_table(usb), &block_sources)
+            .is_empty()
+    );
     // Unmounted and mounted again under the same id: reported again.
-    assert!(watch.observe(&table(""), &block_sources).is_empty());
-    assert_eq!(watch.observe(&table(usb), &block_sources).len(), 1);
+    assert!(watch.observe(&watched_table(""), &block_sources).is_empty());
+    assert_eq!(watch.observe(&watched_table(usb), &block_sources).len(), 1);
+}
+
+#[test]
+fn a_disk_mounted_below_the_hidden_root_alerts_and_the_volume_and_carried_mounts_do_not() {
+    // A USB disk at /mnt/data/usb is a disk of its own: below the root, but
+    // not the hidden volume, nor a filesystem the session carries.
+    let usb = "8 2 8:33 / /mnt/data/usb rw - vfat /dev/sdc1 rw\n\
+               9 2 253:0 /photos /mnt/data/photos rw - ext4 /dev/mapper/data rw\n";
+    let mut watch = MountWatch::new(session_plan("/mnt/data", Some("253:0")));
+    let found = watch.observe(&watched_table(usb), &block_sources);
+    assert_eq!(
+        found.iter().map(|m| &m.mount_point).collect::<Vec<_>>(),
+        [Path::new("/mnt/data/usb")],
+        "{found:?}"
+    );
+    // A plan written before the device was recorded goes by the path, as
+    // before: nothing below the root alerts.
+    let mut legacy = MountWatch::new(session_plan("/mnt/data", None));
+    assert!(
+        legacy
+            .observe(&watched_table(usb), &block_sources)
+            .is_empty()
+    );
 }
 
 /// A notification daemon that never answers holds up neither the probes nor
