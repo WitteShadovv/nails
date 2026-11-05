@@ -18,6 +18,7 @@
 #![cfg_attr(test, allow(unsafe_code))]
 
 pub mod cgroup;
+pub mod loop_device;
 pub mod mountinfo;
 pub mod noatime;
 pub mod proc;
