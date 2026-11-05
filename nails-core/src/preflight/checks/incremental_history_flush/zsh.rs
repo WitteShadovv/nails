@@ -63,8 +63,10 @@
 //! an alias that hands the words it is used with to
 //! a command that reads them as code, options, names or paths
 //! (`alias so=setopt`), one named like a reserved word (`alias '{'=...`),
-//! which zsh expands in place of that word, a `source` without a path or with
-//! one it cannot resolve
+//! which zsh expands in place of that word, a `NULLCMD` or `READNULLCMD` in
+//! the shell's environment, which names the command zsh runs for a
+//! redirection with none (`cat` and `more` by default, which the check reads
+//! as run there), a `source` without a path or with one it cannot resolve
 //! (a process substitution among them), a `ZDOTDIR` it cannot follow, one set
 //! otherwise than by an assignment (`${ZDOTDIR:=...}`), a quote, an expansion
 //! or a here-document that runs to the end of the file without closing, and an
@@ -919,6 +921,12 @@ pub(super) fn zsh<F: Filesystem>(
              environment names run, which zsh expands before a prompt"
                 .to_string(),
         );
+    }
+    for name in install.env.iter().flat_map(|env| &env.nullcmds) {
+        scan.doubts.push(format!(
+            "it cannot tell what code the command that {name} in the shell's environment names \
+             runs, which zsh runs for a redirection that has none"
+        ));
     }
     let homes: Vec<Option<&Path>> = if homes.is_empty() {
         vec![None]

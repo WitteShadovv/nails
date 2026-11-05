@@ -143,6 +143,8 @@ struct Pending {
     /// It reads what an expansion makes: a here-string or a file an
     /// expansion names (`<<< "$1"`, `< $f`).
     fed: bool,
+    /// A redirection stands in it.
+    redirected: bool,
 }
 
 /// The walk over one file's tokens, which finds its [`Event`]s.
@@ -365,6 +367,19 @@ impl Walker<'_> {
     /// or not.
     fn finish(&mut self, piped_after: bool) {
         let words = std::mem::take(&mut self.pending.words);
+        if std::mem::take(&mut self.pending.redirected) && words.is_empty() {
+            // A redirection with no command runs the command NULLCMD names
+            // (`cat`) or, for an input alone, READNULLCMD (`more`), a function
+            // the files define by that name among them.
+            for name in ["cat", "more"] {
+                self.events.push(Event::Call {
+                    name: name.to_string(),
+                    args: Vec::new(),
+                    function: self.function(),
+                    input: Input::None,
+                });
+            }
+        }
         let after = self.pending.after_condition || self.pending.body;
         let piped = self.pending.piped || piped_after;
         // What the command reads: what the commands before it in its
@@ -443,6 +458,16 @@ impl Walker<'_> {
 
     /// The events of a word.
     fn word(&mut self, word: Word) {
+        if self.pending.words.is_empty()
+            && self.pending.redirected
+            && matches!(
+                word.text.as_str(),
+                "}" | "fi" | "done" | "esac" | "end" | "then" | "else" | "elif" | "do"
+            )
+        {
+            // The redirection before it is a command of its own.
+            self.finish(false);
+        }
         if !self.pending.words.is_empty() {
             if word.text == "}" {
                 self.finish(false);
@@ -723,6 +748,7 @@ impl Walker<'_> {
                 Token::Word(word) => self.word(word),
                 Token::Array(name, items) => self.array(name, items),
                 Token::Redirect { writes, dup } => {
+                    self.pending.redirected = true;
                     // The redirection's target is no word of the command, but
                     // what a here-string or a file name says still counts.
                     if let Some(Token::Word(target)) =
