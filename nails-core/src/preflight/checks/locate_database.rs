@@ -31,7 +31,12 @@
 //!
 //! Nothing is written. The decoy's files are read under a root, so that a
 //! scan of an offline image can read them as well, with `O_NOATIME` and
-//! never where a link leads onto the hidden volume ([`files`]).
+//! never where a link leads onto the hidden volume ([`files`]). The running
+//! system is read through the automount guard
+//! ([`crate::filesystem::automount`]): a lookup that would mount an
+//! automount point that nothing is mounted on yet is not made, and the check
+//! warns that it cannot tell, naming the point, as for a file it cannot
+//! read. Without a readable mount table it looks up nothing, and warns.
 
 pub mod conf;
 pub mod cron;
@@ -45,6 +50,7 @@ mod unit;
 mod units;
 
 use super::super::{CheckResult, PreFlightCheck};
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, settle};
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::hidden_root::mount_holding;
 use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
@@ -384,6 +390,25 @@ impl<F: Filesystem> PreFlightCheck<F> for LocateDatabaseCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
+        // Without the table a lookup could mount an automount point, so none
+        // is made.
+        let snapshot = Snapshot::read(fs, &self.root);
+        if let Some(error) = snapshot.unreadable() {
+            return Ok(CheckResult::Warn(format!(
+                "the decoy's locate database may list the hidden volume: NAILS cannot read the \
+                 mount table ({error}), which shows where a lookup would mount an automount \
+                 point, so it looks up nothing. See {DOC}."
+            )));
+        }
+        let guarded = Guarded::new(fs.clone(), &snapshot);
+        let result = self.judge(&guarded);
+        Ok(settle(result, &guarded.skipped(), OnSkip::Warn))
+    }
+}
+
+impl LocateDatabaseCheck {
+    /// The verdict on what the decoy holds of updatedb, read through `fs`.
+    fn judge<F: Filesystem>(&self, fs: &F) -> CheckResult {
         let locations = hidden_locations(fs, &self.hidden_root);
         let hidden: Vec<PathBuf> = locations
             .iter()
@@ -398,67 +423,67 @@ impl<F: Filesystem> PreFlightCheck<F> for LocateDatabaseCheck {
                 found.nixos_prunepaths.as_deref(),
             )
         };
-        Ok(
-            match judge::verdict(found.installed, &found.runs, &locations) {
-                Verdict::NotInstalled => CheckResult::Pass(
-                    "no updatedb (plocate, mlocate or findutils' locate) is installed on the decoy"
-                        .to_string(),
-                ),
-                Verdict::Pass(rules) if rules.is_empty() => {
-                    CheckResult::Pass(if found.notes.is_empty() {
-                        "nothing runs updatedb".to_string()
-                    } else {
-                        format!("nothing runs updatedb: {}", found.notes.join("; "))
-                    })
-                }
-                Verdict::Pass(rules) => CheckResult::Pass(format!(
-                    "updatedb skips the hidden volume: {}",
-                    rules.join("; ")
-                )),
-                Verdict::Fail(runs) => {
-                    let running = runs
-                        .iter()
-                        .any(|judged| matches!(judged.run.start, Start::Now(_)));
-                    let mounted: Vec<String> = hidden
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect();
-                    let mut remediation = format!(
-                        "Lock the hidden volume now: unmount {} and close it. Then, long before \
+        match judge::verdict(found.installed, &found.runs, &locations) {
+            Verdict::NotInstalled => CheckResult::Pass(
+                "no updatedb (plocate, mlocate or findutils' locate) is installed on the decoy"
+                    .to_string(),
+            ),
+            Verdict::Pass(rules) if rules.is_empty() => {
+                CheckResult::Pass(if found.notes.is_empty() {
+                    "nothing runs updatedb".to_string()
+                } else {
+                    format!("nothing runs updatedb: {}", found.notes.join("; "))
+                })
+            }
+            Verdict::Pass(rules) => CheckResult::Pass(format!(
+                "updatedb skips the hidden volume: {}",
+                rules.join("; ")
+            )),
+            Verdict::Fail(runs) => {
+                let running = runs
+                    .iter()
+                    .any(|judged| matches!(judged.run.start, Start::Now(_)));
+                let mounted: Vec<String> = hidden
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
+                let mut remediation = format!(
+                    "Lock the hidden volume now: unmount {} and close it. Then, long before \
                          you use it again, {}.",
-                        mounted.join(" and "),
-                        remedy()
-                    );
-                    if running {
-                        remediation.push_str(
-                            " A database written while the volume was mounted lists its files \
+                    mounted.join(" and "),
+                    remedy()
+                );
+                if running {
+                    remediation.push_str(
+                        " A database written while the volume was mounted lists its files \
                              until updatedb runs again with the volume locked.",
-                        );
-                    }
-                    remediation.push_str(&format!(" See {DOC}."));
-                    CheckResult::fail_with(
-                        format!(
-                            "the decoy's locate database would list the hidden volume: {}.",
-                            findings(&runs).join("; ")
-                        ),
-                        remediation,
-                    )
+                    );
                 }
-                Verdict::Warn(runs) => CheckResult::warn_with(
+                remediation.push_str(&format!(" See {DOC}."));
+                CheckResult::fail_with(
                     format!(
-                        "the decoy's locate database may list the hidden volume: {}.",
+                        "the decoy's locate database would list the hidden volume: {}.",
                         findings(&runs).join("; ")
                     ),
-                    format!(
-                        "Long before you use the volume again, {}. See {DOC}.",
-                        remedy()
-                    ),
+                    remediation,
+                )
+            }
+            Verdict::Warn(runs) => CheckResult::warn_with(
+                format!(
+                    "the decoy's locate database may list the hidden volume: {}.",
+                    findings(&runs).join("; ")
                 ),
-            },
-        )
+                format!(
+                    "Long before you use the volume again, {}. See {DOC}.",
+                    remedy()
+                ),
+            ),
+        }
     }
 }
 
+#[cfg(test)]
+mod lookup_tests;
 #[cfg(test)]
 mod sources_tests;
 #[cfg(test)]
