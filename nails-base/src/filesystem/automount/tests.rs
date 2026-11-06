@@ -951,6 +951,43 @@ fn unnamed_gives_each_point_once_that_the_text_does_not_name() {
     assert_eq!(unnamed("anything", &[]), Vec::<String>::new());
 }
 
+/// What a check that keeps its result says of its ledger: the sentence a
+/// pass would get, each point once, and the fix for the points; nothing for
+/// an empty ledger, and no mount fix for the mount table alone.
+#[test]
+fn a_note_names_each_point_once_with_its_fix() {
+    assert_eq!(note(&[]), None);
+    let ledger = [
+        skip("/boot/config-6.8", "/boot"),
+        skip("/boot/efi", "/boot"),
+        skip("/srv/x", "/srv"),
+    ];
+    assert_eq!(
+        note(&ledger),
+        Some(format!(
+            "NAILS cannot tell about everything it checks: NAILS does not look up \
+             /boot/config-6.8, since the lookup would mount the automount point /boot; NAILS \
+             does not look up /srv/x, since the lookup would mount the automount point /srv.\n{}",
+            fix(&["/boot", "/srv"])
+        ))
+    );
+    let table = [Skipped {
+        path: PathBuf::from("/boot/config-6.8"),
+        reason: Skip::NoMountTable {
+            error: "gone".to_string(),
+        },
+    }];
+    assert_eq!(
+        note(&table),
+        Some(
+            "NAILS cannot tell about everything it checks: NAILS does not look up \
+             /boot/config-6.8, since it cannot read the mount table (gone), which shows where a \
+             lookup would mount an automount point."
+                .to_string()
+        )
+    );
+}
+
 #[test]
 fn an_unreadable_mount_table_is_named_once_and_has_no_mount_fix() {
     let reason = Skip::NoMountTable {
