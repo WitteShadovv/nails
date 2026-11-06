@@ -34,6 +34,56 @@ fn a_file_gone_before_its_read_is_absent() {
     assert_eq!(read_mock(&fs, "/etc/x"), DecoyFile::Absent);
 }
 
+/// Through the automount guard, a file or a directory behind an automount
+/// point that nothing is mounted on yet is neither read nor listed, and
+/// says so in the guard's words; once something is mounted there, it is.
+#[test]
+fn what_lies_behind_an_automount_point_is_not_read_and_says_so() {
+    use crate::filesystem::automount::{Guarded, Snapshot};
+    let root = "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n";
+    let point = "30 1 0:50 / /usr/local rw,relatime - autofs systemd-1 rw,fd=50,direct\n";
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/usr/local/etc/updatedb.conf", "PRUNEFS=\"nfs\"\n");
+    fs.mock_set_directory_contents(Path::new("/usr/local/etc"), Vec::new());
+    fs.mock_set_mount_table(&format!("{root}{point}"));
+    let guarded = Guarded::new(fs.clone(), &Snapshot::read(&fs, Path::new("/")));
+    let hidden = [PathBuf::from("/mnt/data")];
+    let files = DecoyFiles::new(&guarded, Path::new("/"), &hidden);
+    assert_eq!(
+        files.read(Path::new("/usr/local/etc/updatedb.conf")),
+        DecoyFile::Unread(
+            "NAILS does not look up /usr/local/etc/updatedb.conf, since the lookup would mount \
+             the automount point /usr/local"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        files.list(Path::new("/usr/local/etc")),
+        Err(
+            "NAILS does not look up /usr/local/etc, since the lookup would mount the \
+             automount point /usr/local"
+                .to_string()
+        )
+    );
+    assert!(
+        !fs.mock_lookups()
+            .iter()
+            .any(|path| path.starts_with("/usr/local"))
+    );
+    assert_eq!(guarded.skipped().len(), 3);
+
+    let mounted = "31 30 8:3 / /usr/local rw,relatime - ext4 /dev/sda3 rw\n";
+    fs.mock_set_mount_table(&format!("{root}{point}{mounted}"));
+    let guarded = Guarded::new(fs.clone(), &Snapshot::read(&fs, Path::new("/")));
+    let files = DecoyFiles::new(&guarded, Path::new("/"), &hidden);
+    assert_eq!(
+        files.read(Path::new("/usr/local/etc/updatedb.conf")),
+        DecoyFile::Text(b"PRUNEFS=\"nfs\"\n".to_vec())
+    );
+    assert_eq!(files.list(Path::new("/usr/local/etc")), Ok(Vec::new()));
+    assert!(guarded.skipped().is_empty());
+}
+
 /// A lookup that fails for another reason than that nothing is there is
 /// named by its error, and one NAILS may not make asks for sudo; one that
 /// finds nothing there is absent.
