@@ -1,0 +1,6 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&refusal(kind), None)"
+---
+error: nothing shows that /mnt is a volume of its own: it is not looked up, since the lookup would mount the automount point /mnt. Nothing was written.
+  Mount /mnt (for example `ls /mnt`), then run the command again.
