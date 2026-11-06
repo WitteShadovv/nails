@@ -221,6 +221,38 @@ fn a_syslog_alias_nails_cannot_look_up_refuses() {
     );
 }
 
+/// A `syslog.service` link that names no other service, such as a mask in
+/// `/etc/systemd/system`, names no daemon: the next unit directory's link
+/// names it, as before NAILS told a lookup that failed from no link.
+#[test]
+fn a_syslog_alias_that_names_no_service_is_passed_over() {
+    let fs = decoy("volatile");
+    fs.create_symlink(
+        Path::new("/dev/null"),
+        Path::new("/etc/systemd/system/syslog.service"),
+    )
+    .unwrap();
+    fs.create_symlink(
+        Path::new("/usr/lib/systemd/system/nanolog.service"),
+        Path::new("/usr/lib/systemd/system/syslog.service"),
+    )
+    .unwrap();
+    fs.create_symlink(
+        Path::new("8028a17235414b4e80c950b24a7487d7"),
+        Path::new("/run/systemd/units/invocation:nanolog.service"),
+    )
+    .unwrap();
+    let result = run(&fs, false);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "a syslog daemon (nanolog.service, enabled as syslog.service) is active and writes \
+             logs to the decoy disk"
+        ),
+        "{result:?}"
+    );
+}
+
 /// A unit whose invocation marker cannot be looked up may run: a logger's
 /// refuses as active, kdump's refuses as armed, and sssd's warns that NAILS
 /// cannot tell whether sssd is in use. A route that shows the unit running
