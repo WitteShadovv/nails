@@ -976,9 +976,10 @@ of this changelog for that version becomes the release notes word for word, and
   zsh runs in that command's place with the line, is read as a hook
   (`sudo() { print -r -- "sudo $*" >> ~/.zl }`, `alias sudo='logit; sudo'`), however a file defines
   it, and a global alias named like a word of the NAILS commands the operator guide has you type
-  (`sudo`, `nails`, `/mnt/data/nails`, `activate`, `--yes`, every option of `check`, `activate`,
-  `status`, `emergency` and `deactivate`) counts as used, as zsh puts its value in place of that
-  word as the line is entered. zsh 5.9.2 wrote the line with each.
+  (`sudo`, `nails`, `/mnt/data/nails`, `activate`, `verify`, `--yes`: the name of every command
+  `nails --help` lists, of `discard` and of their steps, and every option they and `nails` take)
+  counts as used, as zsh puts its value in place of that word as the line is entered. zsh 5.9.2
+  wrote the line with each.
   zsh 5.9.2 ran a completion function of the files' own as Tab completed a word, from a directory
   they put in `fpath` or by a completer, a `compdef`, a widget or a parameter that names it, and so
   wrote the line with one that appends it. Where the files autoload the stock `compinit`, the

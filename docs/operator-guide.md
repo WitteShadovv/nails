@@ -1397,12 +1397,13 @@ afterwards:
     `set -A X w`, `read X`, `print -r -- "$1" G`), and so is one named like a
     word of the NAILS commands this guide has you type in the decoy, as zsh puts
     its value in place of that word as you enter the line: `sudo`, `doas`,
-    `run0`, `pkexec`, `su`, `nails` and a path that ends in `/nails`, `check`,
-    `activate`, `status`, `emergency` and `deactivate`, and every option those
-    commands take, the global ones, `-h` and `-vv` among them
-    (`alias -g activate=...`, `alias -g -- --yes=...`, `galiases[status]=...`),
-    or whose name holds a backslash or a quote past those zsh takes off. One
-    whose name holds an
+    `run0`, `pkexec`, `su`, `nails` and a path that ends in `/nails`, the name
+    of every command `nails --help` lists, of `discard` and of their steps
+    (`check`, `activate`, `verify`, `rehearse scan`, `config set`), and every
+    option they and `nails` take, the global ones, `-h`, `-V` and `-vv` among
+    them (`alias -g activate=...`, `alias -g -- --yes=...`,
+    `galiases[status]=...`), or whose name holds a backslash or a quote past
+    those zsh takes off. One whose name holds an
     operator, a brace or a blank, or is empty, is a doubt wherever it is
     defined, as zsh splits such a token off a word with no blank beside it
     (`$1>$TTY`, `$1;`, `$1}`) and the check cannot count its uses. So is an
@@ -1693,8 +1694,10 @@ afterwards:
   (`mount`, `cryptsetup`), which zsh runs in that command's place where you type
   it, and, for a function, where zsh's own completion functions run that command
   as you complete a word (`ls <Tab>` runs a function named `ls`), a global alias
-  named like another word you type (the value you give an option, as `5` in
-  `--countdown 5`), which zsh runs as you enter the line, a file a bash
+  named like another word you type (the value you give an option or a
+  setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
+  program named like the command you type that zsh finds first in `PATH` or
+  that `hash` names (a `sudo` script in `~/bin`), a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), nor a history tool

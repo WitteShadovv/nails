@@ -63,17 +63,33 @@ use crate::{Filesystem, Result, TargetUser};
 pub const TYPED_COMMANDS: [&str; 6] = ["sudo", "doas", "run0", "pkexec", "su", "nails"];
 
 /// The other words of the NAILS commands the operator guide has the operator
-/// type before and at the switch: `check`, `activate`, `status`, `emergency`
-/// and `deactivate`, and every option they take as `nails` reads them, the
-/// global ones, `-h` and the `-vv` its help names among them. In zsh a
-/// global alias of such a name runs in place of that word as the line is
-/// entered.
-pub const TYPED_WORDS: [&str; 30] = [
+/// type in the decoy: the name of every command `nails` lists, of `discard`,
+/// and of their steps (`rehearse scan`, `config set`), and every option they
+/// and `nails` take as it reads them, the global ones, `-h`, `-V` and the
+/// `-vv` its help names among them. In zsh a global alias of such a name
+/// runs in place of that word as the line is entered.
+pub const TYPED_WORDS: [&str; 62] = [
     "check",
     "activate",
     "status",
     "emergency",
     "deactivate",
+    "recover",
+    "verify",
+    "rehearse",
+    "plant",
+    "scan",
+    "reset",
+    "init",
+    "config",
+    "path",
+    "show",
+    "validate",
+    "set",
+    "unset",
+    "discard",
+    "completions",
+    "help",
     "-c",
     "--config",
     "-v",
@@ -87,6 +103,8 @@ pub const TYPED_WORDS: [&str; 30] = [
     "--no-log-file",
     "-h",
     "--help",
+    "-V",
+    "--version",
     "-y",
     "--yes",
     "--nixos-flake",
@@ -99,6 +117,20 @@ pub const TYPED_WORDS: [&str; 30] = [
     "--countdown",
     "--reboot",
     "--details",
+    "--deep",
+    "--offline",
+    "--root",
+    "--examiner",
+    "--disk",
+    "--user",
+    "--device",
+    "--image",
+    "--token-file",
+    "--allow-same-boot",
+    "--max-bytes",
+    "--example",
+    "--hardware-config",
+    "--no-hardware-config",
 ];
 
 /// How the check found the shell whose settings it reads.
