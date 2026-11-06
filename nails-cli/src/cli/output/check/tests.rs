@@ -6,7 +6,7 @@
 use super::*;
 use nails_core::CheckResult;
 use nails_core::app::readiness::{
-    ConfigSummary, InheritedEntry, InheritedSummary, ProfileSummary, ReadinessReport,
+    ConfigSummary, InheritedEntry, InheritedSummary, NotReadEntry, ProfileSummary, ReadinessReport,
 };
 
 fn rows() -> Vec<CheckRow> {
@@ -44,6 +44,13 @@ fn report(rows: Vec<CheckRow>) -> ReadinessReport {
             }],
             remote_linked: vec!["dropbox".into()],
             unmatched_masks: Vec::new(),
+            not_read: vec![NotReadEntry {
+                path: "/home/carol/.config/autostart".into(),
+                reason: "NAILS does not look up /home/carol/.config/autostart, since the lookup \
+                         would mount the automount point /home/carol"
+                    .into(),
+                automount_point: Some("/home/carol".into()),
+            }],
         },
     )
 }
@@ -128,6 +135,14 @@ fn json_envelope_carries_inherited_inventory() {
     assert_eq!(value["data"]["inherited"]["remote_linked"][0], "dropbox");
     assert_eq!(value["data"]["inherited"]["entries"][0]["origin"], "added");
     assert_eq!(value["data"]["inherited"]["entries"][0]["status"], "review");
+    let not_read = &value["data"]["inherited"]["not_read"][0];
+    assert_eq!(not_read["path"], "/home/carol/.config/autostart");
+    assert_eq!(
+        not_read["reason"],
+        "NAILS does not look up /home/carol/.config/autostart, since the lookup would mount the \
+         automount point /home/carol"
+    );
+    assert_eq!(not_read["automount_point"], "/home/carol");
 }
 
 /// Under "NixOS profile" the report prints the summary's line: the build

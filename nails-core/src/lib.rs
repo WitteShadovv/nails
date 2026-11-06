@@ -126,7 +126,8 @@ pub use target_user::TargetUser;
 
 // Persona inventory exports
 pub use persona::{
-    EntryStatus, InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona,
+    EntryStatus, InheritedSource, NotRead, PersonaEntry, PersonaInventory,
+    collect_inherited_persona,
 };
 
 // State management exports

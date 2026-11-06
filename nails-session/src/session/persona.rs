@@ -21,12 +21,16 @@
 //!   absolute symlink (a `/home` or `~/.config` linked elsewhere) never leads
 //!   a mask onto the decoy disk. A name the inventory does not list is masked
 //!   as well, judged by its suffix, so a directory the inventory does not read
-//!   never drops a requested mask.
+//!   never drops a requested mask. A place the inventory cannot look up
+//!   refuses nothing: an autostart entry it leaves undecided is masked where
+//!   `mask_inherited` names it or holds `"*"`, a `/run/current-system` it
+//!   cannot look up counts as NixOS, and the entry warns once, naming each
+//!   such place.
 
 use crate::config::{PersonaConfig, PersonaMode};
 use crate::error::{NailsError, Result};
 use crate::filesystem::RealFilesystem;
-use crate::persona::{MaskKind, PersonaSource, collect_inherited_persona};
+use crate::persona::{MaskKind, NotRead, PersonaSource, collect_inherited_persona};
 use crate::target_user::TargetUser;
 use nails_teardown::whole_root::nextroot;
 use rustix::fs::{AtFlags, FileType, Gid, Mode, OFlags, Uid, XattrFlags};
@@ -332,36 +336,36 @@ impl InNextRoot<'_> {
 }
 
 impl PersonaSource for InNextRoot<'_> {
-    fn entries(&self, dir: &Path) -> Vec<PathBuf> {
+    fn entries(&self, dir: &Path) -> std::result::Result<Vec<PathBuf>, NotRead> {
         match self.below(dir) {
-            Some(rel) => nextroot::list_in_root(self.root, rel)
+            Some(rel) => Ok(nextroot::list_in_root(self.root, rel)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|name| dir.join(name))
-                .collect(),
+                .collect()),
             None => RealFilesystem.entries(dir),
         }
     }
 
-    fn text(&self, path: &Path) -> Option<String> {
+    fn text(&self, path: &Path) -> std::result::Result<Option<String>, NotRead> {
         match self.below(path) {
-            Some(rel) => nextroot::read_in_root(self.root, rel)
+            Some(rel) => Ok(nextroot::read_in_root(self.root, rel)
                 .ok()
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())),
             None => RealFilesystem.text(path),
         }
     }
 
-    fn exists(&self, path: &Path) -> bool {
+    fn exists(&self, path: &Path) -> std::result::Result<bool, NotRead> {
         match self.below(path) {
-            Some(rel) => nextroot::exists_in_root(self.root, rel),
+            Some(rel) => Ok(nextroot::exists_in_root(self.root, rel)),
             None => RealFilesystem.exists(path),
         }
     }
 
-    fn is_file(&self, path: &Path) -> bool {
+    fn is_file(&self, path: &Path) -> std::result::Result<bool, NotRead> {
         match self.below(path) {
-            Some(rel) => nextroot::is_file_in_root(self.root, rel),
+            Some(rel) => Ok(nextroot::is_file_in_root(self.root, rel)),
             None => RealFilesystem.is_file(path),
         }
     }
@@ -432,25 +436,46 @@ fn write_unit_mask(
     Ok(home.join(".config/systemd/user").join(unit))
 }
 
+/// What [`write_masks`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Masks {
+    /// The masks written, as the hidden root names them.
+    pub written: Vec<PathBuf>,
+    /// The warning for the entry when the inventory could not read all it
+    /// reads: it names each place and why.
+    pub warning: Option<String>,
+}
+
 /// Write the masks `persona` asks for into the operator's home inside the
-/// next root `root`: one for every maskable inherited entry it names, and one
-/// for every name it lists that the inventory does not (see
+/// next root `root`: one for every maskable inherited entry it names, one for
+/// every autostart entry the inventory could not decide that it names or
+/// covers with `"*"`, and one for every name it lists that the inventory does
+/// not (see
 /// [`PersonaInventory::mask_targets`](crate::persona::PersonaInventory::mask_targets)).
 /// Every path below the home is resolved as the hidden root resolves it
 /// ([`nextroot`]), so a mask lands in the upper even when the decoy's `/home`
 /// or `~/.config` is an absolute symlink. Best-effort per entry: a mask that
-/// cannot be written is skipped with a warning. Returns the masks written, as
-/// the hidden root names them.
-pub fn write_masks(root: &Path, persona: &PersonaConfig, operator: &TargetUser) -> Vec<PathBuf> {
+/// cannot be written is skipped with a warning. A place the inventory cannot
+/// look up refuses nothing; the warning names it.
+pub fn write_masks(root: &Path, persona: &PersonaConfig, operator: &TargetUser) -> Masks {
+    write_masks_read_from(&InNextRoot { root }, root, persona, operator)
+}
+
+/// [`write_masks`], with the inventory read through `source`.
+fn write_masks_read_from<S: PersonaSource>(
+    source: &S,
+    root: &Path,
+    persona: &PersonaConfig,
+    operator: &TargetUser,
+) -> Masks {
     let home = operator.passwd_home();
     if persona.mask_inherited.is_empty() || nextroot::open_dir_in_root(root, home).is_err() {
-        return Vec::new();
+        return Masks::default();
     }
     let fresh = persona.mode == PersonaMode::FreshHome;
     let in_root_home = root.join(home.strip_prefix("/").unwrap_or(home));
-    let inventory =
-        collect_inherited_persona(&InNextRoot { root }, &in_root_home, &operator.name, fresh);
-    inventory
+    let inventory = collect_inherited_persona(source, &in_root_home, &operator.name, fresh);
+    let written = inventory
         .mask_targets(persona)
         .into_iter()
         .filter_map(|target| {
@@ -464,7 +489,26 @@ pub fn write_masks(root: &Path, persona: &PersonaConfig, operator: &TargetUser) 
                 })
                 .ok()
         })
-        .collect()
+        .collect();
+    Masks {
+        written,
+        warning: unread_warning(&inventory.not_read),
+    }
+}
+
+/// The entry's warning for the places `not_read` the inventory could not
+/// read, if any.
+fn unread_warning(not_read: &[NotRead]) -> Option<String> {
+    if not_read.is_empty() {
+        return None;
+    }
+    let reasons: Vec<&str> = not_read.iter().map(|place| place.reason.as_str()).collect();
+    Some(format!(
+        "NAILS could not read everything the hidden session inherits from the decoy: {}. An \
+         autostart entry it could not read is masked only where [persona] mask_inherited names \
+         it or holds \"*\"",
+        reasons.join("; ")
+    ))
 }
 
 #[cfg(test)]
