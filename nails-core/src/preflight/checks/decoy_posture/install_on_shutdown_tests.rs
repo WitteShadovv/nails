@@ -1090,7 +1090,7 @@ fn the_window_and_status_do_not_count_it() {
         "[Journal]\nStorage=volatile\n",
     );
     assert!(finding(&fs, Path::new("/"), None).blocker.is_some());
-    assert!(DecoyPersistenceCheck::persistence_findings(&fs).is_empty());
+    assert!(DecoyPersistenceCheck::persistence(&fs).is_empty());
     assert!(!DecoyPersistenceCheck::decoy_is_persistent(&fs));
     assert!(!DecoyPersistenceCheck::decoy_kdump_armed(&fs));
     // Status has a line of its own for it, by its cause.

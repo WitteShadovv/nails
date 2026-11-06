@@ -197,16 +197,25 @@ where
         ));
     }
     if report.decoy_persistent && report.posture != Posture::Active {
-        out.push(style.marked(
-            Mark::Warn,
-            "The decoy keeps a persistent journal or syslog: the soft-reboots are recorded on its disk",
-        ));
+        // A record NAILS found says more than one it cannot tell about.
+        let line = if report.decoy_persistence_untold.is_empty() {
+            "The decoy keeps a persistent journal or syslog: the soft-reboots are recorded on its disk".to_string()
+        } else {
+            format!(
+                "NAILS cannot tell whether the decoy keeps a persistent journal or syslog ({}): the soft-reboots may be recorded on its disk",
+                report.decoy_persistence_untold.join("; ")
+            )
+        };
+        out.push(style.marked(Mark::Warn, line));
     }
     if report.decoy_kdump_armed && report.posture != Posture::Active {
-        out.push(style.marked(
-            Mark::Warn,
-            "kdump is armed on the decoy: a kernel crash in a hidden session writes its memory to the decoy disk, and activation refuses it",
-        ));
+        let line = match &report.decoy_kdump_untold {
+            None => "kdump is armed on the decoy: a kernel crash in a hidden session writes its memory to the decoy disk, and activation refuses it".to_string(),
+            Some(why) => format!(
+                "kdump is armed on the decoy, or NAILS cannot tell ({why}): a kernel crash in a hidden session may write its memory to the decoy disk, and activation refuses it"
+            ),
+        };
+        out.push(style.marked(Mark::Warn, line));
     }
     if let Some(install) = report.decoy_install_at_shutdown
         && report.posture != Posture::Active
