@@ -838,13 +838,13 @@ when it starts and again on the signal, keeping what it read first, so a
 line deleted after it started stays in effect until
 `unattended-upgrades.service` restarts or the machine reboots, while an
 explicit `false`, or a `#clear` of it, wins on the signal. So when no file
-sets the setting, `decoy-persistence` cannot tell whether the running helper
-still holds a `true` once apt's configuration changed after the helper
-started, and refuses that as well, `--allow-persistent-decoy` lifting it like
-the rest: one of the files apt reads, `/etc/apt`, where `apt.conf` lies, or
-`/etc/apt/apt.conf.d`, where a deleted part shows. It compares their change
-time, which neither `touch -d` nor dpkg sets back as they set a file's
-modification time, with the helper's start: the earlier of systemd's
+sets the setting and apt's configuration changed after the helper started
+(one of the files apt reads, `/etc/apt`, where `apt.conf` lies, or
+`/etc/apt/apt.conf.d`, where a deleted part shows), `decoy-persistence`
+cannot tell whether the running helper still holds a `true`, and refuses that
+as well, `--allow-persistent-decoy` lifting it like the rest. It compares
+their change time, which neither `touch -d` nor dpkg sets back as they set a
+file's modification time, with the helper's start: the earlier of systemd's
 invocation marker of `unattended-upgrades.service` and the start of each of
 its processes, so that a step of the clock either way after the start leaves
 one of them early enough. A change in the second the helper started counts,
