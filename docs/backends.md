@@ -39,8 +39,12 @@ Whatever the backend, the filesystem at the hidden root must:
   place in the decoy's mount table, as a desktop that mounts drives by itself
   can mount it (see
   [Attaching the drive](decoy-requirements.md#attaching-the-drive)); no flag
-  lifts that refusal, and a root on a filesystem the decoy uses that
-  `--allow-decoy-storage` accepted is not judged this way. An encrypted container
+  lifts that refusal. For a root on a filesystem the decoy uses that
+  `--allow-decoy-storage` accepted, the decoy's own mounts of that filesystem,
+  at `/` and by its fstab, and mounts that show none of the root's folder do
+  not count. Any other mount of it does, one the decoy makes with no fstab line
+  included (a `/home` or `/srv` partition that systemd-gpt-auto-generator
+  mounts, ostree's `/sysroot`). An encrypted container
   file on a filesystem the decoy uses is accepted with a warning: that
   filesystem's journal and copy-on-write snapshots (btrfs, snapper) can keep old
   copies of the parts of the container that changed, so a whole device or a
