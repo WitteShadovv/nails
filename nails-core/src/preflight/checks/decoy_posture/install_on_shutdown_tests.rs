@@ -757,3 +757,54 @@ fn the_finding_writes_nothing() {
     assert!(fs.mock_written_paths().is_empty());
     assert_eq!(fs.mock_ops().len(), before);
 }
+
+/// Where the decoy's `apt.conf.d` holds the entry of the name `name`, by its
+/// bytes.
+fn part_path(root: &Path, name: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    root.join("etc/apt/apt.conf.d")
+        .join(std::ffi::OsStr::from_bytes(name))
+}
+
+#[test]
+fn a_name_or_a_value_apt_reads_by_the_locale_is_refused_as_if_on() {
+    // apt's isalpha() takes 0xe9 for a letter in ISO-8859-1, where apt reads
+    // `99caf\xe9`, and skips it in the C locale and a UTF-8 one.
+    let tmp = stock(DEBIAN_13);
+    std::fs::write(part_path(tmp.path(), b"99caf\xe9"), ON).unwrap();
+    let message = blocker(&find(tmp.path())).to_string();
+    assert!(message.starts_with("NAILS cannot tell"), "{message}");
+    assert!(
+        message.contains(
+            "/etc/apt/apt.conf.d/99caf\u{fffd} has a name with a byte beyond ASCII, which apt \
+             reads or skips by the system's locale"
+        ),
+        "{message}"
+    );
+    // A name another rule skips, and what is no file, stay skipped.
+    let tmp = stock(DEBIAN_13);
+    std::fs::write(part_path(tmp.path(), b"99caf\xe9.bak"), ON).unwrap();
+    std::fs::create_dir(part_path(tmp.path(), b"99d\xe9")).unwrap();
+    assert_eq!(find(tmp.path()), Finding::default());
+
+    // strcasecmp() reads `W\xddTH` as `with` in tr_TR.ISO-8859-9.
+    let tmp = stock(UBUNTU_24_04);
+    write(
+        tmp.path(),
+        "etc/apt/apt.conf.d/99local",
+        b"Unattended-Upgrade::InstallOnShutdown \"W\xddTH\";\n",
+    );
+    let found = find(tmp.path());
+    let message = blocker(&found);
+    assert!(
+        message.contains(
+            "/etc/apt/apt.conf.d/99local:1 sets it to a value with a byte beyond ASCII, which apt \
+             reads by the system's locale"
+        ),
+        "{message}"
+    );
+    assert!(!found.blocker.as_ref().unwrap().installs);
+    // Only the value read last counts.
+    write(tmp.path(), "etc/apt/apt.conf.d/99zz-off", OFF.as_bytes());
+    assert_eq!(find(tmp.path()), Finding::default());
+}

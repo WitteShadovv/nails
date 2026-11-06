@@ -25,12 +25,13 @@
 //! through [`apt_conf`]: each file of `/etc/apt/apt.conf.d` apt reads, in
 //! apt's order, then `/etc/apt/apt.conf`, the last assignment winning. A file
 //! that cannot be read or that apt refuses, a line NAILS does not read the
-//! way apt does, and whatever makes apt read other files than these
-//! (`#include`, a `Dir` or `RootDir` setting), leave the setting unknown,
-//! which is refused as if it were on. The helper reads the files again on
-//! the signal without forgetting what it read when it started, so a `false`
-//! there wins, while a line only deleted stays in effect until the helper
-//! restarts: the fix says to set it to false.
+//! way apt does, whatever makes apt read other files than these
+//! (`#include`, a `Dir` or `RootDir` setting), and a file name or a value
+//! that apt reads by the system's locale (a byte beyond ASCII) leave the
+//! setting unknown, which is refused as if it were on. The helper reads the
+//! files again on the signal without forgetting what it read when it
+//! started, so a `false` there wins, while a line only deleted stays in
+//! effect until the helper restarts: the fix says to set it to false.
 //!
 //! The hidden session runs its own copy of the helper wherever the unit is
 //! enabled. At the way back through logind (`nails deactivate`) that copy
@@ -50,7 +51,7 @@
 use super::{ADMIN_UNIT_DIR, loggers, masked, unit_linked};
 use crate::Filesystem;
 use crate::next_step::{NextStep, sudo_line};
-use nails_base::packages::apt_conf::{self, Statement};
+use nails_base::packages::apt_conf::{self, PartName, Statement};
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -196,6 +197,10 @@ fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
         }
     }
     match value {
+        Some((set, at)) if apt_conf::value_by_locale(&set) => Setting::Unknown(format!(
+            "{at} sets it to a value with a byte beyond ASCII, which apt reads by the system's \
+             locale"
+        )),
         Some((set, at)) if apt_conf::string_to_bool(&set, false) => Setting::On(at),
         _ => Setting::Off,
     }
@@ -296,14 +301,22 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
         let Some((read, upper)) = read else {
             continue;
         };
-        if !apt_conf::part_name(&name) {
+        let by_name = apt_conf::part_name(&name);
+        if by_name == PartName::Skipped {
             continue;
         }
         let shown = format!("/{PARTS}/{}", String::from_utf8_lossy(&name));
         let place = if upper { IN_UPPER } else { "" };
-        if regular(fs, &read, &format!("{shown}{place}"))? {
-            found.push(Source { shown, place, read });
+        if !regular(fs, &read, &format!("{shown}{place}"))? {
+            continue;
         }
+        if by_name == PartName::ByLocale {
+            return Err(format!(
+                "{shown}{place} has a name with a byte beyond ASCII, which apt reads or skips by \
+                 the system's locale"
+            ));
+        }
+        found.push(Source { shown, place, read });
     }
     // The main file: the upper's, unless it is a whiteout there, else the
     // decoy's where the view shows it.
