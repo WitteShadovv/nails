@@ -1153,24 +1153,32 @@ while one is mounted).
 A hidden root on a filesystem the decoy uses, accepted with
 `--allow-decoy-storage`, is judged as well, with two kinds of mounts left out.
 One is the decoy's own mounts of that filesystem: the one at `/`, and one that
-a line of `/etc/fstab` makes, a line for that mount point that names the
-mount's device, or a bind line whose source lies on that filesystem. The other
-is a mount that shows none of the root's folder, such as NixOS's read-only
-bind of `/nix/store` beside a bind of a folder of `/`, or another btrfs
-subvolume. So the check passes a bind of a folder of `/`, or a subvolume of a
-filesystem the fstab mounts, with the flag's warning, while a separate drive
-also mounted at `/srv` is refused with `sudo umount /srv`. A root is refused
-as well when a mount that no fstab line makes shows its folder, such as a bind
-of a folder of a `/home` or `/srv` partition that systemd-gpt-auto-generator
-mounts, or of ostree's `/sysroot`; the refusal then says not to unmount what
-this computer mounts by itself, and to use a volume of its own instead.
+a line of `/etc/fstab` makes. That is a line for that mount point that names
+the mount's device (for a ZFS dataset, the dataset) and mounts what the mount
+shows: the filesystem's top, or the btrfs subvolume its `subvol=` names, but
+never a folder bound there by hand. Or it is a bind line whose source lies on
+another of the decoy's own mounts of that filesystem, and the mount shows that
+source's folder. The other is a mount that shows none of the root's folder,
+such as NixOS's read-only bind of `/nix/store` beside a bind of a folder of
+`/`, or another btrfs subvolume. So the check passes a bind of a folder of `/`,
+or a subvolume of a filesystem the fstab mounts, with the flag's warning, while
+a separate drive also mounted at `/srv` is refused with `sudo umount /srv`.
 
-Choose a hidden root that does not lie below a bind of a folder. systemd makes
-the mounts shared, so a bind that it mounts from fstab, or that a person makes
-later, can pass a mount made below one of its two places on to the other: with
-`/persist/mnt` bound at `/mnt`, the volume mounted at `/mnt/data` is also
-mounted at `/persist/mnt/data`. That copy is a second mount, and unmounting it
-unmounts the root as well.
+A root is refused as well when a mount that no fstab line makes shows its
+folder, such as a bind of a folder of a `/home` or `/srv` partition that
+systemd-gpt-auto-generator mounts, of ostree's `/sysroot`, or of a ZFS dataset
+that ZFS mounts by its mountpoint property. The refusal then says not to
+unmount what this computer mounts by itself, and to use a volume of its own
+instead.
+
+Choose a hidden root that lies neither at nor below either place of a bind of
+a folder. systemd makes the mounts shared, so a bind that it mounts from
+fstab, or that a person makes later, can pass a mount made at or below one of
+its two places on to the other: with `/persist/mnt` bound at `/mnt`, the
+volume mounted at `/mnt/data` is also mounted at `/persist/mnt/data`, and with
+`/persist/home` bound at `/home`, a volume mounted at `/persist/home` is also
+mounted at `/home`. That copy is a second mount, and unmounting it unmounts the
+root as well.
 
 Turn the automatic mounting of removable media off long before the next use,
 so that the change is not dated next to a session, and unlock the drive from a

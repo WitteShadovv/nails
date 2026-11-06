@@ -8,6 +8,7 @@ use super::{
     LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Untraced, Verdict,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
+use crate::fstab::FstabEntry;
 use crate::hidden_root::mount_holding;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -470,38 +471,108 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
     }
 }
 
-/// Whether a line of the decoy's fstab makes the mount `mount`: a line for
-/// its mount point, of a filesystem the claims count (no swap, RAM, kernel,
-/// host-share, network or overlay line), whose spec names the device `mount`
-/// is on or another device of its btrfs filesystem, or a bind line whose
-/// source lies on its filesystem. A spec that leads to no device here names
-/// none. A filesystem mounted at a folder that the fstab names for another
-/// device is no mount the fstab makes, whether it is mounted over that
-/// device's mount or in its place.
-pub fn fstab_mounts(scene: &Scene<'_>, mount: &MountEntry) -> bool {
+/// Whether `mount`, a mount of the filesystem that `hidden` (the visible
+/// mount at the hidden root) shows, is one the decoy makes itself: the one at
+/// `/`, or one that a line of its fstab makes. Such a line is for `mount`'s
+/// mount point and of a kind the claims count (no swap, RAM, kernel,
+/// host-share, network or overlay line), and `mount` shows what it mounts:
+///
+/// - A device line names the device `mount` is on, or another device of its
+///   btrfs filesystem, and `mount` shows the filesystem's top, the subvolume
+///   its `subvol=` names, or with `subvolid=` alone a subvolume: never a
+///   folder bound there. A spec that leads to no device here names none,
+///   unless `mount` shows no device either, as a ZFS dataset does: then the
+///   spec is `mount`'s source and the line's type its type.
+/// - A bind line's source lies on another mount of that filesystem than
+///   `hidden`, one of the decoy's own itself, and `mount` shows the folder of
+///   it that the source names.
+///
+/// So the fstab makes none of these: a filesystem mounted at a folder that a
+/// line names for another device, in place of that device's mount or over
+/// it, a folder bound by hand where a line mounts the same filesystem, and
+/// the copy that mount propagation makes, at a bind line's mount point, of a
+/// mount at or below its source.
+pub fn decoys_own_mount(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry) -> bool {
+    // A chain of bind lines is no longer than the fstab.
+    decoys_own(scene, mount, hidden, scene.fstab.len())
+}
+
+/// [`decoys_own_mount`], following bind lines `depth` deep at most.
+fn decoys_own(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry, depth: usize) -> bool {
+    if mount.mount_point == Path::new("/") {
+        return true;
+    }
     let devices = scene.devices;
     let node = devices.node_of_mount(mount);
     scene
         .fstab
         .iter()
         .filter(|entry| entry.file == mount.mount_point)
-        .filter(|entry| {
-            !(entry.is_swap()
-                || entry.is_virtual()
-                || entry.is_host_share()
-                || entry.is_network()
-                || entry.vfstype == "overlay")
-        })
+        .filter(|entry| mounts_storage(entry))
         .any(|entry| {
             if entry.is_bind() {
-                return mount_holding(scene.mounts, Path::new(&entry.spec))
-                    .is_some_and(|holder| holder.dev == mount.dev);
+                return depth > 0 && bind_makes(scene, entry, mount, hidden, depth - 1);
             }
-            match (devices.node_of_spec(&entry.spec), node) {
+            let named = match (devices.node_of_spec(&entry.spec), node) {
                 (Some(named), Some(node)) => named == node || devices.same_btrfs(named, node),
+                // A filesystem with no device, such as a ZFS dataset, is
+                // named by its source.
+                (None, None) => {
+                    entry.vfstype == mount.fstype
+                        && Path::new(&entry.spec) == mount.source.as_path()
+                }
                 _ => false,
-            }
+            };
+            named && shows_what_it_mounts(entry, mount)
         })
+}
+
+/// Whether the bind line `entry` makes `mount`: its source lies on a mount of
+/// the same filesystem, neither `hidden` nor `mount` itself, that is one of
+/// the decoy's own, and `mount` shows the folder of it the source names.
+fn bind_makes(
+    scene: &Scene<'_>,
+    entry: &FstabEntry,
+    mount: &MountEntry,
+    hidden: &MountEntry,
+    depth: usize,
+) -> bool {
+    let source = Path::new(&entry.spec);
+    let Some(holder) = mount_holding(scene.mounts, source) else {
+        return false;
+    };
+    let Ok(below) = source.strip_prefix(&holder.mount_point) else {
+        return false;
+    };
+    holder.mount_id != hidden.mount_id
+        && holder.mount_id != mount.mount_id
+        && holder.dev == mount.dev
+        && mount.root == holder.root.join(below)
+        && decoys_own(scene, holder, hidden, depth)
+}
+
+/// Whether the fstab line `entry` mounts a filesystem the claims count: no
+/// swap, RAM, kernel, host-share, network or overlay line.
+fn mounts_storage(entry: &FstabEntry) -> bool {
+    !(entry.is_swap()
+        || entry.is_virtual()
+        || entry.is_host_share()
+        || entry.is_network()
+        || entry.vfstype == "overlay")
+}
+
+/// Whether `mount` shows what the device line `entry` mounts: on btrfs the
+/// subvolume its `subvol=` names, or with `subvolid=` alone a subvolume, and
+/// otherwise the filesystem's top. A folder bound there is none of these.
+fn shows_what_it_mounts(entry: &FstabEntry, mount: &MountEntry) -> bool {
+    if let Some(subvolume) = entry.option_value("subvol") {
+        return mount.fstype == "btrfs"
+            && mount.root == Path::new("/").join(subvolume.trim_start_matches('/'));
+    }
+    if entry.option_value("subvolid").is_some() {
+        return sharing(mount) != Sharing::Bind;
+    }
+    mount.root == Path::new("/")
 }
 
 /// Where the decoy mounts the filesystem of `holder`, if it is claimed.

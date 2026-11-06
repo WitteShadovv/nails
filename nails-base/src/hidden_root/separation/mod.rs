@@ -82,9 +82,9 @@
 //! the [`Filesystem`](crate::Filesystem) trait, and [`judge_storage`] does
 //! both for the attach gate. [`claimed_devices`] lists the devices the claims
 //! hold, for a check that weighs the hidden root's own stack against them.
-//! [`fstab_mounts`] tells whether a line of the fstab makes a mount, for the
-//! rule that leaves the decoy's own mounts of an accepted root's filesystem
-//! out of its second mounts.
+//! [`decoys_own_mount`] tells whether the decoy makes a mount itself, at `/`
+//! or by a line of its fstab, for the rule that leaves the decoy's own mounts
+//! of an accepted root's filesystem out of its second mounts.
 
 mod collect;
 mod extra;
@@ -93,7 +93,7 @@ mod judge;
 mod tests;
 
 pub use collect::{Collected, collect, judge_storage};
-pub use judge::{claimed_devices, fstab_mounts, judge, sharing, shown_fstype};
+pub use judge::{claimed_devices, decoys_own_mount, judge, sharing, shown_fstype};
 
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;

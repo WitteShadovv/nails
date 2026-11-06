@@ -760,6 +760,174 @@ fn on_a_decoy_filesystem_a_bind_line_of_the_fstab_makes_its_mount() {
             "{fstab}"
         );
     }
+    // A chain of bind lines: the decoy binds a folder of its /home bind at
+    // /srv/shared too, and a root below that sees all three mounts as the
+    // decoy's own.
+    let chain = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 2 1 8:17 / /persist rw - ext4 /dev/vdb1 rw\n\
+                 3 1 8:17 /home /home rw - ext4 /dev/vdb1 rw\n\
+                 4 1 8:17 /home/shared /srv/shared rw - ext4 /dev/vdb1 rw\n\
+                 30 1 8:17 /home/shared/vault /mnt/data rw - ext4 /dev/vdb1 rw\n";
+    let lines = format!(
+        "{persist}/persist/home /home none bind 0 0\n/home/shared /srv/shared none bind 0 0\n"
+    );
+    assert!(elsewhere_on_the_decoy(&decoy_fs(chain, &lines)).is_empty());
+    // Without the line for /home, /home is bound by hand, and so is no mount
+    // a line makes, and neither is the bind of a folder of it.
+    let fs = decoy_fs(
+        chain,
+        &format!("{persist}/home/shared /srv/shared none bind 0 0\n"),
+    );
+    assert_eq!(
+        elsewhere_on_the_decoy(&fs),
+        vec![PathBuf::from("/home"), PathBuf::from("/srv/shared")]
+    );
+    // Two bind lines that bind each other's mount point lead to no mount of
+    // the decoy's own, however often they are followed.
+    let cycle = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 2 1 8:1 /srv /a rw - ext4 /dev/vda1 rw\n\
+                 3 1 8:1 /srv /b rw - ext4 /dev/vda1 rw\n\
+                 30 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n";
+    let fs = decoy_fs(cycle, "/b /a none bind 0 0\n/a /b none bind 0 0\n");
+    assert_eq!(
+        elsewhere_on_the_decoy(&fs),
+        vec![PathBuf::from("/a"), PathBuf::from("/b")]
+    );
+}
+
+/// [`elsewhere_on_the_decoy`] for the root at `root`.
+fn elsewhere_on_the_decoy_at(fs: &MockFilesystem, root: &str) -> Vec<PathBuf> {
+    HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem(fs, Path::new(root))
+        .unwrap()
+        .map(|found| found.mounts.into_iter().map(|m| m.mount_point).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn on_a_decoy_filesystem_a_copy_that_mount_propagation_made_at_a_bind_lines_mount_point_counts() {
+    // The fstab binds /persist/home at /home. The hidden drive mounted at
+    // /persist/home, the root, is copied to /home by the shared propagation
+    // systemd sets up: the decoy's desktop reaches it there, and the line
+    // made the bind of /persist/home that lies below the copy, not the copy.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 2 1 8:2 / /persist rw - ext4 /dev/vda2 rw\n\
+                 20 1 8:2 /home /home rw - ext4 /dev/vda2 rw\n\
+                 30 2 253:0 / /persist/home rw - ext4 /dev/mapper/data rw\n\
+                 31 20 253:0 / /home rw - ext4 /dev/mapper/data rw\n";
+    let fs = decoy_fs(
+        table,
+        "/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /persist ext4 defaults 0 2\n\
+         /persist/home /home none bind 0 0\n",
+    );
+    assert_eq!(
+        elsewhere_on_the_decoy_at(&fs, "/persist/home"),
+        vec![PathBuf::from("/home")]
+    );
+    // The same with a bind line to a folder outside the system folders.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 20 1 8:1 /srv/share /media/share rw - ext4 /dev/vda1 rw\n\
+                 30 1 253:0 / /srv/share rw - ext4 /dev/mapper/data rw\n\
+                 31 20 253:0 / /media/share rw - ext4 /dev/mapper/data rw\n";
+    let fs = decoy_fs(
+        table,
+        "/dev/vda1 / ext4 defaults 0 1\n/srv/share /media/share none bind 0 0\n",
+    );
+    assert_eq!(
+        elsewhere_on_the_decoy_at(&fs, "/srv/share"),
+        vec![PathBuf::from("/media/share")]
+    );
+    // A bind line whose source lies in the root binds the hidden drive.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+                 40 1 253:0 /srv /srv rw - ext4 /dev/mapper/data rw\n";
+    let fs = decoy_fs(
+        table,
+        "/dev/vda1 / ext4 defaults 0 1\n/mnt/data/srv /srv none bind,nofail 0 0\n",
+    );
+    assert_eq!(elsewhere_on_the_decoy(&fs), vec![PathBuf::from("/srv")]);
+}
+
+#[test]
+fn on_a_decoy_filesystem_a_folder_bound_by_hand_where_a_line_mounts_that_filesystem_counts() {
+    // The root's folder /srv/x of / bound by hand over /media/a, where the
+    // fstab binds /srv/a: the line makes the bind below it, not this one.
+    let fs = decoy_fs(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         20 1 8:1 /srv/a /media/a rw - ext4 /dev/vda1 rw\n\
+         30 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n\
+         40 20 8:1 /srv/x /media/a rw - ext4 /dev/vda1 rw\n",
+        "/dev/vda1 / ext4 defaults 0 1\n/srv/a /media/a none bind 0 0\n",
+    );
+    assert_eq!(elsewhere_on_the_decoy(&fs), vec![PathBuf::from("/media/a")]);
+    // The root's folder of the /home partition bound by hand over /home,
+    // which a line mounts from that partition: the line mounts its top.
+    let home = "/dev/vda2 /home ext4 defaults 0 2\n";
+    let table = |extra: &str| {
+        format!(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             2 1 8:2 / /home rw - ext4 /dev/vda2 rw\n\
+             30 1 8:2 /u/vault /mnt/data rw - ext4 /dev/vda2 rw\n{extra}"
+        )
+    };
+    assert!(elsewhere_on_the_decoy(&decoy_fs(&table(""), home)).is_empty());
+    let over = table("40 2 8:2 /u/vault /home rw - ext4 /dev/vda2 rw\n");
+    assert_eq!(
+        elsewhere_on_the_decoy(&decoy_fs(&over, home)),
+        vec![PathBuf::from("/home")]
+    );
+    // A btrfs subvolume mounted by hand where a line mounts another one of
+    // the same filesystem: the line's subvol= names the one it mounts.
+    let pool = |at_home: &str| {
+        format!(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             2 1 0:40 /{at_home} /home rw - btrfs /dev/vda2 rw,subvol=/{at_home}\n\
+             30 1 0:40 /vault /mnt/data rw - btrfs /dev/vda2 rw,subvol=/vault\n"
+        )
+    };
+    let subvol_home = "/dev/vda2 /home btrfs subvol=home 0 0\n";
+    assert!(elsewhere_on_the_decoy(&decoy_fs(&pool("home"), subvol_home)).is_empty());
+    assert_eq!(
+        elsewhere_on_the_decoy(&decoy_fs(&pool("vault"), subvol_home)),
+        vec![PathBuf::from("/home")]
+    );
+    // A line with neither option mounts the filesystem's top.
+    assert_eq!(
+        elsewhere_on_the_decoy(&decoy_fs(
+            &pool("vault"),
+            "/dev/vda2 /home btrfs defaults 0 0\n"
+        )),
+        vec![PathBuf::from("/home")]
+    );
+}
+
+#[test]
+fn on_a_decoy_filesystem_a_zfs_dataset_is_named_by_its_source() {
+    // NixOS mounts a dataset with a legacy mount point by an fstab line that
+    // names it: no device shows for either.
+    let table = |home: &str| {
+        format!(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             2 1 0:51 {home} /home rw - zfs rpool/home rw,xattr,noacl\n\
+             30 1 0:51 /u/vault /mnt/data rw - zfs rpool/home rw,xattr,noacl\n"
+        )
+    };
+    let line = "rpool/home /home zfs defaults 0 0\n";
+    assert!(elsewhere_on_the_decoy(&decoy_fs(&table("/"), line)).is_empty());
+    // A dataset ZFS mounts by its own mountpoint property has no line, a
+    // line for another dataset or of another type does not name it, and the
+    // root's folder bound by hand over /home is no mount the line makes.
+    for (home, fstab) in [
+        ("/", ""),
+        ("/", "rpool/srv /home zfs defaults 0 0\n"),
+        ("/", "rpool/home /home ext4 defaults 0 0\n"),
+        ("/u/vault", line),
+    ] {
+        assert_eq!(
+            elsewhere_on_the_decoy(&decoy_fs(&table(home), fstab)),
+            vec![PathBuf::from("/home")],
+            "{home} {fstab}"
+        );
+    }
 }
 
 #[test]

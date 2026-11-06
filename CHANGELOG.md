@@ -1409,12 +1409,16 @@ of this changelog for that version becomes the release notes word for word, and
   removable media off long before the next use. No flag lifts it. A bind of the volume at the root
   itself passes. For a root on a filesystem the decoy uses that `--allow-decoy-storage` accepted,
   the decoy's own mounts of that filesystem do not count, the one at `/` and those a line of
-  `/etc/fstab` makes, and neither does a mount that shows none of the root's folder (NixOS's
-  read-only bind of `/nix/store`, another btrfs subvolume). So the check passes a bind of a folder
-  of `/` and a subvolume of a filesystem the fstab mounts with the flag's warning, while a separate
-  drive also mounted at `/srv` is refused, and so is a root whose folder a mount that no fstab line
-  makes shows too (a `/home` or `/srv` partition that systemd-gpt-auto-generator mounts, ostree's
-  `/sysroot`). A directory of a disk bound at the root now needs the disk's own mount gone.
+  `/etc/fstab` makes (a line that names the mount's device, or the ZFS dataset, and mounts what it
+  shows, or a bind line from another of the decoy's own mounts of it), and neither does a mount
+  that shows none of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs
+  subvolume). So the check passes a bind of a folder of `/` and a subvolume of a filesystem the
+  fstab mounts with the flag's warning. A separate drive also mounted at `/srv` is refused, and so
+  is the copy that mount propagation makes of a mount at or below a bind line's source, and a root
+  whose folder a mount that no fstab line makes shows too (a `/home` or `/srv` partition that
+  systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a ZFS dataset that ZFS mounts by its
+  mountpoint property). A directory of a disk bound at the root now needs the disk's own mount
+  gone.
   `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the setting, which is
   not verified for every release. A VM test records whether udiskie mounts a drive that cryptsetup
   unlocked, and in it udiskie did.

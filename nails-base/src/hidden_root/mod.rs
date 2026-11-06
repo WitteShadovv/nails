@@ -387,15 +387,17 @@ impl HiddenRoot {
     /// accepted with `--allow-decoy-storage`. Two kinds of other mounts of
     /// that filesystem do not count. One is the decoy's own mounts of it,
     /// which the gate's warning is about: the one at `/`, and one that a line
-    /// of the decoy's fstab makes ([`separation::fstab_mounts`]). The other is
-    /// a mount that shows none of the root's folder, neither that folder nor
-    /// one above or inside it: NixOS's read-only bind of `/nix/store` beside a
-    /// bind of a folder of `/`, say, or another subvolume of a btrfs
-    /// filesystem. Every other mount counts, as for a volume of its own: a
-    /// separate drive mounted at `/srv` by hand as well, which made the gate
-    /// place the root on the decoy's storage, and a mount the decoy makes with
-    /// no fstab line, such as the `/home` or `/srv` partition that
-    /// systemd-gpt-auto-generator mounts, or ostree's `/sysroot`.
+    /// of the decoy's fstab makes ([`separation::decoys_own_mount`]). The
+    /// other is a mount that shows none of the root's folder, neither that
+    /// folder nor one above or inside it: NixOS's read-only bind of
+    /// `/nix/store` beside a bind of a folder of `/`, say, or another
+    /// subvolume of a btrfs filesystem. Every other mount counts, as for a
+    /// volume of its own: a separate drive mounted at `/srv` by hand as well,
+    /// which made the gate place the root on the decoy's storage, a copy that
+    /// mount propagation made of the root's mount at a bind line's mount
+    /// point, and a mount the decoy makes with no fstab line, such as the
+    /// `/home` or `/srv` partition that systemd-gpt-auto-generator mounts, or
+    /// ostree's `/sysroot`.
     ///
     /// It reads the judge's inputs again through `fs`, as the gate does
     /// ([`separation::collect`]), and fails when one that exists cannot be
@@ -440,7 +442,9 @@ fn found_elsewhere<F: Filesystem>(
             )));
         }
         let scene = collected.scene(&table);
-        second.retain(|mount| shows_some_of(mount, visible) && !decoys_own(&scene, mount));
+        second.retain(|mount| {
+            shows_some_of(mount, visible) && !separation::decoys_own_mount(&scene, mount, visible)
+        });
     }
     let mounts: Vec<SecondMount> = second
         .into_iter()
@@ -463,12 +467,6 @@ fn found_elsewhere<F: Filesystem>(
 /// there.
 fn shows_some_of(mount: &MountEntry, visible: &MountEntry) -> bool {
     visible.root.starts_with(&mount.root) || mount.root.starts_with(&visible.root)
-}
-
-/// Whether `mount` is one of the decoy's own mounts in `scene`: the one at
-/// `/`, or one a line of its fstab makes ([`separation::fstab_mounts`]).
-fn decoys_own(scene: &separation::Scene<'_>, mount: &MountEntry) -> bool {
-    mount.mount_point == Path::new("/") || separation::fstab_mounts(scene, mount)
 }
 
 /// The volume at a hidden root, mounted at other places too (see

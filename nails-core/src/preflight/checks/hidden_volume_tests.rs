@@ -1051,3 +1051,66 @@ fn a_second_mount_that_shows_the_folder_of_an_accepted_root_is_refused() {
     assert_eq!(result.allowable(), None);
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 }
+
+/// A mock where the root at `/mnt/data` exists and is writable, with `table`
+/// as its mount table and `fstab` as the decoy's fstab.
+fn decoy_with(table: &str, fstab: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(table);
+    fs.mock_set_file_content("/etc/fstab", fstab);
+    fs
+}
+
+#[test]
+fn a_mount_a_bind_line_of_the_fstab_copies_from_the_root_is_refused_with_the_flag_too() {
+    // The decoy's fstab binds a folder of the root at /srv: once the hidden
+    // drive is mounted at the root, /srv shows its files, and the line names
+    // a folder of the drive, not of the decoy's storage.
+    let fs = decoy_with(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         40 1 253:0 /srv /srv rw - ext4 /dev/mapper/data rw\n",
+        "/dev/vda1 / ext4 defaults 0 1\n/mnt/data/srv /srv none bind,nofail 0 0\n",
+    );
+    let refused = run_allowing(&fs, Allow::Nothing);
+    assert!(refused.is_fail(), "got {refused:?}");
+    assert_eq!(refused.allowable(), Some(Allowable::DecoyStorage));
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(result.message(), on_a_decoy_filesystem_also_at("/srv"));
+    assert_eq!(
+        result.remediation().unwrap(),
+        on_a_decoy_filesystem_fix("/srv")
+    );
+    assert_eq!(result.allowable(), None);
+}
+
+#[test]
+fn a_bind_of_a_folder_of_a_zfs_dataset_the_fstab_mounts_passes_with_the_flag() {
+    // NixOS mounts a dataset with a legacy mount point by an fstab line that
+    // names it; ZFS itself mounts one by its mountpoint property, with none.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 2 1 0:51 / /home rw - zfs rpool/home rw,xattr,noacl\n\
+                 30 1 0:51 /u/vault /mnt/data rw - zfs rpool/home rw,xattr,noacl\n";
+    let fs = decoy_with(table, "rpool/home /home zfs defaults 0 0\n");
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_warn(), "got {result:?}");
+    assert!(
+        result.message().starts_with(
+            "--allow-decoy-storage: using /mnt/data although it is a bind mount of a folder of \
+             /home"
+        ),
+        "{}",
+        result.message()
+    );
+    let fs = decoy_with(table, "");
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(result.message(), on_a_decoy_filesystem_also_at("/home"));
+    assert_eq!(
+        result.remediation().unwrap(),
+        on_a_decoy_filesystem_fix("/home")
+    );
+}
