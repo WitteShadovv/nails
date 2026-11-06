@@ -20,7 +20,8 @@
 //! directories, the test of the whole upper-filesystem probe, and the two
 //! tests of the loop driver's record of the file behind a loop device, one on
 //! a tmpfs and one on a btrfs filesystem it makes with `mkfs.btrfs`, which
-//! must be on `PATH` (btrfs-progs):
+//! must be on `PATH` (btrfs-progs). Both also mount a FUSE filesystem through
+//! `/dev/fuse`, which no daemon serves:
 //!
 //! ```sh
 //! cargo test -p nails-core --test privileged_mounts --no-run
@@ -847,6 +848,71 @@ impl Drop for LoopDevice {
     }
 }
 
+/// A FUSE filesystem that no daemon serves: mounted from a `/dev/fuse` the
+/// test holds open and never reads, so the kernel's first request, and every
+/// lookup through the mount after it, waits for an answer. Dropping it closes
+/// the device, which ends the connection and every wait on it, and detaches
+/// the mount.
+struct SilentFuse {
+    device: Option<std::fs::File>,
+    at: PathBuf,
+}
+
+impl SilentFuse {
+    fn mount(at: &Path) -> Self {
+        use std::os::fd::AsRawFd;
+        let device = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/fuse")
+            .expect("open /dev/fuse");
+        let options = format!(
+            "fd={},rootmode=40000,user_id=0,group_id=0",
+            device.as_raw_fd()
+        );
+        nix::mount::mount(
+            Some("nails-test"),
+            at,
+            Some("fuse"),
+            MsFlags::empty(),
+            Some(options.as_str()),
+        )
+        .expect("mount a FUSE filesystem");
+        Self {
+            device: Some(device),
+            at: at.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for SilentFuse {
+    fn drop(&mut self) {
+        drop(self.device.take());
+        let _ = Mounts.unmount(&self.at, true);
+    }
+}
+
+/// What `backing_filesystem` names for `mount`, and whether `plan` counts it
+/// as its own storage, asked on a thread of its own while `fuse` is mounted.
+/// An answer that takes longer than ten seconds waits on the FUSE
+/// filesystem, which never answers: the test then fails, once dropping
+/// `fuse` has ended the wait.
+fn asked_beside(
+    fuse: SilentFuse,
+    mount: &nails_teardown::mountinfo::MountEntry,
+    plan: &nails_teardown::whole_root::plan::Plan,
+) -> (Option<String>, bool) {
+    let (sent, answer) = std::sync::mpsc::channel();
+    let (mount, plan) = (mount.clone(), plan.clone());
+    std::thread::spawn(move || {
+        let held = nails_teardown::loop_device::backing_filesystem(&mount);
+        let _ = sent.send((held, plan.is_hidden_storage(&mount)));
+    });
+    let answer = answer.recv_timeout(std::time::Duration::from_secs(10));
+    drop(fuse);
+    answer.expect("an answer that does not wait on the FUSE filesystem")
+}
+
 /// The loop driver's record, read through a real loop device: it names the
 /// filesystem that holds the device's backing file by the number the mount
 /// table shows for that filesystem. A filesystem on the loop device is told
@@ -856,7 +922,9 @@ impl Drop for LoopDevice {
 /// root, as its own storage, and nothing else. The mount table lines are the
 /// test's own, for the filesystems the device could hold: what is read is the
 /// driver's record, and the real mount table, which shows the tmpfs that
-/// holds the file.
+/// holds the file. While a FUSE filesystem that no daemon serves is mounted
+/// over the file's folder, nothing is asked of it, and the image counts as a
+/// disk of its own.
 #[test]
 #[ignore = "root only: binding a loop device needs CAP_SYS_ADMIN in the initial namespace"]
 fn the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file() {
@@ -909,6 +977,15 @@ fn the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file() {
     let own: Vec<bool> = mounts.iter().map(|m| plan.is_hidden_storage(m)).collect();
     assert_eq!(own, [true, true, false, false], "{mounts:?}");
 
+    // The path the driver shows for the file runs through a FUSE filesystem
+    // now. A file there would have its daemon answer for the driver's
+    // record, and a lookup of the path asks the daemon in any case, so
+    // neither is asked: the image counts as a disk of its own, though it
+    // still lies on the tmpfs.
+    let fuse = SilentFuse::mount(&at);
+    assert_eq!(asked_beside(fuse, &mounts[0], &plan), (None, false));
+    assert_eq!(backing_filesystem(&mounts[0]), Some(volume.clone()));
+
     // Unbound, the device has no record left to read.
     let node = device.node.clone();
     drop(device);
@@ -927,7 +1004,9 @@ fn the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file() {
 /// path leads to, when it leads to the recorded file. A session whose hidden
 /// volume is that btrfs counts an image on it, mounted below the hidden root
 /// from its loop device, as its own storage, and not while a tmpfs mounted
-/// over the image's folder holds what the path leads to.
+/// over the image's folder holds what the path leads to. Nor while a FUSE
+/// filesystem that no daemon serves is mounted there: the path is not looked
+/// up through it, which would wait for good.
 #[test]
 #[ignore = "root only: binding a loop device needs CAP_SYS_ADMIN in the initial namespace, and mkfs.btrfs"]
 fn a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows() {
@@ -1023,6 +1102,12 @@ fn a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows() {
     Mounts
         .unmount(&folder, false)
         .expect("unmount the tmpfs over the folder");
+    assert_eq!(backing_filesystem(&mounts[0]), Some(volume_dev.clone()));
+
+    // A FUSE filesystem over the folder that no daemon serves: a lookup of
+    // the path through it would wait for good, so none is made.
+    let fuse = SilentFuse::mount(&folder);
+    assert_eq!(asked_beside(fuse, &mounts[0], &plan), (None, false));
     assert_eq!(backing_filesystem(&mounts[0]), Some(volume_dev));
 
     drop(device);
