@@ -44,6 +44,43 @@ fn test_explicit_flake_with_attr_all_paths_exist() {
     assert!(result.message().contains("/srv/flake#amnesia-virtualbox"));
 }
 
+/// An explicit flake behind an automount point that nothing is mounted on
+/// yet is not looked up: the check refuses, naming the point, and says once
+/// how to mount it. One whose lookup fails refuses naming the error, where
+/// it read as a flake that is not there.
+#[test]
+fn an_explicit_flake_nails_cannot_look_up_is_refused() {
+    use crate::filesystem::automount::mount_fix;
+    use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+    let check = NixOSBuildTargetCheck::new(Some("/srv/flake#host".to_string()), HostTarget::None);
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/srv/flake", true);
+    fs.mock_set_path_exists("/srv/flake/flake.nix", true);
+    with_automounts(&fs, &["/srv"]);
+    let result = check.run(&fs).unwrap();
+    assert_eq!(
+        result,
+        CheckResult::fail_with(
+            "NAILS cannot tell whether the flake build target resolves: NAILS does not look up \
+             /srv/flake, since the lookup would mount the automount point /srv.",
+            mount_fix(&[Path::new("/srv")]),
+        )
+    );
+    assert!(!reached(&fs, "/srv"), "{:?}", fs.mock_lookups());
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/srv/flake", true);
+    fs.mock_set_path_exists("/srv/flake/flake.nix", true);
+    fs.mock_set_lookup_error("/srv/flake/flake.nix", std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        check.run(&fs).unwrap(),
+        CheckResult::fail(
+            "NAILS cannot tell whether the flake build target resolves: NAILS cannot look up \
+             /srv/flake/flake.nix; run the command again with sudo."
+        )
+    );
+}
+
 #[test]
 fn test_explicit_flake_without_attr() {
     let fs = MockFilesystem::new();

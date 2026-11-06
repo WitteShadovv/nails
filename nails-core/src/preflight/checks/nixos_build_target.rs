@@ -7,9 +7,10 @@
 //! will resolve before any destructive operations begin.
 
 use super::super::{CheckResult, PreFlightCheck};
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle};
 use crate::nixos::{resolve_local_flake_dir, split_flake_ref};
 use crate::platform::{HiddenFlake, HostTarget, hidden_flake};
-use crate::{Filesystem, Result};
+use crate::{Filesystem, NailsError, Result};
 use std::path::{Path, PathBuf};
 
 /// Validates the NixOS build target reference will resolve
@@ -36,6 +37,14 @@ use std::path::{Path, PathBuf};
 ///   written, its links and `..` resolved by the kernel as Nix resolves a
 ///   path and `git+file:`, and with `.` and `..` applied by the text as Nix
 ///   applies them to `path:`
+///
+/// An explicit flake can lie anywhere, a home an automounter serves or `/srv`
+/// among them, so its directory and its `flake.nix` are looked up through the
+/// automount guard ([`crate::filesystem::automount`]): one behind an
+/// automount point that nothing is mounted on yet is not looked up, and the
+/// check refuses, naming the point and how to mount it. A lookup that fails
+/// for another reason than that nothing is there refuses as well, naming the
+/// error.
 ///
 /// When no flake is specified, it reports the target the host's platform
 /// discovered ([`discover_host_target`](crate::platform::discover_host_target)),
@@ -96,20 +105,28 @@ impl NixOSBuildTargetCheck {
         };
 
         // Check 2: Directory must exist
-        if !fs.path_exists(&dir)? {
-            return Ok(CheckResult::fail(format!(
-                "Flake directory '{}' not found.",
-                dir.display()
-            )));
+        match fs.path_exists(&dir) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(CheckResult::fail(format!(
+                    "Flake directory '{}' not found.",
+                    dir.display()
+                )));
+            }
+            Err(error) => return Ok(unseen_flake(&dir, &error)),
         }
 
         // Check 3: flake.nix must exist in directory
         let flake_nix = dir.join("flake.nix");
-        if !fs.path_exists(&flake_nix)? {
-            return Ok(CheckResult::fail(format!(
-                "flake.nix not found in '{}'.",
-                dir.display()
-            )));
+        match fs.path_exists(&flake_nix) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(CheckResult::fail(format!(
+                    "flake.nix not found in '{}'.",
+                    dir.display()
+                )));
+            }
+            Err(error) => return Ok(unseen_flake(&flake_nix, &error)),
         }
 
         Ok(CheckResult::Pass(format!(
@@ -173,6 +190,20 @@ impl NixOSBuildTargetCheck {
                 "No NixOS configuration found. Provide --nixos-flake, put a hidden flake in <hidden-root>/nixos, or ensure /etc/nixos contains configuration.nix.".to_string()
             ),
         }
+    }
+}
+
+/// The refusal of an explicit flake whose path `path` NAILS could not look
+/// up, for `error`: what it cannot tell, and what to do so that it can.
+fn unseen_flake(path: &Path, error: &NailsError) -> CheckResult {
+    let unseen = describe(&path.display().to_string(), error);
+    let message = format!(
+        "NAILS cannot tell whether the flake build target resolves: {}.",
+        unseen.sentence
+    );
+    match unseen.fix {
+        Some(fix) => CheckResult::fail_with(message, fix),
+        None => CheckResult::fail(message),
     }
 }
 
@@ -267,7 +298,9 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
             return Ok(decoy_flake_refusal(dir, hidden_volume_root, hidden));
         }
         if let Some(ref flake_ref) = self.nixos_flake {
-            self.check_explicit_flake(fs, flake_ref)
+            let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
+            let result = self.check_explicit_flake(&guarded, flake_ref)?;
+            Ok(settle(result, &guarded.skipped(), OnSkip::Refuse(None)))
         } else if let Some(ref selected_flake_dir) = self.selected_flake_dir {
             self.check_selected_flake_dir(fs, selected_flake_dir)
         } else {

@@ -7,6 +7,7 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::filesystem::MountSource;
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, settle};
 use crate::hidden_root::separation::Verdict;
 use crate::hidden_root::{Allow, Assessment, HiddenRoot, Refusal, RefusalKind};
 use crate::naming::suspicious_token;
@@ -128,11 +129,15 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
+        // The root is looked up through the automount guard: one behind an
+        // automount point that nothing is mounted on yet is not, and the gate
+        // refuses it naming the point.
+        let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
         // Steps 1 and 2: the attach gate, which also finds a missing root,
-        // before anything is probed.
+        // before anything is probed. Its refusal says all there is to say.
         let mut warnings = Vec::new();
         let mut decoy_filesystem = false;
-        match HiddenRoot::assess_allowing(fs, &self.hidden_volume_root, self.allow)? {
+        match HiddenRoot::assess_allowing(&guarded, &self.hidden_volume_root, self.allow)? {
             Assessment::Attached => {}
             Assessment::Warned(refusal) => {
                 decoy_filesystem = on_a_decoy_filesystem(&refusal);
@@ -140,7 +145,21 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
             }
             Assessment::Refused(refusal) => return Ok(gate_failure(&refusal)),
         }
+        let result = self.probe(&guarded, warnings, decoy_filesystem)?;
+        Ok(settle(result, &guarded.skipped(), OnSkip::Refuse(None)))
+    }
+}
 
+impl HiddenVolumeCheck {
+    /// The steps after the gate passed: the write probe and the audit of the
+    /// names, with the gate's `warnings`; `decoy_filesystem` when the root
+    /// lies on a filesystem the decoy uses, which the operator accepted.
+    fn probe<F: Filesystem>(
+        &self,
+        fs: &F,
+        mut warnings: Vec<String>,
+        decoy_filesystem: bool,
+    ) -> Result<CheckResult> {
         // Step 3: Check path is writable
         if !fs.is_writable(&self.hidden_volume_root)? {
             return Ok(CheckResult::fail(format!(

@@ -21,11 +21,13 @@
 //! the decoy's updater nor an `rm` on the decoy reaches, so the remediation
 //! names the `discard` that deletes it, with `--allow-decoy-storage` when the
 //! run accepted a root on this computer's own storage, which `discard` refuses
-//! without it. Every probe reads; nothing here writes.
+//! without it. A marker whose lookup fails for another reason than that
+//! nothing is there may be staged, so the check refuses then too, naming it.
+//! Every probe reads; nothing here writes.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::next_step::{NextStep, sudo_line_for};
-use crate::{Filesystem, Result};
+use crate::{Filesystem, NailsError, Result};
 use std::path::{Path, PathBuf};
 
 /// The offline-update markers, relative to a root: systemd's `/system-update`
@@ -67,29 +69,83 @@ impl OfflineUpdateCheck {
     ///
     /// A `/system-update` symlink is counted even when it dangles: its presence
     /// shows the offline-update mechanism is in use, so refusing is the safe,
-    /// fail-closed response. An overlay whiteout is not counted: in the upper
-    /// it means the marker was deleted. Only a whiteout seen as one is left
-    /// out; an entry that cannot be inspected counts.
-    fn present<F: Filesystem>(fs: &F, path: &Path) -> bool {
-        (fs.path_exists(path).unwrap_or(false) || fs.is_symlink(path).unwrap_or(false))
-            && !fs.is_overlay_whiteout(path).unwrap_or(false)
+    /// fail-closed response. The link itself is looked up first, so one whose
+    /// target cannot be looked up counts as well. An overlay whiteout is not
+    /// counted: in the upper it means the marker was deleted. Only a whiteout
+    /// seen as one is left out; an entry that cannot be inspected counts.
+    ///
+    /// # Errors
+    ///
+    /// A lookup of `path` that fails for another reason than that nothing is
+    /// there: the marker may be there.
+    fn present<F: Filesystem>(fs: &F, path: &Path) -> Result<bool> {
+        Ok(fs.entry_exists(path)? && !fs.is_overlay_whiteout(path).unwrap_or(false))
     }
 
     /// The staged-update markers found, as absolute paths in the hidden root:
-    /// those on the decoy, and those in the root overlay's upper.
-    fn staged<F: Filesystem>(&self, fs: &F) -> (Vec<String>, Vec<String>) {
-        let mut on_decoy = Vec::new();
-        let mut in_upper = Vec::new();
+    /// those on the decoy, and those in the root overlay's upper; and those
+    /// NAILS cannot tell about.
+    fn staged<F: Filesystem>(&self, fs: &F) -> Staged {
+        let mut staged = Staged::default();
         for marker in UPDATE_MARKERS {
-            if Self::present(fs, &self.root.join(marker)) {
-                on_decoy.push(format!("/{marker}"));
-            }
-            if Self::present(fs, &self.upper.join(marker)) {
-                in_upper.push(format!("/{marker}"));
+            for (base, place) in [(&self.root, Place::Decoy), (&self.upper, Place::Upper)] {
+                match Self::present(fs, &base.join(marker)) {
+                    Ok(false) => {}
+                    Ok(true) => match place {
+                        Place::Decoy => staged.on_decoy.push(format!("/{marker}")),
+                        Place::Upper => staged.in_upper.push(format!("/{marker}")),
+                    },
+                    Err(error) => staged.untold.push((place, format!("/{marker}"), error)),
+                }
             }
         }
-        (on_decoy, in_upper)
+        staged
     }
+}
+
+/// Where a marker lies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// On the decoy root.
+    Decoy,
+    /// In the root overlay's upper, the hidden session's own.
+    Upper,
+}
+
+/// What [`OfflineUpdateCheck::staged`] found of the markers.
+#[derive(Default)]
+struct Staged {
+    /// The markers on the decoy.
+    on_decoy: Vec<String>,
+    /// The markers in the root overlay's upper.
+    in_upper: Vec<String>,
+    /// The markers whose lookup failed, with where they lie and the error.
+    untold: Vec<(Place, String, NailsError)>,
+}
+
+/// Why NAILS cannot tell whether the marker `marker` is staged at `place`,
+/// whose lookup failed with `error`, and what to do so that it can. The
+/// hidden volume's path is not named: an error is told by what failed.
+fn unseen(place: Place, marker: &str, error: &NailsError) -> (String, String) {
+    let what = match error {
+        NailsError::IoError { source, .. } => source.to_string(),
+        other => other.to_string(),
+    };
+    let at = match place {
+        Place::Decoy => format!("{marker} on the decoy"),
+        Place::Upper => format!("{marker} in the hidden session's overlay"),
+    };
+    let fix = if error.io_kind() == Some(std::io::ErrorKind::PermissionDenied) {
+        "Run the command again with sudo.".to_string()
+    } else {
+        format!("Find out why {at} cannot be looked up, then run the command again.")
+    };
+    (
+        format!(
+            "NAILS cannot tell whether an offline update is staged: it cannot look up {at} ({what})"
+        ),
+        fix,
+    )
 }
 
 /// What to do about the markers found: on the decoy, cancel the update or
@@ -144,31 +200,47 @@ impl<F: Filesystem> PreFlightCheck<F> for OfflineUpdateCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let (on_decoy, in_upper) = self.staged(fs);
-        if on_decoy.is_empty() && in_upper.is_empty() {
+        let Staged {
+            on_decoy,
+            in_upper,
+            untold,
+        } = self.staged(fs);
+        if on_decoy.is_empty() && in_upper.is_empty() && untold.is_empty() {
             return Ok(CheckResult::Pass(
                 "no pending offline update is staged on the decoy".into(),
             ));
         }
-        // Each marker by its location, without naming the hidden volume path.
-        let found: Vec<String> = on_decoy
-            .iter()
-            .map(|marker| format!("{marker} on the decoy"))
-            .chain(
-                in_upper
-                    .iter()
-                    .map(|marker| format!("{marker} in the hidden session's overlay")),
-            )
-            .collect();
-        Ok(CheckResult::fail_with(
-            format!(
+        let mut problems = Vec::new();
+        let mut steps = Vec::new();
+        if !on_decoy.is_empty() || !in_upper.is_empty() {
+            // Each marker by its location, without naming the hidden volume
+            // path.
+            let found: Vec<String> = on_decoy
+                .iter()
+                .map(|marker| format!("{marker} on the decoy"))
+                .chain(
+                    in_upper
+                        .iter()
+                        .map(|marker| format!("{marker} in the hidden session's overlay")),
+                )
+                .collect();
+            problems.push(format!(
                 "a pending offline update is staged ({}); once the overlays are mounted the \
                  decoy's offline updater would apply it inside the hidden session and reboot \
                  into it",
                 found.join(", ")
-            ),
-            remediation(&on_decoy, &in_upper, self.allow_decoy_storage),
-        ))
+            ));
+            steps.push(remediation(&on_decoy, &in_upper, self.allow_decoy_storage));
+        }
+        // A marker NAILS cannot tell about may be staged.
+        for (place, marker, error) in &untold {
+            let (problem, fix) = unseen(*place, marker, error);
+            problems.push(problem);
+            if !steps.contains(&fix) {
+                steps.push(fix);
+            }
+        }
+        Ok(CheckResult::fail_with(problems.join("; "), steps.join(" ")))
     }
 }
 
@@ -186,6 +258,71 @@ mod tests {
         let fs = MockFilesystem::new();
         let result = check().run(&fs).unwrap();
         assert!(result.is_pass(), "{result:?}");
+    }
+
+    /// A marker whose lookup fails may be staged: the check refuses, naming
+    /// where it could not look and what to do, and never names the hidden
+    /// volume's path. It used to pass.
+    #[test]
+    fn a_marker_nails_cannot_look_up_refuses() {
+        use std::io::ErrorKind;
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error("/etc/system-update", ErrorKind::Other);
+        let result = check().run(&fs).unwrap();
+        assert_eq!(
+            result,
+            CheckResult::fail_with(
+                "NAILS cannot tell whether an offline update is staged: it cannot look up \
+                 /etc/system-update on the decoy (Mock: the lookup fails here)",
+                "Find out why /etc/system-update on the decoy cannot be looked up, then run the \
+                 command again."
+            )
+        );
+
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error("/mnt/hidden/upper", ErrorKind::PermissionDenied);
+        fs.mock_set_path_type("/system-update", PathKind::Symlink);
+        let result = check().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert_eq!(
+            result.message(),
+            "a pending offline update is staged (/system-update on the decoy); once the overlays \
+             are mounted the decoy's offline updater would apply it inside the hidden session and \
+             reboot into it; NAILS cannot tell whether an offline update is staged: it cannot \
+             look up /system-update in the hidden session's overlay (Mock: the lookup fails \
+             here); NAILS cannot tell whether an offline update is staged: it cannot look up \
+             /etc/system-update in the hidden session's overlay (Mock: the lookup fails here)"
+        );
+        assert!(!result.message().contains("/mnt/hidden"), "{result:?}");
+        let remediation = result.remediation().unwrap();
+        assert!(remediation.contains("rm /system-update"), "{remediation}");
+        assert!(
+            remediation.ends_with("Run the command again with sudo."),
+            "{remediation}"
+        );
+        assert_eq!(remediation.matches("with sudo").count(), 1, "{remediation}");
+    }
+
+    /// A marker that is a link is counted by the link itself: one whose
+    /// target cannot be looked up counts, and is no lookup NAILS failed.
+    #[test]
+    fn a_marker_link_whose_target_cannot_be_looked_up_counts() {
+        let fs = MockFilesystem::new();
+        fs.create_symlink(
+            Path::new("/var/lib/PackageKit/prepared-update"),
+            Path::new("/system-update"),
+        )
+        .unwrap();
+        fs.mock_set_lookup_error("/var/lib/PackageKit", std::io::ErrorKind::PermissionDenied);
+        let result = check().run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert!(
+            result
+                .message()
+                .starts_with("a pending offline update is staged (/system-update on the decoy)"),
+            "{result:?}"
+        );
+        assert!(!result.message().contains("cannot tell"), "{result:?}");
     }
 
     #[test]

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use super::{HostProfile, NixOsPlatform, Platform, platform_for};
 use crate::Result;
 use crate::filesystem::Filesystem;
+use crate::filesystem::automount::{Guarded, Snapshot};
 
 /// The declarative build target activation would select, resolved once.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +79,12 @@ pub fn discover_with_platform<F: Filesystem>(
         return Ok(HostTarget::OverlayOnly);
     }
     if let Some(flake_ref) = explicit_flake {
-        if let Some(dir) = super::nixos::explicit_decoy_flake(fs, flake_ref)? {
+        // An explicit flake can lie anywhere, behind an automount point too:
+        // its readings are looked up through the automount guard, so that
+        // finding the target mounts nothing. One the guard does not look up
+        // fails the discovery, naming the point.
+        let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
+        if let Some(dir) = super::nixos::explicit_decoy_flake(&guarded, flake_ref)? {
             return Ok(HostTarget::DecoyFlake {
                 dir,
                 hidden_volume_root: hidden_volume_root.to_path_buf(),
@@ -178,6 +184,51 @@ mod tests {
             discover_with_platform(&fake, &fs, Path::new(HIDDEN_ROOT), Some("gh:me/cfg"), false)
                 .unwrap();
         assert_eq!(target, HostTarget::ExplicitFlake("gh:me/cfg".into()));
+    }
+
+    /// Where the decoy holds its own flake, an explicit flake is compared
+    /// with it by device and inode, which looks the explicit one up. One
+    /// behind an automount point that nothing is mounted on yet is not looked
+    /// up: the discovery fails naming the point, and nothing at or below the
+    /// point is looked up. Once something is mounted there it is the
+    /// explicit flake.
+    #[test]
+    fn an_explicit_flake_behind_an_automount_point_is_not_looked_up() {
+        let fs = crate::platform::nixos::tests_support::full_nixos_host();
+        fs.mock_set_path_type("/srv/flake/flake.nix", crate::filesystem::PathKind::File);
+        let root = "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n";
+        fs.mock_set_mount_table(&format!(
+            "{root}30 1 0:50 / /srv rw,relatime - autofs systemd-1 \
+             rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n"
+        ));
+        let discover = || {
+            discover_with_platform(
+                &NixOsPlatform,
+                &fs,
+                Path::new(HIDDEN_ROOT),
+                Some("/srv/flake#host"),
+                false,
+            )
+        };
+        let error = discover().expect_err("the guard does not look it up");
+        assert_eq!(
+            error.to_string(),
+            "NAILS does not look up /srv/flake, since the lookup would mount the automount point \
+             /srv"
+        );
+        assert!(
+            fs.mock_lookups()
+                .iter()
+                .all(|path| !path.starts_with("/srv")),
+            "{:?}",
+            fs.mock_lookups()
+        );
+
+        fs.mock_set_mount_table(root);
+        assert_eq!(
+            discover().unwrap(),
+            HostTarget::ExplicitFlake("/srv/flake#host".into())
+        );
     }
 
     /// A host without a config layer auto-discovers nothing, even when NixOS
