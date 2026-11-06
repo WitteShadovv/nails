@@ -892,6 +892,65 @@ fn a_refusing_part_turns_a_warning_into_a_refusal_and_keeps_only_a_shared_overri
     );
 }
 
+/// A check that words a lookup it did not make itself gives the fix for it:
+/// `settle` does not give it a second time, and gives it for the other
+/// points only.
+#[test]
+fn a_fix_the_result_gives_already_is_not_given_again() {
+    let ledger = [
+        skip("/usr/local/flake", "/usr/local"),
+        skip("/srv/other", "/srv"),
+    ];
+    let own = CheckResult::fail_with(
+        "NAILS does not look up /usr/local/flake, since the lookup would mount the automount \
+         point /usr/local",
+        fix(&["/usr/local"]),
+    );
+    assert_eq!(
+        settle(own, &ledger, OnSkip::Refuse(None)).remediation(),
+        Some(format!("{}\n{}", fix(&["/usr/local"]), fix(&["/srv"])).as_str())
+    );
+    let warned = CheckResult::Warn(format!("one warning\n{}", fix(&["/usr/local"])));
+    let settled = settle(warned, &ledger[..1], OnSkip::Warn);
+    assert_eq!(
+        settled.message().matches("Mount /usr/local").count(),
+        1,
+        "{settled:?}"
+    );
+}
+
+/// What a probe that keeps no check result adds for the lookups its view
+/// did not make: each point once, by its first path, and none its text
+/// names already.
+#[test]
+fn unnamed_gives_each_point_once_that_the_text_does_not_name() {
+    let ledger = [
+        skip("/usr/local/lib/systemd", "/usr/local"),
+        skip("/usr/local/bin/updatedb", "/usr/local"),
+        skip("/srv/data", "/srv"),
+    ];
+    assert_eq!(
+        unnamed("nothing named", &ledger),
+        vec![
+            "NAILS does not look up /usr/local/lib/systemd, since the lookup would mount the \
+             automount point /usr/local"
+                .to_string(),
+            "NAILS does not look up /srv/data, since the lookup would mount the automount point \
+             /srv"
+                .to_string(),
+        ]
+    );
+    assert_eq!(
+        unnamed("... the automount point /srv: so", &ledger),
+        vec![
+            "NAILS does not look up /usr/local/lib/systemd, since the lookup would mount the \
+             automount point /usr/local"
+                .to_string()
+        ]
+    );
+    assert_eq!(unnamed("anything", &[]), Vec::<String>::new());
+}
+
 #[test]
 fn an_unreadable_mount_table_is_named_once_and_has_no_mount_fix() {
     let reason = Skip::NoMountTable {
