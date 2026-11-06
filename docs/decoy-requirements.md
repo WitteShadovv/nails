@@ -881,8 +881,10 @@ it warns that it cannot tell. Set the setting to `false`, or end the session
 with `nails deactivate --poweroff`.
 
 As for kdump, the window's launcher stays usable with the setting on, and
-`nails status` does not call the decoy persistent for it; status does not show
-the setting at all.
+`nails status` does not call the decoy persistent for it. Like kdump it has a
+line of its own in `nails status` on the decoy, which says that
+unattended-upgrades installs at shutdown or that NAILS cannot tell that it
+does not (`decoy_installs_at_shutdown` in `--json`).
 
 The distribution test `<image>-apt-shutdown` shows both on Debian 13, Ubuntu
 24.04 and Ubuntu 26.04: on the stock decoy both rows pass, with the setting

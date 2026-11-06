@@ -1604,9 +1604,11 @@ of this changelog for that version becomes the release notes word for word, and
   the session resolves through its overlay, makes it warn that it cannot tell. It warns as well
   while the decoy's helper is enabled without python3-gi, Debian 13's cloud image among them: the
   helper then writes two WARNING lines to its log on the decoy disk each time it starts, so every
-  way back adds a pair (`apt install python3-gi`). The decoy requirements say to set the setting
-  to `false` rather than delete the line, and to restart the helper after removing a `Dir` or
-  `RootDir` line. A new fuzz target, `apt_conf`, drives the reader.
+  way back adds a pair (`apt install python3-gi`). `status` shows the install at shutdown, or a
+  setting NAILS cannot tell, in a line of its own on the decoy, and `--json` carries it as
+  `decoy_installs_at_shutdown`. The decoy requirements say to set the setting to `false` rather
+  than delete the line, and to restart the helper after removing a `Dir` or `RootDir` line. A new
+  fuzz target, `apt_conf`, drives the reader.
 - Activation refuses while a daily unattended-upgrade run is in progress (the
   `unattended-upgrade-run` check): `apt-daily-upgrade.service` is active, or a process holds
   `/run/unattended-upgrades.lock`. At the switch unattended-upgrades' shutdown helper stopped a run

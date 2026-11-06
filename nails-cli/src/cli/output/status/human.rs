@@ -179,6 +179,12 @@ where
             "kdump is armed on the decoy: a kernel crash in a hidden session writes its memory to the decoy disk, and activation refuses it",
         ));
     }
+    if report.decoy_installs_at_shutdown && report.posture != Posture::Active {
+        out.push(style.marked(
+            Mark::Warn,
+            "unattended-upgrades installs at shutdown on the decoy, or NAILS cannot tell that it does not: an activation would run that install on the decoy disk, and activation refuses it",
+        ));
+    }
     if let Some(last) = &report.last_activation {
         out.push(format!(
             "Last activation:    took {} (finished {})",

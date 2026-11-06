@@ -110,6 +110,10 @@
           "description": "Whether kdump is armed on the decoy (a loaded crash kernel, or an enabled or active kdump-tools.service or kdump.service), or /sys/kernel/kexec_crash_loaded cannot be read or holds neither 0 nor 1. Activation refuses it without --allow-persistent-decoy. False in a hidden session.",
           "type": "boolean"
         },
+        "decoy_installs_at_shutdown": {
+          "description": "Whether the decoy's unattended-upgrades installs the pending updates at shutdown, which an activation is to its shutdown helper, so that an activation would run that install on the decoy disk: the helper runs with Unattended-Upgrade::InstallOnShutdown on, or NAILS cannot tell that it does not (an apt configuration it cannot read or follow, one apt refuses, or one that changed since the helper started while no file sets the setting). Activation refuses it without --allow-persistent-decoy; decoy_persistent does not count it. False in a hidden session.",
+          "type": "boolean"
+        },
         "persona_mode": { "type": "string", "enum": ["shared-home", "fresh-home"] },
         "switch_refusal": {
           "description": "Why and when the last session switch was refused: the soft-reboot stayed on the root it was on. Kept on the hidden volume (a refused entry, shown once the volume is open again) or in /run (a refused way back, shown in the hidden session) until the next activate or deactivate arms its own switch.",
