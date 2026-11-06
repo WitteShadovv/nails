@@ -34,16 +34,20 @@
 //! effect until the helper restarts: the fix says to set it to false.
 //!
 //! The hidden session runs its own copy of the helper wherever the unit is
-//! enabled. At the way back through logind (`nails deactivate`) that copy
-//! installs the updates into the session's overlay. That alone only warns:
-//! when the decoy's helper is stopped but enabled, so that the session starts
-//! it again, and when the session's overlay turns the setting on. The session
-//! sees the decoy's files with the root overlay's upper on top: a file of the
-//! upper replaces the decoy's, and a whiteout deletes it. A directory the
-//! upper holds may be one a session deleted and made again (an opaque one),
-//! below which the decoy's files no longer show; that mark is not read here,
-//! so such a directory is read both ways, and either way that turns the
-//! setting on warns.
+//! enabled and not masked, on the decoy or in the session's overlay. At the
+//! way back through logind (`nails deactivate`) that copy installs the
+//! updates into the session's overlay. That alone only warns: when the
+//! decoy's helper is stopped but the session starts it, and when the
+//! session's overlay turns the setting on. The session sees the decoy's
+//! files with the root overlay's upper on top: a file of the upper replaces
+//! the decoy's, and a whiteout deletes it. A directory the upper holds may be
+//! one a session deleted and made again (an opaque one), below which the
+//! decoy's files no longer show; that mark is not read here, so where the
+//! upper holds `/etc/apt` its files are read both with the decoy's and on
+//! their own, and either way that turns the setting on warns. A link among
+//! apt's files, or on the way to them, resolves in the session through the
+//! overlay, which NAILS does not follow, so it leaves the session's setting
+//! unknown.
 //!
 //! Every read is a lookup, a listing or a read of a file; nothing is
 //! written.
@@ -69,6 +73,9 @@ const PARTS: &str = "etc/apt/apt.conf.d";
 const MAIN: &str = "etc/apt/apt.conf";
 const ETC: &str = "etc";
 const APT: &str = "etc/apt";
+
+/// Where a file of the session's overlay lies, as the texts say it.
+const IN_UPPER: &str = " in the hidden session's overlay";
 
 /// The items that tell apt which files to read: one set or cleared moves
 /// what it reads next, which NAILS does not follow.
@@ -218,6 +225,20 @@ fn regular<F: Filesystem>(fs: &F, path: &Path, shown: &str) -> Result<bool, Stri
         .map_err(|e| format!("{shown} cannot be looked up ({e})"))
 }
 
+/// That `path`, which the hidden session sees through its overlay, is no
+/// link: the session resolves one through the overlay, which NAILS does not
+/// follow.
+fn no_link<F: Filesystem>(fs: &F, path: &Path, shown: &str) -> Result<(), String> {
+    match fs.is_symlink(path) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(format!(
+            "{shown} is a symbolic link, which NAILS does not follow through the hidden \
+             session's overlay"
+        )),
+        Err(e) => Err(format!("{shown} cannot be looked up ({e})")),
+    }
+}
+
 /// What a session's overlay holds at a directory on the way to apt's files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Held {
@@ -265,11 +286,14 @@ struct View<'a> {
     main_lower: Option<&'a Path>,
     /// The upper, for the main file, when its `etc/apt` shows.
     main_upper: Option<&'a Path>,
+    /// Whether it is the hidden session's view, in which a link among apt's
+    /// files resolves through the overlay ([`no_link`]). On the decoy it
+    /// resolves as the decoy's helper resolves it, and is followed.
+    session: bool,
 }
 
 /// The files apt reads in `view`, in its order.
 fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String> {
-    const IN_UPPER: &str = " in the hidden session's overlay";
     // Name -> where it is read from and whether the upper holds it; `None`
     // for a whiteout of the upper, which deletes the decoy's file.
     let mut parts: BTreeMap<Vec<u8>, Option<(PathBuf, bool)>> = BTreeMap::new();
@@ -292,7 +316,13 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
             let Some(name) = name_of(&entry) else {
                 continue;
             };
-            let whiteout = upper && fs.is_overlay_whiteout(&entry).unwrap_or(false);
+            let whiteout = upper
+                && fs.is_overlay_whiteout(&entry).map_err(|e| {
+                    format!(
+                        "/{PARTS}/{}{place} cannot be looked up ({e})",
+                        String::from_utf8_lossy(&name)
+                    )
+                })?;
             parts.insert(name, (!whiteout).then_some((entry, upper)));
         }
     }
@@ -307,6 +337,9 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
         }
         let shown = format!("/{PARTS}/{}", String::from_utf8_lossy(&name));
         let place = if upper { IN_UPPER } else { "" };
+        if view.session {
+            no_link(fs, &read, &format!("{shown}{place}"))?;
+        }
         if !regular(fs, &read, &format!("{shown}{place}"))? {
             continue;
         }
@@ -323,14 +356,18 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
     let mut main = view.main_lower.map(|lower| (lower.join(MAIN), ""));
     if let Some(upper) = view.main_upper {
         let path = upper.join(MAIN);
-        if fs.is_overlay_whiteout(&path).unwrap_or(false) {
+        let doubt = |e| format!("/{MAIN}{IN_UPPER} cannot be looked up ({e})");
+        if fs.is_overlay_whiteout(&path).map_err(doubt)? {
             main = None;
-        } else if fs.path_exists(&path).unwrap_or(false) || fs.is_symlink(&path).unwrap_or(false) {
+        } else if fs.path_exists(&path).map_err(doubt)? || fs.is_symlink(&path).map_err(doubt)? {
             main = Some((path, IN_UPPER));
         }
     }
     if let Some((read, place)) = main {
         let shown = format!("/{MAIN}");
+        if view.session {
+            no_link(fs, &read, &format!("{shown}{place}"))?;
+        }
         if regular(fs, &read, &format!("{shown}{place}"))? {
             found.push(Source { shown, place, read });
         }
@@ -345,6 +382,7 @@ fn decoy_setting<F: Filesystem>(fs: &F, root: &Path) -> Setting {
         parts_upper: None,
         main_lower: Some(root),
         main_upper: None,
+        session: false,
     };
     match sources(fs, view) {
         Ok(found) => evaluate(fs, &found),
@@ -371,31 +409,33 @@ fn session_setting<F: Filesystem>(fs: &F, root: &Path, upper: &Path) -> Setting 
         // The session has no /etc/apt.
         return Setting::Off;
     }
+    // The decoy's directories on the way, which the session sees through
+    // the overlay.
+    for rel in [ETC, APT, PARTS] {
+        if let Err(why) = no_link(fs, &root.join(rel), &format!("/{rel} on the decoy")) {
+            return Setting::Unknown(why);
+        }
+    }
     let parts_upper = (parts == Held::Dir).then_some(upper);
-    let shown_lower = (parts != Held::Gone).then_some(root);
     let main_upper = (apt == Held::Dir).then_some(upper);
     let mut views = vec![View {
-        parts_lower: shown_lower,
+        parts_lower: (parts != Held::Gone).then_some(root),
         parts_upper,
         main_lower: Some(root),
         main_upper,
+        session: true,
     }];
-    if parts == Held::Dir {
-        // apt.conf.d made again in a session.
-        views.push(View {
-            parts_lower: None,
-            parts_upper,
-            main_lower: Some(root),
-            main_upper,
-        });
-    }
-    if etc == Held::Dir || apt == Held::Dir {
-        // /etc or /etc/apt made again in a session.
+    if apt == Held::Dir {
+        // /etc/apt, or /etc, made again in a session: the upper's files on
+        // their own. An apt.conf.d made again on its own needs no view of its
+        // own: where it turns the setting on, the merged view or this one
+        // turns it on too, or the merged view leaves it unknown.
         views.push(View {
             parts_lower: None,
             parts_upper,
             main_lower: None,
             main_upper,
+            session: true,
         });
     }
     let mut unknown = None;
@@ -411,24 +451,58 @@ fn session_setting<F: Filesystem>(fs: &F, root: &Path, upper: &Path) -> Setting 
     unknown.map_or(Setting::Off, Setting::Unknown)
 }
 
-/// Whether the hidden session starts its own copy of the helper: the unit is
-/// linked where systemd pulls it in, on the decoy or in the session's
-/// overlay, and not masked as the session sees it. A link the overlay
-/// deletes is not looked for, so a unit the session disabled still counts.
-fn session_starts_helper<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) -> bool {
-    let linked =
-        unit_linked(fs, root, UNIT) || upper.is_some_and(|upper| unit_linked(fs, upper, UNIT));
-    if !linked {
-        return false;
+/// How the hidden session comes to start its own copy of the helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionStart {
+    /// The decoy enables the unit; else the session's overlay alone does.
+    decoy_enables: bool,
+    /// The decoy masks the unit, and the session's overlay takes the mask
+    /// away.
+    overlay_unmasks: bool,
+}
+
+/// Whether the hidden session starts its own copy of the helper, and how:
+/// the unit is linked where systemd pulls it in, on the decoy or in the
+/// session's overlay, and not masked as the session sees it. A link the
+/// overlay deletes is not looked for, so a unit the session disabled still
+/// counts. In the overlay, anything at the mask's place but a link to
+/// `/dev/null` takes the decoy's mask away, a unit file of the session's
+/// included. An error says NAILS cannot tell.
+fn session_starts_helper<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    upper: Option<&Path>,
+) -> Result<Option<SessionStart>, String> {
+    let decoy_enables = unit_linked(fs, root, UNIT);
+    if !decoy_enables && !upper.is_some_and(|upper| unit_linked(fs, upper, UNIT)) {
+        return Ok(None);
     }
-    let mask = |base: &Path| base.join(ADMIN_UNIT_DIR).join(UNIT);
-    let masked_there = match upper {
-        // The session removed the decoy's mask.
-        Some(upper) if fs.is_overlay_whiteout(&mask(upper)).unwrap_or(false) => false,
-        Some(upper) if fs.is_symlink(&mask(upper)).unwrap_or(false) => masked(fs, upper, UNIT),
-        _ => masked(fs, root, UNIT),
+    let decoy_masks = masked(fs, root, UNIT);
+    let session_masks = match upper {
+        Some(upper) => {
+            let path = upper.join(ADMIN_UNIT_DIR).join(UNIT);
+            let doubt = |e| {
+                format!(
+                    "what the hidden session's overlay holds at /{ADMIN_UNIT_DIR}/{UNIT} cannot \
+                     be read ({e})"
+                )
+            };
+            if fs.is_overlay_whiteout(&path).map_err(doubt)? {
+                false
+            } else if fs.is_symlink(&path).map_err(doubt)?
+                || fs.path_exists(&path).map_err(doubt)?
+            {
+                masked(fs, upper, UNIT)
+            } else {
+                decoy_masks
+            }
+        }
+        None => decoy_masks,
     };
-    !masked_there
+    Ok((!session_masks).then_some(SessionStart {
+        decoy_enables,
+        overlay_unmasks: decoy_masks,
+    }))
 }
 
 /// A refusal of the check's.
@@ -471,22 +545,104 @@ fn turn_off(at: &str) -> String {
     )
 }
 
+/// How the hidden session comes to run its copy of the helper, as the
+/// warning says it: `running` when the decoy's helper runs.
+fn how_it_starts(start: &Result<SessionStart, String>, running: bool) -> String {
+    let start = match start {
+        Err(why) => {
+            return format!(
+                "NAILS cannot tell whether the hidden session starts its own copy of \
+                 unattended-upgrades' shutdown helper ({why})"
+            );
+        }
+        Ok(_) if running => {
+            return "the hidden session starts its own copy of unattended-upgrades' shutdown \
+                    helper"
+                .to_string();
+        }
+        Ok(start) => start,
+    };
+    match (start.decoy_enables, start.overlay_unmasks) {
+        (true, false) => {
+            format!("{UNIT} is stopped on the decoy but enabled, so the hidden session starts it")
+        }
+        (false, false) => format!(
+            "{UNIT} is stopped on the decoy, and the hidden session's overlay enables it, so the \
+             session starts it"
+        ),
+        (true, true) => format!(
+            "{UNIT} is masked on the decoy, but the hidden session's overlay unmasks it, so the \
+             session starts it"
+        ),
+        (false, true) => format!(
+            "{UNIT} is masked on the decoy, but the hidden session's overlay unmasks and enables \
+             it, so the session starts it"
+        ),
+    }
+}
+
+/// What the refusal adds of the way back: what the session's own copy does
+/// when the session ends with deactivate, where it has one.
+fn way_back(start: Option<&Result<SessionStart, String>>) -> String {
+    match start {
+        None => String::new(),
+        Some(Ok(_)) => {
+            ", and when a session ends with deactivate, the session's own copy installs \
+                        them again, into its overlay on the hidden volume"
+                .to_string()
+        }
+        Some(Err(why)) => format!(
+            ", and NAILS cannot tell whether a session's own copy installs them again, into its \
+             overlay on the hidden volume, when the session ends with deactivate ({why})"
+        ),
+    }
+}
+
+/// The warning of what the session's copy of the helper does at the way
+/// back, with the setting as the session reads it; `None` when it does
+/// nothing.
+fn session_warning(
+    start: &Result<SessionStart, String>,
+    running: bool,
+    session: Setting,
+) -> Option<String> {
+    let how = how_it_starts(start, running);
+    let installs = if start.is_ok() {
+        "when the session ends with deactivate, it installs the pending updates"
+    } else {
+        "if the session starts it, it installs the pending updates when the session ends with \
+         deactivate,"
+    };
+    match session {
+        Setting::On(at) => Some(format!(
+            "{how}, and {SETTING} is on there ({at}): {installs} into the session's overlay on \
+             the hidden volume (set it to false, or end the session with `{}`, which sends no \
+             shutdown signal)",
+            sudo_line(NextStep::DeactivatePoweroff)
+        )),
+        Setting::Unknown(why) => Some(format!(
+            "{how}, and NAILS cannot tell whether {SETTING} is on there, which would make it \
+             install the pending updates when the session ends with deactivate: {why}"
+        )),
+        Setting::Off => None,
+    }
+}
+
 /// unattended-upgrades' install at shutdown on the decoy under `root`, with
 /// the root overlay's upper at `upper` (`None`: the decoy alone).
 pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) -> Finding {
     let running = loggers::unit_active(fs, root, UNIT);
-    let in_session = session_starts_helper(fs, root, upper);
-    if !running && !in_session {
+    let start = match session_starts_helper(fs, root, upper) {
+        Ok(start) => start.map(Ok),
+        Err(why) => Some(Err(why)),
+    };
+    if !running && start.is_none() {
+        // No helper reads the setting at a switch.
         return Finding::default();
     }
     let decoy = decoy_setting(fs, root);
     if running {
-        let way_back = if in_session {
-            ", and when a session ends with deactivate, the session's own copy installs them \
-             again, into its overlay on the hidden volume"
-        } else {
-            ""
-        };
+        let way_back = way_back(start.as_ref());
         match &decoy {
             Setting::On(at) => {
                 return Finding {
@@ -523,35 +679,16 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
             Setting::Off => {}
         }
     }
-    if !in_session {
+    let Some(start) = start else {
         return Finding::default();
-    }
+    };
     let session = match upper {
         Some(upper) => session_setting(fs, root, upper),
         None => decoy,
     };
-    let how = if running {
-        "the hidden session starts its own copy of unattended-upgrades' shutdown helper"
-    } else {
-        "unattended-upgrades.service is stopped on the decoy but enabled, so the hidden session \
-         starts it"
-    };
-    let warning = match session {
-        Setting::On(at) => Some(format!(
-            "{how}, and {SETTING} is on there ({at}): when the session ends with deactivate, it \
-             installs the pending updates into the session's overlay on the hidden volume (set \
-             it to false, or end the session with `{}`, which sends no shutdown signal)",
-            sudo_line(NextStep::DeactivatePoweroff)
-        )),
-        Setting::Unknown(why) => Some(format!(
-            "{how}, and NAILS cannot tell whether {SETTING} is on there, which would make it \
-             install the pending updates when the session ends with deactivate: {why}"
-        )),
-        Setting::Off => None,
-    };
     Finding {
         blocker: None,
-        warning,
+        warning: session_warning(&start, running, session),
     }
 }
 

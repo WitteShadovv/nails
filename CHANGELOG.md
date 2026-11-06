@@ -1589,9 +1589,12 @@ of this changelog for that version becomes the release notes word for word, and
   byte), an `#include`, a `Dir` or `RootDir` setting, and a file name or a value of the setting
   with a byte beyond ASCII, which apt reads by the system's locale, leave the setting unknown,
   which is refused as if it were on. When only the hidden session would install (the decoy's
-  helper stopped but enabled, or the session's overlay turning the setting on), it warns instead.
-  The decoy requirements now say to set the setting to `false` rather than delete the line, which
-  stays in effect until the helper restarts. A new fuzz target, `apt_conf`, drives the reader.
+  helper stopped while the decoy or the session's overlay enables it and nothing masks it as the
+  session sees it, or the session's overlay turning the setting on), it warns instead, and a link
+  among apt's files, which the session resolves through its overlay, makes it warn that it cannot
+  tell. The decoy requirements now say to set the setting to `false` rather than delete the line,
+  which stays in effect until the helper restarts. A new fuzz target, `apt_conf`, drives the
+  reader.
 - Activation refuses while a daily unattended-upgrade run is in progress (the
   `unattended-upgrade-run` check): `apt-daily-upgrade.service` is active, or a process holds
   `/run/unattended-upgrades.lock`. At the switch unattended-upgrades' shutdown helper stopped a run

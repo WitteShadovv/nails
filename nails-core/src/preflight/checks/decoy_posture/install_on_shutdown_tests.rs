@@ -564,7 +564,17 @@ fn the_session_enables_or_unmasks_the_helper_in_its_overlay() {
     assert_eq!(find(tmp.path()), Finding::default());
     let upper = tempfile::tempdir().unwrap();
     enable_helper(upper.path());
-    assert!(find_with_upper(tmp.path(), upper.path()).warning.is_some());
+    let warning = find_with_upper(tmp.path(), upper.path())
+        .warning
+        .expect("a warning");
+    assert!(
+        warning.starts_with(
+            "unattended-upgrades.service is stopped on the decoy, and the hidden session's \
+             overlay enables it, so the session starts it, and \
+             Unattended-Upgrade::InstallOnShutdown is on there (/etc/apt/apt.conf.d/99on:1)"
+        ),
+        "{warning}"
+    );
 
     // Masked on the decoy, the mask is the session's to keep.
     enable_helper(tmp.path());
@@ -807,4 +817,229 @@ fn a_name_or_a_value_apt_reads_by_the_locale_is_refused_as_if_on() {
     // Only the value read last counts.
     write(tmp.path(), "etc/apt/apt.conf.d/99zz-off", OFF.as_bytes());
     assert_eq!(find(tmp.path()), Finding::default());
+}
+
+#[test]
+fn a_file_of_the_most_nails_reads_is_read() {
+    let fs = mock_decoy(true, &[("99local", Some(ON))]);
+    fs.mock_set_file_size("/etc/apt/apt.conf.d/99local", FILE_LIMIT);
+    let found = finding(&fs, Path::new("/"), None);
+    assert!(
+        blocker(&found).contains("is on in /etc/apt/apt.conf.d/99local:1"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_link_among_apts_files_leaves_the_sessions_setting_unknown() {
+    // The decoy's part links to a file the session edited: the session's
+    // helper reads the edit through the overlay, NAILS the decoy's file.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(root, "etc/apt/apt.conf.d/50unattended-upgrades", DEBIAN_13);
+    write(root, "etc/apt/x.conf", OFF.as_bytes());
+    link(root, "etc/apt/apt.conf.d/99x", "../x.conf");
+    enable_helper(root);
+    let upper = tempfile::tempdir().unwrap();
+    write(upper.path(), "etc/apt/x.conf", ON.as_bytes());
+    let found = find_with_upper(root, upper.path());
+    assert!(found.blocker.is_none(), "{found:?}");
+    let warning = found.warning.expect("a warning");
+    assert!(
+        warning.contains(
+            "NAILS cannot tell whether Unattended-Upgrade::InstallOnShutdown is on there"
+        ),
+        "{warning}"
+    );
+    assert!(
+        warning.contains(
+            "/etc/apt/apt.conf.d/99x is a symbolic link, which NAILS does not follow through the \
+             hidden session's overlay"
+        ),
+        "{warning}"
+    );
+    // The decoy's own helper follows it on the decoy, and so does NAILS.
+    run_helper(root);
+    write(root, "etc/apt/x.conf", ON.as_bytes());
+    assert!(
+        blocker(&find_with_upper(root, upper.path()))
+            .contains("is on in /etc/apt/apt.conf.d/99x:1"),
+        "{:?}",
+        find_with_upper(root, upper.path())
+    );
+
+    // A link the overlay holds among apt's files, and the main file.
+    for rel in ["etc/apt/apt.conf.d/99session", "etc/apt/apt.conf"] {
+        let tmp = stock(UBUNTU_26_04);
+        let upper = tempfile::tempdir().unwrap();
+        write(upper.path(), "srv/on.conf", ON.as_bytes());
+        link(upper.path(), rel, "/srv/on.conf");
+        let warning = find_with_upper(tmp.path(), upper.path())
+            .warning
+            .expect("a warning");
+        assert!(
+            warning.contains(&format!(
+                "/{rel} in the hidden session's overlay is a symbolic link"
+            )),
+            "{warning}"
+        );
+    }
+
+    // A directory on the way that is a link on the decoy.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(root, "srv/apt.conf.d/50unattended-upgrades", UBUNTU_24_04);
+    std::fs::create_dir_all(root.join("etc/apt")).unwrap();
+    link(root, "etc/apt/apt.conf.d", "../../srv/apt.conf.d");
+    enable_helper(root);
+    let upper = tempfile::tempdir().unwrap();
+    let warning = find_with_upper(root, upper.path())
+        .warning
+        .expect("a warning");
+    assert!(
+        warning.contains(
+            "/etc/apt/apt.conf.d on the decoy is a symbolic link, which NAILS does not follow \
+             through the hidden session's overlay"
+        ),
+        "{warning}"
+    );
+    // The decoy alone reads it through the link, as its helper does.
+    assert_eq!(find(root), Finding::default());
+}
+
+#[test]
+fn a_session_without_etc_apt_reads_no_setting() {
+    // The decoy turns the setting on and its helper is stopped but enabled.
+    for gone in ["/hidden/upper/etc", "/hidden/upper/etc/apt"] {
+        let fs = mock_decoy(false, &[("99on", Some(ON))]);
+        mock_enable(&fs);
+        assert!(
+            finding(&fs, Path::new("/"), None).warning.is_some(),
+            "{gone}"
+        );
+        fs.mock_set_path_type("/hidden/upper/etc", PathKind::Dir);
+        fs.mock_set_whiteout(gone);
+        assert_eq!(
+            finding(&fs, Path::new("/"), Some(Path::new("/hidden/upper"))),
+            Finding::default(),
+            "{gone}"
+        );
+    }
+}
+
+/// The helper enabled on the mock decoy, as its package enables it.
+fn mock_enable(fs: &MockFilesystem) {
+    fs.mock_set_directory_contents(
+        Path::new("/etc/systemd/system"),
+        vec![PathBuf::from("/etc/systemd/system/multi-user.target.wants")],
+    );
+    fs.mock_set_is_symlink(
+        "/etc/systemd/system/multi-user.target.wants/unattended-upgrades.service",
+        true,
+    );
+}
+
+#[test]
+fn the_session_unmasks_the_decoys_mask_with_anything_but_a_mask() {
+    // A whiteout of the decoy's mask.
+    let fs = mock_decoy(false, &[("99on", Some(ON))]);
+    mock_enable(&fs);
+    fs.create_symlink(
+        Path::new("/dev/null"),
+        Path::new("/etc/systemd/system/unattended-upgrades.service"),
+    )
+    .unwrap();
+    let upper = Some(Path::new("/hidden/upper"));
+    assert_eq!(finding(&fs, Path::new("/"), upper), Finding::default());
+    fs.mock_set_whiteout("/hidden/upper/etc/systemd/system/unattended-upgrades.service");
+    let warning = finding(&fs, Path::new("/"), upper)
+        .warning
+        .expect("a warning");
+    assert!(
+        warning.starts_with(
+            "unattended-upgrades.service is masked on the decoy, but the hidden session's overlay \
+             unmasks it, so the session starts it"
+        ),
+        "{warning}"
+    );
+
+    // A unit file of the session's own in the mask's place.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(root, "etc/apt/apt.conf.d/99on", ON.as_bytes());
+    enable_helper(root);
+    link(
+        root,
+        "etc/systemd/system/unattended-upgrades.service",
+        "/dev/null",
+    );
+    let upper = tempfile::tempdir().unwrap();
+    write(
+        upper.path(),
+        "etc/systemd/system/unattended-upgrades.service",
+        b"[Service]\nExecStart=/usr/share/unattended-upgrades/unattended-upgrade-shutdown \
+          --wait-for-signal\n",
+    );
+    let warning = find_with_upper(root, upper.path())
+        .warning
+        .expect("a warning");
+    assert!(
+        warning.starts_with("unattended-upgrades.service is masked on the decoy, but"),
+        "{warning}"
+    );
+
+    // Enabled in the overlay alone, and unmasked there.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(root, "etc/apt/apt.conf.d/99on", ON.as_bytes());
+    link(
+        root,
+        "etc/systemd/system/unattended-upgrades.service",
+        "/dev/null",
+    );
+    enable_helper(upper.path());
+    let warning = find_with_upper(root, upper.path())
+        .warning
+        .expect("a warning");
+    assert!(
+        warning.starts_with(
+            "unattended-upgrades.service is masked on the decoy, but the hidden session's overlay \
+             unmasks and enables it, so the session starts it"
+        ),
+        "{warning}"
+    );
+}
+
+#[test]
+fn what_nails_cannot_tell_of_the_session_is_said_so() {
+    let start: Result<SessionStart, String> = Err("a lookup failed".to_string());
+    let warning = session_warning(
+        &start,
+        false,
+        Setting::On("/etc/apt/apt.conf.d/99on:1".to_string()),
+    )
+    .expect("a warning");
+    assert!(
+        warning.starts_with(
+            "NAILS cannot tell whether the hidden session starts its own copy of \
+             unattended-upgrades' shutdown helper (a lookup failed), and \
+             Unattended-Upgrade::InstallOnShutdown is on there (/etc/apt/apt.conf.d/99on:1): if \
+             the session starts it, it installs"
+        ),
+        "{warning}"
+    );
+    assert!(
+        session_warning(&start, false, Setting::Off).is_none(),
+        "nothing installs"
+    );
+    let unknown =
+        session_warning(&start, true, Setting::Unknown("why".to_string())).expect("a warning");
+    assert!(unknown.starts_with("NAILS cannot tell whether the hidden session starts"));
+    assert!(unknown.ends_with(": why"), "{unknown}");
+    assert_eq!(
+        way_back(Some(&start)),
+        ", and NAILS cannot tell whether a session's own copy installs them again, into its \
+         overlay on the hidden volume, when the session ends with deactivate (a lookup failed)"
+    );
+    assert_eq!(way_back(None), "");
 }
