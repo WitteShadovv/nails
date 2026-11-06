@@ -22,21 +22,24 @@
 #   2. The positive control, on the decoy after that session: a plain
 #      soft-reboot held up by the unit is forced through at the timeout, and
 #      the machine comes back up.
-#   3. The positive control for the session's own switch: once the test has
+#   3. Activation refuses where the timeout would do nothing: with service
+#      watchdogs off, and with a test-only runtime drop-in that turns the
+#      timeout off. Nothing of the entry is left.
+#   4. The positive control for the session's own switch: once the test has
 #      removed the drop-in in the hidden session, a way back held up by the
 #      unit is forced through at the timeout into the decoy, which comes up
 #      with the session's files still in /run (its runtime directory and the
 #      transition's drop-in), as the way back's last step never ran. A cold
 #      boot clears them. The way in has no such control: the entry refuses
 #      unless PID 1 reports the drop-in's action.
-#   4. Why the drop-in powers off by force: with a test-only runtime drop-in
+#   5. Why the drop-in powers off by force: with a test-only runtime drop-in
 #      that sets a plain poweroff for the timeout, PID 1 skips that action
 #      while the switch's shutdown runs, and a switch held up for 90 seconds
 #      goes on only when the hold ends.
-#   5. A way back held up by the unit powers the machine off at the timeout,
+#   6. A way back held up by the unit powers the machine off at the timeout,
 #      with no userspace coming up first, and the next cold boot is the plain
 #      decoy.
-#   6. An entry held up the same way powers off too, without the hidden
+#   7. An entry held up the same way powers off too, without the hidden
 #      session ever coming up; the next cold boot is the plain decoy, the
 #      record still says active, and `recover` resets it.
 #
@@ -103,8 +106,10 @@ in
     #: forces the switch through.
     POWERING_OFF = "Forcibly powering off: job timed out"
     FORCED = "Forcibly soft-rebooting: job timed out"
-    #: Test only: a plain poweroff for the switch's job timeout.
+    #: Test only: a plain poweroff for the switch's job timeout, and no
+    #: timeout at all.
     PLAIN = "/run/systemd/system/soft-reboot.target.d/90-plain-poweroff.conf"
+    NO_TIMEOUT = "/run/systemd/system/soft-reboot.target.d/zzz-no-timeout.conf"
     #: The session's plan in its runtime directory, and the transition's
     #: drop-in: the way back's last step removes both.
     PLAN = "/run/overlay-runtime/plan.json"
@@ -161,6 +166,28 @@ in
         assert not said(since, FORCED), f"{where}: the switch was forced through"
 
 
+    def assert_refused(command, code, *lines):
+        """`command` refuses with exit `code`, saying each of `lines`."""
+        rc, out = machine.execute(f"{command} 2>&1")
+        machine.log(out)
+        assert rc == code, f"{command}: exit {rc}\n{out}"
+        for line in lines:
+            assert line in out, f"{command}: no {line!r} in\n{out}"
+
+
+    def without_timeout():
+        machine.succeed(
+            f"mkdir -p $(dirname {NO_TIMEOUT}) && "
+            f"printf '[Unit]\\nJobTimeoutSec=infinity\\n' > {NO_TIMEOUT} && "
+            "systemctl daemon-reload"
+        )
+        assert unit("JobTimeoutUSec") == "infinity", unit("JobTimeoutUSec")
+
+
+    def with_timeout_again():
+        machine.succeed(f"rm {NO_TIMEOUT} && systemctl daemon-reload")
+
+
     def assert_cold_decoy(where):
         machine.start()
         machine.wait_for_unit("multi-user.target")
@@ -193,6 +220,31 @@ in
         assert not said(since, POWERING_OFF), "the decoy powered off"
         machine.fail("systemctl is-active hold-switch@infinity.service")
         session.assert_decoy_root(machine)
+
+    with subtest("activation refuses where the timeout would do nothing"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        activate = f"nails --config {CONFIG} activate -y --overlay-only"
+        machine.succeed("systemctl service-watchdogs no")
+        assert_refused(
+            activate,
+            4,
+            "ServiceWatchdogs=no",
+            "Turn them on with `sudo systemctl service-watchdogs yes` and activate again",
+        )
+        machine.succeed("systemctl service-watchdogs yes")
+        assert_no_guard("after the refusal with service watchdogs off")
+        without_timeout()
+        # The fix names the test's drop-in, the last that sets the timeout.
+        assert_refused(
+            activate,
+            4,
+            "JobTimeoutUSec=infinity",
+            f"Remove the JobTimeoutSec= that turns the timeout off from {NO_TIMEOUT}",
+        )
+        with_timeout_again()
+        assert_no_guard("after the refusal without a timeout")
+        session.assert_decoy_root(machine)
+        machine.fail("test -e /run/overlay-runtime")
 
     with subtest("without the drop-in a held way back is forced through without its last step"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")

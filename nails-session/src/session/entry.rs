@@ -87,8 +87,7 @@ use nails_teardown::whole_root::{
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-mod guards;
-use guards::{check_stop_guards, check_switch_timeout};
+use super::guards::{GuardHost, check_stop_guards, check_switch_timeout};
 
 /// The configuration copy's name in the runtime directory.
 pub const CONFIG_COPY_NAME: &str = "settings.toml";
@@ -96,8 +95,9 @@ pub const CONFIG_COPY_NAME: &str = "settings.toml";
 /// Inits an FHS root may run, in the order systemd's own build would pick.
 const FHS_INITS: &[&str] = &["/usr/lib/systemd/systemd", "/lib/systemd/systemd"];
 
-/// What the host does for the entry beyond mounts: tests replace it.
-pub trait EntryHost {
+/// What the host does for the entry beyond mounts: tests replace it. It asks
+/// the decoy's PID 1 whether the runtime guards hold as a [`GuardHost`].
+pub trait EntryHost: GuardHost {
     /// Reload the service manager after the drop-in is written.
     fn daemon_reload(&self) -> Result<()>;
     /// Build the hidden NixOS toplevel into the store under `store_root`.
@@ -118,13 +118,6 @@ pub trait EntryHost {
     ) -> Result<store::KeepReport>;
     /// Activate `system` chrooted into `root`.
     fn activate_hidden_system(&self, root: &Path, system: &Path) -> Result<()>;
-    /// The stop commands `unit` runs with every drop-in loaded, as
-    /// `systemctl show --property=ExecStop --value` prints them: empty when it
-    /// runs none, or when the unit does not exist.
-    fn unit_stop_commands(&self, unit: &str) -> Result<String>;
-    /// What `unit`'s job timeout does with every drop-in loaded, as
-    /// `systemctl show --property=JobTimeoutAction --value` prints it.
-    fn job_timeout_action(&self, unit: &str) -> Result<String>;
     /// The units PID 1 holds in the failed state now, recorded in the plan so
     /// the way back resets only the failures the session caused.
     fn failed_units(&self) -> Vec<String> {
@@ -160,15 +153,37 @@ pub trait EntryHost {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RealEntryHost;
 
-impl EntryHost for RealEntryHost {
+/// The decoy's PID 1, through the system's `systemctl`.
+impl GuardHost for RealEntryHost {
     fn unit_stop_commands(&self, unit: &str) -> Result<String> {
-        guards::show_property(unit, "ExecStop")
+        show(Some(unit), "ExecStop")
     }
 
     fn job_timeout_action(&self, unit: &str) -> Result<String> {
-        guards::show_property(unit, "JobTimeoutAction")
+        show(Some(unit), "JobTimeoutAction")
     }
 
+    fn job_timeout(&self, unit: &str) -> Result<String> {
+        show(Some(unit), "JobTimeoutUSec")
+    }
+
+    fn service_watchdogs(&self) -> Result<String> {
+        show(None, "ServiceWatchdogs")
+    }
+
+    fn unit_dropins(&self, unit: &str) -> Result<String> {
+        show(Some(unit), "DropInPaths")
+    }
+}
+
+/// `property` of `unit`, or of PID 1 itself, through the system's `systemctl`
+/// ([`super::guards::show_property`]).
+fn show(unit: Option<&str>, property: &str) -> Result<String> {
+    let systemctl = nails_teardown::whole_root::tools::find(None, "systemctl");
+    super::guards::show_property(systemctl.as_deref(), unit, property)
+}
+
+impl EntryHost for RealEntryHost {
     fn failed_units(&self) -> Vec<String> {
         nails_teardown::whole_root::tools::find(None, "systemctl")
             .and_then(|systemctl| nails_teardown::whole_root::tools::failed_units(&systemctl))
