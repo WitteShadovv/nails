@@ -30,6 +30,77 @@ const OFF: &str = "Unattended-Upgrade::InstallOnShutdown \"false\";\n";
 /// An invocation id as systemd writes it.
 const INVOCATION_ID: &str = "8028a17235414b4e80c950b24a7487d7"; // pragma: allowlist secret
 
+/// The helper's process, as the tests number it.
+const PID: u32 = 412;
+
+/// The helper's unit, in the cgroup tree.
+const CGROUP: &str = "sys/fs/cgroup/system.slice/unattended-upgrades.service";
+
+/// The environment systemd 257 starts the helper with, `extra` added, each
+/// entry ended by a NUL as `/proc/<pid>/environ` holds them.
+fn environ(extra: &[&str]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for entry in [
+        "LANG=C.UTF-8",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin",
+        "INVOCATION_ID=8028a17235414b4e80c950b24a7487d7", // pragma: allowlist secret
+        "JOURNAL_STREAM=8:4321",
+        "SYSTEMD_EXEC_PID=412",
+    ]
+    .iter()
+    .chain(extra)
+    {
+        out.extend_from_slice(entry.as_bytes());
+        out.push(0);
+    }
+    out
+}
+
+/// `/proc/<pid>/stat` of the helper as the kernel writes it, started
+/// `ticks` clock ticks after the boot: its `comm` cut to 15 bytes.
+fn stat_line(pid: u32, ticks: u64) -> String {
+    format!(
+        "{pid} (unattended-upgr) S 1 {pid} {pid} 0 -1 4194560 3145 0 23 0 41 9 0 0 20 0 2 0 \
+         {ticks} 47042560 4823 18446744073709551615 1 1 0 0 0 0 0 16781312 16386 0 0 0 17 1 0 \
+         0 0 0 0 0 0 0 0 0 0 0 0\n"
+    )
+}
+
+/// Seconds since the epoch, now.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// The helper runs, its process started an hour after a boot at `boot`
+/// seconds since the epoch, with the environment `env`: its unit's cgroup
+/// lists it, as systemd's cgroup tree shows a running unit.
+fn run_helper_since(root: &Path, boot: u64, env: &[u8]) {
+    write(
+        root,
+        &format!("{CGROUP}/cgroup.events"),
+        b"populated 1\nfrozen 0\n",
+    );
+    write(
+        root,
+        &format!("{CGROUP}/cgroup.procs"),
+        format!("{PID}\n").as_bytes(),
+    );
+    write(
+        root,
+        &format!("proc/{PID}/stat"),
+        stat_line(PID, 3600 * 100).as_bytes(),
+    );
+    write(root, &format!("proc/{PID}/environ"), env);
+    write(
+        root,
+        "proc/stat",
+        format!("cpu  10 0 10 100 0 0 0 0 0 0\nbtime {boot}\nprocesses 900\n").as_bytes(),
+    );
+}
+
 fn write(root: &Path, rel: &str, content: &[u8]) {
     let path = root.join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -42,13 +113,20 @@ fn link(root: &Path, rel: &str, target: &str) {
     std::os::unix::fs::symlink(target, path).unwrap();
 }
 
-/// The helper runs: systemd's marker of an active unit.
+/// The helper runs, started after every file the test writes: a day from
+/// now, so that what the files say counts and not what it kept.
 fn run_helper(root: &Path) {
-    link(
-        root,
-        "run/systemd/units/invocation:unattended-upgrades.service",
-        INVOCATION_ID,
-    );
+    run_helper_since(root, now() + 86_400, &environ(&[]));
+}
+
+/// python3-gi installed under `root`, as Debian 13 packages it.
+fn install_gi(root: &Path) {
+    polling::tests::install(root, polling::tests::PYTHON3_GI[0]);
+}
+
+/// The helper stops: its unit's cgroup goes with it.
+fn stop_helper(root: &Path) {
+    std::fs::remove_dir_all(root.join(CGROUP)).unwrap();
 }
 
 /// The helper is enabled, as its package enables it.
@@ -85,11 +163,6 @@ fn stock_without_gi(release: &[u8]) -> tempfile::TempDir {
     tmp
 }
 
-/// python3-gi installed under `root`, as Debian 13 packages it.
-fn install_gi(root: &Path) {
-    polling::tests::install(root, polling::tests::PYTHON3_GI[0]);
-}
-
 /// A mock decoy whose helper runs (when `running`) and whose
 /// `apt.conf.d` holds `parts`: each name with its content, or with none
 /// for a file whose read fails. python3-gi is installed.
@@ -97,14 +170,31 @@ fn mock_decoy(running: bool, parts: &[(&str, Option<&str>)]) -> MockFilesystem {
     let fs = MockFilesystem::new();
     fs.mock_add_file("/usr/lib/python3/dist-packages/gi/__init__.py", "");
     if running {
-        fs.create_symlink(
-            Path::new(INVOCATION_ID),
-            Path::new("/run/systemd/units/invocation:unattended-upgrades.service"),
-        )
-        .unwrap();
+        mock_run_helper(&fs, Some(&environ(&[])));
     }
     mock_parts(&fs, "/etc/apt/apt.conf.d", parts);
     fs
+}
+
+/// The helper runs on the mock: systemd's marker of an active unit and its
+/// cgroup's process, which started after every file of the mock changed (a
+/// path with no change time set changed at the epoch), with the environment
+/// `env`, or one that cannot be read.
+fn mock_run_helper(fs: &MockFilesystem, env: Option<&[u8]>) {
+    let marker = "/run/systemd/units/invocation:unattended-upgrades.service";
+    fs.create_symlink(Path::new(INVOCATION_ID), Path::new(marker))
+        .unwrap();
+    fs.mock_set_change_time(
+        marker,
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_003_600),
+    );
+    fs.mock_add_file(&format!("/{CGROUP}/cgroup.procs"), &format!("{PID}\n"));
+    fs.mock_add_file(&format!("/proc/{PID}/stat"), &stat_line(PID, 3600 * 100));
+    match env {
+        Some(env) => fs.mock_set_file_bytes(&format!("/proc/{PID}/environ"), env),
+        None => fs.mock_set_path_type(&format!("/proc/{PID}/environ"), PathKind::File),
+    }
+    fs.mock_add_file("/proc/stat", "btime 2000000000\n");
 }
 
 /// Make `dir` a directory of the mock that lists `parts`.
@@ -179,7 +269,10 @@ fn the_setting_on_with_the_helper_running_is_refused() {
         "{fix}"
     );
     assert!(fix.contains("a line only deleted"), "{fix}");
-    assert!(found.blocker.as_ref().unwrap().installs);
+    assert_eq!(
+        found.blocker.as_ref().unwrap().at_the_switch,
+        AtTheSwitch::Installs
+    );
     assert!(found.warning.is_none());
 }
 
@@ -315,10 +408,6 @@ fn the_files_apt_skips_by_name_or_kind_are_skipped() {
 fn what_nails_cannot_read_as_apt_reads_it_is_refused_as_if_on() {
     for (text, why) in [
         (
-            "Unattended-Upgrade::InstallOnShutdown \"false\"\n",
-            "/etc/apt/apt.conf.d/99local:2 is refused by apt (Extra junk at end of file)",
-        ),
-        (
             "#include \"/etc/elsewhere.conf\";\n",
             "/etc/apt/apt.conf.d/99local:1 has apt read another file",
         ),
@@ -349,7 +438,57 @@ fn what_nails_cannot_read_as_apt_reads_it_is_refused_as_if_on() {
             )),
             "{fix}"
         );
-        assert!(!found.blocker.as_ref().unwrap().installs, "{found:?}");
+        assert_eq!(
+            found.blocker.as_ref().unwrap().at_the_switch,
+            AtTheSwitch::Unknown,
+            "{found:?}"
+        );
+    }
+}
+
+#[test]
+fn a_file_apt_refuses_is_refused_with_what_the_helper_writes() {
+    // The file the scenario under nix/distro-tests writes, with no `;`,
+    // which apt reports at its end, line 2, and the false of a line whose
+    // `;` is missing: apt refuses both, and the helper then installs
+    // nothing at the signal but writes its two ERROR lines.
+    for (text, at) in [
+        (
+            "Nails::Fact \"NAILS_FACT_SYNTAX\"\n",
+            "/etc/apt/apt.conf.d/99local:2",
+        ),
+        (
+            "Unattended-Upgrade::InstallOnShutdown \"false\"\n",
+            "/etc/apt/apt.conf.d/99local:2",
+        ),
+    ] {
+        let tmp = stock(UBUNTU_24_04);
+        write(tmp.path(), "etc/apt/apt.conf.d/99local", text.as_bytes());
+        let found = find(tmp.path());
+        let refusal = found.blocker.as_ref().expect("a refusal");
+        let message = &refusal.finding;
+        assert!(
+            message.starts_with(&format!(
+                "apt refuses {at} (Extra junk at end of file), so NAILS cannot tell"
+            )),
+            "{message}"
+        );
+        assert!(message.contains("installs nothing"), "{message}");
+        assert!(
+            message.contains(
+                "two ERROR lines (`Apt returned an error thus shutdown mode is disabled` and \
+                 apt's message) to /var/log/unattended-upgrades/unattended-upgrades-shutdown.log \
+                 on the decoy disk, or to the journal if it started with the file already refused"
+            ),
+            "{message}"
+        );
+        assert_eq!(
+            refusal.fix,
+            format!(
+                "fix what apt refuses at {at} (Extra junk at end of file), or remove that file"
+            )
+        );
+        assert_eq!(refusal.at_the_switch, AtTheSwitch::ErrorLines);
     }
 }
 
@@ -500,11 +639,7 @@ fn a_file_of_the_upper_replaces_the_decoys() {
 
     // The decoy turns it on; the session's copy of the file turns it off.
     let tmp = stock(UBUNTU_26_04);
-    std::fs::remove_file(
-        tmp.path()
-            .join("run/systemd/units/invocation:unattended-upgrades.service"),
-    )
-    .unwrap();
+    stop_helper(tmp.path());
     write(tmp.path(), "etc/apt/apt.conf", ON.as_bytes());
     let upper = tempfile::tempdir().unwrap();
     write(upper.path(), "etc/apt/apt.conf", OFF.as_bytes());
@@ -687,37 +822,52 @@ fn the_check_refuses_and_the_override_warns() {
 
 #[test]
 fn the_override_of_a_setting_nails_cannot_tell_says_no_install_runs_for_certain() {
-    // A file apt refuses: the helper then installs nothing at the signal,
-    // so the warning does not say that it does.
-    let tmp = stock(UBUNTU_26_04);
-    let root = tmp.path();
-    write(
-        root,
-        "etc/systemd/journald.conf",
-        b"[Journal]\nStorage=volatile\n",
-    );
-    write(root, "sys/kernel/kexec_crash_loaded", b"0\n");
-    write(root, "etc/apt/apt.conf.d/99local", b"Nails::Fact \"x\"\n");
-    let refused = DecoyPersistenceCheck::new(false, false)
-        .with_root(root)
-        .run(&RealFilesystem)
-        .unwrap();
-    assert!(refused.is_fail(), "{refused:?}");
-    let allowed = DecoyPersistenceCheck::new(true, false)
-        .with_root(root)
-        .run(&RealFilesystem)
-        .unwrap();
-    assert!(allowed.is_warn(), "{allowed:?}");
-    let message = allowed.message();
-    assert!(
-        message.contains("NAILS cannot tell whether unattended-upgrades installs"),
-        "{message}"
-    );
-    assert!(
-        message.contains("/etc/apt/apt.conf.d/99local:2 is refused by apt"),
-        "{message}"
-    );
-    assert!(!message.contains("At the switch"), "{message}");
+    // What NAILS does not follow: the warning does not say that the helper
+    // installs. A file apt refuses: the helper installs nothing at the
+    // signal, and the warning says what it writes instead.
+    for (text, said, sentence) in [
+        (
+            &b"#include \"/etc/elsewhere.conf\";\n"[..],
+            "/etc/apt/apt.conf.d/99local:1 has apt read another file",
+            None,
+        ),
+        (
+            &b"Nails::Fact \"x\"\n"[..],
+            "apt refuses /etc/apt/apt.conf.d/99local:2",
+            Some(ERROR_LINES),
+        ),
+    ] {
+        let tmp = stock(UBUNTU_26_04);
+        let root = tmp.path();
+        write(
+            root,
+            "etc/systemd/journald.conf",
+            b"[Journal]\nStorage=volatile\n",
+        );
+        write(root, "sys/kernel/kexec_crash_loaded", b"0\n");
+        write(root, "etc/apt/apt.conf.d/99local", text);
+        let refused = DecoyPersistenceCheck::new(false, false)
+            .with_root(root)
+            .run(&RealFilesystem)
+            .unwrap();
+        assert!(refused.is_fail(), "{refused:?}");
+        let allowed = DecoyPersistenceCheck::new(true, false)
+            .with_root(root)
+            .run(&RealFilesystem)
+            .unwrap();
+        assert!(allowed.is_warn(), "{allowed:?}");
+        let message = allowed.message();
+        assert!(message.contains("NAILS cannot tell whether"), "{message}");
+        assert!(message.contains(said), "{message}");
+        assert!(
+            !message.contains("At the switch unattended-upgrades installs"),
+            "{message}"
+        );
+        match sentence {
+            Some(sentence) => assert!(message.contains(sentence), "{message}"),
+            None => assert!(!message.contains("At the switch"), "{message}"),
+        }
+    }
 }
 
 #[test]
@@ -833,7 +983,10 @@ fn a_name_or_a_value_apt_reads_by_the_locale_is_refused_as_if_on() {
         ),
         "{message}"
     );
-    assert!(!found.blocker.as_ref().unwrap().installs);
+    assert_eq!(
+        found.blocker.as_ref().unwrap().at_the_switch,
+        AtTheSwitch::Unknown
+    );
     // Only the value read last counts.
     write(tmp.path(), "etc/apt/apt.conf.d/99zz-off", OFF.as_bytes());
     assert_eq!(find(tmp.path()), Finding::default());
@@ -1064,6 +1217,380 @@ fn what_nails_cannot_tell_of_the_session_is_said_so() {
          overlay on the hidden volume, when the session ends with deactivate (a lookup failed)"
     );
     assert_eq!(way_back(None), "");
+}
+
+/// The helper runs and started before every file the test writes, in 2001:
+/// whatever of apt's configuration it reads changed since.
+fn run_helper_long_ago(root: &Path) {
+    run_helper_since(root, 1_000_000_000, &environ(&[]));
+}
+
+#[test]
+fn a_setting_no_file_sets_is_refused_after_a_change_since_the_helper_started() {
+    // The stock files of each release set nothing, so what the helper read
+    // when it started counts: a line deleted since stays in effect.
+    for release in [DEBIAN_13, UBUNTU_24_04, UBUNTU_26_04] {
+        let tmp = stock(release);
+        run_helper_long_ago(tmp.path());
+        let found = find(tmp.path());
+        let refusal = found.blocker.as_ref().expect("a refusal");
+        let message = &refusal.finding;
+        assert!(message.starts_with("NAILS cannot tell"), "{message}");
+        assert!(
+            message.contains(
+                "so it counts as on: no file of apt's configuration sets it now, but /etc/apt \
+                 changed after the helper started, and the helper keeps what it read when it \
+                 started, the value of a line deleted since included, until it restarts"
+            ),
+            "{message}"
+        );
+        assert!(
+            refusal.fix.starts_with(
+                "set `Unattended-Upgrade::InstallOnShutdown \"false\";` on the decoy in a file of \
+                 /etc/apt/apt.conf.d, which the helper reads again at the switch"
+            ),
+            "{}",
+            refusal.fix
+        );
+        assert!(
+            refusal.fix.contains("or reboot the decoy"),
+            "{}",
+            refusal.fix
+        );
+        assert_eq!(refusal.at_the_switch, AtTheSwitch::Unknown);
+    }
+    // A false or a #clear, of the setting or of its scope, wins at the
+    // signal over what the helper kept.
+    for text in [
+        OFF,
+        "#clear Unattended-Upgrade::InstallOnShutdown;\n",
+        "#clear Unattended-Upgrade;\n",
+    ] {
+        let tmp = stock(DEBIAN_13);
+        run_helper_long_ago(tmp.path());
+        write(tmp.path(), "etc/apt/apt.conf.d/99local", text.as_bytes());
+        assert_eq!(find(tmp.path()).blocker, None, "{text}");
+    }
+    // A helper started after every change reads what the files say.
+    let tmp = stock(UBUNTU_26_04);
+    assert_eq!(find(tmp.path()).blocker, None);
+    // So does the hidden session's copy, which starts afresh: a helper only
+    // stopped but enabled keeps nothing.
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "etc/apt/apt.conf.d/50unattended-upgrades",
+        DEBIAN_13,
+    );
+    enable_helper(tmp.path());
+    assert_eq!(find(tmp.path()).blocker, None);
+}
+
+/// A mock decoy whose helper runs with the stock files of Debian 13, its
+/// marker made at `marker` and its process started at `process` seconds
+/// since the epoch, and each of apt's files and directories changed at
+/// `files`, but the one at `late`, which changed at `late_at`.
+fn mock_times(marker: u64, process: u64, files: u64, late: &str, late_at: u64) -> MockFilesystem {
+    use std::time::{Duration, UNIX_EPOCH};
+    let stock = String::from_utf8_lossy(DEBIAN_13).into_owned();
+    let fs = mock_decoy(true, &[("50unattended-upgrades", Some(&stock))]);
+    fs.mock_set_path_type("/etc/apt", PathKind::Dir);
+    let at = |secs: u64| UNIX_EPOCH + Duration::from_secs(secs);
+    fs.mock_set_change_time(
+        "/run/systemd/units/invocation:unattended-upgrades.service",
+        at(marker),
+    );
+    // Started an hour after the boot.
+    fs.mock_add_file("/proc/stat", &format!("btime {}\n", process - 3600));
+    for path in [
+        "/etc/apt",
+        "/etc/apt/apt.conf.d",
+        "/etc/apt/apt.conf.d/50unattended-upgrades",
+    ] {
+        fs.mock_set_change_time(path, at(files));
+    }
+    fs.mock_set_change_time(late, at(late_at));
+    fs
+}
+
+#[test]
+fn the_earlier_of_the_marker_and_the_process_start_is_when_the_helper_started() {
+    let t = 2_000_000_000;
+    let part = "/etc/apt/apt.conf.d/50unattended-upgrades";
+    // Nothing changed after either.
+    let fs = mock_times(t, t, t - 100, part, t - 100);
+    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+    // A part changed after the marker, before the process started: the
+    // clock may have been set back in between.
+    let fs = mock_times(t, t + 100, t - 100, part, t + 50);
+    let found = finding(&fs, Path::new("/"), None);
+    assert!(
+        blocker(&found).contains(&format!("but {part} changed after the helper started")),
+        "{found:?}"
+    );
+    // A part changed after the process started, before the marker: the
+    // clock may have been set forward.
+    let fs = mock_times(t + 100, t, t - 100, part, t + 50);
+    assert!(finding(&fs, Path::new("/"), None).blocker.is_some());
+    // The directory, where a deleted part shows.
+    let fs = mock_times(t, t, t - 100, "/etc/apt/apt.conf.d", t + 1);
+    assert!(
+        blocker(&finding(&fs, Path::new("/"), None))
+            .contains("but /etc/apt/apt.conf.d changed after the helper started")
+    );
+    // A change in the second the helper started counts, as a filesystem
+    // may keep change times to the second.
+    let fs = mock_times(t, t, t - 100, part, t);
+    assert!(finding(&fs, Path::new("/"), None).blocker.is_some());
+    let fs = mock_times(t, t, t - 100, part, t - 1);
+    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+}
+
+#[test]
+fn a_link_among_apts_files_leaves_a_setting_no_file_sets_unknown() {
+    // The files are older than the helper, but where a link leads NAILS
+    // does not follow when that changed.
+    let fs = mock_times(2_000_000_000, 2_000_000_000, 1_000, "/etc/apt", 1_000);
+    // The mock looks up a file where its link leads and reads it by the
+    // path it is given.
+    fs.mock_add_file("/srv/99linked", "");
+    fs.create_symlink(
+        Path::new("/srv/99linked"),
+        Path::new("/etc/apt/apt.conf.d/99linked"),
+    )
+    .unwrap();
+    fs.mock_set_file_bytes("/etc/apt/apt.conf.d/99linked", b"// nothing set here\n");
+    fs.mock_set_directory_contents(
+        Path::new("/etc/apt/apt.conf.d"),
+        vec![
+            PathBuf::from("/etc/apt/apt.conf.d/50unattended-upgrades"),
+            PathBuf::from("/etc/apt/apt.conf.d/99linked"),
+        ],
+    );
+    let found = finding(&fs, Path::new("/"), None);
+    assert!(
+        blocker(&found).contains(
+            "but /etc/apt/apt.conf.d/99linked is reached through a symbolic link, so NAILS \
+             cannot tell whether what it leads to changed after the helper started"
+        ),
+        "{found:?}"
+    );
+    // A false set in a file wins, link or not.
+    fs.mock_set_file_bytes("/etc/apt/apt.conf.d/99linked", OFF.as_bytes());
+    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+}
+
+#[test]
+fn what_nails_cannot_read_of_the_running_helper_is_refused_as_if_on() {
+    // No /proc/stat: when the helper started cannot be told, which counts
+    // where no file sets the setting.
+    let tmp = stock(DEBIAN_13);
+    std::fs::remove_file(tmp.path().join("proc/stat")).unwrap();
+    let message = blocker(&find(tmp.path())).to_string();
+    assert!(
+        message.contains("when unattended-upgrades.service started cannot be read: /proc/stat"),
+        "{message}"
+    );
+    // But not where a file sets it.
+    write(tmp.path(), "etc/apt/apt.conf.d/99local", OFF.as_bytes());
+    assert_eq!(find(tmp.path()).blocker, None);
+
+    // A /proc/<pid>/stat that is none.
+    let tmp = stock(DEBIAN_13);
+    write(
+        tmp.path(),
+        &format!("proc/{PID}/stat"),
+        b"412 (unattended-upgr\n",
+    );
+    let message = blocker(&find(tmp.path())).to_string();
+    assert!(message.contains("/proc/412/stat is not one"), "{message}");
+
+    // No process in the unit's cgroup: what the helper reads first cannot
+    // be told, whatever the files say.
+    let tmp = stock(DEBIAN_13);
+    write(tmp.path(), &format!("{CGROUP}/cgroup.procs"), b"");
+    write(tmp.path(), "etc/apt/apt.conf.d/99local", OFF.as_bytes());
+    let message = blocker(&find(tmp.path())).to_string();
+    assert!(
+        message.contains(
+            "/sys/fs/cgroup/system.slice/unattended-upgrades.service/cgroup.procs lists no \
+             process of unattended-upgrades.service"
+        ),
+        "{message}"
+    );
+
+    // An environment NAILS cannot read: only root can.
+    let fs = MockFilesystem::new();
+    mock_run_helper(&fs, None);
+    mock_parts(&fs, "/etc/apt/apt.conf.d", &[("99local", Some(OFF))]);
+    let found = finding(&fs, Path::new("/"), None);
+    let message = blocker(&found);
+    assert!(
+        message.contains(
+            "the environment of unattended-upgrades.service (PID 412), where apt takes APT_CONFIG \
+             from, cannot be read ("
+        ),
+        "{message}"
+    );
+    assert!(message.contains("only root can read it"), "{message}");
+}
+
+/// A stock decoy of `release` whose helper runs with `APT_CONFIG` set to
+/// `value`, started after every file the test writes.
+fn stock_with_apt_config(release: &[u8], value: &str) -> tempfile::TempDir {
+    let tmp = stock(release);
+    run_helper_since(
+        tmp.path(),
+        now() + 86_400,
+        &environ(&[&format!("APT_CONFIG={value}")]),
+    );
+    tmp
+}
+
+#[test]
+fn the_file_the_helpers_apt_config_names_is_read_first() {
+    // The setting turned on where the package's own file has it, in a copy
+    // of Debian 13's 50unattended-upgrades that APT_CONFIG names.
+    let stock_text = String::from_utf8_lossy(DEBIAN_13);
+    let turned_on = stock_text.replace(
+        "//Unattended-Upgrade::InstallOnShutdown \"false\";",
+        "Unattended-Upgrade::InstallOnShutdown \"true\";",
+    );
+    assert_ne!(turned_on, stock_text, "the stock file has the line");
+    let tmp = stock_with_apt_config(DEBIAN_13, "/etc/nails-apt.conf");
+    let root = tmp.path();
+    write(root, "etc/nails-apt.conf", turned_on.as_bytes());
+    let found = find(root);
+    let refusal = found.blocker.as_ref().expect("a refusal");
+    assert!(
+        refusal.finding.contains(
+            "Unattended-Upgrade::InstallOnShutdown is on in the helper's APT_CONFIG file \
+             /etc/nails-apt.conf:"
+        ),
+        "{}",
+        refusal.finding
+    );
+    assert!(
+        refusal.fix.contains(
+            "in the helper's APT_CONFIG file /etc/nails-apt.conf or in a file of \
+             /etc/apt/apt.conf.d that apt reads after it"
+        ),
+        "{}",
+        refusal.fix
+    );
+    assert_eq!(refusal.at_the_switch, AtTheSwitch::Installs);
+    // Every part comes after it: a false there wins.
+    write(root, "etc/apt/apt.conf.d/99local", OFF.as_bytes());
+    assert_eq!(find(root).blocker, None);
+    // Without APT_CONFIG the file is not read.
+    let tmp = stock(DEBIAN_13);
+    write(tmp.path(), "etc/nails-apt.conf", turned_on.as_bytes());
+    assert_eq!(find(tmp.path()).blocker, None);
+    // An APT_CONFIG that is empty is none, as apt takes it.
+    let tmp = stock_with_apt_config(DEBIAN_13, "");
+    assert_eq!(find(tmp.path()).blocker, None);
+}
+
+#[test]
+fn an_apt_config_nails_cannot_follow_is_refused_as_if_on() {
+    for (value, written, why) in [
+        (
+            "/etc/missing.conf",
+            None,
+            "the helper's APT_CONFIG file /etc/missing.conf is no file NAILS can read",
+        ),
+        (
+            "etc/relative.conf",
+            None,
+            "the helper's APT_CONFIG names etc/relative.conf, a relative path",
+        ),
+        (
+            "/etc/apt/../nails-apt.conf",
+            Some(("etc/nails-apt.conf", OFF)),
+            "has a `..` in its path, which NAILS does not follow",
+        ),
+        (
+            // It moves the parts NAILS reads.
+            "/etc/nails-apt.conf",
+            Some((
+                "etc/nails-apt.conf",
+                "Dir::Etc::parts \"/srv/apt.conf.d\";\n",
+            )),
+            "the helper's APT_CONFIG file /etc/nails-apt.conf:1 sets Dir::Etc::parts",
+        ),
+    ] {
+        let tmp = stock_with_apt_config(UBUNTU_24_04, value);
+        if let Some((rel, text)) = written {
+            write(tmp.path(), rel, text.as_bytes());
+        }
+        // A part's false comes after APT_CONFIG but changes nothing here.
+        write(tmp.path(), "etc/apt/apt.conf.d/99local", OFF.as_bytes());
+        let found = find(tmp.path());
+        let message = blocker(&found);
+        assert!(message.starts_with("NAILS cannot tell"), "{message}");
+        assert!(message.contains(why), "{value}: {message}");
+    }
+
+    // Processes of the unit that run with values apart.
+    let tmp = stock(UBUNTU_26_04);
+    let root = tmp.path();
+    write(root, &format!("{CGROUP}/cgroup.procs"), b"412\n413\n");
+    write(root, "proc/413/stat", stat_line(413, 3600 * 100).as_bytes());
+    write(
+        root,
+        "proc/413/environ",
+        &environ(&["APT_CONFIG=/etc/nails-apt.conf"]),
+    );
+    let message = blocker(&find(root)).to_string();
+    assert!(
+        message.contains(
+            "the processes of unattended-upgrades.service run with different values of APT_CONFIG"
+        ),
+        "{message}"
+    );
+}
+
+#[test]
+fn the_session_reads_the_file_apt_config_names_through_its_overlay() {
+    let tmp = stock_with_apt_config(UBUNTU_26_04, "/etc/nails/apt.conf");
+    let root = tmp.path();
+    write(root, "etc/nails/apt.conf", OFF.as_bytes());
+    // The decoy's file, which the session sees through its overlay.
+    let upper = tempfile::tempdir().unwrap();
+    assert_eq!(find_with_upper(root, upper.path()), Finding::default());
+    // The session's own copy of it turns the setting on.
+    write(upper.path(), "etc/nails/apt.conf", ON.as_bytes());
+    let found = find_with_upper(root, upper.path());
+    assert!(found.blocker.is_none(), "{found:?}");
+    let warning = found.warning.expect("a warning");
+    assert!(
+        warning.contains(
+            "the helper's APT_CONFIG file /etc/nails/apt.conf:1 in the hidden session's overlay"
+        ),
+        "{warning}"
+    );
+    // A link on the decoy on the way to it resolves through the overlay.
+    let tmp = stock_with_apt_config(UBUNTU_26_04, "/etc/nails/apt.conf");
+    let root = tmp.path();
+    write(root, "srv/nails/apt.conf", OFF.as_bytes());
+    link(
+        root,
+        "etc/nails",
+        &root.join("srv/nails").display().to_string(),
+    );
+    let upper = tempfile::tempdir().unwrap();
+    // The decoy's helper follows it.
+    assert_eq!(find(root).blocker, None);
+    let warning = find_with_upper(root, upper.path())
+        .warning
+        .expect("a warning");
+    assert!(
+        warning.contains(
+            "/etc/nails on the decoy is a symbolic link, which NAILS does not follow through the \
+             hidden session's overlay"
+        ),
+        "{warning}"
+    );
 }
 
 #[test]
