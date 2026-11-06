@@ -29,6 +29,9 @@
 //! ```
 
 // Submodules
+// The automount guard: a check's view of the filesystem that makes no lookup
+// that would mount an automount point nothing is mounted on yet.
+pub mod automount;
 // The in-memory mock is test-only infrastructure: it exists so downstream tests
 // can drive the filesystem seam without real syscalls. Gating it behind the same
 // switch as the other test fixtures keeps it out of release builds and out of the

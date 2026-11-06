@@ -363,6 +363,74 @@ pub enum NailsError {
         #[source]
         source: std::io::Error,
     },
+
+    /// A lookup of `path` NAILS did not make, for `reason`: it would mount an
+    /// automount point that nothing is mounted on yet, or the mount table
+    /// that shows where one would cannot be read.
+    ///
+    /// A check reads the decoy through
+    /// [`Guarded`](crate::filesystem::automount::Guarded), which asks before
+    /// each lookup and answers so where it makes none, from the same call
+    /// that would have made it. It is no I/O error:
+    /// [`io_kind`](NailsError::io_kind) is `None`, so a reader that sorts
+    /// errors by their kind takes it for one it cannot tell about.
+    #[error("{}", .reason.sentence(.path))]
+    NotLookedUp {
+        /// The path the lookup would have looked up.
+        path: std::path::PathBuf,
+        /// Why it was not made.
+        reason: Skip,
+    },
+}
+
+/// Why NAILS did not make a lookup ([`NailsError::NotLookedUp`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Skip {
+    /// The lookup would mount the automount point `point`, which nothing is
+    /// mounted on yet: a direct or offset one it would pass, or the name in
+    /// the directory of an indirect map it would look up.
+    Automount {
+        /// The automount point.
+        point: std::path::PathBuf,
+    },
+    /// The mount table, which shows where a lookup would mount an automount
+    /// point, cannot be read, for this reason.
+    NoMountTable {
+        /// Why it cannot be read.
+        error: String,
+    },
+}
+
+impl Skip {
+    /// Why `path` was not looked up, as a sentence without its full stop.
+    pub fn sentence(&self, path: &std::path::Path) -> String {
+        self.sentence_for(&path.display())
+    }
+
+    /// Why the path a check names `shown` was not looked up, as
+    /// [`sentence`](Self::sentence) says it.
+    pub fn sentence_for(&self, shown: &dyn std::fmt::Display) -> String {
+        match self {
+            Skip::Automount { point } => format!(
+                "NAILS does not look up {shown}, since the lookup would mount the automount \
+                 point {}",
+                point.display()
+            ),
+            Skip::NoMountTable { error } => format!(
+                "NAILS does not look up {shown}, since it cannot read the mount table ({error}), \
+                 which shows where a lookup would mount an automount point"
+            ),
+        }
+    }
+
+    /// The automount point the lookup would mount, when that is why it was
+    /// not made.
+    pub fn point(&self) -> Option<&std::path::Path> {
+        match self {
+            Skip::Automount { point } => Some(point),
+            Skip::NoMountTable { .. } => None,
+        }
+    }
 }
 
 /// The message of an [`NailsError::IoError`]: the error's own text when it
@@ -408,6 +476,15 @@ impl NailsError {
         }
     }
 
+    /// The path and the reason of a lookup NAILS did not make, when this is
+    /// one ([`NotLookedUp`](NailsError::NotLookedUp)).
+    pub fn not_looked_up(&self) -> Option<(&std::path::Path, &Skip)> {
+        match self {
+            NailsError::NotLookedUp { path, reason } => Some((path, reason)),
+            _ => None,
+        }
+    }
+
     /// A single, concrete next step for this error, when one exists.
     ///
     /// The CLI shows this below the error line so a failure names not just what
@@ -446,6 +523,10 @@ impl NailsError {
                 "Unmount the path yourself if it is safe to do so; nails will not touch a mount it did not create."
             }
             NailsError::RefusedOfflineRoot { problem, .. } => return Some(problem.hint()),
+            NailsError::NotLookedUp {
+                reason: Skip::Automount { point },
+                ..
+            } => return Some(crate::filesystem::automount::mount_fix(&[point.as_path()])),
             // Pre-flight failures carry their own per-check remediation list, and
             // the remaining variants are already specific about the fault.
             _ => return None,
