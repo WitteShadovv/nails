@@ -33,6 +33,10 @@ pub mod systemd_conf;
 pub mod upgrade_run;
 pub mod upper_fs_probe;
 
+// An unmounted automount point on a mock decoy, for the checks' tests.
+#[cfg(test)]
+pub(crate) mod automount_fixture;
+
 // Re-exports for convenient access
 pub use backend_detect::BackendDetectCheck;
 pub use backend_detect::BackendEncryptionCheck;
