@@ -398,3 +398,21 @@ fn a_file_of_a_root_is_read_and_placed_below_it_without_links() {
         Some(PathBuf::from("/home/alice"))
     );
 }
+
+#[test]
+fn change_time_is_what_a_test_set_and_the_epoch_otherwise() {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let fs = MockFilesystem::new();
+    let apt = Path::new("/etc/apt");
+    assert_eq!(fs.change_time(apt).unwrap(), UNIX_EPOCH);
+    let at = UNIX_EPOCH + Duration::from_secs(2_000_000_000);
+    fs.mock_set_change_time("/etc/apt", at);
+    assert_eq!(fs.change_time(apt).unwrap(), at);
+    assert_eq!(
+        fs.change_time(Path::new("/etc/apt/apt.conf")).unwrap(),
+        UNIX_EPOCH
+    );
+    fs.reset();
+    assert_eq!(fs.change_time(apt).unwrap(), UNIX_EPOCH);
+}

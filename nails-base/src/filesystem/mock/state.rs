@@ -164,6 +164,10 @@ pub struct MockFilesystem {
     pub(super) rename_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) explicit_file_sizes: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) modified_times: Arc<Mutex<HashMap<PathBuf, DateTime<Utc>>>>,
+    /// The status change times reported by
+    /// [`Filesystem::change_time`](crate::Filesystem::change_time), keyed
+    /// by path. An unset path reads as changed at the epoch.
+    pub(super) change_times: Arc<Mutex<HashMap<PathBuf, std::time::SystemTime>>>,
     pub(super) permissions: Arc<Mutex<HashMap<PathBuf, u32>>>,
     pub(super) permissions_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     /// Numeric `(uid, gid)` ownership recorded by `write_user_file`, so tests can
@@ -222,6 +226,7 @@ impl MockFilesystem {
             rename_should_fail: Arc::new(Mutex::new(HashSet::new())),
             explicit_file_sizes: Arc::new(Mutex::new(HashSet::new())),
             modified_times: Arc::new(Mutex::new(HashMap::new())),
+            change_times: Arc::new(Mutex::new(HashMap::new())),
             permissions: Arc::new(Mutex::new(HashMap::new())),
             permissions_should_fail: Arc::new(Mutex::new(HashSet::new())),
             owners: Arc::new(Mutex::new(HashMap::new())),
@@ -318,6 +323,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.modified_times
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.change_times
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
