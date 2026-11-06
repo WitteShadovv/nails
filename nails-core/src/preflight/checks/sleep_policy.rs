@@ -23,6 +23,7 @@
 
 use super::systemd_conf::{self, Assignment, Unread};
 use crate::config::SleepPolicyMode;
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, settle};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
 use std::path::Path;
@@ -357,25 +358,43 @@ impl<F: Filesystem> PreFlightCheck<F> for SleepPolicyCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let settings = effective_logind_sleep(fs);
-        let risks = Self::sleep_risks(&settings);
-        let unlocked = Self::unlocked_lid(&settings);
+        // logind's files are read through the automount guard; without the
+        // table a lookup could mount an automount point, so none is made.
+        let snapshot = Snapshot::read(fs, Path::new("/"));
+        if let Some(error) = snapshot.unreadable() {
+            return Ok(CheckResult::Warn(format!(
+                "NAILS cannot tell whether the host would suspend an active session or leave it \
+                 unlocked behind a closed lid: NAILS cannot read the mount table ({error}), which \
+                 shows where a lookup would mount an automount point, so it looks up nothing."
+            )));
+        }
+        let guarded = Guarded::new(fs.clone(), &snapshot);
+        let result = self.judge(&effective_logind_sleep(&guarded));
+        Ok(settle(result, &guarded.skipped(), OnSkip::Warn))
+    }
+}
+
+impl SleepPolicyCheck {
+    /// The result for the effective logind `settings`.
+    fn judge(&self, settings: &LogindSleepSettings) -> CheckResult {
+        let risks = Self::sleep_risks(settings);
+        let unlocked = Self::unlocked_lid(settings);
 
         if risks.is_empty() && unlocked.is_empty() {
-            return Ok(CheckResult::Pass(format!(
+            return CheckResult::Pass(format!(
                 "host will not suspend an active session (HandleLidSwitch={}, IdleAction={})",
                 settings.effective_lid_switch(),
                 settings.effective_idle_action()
-            )));
+            ));
         }
 
         let mut message = if risks.is_empty() {
             String::new()
         } else {
-            self.sleep_warning(&settings, &risks)
+            self.sleep_warning(settings, &risks)
         };
         if !unlocked.is_empty() {
-            let warning = unlocked_warning(&settings, &unlocked);
+            let warning = unlocked_warning(settings, &unlocked);
             if message.is_empty() {
                 message = warning;
             } else {
@@ -383,7 +402,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SleepPolicyCheck {
                 message.push_str(&sentence(&warning));
             }
         }
-        Ok(CheckResult::Warn(message))
+        CheckResult::Warn(message)
     }
 }
 
