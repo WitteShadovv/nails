@@ -22,6 +22,15 @@
 //! [`string_to_bool`] reads a value as apt's `FindB()` does. Names compare
 //! without regard to ASCII case, as apt's do. The `apt_conf` fuzz target
 //! drives the reader with hostile input.
+//!
+//! apt runs in the system's locale, and two of its choices follow it: which
+//! files of a parts directory it reads (`isalpha()`), and which words it
+//! takes for a boolean (`strcasecmp()`). Both are the same in every locale
+//! for ASCII, so the reader keeps to ASCII's rules and says where a byte
+//! beyond it leaves the choice to the locale: a [`PartName::ByLocale`], and a
+//! value [`value_by_locale`] names. The structure of a file follows no
+//! locale: apt's `isspace()` takes no byte beyond ASCII for a space in any
+//! locale glibc builds on an ASCII charset.
 
 /// The longest line, newline excluded, read the way apt reads it. apt reads a
 /// line in pieces of 4095 bytes, its newline included, and when the last
@@ -535,26 +544,51 @@ pub fn names(name: &[u8], key: &[&str], or_above: bool) -> bool {
             .all(|(tag, wanted)| tag.eq_ignore_ascii_case(wanted.as_bytes()))
 }
 
-/// Whether apt reads the file `name` of a configuration parts directory
+/// What apt makes of a file of a configuration parts directory
+/// (`apt.conf.d`) by its name ([`part_name`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartName {
+    /// apt reads it.
+    Read,
+    /// apt skips it.
+    Skipped,
+    /// apt reads it in some locales and skips it in others: it would read it
+    /// but for a byte beyond ASCII, which its `isalpha()` takes for a letter
+    /// in some single-byte locales (`0xe9`, `é` in ISO-8859-1) and not in
+    /// the C locale or a UTF-8 one.
+    ByLocale,
+}
+
+/// What apt makes of the file `name` of a configuration parts directory
 /// (`apt.conf.d`), by its name: `GetListOfFilesInDir()` with the extension
 /// `conf` or none. It skips a name that starts with a dot, one with another
 /// extension (`.bak`, `.dpkg-old`, `.disabled`), one with a character other
 /// than a letter, a digit, `_`, `-`, `:` and `.` (`x~`), and one that ends
 /// with a dot. Whether the file is a regular file is asked apart.
-pub fn part_name(name: &[u8]) -> bool {
-    if name.is_empty() || name[0] == b'.' {
-        return false;
+pub fn part_name(name: &[u8]) -> PartName {
+    if name.is_empty() || name[0] == b'.' || name.last() == Some(&b'.') {
+        return PartName::Skipped;
     }
     let extension = match name.iter().rposition(|&byte| byte == b'.') {
         Some(dot) => &name[dot + 1..],
         None => name,
     };
-    if extension != name && extension != b"conf" && !extension.is_empty() {
-        return false;
+    if extension != name && extension != b"conf" {
+        return PartName::Skipped;
     }
-    name.iter()
-        .all(|&byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':' | b'.'))
-        && name.last() != Some(&b'.')
+    let mut beyond_ascii = false;
+    for &byte in name {
+        if !byte.is_ascii() {
+            beyond_ascii = true;
+        } else if !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':' | b'.')) {
+            return PartName::Skipped;
+        }
+    }
+    if beyond_ascii {
+        PartName::ByLocale
+    } else {
+        PartName::Read
+    }
 }
 
 /// What C's `strtol(text, &end, 0)` makes of the whole of `text`, on a
@@ -638,6 +672,17 @@ pub fn string_to_bool(value: &[u8], default: bool) -> bool {
         return true;
     }
     default
+}
+
+/// Whether apt's reading of `value` as a boolean hangs on the system's
+/// locale: a byte beyond ASCII before its first NUL. strtol() reads no number
+/// in such a value, but `strcasecmp()` compares it with apt's words by the
+/// locale's case rules, which can lowercase such a byte to an ASCII letter:
+/// `İ` (`0xdd` in ISO-8859-9) to `i`, so that `W\xddTH` reads as `with` in
+/// tr_TR.ISO-8859-9. [`string_to_bool`] reads by ASCII's rules alone, which
+/// know no word with such a byte.
+pub fn value_by_locale(value: &[u8]) -> bool {
+    !c_str(value).is_ascii()
 }
 
 #[cfg(test)]

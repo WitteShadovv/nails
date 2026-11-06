@@ -14,17 +14,20 @@
 //!   going on over as many lines as they take;
 //! - after a file that ends outside every block and comment, a statement
 //!   that sets the setting is read, last, with its value and its line, and so
-//!   is a `#clear` of it;
+//!   is a `#clear` of the setting and one of the scope above it;
 //! - each item the reader names the setting has two tags, the setting's
 //!   apart from ASCII case;
-//! - a value reads as the same boolean whatever the default, unless apt
-//!   knows no boolean in it, when it reads as the default either way.
+//! - a value never reads as the opposite of the default: read with the
+//!   default true and with the default false, it reads the same both times
+//!   or as the default both times;
+//! - a value whose reading the reader leaves to the system's locale (a byte
+//!   beyond ASCII before its first NUL) reads as the default both times.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use nails_base::packages::apt_conf::{
-    Parsed, Statement, SyntaxError, names, parse, string_to_bool, tags,
+    Parsed, Statement, SyntaxError, names, parse, string_to_bool, tags, value_by_locale,
 };
 
 /// The setting unattended-upgrades' shutdown helper reads.
@@ -70,15 +73,20 @@ fuzz_target!(|data: &[u8]| {
                     line: lines + 1,
                 })
             );
-            let cleared = [data, b"\n#clear Unattended-Upgrade;\n"].concat();
-            let after = parse(&cleared).expect("a clear after a whole file is read");
-            assert_eq!(
-                after.statements.last(),
-                Some(&Statement::Clear {
-                    name: b"Unattended-Upgrade".to_vec(),
-                    line: lines + 1,
-                })
-            );
+            for name in [
+                b"Unattended-Upgrade::InstallOnShutdown".as_slice(),
+                b"Unattended-Upgrade",
+            ] {
+                let cleared = [data, b"\n#clear ", name, b";\n"].concat();
+                let after = parse(&cleared).expect("a clear after a whole file is read");
+                assert_eq!(
+                    after.statements.last(),
+                    Some(&Statement::Clear {
+                        name: name.to_vec(),
+                        line: lines + 1,
+                    })
+                );
+            }
         }
 
         for statement in &parsed.statements {
@@ -94,6 +102,9 @@ fuzz_target!(|data: &[u8]| {
             }
             let (on, off) = (string_to_bool(value, true), string_to_bool(value, false));
             assert!(on || !off, "{value:?}");
+            if value_by_locale(value) {
+                assert!(on && !off, "{value:?}");
+            }
         }
     }
 });
