@@ -238,10 +238,12 @@ volatile can count as persistent. Run them with sudo.
   see [Decoys joined to a domain](#decoys-joined-to-a-domain).
 - **unattended-upgrades in a hidden session** — the hidden session's own copy
   of unattended-upgrades' shutdown helper set to install at shutdown: the
-  decoy's helper is stopped but enabled, so the session starts it, or the
-  session's overlay turns the setting on. At the way back it installs the
-  pending updates into the session's overlay on the hidden volume; see
-  [Unattended upgrades](#unattended-upgrades).
+  decoy's helper is stopped while the decoy or the session's overlay enables
+  it and nothing masks it as the session sees it, so the session starts it,
+  or the session's overlay turns the setting on. At the way back it installs
+  the pending updates into the session's overlay on the hidden volume. It
+  warns too where NAILS cannot tell what the session reads, as for a link
+  among apt's files; see [Unattended upgrades](#unattended-upgrades).
 
 The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
@@ -782,10 +784,11 @@ and a `Dir` or `RootDir` setting, which move the files apt reads, leave the
 setting unknown, and `decoy-persistence` refuses that as if it were on. So do
 a file name and a value of the setting with a byte beyond ASCII: apt runs in
 the system's locale, which decides whether it takes such a byte for a letter
-of a name it reads (`é` in ISO-8859-1, but not in a UTF-8 locale) and for a
-letter of `true` or `with` (`İ` in ISO-8859-9 reads as the `i` of `with`), so
-NAILS cannot tell what apt makes of it. NAILS does not read `APT_CONFIG`,
-which the helper's unit does not set.
+of a file name it reads (`é` in ISO-8859-1, but not in a UTF-8 locale) and
+how it compares a value with its words for true and false (`İ` in ISO-8859-9
+lowercases to `i`, so `WİTH` reads as `with`), so NAILS cannot tell what apt
+makes of it. NAILS does not read `APT_CONFIG`, which the helper's unit does
+not set.
 
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a

@@ -1422,11 +1422,10 @@ of this changelog for that version becomes the release notes word for word, and
   `/proc/locks` by the lock file's device and inode, without opening or locking the file, refuses
   when it cannot tell (a lock file that is anything but a plain file included: the helper cannot
   open a link, a directory or a socket there and takes that for a held lock), and says to try
-  again in a few minutes; no flag lifts it. The
-  entry looks again right before it asks logind for the switch. A new distribution test,
-  `<image>-apt-shutdown` on Debian 13, Ubuntu 24.04 and Ubuntu 26.04, holds a daily run with its
-  lock taken and shows the refusal leaves no line on the decoy disk, where a plain
-  `systemctl soft-reboot` during the same run writes it.
+  again in a few minutes; no flag lifts it. The entry looks again right before it asks logind for
+  the switch. A new distribution test, `<image>-apt-shutdown` on Debian 13, Ubuntu 24.04 and
+  Ubuntu 26.04, holds a daily run with its lock taken and shows the refusal leaves no line on the
+  decoy disk, where a plain `systemctl soft-reboot` during the same run writes it.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the

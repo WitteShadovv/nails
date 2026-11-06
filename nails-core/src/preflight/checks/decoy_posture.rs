@@ -54,9 +54,13 @@
 //!   controller records the hidden session's logins out of NAILS's reach (see
 //!   [`sssd`]),
 //! - unattended-upgrades in the hidden session alone installing at the way
-//!   back: the decoy's helper stopped but enabled, so the session starts its
-//!   own copy, or the session's overlay turning the setting on. At the way
-//!   back that copy installs the pending updates into the session's overlay.
+//!   back: the decoy's helper stopped while the decoy or the session's
+//!   overlay enables it and nothing masks it as the session sees it, so the
+//!   session starts its own copy, or the session's overlay turning the
+//!   setting on. At the way back that copy installs the pending updates into
+//!   the session's overlay. Where NAILS cannot tell what the session reads,
+//!   as for a link among apt's files, it warns too (see
+//!   [`install_on_shutdown`]).
 //!
 //! # No writes
 //!
