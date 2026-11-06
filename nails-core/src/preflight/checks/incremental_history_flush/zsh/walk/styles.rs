@@ -25,15 +25,16 @@ use super::strings::computed;
 /// `format` and `tag-order`, in which `zformat` reads a `%(` as arithmetic;
 /// `file-patterns`, which `_files` reads with `eval`; `environ`, which
 /// `_sudo` sets parameters by; `use-cache`, which makes them source the cache
-/// files; and any style the check has not read.
-const DATA_STYLES: [&str; 70] = [
+/// files, and `cache-path`, which names their directory, whose files
+/// `_luarocks` sources whatever `use-cache` says; and any style the check has
+/// not read.
+const DATA_STYLES: [&str; 69] = [
     "accept-exact",
     "accept-exact-dirs",
     "add-space",
     "ambiguous",
     "auto-description",
     "avoid-completer",
-    "cache-path",
     "call-command",
     "complete-options",
     "condition",
@@ -205,6 +206,9 @@ pub(super) fn style_doubt(style: &str, values: &[Word], eval: bool) -> Option<St
              cache, which the check does not read"
                 .to_string()
         }
+        "cache-path" => "they source the files of the directory `cache-path` names where \
+                         `use-cache` is on, and `_luarocks` whatever it says"
+            .to_string(),
         "environ" => "`_sudo` sets the parameters the value of `environ` names".to_string(),
         _ => format!("the check does not know how they read the `{style}` style"),
     };

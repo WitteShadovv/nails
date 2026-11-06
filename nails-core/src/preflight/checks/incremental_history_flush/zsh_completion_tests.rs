@@ -462,6 +462,7 @@ fn a_completion_style_whose_value_zsh_s_own_code_may_run_is_a_doubt() {
         "zstyle ':completion:*' tag-order 'files:f:%(d.x.y)'",
         "zstyle ':completion:*' use-cache on",
         "zstyle ':completion:*' use-cache $c",
+        "zstyle ':completion:*' cache-path ~/.zcache",
         "zstyle ':completion:*' environ 'LISTMAX=x'",
         "zstyle ':completion:*:git:*' max-verbose 'pipestatus[$(logit)1]'",
         "zstyle ':completion:*' something-new x",
@@ -504,7 +505,6 @@ fn a_completion_style_whose_value_zsh_s_own_code_may_run_is_a_doubt() {
         "zstyle ':completion:*' select-scroll -2",
         "zstyle ':completion:*' file-patterns '*(-/):directories' '*.txt:text'",
         "zstyle ':completion:*' use-cache off",
-        "zstyle ':completion:*' cache-path ~/.zcache",
         "zstyle ':completion:*' tag-order local-directories directory-stack",
         "zstyle -e ':completion:*' verbose 'reply=(yes)'",
         "zstyle ':chpwd:*' menu 'select=1+x'",
@@ -532,10 +532,13 @@ fn a_parameter_that_gives_the_completion_system_code_or_options_is_a_doubt() {
         "_comp_options+=(globdots) # dotfiles",
     ] {
         let got = found(&format!("{COMPINIT}{line}\n"));
+        let what = if line.starts_with("_comp_options") {
+            "which zsh's completion system takes the options it completes with from"
+        } else {
+            "which zsh's completion system runs code or"
+        };
         assert!(
-            got.doubts
-                .iter()
-                .any(|doubt| doubt.contains("which zsh's completion system runs code or")),
+            got.doubts.iter().any(|doubt| doubt.contains(what)),
             "{line}: {got:?}"
         );
     }
@@ -614,4 +617,46 @@ fn what_the_check_cannot_read_where_compinit_runs_is_a_doubt() {
         got.doubts.iter().any(|found| found.starts_with(&doubt)),
         "{got:?}"
     );
+}
+
+#[test]
+fn files_in_the_completion_cache_s_directory_are_a_doubt_where_compinit_runs() {
+    // zsh 5.9.2's `_retrieve_cache` sources a file of
+    // `${ZDOTDIR:-$HOME}/.zcompcache` where use-cache is on, and its
+    // `_composer`, `_zypper` and `_luarocks` source one there whatever the
+    // files set: one that appends the line to the history file writes it.
+    let fs = MockFilesystem::new();
+    listed(&fs, "/home/alice/.zcompcache", &["command-descriptions"]);
+    let got = found_with(&fs, COMPINIT);
+    assert_eq!(
+        got.doubts,
+        [
+            "it cannot tell what the files of the completion cache in /home/alice/.zcompcache run \
+             (`command-descriptions`), which zsh's own completion functions source as you complete \
+             some commands (`composer`, `zypper`, `luarocks`) or a word where `use-cache` is on"
+        ]
+    );
+    // In the ZDOTDIR a file sets too.
+    let fs = MockFilesystem::new();
+    listed(&fs, "/home/alice/z/.zcompcache", &["x"]);
+    seed(&fs, "/home/alice/.zshenv", "ZDOTDIR=/home/alice/z\n");
+    let got = found_with(&fs, "");
+    seed(&fs, "/home/alice/z/.zshrc", COMPINIT);
+    let got_rc = scan_with(&fs, UNKNOWN, &install(&fs, &[]));
+    assert_eq!(got, Scan::default());
+    assert!(
+        got_rc
+            .doubts
+            .iter()
+            .any(|doubt| doubt.contains("in /home/alice/z/.zcompcache run")),
+        "{got_rc:?}"
+    );
+    // None, an empty one, and one without compinit, are no doubt.
+    assert_eq!(found(COMPINIT), Scan::default());
+    let fs = MockFilesystem::new();
+    listed(&fs, "/home/alice/.zcompcache", &[]);
+    assert_eq!(found_with(&fs, COMPINIT), Scan::default());
+    let fs = MockFilesystem::new();
+    listed(&fs, "/home/alice/.zcompcache", &["command-descriptions"]);
+    assert_eq!(found_with(&fs, "HISTSIZE=100\n"), Scan::default());
 }
