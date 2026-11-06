@@ -787,7 +787,6 @@ letter of `true` or `with` (`İ` in ISO-8859-9 reads as the `i` of `with`), so
 NAILS cannot tell what apt makes of it. NAILS does not read `APT_CONFIG`,
 which the helper's unit does not set.
 
-
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a
 line deleted after it started stays in effect until
@@ -819,13 +818,15 @@ As for kdump, the window's launcher stays usable with the setting on, and
 the setting at all.
 
 The distribution test `<image>-apt-shutdown` shows both on Debian 13, Ubuntu
-24.04 and Ubuntu 26.04: a daily run held with its lock taken makes `check` and
-`activate` refuse and leaves no line on the decoy disk, while a plain
-`systemctl soft-reboot` during the same run writes the helper's line there;
-with the setting on, `check` and `activate` refuse, and with
-`--allow-persistent-decoy` the decoy's helper logs its shutdown-mode run at the
-switch; with the decoy's helper stopped but enabled, `check` only warns and the
-session's copy logs its shutdown-mode run into the upper at the way back.
+24.04 and Ubuntu 26.04: on the stock decoy both rows pass, with the setting
+off as `apt-config` reads it too; a daily run held with its lock taken makes
+`check` and `activate` refuse and leaves no line on the decoy disk, while a
+plain `systemctl soft-reboot` during the same run writes the helper's line
+there; with the setting on, as `apt-config` reads it, `check` and `activate`
+refuse, and with `--allow-persistent-decoy` the decoy's helper logs its
+shutdown-mode run at the switch; with the decoy's helper stopped but enabled,
+`check` only warns and the session's copy logs its shutdown-mode run into the
+upper at the way back.
 
 ## Decoys joined to a domain
 
