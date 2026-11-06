@@ -23,8 +23,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// [`read_link`], [`mount_root`]) is answered without a lookup where the
 /// path ends at a direct automount point. A lookup that is not made fails
 /// with [`NailsError::NotLookedUp`] and is kept in the ledger
-/// ([`skipped`](Guarded::skipped)); one the guard cannot read the way of
-/// fails with that error, naming the path, as the lookup would. With a
+/// ([`skipped`](Guarded::skipped)). A lookup whose way the guard cannot
+/// read is not made either: it fails with the error of that read, naming
+/// the path, as the lookup itself would fail, and is not kept. With a
 /// table that cannot be read, no lookup is made; for a tree that is not
 /// the running system's, every call is made as it is.
 ///
@@ -33,8 +34,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// asked as [`canonicalize`] is, and made unless that would mount. A walk of
 /// a tree ([`find_files_with_pattern`], [`scan_files_with_pattern`]) and a
 /// read under another root than `/` cannot be asked about one lookup at a
-/// time: they fail with an error of kind `Unsupported` where something is
-/// guarded.
+/// time: by the running system's table they fail with an error of kind
+/// `Unsupported` ([`resolve_in_root`] answers none), and are kept in no
+/// ledger.
 ///
 /// Clones share the snapshot and the ledger; two views made with
 /// [`new`](Guarded::new) share the snapshot only.
@@ -44,6 +46,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// [`mount_root`]: Filesystem::mount_root
 /// [`find_files_with_pattern`]: Filesystem::find_files_with_pattern
 /// [`scan_files_with_pattern`]: Filesystem::scan_files_with_pattern
+/// [`resolve_in_root`]: Filesystem::resolve_in_root
 #[derive(Debug, Clone)]
 pub struct Guarded<F> {
     inner: F,
