@@ -68,7 +68,9 @@
 //! leads the entry into the hidden volume is not refused: the decoy's line
 //! names a path outside it, and only a link in the hidden root leads it
 //! there. It still names a decoy filesystem, which the hidden systemd would
-//! mount read-write inside the hidden volume, so it is kept off.
+//! mount read-write inside the hidden volume, so it is kept off. A RAM or
+//! kernel filesystem a link leads there is left to the hidden systemd, as one
+//! elsewhere is: nothing of it reaches a disk.
 //!
 //! Two kinds of entry are refused outright, and activation with them: one
 //! whose mount point is not a plain absolute path, which cannot be mounted

@@ -500,22 +500,22 @@ impl Plan {
     /// Whether `mount` is the session's own storage at or below the hidden
     /// root, rather than a disk mounted during the session, which the session
     /// watcher alerts on, the read-only guard sets read-only and the way back
-    /// unmounts. What counts is told by device, not by path: a disk someone
-    /// mounts at `<root>/usb` lies below the root but is a real disk of its
-    /// own.
+    /// unmounts. The hidden volume is told by device, not by path: a disk
+    /// someone mounts at `<root>/usb` lies below the root but is a real disk
+    /// of its own. NAILS's own mounts in the volume are told by path.
     ///
     /// The session's own storage is the hidden volume, a mount of the device
     /// [`hidden_dev`](Self::hidden_dev) records (the volume, a bind of a
     /// folder of it) or of a loop device whose backing file lies on it
-    /// ([`shows_hidden_volume`]), and NAILS's own mounts in the volume: a
-    /// carried decoy filesystem at its place ([`CarriedMount::at`]) and
-    /// anything below `<root>/root`, where NAILS keeps its layers and carries
-    /// the decoy's filesystems. A mount outside the hidden root is never
-    /// counted, a bind of the volume or a loop on it there included: the
-    /// device a root accepted with `--allow-decoy-storage` records can be one
-    /// the decoy's own filesystems share. A plan written before the device
-    /// was recorded has only the path to go by: every mount at or below the
-    /// root counts.
+    /// ([`shows_hidden_volume`]), and, whatever their device, NAILS's own
+    /// mounts in the volume: a mount at a carried decoy filesystem's place
+    /// ([`CarriedMount::at`]) and anything below `<root>/root`, where NAILS
+    /// keeps its layers and carries the decoy's filesystems. A mount outside
+    /// the hidden root is never counted, a bind of the volume or a loop on it
+    /// there included: the device a root accepted with `--allow-decoy-storage`
+    /// records can be one the decoy's own filesystems share. A plan written
+    /// before the device was recorded has only the path to go by: every mount
+    /// at or below the root counts.
     pub fn is_hidden_storage(&self, mount: &MountEntry) -> bool {
         self.is_hidden_storage_with(mount, crate::loop_device::backing_filesystem)
     }

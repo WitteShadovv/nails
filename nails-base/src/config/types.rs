@@ -262,10 +262,10 @@ pub struct Config {
 
     /// Disks mounted during the hidden session.
     ///
-    /// The session watcher alerts on a read-write mount of a disk outside the
-    /// hidden volume (on by default); `read_only` opts into making every disk
-    /// the session does not use read-only for the session. See
-    /// [`SessionMountsConfig`].
+    /// The session watcher alerts on a read-write mount of a block device that
+    /// is not the session's own storage, one below the hidden root included
+    /// (on by default); `read_only` opts into making every disk the session
+    /// does not use read-only for the session. See [`SessionMountsConfig`].
     #[serde(default)]
     pub session_mounts: SessionMountsConfig,
 
