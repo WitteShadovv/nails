@@ -22,10 +22,10 @@
 #      session is made read-only by the udev rule alone (the watcher, the
 #      fallback, is stopped first), a mount comes up read-only and every write
 #      fails, and the decoy root and the hidden backend stay writable. The
-#      third disk, set writable again by hand and mounted below the hidden
-#      root, is set read-only again by the watcher's sweep. After the way back
-#      every disk is writable again, the second disk is byte for byte as before
-#      the session, and the decoy mounts it read-write.
+#      third disk, mounted read-only below the hidden root and set writable
+#      again by hand, is set read-only again by the watcher's sweep. After the
+#      way back every disk is writable again, the second disk is byte for byte
+#      as before the session, and the decoy mounts it read-write.
 #
 # A notification server on testuser's session bus (lib/notification-server.nix)
 # records the alert, as in faults-backend-watch-alert.
@@ -213,14 +213,19 @@ in
         machine.fail(f"dd if=/dev/zero of={EXTRA} bs=512 count=1 seek=1 conv=notrunc oflag=direct")
 
     with subtest("a disk below the hidden root is swept read-only like any other"):
-        # Set writable again by hand, which raises no uevent, and mounted
-        # read-only below the hidden root: only the watcher's sweep sets it
+        # Mounted read-only below the hidden root, then set writable again by
+        # hand, which raises no uevent: only the watcher's sweep sets it
         # read-only again, as the guard keeps no disk below the root writable
-        # that is not the session's own.
+        # that is not the session's own. It is mounted first, since a sweep
+        # sets an unmounted disk read-only whatever rule tells the session's
+        # own storage, and the watcher is paused while it is set writable, so
+        # no sweep runs between that and the check that it is writable.
         machine.wait_until_succeeds(f"test \"$(blockdev --getro {INNER})\" = 1", timeout=30)
+        machine.succeed(f"mkdir -p {BELOW} && mount -o ro {INNER} {BELOW}")
+        machine.succeed(f"systemctl kill --signal=STOP {WATCH_UNIT}")
         machine.succeed(f"blockdev --setrw {INNER}")
         assert not is_read_only(INNER)
-        machine.succeed(f"mkdir -p {BELOW} && mount -o ro {INNER} {BELOW}")
+        machine.succeed(f"systemctl kill --signal=CONT {WATCH_UNIT}")
         machine.wait_until_succeeds(f"test \"$(blockdev --getro {INNER})\" = 1", timeout=30)
         machine.succeed(f"umount {BELOW}")
 
