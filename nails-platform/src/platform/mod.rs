@@ -149,6 +149,32 @@ impl HostProfile {
         }
     }
 
+    /// The profile of a host whose detection failed with `error`: one NAILS
+    /// refuses, since it cannot tell which platform it is, saying so. Nothing
+    /// rules SELinux out on it.
+    pub fn undetected(error: &dyn std::fmt::Display) -> Self {
+        Self {
+            kind: PlatformKind::Unsupported,
+            id: None,
+            id_like: Vec::new(),
+            version_id: None,
+            variant_id: None,
+            family: None,
+            lsms: Vec::new(),
+            selinux: Some(SelinuxStatus {
+                selinuxfs: Selinuxfs::Unknown,
+                enforce: None,
+                config_mode: None,
+                config_policy: None,
+            }),
+            is_systemd: false,
+            is_ostree: false,
+            has_current_system: false,
+            unsupported_reason: Some(format!("NAILS cannot tell which platform this is: {error}")),
+            support_warning: None,
+        }
+    }
+
     /// Return `Err(NailsError::UnsupportedPlatform)` when this host is one NAILS
     /// refuses, otherwise `Ok(())`.
     ///

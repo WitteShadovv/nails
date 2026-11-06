@@ -384,11 +384,25 @@ impl<F: Filesystem> PreFlightCheck<F> for NetworkToolsCheck {
             ));
         }
 
-        let profile = crate::platform::detect(fs)?;
+        Ok(self.on_host(crate::platform::detect(fs)))
+    }
+}
+
+impl NetworkToolsCheck {
+    /// The row for the host `detected` found. A detection that fails warns,
+    /// as the check only warns: NAILS cannot tell which tools the way back
+    /// needs.
+    fn on_host(&self, detected: Result<crate::platform::HostProfile>) -> CheckResult {
+        let profile = match detected {
+            Ok(profile) => profile,
+            Err(error) => {
+                return CheckResult::Warn(format!(
+                    "NAILS cannot tell which tools the way back needs: {error}"
+                ));
+            }
+        };
         if profile.kind == PlatformKind::Unsupported {
-            return Ok(CheckResult::Pass(
-                "Network tool check skipped on an unsupported host".into(),
-            ));
+            return CheckResult::Pass("Network tool check skipped on an unsupported host".into());
         }
         // Entry records the system `/run/current-system` names, which the way
         // back repoints that link to before it looks, only on NixOS.
@@ -398,7 +412,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NetworkToolsCheck {
             None
         };
         let lacks = way_back_lacks(&self.paths.root, decoy_system.as_deref());
-        Ok(Self::evaluate(&lacks, profile.kind, profile.family))
+        Self::evaluate(&lacks, profile.kind, profile.family)
     }
 }
 
