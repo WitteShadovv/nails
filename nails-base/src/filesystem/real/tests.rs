@@ -1246,6 +1246,41 @@ fn read_link_gives_the_target_without_following_it() {
     );
 }
 
+/// Where the kernel has no `statx`, the legacy `fstatat` still tells a link
+/// from anything else, follows no link and mounts nothing, and says nothing
+/// of mount roots; a lookup that fails names the path.
+#[test]
+fn without_statx_a_link_is_still_told_and_nothing_else_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink("/", &link).unwrap();
+    let file = dir.path().join("file");
+    fs::write(&file, "text").unwrap();
+    assert_eq!(
+        super::file_ops::mount_root_without_statx(&link).unwrap(),
+        MountRoot::Link
+    );
+    for path in [dir.path(), file.as_path(), Path::new("/")] {
+        assert_eq!(
+            super::file_ops::mount_root_without_statx(path).unwrap(),
+            MountRoot::Entry(None),
+            "{}",
+            path.display()
+        );
+    }
+    for (path, kind) in [
+        (dir.path().join("missing"), std::io::ErrorKind::NotFound),
+        (file.join("below"), std::io::ErrorKind::NotADirectory),
+    ] {
+        let error = super::file_ops::mount_root_without_statx(&path).unwrap_err();
+        assert_eq!(error.io_kind(), Some(kind), "{error}");
+        assert!(
+            error.to_string().starts_with(&path.display().to_string()),
+            "{error}"
+        );
+    }
+}
+
 #[test]
 fn a_link_to_a_mount_point_is_no_mount_point_itself() {
     let dir = tempfile::tempdir().unwrap();
