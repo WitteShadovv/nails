@@ -1853,9 +1853,10 @@ writes its superblock).
 
 - The session watcher raises a desktop alert ("Disk mounted with write access")
   for every read-write mount of a disk that is not the session's own storage,
-  one mounted below the hidden root included (`session_mounts.alert`, on by
-  default). Its alerts appear on the desktop of the account logged in on the
-  machine's own screen; while nobody is logged in there, none can be shown.
+  one mounted below the hidden root included, but not one below
+  `<hidden-root>/root` (`session_mounts.alert`, on by default). Its alerts
+  appear on the desktop of the account logged in on the machine's own screen;
+  while nobody is logged in there, none can be shown.
 - A disk mounted over the hidden root itself (with `/mnt` as the root, an
   ordinary `mount /dev/sdc1 /mnt`) takes every file saved under `/mnt` from
   then on. The watcher raises "Disk mounted over a folder in use", naming the
@@ -1874,7 +1875,10 @@ writes its superblock).
   writable again, so the decoy mounts them as usual.
 
 A root shell can always set a disk writable again and mount it; the guard is
-against automounts and mistakes. See
+against automounts and mistakes. Below `<hidden-root>/root`, where NAILS keeps
+its layers, every mount counts as the session's own: a disk mounted there raises
+no alert, is not set read-only again once mounted, and stays mounted on the way
+back. Mount nothing there. See
 [Disks mounted during the session](configuration.md#disks-mounted-during-the-session).
 
 ### During the session

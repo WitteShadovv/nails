@@ -20,12 +20,19 @@ of this changelog for that version becomes the release notes word for word, and
   run `<hidden-root>/nails.new config validate` inside a hidden session (it checks the
   `config/nails.toml` next to it), delete the key if it is reported, and pass
   `--allow-persistent-decoy` on the activations that need the override.
-- A decoy whose fstab mounts anything at or below the hidden root, a `noauto` line or a tmpfs
-  included, can no longer activate: `check` fails `fstab-policy` (exit 4) and `activate` refuses,
-  where 0.3.0-rc.3 left the line to the hidden systemd. With the hidden root at `/mnt/data`, a
-  line for `/mnt/data/backup` is one. Before you activate with the new binary, mount the hidden
-  volume where the decoy's fstab mounts nothing, or move or remove that line. The same holds for
-  a mount or automount unit that a boot target links at such a path.
+- A decoy whose fstab mounts another disk or a RAM filesystem at or below the hidden root, a
+  `noauto` line included, can no longer activate: `check` fails `fstab-policy` (exit 4) and
+  `activate` refuses, where 0.3.0-rc.3 left the line to the hidden systemd. (A line that mounts the
+  hidden volume itself was refused before, by `backend-entries`.) With the hidden root at
+  `/mnt/data`, a line for `/mnt/data/backup` is one. Before you activate with the new binary, mount
+  the hidden volume where the decoy's fstab mounts nothing, or move or remove that line. The same
+  holds for a mount or automount unit that a boot target links at such a path, and for a hidden
+  NixOS configuration whose `fileSystems` mount something there, the hidden volume itself included,
+  which 0.3.0-rc.3 entered too: a hardware configuration generated in a session while the volume was
+  mounted has such an entry. Activation now refuses that build before it activates it. Remove the
+  entry from the hidden configuration in a session entered with `nails activate --overlay-only`.
+  That session runs with the hidden `/etc` of the last activation and does not decide its fstab, so
+  what that fstab mounts there is mounted as before, until a build without the entry replaces it.
 
 ### Added
 
@@ -564,12 +571,13 @@ of this changelog for that version becomes the release notes word for word, and
   automount, a tmpfs and a line for the hidden volume itself as well, in the decoy's fstab and in a
   hidden NixOS generation's, which activation decides right after the build, before it keeps the
   build's closure or activates it, and a mount or automount unit that a boot target links outside
-  the fstab. It names the root and what to do: for the decoy's fstab, mount the hidden volume where
-  it mounts nothing, or move that line; for a hidden NixOS generation's, change the hidden
+  the fstab. In the decoy's fstab, `backend-entries` refused a line that mounts the hidden volume
+  itself already. It names the root and what to do: for the decoy's fstab, mount the hidden volume
+  where it mounts nothing, or move that line; for a hidden NixOS generation's, change the hidden
   configuration in a session entered with `nails activate --overlay-only`. A mount unit that only
   another unit pulls in is still not decided, and the session watcher alerts on a disk it mounts
   read-write. A line that a link in the hidden root leads below the root is still kept unmounted
-  rather than refused.
+  rather than refused, and a RAM or kernel filesystem there is still left to the hidden systemd.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an

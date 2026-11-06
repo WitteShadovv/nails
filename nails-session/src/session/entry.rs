@@ -695,7 +695,8 @@ fn build(
 /// from starting ([`mount_units::kept_off`]), each skip with the units it
 /// pulls in that act on its device, and each unit a boot target requires
 /// that is masked with why, for `status`. A directory of unit links that cannot be
-/// listed refuses the entry. Returns the warnings of every decision.
+/// listed refuses the entry, and so does a unit whose mount point lies at or
+/// below the hidden root ([`policy`]). Returns the warnings of every decision.
 ///
 /// The filesystems of these units are put in place after the fstabs': one
 /// that is the parent of an fstab entry's mount point, both mounted now,

@@ -291,8 +291,9 @@ fn render_template(root: &Path, title: &str) -> String {
 # manual mount of a decoy partition). They are real disks: a read-write mount
 # takes hidden writes.
 #   alert: the session watcher alerts you about every read-write mount of a disk
-#     the session does not own, one below the hidden root included (the
-#     watcher runs for this even when [backend_watch] is disabled).
+#     the session does not own, one below the hidden root included, outside
+#     its root/ folder, which holds the session's layers (the watcher runs
+#     for this even when [backend_watch] is disabled).
 #   read_only: opt-in: every disk the session does not use, and every disk
 #     attached during it, is read-only for the session (mounts come up read-only,
 #     writes fail); the way back makes them writable again. A root user can still
