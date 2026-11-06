@@ -1569,7 +1569,9 @@ of this changelog for that version becomes the release notes word for word, and
   the timeout instead, PID 1 skips the action and a switch held up for 90 seconds goes on when the
   hold ends. In the same test activation refuses with no timeout and goes on after a
   `systemctl service-watchdogs no`, which its own reload undoes, and `deactivate` refuses with
-  service watchdogs off, with no timeout and without the drop-in.
+  service watchdogs off, with no timeout and without the drop-in, each time before it says that
+  the session ends. `deactivate --poweroff` in a session with service watchdogs off powers the
+  machine off, and the next boot is the plain decoy with the session's end recorded.
   The distribution smoke tests check that the hidden PID 1 has the drop-in loaded and that the
   decoy has its own unit again after each way back.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics

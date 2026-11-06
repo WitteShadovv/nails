@@ -162,11 +162,13 @@ goes on only when the hold ends: why the drop-in powers off by force. In the
 same test activation refuses with no timeout and goes on after a `systemctl
 service-watchdogs no`, which its own reload undoes, and `deactivate` refuses
 with service watchdogs off, with no timeout and without the drop-in, the
-session going on each time. Activation's refusal with service watchdogs off,
-which only `systemd.service_watchdogs=` on the kernel command line (or with
-systemd 257 and older in the `SystemdOptions` EFI variable) leaves after its
-reload, is a unit test and a real-kernel test: in a VM it would take a node
-booted with that parameter.
+session going on each time and nothing said about its end. `deactivate
+--poweroff` in a session with service watchdogs off powers the machine off.
+Activation's refusal with service watchdogs off, which only
+`systemd.service_watchdogs=` on the kernel command line (or with systemd 257
+and older in the `SystemdOptions` EFI variable) leaves after its reload, is a
+unit test and a real-kernel test: in a VM it would take a node booted with
+that parameter.
 
 ### (d) Contract tests: one body, mock and real
 
