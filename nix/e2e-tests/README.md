@@ -712,7 +712,8 @@ on a system without one; the decoy's next boot mounts them again.
 ### The unattended-upgrades scenario
 
 unattended-upgrades' shutdown helper waits for logind's shutdown signal, which
-every switch sends. `tests/apt-shutdown.nix` (`<image>-apt-shutdown`) shows
+activation and the way back with `deactivate` send, as `systemctl soft-reboot`
+does. `tests/apt-shutdown.nix` (`<image>-apt-shutdown`) shows
 what it does at a switch and that the refusals keep it off the decoy disk
 ([decoy requirements](../../docs/decoy-requirements.md#unattended-upgrades)).
 It starts a daily run as `apt-daily-upgrade.timer` does and holds it at its

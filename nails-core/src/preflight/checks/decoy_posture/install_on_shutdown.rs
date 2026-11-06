@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! unattended-upgrades' install at shutdown, which every switch sets off.
+//! unattended-upgrades' install at shutdown, which a switch through logind
+//! sets off.
 //!
 //! unattended-upgrades (Debian, Ubuntu) runs a shutdown helper,
 //! `unattended-upgrades.service` (`unattended-upgrade-shutdown
-//! --wait-for-signal`), that waits for logind's shutdown signal. A switch
-//! sends that signal, as `systemctl soft-reboot` does, and the helper does
-//! not ask what kind of shutdown comes. With
+//! --wait-for-signal`), that waits for logind's shutdown signal. Activation
+//! sends that signal, as `systemctl soft-reboot` does, and so does the way
+//! back with `nails deactivate` (`emergency` asks PID 1 directly and sends
+//! none). The helper does not ask what kind of shutdown comes. With
 //! `Unattended-Upgrade::InstallOnShutdown` on, it reads apt's configuration
 //! again on the signal and starts unattended-upgrade in its shutdown mode,
 //! which installs the pending updates its settings allow: at activation on
