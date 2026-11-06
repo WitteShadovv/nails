@@ -660,3 +660,46 @@ fn files_in_the_completion_cache_s_directory_are_a_doubt_where_compinit_runs() {
     listed(&fs, "/home/alice/.zcompcache", &["command-descriptions"]);
     assert_eq!(found_with(&fs, "HISTSIZE=100\n"), Scan::default());
 }
+#[test]
+fn a_style_whose_pattern_may_match_a_completion_context_by_its_options_is_read() {
+    // zsh 5.9.2 compiles a zstyle pattern with the options on as zstyle
+    // runs: `@(:completion):*` matches a completion context under KSH_GLOB,
+    // `x#:completion:*` under EXTENDED_GLOB and `x|:completion:*` under
+    // none, so `_main_complete` reads menu's value as arithmetic.
+    for pattern in [
+        "@(:completion):*",
+        "+(:completion:)*",
+        "!(x)",
+        "x#:completion:*",
+        "x(#c0,1):completion:*",
+        ":completionx#:*",
+        "x|:completion:*",
+        "(x|:completion:*)",
+        "(#i):COMPLETION:*",
+    ] {
+        for style in ["menu 'select=1+x'", "max-verbose 5", "cache-path ~/cc"] {
+            let line = format!("zstyle '{pattern}' {style}");
+            let got = found(&format!("{COMPINIT}{line}\n"));
+            assert!(
+                got.doubts.iter().any(|doubt| doubt.starts_with(
+                    "it cannot tell what code zsh's own completion functions run as you complete \
+                     a word with `zstyle "
+                )),
+                "{line}: {got:?}"
+            );
+        }
+    }
+    // One whose literal start no option makes match none.
+    for pattern in [
+        ":vcs_info:*",
+        ":zle:*",
+        ":complexion:*",
+        ":COMPLETION(#i):*",
+    ] {
+        assert_eq!(
+            found(&format!("{COMPINIT}zstyle '{pattern}' menu 'select=1+x'\n")),
+            Scan::default(),
+            "{pattern}"
+        );
+    }
+}

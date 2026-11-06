@@ -103,18 +103,31 @@ const DATA_STYLES: [&str; 69] = [
 /// Whether `pattern`, a `zstyle`'s pattern as written, may match a context
 /// zsh's own completion functions look a style up in, which starts with
 /// `:completion:`: one an expansion, brace expansion or a glob may make, or
-/// whose part before its first pattern character neither starts with
-/// `:completion:` nor is the start of it (`:prompt:*`, `:vcs_info:*` match
-/// none).
+/// one whose literal start, its part before its first character that may
+/// start a pattern, either starts with `:completion:` or is the start of it
+/// (`:prompt:*`, `:vcs_info:*` match none). A pattern with a `|` anywhere
+/// may: zsh reads one outside parentheses too as parting alternatives
+/// (`x|:completion:*`). zsh compiles a pattern with the options on as
+/// `zstyle` runs, so a character that starts one with `KSH_GLOB` (`@(`, `+(`,
+/// `!(`) ends the literal start too, and one that `EXTENDED_GLOB` may make
+/// repeat zero times (`x#:completion:*`, `x(#c0,1):completion:*`) is no
+/// part of it.
 pub(super) fn completion_context(pattern: &Word) -> bool {
-    if computed(pattern) || pattern.bare {
+    if computed(pattern) || pattern.bare || pattern.text.contains('|') {
         return true;
     }
-    let literal: String = pattern
-        .text
-        .chars()
-        .take_while(|c| !"*?[<(|#^~\\".contains(*c))
-        .collect();
+    let chars: Vec<char> = pattern.text.chars().collect();
+    let mut literal = String::new();
+    for (at, c) in chars.iter().enumerate() {
+        let ksh = matches!(c, '@' | '+' | '!') && chars.get(at + 1) == Some(&'(');
+        if ksh || "*?[<(|#^~\\".contains(*c) {
+            if matches!(c, '#' | '(') {
+                literal.pop();
+            }
+            break;
+        }
+        literal.push(*c);
+    }
     ":completion:".starts_with(&literal) || literal.starts_with(":completion:")
 }
 
