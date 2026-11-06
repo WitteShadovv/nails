@@ -593,6 +593,20 @@ pub fn unnamed(text: &str, skipped: &[Skipped]) -> Vec<String> {
         .collect()
 }
 
+/// What a check that keeps its result, as one that only informs does, says
+/// of the lookups `skipped` its view did not make: the sentence [`settle`]
+/// puts before a pass, then on a line of its own the fix that mounts the
+/// automount points, if any. `None` when the view made every lookup.
+pub fn note(skipped: &[Skipped]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let (points, reasons) = ledger("", skipped);
+    let all: Vec<&str> = reasons.iter().map(|(reason, _)| reason.as_str()).collect();
+    let fix = (!points.is_empty()).then(|| mount_fix(&points));
+    Some(with_fix(untold(&all), fix.as_deref()))
+}
+
 /// The sentence that says the check cannot tell, for `reasons`.
 fn untold(reasons: &[&str]) -> String {
     format!(
