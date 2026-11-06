@@ -227,8 +227,8 @@ impl SleepPolicyCheck {
         if let Some(unread) = &settings.unread {
             return vec![format!(
                 "NAILS cannot tell what logind does on a closed lid or an idle session, so \
-                 either may suspend the host: {unread}; {}",
-                unread.advice()
+                 either may suspend the host: {}",
+                unread.with_advice()
             )];
         }
         let mut risks = Vec::new();

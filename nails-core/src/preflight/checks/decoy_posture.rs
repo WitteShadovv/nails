@@ -139,8 +139,8 @@ impl DecoyPersistenceCheck {
             ),
             Err(unread) => out.push(format!(
                 "NAILS cannot tell where systemd-journald keeps the journal, so it counts as \
-                 persistent: {unread}; {}",
-                unread.advice()
+                 persistent: {}",
+                unread.with_advice()
             )),
         }
         out.extend(loggers::active_logger_blockers(fs, root));

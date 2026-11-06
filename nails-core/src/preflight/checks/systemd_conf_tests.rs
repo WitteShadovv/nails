@@ -578,17 +578,22 @@ fn a_file_nails_cannot_read_leaves_the_configuration_unread() {
 
 /// A lookup that fails for another reason than that nothing is there leaves
 /// the configuration unread, its cause taken from the error: one NAILS may
-/// not make as a file it cannot read, any other as an entry systemd does not
-/// read alike. A lookup that finds no file finds none, while a path below a
-/// file is not read alike either: systemd's open fails there with another
-/// error than ENOENT, which it does not skip.
+/// not make as a file it cannot read, any other as one it cannot look up,
+/// with the error. A lookup that finds no file finds none, while a path below
+/// a file is not read alike: systemd's open fails there with another error
+/// than ENOENT, which it does not skip.
 #[test]
 fn a_lookup_that_fails_leaves_the_configuration_unread_by_its_kind() {
     use std::io::ErrorKind;
     let main = "/etc/systemd/journald.conf";
     for (kind, cause) in [
         (ErrorKind::PermissionDenied, Some(UnreadCause::CannotRead)),
-        (ErrorKind::Other, Some(UnreadCause::NotRegular)),
+        (
+            ErrorKind::Other,
+            Some(UnreadCause::LookupFailed(
+                "Mock: the lookup fails here".to_string(),
+            )),
+        ),
         (ErrorKind::NotFound, None),
         (ErrorKind::NotADirectory, Some(UnreadCause::NotRegular)),
     ] {
@@ -601,6 +606,115 @@ fn a_lookup_that_fails_leaves_the_configuration_unread_by_its_kind() {
             None => assert_eq!(read, Ok(vec![]), "{kind:?}"),
         }
     }
+}
+
+/// A loop of links is an entry the systemd releases do not read alike, as it
+/// was before a failed lookup was told from a missing file.
+#[test]
+fn a_main_file_in_a_loop_of_links_is_no_regular_file() {
+    let fs = crate::MockFilesystem::new();
+    let main = Path::new("/etc/systemd/journald.conf");
+    fs.create_symlink(main, main).unwrap();
+    assert_eq!(
+        section_assignments(&fs, Path::new("/"), "journald.conf", "Journal", RELEASE),
+        unread(main.to_path_buf(), UnreadCause::NotRegular)
+    );
+}
+
+/// A main file, a drop-in directory or a drop-in that the automount guard
+/// does not look up leaves the configuration unread, named by the guard's
+/// reason: the lookup would mount the automount point, which nothing is
+/// mounted on yet, and no lookup is made below it.
+#[test]
+fn a_lookup_the_guard_does_not_make_leaves_the_configuration_unread() {
+    use crate::filesystem::automount::{Guarded, Snapshot};
+    let point = Path::new("/usr/local");
+    let skip = || {
+        UnreadCause::NotLookedUp(Skip::Automount {
+            point: point.to_path_buf(),
+        })
+    };
+    let fs = crate::MockFilesystem::new();
+    crate::preflight::checks::automount_fixture::with_automounts(&fs, &["/usr/local"]);
+    let guarded = Guarded::new(fs.clone(), &Snapshot::read(&fs, Path::new("/")));
+    let read = section_assignments(
+        &guarded,
+        Path::new("/"),
+        "journald.conf",
+        "Journal",
+        RELEASE,
+    );
+    let path = PathBuf::from("/usr/local/lib/systemd/journald.conf");
+    assert_eq!(read, unread(path.clone(), skip()));
+    let Err(skipped) = read else { unreachable!() };
+    assert_eq!(
+        skipped.to_string(),
+        "NAILS does not look up /usr/local/lib/systemd/journald.conf, since the lookup would \
+         mount the automount point /usr/local"
+    );
+    // The check gives the fix once, by the ledger.
+    assert_eq!(skipped.advice(), None);
+    assert_eq!(skipped.with_advice(), skipped.to_string());
+    assert!(
+        !crate::preflight::checks::automount_fixture::reached(&fs, "/usr/local"),
+        "{:?}",
+        fs.mock_lookups()
+    );
+
+    // With a main file in /etc, the drop-in directory below the point is the
+    // first lookup the guard does not make.
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    let guarded = Guarded::new(fs.clone(), &Snapshot::read(&fs, Path::new("/")));
+    assert_eq!(
+        section_assignments(
+            &guarded,
+            Path::new("/"),
+            "journald.conf",
+            "Journal",
+            RELEASE
+        ),
+        unread(
+            PathBuf::from("/usr/local/lib/systemd/journald.conf.d"),
+            skip()
+        )
+    );
+
+    // Without a mount table nothing is looked up.
+    fs.mock_set_mount_table_error("no mountinfo");
+    let guarded = Guarded::new(fs.clone(), &Snapshot::read(&fs, Path::new("/")));
+    let Err(untold) = section_assignments(
+        &guarded,
+        Path::new("/"),
+        "journald.conf",
+        "Journal",
+        RELEASE,
+    ) else {
+        panic!("a configuration read without the mount table is unread");
+    };
+    assert!(
+        matches!(
+            untold.cause,
+            UnreadCause::NotLookedUp(Skip::NoMountTable { .. })
+        ),
+        "{untold:?}"
+    );
+}
+
+/// A lookup that fails with an error NAILS cannot act on is named by it.
+#[test]
+fn a_failed_lookup_names_its_error() {
+    let failed = Unread {
+        path: PathBuf::from("/etc/systemd/journald.conf"),
+        cause: UnreadCause::LookupFailed("Input/output error (os error 5)".to_string()),
+    };
+    assert_eq!(
+        failed.with_advice(),
+        "NAILS cannot look up /etc/systemd/journald.conf (Input/output error (os error 5)); \
+         find out why it cannot be looked up, then run the command again"
+    );
 }
 
 /// A file that is gone by the time it is read adds nothing, as systemd skips
@@ -644,11 +758,11 @@ fn an_unread_configuration_names_its_entry_and_what_to_do() {
         "/etc/systemd/journald.conf.d/50-x.conf is not a regular file"
     );
     assert!(
-        not_regular.advice().ends_with(
+        not_regular.with_advice().ends_with(
             "put a regular file there (an empty one masks a vendor file of the same name)"
         ),
         "{}",
-        not_regular.advice()
+        not_regular.with_advice()
     );
     let cannot_read = Unread {
         path,
@@ -658,7 +772,10 @@ fn an_unread_configuration_names_its_entry_and_what_to_do() {
         cannot_read.to_string(),
         "NAILS cannot read /etc/systemd/journald.conf.d/50-x.conf"
     );
-    assert_eq!(cannot_read.advice(), "run the command again with sudo");
+    assert_eq!(
+        cannot_read.advice(),
+        Some("run the command again with sudo")
+    );
     let unknown_release = Unread {
         path: PathBuf::from("/run/systemd/journald.conf"),
         cause: UnreadCause::UnknownRelease,
@@ -670,7 +787,7 @@ fn an_unread_configuration_names_its_entry_and_what_to_do() {
     );
     assert_eq!(
         unknown_release.advice(),
-        "put the main file in /etc/systemd, where every release reads it"
+        Some("put the main file in /etc/systemd, where every release reads it")
     );
 }
 
