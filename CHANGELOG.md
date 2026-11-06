@@ -971,7 +971,30 @@ of this changelog for that version becomes the release notes word for word, and
   its name (`functions -c add-zsh-hook azh`), and, on the command line, at an option that changes
   how zsh reads code (`-I`, `--rc-quotes`). A global alias named by a word that the code does not
   use is no doubt where no hook writes to a device, so the commands the check took as filters for
-  one (`| grep`) are gone.
+  one (`| grep`) are gone. A function or a regular alias named like the command a NAILS command is
+  typed with (`sudo`, `doas`, `run0`, `pkexec`, `su`, `nails`, a path that ends in `/nails`), which
+  zsh runs in that command's place with the line, is read as a hook
+  (`sudo() { print -r -- "sudo $*" >> ~/.zl }`, `alias sudo='logit; sudo'`), however a file defines
+  it, and a global alias named like a word of the NAILS commands the operator guide has you type
+  (`sudo`, `nails`, `/mnt/data/nails`, `activate`, `--yes`, every option of `check`, `activate`,
+  `status`, `emergency` and `deactivate`) counts as used, as zsh puts its value in place of that
+  word as the line is entered. zsh 5.9.2 wrote the line with each.
+  zsh 5.9.2 ran a completion function of the files' own as Tab completed a word, from a directory
+  they put in `fpath` or by a completer, a `compdef`, a widget or a parameter that names it, and so
+  wrote the line with one that appends it. Where the files autoload the stock `compinit`, the
+  completion functions of zsh's own and of the Nix profiles in the store are still read as harmless,
+  and completion code of the files' own is a doubt: a completion function (a file whose name starts
+  with `_`) in another directory of `fpath` (`fpath=(~/zc $fpath)`, a Home Manager plugin's,
+  zsh-completions in a home), a completer, a completion widget's function or a `compdef`'s that is
+  no function of zsh's own or that a file defines in place of one
+  (`zstyle ':completion:*' completer _w`, a `cache-policy` or `user-expand` style,
+  `zle -C w complete-word _w`, `compdef _w cmd`, `compdef '...' cmd`), a `zstyle -e` of such a
+  style, and a file that sets `_comps`, `_patcomps`, `_postpatcomps`, `_services`, `_compautos`,
+  `compprefuncs`, `comppostfuncs` or `_comp_setup`. A function the files define whose name starts
+  with `_` is a hook there, and the code of a `command` style is a hook's. A dump file whose
+  completion of a command or a pattern is no completion function's name is read as code, and
+  `compctl` and bash's `complete` are doubts wherever they stand. So a setup with completion
+  functions of its own warns again.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

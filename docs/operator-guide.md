@@ -1345,7 +1345,14 @@ afterwards:
     or `-K` binds to keys, one copied to a hook's name (`functions -c`), a
     function named like a builtin or like the dispatcher of
     `add-zle-hook-widget` (`azhw:...`), which zsh's own code runs as each line
-    is entered (`add-zle-hook-widget`'s hooks run `zstyle` and `zle`), the code
+    is entered (`add-zle-hook-widget`'s hooks run `zstyle` and `zle`), a
+    function or a regular alias named like the command you type a NAILS command
+    with (`sudo`, `doas`, `run0`, `pkexec`, `su` or `nails`, or a path that ends
+    in `/nails`, as `/mnt/data/nails`), which zsh runs in its place with that
+    line (`sudo() { print -r -- "$*" >> ~/.zl }`, `alias sudo='logit; sudo'`),
+    however a file defines it (`functions[sudo]=`, `aliases[sudo]=`, an `eval`,
+    an autoload, a name in quotes; one whose name holds a backslash or a quote
+    past those zsh takes off is a hook too), the code
     `sched`, `zstyle -e` and `bindkey -s` run and the line `zle -U` and
     `print -z` type, the code of a function's own file and of a file a hook
     sources, a prompt theme that `prompt` runs from a hook, and a function or
@@ -1387,7 +1394,15 @@ afterwards:
     parameters zsh keeps a number in alone (`start=$SECONDS`). A global alias is
     a doubt where a word of the code the check reads holds its name beyond its
     definition, as zsh puts its value in place of that word (`function X`,
-    `set -A X w`, `read X`, `print -r -- "$1" G`), and one whose name holds an
+    `set -A X w`, `read X`, `print -r -- "$1" G`), and so is one named like a
+    word of the NAILS commands this guide has you type in the decoy, as zsh puts
+    its value in place of that word as you enter the line: `sudo`, `doas`,
+    `run0`, `pkexec`, `su`, `nails` and a path that ends in `/nails`, `check`,
+    `activate`, `status`, `emergency` and `deactivate`, and every option those
+    commands take, the global ones, `-h` and `-vv` among them
+    (`alias -g activate=...`, `alias -g -- --yes=...`, `galiases[status]=...`),
+    or whose name holds a backslash or a quote past those zsh takes off. One
+    whose name holds an
     operator, a brace or a blank, or is empty, is a doubt wherever it is
     defined, as zsh splits such a token off a word with no blank beside it
     (`$1>$TTY`, `$1;`, `$1}`) and the check cannot count its uses. So is an
@@ -1504,7 +1519,33 @@ afterwards:
     completion binds, and the check does not read them unless a file it reads
     runs one by name, makes one a hook (a widget's function, one that
     `compdef -k` binds) or runs one in a command substitution; a completion
-    that runs as a line is typed or entered is a doubt, as above. `compaudit`
+    that runs as a line is typed or entered is a doubt, as above. It takes the
+    completion functions in zsh's own directory and in a Nix profile's for
+    harmless: the directories NixOS's `/etc/zshenv` puts in `fpath` for each
+    profile `NIX_PROFILES` names (or your files put in `fpath` by the same
+    path), where they lead into the Nix store, so the functions a package puts
+    there are code it does not read. Where your files autoload zsh's own
+    `compinit`, what may make zsh run completion code of your own as you
+    complete a word is a doubt: a completion function, a file whose name starts
+    with `_`, in any other directory of `fpath` (one your files add, as
+    `fpath=(~/zc $fpath)`, a Home Manager plugin's or zsh-completions in your
+    home, or one an `FPATH` in the shell's environment names), and a completer,
+    a completion widget's function or a `compdef`'s that is no function of zsh's
+    own directory, or that a file defines in place of one
+    (`zstyle ':completion:*' completer _w`, a `cache-policy` or `user-expand`
+    style, `zle -C w complete-word _w`, `compdef _w cmd`, and
+    `compdef '...' cmd`, whose code zsh runs), a `zstyle -e` of one of those
+    styles, and a file that sets a parameter zsh's completion system runs code
+    or functions from (`_comps`, `_patcomps`, `_postpatcomps`, `_services`,
+    `_compautos`, `compprefuncs`, `comppostfuncs`, `_comp_setup`). A function
+    your files define whose name starts with `_`, as zsh's completion functions
+    run such names, is a hook there, and the code of a `command` style, which
+    `_call_program` runs, is a hook's wherever it stands. In a dump file, a
+    completion of a command or a pattern that is no completion function's name
+    is code, which makes the check read the file as code. `compctl`, whose
+    completion runs without `compinit`, and bash's `complete`, which
+    `bashcompinit` defines, are doubts wherever they stand. So a setup with
+    completion functions of its own warns. `compaudit`
     may put the directories under one that holds a `Base` directory at the end
     of `fpath`, which the check reads too (a `_compdir` a file names or the
     shell's environment holds, which picks that directory, is a doubt).
@@ -1645,11 +1686,15 @@ afterwards:
   whose work the check reads by its name to another name
   (`functions -c add-zsh-hook azh`), or when the shell is not bash, zsh, fish or
   dash (dash keeps no history file). It does not see a setting made by a plugin
-  manager's function, one you typed into the shell, what zsh runs only as you
-  complete a word (the completion functions `compinit` marks, as you press Tab,
+  manager's function, one you typed into the shell, the completion functions a
+  package puts in a Nix profile, which zsh runs as you complete a word (Tab,
   `^D` or one of the keys zsh's own completion functions bind), a function or an
-  alias named like the command you type (`sudo`, `nails`), or a global alias
-  named like a word of it, which zsh runs as you enter the line, a file a bash
+  alias named like another command than those you type a NAILS command with
+  (`mount`, `cryptsetup`), which zsh runs in that command's place where you type
+  it, and, for a function, where zsh's own completion functions run that command
+  as you complete a word (`ls <Tab>` runs a function named `ls`), a global alias
+  named like another word you type (the value you give an option, as `5` in
+  `--countdown 5`), which zsh runs as you enter the line, a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), nor a history tool

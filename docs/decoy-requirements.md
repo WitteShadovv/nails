@@ -592,9 +592,19 @@ history yourself so an interactive shell has nowhere to write:
   follows a command's words, `ALIAS_FUNC_DEF` where an alias shares a function's
   name, a prompt with code where `PROMPT_SUBST` (or `PROMPT_VARS`) may be on, a
   `NULLCMD` or `READNULLCMD` of any value in the environment you start the shell
-  from, and a file your startup files write before zsh reads it.
+  from, a file your startup files write before zsh reads it, a function or an
+  alias named `sudo`, `doas`, `run0`, `pkexec`, `su` or `nails` (or the path
+  you start `nails` by) that writes a file, and a global alias named like a
+  word of the NAILS commands you type (`activate`, `--yes`).
   It follows `compinit` for a `.zshrc` that autoloads it too, when that zsh is
-  one from the Nix store. For any other zsh, and when the check finds no shell
+  one from the Nix store, and takes the completion functions of zsh's own and
+  those packages put in the Nix profiles for harmless. Completion code of your
+  own warns there, as zsh runs it as you complete a word: a completion
+  function in another directory of `fpath` (a Home Manager plugin's,
+  zsh-completions in your home), a completer, completion widget or `compdef`
+  that names a function other than zsh's own, a function your files define
+  whose name starts with `_` that writes a file, and `compctl` or bash's
+  `complete`. For any other zsh, and when the check finds no shell
   you typed into, it cannot tell where zsh finds `compinit`, and `zsh -f` is
   the one that passes. With Home Manager's `programs.zsh`, only `zsh -f`
   passes the check, as it names the options in `.zshrc` whether it turns them
