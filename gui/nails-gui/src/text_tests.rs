@@ -110,7 +110,7 @@ fn terminal_lines_name_the_engine_on_the_hidden_volume() {
 fn an_allowed_risk_is_named_and_its_word_prompted() {
     assert_eq!(
         allowed_by_you(RISK_PERSISTENT_DECOY),
-        "Allowed by you: a persistent record on this computer's disk."
+        "Allowed by you: a record that may persist on this computer's disk."
     );
     assert_eq!(type_to_continue(ALLOW_WORD), "Type allow to continue");
     // The buttons that open a question end in the ellipsis character.

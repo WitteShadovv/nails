@@ -269,10 +269,18 @@ pub struct StatusReport {
     pub nextroot_mounted: bool,
     /// The last successful activation.
     pub last_activation: Option<LastActivation>,
-    /// Whether the decoy keeps a persistent posture (journal, syslog).
+    /// Whether the decoy keeps a persistent posture (journal, syslog), or may
+    /// keep one where NAILS cannot tell, which counts.
     pub decoy_persistent: bool,
+    /// Why NAILS cannot tell whether the decoy keeps a persistent journal or
+    /// syslog, when it found none it can tell of: each reason counts in
+    /// [`decoy_persistent`](Self::decoy_persistent). Empty otherwise.
+    pub decoy_persistence_untold: Vec<String>,
     /// Whether kdump is armed on the decoy, or its state cannot be read.
     pub decoy_kdump_armed: bool,
+    /// Why NAILS cannot tell whether kdump is armed, when that is why
+    /// [`decoy_kdump_armed`](Self::decoy_kdump_armed) is set.
+    pub decoy_kdump_untold: Option<String>,
     /// What an activation would make the decoy's unattended-upgrades do at
     /// its shutdown helper's signal, by the cause for which activation
     /// refuses it: the install at shutdown, the ERROR lines of a file apt
@@ -476,6 +484,16 @@ impl<F: Filesystem> StatusCommand<F> {
         let opsec_reminders = uptime
             .map(|u| generate_opsec_reminders(u, self.config.show_opsec_reminders))
             .unwrap_or_default();
+        // The decoy's records are read on the decoy alone, as the
+        // decoy-persistence check reads them.
+        let (persistence, kdump) = if view.is_hidden() {
+            (Vec::new(), None)
+        } else {
+            (
+                crate::preflight::DecoyPersistenceCheck::persistence(&self.filesystem),
+                crate::preflight::DecoyPersistenceCheck::kdump_on_decoy(&self.filesystem),
+            )
+        };
         Ok(StatusReport {
             posture,
             session: view_name(view),
@@ -525,10 +543,10 @@ impl<F: Filesystem> StatusCommand<F> {
                 e.mount_point == Path::new(nails_teardown::whole_root::nextroot::NEXTROOT)
             }),
             last_activation: state_file.last_activation.clone(),
-            decoy_persistent: !view.is_hidden()
-                && crate::preflight::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem),
-            decoy_kdump_armed: !view.is_hidden()
-                && crate::preflight::DecoyPersistenceCheck::decoy_kdump_armed(&self.filesystem),
+            decoy_persistent: !persistence.is_empty(),
+            decoy_persistence_untold: untold_only(&persistence),
+            decoy_kdump_armed: kdump.is_some(),
+            decoy_kdump_untold: kdump.and_then(|finding| finding.untold),
             decoy_install_at_shutdown: if view.is_hidden() {
                 None
             } else {
@@ -540,6 +558,19 @@ impl<F: Filesystem> StatusCommand<F> {
             state: state_file.state,
         })
     }
+}
+
+/// Why NAILS cannot tell whether the decoy keeps a persistent journal or
+/// syslog, from `findings`, when it found no record it can tell of: a found
+/// record says more, and none is said for it.
+fn untold_only(findings: &[crate::preflight::PersistenceFinding]) -> Vec<String> {
+    if findings.iter().any(|finding| finding.untold.is_none()) {
+        return Vec::new();
+    }
+    findings
+        .iter()
+        .filter_map(|finding| finding.untold.clone())
+        .collect()
 }
 
 #[cfg(test)]

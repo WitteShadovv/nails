@@ -1299,8 +1299,8 @@ fn persistence_findings_name_each_store_and_its_fix() {
     );
     volatile.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     assert_eq!(
-        DecoyPersistenceCheck::persistence_findings(&volatile),
-        Vec::<String>::new()
+        DecoyPersistenceCheck::persistence(&volatile),
+        Vec::<PersistenceFinding>::new()
     );
 
     let both = MockFilesystem::new();
@@ -1310,10 +1310,15 @@ fn persistence_findings_name_each_store_and_its_fix() {
     );
     both.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     set_unit_active(&both, "auditd.service");
-    let findings = DecoyPersistenceCheck::persistence_findings(&both);
+    let findings = DecoyPersistenceCheck::persistence(&both);
     assert_eq!(findings.len(), 2, "{findings:?}");
-    assert!(findings[0].contains("Storage=volatile"), "{findings:?}");
-    assert!(findings[1].contains("auditd"), "{findings:?}");
+    assert!(
+        findings[0].sentence.contains("Storage=volatile"),
+        "{findings:?}"
+    );
+    assert!(findings[1].sentence.contains("auditd"), "{findings:?}");
+    // Both are records the decoy keeps.
+    assert!(findings.iter().all(|finding| finding.untold.is_none()));
 }
 
 #[test]

@@ -33,7 +33,9 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         nextroot_mounted: false,
         last_activation: None,
         decoy_persistent: false,
+        decoy_persistence_untold: Vec::new(),
         decoy_kdump_armed: false,
+        decoy_kdump_untold: None,
         decoy_install_at_shutdown: None,
         persona_mode: PersonaMode::SharedHome,
         switch_refusal: None,
@@ -204,6 +206,54 @@ fn an_armed_kdump_is_shown_on_the_decoy_in_both_forms() {
     active.decoy_kdump_armed = true;
     let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
     assert!(!lines.contains("kdump"), "{lines}");
+}
+
+/// A persistent record NAILS cannot tell about counts in both forms: the
+/// JSON says the decoy is persistent and kdump armed as for a record found,
+/// with no field of its own, and the line says NAILS cannot tell, and why.
+#[test]
+fn a_record_nails_cannot_tell_about_counts_and_says_so() {
+    let mut decoy = report(Posture::Decoy, "decoy");
+    decoy.decoy_persistent = true;
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(
+        lines.contains(
+            "The decoy keeps a persistent journal or syslog: the soft-reboots are recorded on \
+             its disk"
+        ),
+        "{lines}"
+    );
+
+    decoy.decoy_persistence_untold = vec!["NAILS cannot read /var/log/journal".to_string()];
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(
+        lines.contains(
+            "NAILS cannot tell whether the decoy keeps a persistent journal or syslog (NAILS \
+             cannot read /var/log/journal): the soft-reboots may be recorded on its disk"
+        ),
+        "{lines}"
+    );
+    assert!(!lines.contains("The decoy keeps"), "{lines}");
+
+    decoy.decoy_kdump_armed = true;
+    decoy.decoy_kdump_untold =
+        Some("/sys/kernel/kexec_crash_loaded cannot be probed (Input/output error)".to_string());
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(
+        lines.contains(
+            "kdump is armed on the decoy, or NAILS cannot tell (/sys/kernel/kexec_crash_loaded \
+             cannot be probed (Input/output error)): a kernel crash in a hidden session may \
+             write its memory to the decoy disk, and activation refuses it"
+        ),
+        "{lines}"
+    );
+
+    let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
+    assert_eq!(value["data"]["decoy_persistent"], true);
+    assert_eq!(value["data"]["decoy_kdump_armed"], true);
+    assert!(value["data"].get("decoy_persistence_untold").is_none());
+    assert!(value["data"].get("decoy_kdump_untold").is_none());
+    assert_matches_the_schema(&value);
 }
 
 #[test]
