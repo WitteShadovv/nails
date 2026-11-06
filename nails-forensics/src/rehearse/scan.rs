@@ -202,7 +202,9 @@ fn push_target(
 /// volume. The hidden volume is the device mounted at `hidden_root`, wherever
 /// else it is mounted, and a loop device whose backing file lies on it, as
 /// `loop_file` tells; a disk mounted below the hidden root is read like any
-/// other, and so is a decoy filesystem a session carries there. Duplicates (by
+/// other, and so is a decoy filesystem a session carries there. Of two
+/// filesystems stacked at `hidden_root` the topmost is taken for the volume,
+/// so a caller refuses such a root first, as `rehearse scan` does. Duplicates (by
 /// canonical path) are listed once. Each filesystem-backed device carries the
 /// blind spot its
 /// storage gives a raw plaintext scan, so a scan of a compressed,
