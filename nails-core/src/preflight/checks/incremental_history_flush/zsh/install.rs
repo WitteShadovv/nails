@@ -17,6 +17,7 @@
 //! of a shell that runs now; of one that may run later it knows neither.
 
 use super::arith::READ_AS_NUMBER;
+use super::completion::read_as_code;
 use super::walk::PROMPTS;
 use super::{Reader, Word};
 use crate::Filesystem;
@@ -73,16 +74,25 @@ pub(in super::super) const ENVIRONMENT: [&str; 36] = [
     "ZFTP_TMOUT",
 ];
 
-/// Whether the check reads the value of the variable `name` of
-/// [`ENVIRONMENT`] only for an expansion in it, for whether it is a number
-/// or not at all, as it does `MAILPATH`'s, `NULLCMD`'s, `READNULLCMD`'s, the
-/// prompts' ([`PROMPTS`]) and those zsh reads as arithmetic each time it uses
-/// them ([`READ_AS_NUMBER`]), so that what is no UTF-8 in it may be
-/// replaced.
+/// Whether the check keeps the variable `name` of a shell's environment:
+/// one of [`ENVIRONMENT`], or one that zsh's own completion functions may
+/// read as code ([`read_as_code`], `_patch_args`, `debug_fd`), which it reads
+/// where the files run the stock `compinit`.
+pub(in super::super) fn kept(name: &str) -> bool {
+    ENVIRONMENT.contains(&name) || read_as_code(name)
+}
+
+/// Whether the check reads the value of the variable `name` it keeps
+/// ([`kept`]) only for an expansion in it, for whether it is a number or not
+/// at all, as it does `MAILPATH`'s, `NULLCMD`'s, `READNULLCMD`'s, the
+/// prompts' ([`PROMPTS`]), those zsh reads as arithmetic each time it uses
+/// them ([`READ_AS_NUMBER`]) and those zsh's own completion functions may
+/// read as code, so that what is no UTF-8 in it may be replaced.
 pub(in super::super) fn lossy(name: &str) -> bool {
     matches!(name, "MAILPATH" | "NULLCMD" | "READNULLCMD")
         || PROMPTS.contains(&name)
         || READ_AS_NUMBER.contains(&name)
+        || read_as_code(name)
 }
 
 /// The name the check keeps, without a value, for any variable of the
@@ -137,6 +147,9 @@ pub(in super::super) struct Env {
     /// The parameters zsh reads as arithmetic each time it uses them
     /// ([`READ_AS_NUMBER`]) it holds, each one's name and value.
     pub numbers: Vec<(String, String)>,
+    /// The parameters zsh's own completion functions may read as code
+    /// ([`read_as_code`]) it holds, each one's name and value.
+    pub completion: Vec<(String, String)>,
 }
 
 impl Install {
@@ -190,6 +203,12 @@ impl Install {
                 numbers: READ_AS_NUMBER
                     .iter()
                     .filter_map(|name| get(name).map(|value| ((*name).to_string(), value)))
+                    .collect(),
+                completion: environment
+                    .into_iter()
+                    .flatten()
+                    .filter(|(name, _)| read_as_code(name))
+                    .cloned()
                     .collect(),
             }),
         }

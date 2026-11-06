@@ -81,6 +81,12 @@ pub(super) fn beyond(named: &Named, read: &[usize; 3], walked: &Walked, place: &
             READ_AS_NUMBER.join(", ")
         )));
     }
+    if named.code_params > walked.code_params {
+        events.push(Event::CodeParameter {
+            name: String::new(),
+            local: false,
+        });
+    }
     if named.alias_params > walked.alias_params {
         events.push(Event::Doubt(format!(
             "it cannot tell what alias a line of {place} may give by the parameters that hold \

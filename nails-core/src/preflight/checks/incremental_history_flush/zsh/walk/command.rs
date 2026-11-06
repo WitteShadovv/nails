@@ -14,9 +14,10 @@ use super::super::arith::READ_AS_NUMBER;
 use super::super::backstop::{
     self, FC_WRITES, history_path, is_fc_flag, qualifier_code, reexpands, zdotdir_writes,
 };
+use super::super::completion;
 use super::super::lexer::{Word, is_name};
 use super::hooks::hook_array;
-use super::names::{names_parameter, targets};
+use super::names::{computed, names_parameter, targets};
 use super::strings::PROMPTS;
 use super::{Event, Frame, Input, Walker, mentioned, walk_text_in};
 
@@ -42,6 +43,22 @@ const PRECOMMANDS: &[&str] = &[
     "time",
     "!",
 ];
+
+/// Whether the check reads the value of the parameter `name` where the files
+/// set it, so that a tie (`typeset -T`) by which zsh sets it by another name
+/// is a doubt: one zsh reads as arithmetic each time it uses it (`TMOUT`),
+/// `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`, `fpath` and an array of hook
+/// functions. zsh ties none of its special parameters (`PS1`, `HOME`) to
+/// another; a parameter of zsh's completion system that a tie names counts
+/// as set where `compinit` runs ([`completion::read_as_code`]).
+fn tie_read(name: &str) -> bool {
+    READ_AS_NUMBER.contains(&name)
+        || matches!(
+            name,
+            "ZDOTDIR" | "XDG_CONFIG_HOME" | "NIX_PROFILES" | "fpath" | "FPATH"
+        )
+        || hook_array(name)
+}
 
 /// Whether `text` assigns a variable (`name=...`, `name+=...`,
 /// `name[key]=...`), not a word with an `=` in it (`${=c}`, `$=c`).
@@ -286,6 +303,7 @@ impl Walker<'_> {
         self.fcs += nested.fcs;
         self.nix_profiles += nested.nix_profiles;
         self.indirects += nested.indirects;
+        self.code_params += nested.code_params;
         self.alias_params += nested.alias_params;
         self.function_params += nested.function_params;
         self.may_stop |= nested.may_stop;
@@ -686,6 +704,9 @@ impl Walker<'_> {
         // a builtin sets by its name, to a value the check cannot read.
         for target in targets(&command.text, args) {
             let name = assigned(&target.text);
+            if completion::by_shape(name) {
+                self.code_parameter(name, false);
+            }
             if ALIAS_PARAMETERS.contains(&name) {
                 self.alias_params += 1;
                 self.events.push(Event::Doubt(format!(
@@ -750,9 +771,50 @@ impl Walker<'_> {
     }
 
     /// The events of a `typeset` or the like (`command`) of `args`: a
-    /// parameter whose name an expansion makes is a doubt, and each word
-    /// is an assignment or a declaration.
+    /// parameter whose name an expansion makes is a doubt, and so is a tie
+    /// (`typeset -T TMOUT tmout`) of one whose value the check reads
+    /// ([`tie_read`]), as zsh then sets it by the other name too
+    /// (`tmout=(...)`); each word is an assignment or a declaration.
     fn declare(&mut self, command: &str, args: &[Word], unconditional: bool) {
+        // zsh takes the options from the words up to the first that starts
+        // with neither `-` nor `+`, or a `--`.
+        let flags: Vec<&Word> = args
+            .iter()
+            .take_while(|arg| arg.text.starts_with(['-', '+']) && arg.text != "--")
+            .collect();
+        let ties = flags
+            .iter()
+            .any(|flag| flag.text.starts_with('-') && (flag.text.contains('T') || computed(flag)));
+        // In a function, `local` and a `typeset` without `-g` or `-x` declare
+        // parameters of its own.
+        let local = self.function().is_some()
+            && match command {
+                "local" | "private" => true,
+                "typeset" | "declare" | "integer" | "float" | "readonly" => !flags
+                    .iter()
+                    .any(|flag| computed(flag) || flag.text.contains(['g', 'x'])),
+                _ => false,
+            };
+        if ties {
+            for arg in &args[flags.len()..] {
+                let name = assigned(arg.text.split_once('=').map_or(&arg.text, |(name, _)| name));
+                if completion::by_shape(name) {
+                    self.code_parameter(name, false);
+                }
+                if computed(arg) || tie_read(name) {
+                    self.events.push(Event::Doubt(format!(
+                        "it cannot follow the value of `{}`, which `{command} {}` in {} ties to \
+                         another name, by which zsh sets it too",
+                        arg.text,
+                        args.iter()
+                            .map(|arg| arg.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        self.place
+                    )));
+                }
+            }
+        }
         for arg in args {
             if computed_target(&arg.text) {
                 self.events.push(Event::Doubt(format!(
@@ -767,7 +829,9 @@ impl Walker<'_> {
             if PROMPTS.contains(&arg.text.as_str()) {
                 self.prompts += 1;
             }
+            self.declaring_local = local;
             self.assignment(arg, unconditional);
+            self.declaring_local = false;
         }
     }
 
@@ -803,6 +867,13 @@ impl Walker<'_> {
             .map_or(word.text.as_str(), |(target, _)| target);
         if READ_AS_NUMBER.contains(&assigned(target)) && !target.contains('[') {
             self.numbers += 1;
+        }
+        // A parameter zsh's own completion functions may read as code, set to
+        // a value: one of a function's own only where it is declared so.
+        if word.text.contains('=') && completion::by_shape(assigned(target)) {
+            self.code_params += 1;
+            let local = self.declaring_local;
+            self.code_parameter(assigned(target), local);
         }
         if self.fpath_assignment(word) {
             return;

@@ -145,6 +145,12 @@ pub(in super::super) enum Event {
     /// functions may run as they run a command of that name as you complete
     /// a word (`ls --help` for `ls <Tab>`).
     Function(String),
+    /// A parameter whose name zsh's own completion functions may make or
+    /// keep code in is set, by the name given (`_patch_args=(...)`), or by
+    /// one a line may set that the walk did not read where it is empty
+    /// (`: ${_x::=...}`); `local` when it is a function's own
+    /// ([`super::super::completion::by_shape`]).
+    CodeParameter { name: String, local: bool },
     /// A global alias is defined, named `name` as written, by the word
     /// `text` (`G=| grep`). zsh puts its value in place of any token of code
     /// that is its name, a redirection's target (`/dev/tty`) or an operator

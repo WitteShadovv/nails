@@ -660,6 +660,180 @@ fn files_in_the_completion_cache_s_directory_are_a_doubt_where_compinit_runs() {
     listed(&fs, "/home/alice/.zcompcache", &["command-descriptions"]);
     assert_eq!(found_with(&fs, "HISTSIZE=100\n"), Scan::default());
 }
+
+#[test]
+fn an_unlistable_completion_cache_directory_is_a_doubt_where_compinit_runs() {
+    // zsh's own completion functions may source its files.
+    let fs = MockFilesystem::new();
+    fs.mock_set_unreadable_dir("/home/alice/.zcompcache");
+    let got = found_with(&fs, COMPINIT);
+    assert!(
+        got.doubts.iter().any(|doubt| doubt.starts_with(
+            "it could not read the directory /home/alice/.zcompcache (permission denied), whose \
+             files zsh's own completion functions may source as you complete a word"
+        )),
+        "{got:?}"
+    );
+    let fs = MockFilesystem::new();
+    fs.mock_set_unreadable_dir("/home/alice/.zcompcache");
+    assert_eq!(found_with(&fs, "HISTSIZE=100\n"), Scan::default());
+}
+
+/// The words of a doubt of a parameter whose name zsh's own completion
+/// functions may keep code by, set as `name`.
+fn code_parameter(name: &str) -> String {
+    format!(
+        "as it sets `{name}`, a parameter by whose name zsh's own completion functions may keep \
+         code they run"
+    )
+}
+
+#[test]
+fn a_parameter_zsh_s_own_completion_functions_keep_code_in_is_a_doubt_where_compinit_runs() {
+    // zsh 5.9.2 runs the action of the specification `_patch` takes from
+    // `_patch_args` as `patch --zz=<Tab>` completes, and so `_telnet`,
+    // `_finger`, `_arguments`' cache by the command's name, `_valgrind`'s
+    // `args_<tool>` and `_baz`'s `cmd_<subcommand>`: each may append the
+    // line to the history file.
+    for (set, name) in [
+        (
+            "_patch_args=( '--zz=[x]:y:{print -r -- \"$BUFFER\" >> ~/.zl}' )",
+            "_patch_args",
+        ),
+        (
+            "typeset -ga _patch_args=( '--zz=[x]:y:{w}' )",
+            "_patch_args",
+        ),
+        ("_args_cache_curl=( '--zz=[x]:y:{w}' )", "_args_cache_curl"),
+        ("export _telnet_args='-zz[x]:y:{w}'", "_telnet_args"),
+        ("f() { _finger_args=(x) }", "_finger_args"),
+        ("_whois_arguments+=(x)", "_whois_arguments"),
+        ("cmd_foo=( ':x:{w}' )", "cmd_foo"),
+        ("args_foo=( '--zz=[x]:y:{w}' )", "args_foo"),
+        ("__x=1", "__x"),
+        ("typeset -A _x\n_x[k]=v", "_x"),
+        ("eval '_x=1'", "_x"),
+        ("alias s='_x=1 true'\ns", "_x"),
+        ("print -v _patch_args x", "_patch_args"),
+        ("read -r _patch_args < ~/.spec", "_patch_args"),
+        ("zstyle -s ':x' y _patch_args", "_patch_args"),
+        ("for _patch_args in x; do :; done", "_patch_args"),
+        ("set -A _patch_args x", "_patch_args"),
+        ("zparseopts -A _patch_args", "_patch_args"),
+        ("local _x=1", "_x"),
+        ("typeset -T X _patch_args\nX=y", "_patch_args"),
+    ] {
+        let got = found(&format!("{COMPINIT}{set}\n"));
+        assert!(
+            got.doubts
+                .iter()
+                .any(|doubt| doubt.contains(&code_parameter(name))),
+            "{set}: {got:?}"
+        );
+        assert_eq!(found_plain(set), Scan::default(), "{set}");
+    }
+    // One a line sets in a form the walk does not read.
+    for set in [": ${_patch_args::=x}", ": ${(A)_x::=y}", ": ${_x:=y}"] {
+        let got = found(&format!("{COMPINIT}{set}\n"));
+        assert!(
+            got.doubts.iter().any(|doubt| doubt.contains(
+                "as it may set a parameter whose name starts with `_`, `cmd_` or `args_` in a way \
+                 the check does not read"
+            )),
+            "{set}: {got:?}"
+        );
+    }
+    // `debug_fd`, which `_call_program` reads as arithmetic, and
+    // `MODULEPATH`, which `_module` expands once more, in any form.
+    for (set, what) in [
+        (
+            "debug_fd='pipestatus[$(w)1]'",
+            "`_call_program` reads as arithmetic",
+        ),
+        ("dbg=x\ndebug_fd=dbg", "`_call_program` reads as arithmetic"),
+        (
+            "typeset -g debug_fd=x",
+            "`_call_program` reads as arithmetic",
+        ),
+        (": ${debug_fd::=x}", "`_call_program` reads as arithmetic"),
+        ("MODULEPATH='$(w)'", "`_module` expands once more"),
+    ] {
+        let got = found(&format!("{COMPINIT}{set}\n"));
+        assert!(
+            got.doubts.iter().any(|doubt| doubt.contains(what)),
+            "{set}: {got:?}"
+        );
+    }
+    // A function's own, one whose name has an upper-case letter past its
+    // `_`, a declaration without a value, the names compinstall and compdef
+    // give functions, and the same lines without compinit pass.
+    for rc in [
+        format!("{COMPINIT}f() {{ local _patch_args=(x); typeset -a _y=(z); local -a _z=(w) }}\n"),
+        format!("{COMPINIT}_ZSH_AUTOSUGGEST_X=1\n__NIXOS_DONE=1\n"),
+        format!("{COMPINIT}typeset -ga _patch_args\n"),
+        format!("{COMPINIT}zstyle ':completion:*' completer _complete\ncompdef _gnu_generic foo\n"),
+        "_patch_args=(x)\ndebug_fd=x\n: ${_x::=y}\n".to_string(),
+    ] {
+        assert_eq!(found(&rc), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_parameter_zsh_s_own_completion_functions_may_read_as_code_in_the_environment_is_a_doubt() {
+    // zsh takes the shell's environment as parameters it sets: an
+    // `_patch_args` there is as one a file sets.
+    for (vars, doubts) in [
+        (vec![("_patch_args", "--zz=[x]:y:{w}")], true),
+        (vec![("_args_cache_curl", "--zz=[x]:y:{w}")], true),
+        (vec![("debug_fd", "pipestatus[$(w)1]")], true),
+        (vec![("compprefuncs", "w")], true),
+        (vec![("MODULEPATH", "$(w)")], true),
+        (vec![("debug_fd", "3")], false),
+        (vec![("MODULEPATH", "/usr/share/modulefiles")], false),
+        (
+            vec![
+                ("__NIXOS_SET_ENVIRONMENT_DONE", "1"),
+                ("_JAVA_OPTIONS", "-Dx=y"),
+                ("__GL_SYNC_TO_VBLANK", "0"),
+            ],
+            false,
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        nix_zsh(&fs, &[OWN], &STOCK);
+        seed(&fs, "/home/alice/.zshrc", COMPINIT);
+        let known = install(&fs, &vars);
+        let got = scan_with(&fs, UNKNOWN, &known);
+        let ours = got.doubts.iter().any(|doubt| {
+            doubt.starts_with(
+                "it cannot tell what the shell's environment makes zsh run as you complete a word",
+            )
+        });
+        assert_eq!(ours, doubts, "{vars:?}: {got:?}");
+        // Without compinit, nothing reads them.
+        seed(&fs, "/home/alice/.zshrc", "HISTSIZE=100\n");
+        assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{vars:?}");
+    }
+    // The check keeps them from a shell's environment.
+    for name in [
+        "_patch_args",
+        "debug_fd",
+        "MODULEPATH",
+        "compcontext",
+        "cmd_x",
+    ] {
+        assert!(super::super::kept(name), "{name}");
+    }
+    for name in [
+        "__NIXOS_SET_ENVIRONMENT_DONE",
+        "_JAVA_OPTIONS",
+        "EDITOR",
+        "_",
+    ] {
+        assert!(!super::super::kept(name), "{name}");
+    }
+}
+
 #[test]
 fn a_style_whose_pattern_may_match_a_completion_context_by_its_options_is_read() {
     // zsh 5.9.2 compiles a zstyle pattern with the options on as zstyle
