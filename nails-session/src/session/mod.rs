@@ -18,6 +18,7 @@
 pub mod checks;
 pub mod entry;
 pub mod fstab;
+pub mod guards;
 pub mod hidden_masks;
 pub mod kernel_modules;
 pub mod labels;
@@ -37,6 +38,7 @@ pub mod way_back;
 pub mod window_launcher;
 
 pub use entry::{Entry, EntryHost, EntryInputs, RealEntryHost, decoy_root_of};
+pub use guards::GuardHost;
 pub use layout::{Layout, Paths};
 pub use leave::{LeaveReport, LeaveTo, RealTargetHost, TargetHost, leave};
 pub use probe::{SessionView, probe};

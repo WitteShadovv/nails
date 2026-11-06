@@ -12,6 +12,7 @@
 use super::*;
 use crate::nixos::NixOSBuilder;
 use crate::platform::{FakePlatform, Selinuxfs};
+use crate::session::GuardHost;
 use crate::test_support::{Rerun, ScratchTmpfs, write_executable};
 use crate::{Config, PlatformState, RealFilesystem, StateFile};
 use nails_teardown::mountinfo::parse_mountinfo;
@@ -61,14 +62,24 @@ impl EntryHost for FakeEntryHost {
     fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
         Ok(())
     }
+    fn drop_pending_switch(&self) -> bool {
+        !self.switch_coming
+    }
+}
+
+/// Its PID 1 holds every runtime guard.
+impl GuardHost for FakeEntryHost {
     fn unit_stop_commands(&self, _: &str) -> Result<String> {
         Ok(String::new())
     }
     fn job_timeout_action(&self, _: &str) -> Result<String> {
         Ok(nails_teardown::whole_root::transition::SWITCH_TIMEOUT_ACTION.to_string())
     }
-    fn drop_pending_switch(&self) -> bool {
-        !self.switch_coming
+    fn job_timeout(&self, _: &str) -> Result<String> {
+        Ok("30min".to_string())
+    }
+    fn service_watchdogs(&self) -> Result<String> {
+        Ok("yes".to_string())
     }
 }
 

@@ -5,10 +5,10 @@
 //! mounts: a decoy root with a separate `/home` and an ESP, the fstab
 //! policy, the drop-in, and the transition that consumes it.
 
-use nails_core::session::WindowLauncher;
 use nails_core::session::entry::{self, EntryHost, EntryInputs};
 use nails_core::session::labels::Labels;
 use nails_core::session::layout::Paths;
+use nails_core::session::{GuardHost, WindowLauncher};
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host, write_executable};
 use nails_core::{NailsError, nixos::NixOSBuilder};
@@ -41,6 +41,11 @@ pub(crate) struct FakeHost {
     /// What the switch's job timeout does once the drop-ins are loaded, when
     /// a later drop-in sets it again; else the timeout guard's action.
     timeout_action: Option<&'static str>,
+    /// Whether PID 1 acts on a job timeout, when it says otherwise than
+    /// `yes`.
+    watchdogs: Option<&'static str>,
+    /// The switch's job timeout, when it is not the unit's own 30 minutes.
+    timeout: Option<&'static str>,
 }
 
 impl FakeHost {
@@ -53,7 +58,7 @@ impl FakeHost {
     }
 }
 
-impl EntryHost for FakeHost {
+impl GuardHost for FakeHost {
     fn unit_stop_commands(&self, _: &str) -> nails_core::Result<String> {
         Ok(String::new())
     }
@@ -64,6 +69,16 @@ impl EntryHost for FakeHost {
             .unwrap_or(transition::SWITCH_TIMEOUT_ACTION)
             .to_string())
     }
+    fn job_timeout(&self, unit: &str) -> nails_core::Result<String> {
+        assert_eq!(unit, transition::SWITCH_TIMEOUT_UNIT);
+        Ok(self.timeout.unwrap_or("30min").to_string())
+    }
+    fn service_watchdogs(&self) -> nails_core::Result<String> {
+        Ok(self.watchdogs.unwrap_or("yes").to_string())
+    }
+}
+
+impl EntryHost for FakeHost {
     fn daemon_reload(&self) -> nails_core::Result<()> {
         if self.cancel_at_reload && self.reloads.get() == 0 {
             nails_core::cancel::testing::request();
@@ -1540,37 +1555,54 @@ fn an_entry_whose_switch_would_not_power_off_at_its_timeout_is_refused() {
     ))
     .in_user_mount_ns()
     .run(|| {
-        let world = World::new();
-        let paths = world.paths();
         // A drop-in of the decoy's that sorts after the guard sets the
-        // action again.
-        let host = FakeHost {
-            timeout_action: Some("soft-reboot-force\n"),
-            ..FakeHost::default()
-        };
-        let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
-        assert!(
-            matches!(error, NailsError::PreFlightCheckFailed(_)),
-            "{error}"
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("JobTimeoutAction=soft-reboot-force"),
-            "{error}"
-        );
-        let entries = read_mountinfo().unwrap();
-        assert!(
-            !entries
-                .iter()
-                .any(|e| e.mount_point.starts_with(paths.nextroot())),
-            "nothing was mounted at the next root"
-        );
-        assert!(!paths.runtime().exists());
-        assert!(!world.run.path().join(DROPIN_DIR).exists());
-        assert_timeout_guard(&world, false);
-        // One reload loads the guards, one forgets them again.
-        assert_eq!(host.reloads.get(), 2);
+        // action again; service watchdogs are off, so PID 1 takes no action
+        // at the timeout; a drop-in turns the timeout off.
+        let hosts = [
+            (
+                FakeHost {
+                    timeout_action: Some("soft-reboot-force\n"),
+                    ..FakeHost::default()
+                },
+                "JobTimeoutAction=soft-reboot-force",
+            ),
+            (
+                FakeHost {
+                    watchdogs: Some("no\n"),
+                    ..FakeHost::default()
+                },
+                "ServiceWatchdogs=no",
+            ),
+            (
+                FakeHost {
+                    timeout: Some("infinity\n"),
+                    ..FakeHost::default()
+                },
+                "JobTimeoutUSec=infinity",
+            ),
+        ];
+        for (host, said) in hosts {
+            let world = World::new();
+            let paths = world.paths();
+            let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
+            assert!(
+                matches!(error, NailsError::PreFlightCheckFailed(_)),
+                "{error}"
+            );
+            assert!(error.to_string().contains(said), "{error}");
+            let entries = read_mountinfo().unwrap();
+            assert!(
+                !entries
+                    .iter()
+                    .any(|e| e.mount_point.starts_with(paths.nextroot())),
+                "{said}: nothing was mounted at the next root"
+            );
+            assert!(!paths.runtime().exists(), "{said}");
+            assert!(!world.run.path().join(DROPIN_DIR).exists(), "{said}");
+            assert_timeout_guard(&world, false);
+            // One reload loads the guards, one forgets them again.
+            assert_eq!(host.reloads.get(), 2, "{said}");
+        }
     });
 }
 

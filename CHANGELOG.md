@@ -1540,23 +1540,24 @@ of this changelog for that version becomes the release notes word for word, and
   the transition drop-in goes: on the way back, and in a cancelled, failed or refused activation,
   `recover` and an emergency on the decoy. Until it goes it covers every other soft-reboot as well,
   such as one started by hand in the hidden session. A plain `poweroff` would not do: systemd
-  skips that action while `shutdown.target` is active or queued, as it is during a switch. The
-  activation refuses when, once the drop-ins are loaded, the action is another one, which a later
-  drop-in of the decoy's would cause, and `verify` reports the drop-in if it is left on the decoy.
-  With service watchdogs turned off (`systemd.service_watchdogs=0` on the kernel command line, or
-  `systemctl service-watchdogs no`), systemd takes no action at a job timeout, and
-  `JobTimeoutSec=infinity` in a drop-in turns the timeout off: such a switch then stays where it
-  stopped until the machine is powered off by hand. The NixOS module text for `soft-reboot.target`
-  that `nails check` prints stays as it is: a drop-in under `/run` overrides the unit file wherever
-  that lies. A plain `emergency` in the hidden session returns through the same switch, so the
-  drop-in covers it too, and `deactivate --poweroff` and `emergency --poweroff` power off as
-  before. A NixOS VM test holds up each switch with a unit whose stop never ends and a timeout of a
-  minute: the machine powers off and the next boot is the plain decoy. Without the drop-in the
-  same hold forces a plain soft-reboot through, and a way back into the decoy, which then starts
-  with the session's files in `/run`. With a plain `poweroff` set for the timeout instead, PID 1
-  skips the action and a switch held up for 90 seconds goes on when the hold ends. The
-  distribution smoke tests check that the hidden PID 1 has the drop-in loaded and that the decoy
-  has its own unit again after each way back.
+  skips that action while `shutdown.target` is active or queued, as it is during a switch. Once
+  the drop-ins are loaded, the activation refuses when the timeout would not power the machine
+  off: when the action is another one, which a later drop-in of the decoy's would cause, when
+  service watchdogs are turned off (`systemd.service_watchdogs=0` on the kernel command line, or
+  `systemctl service-watchdogs no`), as systemd then takes no action at a job timeout, and when
+  `JobTimeoutSec=infinity` turns the timeout off. `verify` reports the drop-in if it is left on
+  the decoy. The NixOS module text for
+  `soft-reboot.target` that `nails check` prints stays as it is: a drop-in under `/run` overrides
+  the unit file wherever that lies. A plain `emergency` in the hidden session returns through the
+  same switch, so the drop-in covers it too, and `deactivate --poweroff` and
+  `emergency --poweroff` power off as before. A NixOS VM test holds up each switch with a unit
+  whose stop never ends and a timeout of a minute: the machine powers off and the next boot is
+  the plain decoy. Without the drop-in the same hold forces a plain soft-reboot through, and a way
+  back into the decoy, which then starts with the session's files in `/run`. With a plain
+  `poweroff` set for the timeout instead, PID 1 skips the action and a switch held up for 90
+  seconds goes on when the hold ends. In the same test activation refuses with service watchdogs
+  off and with no timeout. The distribution smoke tests check that the hidden PID 1 has the
+  drop-in loaded and that the decoy has its own unit again after each way back.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the
@@ -1742,8 +1743,8 @@ of this changelog for that version becomes the release notes word for word, and
   computer's keyboard woke PID 1 in the tests, and the switch went on. If that does nothing, power
   off. Left alone, the machine powers itself off about 30 minutes after the switch began, where
   systemd would have switched by force without NAILS's last step before the switch (see
-  Security, also for the settings under which nothing happens then). systemd fixed the issue in
-  259.10, 260.6, 261.4 and 262.1. On
+  Security, also for the settings under which nothing would happen then, which activation
+  refuses). systemd fixed the issue in 259.10, 260.6, 261.4 and 262.1. On
   3 November 2026 no release of 254 to 258 had the fix, and no supported decoy had it, neither in
   its systemd release nor as a patch of its package: Debian 13 had systemd 257.13, Ubuntu 24.04
   255.4, Ubuntu 26.04 259.9, NixOS 26.05 260.5 and NixOS unstable 262. See docs/operator-guide.md.

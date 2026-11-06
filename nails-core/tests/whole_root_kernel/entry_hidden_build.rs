@@ -11,6 +11,7 @@
 
 use super::{FakeHost, World};
 use nails_core::nixos::NixOSBuilder;
+use nails_core::session::GuardHost;
 use nails_core::session::entry::{self, EntryHost};
 use nails_core::session::layout::Layout;
 use nails_core::session::store::KeepReport;
@@ -46,6 +47,24 @@ impl BuildHost {
     }
 }
 
+impl GuardHost for BuildHost {
+    fn unit_stop_commands(&self, unit: &str) -> Result<String> {
+        self.host.unit_stop_commands(unit)
+    }
+    fn job_timeout_action(&self, unit: &str) -> Result<String> {
+        self.host.job_timeout_action(unit)
+    }
+    fn job_timeout(&self, unit: &str) -> Result<String> {
+        self.host.job_timeout(unit)
+    }
+    fn service_watchdogs(&self) -> Result<String> {
+        self.host.service_watchdogs()
+    }
+    fn unit_dropins(&self, unit: &str) -> Result<String> {
+        self.host.unit_dropins(unit)
+    }
+}
+
 impl EntryHost for BuildHost {
     fn daemon_reload(&self) -> Result<()> {
         self.host.daemon_reload()
@@ -78,12 +97,6 @@ impl EntryHost for BuildHost {
         std::os::unix::fs::symlink(system.join("etc"), root.join("etc/static")).unwrap();
         std::fs::write(root.join("etc/fstab"), &self.fstab).unwrap();
         Ok(())
-    }
-    fn unit_stop_commands(&self, unit: &str) -> Result<String> {
-        self.host.unit_stop_commands(unit)
-    }
-    fn job_timeout_action(&self, unit: &str) -> Result<String> {
-        self.host.job_timeout_action(unit)
     }
     fn kernel_settings(&self) -> Vec<KernelSetting> {
         self.host.kernel_settings()
