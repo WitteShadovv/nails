@@ -134,11 +134,12 @@ session whose dummy link the way back deletes still returns.
 
 A switch that hangs until `soft-reboot.target`'s job timeout powers the
 machine off instead of being forced through without the transition step. The
-drop-in that sets this and the entry's check that it holds once loaded are
-unit tests and real-kernel tests, and so is its removal on each path that
-removes it: the way back, a switch refused on the decoy, an entry rolled back
-(cancelled, failed, or refused before or at its soft-reboot), `recover` and an
-emergency on the decoy. The whole path is tested in a VM, by
+drop-in that sets this and the entry's check that it holds once loaded (its
+action, service watchdogs on and a timeout set) are unit tests and real-kernel
+tests, and so is its removal on each path that removes it: the way back, a
+switch refused on the decoy, an entry rolled back (cancelled, failed, or
+refused before or at its soft-reboot), `recover` and an emergency on the
+decoy. The whole path is tested in a VM, by
 `session-switch-timeout`: a test-only unit whose stop never ends holds up the
 switch, and a test-only drop-in shortens the timeout to a minute. The way back
 and the way in each power the machine off, with PID 1's own line for it on the
@@ -148,7 +149,8 @@ the test removed in the hidden session goes on by force into the decoy, which
 comes up with the session's files still in `/run`. With a plain `poweroff` set
 for the timeout instead, PID 1 skips that action during the switch ("Shutdown
 is already active"), and a switch held up for 90 seconds goes on only when the
-hold ends: why the drop-in powers off by force.
+hold ends: why the drop-in powers off by force. In the same test activation
+refuses with service watchdogs off and with no timeout.
 
 ### (d) Contract tests: one body, mock and real
 
