@@ -213,10 +213,10 @@ pub const CHECK_MOUNTED_TWICE_FIX: Message = Message {
            other mount point that umount reaches by its path, each quoted for the shell where \
            it needs it, the deepest first, so the line pastes as it is. \"The command\" is the \
            one that failed (check or activate). A line of check.mounted-twice-hidden for each \
-           mount another one hides, the line of check.mounted-twice-decoy-filesystem-fix when \
-           the failure is check.mounted-twice-decoy-filesystem, then the two lines of \
-           check.mounted-twice-advice, follow it. All of them together are the --json fix of \
-           that check.",
+           mount another one hides follows it, then check.mounted-twice-advice and \
+           check.mounted-twice-read. When the failure is check.mounted-twice-decoy-filesystem, \
+           the two lines of check.mounted-twice-decoy-filesystem-fix come first. All of them \
+           together are the --json fix of that check.",
     placeholders: &["mount_points"],
     surface: Surface::Cli,
 };
@@ -306,44 +306,63 @@ pub const CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM: Message = Message {
            and by its fstab do not count, and neither does one that shows none of the root \
            folder (another btrfs subvolume, say). {root} and {places} are as in \
            check.mounted-twice: the root folder as configured, and the other mount points \
-           joined by commas and a last \"and\". The fix is that of check.mounted-twice, with \
-           a line of check.mounted-twice-decoy-filesystem-fix before its two advice lines. \
-           It starts in lower case because it follows the check's name and a colon; the same \
-           text is the --json message of that check.",
+           joined by commas and a last \"and\". The fix starts with the two lines of \
+           check.mounted-twice-decoy-filesystem-fix, then has those of check.mounted-twice, \
+           where check.mounted-twice-advice only comes when one of the places lies under \
+           /media or /run/media. It starts in lower case because it follows the check's name \
+           and a colon; the same text is the --json message of that check.",
     placeholders: &["root", "places"],
     surface: Surface::Cli,
 };
 
-/// A line of the fix for [`CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM`]: a mount
-/// this computer makes by itself is no mount to remove, so the root needs a
-/// volume of its own.
+/// The first lines of the fix for [`CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM`]: a
+/// mount this computer makes by itself is no mount to remove, so the root
+/// needs a volume of its own, and only one made by hand is unmounted.
 pub const CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM_FIX: Message = Message {
     id: "check.mounted-twice-decoy-filesystem-fix",
     text: "If this computer mounts it at {places} by itself, do not unmount it there: use a \
-           volume on a disk or partition of its own instead.",
-    note: "One line of the fix for check.mounted-twice-decoy-filesystem, after its unmount \
-           lines and before the two lines of check.mounted-twice-advice. \"It\" is the \
-           filesystem of the root folder. A mount this computer makes without a line in its \
-           fstab (the /home partition systemd finds by itself, say) is one the operator \
-           should keep: unmounting it would take it from this computer. {places} is the same \
-           list as in check.mounted-twice-decoy-filesystem.",
+           volume on a disk or partition of its own instead.\n\
+           If it was mounted there by hand, unmount it:",
+    note: "The first two lines of the fix for check.mounted-twice-decoy-filesystem, before \
+           its unmount lines (check.mounted-twice-fix and the lines that follow it there). \
+           \"It\" is the filesystem of the root folder. A mount this computer makes without a \
+           line in its fstab (the /home partition systemd finds by itself, say) is one the \
+           operator should keep: unmounting it would take it from this computer, and for \
+           such a partition the check could then no longer tell that the root lies on this \
+           computer's storage. \
+           So that line comes first, and the unmount lines only follow the second one, for a \
+           mount made by hand. {places} is the same list as in \
+           check.mounted-twice-decoy-filesystem.",
     placeholders: &["places"],
     surface: Surface::Cli,
 };
 
-/// The last lines of the fix for [`CHECK_MOUNTED_TWICE`]: keep a desktop from
+/// A line of the fix for [`CHECK_MOUNTED_TWICE`]: keep a desktop from
 /// mounting the drive next time.
 pub const CHECK_MOUNTED_TWICE_ADVICE: Message = Message {
     id: "check.mounted-twice-advice",
-    text: "Long before the next use, turn off the automatic mounting of removable media.\n\
-           Read \"Attaching the drive\" in the decoy requirements on another device.",
-    note: "The last two lines of the fix shown below check.mounted-twice (or \
-           check.mounted-twice-decoy-filesystem), after its other lines. The first is about \
-           the desktop's setting that mounts a drive once it is attached or unlocked (GNOME, \
-           KDE, udiskie); \"long before\" because a setting changed just before a session \
-           dates it. The second names the section of the documentation \
-           (docs/decoy-requirements.md) that says where those settings are; it is read on \
-           another device, as opening it on this computer leaves traces.",
+    text: "Long before the next use, turn off the automatic mounting of removable media.",
+    note: "The line before check.mounted-twice-read at the end of the fix shown below \
+           check.mounted-twice, after its other lines, and below \
+           check.mounted-twice-decoy-filesystem only when one of its places lies under /media \
+           or /run/media, where a desktop mounts a drive. It is about the desktop's setting \
+           that mounts a drive once it is attached or unlocked (GNOME, KDE, udiskie); \"long \
+           before\" because a setting changed just before a session dates it.",
+    placeholders: &[],
+    surface: Surface::Cli,
+};
+
+/// The last line of the fix for [`CHECK_MOUNTED_TWICE`] and
+/// [`CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM`]: where the documentation says more.
+pub const CHECK_MOUNTED_TWICE_READ: Message = Message {
+    id: "check.mounted-twice-read",
+    text: "Read \"Attaching the drive\" in the decoy requirements on another device.",
+    note: "The last line of the fix shown below check.mounted-twice or \
+           check.mounted-twice-decoy-filesystem. It names the section of the documentation \
+           (docs/decoy-requirements.md) that says where the desktops keep their setting for \
+           mounting drives, and which mounts count for a root accepted with \
+           --allow-decoy-storage; it is read on another device, as opening it on this \
+           computer leaves traces.",
     placeholders: &[],
     surface: Surface::Cli,
 };
@@ -373,4 +392,5 @@ pub const CATALOG: &[Message] = &[
     CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM,
     CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM_FIX,
     CHECK_MOUNTED_TWICE_ADVICE,
+    CHECK_MOUNTED_TWICE_READ,
 ];
