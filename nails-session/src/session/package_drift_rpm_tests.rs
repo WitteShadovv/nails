@@ -328,6 +328,77 @@ fn an_upper_directory_that_cannot_be_listed_cannot_be_judged() {
     );
 }
 
+/// A directory of the upper on the way to a package's file that this
+/// process may list but not look into (`r--`) is no directory a hidden
+/// session replaced: the check cannot tell whether the package is the
+/// hidden sessions' own, and says so. Taken for a replaced one, it made a
+/// package the decoy updated count as the hidden sessions' own, which hid
+/// its drift.
+#[test]
+fn an_upper_directory_that_cannot_be_looked_into_is_no_replaced_one() {
+    use crate::filesystem::RealFilesystem;
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        // Root looks into any directory.
+        return;
+    }
+    let decoy = tempfile::tempdir().unwrap();
+    let hidden = tempfile::tempdir().unwrap();
+    let database = decoy.path().join(DB);
+    std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+    std::fs::write(&database, DECOY).unwrap();
+    let upper = hidden.path().join("root/upper");
+    std::fs::create_dir_all(upper.join(DB).parent().unwrap()).unwrap();
+    std::fs::write(upper.join(DB), HIDDEN).unwrap();
+    for own in OWN {
+        let path = upper.join(own);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"").unwrap();
+    }
+    // beta, which the decoy updated, has a directory of its name in the
+    // upper, below one that may be listed but not looked into.
+    std::fs::create_dir_all(upper.join("usr/share/beta")).unwrap();
+    let share = upper.join("usr/share");
+    std::fs::set_permissions(&share, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    let check = PackageDriftCheck::new(decoy.path().to_path_buf(), hidden.path().to_path_buf())
+        .as_privileged(true);
+    let result = PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
+    std::fs::set_permissions(&share, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "could not tell whether hidden sessions' copy of the rpm package database \
+             (/usr/lib/sysimage/rpm/rpmdb.sqlite) follows the decoy's: an entry of hidden \
+             sessions' upper cannot be read ("
+        ),
+        "{result:?}"
+    );
+    assert!(
+        result.message().contains("usr/share/") && !result.message().contains("since hidden"),
+        "{result:?}"
+    );
+}
+
+/// rpm's log or journal beside the decoy's database that cannot be looked
+/// up tells nothing: the check cannot tell, and says which.
+#[test]
+fn an_rpm_log_that_cannot_be_looked_up_cannot_be_judged() {
+    let fs = fedora(DECOY, Some(HIDDEN));
+    upper(&fs, &[&[DB], OWN].concat(), OWN_REMOVED);
+    fs.mock_set_lookup_error(&format!("{ROOT}/{DB}-wal"), std::io::ErrorKind::Other);
+    let result = run(&check(), &fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "could not tell whether hidden sessions' copy of the rpm package database \
+         (/usr/lib/sysimage/rpm/rpmdb.sqlite) follows the decoy's: \
+         /usr/lib/sysimage/rpm/rpmdb.sqlite-wal on the decoy cannot be looked up \
+         (/decoy/usr/lib/sysimage/rpm/rpmdb.sqlite-wal: Mock: the lookup fails here)"
+    );
+}
+
 #[test]
 fn reading_rpms_database_leaves_the_decoys_access_times_alone() {
     use crate::filesystem::RealFilesystem;
