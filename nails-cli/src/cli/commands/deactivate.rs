@@ -16,7 +16,9 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use nails_core::NailsError;
-use nails_core::app::deactivate::{PowerOffReason, Prepared, ReadyDeactivation, power_off_reason};
+use nails_core::app::deactivate::{
+    LockedDeactivation, PowerOffReason, Prepared, ReadyDeactivation, power_off_reason,
+};
 use nails_core::output::Mark;
 use nails_core::session::{LeaveReport, LeaveTo};
 
@@ -174,10 +176,15 @@ pub(crate) fn lock_and_leave(
         Ok(locked) => locked,
         Err(error) => return super::report_lock_error(error, "deactivate", settings.is_json()),
     };
-    let may = locked.may_leave(to);
-    leave_and_report(settings, to, warnings, bound.as_ref(), may, |to| {
-        locked.leave(to)
-    })
+    leave_and_report(
+        settings,
+        to,
+        warnings,
+        bound.as_ref(),
+        &mut locked,
+        LockedDeactivation::may_leave,
+        LockedDeactivation::leave,
+    )
 }
 
 /// Write each of the `warnings` before the question, on `out` (stderr, as
@@ -189,12 +196,16 @@ fn write_warnings(settings: &OutputSettings, warnings: &[String], out: &mut impl
     }
 }
 
-/// Commit the way back with `leave` and report it, returning the status to
-/// exit with.
+/// Ask the handle that leaves (`locked`) with `may_leave` whether the way
+/// back `to` may start, commit it with `leave` and report it, returning the
+/// status to exit with. Outside tests these are the lock step's handle and
+/// its [`LockedDeactivation::may_leave`] and [`LockedDeactivation::leave`].
 ///
-/// A way back that may not start (`may`: a program blocks shutdown) is
-/// reported before anything else, so no line announces a switch that does not
-/// come. A person reads the result before the switch, which stops the
+/// A way back that may not start (a program blocks shutdown, or the hidden
+/// session's PID 1 does not hold the guards a return needs) is reported
+/// before anything else, so no line announces a switch that does not come.
+/// `may_leave` is asked about this very `to`, as a power-off needs none of
+/// those guards. A person reads the result before the switch, which stops the
 /// terminal: the lines come first, and a failure to prepare or enqueue it
 /// follows them on stderr. They say where the machine ends: at the decoy's
 /// login screen, or off where the way back is `bound` to power off instead,
@@ -207,16 +218,17 @@ fn write_warnings(settings: &OutputSettings, warnings: &[String], out: &mut impl
 /// process outlives the switch long enough to print it, since a mutating
 /// command catches SIGTERM and ignores SIGHUP, but a reader the switch stops
 /// first may not read it.
-fn leave_and_report(
+fn leave_and_report<L>(
     settings: &OutputSettings,
     to: LeaveTo,
     mut warnings: Vec<String>,
     bound: Option<&PowerOffReason>,
-    may: Result<(), NailsError>,
-    leave: impl FnOnce(LeaveTo) -> Result<LeaveReport, NailsError>,
+    locked: &mut L,
+    may_leave: impl FnOnce(&L, LeaveTo) -> Result<(), NailsError>,
+    leave: impl FnOnce(&mut L, LeaveTo) -> Result<LeaveReport, NailsError>,
 ) -> ExitStatus {
     let json = settings.is_json();
-    if let Err(e) = may {
+    if let Err(e) = may_leave(locked, to) {
         return report_error(
             json,
             "deactivate",
@@ -240,7 +252,7 @@ fn leave_and_report(
         }
         crate::cli::output::flush_stdio();
     }
-    match leave(to) {
+    match leave(locked, to) {
         Ok(report) => {
             tracing::debug!(
                 backend_closing = ?report.deferred,

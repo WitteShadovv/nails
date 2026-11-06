@@ -496,6 +496,68 @@ mod tests {
         });
     }
 
+    /// The locked handle asks the host it would leave with, and only about a
+    /// return: a return whose switch would not power off at its job timeout
+    /// is refused, and a power-off goes on. The test runs in a PID, user and
+    /// mount namespace of its own with a fresh `/run`, as the one above: the
+    /// probe finds no session plan, so the host takes `systemctl` and
+    /// `busctl` from the system directories, the first of which is below
+    /// `/run`. Stand-ins there answer for a logind that lists no inhibitor and
+    /// a PID 1 that holds the guards, but for service watchdogs, which a file
+    /// in that `/run` turns off and on. They only print: nothing is started.
+    #[test]
+    fn the_locked_handle_asks_pid_1_about_the_guards_of_a_return_only() {
+        let _ = crate::test_support::Rerun::new(crate::test_path!(
+            the_locked_handle_asks_pid_1_about_the_guards_of_a_return_only
+        ))
+        .in_pid_ns()
+        .run(|| {
+            nix::mount::mount(
+                Some("tmpfs"),
+                "/run",
+                Some("tmpfs"),
+                nix::mount::MsFlags::empty(),
+                Some("mode=0755"),
+            )
+            .expect("a fresh /run");
+            let bin = Path::new("/run/current-system/sw/bin");
+            std::fs::create_dir_all(bin).unwrap();
+            let watchdogs = Path::new("/run/watchdogs");
+            crate::test_support::write_executable(
+                &bin.join("busctl"),
+                "#!/bin/sh\necho '{\"type\":\"a(ssssuu)\",\"data\":[[]]}'\n",
+                0o755,
+            );
+            crate::test_support::write_executable(
+                &bin.join("systemctl"),
+                format!(
+                    "#!/bin/sh\ncase \"$*\" in\n\
+                     'show --property=JobTimeoutAction --value soft-reboot.target') \
+                     echo poweroff-force ;;\n\
+                     'show --property=JobTimeoutUSec --value soft-reboot.target') echo 30min ;;\n\
+                     'show --property=ServiceWatchdogs --value') cat {} ;;\n\
+                     esac\nexit 0\n",
+                    watchdogs.display()
+                ),
+                0o755,
+            );
+            std::fs::write(watchdogs, "no\n").unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let locked = locked(ready_at(dir.path()));
+
+            let error = locked.may_leave(LeaveTo::Decoy).unwrap_err();
+            let NailsError::PreFlightCheckFailed(failures) = &error else {
+                panic!("expected the guards' refusal, got {error:?}")
+            };
+            assert_eq!(failures[0].0, "switch-timeout", "{error}");
+            assert!(failures[0].1.contains("ServiceWatchdogs=no"), "{error}");
+            locked.may_leave(LeaveTo::Poweroff).unwrap();
+
+            std::fs::write(watchdogs, "yes\n").unwrap();
+            locked.may_leave(LeaveTo::Decoy).unwrap();
+        });
+    }
+
     /// The handle that leaves holds the state lock for as long as it lives,
     /// and the real lock step runs the attach gate first.
     #[test]
