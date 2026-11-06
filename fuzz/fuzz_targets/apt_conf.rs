@@ -3,15 +3,15 @@
 
 //! An apt configuration file of the decoy, from which NAILS reads whether
 //! unattended-upgrades installs the pending updates at shutdown, which a
-//! switch is to it.
+//! switch through logind is to it.
 //!
 //! The input is the file. The target checks that:
 //!
-//! - an empty line, or a line holding only a comment, put in before any line
-//!   changes nothing but the line numbers: the statements stay the same, and
-//!   a file apt refuses is refused for the same reason. apt reads a file line
-//!   by line, a statement and a `/* */` comment going on over as many lines
-//!   as they take;
+//! - an empty line, or a line holding only a comment, put in before any of
+//!   the first 16 lines changes nothing but the line numbers: the statements
+//!   stay the same, and a file the reader refuses stays refused for the same
+//!   reason. apt reads a file line by line, a statement and a `/* */` comment
+//!   going on over as many lines as they take;
 //! - after a file that ends outside every block and comment, a statement
 //!   that sets the setting is read, last, with its value and its line, and so
 //!   is a `#clear` of it;
@@ -36,7 +36,7 @@ const NOTHING: [&[u8]; 3] = [b"\n", b"// nothing\n", b"   \t\n"];
 fuzz_target!(|data: &[u8]| {
     let first = parse(data);
 
-    // A line of nothing put in before each line in turn.
+    // A line of nothing put in before each of the first 16 lines in turn.
     let starts = std::iter::once(0)
         .chain(
             data.iter()

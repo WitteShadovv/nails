@@ -1403,7 +1403,8 @@ of this changelog for that version becomes the release notes word for word, and
   stays usable and `status` does not call the decoy persistent. It reads the setting as apt does:
   the files of `/etc/apt/apt.conf.d` apt reads, in its order and skipping those it skips by name,
   then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file NAILS cannot read or
-  apt refuses, an `#include`, and a `Dir` or `RootDir` setting leave the setting unknown, which is
+  apt refuses, a line NAILS does not read the way apt does (longer than 4000 bytes, or with a NUL
+  byte), an `#include`, and a `Dir` or `RootDir` setting leave the setting unknown, which is
   refused as if it were on. When only the hidden session would install (the decoy's helper stopped
   but enabled, or the session's overlay turning the setting on), it warns instead. The decoy
   requirements now say to set the setting to `false` rather than delete the line, which stays in
