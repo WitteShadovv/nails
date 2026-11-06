@@ -852,8 +852,9 @@ impl Drop for LoopDevice {
 /// btrfs does, by its source, the device's node. So a session whose hidden
 /// volume holds the file counts that filesystem, mounted below the hidden
 /// root, as its own storage, and nothing else. The mount table lines are the
-/// test's own, for the filesystems the device could hold: the driver's
-/// record is what is read.
+/// test's own, for the filesystems the device could hold: what is read is the
+/// driver's record, and the real mount table, which shows the tmpfs that
+/// holds the file.
 #[test]
 #[ignore = "root only: binding a loop device needs CAP_SYS_ADMIN in the initial namespace"]
 fn the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file() {
