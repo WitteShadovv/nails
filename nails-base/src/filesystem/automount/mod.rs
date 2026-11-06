@@ -309,6 +309,15 @@ pub fn on_the_way<F: Filesystem>(fs: &F, table: &[MountEntry], path: &Path, look
     };
     let mut steps = Vec::new();
     push_steps(&mut steps, path);
+    // Only a place at or below an automount point can be held by one, so the
+    // table is asked which mount holds a place only then: that reads the whole
+    // table for each prefix of the place, and most tables hold no automount
+    // point, or none on the way.
+    let points: Vec<&Path> = table
+        .iter()
+        .filter(|mount| mount.fstype == AUTOMOUNT_FS)
+        .map(|mount| mount.mount_point.as_path())
+        .collect();
     let mut links = 0;
     while let Some(step) = steps.pop() {
         let name = match step {
@@ -320,7 +329,8 @@ pub fn on_the_way<F: Filesystem>(fs: &F, table: &[MountEntry], path: &Path, look
         };
         let next = at.join(name);
         let last = steps.is_empty();
-        if let Some(mount) = mount_holding(table, &next)
+        if points.iter().any(|point| next.starts_with(point))
+            && let Some(mount) = mount_holding(table, &next)
             && mounts(mount, &next)
         {
             // A direct point at the end of a lookup that only resolves
