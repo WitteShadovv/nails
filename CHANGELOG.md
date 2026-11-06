@@ -1545,18 +1545,22 @@ of this changelog for that version becomes the release notes word for word, and
   off: when the action is another one, which a later drop-in of the decoy's would cause, when
   service watchdogs are off, as systemd then takes no action at a job timeout, and when
   `JobTimeoutSec=infinity` turns the timeout off. Every reload of PID 1 sets service watchdogs to
-  what the kernel command line says, so after activation's reload only
-  `systemd.service_watchdogs=0` there turns them off: a `systemctl service-watchdogs no` before
-  activation does not count, and `systemctl service-watchdogs yes` does not lift the refusal.
-  Before it prepares the way back, `deactivate` asks the hidden session's PID 1 the same, where a
+  what the kernel command line says, and with systemd 257 and older the `SystemdOptions` EFI
+  variable, so after activation's reload only `systemd.service_watchdogs=` in one of those turns
+  them off, which the refusal names: a `systemctl service-watchdogs no` before activation does not
+  count, and `systemctl service-watchdogs yes` does not lift the refusal. Before it prepares the
+  way back, `deactivate` asks the hidden session's PID 1 the same, where a
   `systemctl service-watchdogs no` in the session counts until PID 1 next reloads, and whether the
-  stop guards hold as activation checks them, since the hidden system's own configuration or a
-  change in the session can undo a guard: it refuses unless they all hold, and names
-  `deactivate --poweroff` and `emergency`, neither of which asks. `verify` reports the drop-in if
-  it is left on the decoy. The NixOS module text for
-  `soft-reboot.target` that `nails check` prints stays as it is: a drop-in under `/run` overrides
-  the unit file wherever that lies. A plain `emergency` in the hidden session returns through the
-  same switch, so the drop-in covers it too, and `deactivate --poweroff` and
+  stop guard of `blk-availability.service` holds as activation checks it, since the hidden
+  system's own configuration or a change in the session can undo a guard. Neither asks about the
+  runtime guards of NixOS's static addresses and the D-Bus units. `deactivate` refuses unless both
+  hold, before the lines that say the session ends, and names `deactivate --poweroff` and
+  `emergency`, neither of which asks; where the session turned service watchdogs off it names
+  `systemctl service-watchdogs yes` first, as without them a power-off that hangs is not ended at
+  its job timeout either. `verify` reports the drop-in if it is left on the decoy. The NixOS
+  module text for `soft-reboot.target` that `nails check` prints stays as it is: a drop-in under
+  `/run` overrides the unit file wherever that lies. A plain `emergency` in the hidden session
+  returns through the same switch, so the drop-in covers it too, and `deactivate --poweroff` and
   `emergency --poweroff` power off as before. A NixOS VM test holds up each switch with a unit
   whose stop never ends and a timeout of a minute: the machine powers off and the next boot is
   the plain decoy. Without the drop-in the same hold forces a plain soft-reboot through, and a way

@@ -16,8 +16,10 @@
 //!
 //! Before it prepares anything it refuses while a program blocks shutdown,
 //! and a return to the decoy unless the hidden session's PID 1 still holds the
-//! runtime guards the entry installed ([`may_leave`]): the hidden system's own
-//! configuration, or a change in the session, can undo one.
+//! two runtime guards the entry checked in the decoy's, the stop guard of
+//! `blk-availability.service` and the switch's timeout guard ([`may_leave`]):
+//! the hidden system's own configuration, or a change in the session, can
+//! undo one.
 
 use super::guards::{self, GuardHost};
 use super::layout::Paths;
@@ -30,7 +32,7 @@ use rustix::mount::UnmountFlags;
 use std::path::{Path, PathBuf};
 
 /// Enqueues a systemd target: tests replace it. It asks PID 1 whether the
-/// runtime guards hold as a [`GuardHost`].
+/// guards the way back checks hold as a [`GuardHost`].
 pub trait TargetHost: GuardHost {
     /// Enqueue `target`. An error means it is known not to have been taken:
     /// nothing is left that would start it later.
@@ -362,11 +364,13 @@ pub fn way_back_foresees(root: &Path, decoy_system: Option<&Path>) -> network::F
 
 /// Whether the way back `to` may start now: not while a program blocks
 /// shutdown ([`TargetHost::may_switch`]), and a return to the decoy not
-/// unless every runtime guard holds in the hidden session's PID 1
-/// ([`guards::check_way_back`]), so that a return that hangs until its job
-/// timeout powers off rather than going on by force without its last step. A
-/// power-off goes through no soft-reboot, and `poweroff.target` powers off by
-/// force at its own job timeout.
+/// unless the guards the entry checked hold in the hidden session's PID 1,
+/// the stop guard of `blk-availability.service` and the switch's timeout
+/// guard ([`guards::check_way_back`]), so that a return that hangs until its
+/// job timeout powers off rather than going on by force without its last
+/// step. A power-off asks about neither: it goes through no soft-reboot, so
+/// nothing can force it into the decoy, and `poweroff.target` powers off by
+/// force at its own job timeout while service watchdogs are on.
 pub fn may_leave(to: LeaveTo, host: &dyn TargetHost) -> Result<()> {
     host.may_switch()?;
     if to == LeaveTo::Decoy {
@@ -710,11 +714,11 @@ mod tests {
         }
     }
 
-    /// A return goes on only when every runtime guard holds in the hidden
+    /// A return goes on only when the guards it checks hold in the hidden
     /// session's PID 1. Otherwise it is refused before anything is prepared,
     /// with the plan unarmed, nothing mounted and nothing enqueued, and the
     /// refusal names the power-off and the emergency. A power-off asks about
-    /// none of them and goes on.
+    /// neither and goes on.
     #[test]
     fn a_return_is_refused_before_anything_is_prepared_unless_the_guards_hold() {
         let dir = tempfile::tempdir().unwrap();

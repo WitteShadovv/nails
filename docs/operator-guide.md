@@ -347,9 +347,11 @@ Keep all of it `root`-owned on the hidden volume.
    power the machine off: a drop-in of the decoy's that sorts after it sets
    the action again, service watchdogs are off (PID 1 then takes no action at
    a job timeout), or `JobTimeoutSec=infinity` turns the timeout off. Its own
-   reload sets service watchdogs to what the kernel command line says, as
-   every reload of PID 1 does, so they are off then only with
-   `systemd.service_watchdogs=0` there: remove that and boot again. The way
+   reload sets service watchdogs to what the kernel command line says, and
+   with systemd 257 and older the `SystemdOptions` EFI variable
+   (`bootctl systemd-efi-options`), as every reload of PID 1 does, so they are
+   off then only where one of those turns them off with
+   `systemd.service_watchdogs=`: remove it there and boot again. The way
    back removes these drop-ins, and leaves any other drop-in the decoy had for
    these units in place. Ctrl+C (or a
    SIGTERM) up to this point cancels the activation: it stops at the next step,
@@ -516,15 +518,21 @@ device-mapper stack for deferred removal, records the state as inactive and
 soft-reboots, through logind as activation does. A program that holds a
 shutdown block inhibitor in the session, or a logind that does not answer
 whether one does, makes it refuse before it starts, with the session running
-on (`emergency` does not wait for it). So does a hidden session's PID 1 that
-no longer holds the runtime guards activation installed, which the hidden
-system's own configuration or a change in the session can undo: `deactivate`
-asks it about them before it prepares anything, as activation asks the
-decoy's (the stop guards, and a timeout that powers the machine off, with
-service watchdogs on and a timeout set), and its refusal names
-`deactivate --poweroff` and `emergency`, neither of which asks. When the
-soft-reboot is not started after all (logind refuses or drops it), the
-session runs on as well, but the disks it unmounted for the switch stay
+on (`emergency` does not wait for it). So does a hidden session's PID 1 in
+which the stop guard of `blk-availability.service` or the timeout guard no
+longer holds, which the hidden system's own configuration or a change in the
+session can undo: `deactivate` asks it about those two before it prepares
+anything, as activation asks the decoy's (no stop command for that unit, and
+a timeout that powers the machine off, with service watchdogs on and a
+timeout set). Neither asks about the other runtime guards, those of NixOS's
+static addresses and of the D-Bus units. The refusal comes before the lines
+that say the session ends, and names `deactivate --poweroff` and
+`emergency`, neither of which asks. Where the session turned service
+watchdogs off, it names `sudo systemctl service-watchdogs yes` first: that
+turns them back on until PID 1 next reloads, and without them a power-off
+or an emergency's return that hangs is not ended at its job timeout either.
+When the soft-reboot is not started after all (logind refuses or drops it),
+the session runs on as well, but the disks it unmounted for the switch stay
 unmounted: `deactivate` names them. A device it cannot mark (the hidden session removed `dmsetup`,
 say) stays open after the switch, its key in RAM, until power-off:
 `deactivate` and `emergency` name it once the soft-reboot is enqueued
@@ -2051,11 +2059,13 @@ never ends, and for any other soft-reboot in that time. Activation refuses
 where nothing would happen by itself: when service watchdogs are off, as
 systemd then takes no action at a job timeout, and when a drop-in sets
 `JobTimeoutSec=infinity` for `soft-reboot.target`. After the reload activation
-makes, service watchdogs are off only with `systemd.service_watchdogs=0` on
-the kernel command line, as every reload of PID 1 sets them to what the
-command line says. `deactivate` refuses the same in the hidden session, where
-a `systemctl service-watchdogs no` counts until PID 1 next reloads; a plain
-`emergency` does not ask. A drop-in with another value moves the 30 minutes.
+makes, service watchdogs are off only where `systemd.service_watchdogs=` on
+the kernel command line, or with systemd 257 and older in the `SystemdOptions`
+EFI variable, turns them off, as every reload of PID 1 sets them to what those
+say. `deactivate` refuses the same in the hidden session, where a
+`systemctl service-watchdogs no` counts until PID 1 next reloads and
+`systemctl service-watchdogs yes` turns them back on; a plain `emergency` does
+not ask. A drop-in with another value moves the 30 minutes.
 Once the machine is off, the decoy comes up as after a power loss (see
 below).
 

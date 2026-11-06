@@ -1,8 +1,14 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Whether the runtime guards hold once the service manager has loaded them
-//! ([`transition::runtime_guards`]), asked of PID 1 before each switch.
+//! Whether two of the runtime guards ([`transition::runtime_guards`]) hold
+//! once the service manager has loaded them: the stop guard of
+//! `blk-availability.service` ([`stop_guards`]) and the switch's timeout guard
+//! ([`switch_timeout`]). PID 1 is asked before the entry and before the way
+//! back that `deactivate` takes; a plain emergency asks nothing. The other
+//! runtime guards, the stop guard of NixOS's static addresses
+//! (`network-addresses-.service`) and the one that stops the D-Bus units at
+//! `shutdown.target`, are asked about in neither direction.
 //!
 //! systemd applies a unit's drop-ins in the order of their file names, so a
 //! drop-in that sorts after a guard can undo it, and one of the guard's own
@@ -11,7 +17,7 @@
 //! [`check_switch_timeout`]). The way back asks the hidden session's PID 1,
 //! whose own configuration, and whatever the session changed, can undo a guard
 //! as well, before it prepares anything ([`check_way_back`]). Each refuses
-//! unless every guard holds.
+//! unless both guards hold.
 
 use crate::error::{NailsError, Result};
 use nails_teardown::whole_root::plan::Direction;
@@ -76,6 +82,11 @@ pub struct Unheld {
     /// refusal; the way back names the two other ways to end the session
     /// instead.
     pub remedy: String,
+    /// What the hidden session can change itself for the guard to hold, which
+    /// a refused way back names before those two ways: only service
+    /// watchdogs turned off in the session, as nothing reloads PID 1 before
+    /// the way back.
+    pub in_session: Option<String>,
 }
 
 /// The name of the refusal over a stop guard.
@@ -117,6 +128,7 @@ pub fn stop_guards(host: &(impl GuardHost + ?Sized)) -> Result<Option<Unheld>> {
                     "Remove the ExecStop= from that drop-in (`systemctl cat {unit}` shows \
                      where it is)"
                 ),
+                in_session: None,
             }));
         }
     }
@@ -200,14 +212,18 @@ fn skipped_step(direction: Direction) -> &'static str {
 /// timeout ("Watchdog disabled! Not acting on: job timed out"), or when the
 /// unit has no timeout (`JobTimeoutSec=infinity`, or `0`): the switch would
 /// then stay hung, the hidden volume's key in RAM, until someone powers off.
-/// An answer it cannot read refuses as well.
+/// An answer it cannot read refuses as well, a timeout that reads as no span
+/// of time ([`is_timespan`]) among them.
 ///
 /// Every reload of PID 1 sets service watchdogs to what the kernel command
-/// line says (`systemd.service_watchdogs=`, on by default) before it reloads,
-/// so after the entry's reload a `systemctl service-watchdogs no` no longer
-/// counts and only the command line can turn them off; the fix names it. The
-/// way back reloads nothing, so there a `systemctl service-watchdogs no` in
-/// the session counts until the next reload.
+/// line says (`systemd.service_watchdogs=`, on by default), and with systemd
+/// 257 and older the `SystemdOptions` EFI variable too, before it reloads. So
+/// after the entry's reload a `systemctl service-watchdogs no` no longer
+/// counts, and only those two can turn them off; the entry's fix names both.
+/// The way back reloads nothing, so there a `systemctl service-watchdogs no`
+/// in the session counts until the next reload, and a
+/// `systemctl service-watchdogs yes` turns them back on just as well: the
+/// way back's refusal names that.
 pub fn switch_timeout(
     host: &(impl GuardHost + ?Sized),
     direction: Direction,
@@ -234,6 +250,7 @@ pub fn switch_timeout(
                      shows where it is)"
                 ),
             },
+            in_session: None,
         }));
     }
     let watchdogs = host.service_watchdogs()?;
@@ -249,11 +266,17 @@ pub fn switch_timeout(
                      stopped, the hidden volume's key in RAM, until the machine is powered off \
                      by hand"
                 ),
-                remedy: "Remove `systemd.service_watchdogs=0` from the kernel command line \
-                         (every reload of PID 1, the one activation makes included, sets service \
-                         watchdogs to what it says, so `systemctl service-watchdogs yes` does not \
-                         last), boot again"
+                remedy: "Remove `systemd.service_watchdogs=` from the kernel command line, and \
+                         with systemd 257 or older from the SystemdOptions EFI variable \
+                         (`bootctl systemd-efi-options`): every reload of PID 1, the one \
+                         activation makes included, sets service watchdogs to what those say, \
+                         so `systemctl service-watchdogs yes` does not last. Then boot again"
                     .to_string(),
+                in_session: (direction == Direction::Leave).then(|| {
+                    "Turn service watchdogs back on with `sudo systemctl service-watchdogs yes` \
+                     and deactivate again"
+                        .to_string()
+                }),
             }));
         }
         other => {
@@ -284,9 +307,35 @@ pub fn switch_timeout(
                      shows the drop-in or unit file that has it)"
                 ),
             },
+            in_session: None,
         })),
-        _ => Ok(None),
+        timeout if is_timespan(timeout) => Ok(None),
+        other => Err(NailsError::InvalidState(format!(
+            "systemctl show printed JobTimeoutUSec={other} for {unit}, which reads as no span \
+             of time"
+        ))),
     }
+}
+
+/// Whether `text` reads as a span of time as `systemctl show` prints one
+/// (systemd's `format_timespan()`): `0`, or numbers each followed by its unit
+/// and set apart by a space, as in `30min`, `1min 30s` or `1.500000s`.
+/// `infinity`, the one other answer, is no span.
+fn is_timespan(text: &str) -> bool {
+    const UNITS: [&str; 9] = ["y", "month", "w", "d", "h", "min", "s", "ms", "us"];
+    let number = |digits: &str| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    text == "0"
+        || (!text.is_empty()
+            && text.split(' ').all(|part| {
+                let (amount, unit) =
+                    part.split_at(part.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(0));
+                UNITS.contains(&unit)
+                    && amount
+                        .split_once('.')
+                        .map_or(number(amount), |(whole, fraction)| {
+                            number(whole) && number(fraction)
+                        })
+            }))
 }
 
 /// The entry's refusal of `unheld`, a guard that does not hold in the decoy's
@@ -316,12 +365,13 @@ pub fn check_switch_timeout(host: &(impl GuardHost + ?Sized)) -> Result<()> {
     refuse_entry(switch_timeout(host, Direction::Enter)?)
 }
 
-/// Refuse the way back unless every runtime guard holds in the hidden
-/// session's PID 1, as the entry checked them in the decoy's: the stop
-/// guards' units run no stop command ([`stop_guards`]), and a switch that
-/// hangs until its job timeout powers the machine off ([`switch_timeout`]).
-/// A PID 1 that cannot be asked refuses it too. The refusal names the two
-/// other ways to end the session ([`way_back_endings`]).
+/// Refuse the way back unless the guards the entry checked in the decoy's
+/// PID 1 hold in the hidden session's: `blk-availability.service` runs no
+/// stop command ([`stop_guards`]), and a switch that hangs until its job
+/// timeout powers the machine off ([`switch_timeout`]). A PID 1 that cannot
+/// be asked refuses it too. The refusal names the two other ways to end the
+/// session ([`way_back_fix`]), after what the session can change itself for
+/// the guard to hold, where there is such a thing.
 pub fn check_way_back(host: &(impl GuardHost + ?Sized)) -> Result<()> {
     let asked = |check: &'static str, found: Result<Option<Unheld>>| {
         found.map_err(|error| match error {
@@ -333,33 +383,40 @@ pub fn check_way_back(host: &(impl GuardHost + ?Sized)) -> Result<()> {
         Some(unheld) => Ok(Some(unheld)),
         None => asked(SWITCH_TIMEOUT, switch_timeout(host, Direction::Leave)),
     });
-    let (check, reason) = match unheld {
+    let (check, reason, in_session) = match unheld {
         Ok(None) => return Ok(()),
-        Ok(Some(unheld)) => (unheld.check, unheld.reason),
+        Ok(Some(unheld)) => (unheld.check, unheld.reason, unheld.in_session),
         Err((check, error)) => (
             check,
             format!(
                 "the hidden session's PID 1 could not be asked whether its guards hold: {error}"
             ),
+            None,
         ),
     };
     Err(NailsError::PreFlightCheckFailed(vec![(
         check.to_string(),
         reason,
-        Some(way_back_endings()),
+        Some(way_back_fix(in_session.as_deref())),
     )]))
 }
 
-/// The two other ways to end the session that a refused way back names:
-/// `deactivate --poweroff`, whose power-off goes through no soft-reboot, and
-/// `emergency`, which does not ask PID 1 about the guards.
-fn way_back_endings() -> String {
+/// The fix of a refused way back: what the session can change itself for the
+/// guard to hold (`in_session`), where there is such a thing, then the two
+/// other ways to end the session, `deactivate --poweroff`, whose power-off
+/// goes through no soft-reboot, and `emergency`, which does not ask PID 1
+/// about the guards.
+fn way_back_fix(in_session: Option<&str>) -> String {
     use nails_base::next_step::{NextStep, sudo_line};
-    format!(
-        "End the session with `{}`, which powers off, or with `{}`",
+    let endings = format!(
+        "the session with `{}`, which powers off, or with `{}`",
         sudo_line(NextStep::DeactivatePoweroff),
         sudo_line(NextStep::Emergency)
-    )
+    );
+    match in_session {
+        Some(change) => format!("{change}, or end {endings}"),
+        None => format!("End {endings}"),
+    }
 }
 
 #[cfg(test)]
