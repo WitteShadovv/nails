@@ -117,8 +117,10 @@ use crate::Filesystem;
 use backstop::Forms;
 pub(super) use command_line::{CommandLine, Start};
 #[cfg(test)]
+pub(super) use install::ENVIRONMENT;
+#[cfg(test)]
 pub(super) use install::tests::seed_coreutils;
-pub(super) use install::{ENVIRONMENT, Install, LOADER, lossy};
+pub(super) use install::{Install, LOADER, kept, lossy};
 use install::{dircolors_split, profile_words};
 use lexer::Word;
 #[cfg(test)]
@@ -592,6 +594,11 @@ impl<F: Filesystem> Reader<'_, F> {
             Event::Completes { function, what } => self.completion.completes(function, what, place),
             Event::Style(doubt) => self.completion.style(doubt),
             Event::Function(name) => self.completion.function(name, place),
+            Event::CodeParameter { name, local } => {
+                if !local {
+                    self.completion.code_parameter(name, place);
+                }
+            }
             event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
                 self.reading_event(event, place);
             }
