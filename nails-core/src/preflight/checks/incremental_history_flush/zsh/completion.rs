@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What zsh may run as you complete a word (Tab, `^D`) that is no code of
-//! zsh's own, once the files run its stock `compinit`. The check reads the
-//! completion functions zsh ships as harmless, and those packages put in the
-//! Nix profiles too, which `fpath` names in front of zsh's own on NixOS; it
-//! does not read either. So it doubts what may make zsh run code of the
+//! zsh's own, once the files autoload its stock `compinit`. The check takes
+//! the completion functions zsh ships for harmless, and those packages put in
+//! the Nix profiles too, which `fpath` names in front of zsh's own on NixOS,
+//! without reading either. So it doubts what may make zsh run code of the
 //! files' own instead: a completion function, a file whose name starts with
 //! `_`, in any other directory of `fpath` (`fpath=(~/zc $fpath)`), which
 //! `compinit` marks to be autoloaded, and a completer, a completion widget's
@@ -27,12 +27,12 @@ use crate::Filesystem;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-/// The parameters of zsh's completion system that hold code it runs or the
-/// names of the functions it runs as you complete a word: the completion of
-/// each command, pattern and service (`_dispatch` runs each with `eval`),
-/// the flags of the functions marked to be autoloaded, the functions
-/// `_main_complete` runs before and after it completes, and the code it runs
-/// first.
+/// The parameters of zsh's completion system that hold code it runs, or
+/// pick it, as you complete a word: the completion of each command and
+/// pattern, which `_dispatch` runs with `eval`, the service each command is
+/// completed as, the flags of the functions marked to be autoloaded, the
+/// functions `_main_complete` runs before and after it completes, and the
+/// code it runs first.
 const PARAMETERS: [&str; 8] = [
     "_comps",
     "_patcomps",
