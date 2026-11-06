@@ -6,10 +6,15 @@
 //! The JSON report lists every inherited entry with what becomes of it; the
 //! human listing shows only the entries that need review or are masked, counts
 //! the desktop's and distribution's own components, and says on a line of its
-//! own when the hidden session starts in the decoy home (`shared-home`).
+//! own when the hidden session starts in the decoy home (`shared-home`). A
+//! place the inventory could not read gets a warning line of its own, and
+//! while there is one the listing never says that nothing is inherited.
+
+use std::path::Path;
 
 use nails_core::EntryStatus;
 use nails_core::app::readiness::{InheritedEntry, InheritedSummary};
+use nails_core::filesystem::automount::mount_fix;
 use nails_core::output::{Mark, Style};
 
 use crate::cli::output::count_noun;
@@ -43,7 +48,7 @@ pub fn inherited_lines(
         .iter()
         .filter(|entry| entry.status != EntryStatus::Ignored.as_str())
         .collect();
-    if listed.is_empty() {
+    if listed.is_empty() && summary.not_read.is_empty() {
         let none = if summary.entries.is_empty() {
             "none inherited"
         } else {
@@ -70,6 +75,26 @@ pub fn inherited_lines(
             Mark::Bullet,
             format!("{} ({}){tags}", entry.name, entry.source),
         ));
+    }
+
+    for place in &summary.not_read {
+        lines.push(style.marked(
+            Mark::Warn,
+            format!("not read: {} ({})", place.path, place.reason),
+        ));
+    }
+    let mut points: Vec<&Path> = Vec::new();
+    for point in summary
+        .not_read
+        .iter()
+        .filter_map(|place| place.automount_point.as_deref())
+    {
+        if !points.contains(&Path::new(point)) {
+            points.push(Path::new(point));
+        }
+    }
+    if !points.is_empty() {
+        lines.push(style.marked(Mark::Info, mount_fix(&points)));
     }
 
     let ignored = summary.count(EntryStatus::Ignored);
@@ -120,7 +145,7 @@ pub fn inherited_lines(
 mod tests {
     use super::*;
     use nails_core::config::{PersonaConfig, PersonaMode};
-    use nails_core::{InheritedSource, PersonaEntry, PersonaInventory};
+    use nails_core::{InheritedSource, NotRead, PersonaEntry, PersonaInventory};
 
     const PLAIN: Style = Style {
         color: false,
@@ -136,6 +161,7 @@ mod tests {
                 PersonaEntry::new("pipewire.socket", InheritedSource::GlobalUnit),
                 PersonaEntry::new("alice", InheritedSource::Linger),
             ],
+            ..PersonaInventory::default()
         }
     }
 
@@ -235,6 +261,7 @@ mod tests {
                 "gnome-keyring-ssh",
                 InheritedSource::GlobalAutostart,
             )],
+            ..PersonaInventory::default()
         };
         let summary = InheritedSummary::from_inventory(&inventory, &persona(&[]));
         let lines = inherited_lines(&summary, "fresh-home", PLAIN);
@@ -245,6 +272,73 @@ mod tests {
         assert_eq!(
             inherited_lines(&empty, "fresh-home", PLAIN),
             vec!["[PASS] none inherited"]
+        );
+    }
+
+    /// A place the inventory could not read gets a warning line; while there
+    /// is one, the listing never says nothing is inherited or to review, and
+    /// it says once how to mount the automount points it names.
+    #[test]
+    fn a_place_not_read_warns_and_keeps_the_pass_line_out() {
+        let not_read = |path: &str, reason: &str, point: Option<&str>| NotRead {
+            path: path.into(),
+            reason: reason.to_string(),
+            automount_point: point.map(Into::into),
+            entry: None,
+        };
+        let autostart = "NAILS does not look up /home/carol/.config/autostart, since the lookup \
+                         would mount the automount point /home/carol";
+        let units = "NAILS does not look up /home/carol/.config/systemd/user, since the lookup \
+                     would mount the automount point /home/carol";
+        let linger = "NAILS cannot look up /var/lib/systemd/linger/carol; run the command again \
+                      with sudo";
+        let inventory = PersonaInventory {
+            not_read: vec![
+                not_read(
+                    "/home/carol/.config/autostart",
+                    autostart,
+                    Some("/home/carol"),
+                ),
+                not_read(
+                    "/home/carol/.config/systemd/user",
+                    units,
+                    Some("/home/carol"),
+                ),
+                not_read("/var/lib/systemd/linger/carol", linger, None),
+            ],
+            ..PersonaInventory::default()
+        };
+        let summary = InheritedSummary::from_inventory(&inventory, &persona(&[]));
+        let fix = mount_fix(&[Path::new("/home/carol")]);
+        assert_eq!(
+            inherited_lines(&summary, "fresh-home", PLAIN),
+            vec![
+                format!("[WARN] not read: /home/carol/.config/autostart ({autostart})"),
+                format!("[WARN] not read: /home/carol/.config/systemd/user ({units})"),
+                format!("[WARN] not read: /var/lib/systemd/linger/carol ({linger})"),
+                format!("[INFO] {fix}"),
+            ]
+        );
+
+        // Beside entries that need no review, no "nothing to review" either,
+        // and without an automount point, no fix line.
+        let inventory = PersonaInventory {
+            entries: vec![PersonaEntry::new(
+                "gnome-keyring-ssh",
+                InheritedSource::GlobalAutostart,
+            )],
+            not_read: vec![not_read("/var/lib/systemd/linger/carol", linger, None)],
+        };
+        let summary = InheritedSummary::from_inventory(&inventory, &persona(&[]));
+        let lines = inherited_lines(&summary, "fresh-home", PLAIN);
+        assert_eq!(
+            lines,
+            vec![
+                format!("[WARN] not read: /var/lib/systemd/linger/carol ({linger})"),
+                "[INFO] 1 component of the desktop or distribution not listed (--json lists \
+                 every entry)"
+                    .to_string(),
+            ]
         );
     }
 }

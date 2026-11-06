@@ -49,7 +49,8 @@ pub mod sleep_guard;
 pub mod watcher;
 
 pub use persona::{
-    EntryStatus, InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona,
+    EntryStatus, InheritedSource, NotRead, PersonaEntry, PersonaInventory,
+    collect_inherited_persona,
 };
 
 // For the tests of code that must never open a FIFO.

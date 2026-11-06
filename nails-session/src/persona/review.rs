@@ -15,9 +15,10 @@
 //!   writers, lingering and autologin.
 //!
 //! It also decides which masks activation writes: one for every maskable entry
-//! the configuration names, and one for every name it lists that the inventory
-//! does not, so a directory the collector does not read never drops a mask the
-//! operator asked for.
+//! the configuration names, one for every autostart entry the inventory could
+//! not decide that it names or covers with `"*"`, and one for every name it
+//! lists that the inventory does not, so a directory the collector does not
+//! read never drops a mask the operator asked for.
 
 use super::classify::unit_stem;
 use super::inventory::{PersonaEntry, PersonaInventory};
@@ -92,8 +93,10 @@ impl PersonaEntry {
 
 impl PersonaInventory {
     /// The masks `persona` asks activation to write: every maskable entry it
-    /// names (all of them with `"*"`), then every name it lists that matches no
-    /// maskable entry ([`Self::unmatched_masks`]), judged by its suffix (see
+    /// names (all of them with `"*"`), then every entry the inventory could
+    /// not decide ([`Self::undecided`]) that it names or covers with `"*"`,
+    /// since the hidden session may start it, then every name it lists that
+    /// matches neither ([`Self::unmatched_masks`]), judged by its suffix (see
     /// [`MaskKind::for_name`]). A name that is not a single file name is never
     /// a target, and no target appears twice.
     pub fn mask_targets(&self, persona: &PersonaConfig) -> Vec<MaskTarget> {
@@ -109,6 +112,11 @@ impl PersonaInventory {
             };
             push_target(&mut targets, &entry.name, kind);
         }
+        for (name, source) in self.undecided() {
+            if source.is_autostart() && persona.masks_inherited(name) {
+                push_target(&mut targets, name, MaskKind::Autostart);
+            }
+        }
         for name in self.unmatched_masks(persona) {
             let kind = MaskKind::for_name(&name);
             push_target(&mut targets, &name, kind);
@@ -117,15 +125,18 @@ impl PersonaInventory {
     }
 
     /// The names `[persona] mask_inherited` lists that match no maskable
-    /// inherited entry, in configuration order. Activation masks them anyway;
-    /// `nails check` names them, since a typo lands here too.
+    /// inherited entry, nor one the inventory could not decide, in
+    /// configuration order. Activation masks them anyway; `nails check`
+    /// names them, since a typo lands here too.
     pub fn unmatched_masks(&self, persona: &PersonaConfig) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for name in &persona.mask_inherited {
             if name == "*" || !is_entry_name(name) || out.contains(name) {
                 continue;
             }
-            if !self.maskable().any(|entry| &entry.name == name) {
+            if !self.maskable().any(|entry| &entry.name == name)
+                && !self.undecided().any(|(undecided, _)| undecided == name)
+            {
                 out.push(name.clone());
             }
         }
@@ -234,6 +245,7 @@ mod tests {
                 PersonaEntry::new("syncthing.service", InheritedSource::GlobalUnit),
                 PersonaEntry::new("alice", InheritedSource::Linger),
             ],
+            ..PersonaInventory::default()
         };
         let persona = masking(&[
             "syncthing.service",
@@ -266,6 +278,7 @@ mod tests {
                 PersonaEntry::new("pipewire.socket", InheritedSource::GlobalUnit),
                 PersonaEntry::new("alice", InheritedSource::Autologin),
             ],
+            ..PersonaInventory::default()
         };
         let persona = masking(&["*", "dropbox", "extra"]);
         assert_eq!(inventory.unmatched_masks(&persona), vec!["extra"]);
@@ -276,6 +289,52 @@ mod tests {
                 target("pipewire.socket", MaskKind::Unit),
                 target("extra", MaskKind::Autostart),
             ]
+        );
+    }
+
+    /// An autostart entry the inventory could not decide may start in the
+    /// hidden session: `"*"` masks it, and so does its name; it is no name
+    /// that matches nothing.
+    #[test]
+    fn an_undecided_entry_is_masked_where_the_configuration_covers_it() {
+        let not_read = |name: &str| {
+            crate::persona::NotRead {
+                path: format!("/etc/xdg/autostart/{name}.desktop").into(),
+                reason: format!("NAILS cannot look up /etc/xdg/autostart/{name}.desktop"),
+                automount_point: None,
+                entry: None,
+            }
+            .of_entry(name, InheritedSource::GlobalAutostart)
+        };
+        let inventory = PersonaInventory {
+            entries: vec![PersonaEntry::new("dropbox", InheritedSource::UserAutostart)],
+            not_read: vec![
+                not_read("sync"),
+                crate::persona::NotRead {
+                    path: "/var/lib/systemd/linger/alice".into(),
+                    reason: "NAILS cannot look up /var/lib/systemd/linger/alice".to_string(),
+                    automount_point: None,
+                    entry: None,
+                },
+            ],
+        };
+        assert_eq!(
+            inventory.mask_targets(&masking(&["*"])),
+            vec![
+                target("dropbox", MaskKind::Autostart),
+                target("sync", MaskKind::Autostart),
+            ]
+        );
+        assert_eq!(
+            inventory.mask_targets(&masking(&["dropbox"])),
+            vec![target("dropbox", MaskKind::Autostart)],
+            "a name the configuration does not cover is not masked"
+        );
+        let named = masking(&["sync"]);
+        assert!(inventory.unmatched_masks(&named).is_empty());
+        assert_eq!(
+            inventory.mask_targets(&named),
+            vec![target("sync", MaskKind::Autostart)]
         );
     }
 
@@ -308,6 +367,7 @@ mod tests {
                 PersonaEntry::new("xdg-user-dirs", InheritedSource::GlobalAutostart),
                 PersonaEntry::new("syncthing.service", InheritedSource::UserUnit),
             ],
+            ..PersonaInventory::default()
         };
         let persona = masking(&["syncthing.service"]);
         let names = |status| {
