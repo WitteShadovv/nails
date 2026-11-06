@@ -260,7 +260,8 @@ distroVm.buildVmTest {
 
     def prepare_boot():
         # Everything a fresh boot loses: the 9p shares (nix-vm-test mounts
-        # them only once, before this script) and the /run config.
+        # them only once, before this script) and the /run config. The apt
+        # timers are stopped, so that no daily run refuses an activation.
         vm.wait_for_unit("multi-user.target")
         for tag, target in (
             ("${binShare.tag}", "${binShare.target}"),
@@ -273,6 +274,8 @@ distroVm.buildVmTest {
             )
         vm.succeed(f"test -x {nails} && test -x {installer}/install")
         write_config()
+        vm.succeed("""${hiddenRoot.stopAptTimers}""")
+        vm.wait_until_succeeds("""${hiddenRoot.aptRunsEnded}""", timeout=900)
 
 
     def qmp(command: str, arguments: dict[str, Any] | None = None) -> Any:

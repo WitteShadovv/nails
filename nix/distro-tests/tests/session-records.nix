@@ -126,6 +126,8 @@ distroVm.buildVmTest {
     def prepare_boot():
         # Everything a soft-reboot drops: the once-mounted 9p binary share and
         # the /run config. The record files live on the decoy root and persist.
+        # The apt timers are stopped, so that no daily run refuses an
+        # activation.
         vm.wait_for_unit("multi-user.target")
         vm.succeed(
             "mkdir -p ${binShare.target} && "
@@ -135,6 +137,8 @@ distroVm.buildVmTest {
         )
         vm.succeed(f"test -x {nails}")
         write_config()
+        vm.succeed("""${hiddenRoot.stopAptTimers}""")
+        vm.wait_until_succeeds("""${hiddenRoot.aptRunsEnded}""", timeout=900)
 
 
     def qmp(command: str, arguments: dict[str, Any] | None = None) -> Any:
