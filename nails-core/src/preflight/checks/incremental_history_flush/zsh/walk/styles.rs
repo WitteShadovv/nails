@@ -105,15 +105,18 @@ const DATA_STYLES: [&str; 69] = [
 /// `:completion:`: one an expansion, brace expansion or a glob may make, or
 /// one whose literal start, its part before its first character that may
 /// start a pattern, either starts with `:completion:` or is the start of it
-/// (`:prompt:*`, `:vcs_info:*` match none). A pattern with a `|` anywhere
-/// may: zsh reads one outside parentheses too as parting alternatives
-/// (`x|:completion:*`). zsh compiles a pattern with the options on as
+/// (`:prompt:*`, `:vcs_info:*` match none). A pattern with a `|` outside
+/// parentheses and brackets may, as zsh reads one there too as parting
+/// alternatives (`x|:completion:*`), and so may one whose parentheses do not
+/// close; a `|` inside them parts alternatives of their group alone, past
+/// the literal start (`:vcs_info:(git|svn):*`). zsh compiles a pattern with
+/// the options on as
 /// `zstyle` runs, so a character that starts one with `KSH_GLOB` (`@(`, `+(`,
 /// `!(`) ends the literal start too, and one that `EXTENDED_GLOB` may make
 /// repeat zero times (`x#:completion:*`, `x(#c0,1):completion:*`) is no
 /// part of it.
 pub(super) fn completion_context(pattern: &Word) -> bool {
-    if computed(pattern) || pattern.bare || pattern.text.contains('|') {
+    if computed(pattern) || pattern.bare || top_level_bar(&pattern.text) {
         return true;
     }
     let chars: Vec<char> = pattern.text.chars().collect();
@@ -129,6 +132,34 @@ pub(super) fn completion_context(pattern: &Word) -> bool {
         literal.push(*c);
     }
     ":completion:".starts_with(&literal) || literal.starts_with(":completion:")
+}
+
+/// Whether `text`, a zsh pattern, holds a `|` outside parentheses and
+/// brackets, past a backslash's character, or parentheses that do not
+/// close, in which zsh may read a `|` so.
+fn top_level_bar(text: &str) -> bool {
+    let mut depth = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '[' => {
+                // A class runs to its `]`, one that comes first in it too.
+                chars.next_if(|next| matches!(next, '^' | '!'));
+                chars.next_if_eq(&']');
+                if !chars.by_ref().any(|next| next == ']') {
+                    return depth > 0;
+                }
+            }
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    depth > 0
 }
 
 /// Whether `text`, a value of the `menu` style, is one `_main_complete`

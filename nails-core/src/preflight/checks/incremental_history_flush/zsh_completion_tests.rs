@@ -850,6 +850,8 @@ fn a_style_whose_pattern_may_match_a_completion_context_by_its_options_is_read()
         "x|:completion:*",
         "(x|:completion:*)",
         "(#i):COMPLETION:*",
+        ":vcs_info:(git)|:completion:*",
+        ":vcs_info:(git:*",
     ] {
         for style in ["menu 'select=1+x'", "max-verbose 5", "cache-path ~/cc"] {
             let line = format!("zstyle '{pattern}' {style}");
@@ -863,12 +865,16 @@ fn a_style_whose_pattern_may_match_a_completion_context_by_its_options_is_read()
             );
         }
     }
-    // One whose literal start no option makes match none.
+    // One whose literal start no option makes match none, a `|` inside its
+    // parentheses or brackets among it.
     for pattern in [
         ":vcs_info:*",
         ":zle:*",
         ":complexion:*",
         ":COMPLETION(#i):*",
+        ":vcs_info:(git|svn):*",
+        ":vcs_info:(sv[nk]|bzr):*",
+        ":vcs_info:[|]:*",
     ] {
         assert_eq!(
             found(&format!("{COMPINIT}zstyle '{pattern}' menu 'select=1+x'\n")),

@@ -1567,10 +1567,11 @@ afterwards:
     The code of a `command` style, which `_call_program` runs, is a hook's
     wherever it stands, and one an expansion makes is a doubt. A completion
     style, one whose pattern may match a context of zsh's completion system
-    (`':completion:*'`, `'*'`, one with a `|`, which zsh reads as parting
-    alternatives anywhere in it, and one that `KSH_GLOB` or `EXTENDED_GLOB`,
-    on as `zstyle` runs, may make match, as `@(:completion):*` or
-    `x#:completion:*`), is read as zsh's own completion functions read
+    (`':completion:*'`, `'*'`, one with a `|` outside its parentheses and
+    brackets, which zsh reads as parting alternatives of the whole pattern,
+    and one that `KSH_GLOB` or `EXTENDED_GLOB`, on as `zstyle` runs, may make
+    match, as `@(:completion):*` or `x#:completion:*`), is read as zsh's own
+    completion functions read
     its value: a style they only test for true or read as data passes with any
     value (`verbose`, `list-colors`, `matcher-list`, `group-name`,
     `special-dirs`, `rehash` and the like), a value of `menu`, `range` or

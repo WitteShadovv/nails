@@ -1029,8 +1029,8 @@ of this changelog for that version becomes the release notes word for word, and
   `debug_fd` that is a plain number and a `MODULEPATH` without an expansion). Every function of the files' own is a hook there, one they
   define or autoload from a file of their own, and the code of a `command` style is a hook's, one
   an expansion makes a doubt. A completion style is read as zsh's own completion functions read
-  it, where its pattern may match a completion context (one with a `|`, and one `KSH_GLOB` or
-  `EXTENDED_GLOB` may make match): one they only test for true or read as data
+  it, where its pattern may match a completion context (one with a `|` outside its parentheses and
+  brackets, and one `KSH_GLOB` or `EXTENDED_GLOB` may make match): one they only test for true or read as data
   passes with any value (`verbose`, `list-colors`, `matcher-list`, `group-name` and 65 more), and a
   value of `menu`, `range` or `select-scroll` that is no plain number, a
   `format` or `tag-order` with a `%(` or an expansion (`$'...'`, `"%F{$c}"`), a `file-patterns`
