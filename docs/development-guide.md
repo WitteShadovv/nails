@@ -80,7 +80,8 @@ and opaque directories, and the test of the whole upper-filesystem probe. The
 other two bind loop devices, which only root of the initial namespace may, to
 read the loop driver's record of the file behind one: on a tmpfs, and on a
 btrfs filesystem the test makes with `mkfs.btrfs` (btrfs-progs), which must be
-on `PATH`. They are `#[ignore]`d and CI runs them in the dedicated
+on `PATH`. Both also mount a FUSE filesystem through `/dev/fuse`, which no
+daemon serves. They are `#[ignore]`d and CI runs them in the dedicated
 `privileged-mounts` job of `ci.yml` on every PR, which `gate` aggregates.
 
 The whole-root session's mechanics have a rootless real-kernel tier of their
