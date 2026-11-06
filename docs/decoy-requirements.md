@@ -789,34 +789,71 @@ install, which then runs on into the switch. At the way back with
 `nails deactivate` the hidden session's own copy of the helper installs them
 into the session's overlay. `decoy-persistence` refuses while the decoy's
 helper runs with the setting on, and `--allow-persistent-decoy` turns that
-into a warning for one run. It reads the setting as apt reads it: each file of
+into a warning for one run. It reads the setting as apt reads it: first the
+file the helper's `APT_CONFIG` names, if it runs with one, then each file of
 `/etc/apt/apt.conf.d` that apt reads, in apt's order (a name with an
 extension other than `.conf`, such as `.bak` or `.dpkg-old`, one starting with
 a dot, one with other characters than letters, digits, `_`, `-`, `:` and `.`,
 one ending with a dot, and what is not a file are skipped, as apt skips them),
 then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file
-NAILS cannot read or that apt refuses, a line NAILS does not read the way apt
-does (one longer than 4000 bytes, or with a NUL byte in it), an `#include`,
-and a `Dir` or `RootDir` setting, which move the files apt reads, leave the
-setting unknown, and `decoy-persistence` refuses that as if it were on. So do
+NAILS cannot read, a line NAILS does not read the way apt does (one longer
+than 4000 bytes, or with a NUL byte in it), an `#include`, and a `Dir` or
+`RootDir` setting, which move the files apt reads, leave the setting unknown,
+and `decoy-persistence` refuses that as if it were on. So do
 a file name and a value of the setting with a byte beyond ASCII: apt runs in
 the system's locale, which decides whether it takes such a byte for a letter
 of a file name it reads (`é` in ISO-8859-1, but not in a UTF-8 locale) and
 how it compares a value with its words for true and false (`İ` in ISO-8859-9
 lowercases to `i`, so `WİTH` reads as `with`), so NAILS cannot tell what apt
-makes of it. NAILS does not read `APT_CONFIG`, which the helper's unit does
-not set.
+makes of it.
+
+A file apt refuses is refused as well, and `--allow-persistent-decoy` lifts
+that with the rest, but the refusal says what happens then: at every
+activation the decoy's helper reads apt's configuration again, finds that file
+refused and installs nothing, but writes two ERROR lines, `Apt returned an
+error thus shutdown mode is disabled` and apt's message. They go to its log on
+the decoy disk, `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log`,
+or to the journal if the helper started with the file already refused, as it
+then logs there for its whole run. The refusal names the file and the line to
+fix.
+
+The helper's unit sets no `APT_CONFIG`, but PID 1's environment, a drop-in of
+the unit or `systemctl set-environment` can give it one, and apt then reads the
+file it names before every other. NAILS reads that one variable from the
+environment of the running helper's processes, those its unit's cgroup lists
+(`/proc/<pid>/environ`, which only root can read), keeps nothing else of it,
+and reads the file first as apt does. It cannot tell, and refuses, when that
+environment cannot be read, as by a `nails check` run without sudo, when the
+file cannot be read, when the variable names a relative path or one with
+`..`, and when the processes run with different values. The hidden session's
+own copy is read with the same file, as the session starts it from the same
+files of the decoy.
 
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a
 line deleted after it started stays in effect until
 `unattended-upgrades.service` restarts or the machine reboots, while an
-explicit `false` wins on the signal. What it read first also decides which
-files it reads on the signal: after a `Dir` or `RootDir` line that moved them
-was removed, it still reads the files that line named, which NAILS does not
-read, so the setting NAILS reads need not be the one the helper reads. Restart
-the helper or reboot after removing such a line. NAILS reads only the files,
-so it cannot see what the running helper still holds.
+explicit `false`, or a `#clear` of it, wins on the signal. So when no file
+sets the setting, `decoy-persistence` cannot tell whether the running helper
+still holds a `true` once apt's configuration changed after the helper
+started, and refuses that as well, `--allow-persistent-decoy` lifting it like
+the rest: one of the files apt reads, `/etc/apt`, where `apt.conf` lies, or
+`/etc/apt/apt.conf.d`, where a deleted part shows. It compares their change
+time, which neither `touch -d` nor dpkg sets back as they set a file's
+modification time, with the helper's start: the earlier of systemd's
+invocation marker of `unattended-upgrades.service` and the start of each of
+its processes, so that a step of the clock either way after the start leaves
+one of them early enough. A change in the second the helper started counts,
+as a filesystem may keep change times to the second. A symbolic link among
+those files or on the way to them, whose target's change NAILS does not
+follow, counts as a change. This also refuses a decoy after an update of a
+package that ships a file of `/etc/apt/apt.conf.d`, until the helper
+restarts: set the setting to `false` once, or reboot. What the helper read
+first also decides which files it reads on the signal: after a `Dir` or
+`RootDir` line that moved them was removed, it still reads the files that
+line named, which NAILS does not read, so where a file NAILS reads sets the
+setting, the one the helper reads need not be the same. Restart the helper or
+reboot after removing such a line.
 
 Without python3-gi, which unattended-upgrades only suggests and Debian 13's
 cloud image does not install, the helper cannot wait for logind's signal: each
@@ -1407,7 +1444,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Snapper timeline snapshots](#session-time-records) (`snapper-timeline`) | `/.snapshots`, `/var/lib/snapper` | all | path probe (info) | path probe (info) | Keep the overlay upper on the hidden volume, which NAILS enforces, so a decoy snapshot never captures a session's writes; disable the snapper timeline timer on the decoy if you want no snapshot dating the machine's activity. | none: asserted on a btrfs decoy with snapper by the cross-distro forensic probe once those images boot |
 | [Copy-on-write and compressed storage history](threat-model.md#residual-channels) (`btrfs-cow-history`) | old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs, zfs or an f2fs mount with compression | all | none: a copy-on-write or compressed decoy is a property of the decoy's own storage, not a session write | none: a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean: a mounted one (a zfs dataset included) by its mount, an image or an unmounted device by its superblock, and a whole disk partition by partition, where an encrypted partition, or one on which no filesystem is identified, is not checked either | Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean. | none: the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems |
 | [Fedora GRUB boot-success state](#session-time-records) (`grubenv-boot-success`) | `/boot/grub2/grubenv`, `/boot/efi/EFI/fedora/grubenv` | Fedora | none: Fedora's boot-success flag is written by the decoy's own boot after the switch; NAILS binds /boot and the ESP read-only during a session, so the session never writes it | path probe (info) | Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot. | none: asserted on the Fedora decoy by the cross-distro forensic probe once its image boots |
-| [unattended-upgrades set to install at shutdown](#unattended-upgrades) (`unattended-upgrades-install-on-shutdown`) | `/var/log/unattended-upgrades`, `/var/log/apt`, `/var/log/dpkg.log` | Debian | `decoy-persistence` (refuses) | none: the logs and the packages are the decoy's own, as after any shutdown that installs updates | Activation refuses while the decoy's helper runs with the setting on, or with an apt configuration NAILS cannot read or follow, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override |
+| [unattended-upgrades set to install at shutdown](#unattended-upgrades) (`unattended-upgrades-install-on-shutdown`) | `/var/log/unattended-upgrades`, `/var/log/apt`, `/var/log/dpkg.log` | Debian | `decoy-persistence` (refuses) | none: the logs and the packages are the decoy's own, as after any shutdown that installs updates | Activation refuses while the decoy's helper runs with the setting on, or with an apt configuration NAILS cannot read or follow, one apt refuses, or one that changed since the helper started while no file sets the setting, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override |
 | [A daily unattended-upgrade run at the switch](#unattended-upgrades) (`unattended-upgrades-run-at-the-switch`) | `/var/log/unattended-upgrades` | Debian | `unattended-upgrade-run` (refuses) | none: the lines are the decoy's own logs, as after a shutdown during a daily run | Activation refuses while apt-daily-upgrade.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run |
 | [unattended-upgrades' shutdown helper without python3-gi](#unattended-upgrades) (`unattended-upgrades-polling-without-python3-gi`) | `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log` | Debian | `decoy-persistence` | none: the lines are the decoy's own log, as after any start of the helper | decoy-persistence warns while the decoy's helper is enabled and python3-gi is not installed. Install it: apt install python3-gi. | none: asserted on Debian 13 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose stock decoy warns of it and whose helper adds a pair at the way back |
 | [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | `preflight-checks` |

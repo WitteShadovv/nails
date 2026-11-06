@@ -33,8 +33,10 @@
 //!   `Unattended-Upgrade::InstallOnShutdown` on: a switch through logind is a
 //!   shutdown to it, so at activation it installs the pending updates on the
 //!   decoy disk and logs that run there. An apt configuration NAILS cannot
-//!   read or does not follow leaves the setting unknown, which is refused as
-//!   if it were on (see [`install_on_shutdown`]).
+//!   read or does not follow, one apt refuses, and one that changed since the
+//!   helper started while no file sets the setting, as the helper keeps what
+//!   it read then, leave the setting unknown, which is refused as if it were
+//!   on (see [`install_on_shutdown`]).
 //!
 //! Warn (surface the hazard, never block):
 //! - an atime policy that records read access on the decoy (`strictatime` /
@@ -431,12 +433,13 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
         let logs = !log_blockers.is_empty();
         let kdump = kdump_blocker.is_some();
         let upgrade = upgrades.blocker.is_some();
-        // What the override lets happen is said only when NAILS found the
-        // setting on, not when it cannot tell.
-        let installs = upgrades
+        // What the override lets happen is said only where NAILS can tell:
+        // the install of a setting found on, or the ERROR lines of a file apt
+        // refuses.
+        let at_the_switch = upgrades
             .blocker
             .as_ref()
-            .is_some_and(|blocker| blocker.installs);
+            .map(|blocker| blocker.at_the_switch);
         let (upgrade_blocker, upgrade_fix) = upgrades
             .blocker
             .map(|blocker| (blocker.finding, blocker.fix))
@@ -465,11 +468,16 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
                          /var/crash on the decoy disk.",
                     );
                 }
-                if installs {
-                    msg.push_str(
+                match at_the_switch {
+                    Some(install_on_shutdown::AtTheSwitch::Installs) => msg.push_str(
                         " At the switch unattended-upgrades installs the pending updates on the \
                          decoy disk and logs that run there.",
-                    );
+                    ),
+                    Some(install_on_shutdown::AtTheSwitch::ErrorLines) => {
+                        msg.push(' ');
+                        msg.push_str(install_on_shutdown::ERROR_LINES);
+                    }
+                    Some(install_on_shutdown::AtTheSwitch::Unknown) | None => {}
                 }
                 if !warnings.is_empty() {
                     msg.push_str(&format!(" Also: {}.", warnings.join("; ")));
