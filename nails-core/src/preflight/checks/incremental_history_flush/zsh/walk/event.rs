@@ -136,6 +136,11 @@ pub(in super::super) enum Event {
     /// completer _w`, `zle -C w complete-word _w`); one an expansion makes,
     /// or code that makes it, may be any.
     Completes { function: Word, what: String },
+    /// A style of zsh's completion system is set where its value may make
+    /// zsh's own completion functions run code as you complete a word, as
+    /// the doubt says, which counts where the files run the stock `compinit`
+    /// (`zstyle ':completion:*' menu 'select=1+x'`).
+    Style(String),
     /// A global alias is defined, named `name` as written, by the word
     /// `text` (`G=| grep`). zsh puts its value in place of any token of code
     /// that is its name, a redirection's target (`/dev/tty`) or an operator

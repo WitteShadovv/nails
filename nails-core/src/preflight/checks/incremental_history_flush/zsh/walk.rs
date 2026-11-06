@@ -26,6 +26,7 @@ mod names;
 mod options;
 mod sets;
 mod strings;
+mod styles;
 mod unread;
 
 pub(super) use super::builtins::HOOKS;

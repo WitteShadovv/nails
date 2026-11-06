@@ -486,7 +486,7 @@ impl<F: Filesystem> Reader<'_, F> {
         self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
         let forms = self.lines(text, &place);
-        self.completion.parameters(&forms, &place);
+        self.completion.parameters(text, &forms, &place);
         self.reading(text, &forms, &place);
         self.shadows(&forms, &place, outer.as_deref());
         if backstop::names_any(text, &["globsubst"]) {
@@ -590,6 +590,7 @@ impl<F: Filesystem> Reader<'_, F> {
             }
             Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
             Event::Completes { function, what } => self.completion.completes(function, what, place),
+            Event::Style(doubt) => self.completion.style(doubt),
             event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
                 self.reading_event(event, place);
             }
