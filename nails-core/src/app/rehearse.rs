@@ -16,11 +16,14 @@
 //! an outcome without planting the canary in a log on the decoy, where the
 //! next scan would find it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nails_api::ExitStatus;
 
-use crate::hidden_root::{Assessment, Refusal, recorded_acceptance, refusal};
+use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
+use crate::hidden_root::{
+    Assessment, Refusal, RefusalKind, covered_mount, recorded_acceptance, refusal, separation,
+};
 use crate::rehearse::{
     self, ChannelRecord, Here, LiveSession, Phase, RehearsalState, ScanReport, ScanSummary,
     ScanTarget,
@@ -411,6 +414,7 @@ impl Rehearsal {
 
     /// Scan the decoy's storage for the canary.
     pub fn scan(&self, options: &ScanOptions) -> Result<ScanOutcome, RehearseFailure> {
+        self.refuse_covered_root(options)?;
         let (token, state) = self
             .scan_token(options)
             .map_err(|e| RehearseFailure::new(ExitStatus::InvalidState, "no_token", e))?;
@@ -517,6 +521,22 @@ impl Rehearsal {
         })
     }
 
+    /// [`covered_root`] for a scan of the mounted devices by default, the
+    /// only scan that skips the hidden volume. It comes first, as the
+    /// rehearsal state is read through the root too. A mount table that
+    /// cannot be read is left to the choice of the devices, which reports it.
+    fn refuse_covered_root(&self, options: &ScanOptions) -> Result<(), RehearseFailure> {
+        if options.offline || !options.devices.is_empty() {
+            return Ok(());
+        }
+        let Ok(mounts) = crate::filesystem::read_mountinfo() else {
+            return Ok(());
+        };
+        let root = &self.config.hidden_volume_root;
+        let hidden = root.canonicalize().unwrap_or_else(|_| root.clone());
+        covered_root(&mounts, &hidden).map_or(Ok(()), Err)
+    }
+
     /// The token for a scan, and the state it came from when it came from one.
     fn scan_token(
         &self,
@@ -577,6 +597,29 @@ impl Rehearsal {
             nails_teardown::loop_device::backing_filesystem,
         ))
     }
+}
+
+/// The refusal of a default scan while a second filesystem is mounted over
+/// the hidden root at `root` (resolved), as the attach gate refuses `plant`
+/// there ([`HiddenRoot::assess`]): the scan skips the hidden volume by the
+/// device mounted at the root, and of two filesystems there it cannot tell
+/// which is the volume. It would read the hidden volume and skip the disk
+/// over it. A second mount of the volume itself is no cover.
+fn covered_root(mounts: &[MountEntry], root: &Path) -> Option<RehearseFailure> {
+    let top = top_mount_at(mounts, root)?;
+    let below = covered_mount(mounts, top)?;
+    let refusal = Refusal::new(
+        RefusalKind::Covered {
+            below: separation::shown_fstype(&below.fstype),
+            above: separation::shown_fstype(&top.fstype),
+        },
+        root,
+    );
+    Some(RehearseFailure::new(
+        ExitStatus::PreflightRefused,
+        refusal.code(),
+        format!("{} {}", refusal.message(), refusal.hint(None).join(" ")),
+    ))
 }
 
 /// The live hidden session in `view`, `None` outside one. A hidden root whose
