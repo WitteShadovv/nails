@@ -22,12 +22,13 @@
 //! a warning for one run. The setting is read the way the helper reads it,
 //! through [`apt_conf`]: each file of `/etc/apt/apt.conf.d` apt reads, in
 //! apt's order, then `/etc/apt/apt.conf`, the last assignment winning. A file
-//! that cannot be read or that apt refuses, and whatever makes apt read other
-//! files than these (`#include`, a `Dir` or `RootDir` setting), leave the
-//! setting unknown, which is refused as if it were on. The helper reads the
-//! files again on the signal without forgetting what it read when it
-//! started, so a `false` there wins, while a line only deleted stays in
-//! effect until the helper restarts: the fix says to set it to false.
+//! that cannot be read or that apt refuses, a line NAILS does not read the
+//! way apt does, and whatever makes apt read other files than these
+//! (`#include`, a `Dir` or `RootDir` setting), leave the setting unknown,
+//! which is refused as if it were on. The helper reads the files again on
+//! the signal without forgetting what it read when it started, so a `false`
+//! there wins, while a line only deleted stays in effect until the helper
+//! restarts: the fix says to set it to false.
 //!
 //! The hidden session runs its own copy of the helper wherever the unit is
 //! enabled. At the way back through logind (`nails deactivate`) that copy
@@ -126,9 +127,16 @@ fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
         };
         let parsed = match apt_conf::parse(&bytes) {
             Ok(parsed) => parsed,
-            Err(e) => {
+            Err(e) if e.by_apt => {
                 return Setting::Unknown(format!(
                     "{} is refused by apt ({})",
+                    at(e.line),
+                    e.reason
+                ));
+            }
+            Err(e) => {
+                return Setting::Unknown(format!(
+                    "{} holds {}, which NAILS does not read",
                     at(e.line),
                     e.reason
                 ));

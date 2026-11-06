@@ -329,6 +329,28 @@ fn an_unreadable_or_oversized_file_is_refused_as_if_on() {
 }
 
 #[test]
+fn a_line_nails_does_not_read_is_not_called_refused_by_apt() {
+    // apt reads both lines; NAILS does not, and says so.
+    for (text, why) in [
+        (
+            format!("// {}\n{ON}", "x".repeat(apt_conf::MAX_LINE)),
+            "/etc/apt/apt.conf.d/99local:1 holds more than 4000 bytes, which NAILS does not read",
+        ),
+        (
+            "Foo \"x\0\";\n".to_string(),
+            "/etc/apt/apt.conf.d/99local:1 holds a NUL byte, which NAILS does not read",
+        ),
+    ] {
+        let tmp = stock(UBUNTU_24_04);
+        write(tmp.path(), "etc/apt/apt.conf.d/99local", text.as_bytes());
+        let message = blocker(&find(tmp.path())).to_string();
+        assert!(message.starts_with("NAILS cannot tell"), "{message}");
+        assert!(message.contains(why), "{message}");
+        assert!(!message.contains("refused by apt"), "{message}");
+    }
+}
+
+#[test]
 fn without_a_helper_running_or_starting_the_setting_does_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     write(

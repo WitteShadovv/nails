@@ -13,8 +13,9 @@
 //! statement ends at a `;`, a `{` or a `}` outside a quoted string. Each
 //! statement is a tag, its value (quoted strings, or one word), and the scope
 //! of the blocks around it. A file apt refuses is refused here, on the line
-//! apt names; a line longer than [`MAX_LINE`] bytes, or one with a NUL byte
-//! in it, which apt reads in pieces, is refused too.
+//! apt names, and so is a line NAILS does not read the way apt does: one
+//! longer than [`MAX_LINE`] bytes, and one with a NUL byte in it, at which
+//! apt stops reading the line.
 //!
 //! [`tags`] splits an item's name into the tags apt looks up, [`part_name`]
 //! tells the files of a parts directory apt reads from those it skips, and
@@ -23,8 +24,9 @@
 //! drives the reader with hostile input.
 
 /// The longest line, newline excluded, read the way apt reads it. apt reads a
-/// line in pieces of 4095 bytes and joins a piece to the next in a way that
-/// can join two lines, so a longer line is refused rather than read wrong.
+/// line in pieces of 4095 bytes, its newline included, and when the last
+/// piece of a line fills one exactly, it joins the next line to it. So a line
+/// longer than this is refused rather than read wrong.
 pub const MAX_LINE: usize = 4000;
 
 /// One statement of a file, as apt applies it.
@@ -64,16 +66,14 @@ pub enum Statement {
 /// A file apt refuses, or one NAILS does not read the way apt does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyntaxError {
-    /// The line apt names, counted from 1.
+    /// The line apt names, or the one NAILS does not read, counted from 1.
     pub line: usize,
-    /// What is wrong, in apt's words where apt says it.
+    /// What is wrong: apt's words where apt refuses the file, else what the
+    /// line holds that NAILS does not read.
     pub reason: &'static str,
-}
-
-impl std::fmt::Display for SyntaxError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "line {}: {}", self.line, self.reason)
-    }
+    /// Whether apt refuses the file there. Otherwise apt reads the line, but
+    /// not in a way NAILS follows (see [`parse`]).
+    pub by_apt: bool,
 }
 
 /// A file read whole.
@@ -96,10 +96,8 @@ fn is_space(byte: u8) -> bool {
 
 /// The first `needle` in `haystack` at or after `from`.
 fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if from > haystack.len() {
-        return None;
-    }
-    haystack[from..]
+    haystack
+        .get(from..)?
         .windows(needle.len())
         .position(|window| window == needle)
         .map(|at| at + from)
@@ -184,25 +182,42 @@ fn c_str(bytes: &[u8]) -> &[u8] {
     }
 }
 
+/// `at` moved past the spaces there in `text`, as apt's `ParseQuoteWord()`
+/// and `ParseCWord()` skip them first. [`Reader::statement`] calls neither at
+/// a space, though: a statement starts with none, and a word is read up to
+/// the white space after it, which is skipped too.
+fn skip_spaces(text: &[u8], mut at: usize) -> usize {
+    while at < text.len() && text[at] == b' ' {
+        at += 1;
+    }
+    at
+}
+
+/// Where the first `close` after `open` in `text` is: where apt's
+/// `ParseQuoteWord()` goes on from a `"` or a `[` (its `strchr()`).
+fn closing(text: &[u8], open: usize, close: u8) -> Option<usize> {
+    text[open + 1..]
+        .iter()
+        .position(|&byte| byte == close)
+        .map(|at| open + 1 + at)
+}
+
 /// The word at `*pos` in `text`, as apt's `ParseQuoteWord()` reads it: up to
 /// white space outside `"..."` and `[...]`, with the quotes dropped and each
 /// `%xx` decoded. `*pos` moves past it and the white space after it; `None`
 /// leaves it where it was.
 fn parse_quote_word(text: &[u8], pos: &mut usize) -> Option<Vec<u8>> {
     let begin = *pos;
-    let mut at = begin;
-    while at < text.len() && text[at] == b' ' {
-        at += 1;
-    }
+    let mut at = skip_spaces(text, begin);
     if at >= text.len() {
         return None;
     }
     while at < text.len() && !is_space(text[at]) {
         if text[at] == b'"' {
-            at += 1 + text[at + 1..].iter().position(|&byte| byte == b'"')?;
+            at = closing(text, at, b'"')?;
         }
         if text[at] == b'[' {
-            at += 1 + text[at + 1..].iter().position(|&byte| byte == b']')?;
+            at = closing(text, at, b']')?;
         }
         at += 1;
     }
@@ -237,10 +252,7 @@ fn parse_quote_word(text: &[u8], pos: &mut usize) -> Option<Vec<u8>> {
 /// stays where it was.
 fn parse_c_word(text: &[u8], pos: &mut usize) -> Option<Vec<u8>> {
     let begin = *pos;
-    let mut at = begin;
-    while at < text.len() && text[at] == b' ' {
-        at += 1;
-    }
+    let mut at = skip_spaces(text, begin);
     if at >= text.len() {
         return None;
     }
@@ -292,7 +304,13 @@ impl Reader {
 
     /// Read the statements of one line, comments taken out.
     fn read_fragment(&mut self, fragment: &[u8], line: usize) -> Result<(), SyntaxError> {
-        let error = |reason| Err(SyntaxError { line, reason });
+        let error = |reason| {
+            Err(SyntaxError {
+                line,
+                reason,
+                by_apt: true,
+            })
+        };
         let mut in_quote = false;
         let mut start = 0;
         for (at, &byte) in fragment.iter().enumerate() {
@@ -352,7 +370,13 @@ impl Reader {
 
     /// Apply the pending statement, which `term` (`;`, `{` or `}`) ends.
     fn statement(&mut self, term: u8, line: usize) -> Result<(), SyntaxError> {
-        let error = |reason| Err(SyntaxError { line, reason });
+        let error = |reason| {
+            Err(SyntaxError {
+                line,
+                reason,
+                by_apt: true,
+            })
+        };
         let pending = std::mem::take(&mut self.pending);
         let text = c_str(&pending);
         let mut pos = 0;
@@ -409,8 +433,8 @@ impl Reader {
 }
 
 /// The statements of the configuration file `text`, as apt reads it, or why
-/// apt refuses it (or NAILS reads it differently: a line longer than
-/// [`MAX_LINE`] bytes, or a NUL byte).
+/// apt refuses it, or the first line NAILS does not read the way apt does: a
+/// line longer than [`MAX_LINE`] bytes, or one with a NUL byte in it.
 pub fn parse(text: &[u8]) -> Result<Parsed, SyntaxError> {
     let mut reader = Reader::default();
     let mut in_comment = false;
@@ -420,13 +444,15 @@ pub fn parse(text: &[u8]) -> Result<Parsed, SyntaxError> {
         if raw.len() > MAX_LINE {
             return Err(SyntaxError {
                 line,
-                reason: "a line longer than apt reads in one piece",
+                reason: "more than 4000 bytes",
+                by_apt: false,
             });
         }
         if raw.contains(&0) {
             return Err(SyntaxError {
                 line,
-                reason: "a NUL byte, at which apt stops reading the line",
+                reason: "a NUL byte",
+                by_apt: false,
             });
         }
         // apt drops the line's end (any \r and \n), counts a tab as eight
@@ -461,6 +487,7 @@ pub fn parse(text: &[u8]) -> Result<Parsed, SyntaxError> {
         return Err(SyntaxError {
             line,
             reason: "Extra junk at end of file",
+            by_apt: true,
         });
     }
     Ok(Parsed {
@@ -576,20 +603,19 @@ fn strtol_whole(text: &[u8]) -> Option<i64> {
 /// when it says nothing: an empty value, or a word apt does not know.
 ///
 /// apt reads a number first, with `strtol()` into an `int` (so `0x1`, `01`
-/// and `4294967297` read as 1), and takes it when the whole value is one and
-/// it is 0 or 1. Then it knows `no`, `false`, `without`, `off`, `disable`
-/// and `yes`, `true`, `with`, `on`, `enable`, in any ASCII case. It reads the
-/// value up to its first NUL byte, and a value with nothing before it as 0.
+/// and `4294967297` read as 1), and takes it when strtol() reads the whole
+/// value and it is 0 or 1. Then it knows `no`, `false`, `without`, `off`,
+/// `disable` and `yes`, `true`, `with`, `on`, `enable`, in any ASCII case,
+/// comparing the value up to its first NUL byte (a `%00` in a word puts one
+/// in). strtol() stops at that byte, so a value that holds one is never a
+/// number.
 pub fn string_to_bool(value: &[u8], default: bool) -> bool {
     if value.is_empty() {
         return default;
     }
-    let value = c_str(value);
-    // strtol() reads an empty C string whole, as 0.
-    if value.is_empty() {
-        return false;
-    }
-    if let Some(number) = strtol_whole(value) {
+    if !value.contains(&0)
+        && let Some(number) = strtol_whole(value)
+    {
         // apt keeps strtol()'s long in an int: the low 32 bits.
         match number as i32 {
             0 => return false,
@@ -597,6 +623,7 @@ pub fn string_to_bool(value: &[u8], default: bool) -> bool {
             _ => {}
         }
     }
+    let value = c_str(value);
     let is = |word: &str| value.eq_ignore_ascii_case(word.as_bytes());
     if ["no", "false", "without", "off", "disable"]
         .iter()
