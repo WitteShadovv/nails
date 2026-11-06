@@ -124,4 +124,30 @@
       fi
     done
   '';
+
+  # Stop apt's daily timers (Debian, Ubuntu), so that no daily run starts
+  # during a scenario and makes unattended-upgrade-run refuse an activation.
+  # Both timers are Persistent and every boot starts them again, a
+  # soft-reboot's too, so a scenario that activates stops them after each boot
+  # and then waits for aptRunsEnded, in case a timer started its run before it
+  # was stopped. An image without them has nothing to stop.
+  stopAptTimers = ''
+    set -eu
+    for timer in apt-daily.timer apt-daily-upgrade.timer; do
+      if systemctl cat "$timer" >/dev/null 2>&1; then
+        systemctl stop "$timer"
+      fi
+    done
+  '';
+
+  # Succeeds once neither daily apt service is active (a unit an image does
+  # not have reads as inactive).
+  aptRunsEnded = ''
+    for unit in apt-daily.service apt-daily-upgrade.service; do
+      case "$(systemctl show -P ActiveState "$unit")" in
+        inactive | failed) ;;
+        *) exit 1 ;;
+      esac
+    done
+  '';
 }
