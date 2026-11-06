@@ -65,7 +65,8 @@ pub(super) fn device_id(path: &Path) -> Result<u64> {
 
 /// What `path` itself is, as one `statx` says that follows no link and
 /// triggers no automount there: whether it is the root of a mount is `None`
-/// when the kernel has no `statx` or does not report the attribute.
+/// when the kernel does not report the attribute. A kernel without `statx`
+/// (before Linux 4.11) is asked with [`mount_root_without_statx`].
 pub(super) fn mount_root(path: &Path) -> Result<MountRoot> {
     use rustix::fs::{AtFlags, CWD, FileType, StatxAttributes, StatxFlags, statx};
 
@@ -89,7 +90,27 @@ pub(super) fn mount_root(path: &Path) -> Result<MountRoot> {
                 Ok(MountRoot::Entry(says(StatxAttributes::MOUNT_ROOT)))
             }
         }
-        Err(rustix::io::Errno::NOSYS) => Ok(MountRoot::Entry(None)),
+        Err(rustix::io::Errno::NOSYS) => mount_root_without_statx(path),
+        Err(e) => Err(NailsError::io(path, std::io::Error::from(e))),
+    }
+}
+
+/// What `path` itself is where the kernel has no `statx`, as one `fstatat`
+/// says that follows no link and triggers no automount there: a link, or
+/// anything else, of which it does not say whether it is the root of a
+/// mount or an automount point.
+pub(super) fn mount_root_without_statx(path: &Path) -> Result<MountRoot> {
+    use rustix::fs::{AtFlags, CWD, FileType, statat};
+
+    match statat(
+        CWD,
+        path,
+        AtFlags::NO_AUTOMOUNT.union(AtFlags::SYMLINK_NOFOLLOW),
+    ) {
+        Ok(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::Symlink => {
+            Ok(MountRoot::Link)
+        }
+        Ok(_) => Ok(MountRoot::Entry(None)),
         Err(e) => Err(NailsError::io(path, std::io::Error::from(e))),
     }
 }
