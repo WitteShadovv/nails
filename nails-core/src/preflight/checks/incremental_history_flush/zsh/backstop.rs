@@ -58,6 +58,10 @@ pub(super) struct Named {
     /// A parameter zsh reads as arithmetic each time it uses it (`TMOUT`)
     /// where it is not read ([`number_writes`]).
     pub(super) numbers: usize,
+    /// A parameter whose name zsh's own completion functions may make or
+    /// keep code in, assigned with an `=`
+    /// ([`super::completion::code_parameter_writes`]).
+    pub(super) code_params: usize,
     /// A parameter that holds aliases (`aliases`, `galiases`) where it is
     /// not read ([`alias_writes`]).
     pub(super) alias_params: usize,
@@ -87,6 +91,7 @@ impl Named {
             hooks: self.hooks.max(other.hooks),
             prompts: self.prompts.max(other.prompts),
             numbers: self.numbers.max(other.numbers),
+            code_params: self.code_params.max(other.code_params),
             alias_params: self.alias_params.max(other.alias_params),
             function_params: self.function_params.max(other.function_params),
             arith: self.arith.max(other.arith),
@@ -111,6 +116,7 @@ impl Named {
         self.hooks += hook_writes(piece);
         self.prompts += prompt_writes(piece);
         self.numbers += number_writes(piece);
+        self.code_params += super::completion::code_parameter_writes(piece);
         self.arith += piece.matches("((").count() + piece.matches("$[").count();
         let alone = matches!(
             piece,

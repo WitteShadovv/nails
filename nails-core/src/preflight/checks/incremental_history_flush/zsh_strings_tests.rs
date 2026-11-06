@@ -586,6 +586,38 @@ fn a_parameter_zsh_reads_as_arithmetic_each_time_it_uses_it_holds_a_number() {
             "{set}: {doubts:?}"
         );
     }
+    // A tie sets it by another name too (`typeset -T TMOUT tmout`,
+    // `tmout=(...)`), as zsh 5.9.2 does, so the check cannot follow its value.
+    for set in [
+        "typeset -T TMOUT tmout\ntmout=('pipestatus[$(logit)1]')",
+        "typeset -T tm TMOUT\ntm=x",
+        "typeset -T PERIOD period\nperiod=(x)",
+        "declare -T TMOUT tmout",
+        "typeset -xT TMOUT tmout",
+        "typeset -T ZDOTDIR zdotdir\nzdotdir=(~/x)",
+        "typeset -T NIX_PROFILES nix_profiles ' '",
+        "typeset -T PRECMD precmd_functions\nPRECMD=logit",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{set}\n"));
+        let doubts = scan(&fs, UNKNOWN).doubts;
+        assert!(
+            doubts
+                .iter()
+                .any(|doubt| doubt.contains("ties to another name, by which zsh sets it too")),
+            "{set}: {doubts:?}"
+        );
+    }
+    // One of parameters the check does not read passes, as a PATH-like tie
+    // does.
+    for rc in [
+        "typeset -T PYTHONPATH pythonpath\npythonpath+=(~/py)\n",
+        "typeset -TUx PERL5LIB perl5lib\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
     // A number, declared, made read-only, exported or unset, is none, as a
     // hardened /etc/profile sets TMOUT.
     for rc in [

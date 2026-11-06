@@ -9,6 +9,7 @@
 //! in turns into one) may be a flag or name any option, a doubt.
 
 use super::super::backstop;
+use super::super::completion;
 use super::super::lexer::Word;
 use super::command::ALIAS_PARAMETERS;
 use super::hooks::hook_array;
@@ -109,6 +110,9 @@ impl Walker<'_> {
                     } else if hook_array(&name.text) {
                         self.hooks += 1;
                         hooks = true;
+                    } else if completion::by_shape(&name.text) {
+                        // One zsh's own completion functions may read as code.
+                        self.code_parameter(&name.text, false);
                     } else if ALIAS_PARAMETERS.contains(&name.text.as_str())
                         || matches!(name.text.as_str(), "functions" | "dis_functions")
                     {

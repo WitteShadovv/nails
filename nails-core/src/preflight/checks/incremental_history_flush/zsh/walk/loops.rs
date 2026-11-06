@@ -5,6 +5,7 @@
 //! a `foreach`'s or a `select`'s variables and list, a `repeat`'s count, and
 //! how each one's body ends.
 
+use super::super::completion;
 use super::super::lexer::{End, Token, is_name};
 use super::{Closer, Frame, Walker};
 
@@ -33,15 +34,20 @@ impl Walker<'_> {
                 None
             }
         };
+        let mut vars: Vec<String> = var.iter().cloned().collect();
         // More variables, as zsh takes them (`for key value in ...`).
-        while self
-            .tokens
-            .next_if(|token| {
-                matches!(token, Token::Word(word) if is_name(&word.text) && !matches!(word.text.as_str(), "in" | "do"))
-            })
-            .is_some()
-        {
+        while let Some(Token::Word(word)) = self.tokens.next_if(|token| {
+            matches!(token, Token::Word(word) if is_name(&word.text) && !matches!(word.text.as_str(), "in" | "do"))
+        }) {
+            vars.push(word.text);
             var = None;
+        }
+        // The loop sets each to the words of its list in turn: a parameter
+        // zsh's own completion functions may read as code among them.
+        for name in vars {
+            if completion::by_shape(&name) {
+                self.code_parameter(&name, false);
+            }
         }
         let mut list = Vec::new();
         let mut listed = false;

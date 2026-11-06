@@ -167,8 +167,8 @@ pub struct InspectedShell {
     /// The file its process runs, as `/proc/<pid>/exe` names it; `None` for
     /// a login shell, which may not run now, or when it cannot be read.
     pub exe: Option<PathBuf>,
-    /// The variables of its environment that the check reads, those of
-    /// [`zsh::ENVIRONMENT`] it holds, as `/proc/<pid>/environ` gives them;
+    /// The variables of its environment that the check reads, those it keeps
+    /// ([`zsh::kept`]) that it holds, as `/proc/<pid>/environ` gives them;
     /// `None` for a login shell, or when it cannot be read.
     pub environment: Option<Vec<(String, String)>>,
 }
@@ -235,16 +235,17 @@ impl InspectedShell {
     }
 }
 
-/// The variables of [`zsh::ENVIRONMENT`] that `bytes`, a process's
+/// The variables the check keeps ([`zsh::kept`]) that `bytes`, a process's
 /// `/proc/<pid>/environ`, holds, each once, as the first that names it sets
 /// it, as zsh takes it; no other is kept, but that a variable of the dynamic
 /// loader is set, kept as [`zsh::LOADER`] without its value. `None` when one
 /// of them holds what is no UTF-8, a path the check cannot name as zsh reads
 /// it; the value of a prompt, `MAILPATH`, `NULLCMD` or `READNULLCMD`, which
-/// the check reads only for an expansion in it or not at all, and of a
+/// the check reads only for an expansion in it or not at all, of a
 /// parameter zsh reads as arithmetic each time it uses it (`TMOUT`), which
-/// it reads only for whether it is a number, is kept with what is no UTF-8
-/// replaced ([`zsh::lossy`]).
+/// it reads only for whether it is a number, and of one zsh's own completion
+/// functions may read as code (`debug_fd`, `_patch_args`), is kept with what
+/// is no UTF-8 replaced ([`zsh::lossy`]).
 fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
     let mut found: Vec<(String, String)> = Vec::new();
     for entry in bytes.split(|byte| *byte == 0) {
@@ -258,9 +259,9 @@ fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
             }
             continue;
         }
-        let Some(name) = zsh::ENVIRONMENT
-            .iter()
-            .find(|known| known.as_bytes() == name)
+        let Some(name) = std::str::from_utf8(name)
+            .ok()
+            .filter(|name| zsh::kept(name))
         else {
             continue;
         };
