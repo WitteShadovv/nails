@@ -41,35 +41,55 @@ fn refused() -> NailsError {
     NailsError::InvalidState("systemctl could not enqueue soft-reboot.target".to_string())
 }
 
-/// The refusal of a return whose hidden PID 1 has service watchdogs off, so
-/// that its job timeout would not power off, as the session layer gives it.
-fn unguarded() -> NailsError {
-    use nails_core::session::GuardHost;
-    struct WatchdogsOff;
-    impl GuardHost for WatchdogsOff {
-        fn unit_stop_commands(&self, _: &str) -> nails_core::Result<String> {
-            Ok(String::new())
-        }
-        fn job_timeout_action(&self, _: &str) -> nails_core::Result<String> {
-            Ok("poweroff-force".to_string())
-        }
-        fn job_timeout(&self, _: &str) -> nails_core::Result<String> {
-            Ok("30min".to_string())
-        }
-        fn service_watchdogs(&self) -> nails_core::Result<String> {
-            Ok("no".to_string())
-        }
+/// A hidden session's PID 1 with service watchdogs off, so that a return's
+/// job timeout would not power off, and a logind that lists no program that
+/// blocks shutdown. It starts nothing.
+struct WatchdogsOff;
+
+impl nails_core::session::GuardHost for WatchdogsOff {
+    fn unit_stop_commands(&self, _: &str) -> nails_core::Result<String> {
+        Ok(String::new())
     }
-    nails_core::session::guards::check_way_back(&WatchdogsOff).unwrap_err()
+    fn job_timeout_action(&self, _: &str) -> nails_core::Result<String> {
+        Ok("poweroff-force".to_string())
+    }
+    fn job_timeout(&self, _: &str) -> nails_core::Result<String> {
+        Ok("30min".to_string())
+    }
+    fn service_watchdogs(&self) -> nails_core::Result<String> {
+        Ok("no".to_string())
+    }
 }
 
-/// The refusal of a way back while a program blocks shutdown.
-fn blocked() -> NailsError {
-    NailsError::InvalidState(
+impl nails_core::session::TargetHost for WatchdogsOff {
+    fn start_target(&self, target: &str) -> nails_core::Result<()> {
+        panic!("the check started {target}")
+    }
+}
+
+/// The check of the handle that leaves in a session whose PID 1 has service
+/// watchdogs off: the session layer's own, which refuses a return and lets a
+/// power-off go.
+fn unguarded_check(_: &(), to: LeaveTo) -> Result<(), NailsError> {
+    nails_core::session::leave::may_leave(to, &WatchdogsOff)
+}
+
+/// The check of the handle that leaves while a program blocks shutdown,
+/// which refuses either way.
+fn blocked_check(_: &(), _: LeaveTo) -> Result<(), NailsError> {
+    Err(NailsError::InvalidState(
         "apt blocks shutdown (Installing, PID 4242): the switch would cut it short. Let it \
          finish, then try again"
             .to_string(),
-    )
+    ))
+}
+
+/// A check of the handle that leaves, as a stand-in for its own.
+type Check = fn(&(), LeaveTo) -> Result<(), NailsError>;
+
+/// The check of the handle that leaves where nothing holds the way back.
+fn no_refusal(_: &(), _: LeaveTo) -> Result<(), NailsError> {
+    Ok(())
 }
 
 /// Report a way back through a stand-in for it that prints [`ENQUEUED`] and
@@ -137,34 +157,40 @@ fn subprocess_deactivate_entrypoint() {
             &args,
             Prepared::Ready(Box::new(ready_at(root.path()))),
             |_ready, to, warnings, bound| {
-                super::leave_and_report(&settings, to, warnings, bound.as_ref(), Ok(()), |_| {
-                    crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
-                    Ok(LeaveReport::default())
-                })
+                super::leave_and_report(
+                    &settings,
+                    to,
+                    warnings,
+                    bound.as_ref(),
+                    &mut (),
+                    no_refusal,
+                    |_, _| {
+                        crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+                        Ok(LeaveReport::default())
+                    },
+                )
             },
         );
         // The exit runs no destructor: remove the scratch tree first.
         drop(root);
         crate::cli::chokepoint::exit_process(status.code());
     }
-    if let Some((settings, refusal)) = match case.as_str() {
-        "human-blocked" => Some((ascii, blocked())),
-        "json-blocked" => Some((json(), blocked())),
-        "human-unguarded" => Some((ascii, unguarded())),
-        "json-unguarded" => Some((json(), unguarded())),
+    // The handle's check refuses as the case says, asked about the ending the
+    // case leaves to.
+    if let Some((settings, to, check)) = match case.as_str() {
+        "human-blocked" => Some((ascii, LeaveTo::Decoy, blocked_check as Check)),
+        "json-blocked" => Some((json(), LeaveTo::Decoy, blocked_check as Check)),
+        "human-unguarded" => Some((ascii, LeaveTo::Decoy, unguarded_check as Check)),
+        "json-unguarded" => Some((json(), LeaveTo::Decoy, unguarded_check as Check)),
+        "human-unguarded-poweroff" => Some((ascii, LeaveTo::Poweroff, unguarded_check as Check)),
+        "json-unguarded-poweroff" => Some((json(), LeaveTo::Poweroff, unguarded_check as Check)),
         _ => None,
     } {
-        let status = super::leave_and_report(
-            &settings,
-            LeaveTo::Decoy,
-            Vec::new(),
-            None,
-            Err(refusal),
-            |_| {
+        let status =
+            super::leave_and_report(&settings, to, Vec::new(), None, &mut (), check, |_, _| {
                 crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
                 Ok(LeaveReport::default())
-            },
-        );
+            });
         crate::cli::chokepoint::exit_process(status.code());
     }
     let (settings, to, outcome) = match case.as_str() {
@@ -182,10 +208,18 @@ fn subprocess_deactivate_entrypoint() {
     } else {
         Vec::new()
     };
-    let status = super::leave_and_report(&settings, to, warnings, None, Ok(()), |_| {
-        crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
-        outcome
-    });
+    let status = super::leave_and_report(
+        &settings,
+        to,
+        warnings,
+        None,
+        &mut (),
+        no_refusal,
+        |_, _| {
+            crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+            outcome
+        },
+    );
     crate::cli::chokepoint::exit_process(status.code());
 }
 
@@ -625,6 +659,38 @@ fn an_unguarded_way_back_is_refused_before_its_banner() {
         "{value}"
     );
     assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
+/// The handle's check is asked about the ending the operator chose: in the
+/// session whose return it refuses, `deactivate --poweroff`, which the
+/// refusal names, goes on to its banner and the power-off, and under
+/// `--json` its one envelope reports the power-off enqueued.
+#[test]
+fn a_power_off_goes_on_where_a_return_is_refused() {
+    let output = run_subprocess("human-unguarded-poweroff");
+    assert_eq!(
+        stdout_lines(&output),
+        [
+            "[PASS] Ending the hidden session and powering off".to_string(),
+            ENQUEUED.to_string(),
+        ],
+        "{output:?}"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let output = run_subprocess("json-unguarded-poweroff");
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the stand-in's line, one envelope: {output:?}"
+    );
+    assert_eq!(lines[0], ENQUEUED, "{output:?}");
+    let value = envelope("deactivate", &lines[1]);
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["data"]["status"], "poweroff_requested", "{value}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
 /// A person reads the result before the switch, which stops the terminal,

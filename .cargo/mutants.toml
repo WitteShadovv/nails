@@ -65,11 +65,12 @@ exclude_re = [
     # as well, which the atime test catches.)
     'nails-core/src/preflight/checks/systemd_conf\.rs:\d+:28: replace \| with & in read_config_bytes_noatime$',
 
-    # The way back enqueues the soft-reboot with the plan's systemctl.
-    # Without the plan, tools::find takes systemctl from the system
-    # directories (/run/current-system/sw/bin, /usr/bin and so on), where
-    # every supported host keeps it, and PID 1 takes the same target from
-    # either. Only a live hidden session takes this arm, and no Rust test has
-    # one.
-    'nails-core/src/app/deactivate\.rs:\d+:\d+: delete match arm SessionView::Hidden\(plan\) in [A-Za-z]+Deactivation::leave$',
+    # The way back enqueues the soft-reboot with the plan's systemctl, and its
+    # check (may_leave) asks PID 1 and logind about the guards and the
+    # programs that block shutdown with the plan's systemctl and busctl.
+    # Without the plan, tools::find takes them from the system directories
+    # (/run/current-system/sw/bin, /usr/bin and so on), where every supported
+    # host keeps them, and PID 1 and logind answer the same through either.
+    # Only a live hidden session takes this arm, and no Rust test has one.
+    'nails-core/src/app/deactivate\.rs:\d+:\d+: delete match arm SessionView::Hidden\(plan\) in [A-Za-z]+Deactivation::(may_)?leave$',
 ]
