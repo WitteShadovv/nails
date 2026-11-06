@@ -33,6 +33,7 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         last_activation: None,
         decoy_persistent: false,
         decoy_kdump_armed: false,
+        decoy_installs_at_shutdown: false,
         persona_mode: PersonaMode::SharedHome,
         switch_refusal: None,
         opsec_reminders: Vec::new(),
@@ -202,6 +203,37 @@ fn an_armed_kdump_is_shown_on_the_decoy_in_both_forms() {
     active.decoy_kdump_armed = true;
     let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
     assert!(!lines.contains("kdump"), "{lines}");
+}
+
+#[test]
+fn an_install_at_shutdown_is_shown_on_the_decoy_in_both_forms() {
+    let mut decoy = report(Posture::Decoy, "decoy");
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(!lines.contains("unattended-upgrades"), "{lines}");
+    let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
+    assert_eq!(value["data"]["decoy_installs_at_shutdown"], false);
+
+    decoy.decoy_installs_at_shutdown = true;
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(
+        lines.contains(
+            "unattended-upgrades installs at shutdown on the decoy, or NAILS cannot tell that it \
+             does not: an activation would run that install on the decoy disk, and activation \
+             refuses it"
+        ),
+        "{lines}"
+    );
+    let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
+    assert_eq!(value["data"]["decoy_installs_at_shutdown"], true);
+    assert_matches_the_schema(&value);
+    // It does not call the decoy persistent, as for kdump.
+    assert_eq!(value["data"]["decoy_persistent"], false);
+
+    // In the session the line is about the decoy, so it is left out.
+    let mut active = report(Posture::Active, "hidden");
+    active.decoy_installs_at_shutdown = true;
+    let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
+    assert!(!lines.contains("unattended-upgrades"), "{lines}");
 }
 
 #[test]

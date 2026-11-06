@@ -13,7 +13,8 @@
 #
 #   - checks the stock decoy: both rows pass, but where the image has no
 #     python3-gi (Debian 13), decoy-persistence warns of the helper's lines,
-#     and `apt-config` reads the setting off, as NAILS does;
+#     `apt-config` reads the setting off, as NAILS does, and `status` says
+#     the decoy does not install at shutdown;
 #   - starts a daily run the way apt-daily-upgrade.timer does
 #     (`apt-daily-upgrade.service`) and holds it at its first step, the power
 #     check, with a stand-in for powermgmt-base's `on_ac_power` that waits
@@ -35,7 +36,7 @@
 #     the signal. The helper then writes its line on the decoy disk;
 #   - turns the setting on in a file of `/etc/apt/apt.conf.d`, which
 #     `apt-config` reads as on: `check` and `activate` refuse, naming the file
-#     and its line. With
+#     and its line, and `status` says the decoy installs at shutdown. With
 #     `--allow-persistent-decoy` the activation goes through, and the decoy's
 #     helper logs its shutdown-mode run on the decoy disk at the switch, the
 #     positive control; without python3-gi, the helper the way back starts
@@ -261,6 +262,15 @@ distroVm.buildVmTest {
         return found
 
 
+    def status_flag():
+        # What `status --json` says of the install at shutdown; the command
+        # may refuse for want of an initialised volume, the report stays.
+        _, out = vm.execute(f"{nails_cmd} status --json 2>/dev/null")
+        flag = json.loads(out)["data"]["decoy_installs_at_shutdown"]
+        print(f"status: decoy_installs_at_shutdown is {flag}")
+        return flag
+
+
     def apt_reads_setting():
         # The setting as apt itself reads it: `apt-config shell` prints
         # nothing for a setting no file sets, which apt reads as off.
@@ -452,6 +462,7 @@ distroVm.buildVmTest {
             assert persistence["status"] == "warn", persistence
             assert "python3-gi is not installed" in persistence["message"], persistence
             assert "(apt install python3-gi)" in persistence["message"], persistence
+        assert not status_flag(), "status says the stock decoy installs at shutdown"
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
     with subtest("a daily unattended-upgrade run refuses check and activation"):
@@ -520,6 +531,7 @@ distroVm.buildVmTest {
         refusal = row("decoy-persistence")
         assert refusal["status"] == "fail", refusal
         assert f"is on in {setting_file}:1" in refusal["message"], refusal
+        assert status_flag(), "status does not say the decoy installs at shutdown"
         mode_before = count(helper_log, SHUTDOWN_MODE)
         rc, out = vm.execute(f"{nails_cmd} activate -y 2>&1")
         print(out)

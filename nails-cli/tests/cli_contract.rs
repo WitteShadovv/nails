@@ -452,6 +452,12 @@ fn redact_status(mut value: Value) -> Value {
         if data.contains_key("decoy_kdump_armed") {
             data["decoy_kdump_armed"] = Value::String("[decoy_kdump_armed]".to_string());
         }
+        // So is unattended-upgrades' install at shutdown, from the host's apt
+        // configuration and its running helper.
+        if data.contains_key("decoy_installs_at_shutdown") {
+            data["decoy_installs_at_shutdown"] =
+                Value::String("[decoy_installs_at_shutdown]".to_string());
+        }
         if data.contains_key("uptime_seconds") {
             data["uptime_seconds"] = Value::String("[uptime_s]".to_string());
         }
@@ -1114,6 +1120,15 @@ fn status_human_default_rendering_snapshot() {
     let harness = Harness::new();
     harness.write_state(SystemState::Inactive);
     let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
+    // The line of unattended-upgrades' install at shutdown is probed from the
+    // live host's apt configuration and its running helper, which an
+    // unprivileged run cannot read: it is left out, as its JSON flag is
+    // redacted.
+    let stdout = stdout
+        .lines()
+        .filter(|line| !line.contains("unattended-upgrades installs at shutdown on the decoy"))
+        .collect::<Vec<_>>()
+        .join("\n");
     insta::assert_snapshot!("status_human_default", redact_volume_line(&stdout));
 }
 

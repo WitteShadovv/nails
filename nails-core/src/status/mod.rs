@@ -273,6 +273,10 @@ pub struct StatusReport {
     pub decoy_persistent: bool,
     /// Whether kdump is armed on the decoy, or its state cannot be read.
     pub decoy_kdump_armed: bool,
+    /// Whether the decoy's unattended-upgrades installs at shutdown, so that
+    /// an activation runs that install on the decoy disk, or NAILS cannot
+    /// tell that it does not.
+    pub decoy_installs_at_shutdown: bool,
     /// The persona mode.
     pub persona_mode: PersonaMode,
     /// Why and when the last switch was refused, when it was and the record is
@@ -523,6 +527,10 @@ impl<F: Filesystem> StatusCommand<F> {
                 && crate::preflight::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem),
             decoy_kdump_armed: !view.is_hidden()
                 && crate::preflight::DecoyPersistenceCheck::decoy_kdump_armed(&self.filesystem),
+            decoy_installs_at_shutdown: !view.is_hidden()
+                && crate::preflight::DecoyPersistenceCheck::decoy_installs_at_shutdown(
+                    &self.filesystem,
+                ),
             persona_mode: self.config.persona.mode,
             switch_refusal,
             opsec_reminders,
