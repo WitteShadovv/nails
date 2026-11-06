@@ -26,6 +26,7 @@
 use super::separation::{SYS_CLASS_BLOCK, Sharing, Verdict};
 use super::{Refusal, RefusalKind};
 use crate::blockdev::PROC_DEVICES;
+use crate::error::Skip;
 use std::path::Path;
 
 /// Where the kernel's block devices and their attributes are read.
@@ -73,13 +74,27 @@ pub const OVERRIDE_CONSEQUENCE: &str = "everything written there lands on that s
 
 impl RefusalKind {
     /// A root whose lookup failed with `error` for another reason than that
-    /// nothing is there. An I/O error is named by what failed, as the root is
-    /// named beside it.
+    /// nothing is there, or was not made. An I/O error is named by what
+    /// failed, as the root is named beside it. A lookup the automount guard
+    /// did not make is one that would mount an automount point, or one made
+    /// without the mount table, which the gate reads too.
     pub fn lookup_failed(error: &crate::NailsError) -> Self {
         match error {
             crate::NailsError::IoError { source, .. } => RefusalKind::LookupFailed {
                 error: source.to_string(),
                 denied: source.kind() == std::io::ErrorKind::PermissionDenied,
+            },
+            crate::NailsError::NotLookedUp {
+                reason: Skip::Automount { point },
+                ..
+            } => RefusalKind::NotLookedUp {
+                point: point.clone(),
+            },
+            crate::NailsError::NotLookedUp {
+                reason: Skip::NoMountTable { error },
+                ..
+            } => RefusalKind::MountTableUnreadable {
+                error: error.clone(),
             },
             other => RefusalKind::LookupFailed {
                 error: other.to_string(),
@@ -98,6 +113,7 @@ impl RefusalKind {
             RefusalKind::NotConfigured
             | RefusalKind::Missing
             | RefusalKind::LookupFailed { .. }
+            | RefusalKind::NotLookedUp { .. }
             | RefusalKind::MountTableUnreadable { .. }
             | RefusalKind::NotAMountPoint { .. }
             | RefusalKind::DecoyStorage { .. }
@@ -127,6 +143,11 @@ impl RefusalKind {
             RefusalKind::Missing => format!("{root} does not exist"),
             RefusalKind::LookupFailed { error, .. } => format!(
                 "nothing shows that {root} is a volume of its own: it cannot be looked up ({error})"
+            ),
+            RefusalKind::NotLookedUp { point } => format!(
+                "nothing shows that {root} is a volume of its own: it is not looked up, since the \
+                 lookup would mount the automount point {}",
+                point.display()
             ),
             RefusalKind::MountTableUnreadable { error } => format!(
                 "nothing shows that {root} is a volume of its own: the mount table cannot be \
@@ -305,6 +326,11 @@ impl Refusal {
                 "Find out why {} cannot be looked up, then run the command again.",
                 self.root.display()
             )],
+            RefusalKind::NotLookedUp { point } => vec![format!(
+                "Mount {} (for example `ls {}`), then run the command again.",
+                point.display(),
+                crate::next_step::shell_word(point.as_os_str())
+            )],
             RefusalKind::Missing | RefusalKind::NotAMountPoint { .. } => {
                 // Most often the volume is simply not unlocked yet, or the
                 // path has a typo.
@@ -403,6 +429,9 @@ mod tests {
             RefusalKind::LookupFailed {
                 error: "Input/output error (os error 5)".into(),
                 denied: false,
+            },
+            RefusalKind::NotLookedUp {
+                point: PathBuf::from("/mnt"),
             },
             RefusalKind::NotAMountPoint {
                 mount_point: PathBuf::from("/"),
@@ -572,9 +601,9 @@ mod tests {
             .iter()
             .map(Refusal::code)
             .collect();
-        assert_eq!(&codes[..17], &[NOT_SEPARATE_VOLUME; 17]);
-        assert_eq!(&codes[17..19], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[19..], &[STORAGE_UNJUDGED; 18]);
+        assert_eq!(&codes[..18], &[NOT_SEPARATE_VOLUME; 18]);
+        assert_eq!(&codes[18..20], &[ROOT_COVERED; 2]);
+        assert_eq!(&codes[20..], &[STORAGE_UNJUDGED; 18]);
     }
 
     #[test]
@@ -901,6 +930,7 @@ mod tests {
                     | RefusalKind::StorageUntraced { .. }
                     | RefusalKind::NotConfigured
                     | RefusalKind::LookupFailed { .. }
+                    | RefusalKind::NotLookedUp { .. }
                     | RefusalKind::MountTableUnreadable { .. }
             );
             assert_eq!(redirects, expected, "{refusal:?}: {hint}");

@@ -457,6 +457,77 @@ fn a_root_that_cannot_be_looked_up_is_refused_naming_the_error() {
     }
 }
 
+/// Read through the automount guard, a root that an automount point nothing
+/// is mounted on yet holds is refused without a lookup of it, naming the
+/// point, and the fix mounts it; a root the guard cannot ask about for want
+/// of the mount table is refused as one the gate cannot read the table for.
+/// Once something is mounted on the point, the root is looked up.
+#[test]
+fn a_root_behind_an_automount_point_is_refused_without_a_lookup() {
+    use crate::filesystem::automount::{Guarded, Snapshot};
+    let automount = "20 1 0:50 / /mnt rw,relatime - autofs systemd-1 rw,fd=50,direct\n";
+    let fs = fs_with(&decoy_table(automount).replace(HIDDEN_MOUNT, ""));
+    let guarded = Guarded::new(fs.clone(), &Snapshot::read(&fs, Path::new("/")));
+    let refused = match HiddenRoot::assess(&guarded, Path::new("/mnt/data")).unwrap() {
+        Assessment::Refused(refusal) => refusal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        refused.kind,
+        RefusalKind::NotLookedUp {
+            point: PathBuf::from("/mnt")
+        }
+    );
+    assert_eq!(refused.code(), super::refusal::NOT_SEPARATE_VOLUME);
+    assert_eq!(
+        refused.message(),
+        "nothing shows that /mnt/data is a volume of its own: it is not looked up, since the \
+         lookup would mount the automount point /mnt. Nothing was written."
+    );
+    assert_eq!(
+        refused.hint(None),
+        ["Mount /mnt (for example `ls /mnt`), then run the command again."]
+    );
+    assert!(!Allow::DecoyStorage.covers(&refused.kind));
+    assert!(
+        !fs.mock_lookups()
+            .iter()
+            .any(|path| path.starts_with("/mnt"))
+    );
+
+    let unread = MockFilesystem::new();
+    unread.mock_set_mount_table_error("gone");
+    let guarded = Guarded::new(unread.clone(), &Snapshot::read(&unread, Path::new("/")));
+    let refused = refusal_of(&guarded, "/mnt/data");
+    assert!(
+        matches!(&refused.kind, RefusalKind::MountTableUnreadable { error } if error.contains("gone")),
+        "{refused:?}"
+    );
+    assert!(unread.mock_lookups().is_empty());
+
+    let mounted = fs_with(&format!(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n{automount}\
+         21 20 8:5 / /mnt rw - ext4 /dev/vda5 rw\n\
+         10 21 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n"
+    ));
+    let guarded = Guarded::new(mounted.clone(), &Snapshot::read(&mounted, Path::new("/")));
+    assert!(!matches!(
+        HiddenRoot::assess(&guarded, Path::new("/mnt/data")).unwrap(),
+        Assessment::Refused(Refusal {
+            kind: RefusalKind::NotLookedUp { .. },
+            ..
+        })
+    ));
+}
+
+/// The refusal of `root` on any filesystem.
+fn refusal_of<F: Filesystem>(fs: &F, root: &str) -> Refusal {
+    match HiddenRoot::assess(fs, Path::new(root)).unwrap() {
+        Assessment::Refused(refusal) => refusal,
+        other => panic!("{root} was accepted: {other:?}"),
+    }
+}
+
 /// A marker found counts beside a lookup of the other one that failed. With
 /// none found and a lookup that failed, the marker may be there: the error,
 /// never a root that needs `init`.
