@@ -83,6 +83,14 @@ pub enum RefusalKind {
         /// command again with sudo lifts.
         denied: bool,
     },
+    /// The path was not looked up, since the lookup would mount the
+    /// automount point `point`, which nothing is mounted on yet, so nothing
+    /// shows what is at it ([`RefusalKind::lookup_failed`] of a lookup the
+    /// automount guard did not make).
+    NotLookedUp {
+        /// The automount point.
+        point: PathBuf,
+    },
     /// The mount table could not be read, so nothing shows what is mounted.
     MountTableUnreadable {
         /// Why it could not be read.

@@ -175,6 +175,12 @@ mod tests {
                     denied: false,
                 },
             ),
+            (
+                "lookup_not_made",
+                RefusalKind::NotLookedUp {
+                    point: PathBuf::from("/mnt"),
+                },
+            ),
             ("same_device_as_root", RefusalKind::SameDeviceAsRoot),
             (
                 "covered",
