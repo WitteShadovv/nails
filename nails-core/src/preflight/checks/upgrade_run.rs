@@ -15,13 +15,17 @@
 //! its install steps, but APT holds its shutdown block only while dpkg runs,
 //! so the `shutdown-inhibitors` check does not see it. A daily run is started
 //! by `apt-daily-upgrade.service`, which runs a while before it takes the
-//! lock, and `apt-daily.service` takes it for its download.
+//! lock. `apt-daily.service` runs `apt-get update` first and then, with
+//! unattended-upgrades installed, `unattended-upgrade --download-only`, which
+//! takes the same lock: a switch made before that, past the last look, meets
+//! the lock when the helper looks for it, at once with python3-gi and up to
+//! 3 seconds after the signal without it.
 //!
-//! So activation is refused while `apt-daily-upgrade.service` is active or a
-//! process holds the lock, until the run ends, a few minutes as a rule. No
-//! flag lifts the refusal. The entry looks again right before it asks logind
-//! for the switch ([`upgrade_run`]), as a run can start while the entry is
-//! prepared.
+//! So activation is refused while `apt-daily-upgrade.service` or
+//! `apt-daily.service` is active or a process holds the lock, until the run
+//! ends, a few minutes as a rule. No flag lifts the refusal. The entry looks
+//! again right before it asks logind for the switch ([`upgrade_run`]), as a
+//! run can start while the entry is prepared.
 //!
 //! Whether the lock is held is read from `/proc/locks`, which lists every
 //! lock with the device and inode of its file, against those of the lock
@@ -38,8 +42,10 @@ use super::decoy_posture::unit_active;
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
-/// The unit of the daily run, which its timer starts.
+/// The units of the daily runs, which their timers start: the install, and
+/// the download, whose run of unattended-upgrade takes the same lock.
 const DAILY_UPGRADE: &str = "apt-daily-upgrade.service";
+const DAILY_DOWNLOAD: &str = "apt-daily.service";
 
 /// The lock a run of unattended-upgrade holds from its start to its end,
 /// relative to the root, under both of its names: unattended-upgrade names
@@ -139,13 +145,18 @@ pub fn lock_holders(locks: &str, file: (u64, u64, u64)) -> Vec<i64> {
 }
 
 /// Whether a daily unattended-upgrade run is in progress on the system
-/// under `root`: `apt-daily-upgrade.service` is active, or a process holds
-/// unattended-upgrade's lock. Reads only; nothing is opened but
-/// `/proc/locks`, and only where the lock file exists.
+/// under `root`: `apt-daily-upgrade.service` or `apt-daily.service` is
+/// active, or a process holds unattended-upgrade's lock. Reads only; nothing
+/// is opened but `/proc/locks`, and only where the lock file exists.
 pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
     let mut signs = Vec::new();
     if unit_active(fs, root, DAILY_UPGRADE) {
         signs.push(format!("{DAILY_UPGRADE} is active"));
+    }
+    if unit_active(fs, root, DAILY_DOWNLOAD) {
+        signs.push(format!(
+            "{DAILY_DOWNLOAD} is active, whose download run takes the lock"
+        ));
     }
     let mut seen = Vec::new();
     let mut locks: Option<String> = None;

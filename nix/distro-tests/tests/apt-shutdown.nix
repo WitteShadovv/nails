@@ -26,14 +26,15 @@
 #     row passes again;
 #   - starts apt-daily.service the way apt-daily.timer does and holds it
 #     before its download run, `unattended-upgrade --download-only`, takes the
-#     same lock: the unit is active and no process holds the lock, so the
-#     `unattended-upgrade-run` row passes. It pauses the decoy's helper
-#     (SIGSTOP) and activates; once logind sends its signal, a unit lets the
+#     same lock: the unit is active and no process holds the lock. `check`
+#     and `activate` refuse, and the helper's log gains no line. As the
+#     positive control, it pauses the decoy's helper (SIGSTOP) and makes a
+#     plain soft-reboot; once logind sends its signal, a unit lets the
 #     download run start, waits until it holds the lock and lets the helper go
-#     on (SIGCONT). That is the order of the race the row does not see: the
-#     lock taken after the activation's last look and before the helper's
-#     first, which without python3-gi the helper takes up to 3 seconds after
-#     the signal. The helper then writes its line on the decoy disk;
+#     on (SIGCONT). That is the order of the race the refusal closes: the lock
+#     taken after the switch's last look and before the helper's first, which
+#     without python3-gi the helper takes up to 3 seconds after the signal.
+#     The helper then writes its line on the decoy disk;
 #   - turns the setting on in a file of `/etc/apt/apt.conf.d`, which
 #     `apt-config` reads as on: `check` and `activate` refuse, naming the file
 #     and its line, and `status` says the decoy installs at shutdown. With
@@ -509,21 +510,33 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         assert row("unattended-upgrade-run")["status"] == "pass"
 
-    with subtest("an activation while apt-daily.service runs meets its download run's lock"):
+    with subtest("apt-daily.service refuses check and activation before its download takes the lock"):
         lines_before = count(helper_log, IN_PROGRESS)
         start_daily_download()
-        # The unit is active and no process holds the lock: the row passes.
-        assert row("unattended-upgrade-run")["status"] == "pass"
+        refusal = row("unattended-upgrade-run")
+        assert refusal["status"] == "fail", refusal
+        assert (
+            "apt-daily.service is active, whose download run takes the lock" in refusal["message"]
+        ), refusal
+        rc, out = vm.execute(f"{nails_cmd} activate -y 2>&1")
+        print(out)
+        assert rc != 0, out
+        assert "apt-daily.service is active" in out, out
+        assert "Try again in a few minutes" in out, out
+        assert_on_the_decoy()
+        assert count(helper_log, IN_PROGRESS) == lines_before, tail(helper_log)
+
+    with subtest("positive control: a soft-reboot while apt-daily.service runs meets its download run's lock"):
+        # The race the refusal closes: the download run takes the lock after
+        # the switch's last look and before the helper's first.
         race_at_the_signal(lines_before)
-        follow(f"{nails_cmd} activate -y > /mnt/data/activate-race.log 2>&1", "activate-race")
-        print(vm.succeed("cat /mnt/data/activate-race.log || true"))
-        session.assert_hidden_root(vm)
-        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-race")
+        follow("systemctl --no-wall soft-reboot", "soft-reboot-daily")
         assert_on_the_decoy()
         print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
         print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
         assert count(helper_log, IN_PROGRESS) > lines_before, tail(helper_log)
         end_daily_download()
+        assert row("unattended-upgrade-run")["status"] == "pass"
 
     with subtest("InstallOnShutdown on refuses check and activation"):
         vm.succeed(f"printf %s {shlex.quote(setting_on)} > {setting_file}")

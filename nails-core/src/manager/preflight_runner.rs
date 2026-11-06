@@ -215,7 +215,8 @@ pub fn build_registry<F: Filesystem>(
     )));
     // A daily unattended-upgrade run takes no shutdown block outside its dpkg
     // runs, but at the switch unattended-upgrades' shutdown helper stops it
-    // and logs that on the decoy disk: refused until the run ends, with no
+    // and logs that on the decoy disk: refused until the run ends, and while
+    // apt-daily.service runs, whose download takes the same lock, with no
     // flag to lift it. The entry looks again right before the switch.
     registry.add_check(Box::new(UpgradeRunCheck::new()));
 
