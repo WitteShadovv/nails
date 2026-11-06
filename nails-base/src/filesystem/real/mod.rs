@@ -284,6 +284,10 @@ impl Filesystem for RealFilesystem {
         Ok(std::time::SystemTime::from(dir_ops::modified_time(path)?))
     }
 
+    fn change_time(&self, path: &Path) -> Result<std::time::SystemTime> {
+        file_ops::change_time(path)
+    }
+
     fn copy_tree(&self, src: &Path, dst: &Path) -> Result<()> {
         dir_ops::copy_tree(src, dst)
     }

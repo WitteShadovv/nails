@@ -197,6 +197,10 @@ impl Filesystem for MockFilesystem {
         self.modified_time_impl(path)
     }
 
+    fn change_time(&self, path: &Path) -> Result<std::time::SystemTime> {
+        self.change_time_impl(path)
+    }
+
     fn copy_file(&self, src: &Path, dst: &Path) -> Result<()> {
         self.copy_file_impl(src, dst)
     }
