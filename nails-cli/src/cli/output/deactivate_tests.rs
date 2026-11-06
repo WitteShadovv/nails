@@ -113,6 +113,30 @@ fn an_invalid_state_names_both_ways_an_emergency_ends_the_session() {
     );
 }
 
+/// A return the hidden session's PID 1 does not guard is refused as not
+/// ready: the message says why, the fix names the power-off and the
+/// emergency, and the next step is the power-off.
+#[test]
+fn an_unguarded_way_back_names_the_power_off_and_the_emergency() {
+    let body = deactivate_error_body(&NailsError::PreFlightCheckFailed(vec![(
+        "switch-timeout".to_string(),
+        "soft-reboot.target has no job timeout".to_string(),
+        Some("End the session with `a`, which powers off, or with `b`".to_string()),
+    )]));
+    assert_eq!(body.code, "not_ready");
+    assert_eq!(
+        body.message.lines().collect::<Vec<_>>(),
+        [
+            "the way back is refused: soft-reboot.target has no job timeout",
+            "End the session with `a`, which powers off, or with `b`",
+        ]
+    );
+    assert_eq!(
+        body.next.map(|next| next.command).as_deref(),
+        Some("deactivate --poweroff")
+    );
+}
+
 #[test]
 fn other_errors_map_to_a_generic_deactivation_failure() {
     let body = deactivate_error_body(&NailsError::io(

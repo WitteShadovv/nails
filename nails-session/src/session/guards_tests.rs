@@ -371,3 +371,86 @@ fn a_setting_counts_only_on_a_line_of_its_own_in_the_unit_section() {
         );
     }
 }
+
+/// The way back asks the hidden session's PID 1 the same: it goes on only
+/// when every guard holds, and its refusal says what a forced way back would
+/// leave and names the two other ways to end the session, never a fix to
+/// activate with.
+#[test]
+fn the_way_back_is_refused_unless_every_guard_holds() {
+    assert!(check_way_back(&Pid1::default()).is_ok());
+    let unheld = [
+        (
+            Pid1 {
+                stop: "{ path=/usr/sbin/blkdeactivate ; }\n",
+                ..Pid1::default()
+            },
+            "stop-guard",
+            "blk-availability.service would still run a stop command",
+        ),
+        (
+            Pid1 {
+                action: "soft-reboot-force\n",
+                ..Pid1::default()
+            },
+            "switch-timeout",
+            "would go on by force without its last step, and the decoy would start with the \
+             hidden session's files in /run",
+        ),
+        (
+            Pid1 {
+                watchdogs: "no\n",
+                ..Pid1::default()
+            },
+            "switch-timeout",
+            "ServiceWatchdogs=no",
+        ),
+        (
+            Pid1 {
+                timeout: "infinity\n",
+                ..Pid1::default()
+            },
+            "switch-timeout",
+            "JobTimeoutUSec=infinity",
+        ),
+        (
+            Pid1 {
+                unreadable: Some("ExecStop"),
+                ..Pid1::default()
+            },
+            "stop-guard",
+            "the hidden session's PID 1 could not be asked whether its guards hold: systemctl \
+             show blk-availability.service failed",
+        ),
+        (
+            Pid1 {
+                unreadable: Some("ServiceWatchdogs"),
+                ..Pid1::default()
+            },
+            "switch-timeout",
+            "could not be asked whether its guards hold",
+        ),
+    ];
+    for (pid1, check, said) in unheld {
+        let error = check_way_back(&pid1).unwrap_err();
+        let (named, reason, fix) = refusal(&error);
+        assert_eq!(named, check, "{error}");
+        assert!(reason.contains(said), "{reason}");
+        assert!(!fix.contains("activate again"), "{fix}");
+        assert_eq!(fix, way_back_endings());
+    }
+}
+
+/// The two other ways to end the session, as the running binary's lines.
+#[test]
+fn a_refused_way_back_names_the_power_off_and_the_emergency() {
+    use nails_base::next_step::{NextStep, sudo_line};
+    assert_eq!(
+        way_back_endings(),
+        format!(
+            "End the session with `{}`, which powers off, or with `{}`",
+            sudo_line(NextStep::DeactivatePoweroff),
+            sudo_line(NextStep::Emergency)
+        )
+    );
+}

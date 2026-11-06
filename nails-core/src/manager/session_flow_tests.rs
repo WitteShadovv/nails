@@ -84,12 +84,32 @@ impl GuardHost for FakeEntryHost {
 }
 
 /// Records the targets started; refuses them when `refuse` is set, and
-/// refuses any switch when `blocked` is (a program blocks shutdown).
+/// refuses any switch when `blocked` is (a program blocks shutdown). Its
+/// PID 1 holds the runtime guards unless `unguarded` is set.
 #[derive(Default)]
 struct FakeTarget {
     started: RefCell<Vec<String>>,
     refuse: bool,
     blocked: bool,
+    unguarded: bool,
+}
+
+/// Its PID 1 holds every runtime guard as [`FakeEntryHost`]'s does, but has
+/// service watchdogs off when `unguarded` is set, so that a switch's job
+/// timeout would do nothing.
+impl GuardHost for FakeTarget {
+    fn unit_stop_commands(&self, unit: &str) -> Result<String> {
+        FakeEntryHost::default().unit_stop_commands(unit)
+    }
+    fn job_timeout_action(&self, unit: &str) -> Result<String> {
+        FakeEntryHost::default().job_timeout_action(unit)
+    }
+    fn job_timeout(&self, unit: &str) -> Result<String> {
+        FakeEntryHost::default().job_timeout(unit)
+    }
+    fn service_watchdogs(&self) -> Result<String> {
+        Ok(if self.unguarded { "no" } else { "yes" }.to_string())
+    }
 }
 
 impl TargetHost for FakeTarget {
@@ -515,6 +535,47 @@ fn a_way_back_that_did_not_start_keeps_the_session_record() {
     assert!(error.to_string().contains("refused"), "{error}");
     assert_eq!(*target.started.borrow(), ["poweroff.target"]);
     assert!(recorded(&hidden).state.is_active(), "the session goes on");
+}
+
+/// A return whose guards do not hold in the hidden session's PID 1 is
+/// refused before anything is prepared or enqueued, and the session goes on
+/// with its record; a power-off asks about no guard and goes on.
+#[test]
+fn a_return_without_its_guards_keeps_the_session_and_a_power_off_goes_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let target = FakeTarget {
+        unguarded: true,
+        ..FakeTarget::default()
+    };
+
+    let error = m
+        .leave_session_on(&machine, LeaveTo::Decoy, &target)
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, NailsError::PreFlightCheckFailed(failures)
+            if failures[0].1.contains("ServiceWatchdogs=no")),
+        "{error}"
+    );
+    assert!(target.started.borrow().is_empty());
+    assert!(recorded(&hidden).state.is_active(), "the session goes on");
+    assert!(
+        Plan::load(&machine.paths.plan()).unwrap().armed.is_none(),
+        "the way back is not armed"
+    );
+    assert!(!machine.paths.nextroot().exists(), "nothing is mounted");
+
+    m.leave_session_on(&machine, LeaveTo::Poweroff, &target)
+        .unwrap();
+    assert_eq!(*target.started.borrow(), ["poweroff.target"]);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
 
 #[test]
