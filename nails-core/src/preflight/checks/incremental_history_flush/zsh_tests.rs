@@ -316,6 +316,100 @@ fn a_path_is_resolved_in_every_home_and_config_home_it_may_be_in() {
 }
 
 #[test]
+fn a_zdotdir_neither_the_environment_nor_a_file_sets_is_empty_in_a_path() {
+    // zsh expands an unset ZDOTDIR to nothing, so `$ZDOTDIR/x` is `/x`, not
+    // a file in the home; `${ZDOTDIR:-$HOME}` is the home.
+    for (line, read) in [
+        ("source $ZDOTDIR/hist.zsh", "/hist.zsh"),
+        ("source ${ZDOTDIR}/hist.zsh", "/hist.zsh"),
+        ("source ${ZDOTDIR:-$HOME}/hist.zsh", "/home/alice/hist.zsh"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        seed(&fs, "/hist.zsh", "setopt share_history\n");
+        seed(&fs, "/home/alice/hist.zsh", "setopt inc_append_history\n");
+        let names = if read == "/hist.zsh" {
+            "SHARE_HISTORY"
+        } else {
+            "INC_APPEND_HISTORY"
+        };
+        assert_eq!(
+            on(&fs, NOT_LOGIN),
+            [format!("{read} names {names}")],
+            "{line}"
+        );
+    }
+    // One a file sets, or the shell's environment holds, names its
+    // directory.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshenv", "ZDOTDIR=/home/alice/z\n");
+    seed(&fs, "/home/alice/z/.zshrc", "source $ZDOTDIR/hist.zsh\n");
+    seed(&fs, "/home/alice/z/hist.zsh", "setopt share_history\n");
+    seed(&fs, "/hist.zsh", "setopt inc_append_history\n");
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/z/hist.zsh names SHARE_HISTORY"]
+    );
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/z/.zshrc", "source $ZDOTDIR/hist.zsh\n");
+    seed(&fs, "/home/alice/z/hist.zsh", "setopt share_history\n");
+    let install = Install::of(
+        &fs,
+        None,
+        Some(&[("ZDOTDIR".to_string(), "/home/alice/z".to_string())]),
+    );
+    let found: Vec<String> = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &install)
+        .writes
+        .into_iter()
+        .map(|write| write.what)
+        .collect();
+    assert_eq!(found, ["/home/alice/z/hist.zsh names SHARE_HISTORY"]);
+    // Set under a condition, it may be either, which the check cannot
+    // follow.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "[[ -d ~/z ]] && ZDOTDIR=/home/alice/z\n",
+    );
+    seed(&fs, "/home/alice/.zshrc", "source $ZDOTDIR/hist.zsh\n");
+    assert_eq!(
+        scan(&fs, NOT_LOGIN).doubts,
+        ["it cannot follow the file /home/alice/.zshrc sources as `$ZDOTDIR/hist.zsh`"]
+    );
+}
+
+#[test]
+fn a_parameter_whose_name_starts_like_home_is_another_one() {
+    // `$HOMEBREW_PREFIX` is no `$HOME` with `BREW_PREFIX` after it.
+    for line in [
+        "source $HOMEBREW_PREFIX/share/hist.zsh",
+        "source $ZDOTDIRS/hist.zsh",
+        "source $XDG_CONFIG_HOME2/hist.zsh",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        seed(&fs, "/home/aliceBREW_PREFIX/share/hist.zsh", "HISTSIZE=1\n");
+        let path = line.trim_start_matches("source ");
+        assert_eq!(
+            scan(&fs, NOT_LOGIN).doubts,
+            [format!(
+                "it cannot follow the file /home/alice/.zshrc sources as `{path}`"
+            )],
+            "{line}"
+        );
+    }
+    // `${HOME}` ends where its brace does.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "source ${HOME}BREW/hist.zsh\n");
+    seed(&fs, "/home/aliceBREW/hist.zsh", "setopt share_history\n");
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/aliceBREW/hist.zsh names SHARE_HISTORY"]
+    );
+}
+
+#[test]
 fn a_zdotdir_or_a_source_the_check_cannot_read_is_a_doubt() {
     for (line, doubt) in [
         (

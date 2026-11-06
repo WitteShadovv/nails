@@ -105,6 +105,7 @@ mod functions;
 mod install;
 mod lexer;
 mod made;
+mod paths;
 mod reading;
 mod runs;
 mod shadows;
@@ -162,6 +163,9 @@ struct Reader<'a, F: Filesystem> {
     /// dump file in the one in force as it runs.
     zdotdirs_seen: Vec<PathBuf>,
     zdotdir_lost: bool,
+    /// Whether the shell's environment or a file read may set `ZDOTDIR`,
+    /// which zsh expands to nothing while neither does (`$ZDOTDIR/x`).
+    zdotdir_set: bool,
     /// What `XDG_CONFIG_HOME` may be as the files read so far set it: each
     /// value as written, `None` while unset.
     xdg_config_homes: Vec<Option<String>>,
@@ -348,70 +352,6 @@ impl<F: Filesystem> Reader<'_, F> {
         }
     }
 
-    /// The paths `value` may name: one for each value `XDG_CONFIG_HOME` may
-    /// have, each different one once; `None` when one of them is no path the
-    /// check can know.
-    fn resolve(&self, value: &Word) -> Option<Vec<PathBuf>> {
-        let mut paths = Vec::new();
-        for config in &self.xdg_config_homes {
-            let path = self.resolve_in(value, config.as_deref())?;
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-        (!paths.is_empty()).then_some(paths)
-    }
-
-    /// The path `value` names with `XDG_CONFIG_HOME` set to `config` as
-    /// written, or unset: with `~`, `$HOME`, `$ZDOTDIR`, `$XDG_CONFIG_HOME`
-    /// and their `${...:-...}` defaults in it; `None` when it names anything
-    /// else the check cannot know, or no absolute path.
-    fn resolve_in(&self, value: &Word, config: Option<&str>) -> Option<PathBuf> {
-        let home = self.home?.to_string_lossy().into_owned();
-        let default_config = format!("{home}/.config");
-        let config = config.map(str::to_string);
-        let zdotdir = match self.zdotdirs.as_slice() {
-            [one] => Some(one.to_string_lossy().into_owned()),
-            _ => None,
-        };
-        let mut text = value.text.clone();
-        if value.expands {
-            for (pattern, with) in [
-                (
-                    "${XDG_CONFIG_HOME:-$HOME/.config}",
-                    config.clone().or(Some(default_config.clone())),
-                ),
-                (
-                    "${XDG_CONFIG_HOME:-${HOME}/.config}",
-                    config.clone().or(Some(default_config.clone())),
-                ),
-                (
-                    "${XDG_CONFIG_HOME:-~/.config}",
-                    config.clone().or(Some(default_config)),
-                ),
-                ("${ZDOTDIR:-$HOME}", zdotdir.clone()),
-                ("${ZDOTDIR:-${HOME}}", zdotdir.clone()),
-                ("${ZDOTDIR:-~}", zdotdir.clone()),
-                ("${XDG_CONFIG_HOME}", config.clone()),
-                ("$XDG_CONFIG_HOME", config),
-                ("${ZDOTDIR}", zdotdir.clone()),
-                ("$ZDOTDIR", zdotdir),
-                ("${HOME}", Some(home.clone())),
-                ("$HOME", Some(home.clone())),
-            ] {
-                if text.contains(pattern) {
-                    text = text.replace(pattern, &with?);
-                }
-            }
-        }
-        if text == "~" || text.starts_with("~/") {
-            text = format!("{home}{}", &text[1..]);
-        }
-        let plain = !text.contains(['$', '`', '~']) && !text.contains(GLOB);
-        let path = PathBuf::from(text);
-        (plain && path.is_absolute()).then_some(path)
-    }
-
     /// The text of the file at `path`, unless it is being followed already,
     /// nothing is there, or the check cannot read it, which is a doubt; zsh
     /// may run compiled code in its place, which is a doubt too.
@@ -565,15 +505,6 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         self.outers.pop();
         self.stack.pop();
-    }
-
-    /// Note `dirs` among the directories `ZDOTDIR` may have named.
-    fn seen(&mut self, dirs: &[PathBuf]) {
-        for dir in dirs {
-            if !self.zdotdirs_seen.contains(dir) {
-                self.zdotdirs_seen.push(dir.clone());
-            }
-        }
     }
 
     /// Mark the function `name` to be read as one the files autoload, which
@@ -858,46 +789,6 @@ impl<F: Filesystem> Reader<'_, F> {
             _ => {}
         }
     }
-
-    /// Note the value `value` a file at `place` gives `ZDOTDIR` or
-    /// `XDG_CONFIG_HOME` (`name`); `certain` when the assignment certainly
-    /// runs.
-    fn assign(&mut self, name: &str, value: Word, certain: bool, place: &str) {
-        if name == "XDG_CONFIG_HOME" {
-            let config = Some(value.text);
-            if certain {
-                self.xdg_config_homes = vec![config];
-            } else if !self.xdg_config_homes.contains(&config) {
-                self.xdg_config_homes.push(config);
-            }
-            return;
-        }
-        match self.resolve(&value) {
-            Some(dirs) if certain => {
-                self.seen(&dirs);
-                self.zdotdirs = dirs;
-            }
-            Some(dirs) => {
-                self.seen(&dirs);
-                for dir in dirs {
-                    if !self.zdotdirs.contains(&dir) {
-                        self.zdotdirs.push(dir);
-                    }
-                }
-            }
-            None => {
-                self.zdotdir_lost = true;
-                if certain {
-                    // zsh reads the user's files somewhere else now.
-                    self.zdotdirs.clear();
-                }
-                self.doubt(format!(
-                    "it cannot follow the ZDOTDIR that {place} sets (`{}`)",
-                    value.text
-                ));
-            }
-        }
-    }
 }
 
 /// The path of the compiled form zsh looks for beside `path`: `path.zwc`.
@@ -1005,6 +896,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         home,
         options: Default::default(),
         zdotdir_lost: zdotdirs.is_empty(),
+        zdotdir_set: env.is_some_and(|env| env.zdotdir.is_some()),
         zdotdirs_seen: zdotdirs.clone(),
         zdotdirs,
         xdg_config_homes: vec![None],
