@@ -382,7 +382,14 @@ fn attach_refusal<F: Filesystem>(
     } else {
         Allow::Nothing
     };
-    match crate::HiddenRoot::assess_allowing(fs, root, allow) {
+    // The root is looked up through the automount guard, as the hidden-volume
+    // row looks it up, so a root behind an automount point that nothing is
+    // mounted on yet is refused naming the point, and not mounted.
+    let guarded = crate::filesystem::automount::Guarded::new(
+        fs.clone(),
+        &crate::filesystem::automount::Snapshot::read(fs, Path::new("/")),
+    );
+    match crate::HiddenRoot::assess_allowing(&guarded, root, allow) {
         Ok(Assessment::Refused(refusal)) => {
             let exe = std::env::current_exe().ok();
             let body = super::refusal::refusal_body(&refusal, exe.as_deref());
@@ -775,6 +782,28 @@ mod tests {
              the lookup fails here). Nothing was written.\nRun the command again with sudo."
         );
         assert_eq!(body.allowable, None);
+    }
+
+    /// A root behind an automount point that nothing is mounted on yet is
+    /// not looked up: `check` leads with the gate's refusal, which names the
+    /// point and how to mount it, and nothing at or below the point is
+    /// looked up.
+    #[test]
+    fn attach_refusal_makes_no_lookup_behind_an_automount_point() {
+        use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/vault", true);
+        with_automounts(&fs, &["/mnt"]);
+        let body = attach_refusal(&fs, Path::new("/mnt/vault"), &PreflightOptions::default())
+            .expect("a root the guard does not look up is refused");
+        assert_eq!(body.code, "not_separate_volume");
+        assert_eq!(
+            body.message,
+            "nothing shows that /mnt/vault is a volume of its own: it is not looked up, since the \
+             lookup would mount the automount point /mnt. Nothing was written.\nMount /mnt (for \
+             example `ls /mnt`), then run the command again."
+        );
+        assert!(!reached(&fs, "/mnt"), "{:?}", fs.mock_lookups());
     }
 
     /// A root on the decoy's storage is the refusal `check

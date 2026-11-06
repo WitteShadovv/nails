@@ -156,8 +156,18 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
         // the gate without the override refuses it. The hidden-volume check
         // owns the operator message, so an unattached root is a silent skip,
         // not a second failure.
-        match crate::hidden_root::HiddenRoot::verify_attached(fs, &self.hidden_volume_root, false)?
-        {
+        // The gate looks the root up through the automount guard, as the
+        // hidden-volume check does, so a root behind an automount point that
+        // nothing is mounted on yet is not attached, and not mounted.
+        let guarded = crate::filesystem::automount::Guarded::new(
+            fs.clone(),
+            &crate::filesystem::automount::Snapshot::read(fs, Path::new("/")),
+        );
+        match crate::hidden_root::HiddenRoot::verify_attached(
+            &guarded,
+            &self.hidden_volume_root,
+            false,
+        )? {
             crate::hidden_root::AttachState::Attached => {}
             crate::hidden_root::AttachState::Unattached(reason) => {
                 return Ok(CheckResult::skipped(format!(
