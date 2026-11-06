@@ -817,12 +817,13 @@ of this changelog for that version becomes the release notes word for word, and
   decoy, so the check now says to put the hidden root on storage of its own instead. Where it also
   flags lines only the hidden volume needs, it still says to remove those, since once the hidden
   root moves they are flagged no more and would stay behind naming it.
-- `backend-entries` no longer says to remove the decoy's fstab line for the filesystem that a root
-  accepted with `--allow-decoy-storage` is a folder or a subvolume of, such as the line for `/`
-  below a bind of a folder of `/`. That line names the root's device, so the check took it for a
-  line that mounts the volume itself, while it mounts the decoy's own filesystem, which removing it
-  would break. It now says it mounts the filesystem the volume is part of and that the decoy's own
-  boot needs it, and to put the hidden root on storage of its own instead.
+- `backend-entries` no longer says to remove a line of the decoy's fstab that the boot mounts for
+  the filesystem that a root accepted with `--allow-decoy-storage` is a folder or a subvolume of,
+  such as the line for `/` below a bind of a folder of `/`. That line names the root's device, so
+  the check took it for a line that mounts the volume itself, while it mounts the decoy's own
+  filesystem, which removing it would break. It now says it mounts the filesystem the volume is
+  part of and that the decoy's own boot needs it, and to put the hidden root on storage of its own
+  instead. A `noauto` line for that filesystem is still one to remove.
 - The attach gate no longer says `per /etc/fstab` of a root whose filesystem is mounted at `/` or at
   one of the system folders it counts as the decoy's (`/srv`, `/home`, `/opt` and the like) when no
   fstab line mounts it there, a separate drive mounted at `/srv` by hand, say. It says the computer
