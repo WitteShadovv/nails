@@ -478,3 +478,232 @@ fn a_user_override_that_hides_a_system_entry_counts_in_shared_home_only() {
         "the fresh home does not carry the override"
     );
 }
+
+/// The place of `inventory` not read at `path`.
+fn not_read_at<'a>(inventory: &'a PersonaInventory, path: &str) -> Option<&'a NotRead> {
+    inventory
+        .not_read
+        .iter()
+        .find(|not_read| not_read.path == Path::new(path))
+}
+
+#[test]
+fn a_place_that_cannot_be_looked_up_is_not_read_and_the_rest_is_read_on() {
+    let fs = MockFilesystem::new();
+    let dir = PathBuf::from("/etc/xdg/autostart");
+    let entry = dir.join("syncthing.desktop");
+    fs.mock_set_directory_contents(&dir, vec![entry.clone()]);
+    fs.mock_set_file_content(entry.to_str().unwrap(), "[Desktop Entry]\n");
+    fs.mock_set_path_exists("/var/lib/systemd/linger/alice", true);
+    fs.mock_set_lookup_error(
+        "/var/lib/systemd/linger",
+        std::io::ErrorKind::PermissionDenied,
+    );
+
+    let inventory = collect(&fs, false);
+    assert!(names_for(&inventory, InheritedSource::Linger).is_empty());
+    assert_eq!(
+        names_for(&inventory, InheritedSource::GlobalAutostart),
+        vec!["syncthing".to_string()]
+    );
+    let linger = not_read_at(&inventory, "/var/lib/systemd/linger/alice").expect("not read");
+    assert_eq!(
+        linger.reason,
+        "NAILS cannot look up /var/lib/systemd/linger/alice; run the command again with sudo"
+    );
+    assert_eq!(linger.automount_point, None);
+    assert_eq!(linger.entry, None);
+    assert_eq!(inventory.not_read.len(), 1, "{:?}", inventory.not_read);
+    // A place that is not there is nothing, never one not read.
+    let fs = MockFilesystem::new();
+    fs.mock_set_lookup_error("/var/lib/systemd/linger", std::io::ErrorKind::NotFound);
+    assert!(collect(&fs, false).not_read.is_empty());
+}
+
+/// A `/run/current-system` NAILS cannot look up counts as NixOS: the
+/// profile directories are searched as well, and the marker is not read.
+#[test]
+fn a_nixos_marker_that_cannot_be_looked_up_counts_as_nixos() {
+    let fs = MockFilesystem::new();
+    let dir = PathBuf::from("/nix/var/nix/profiles/default/etc/xdg/autostart");
+    let entry = dir.join("kdeconnect-indicator.desktop");
+    fs.mock_set_directory_contents(&dir, vec![entry.clone()]);
+    fs.mock_set_file_content(entry.to_str().unwrap(), "[Desktop Entry]\n");
+    assert!(collect(&fs, false).is_empty(), "not NixOS: not searched");
+
+    fs.mock_set_lookup_error("/run/current-system", std::io::ErrorKind::Other);
+    let inventory = collect(&fs, false);
+    assert_eq!(
+        names_for(&inventory, InheritedSource::GlobalAutostart),
+        vec!["kdeconnect-indicator".to_string()]
+    );
+    let marker = not_read_at(&inventory, "/run/current-system").expect("not read");
+    assert!(
+        marker
+            .reason
+            .starts_with("NAILS cannot look up /run/current-system ("),
+        "{marker:?}"
+    );
+}
+
+/// A file of a name NAILS cannot look up may decide the name: no file of it
+/// further down the search path does, and the name is undecided.
+#[test]
+fn an_autostart_file_that_cannot_be_looked_up_leaves_its_name_undecided() {
+    let fs = MockFilesystem::new();
+    seed_entry(&fs, "/etc/xdg/autostart", "sync.desktop");
+    seed_entry(&fs, "/home/alice/.config/autostart", "sync.desktop");
+    seed_entry(&fs, "/home/alice/.config/autostart", "notes.desktop");
+    fs.mock_set_lookup_error(
+        "/home/alice/.config/autostart/sync.desktop",
+        std::io::ErrorKind::Other,
+    );
+
+    let inventory = collect(&fs, false);
+    assert_eq!(
+        names_for(&inventory, InheritedSource::UserAutostart),
+        vec!["notes".to_string()]
+    );
+    assert!(
+        names_for(&inventory, InheritedSource::GlobalAutostart).is_empty(),
+        "the file further down does not decide the name"
+    );
+    let file =
+        not_read_at(&inventory, "/home/alice/.config/autostart/sync.desktop").expect("not read");
+    assert_eq!(
+        file.entry,
+        Some(("sync".to_string(), InheritedSource::UserAutostart))
+    );
+    assert_eq!(
+        inventory.undecided().collect::<Vec<_>>(),
+        vec![("sync", InheritedSource::UserAutostart)]
+    );
+    // In fresh-home the home is not read, and the system's file decides.
+    let fresh = collect(&fs, true);
+    assert!(fresh.not_read.is_empty(), "{:?}", fresh.not_read);
+    assert_eq!(
+        names_for(&fresh, InheritedSource::GlobalAutostart),
+        vec!["sync".to_string()]
+    );
+}
+
+/// A display-manager file NAILS cannot look up is not read: the accounts
+/// the other files name are still listed.
+#[test]
+fn a_display_manager_file_that_cannot_be_looked_up_is_not_read() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        "/etc/gdm3/custom.conf",
+        "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\n",
+    );
+    fs.mock_set_lookup_error("/etc/gdm3/custom.conf", std::io::ErrorKind::Other);
+    fs.mock_set_file_content(
+        "/etc/lightdm/lightdm.conf",
+        "[Seat:*]\nautologin-user=dave\n",
+    );
+    let dir = PathBuf::from("/etc/sddm.conf.d");
+    let drop_in = dir.join("10-autologin.conf");
+    fs.mock_set_directory_contents(&dir, vec![drop_in.clone()]);
+    fs.mock_set_file_content(drop_in.to_str().unwrap(), "[Autologin]\nUser=carol\n");
+    fs.mock_set_lookup_error(drop_in.to_str().unwrap(), std::io::ErrorKind::Other);
+
+    let inventory = collect(&fs, false);
+    assert_eq!(
+        names_for(&inventory, InheritedSource::Autologin),
+        vec!["dave".to_string()]
+    );
+    let paths: Vec<&Path> = inventory
+        .not_read
+        .iter()
+        .map(|not_read| not_read.path.as_path())
+        .collect();
+    assert_eq!(
+        paths,
+        [Path::new("/etc/gdm3/custom.conf"), drop_in.as_path()],
+        "{:?}",
+        inventory.not_read
+    );
+}
+
+/// Through the automount guard, a home behind an automount point that
+/// nothing is mounted on yet is not read: each place names the point, and
+/// nothing at or below it is looked up.
+#[test]
+fn a_home_behind_an_automount_point_is_not_read_and_not_looked_up() {
+    use crate::filesystem::automount::{Guarded, Snapshot};
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         31 1 0:51 / /home/alice rw,relatime - autofs systemd-1 \
+         rw,fd=1,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=1\n",
+    );
+    seed_entry(&fs, "/home/alice/.config/autostart", "dropbox.desktop");
+    seed_entry(&fs, "/etc/xdg/autostart", "syncthing.desktop");
+    fs.mock_clear_lookups();
+    let guarded = Guarded::new(fs.clone(), &Snapshot::read(&fs, Path::new("/")));
+
+    let inventory = collect_inherited_persona(&guarded, Path::new(HOME), USER, false);
+    assert_eq!(
+        names_for(&inventory, InheritedSource::GlobalAutostart),
+        vec!["syncthing".to_string()]
+    );
+    assert!(names_for(&inventory, InheritedSource::UserAutostart).is_empty());
+    let autostart = not_read_at(&inventory, "/home/alice/.config/autostart").expect("not read");
+    assert_eq!(
+        autostart.reason,
+        "NAILS does not look up /home/alice/.config/autostart, since the lookup would mount the \
+         automount point /home/alice"
+    );
+    assert_eq!(
+        autostart.automount_point.as_deref(),
+        Some(Path::new("/home/alice"))
+    );
+    assert!(not_read_at(&inventory, "/home/alice/.config/systemd/user").is_some());
+    assert!(
+        fs.mock_lookups()
+            .iter()
+            .all(|path| !path.starts_with("/home/alice")),
+        "{:?}",
+        fs.mock_lookups()
+    );
+}
+
+/// A FIFO is no regular file, so it is skipped unread as before and never
+/// counts as a place NAILS could not read.
+#[test]
+fn a_fifo_is_no_place_not_read() {
+    use crate::filesystem::RealFilesystem;
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".config/autostart");
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("nails-test-fifo.desktop");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let inventory = crate::test_fifo::releasing_readers(&fifo, || {
+        collect_inherited_persona(&RealFilesystem, home.path(), "alice", false)
+    });
+    assert!(names_for(&inventory, InheritedSource::UserAutostart).is_empty());
+    assert!(
+        inventory
+            .not_read
+            .iter()
+            .all(|not_read| !not_read.path.starts_with(home.path())),
+        "{:?}",
+        inventory.not_read
+    );
+}
+
+/// An entry file `name` in the autostart directory `dir`.
+fn seed_entry(fs: &MockFilesystem, dir: &str, name: &str) {
+    let path = PathBuf::from(dir).join(name);
+    let mut listing = fs.list_directory(Path::new(dir)).unwrap_or_default();
+    listing.push(path.clone());
+    fs.mock_set_directory_contents(Path::new(dir), listing);
+    fs.mock_set_file_content(path.to_str().unwrap(), "[Desktop Entry]\n");
+}

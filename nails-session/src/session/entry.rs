@@ -668,7 +668,9 @@ fn build(
     plan.boot_masks = hidden_masks::units(&nextroot, &plan.masks);
     plan.generator_masks = hidden_masks::generators();
     if let Some(operator) = &inputs.operator {
-        super::persona::write_masks(&nextroot, &inputs.persona, operator);
+        // The masks only ever add to the hidden upper: a place the inventory
+        // cannot read is a warning, never a refusal.
+        warnings.extend(super::persona::write_masks(&nextroot, &inputs.persona, operator).warning);
     }
     // Best effort, like the masks: a launcher that cannot be written costs
     // the menu entry, never the entry into the hidden root.
