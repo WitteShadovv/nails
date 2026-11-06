@@ -80,7 +80,11 @@
 //! global, a builtin's flag or name such a word may make, an option that
 //! changes how zsh reads code ([`reading`]), a file the code may
 //! make or write before zsh reads it, and a program a hook runs where a hook
-//! may give it the command line in its environment ([`made`]). Beside the
+//! may give it the command line in its environment ([`made`]). A function
+//! or a regular alias named like the command a NAILS command is typed with
+//! (`sudo`, `nails`) runs with that line, so its code counts as a hook's, and
+//! a global alias named like a word of such a command counts as used
+//! ([`builtins::typed`], [`runs`]). Beside the
 //! code, the lines of each
 //! file are counted for what they name ([`backstop`]): an option named beyond
 //! what the code names counts as on, an `fpath` setting beyond what the walk

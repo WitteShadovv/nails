@@ -138,7 +138,9 @@ impl Walker<'_> {
     /// first one's code is its body, and each other runs it, so that it
     /// counts as a hook where any is one. A name zsh may expand into another
     /// may be a hook's, so its code counts as a hook's ([`computed_name`]),
-    /// and so may an alias's in the second form ([`Event::NamedBody`]).
+    /// and so does one that holds a backslash or a quote past those zsh takes
+    /// off (`'s\udo'`), which the check may read otherwise than zsh, and so
+    /// may an alias's in the second form ([`Event::NamedBody`]).
     pub(super) fn define(&mut self, names: Vec<Word>, paren: bool) {
         let mut first: Option<String> = None;
         for name in names {
@@ -147,7 +149,7 @@ impl Walker<'_> {
             if paren {
                 self.events.push(Event::NamedBody(name.text.clone()));
             }
-            if computed_name(&name) {
+            if computed_name(&name) || name.text.contains(['\\', '\'', '"']) {
                 self.events.push(Event::Hook(name.text.clone()));
             }
             match &first {

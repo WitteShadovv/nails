@@ -883,6 +883,35 @@ mod tests {
         }
     }
 
+    /// The zsh history check counts a global alias named like a word of the
+    /// NAILS commands the guide has the operator type in the decoy as used
+    /// (`nails_core`'s `TYPED_WORDS`): those commands and every option they
+    /// take, the global ones and `-h` among them, and the `-vv` the help of
+    /// `-v` names. An option added to them and missing there would be a
+    /// global alias the check passes while zsh runs it.
+    #[test]
+    fn the_words_the_zsh_history_check_counts_are_the_typed_commands_options() {
+        use nails_core::preflight::checks::incremental_history_flush::TYPED_WORDS;
+        let mut command = Cli::command();
+        command.build();
+        let mut words = vec!["-vv".to_string()];
+        for name in ["check", "activate", "status", "emergency", "deactivate"] {
+            words.push(name.to_string());
+            let sub = command
+                .find_subcommand(name)
+                .expect("the subcommand exists");
+            for arg in sub.get_arguments() {
+                words.extend(arg.get_short().map(|short| format!("-{short}")));
+                words.extend(arg.get_long().map(|long| format!("--{long}")));
+            }
+        }
+        words.sort();
+        words.dedup();
+        let mut typed: Vec<String> = TYPED_WORDS.iter().map(|word| (*word).to_string()).collect();
+        typed.sort();
+        assert_eq!(typed, words);
+    }
+
     #[test]
     fn discard_parses_target_and_yes() {
         let cli = parse(&["discard", "/home", "-y"]).expect("should parse");

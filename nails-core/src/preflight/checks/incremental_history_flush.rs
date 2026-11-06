@@ -55,6 +55,52 @@ use std::path::{Path, PathBuf};
 use super::super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result, TargetUser};
 
+/// The commands an operator may type a NAILS command with as the line's
+/// first word: `sudo`, as the operator guide has it, the other ways to run
+/// one as root (`doas`, `run0`, `pkexec`, `su`), and `nails` itself. In zsh
+/// a function or a regular alias of such a name runs in that command's
+/// place, with the line.
+pub const TYPED_COMMANDS: [&str; 6] = ["sudo", "doas", "run0", "pkexec", "su", "nails"];
+
+/// The other words of the NAILS commands the operator guide has the operator
+/// type before and at the switch: `check`, `activate`, `status`, `emergency`
+/// and `deactivate`, and every option they take as `nails` reads them, the
+/// global ones, `-h` and the `-vv` its help names among them. In zsh a
+/// global alias of such a name runs in place of that word as the line is
+/// entered.
+pub const TYPED_WORDS: [&str; 30] = [
+    "check",
+    "activate",
+    "status",
+    "emergency",
+    "deactivate",
+    "-c",
+    "--config",
+    "-v",
+    "-vv",
+    "--verbose",
+    "-q",
+    "--quiet",
+    "--color",
+    "--ascii",
+    "--json",
+    "--no-log-file",
+    "-h",
+    "--help",
+    "-y",
+    "--yes",
+    "--nixos-flake",
+    "--dry-run",
+    "--overlay-only",
+    "--allow-persistent-decoy",
+    "--allow-decoy-storage",
+    "--allow-discards",
+    "--poweroff",
+    "--countdown",
+    "--reboot",
+    "--details",
+];
+
 /// How the check found the shell whose settings it reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellOrigin {
