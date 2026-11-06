@@ -178,7 +178,8 @@ fn a_switch_that_would_not_power_off_at_its_timeout_refuses_the_entry() {
 }
 
 /// With service watchdogs off PID 1 takes no action at a job timeout, the
-/// guard's included: the entry is refused, and the fix turns them on.
+/// guard's included: the entry is refused. After the entry's reload only the
+/// kernel command line can have turned them off, and the fix names it.
 #[test]
 fn service_watchdogs_turned_off_refuse_the_entry() {
     let pid1 = Pid1 {
@@ -198,7 +199,9 @@ fn service_watchdogs_turned_off_refuse_the_entry() {
     );
     assert_eq!(
         fix,
-        "Turn them on with `sudo systemctl service-watchdogs yes` and activate again"
+        "Remove `systemd.service_watchdogs=0` from the kernel command line (every reload of \
+         PID 1, the one activation makes included, sets service watchdogs to what it says, so \
+         `systemctl service-watchdogs yes` does not last), boot again and activate again"
     );
 }
 

@@ -22,12 +22,17 @@
 #   2. The positive control, on the decoy after that session: a plain
 #      soft-reboot held up by the unit is forced through at the timeout, and
 #      the machine comes back up.
-#   3. Activation refuses where the timeout would do nothing: with service
-#      watchdogs off, and with a test-only runtime drop-in that turns the
-#      timeout off. Nothing of the entry is left.
+#   3. Activation refuses where the timeout would do nothing, with a
+#      test-only runtime drop-in that turns the timeout off, and nothing of the
+#      entry is left. A `systemctl service-watchdogs no` on the decoy does not
+#      refuse it: every reload of PID 1, the activation's own included, sets
+#      service watchdogs back to what the kernel command line says, and the
+#      hidden PID 1 then has them on. Only that command line could turn them
+#      off for good, which would take a node of its own.
 #   4. In a session, deactivate refuses while the hidden PID 1 has service
-#      watchdogs off, has no timeout, or has lost the drop-in, and the session
-#      goes on each time. Then the positive control for the session's own
+#      watchdogs off (nothing reloads it before the way back), has no
+#      timeout, or has lost the drop-in, and the session goes on each time.
+#      Then the positive control for the session's own
 #      switch: a test-only unit whose stop removes the drop-in and reloads
 #      PID 1 during the switch, after deactivate checked it, and a way back
 #      held up by the unit is forced through at the timeout into the decoy,
@@ -135,6 +140,11 @@ in
         return machine.succeed(f"systemctl show -P {prop} {UNIT}").strip()
 
 
+    def manager(prop):
+        """`prop` of PID 1 itself."""
+        return machine.succeed(f"systemctl show -P {prop}").strip()
+
+
     def assert_guard(where):
         """PID 1 has the session's drop-in loaded, on top of the test's own:
         the switch's job timeout powers off, and the timeout is the test's."""
@@ -240,15 +250,6 @@ in
     with subtest("activation refuses where the timeout would do nothing"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         activate = f"nails --config {CONFIG} activate -y --overlay-only"
-        machine.succeed("systemctl service-watchdogs no")
-        assert_refused(
-            activate,
-            4,
-            "ServiceWatchdogs=no",
-            "Turn them on with `sudo systemctl service-watchdogs yes` and activate again",
-        )
-        machine.succeed("systemctl service-watchdogs yes")
-        assert_no_guard("after the refusal with service watchdogs off")
         without_timeout()
         # The fix names the test's drop-in, the last that sets the timeout.
         assert_refused(
@@ -263,7 +264,12 @@ in
         machine.fail("test -e /run/overlay-runtime")
 
     with subtest("deactivate refuses without the guard, and a guard gone after it is forced through"):
+        # The activation's reload undoes this, so it goes on, and the hidden
+        # PID 1 has service watchdogs on.
+        machine.succeed("systemctl service-watchdogs no")
+        assert manager("ServiceWatchdogs") == "no"
         canonical_activate(CONFIG, "--overlay-only", "activate-forced-back")
+        assert manager("ServiceWatchdogs") == "yes", "the entry's reload left them off"
         assert_guard("the session whose way back the test unguards")
         deactivate = f"nails --config {CONFIG} deactivate -y"
         # What every refusal of the way back names instead.
