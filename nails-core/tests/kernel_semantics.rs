@@ -248,6 +248,7 @@ fn deciding_the_decoy_s_own_units_leaves_the_atimes_of_their_directories() {
         let dirs = mount_units::UnitDirs {
             root: decoy.path(),
             run: run.path(),
+            guard: None,
         };
         let decisions = checks::decoy_units(dirs, &[], &[], Path::new("/mnt/data"));
         assert_eq!(decisions.len(), 1, "{decisions:?}");

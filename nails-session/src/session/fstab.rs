@@ -66,10 +66,36 @@ fn read_fstab_in_root(root: &Path, path: &Path) -> std::io::Result<Vec<u8>> {
 /// way back and the `fstab-policy` check all take entries resolved here, so
 /// they name the same mount points.
 pub fn parse_in_root(text: &[u8], root: &Path) -> Vec<FstabEntry> {
+    parse_in_root_guarded(text, root, None)
+}
+
+/// [`parse_in_root`], with each resolution asked of `guard` first, for a check
+/// that reads the running system: a mount point at a direct automount point
+/// that nothing is mounted on yet resolves to that point without a lookup
+/// (an `x-systemd.automount` line keeps its path, as systemd mounts nothing
+/// there before the switch), and one the guard does not resolve is kept as
+/// it is written, while the guard keeps that lookup in its ledger.
+pub fn parse_in_root_guarded(
+    text: &[u8],
+    root: &Path,
+    guard: Option<super::mount_units::Guard<'_>>,
+) -> Vec<FstabEntry> {
+    use crate::filesystem::automount::Lookup;
     let mut entries = parse_fstab(&String::from_utf8_lossy(text));
     for entry in &mut entries {
         // A relative mount point (swap's `none`) comes back as it is.
-        entry.file = nails_teardown::whole_root::nextroot::canonical_in_root(root, &entry.file);
+        let asked = match guard {
+            Some(guard) if entry.file.is_absolute() => {
+                guard.ask(root, &entry.file, Lookup::Resolves { follow: true })
+            }
+            _ => Ok(None),
+        };
+        entry.file = match asked {
+            Ok(None) => nails_teardown::whole_root::nextroot::canonical_in_root(root, &entry.file),
+            // The point's own path, as the root sees it.
+            Ok(Some(point)) => Path::new("/").join(point.strip_prefix(root).unwrap_or(&point)),
+            Err(_) => entry.file.clone(),
+        };
     }
     entries
 }

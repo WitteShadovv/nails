@@ -32,6 +32,7 @@ impl Decoy {
         UnitDirs {
             root: self.root.path(),
             run: self.run.path(),
+            guard: None,
         }
     }
 

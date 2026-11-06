@@ -768,9 +768,11 @@ fn keep_units_off(
     present: policy::Present<'_>,
 ) -> Result<Vec<String>> {
     let nextroot = paths.nextroot();
+    // The next root is no tree of the running system's automount points.
     let dirs = UnitDirs {
         root: &nextroot,
         run: &paths.run,
+        guard: None,
     };
     let refused = |decision: Decision| NailsError::InvalidState(decision.unit_refusal());
     let native = mount_units::read(dirs).map_err(|unlisted| refused(unlisted.refusal()))?;
