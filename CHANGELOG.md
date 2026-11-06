@@ -865,12 +865,14 @@ of this changelog for that version becomes the release notes word for word, and
   `rehearse plant` counted a write to it, or to an overlay whose upper lies on it, as one onto the
   hidden volume. The session now tells its own storage below the hidden root by device: the hidden
   volume, by the device the session plan records, a bind of a folder of it included, and a disk
-  image on it mounted straight from its loop device (not a partition of one, or a mapping over
-  one). By path it also counts every mount below `<hidden-root>/root`, where NAILS keeps its layers
-  and carries the decoy's filesystems for the way back. Any other mount below the hidden root is a
-  disk mounted during the session, and a mount outside the hidden root is one as before, also where
-  it shows the hidden volume. `rehearse` tells the hidden volume by the device mounted at the root,
-  so a scan reads every other disk below it, a decoy filesystem a session carries there too.
+  image on it mounted straight from its loop device (not a partition of one, or a mapping over one).
+  By path it also counts every mount below `<hidden-root>/root`, where NAILS keeps its layers and
+  carries the decoy's filesystems for the way back. Any other mount below the hidden root is a disk
+  mounted during the session, and a mount outside the hidden root is one as before, also where it
+  shows the hidden volume. `rehearse` tells the hidden volume by the device mounted at the root, so
+  a scan reads every other disk below it, a decoy filesystem a session carries there too, and a
+  default scan refuses while a second filesystem is mounted over the root, as `plant` does, since it
+  cannot tell which of the two is the volume.
 - The attach gate refuses a partition of a loop device whose image file lies on the decoy's disk,
   as it refuses the loop device itself. A partition the kernel made on a loop device (`losetup -P`,
   or a disk image opened in a file manager) shows no device below it, so the image file behind it

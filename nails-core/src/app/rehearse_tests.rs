@@ -392,6 +392,40 @@ fn a_scan_with_no_device_to_read_fails() {
 }
 
 #[test]
+fn a_default_scan_is_refused_while_a_disk_covers_the_hidden_root() {
+    use crate::filesystem::mountinfo::parse_mountinfo;
+    let root = Path::new("/mnt/data");
+    let volume = "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+                  30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n";
+    // A disk mounted over the hidden volume: the scan would take it for the
+    // volume, skip it and read the volume.
+    let covered = parse_mountinfo(&format!(
+        "{volume}31 30 8:33 / /mnt/data rw - vfat /dev/sdc1 rw\n"
+    ));
+    let failure = covered_root(&covered, root).expect("a covered root is refused");
+    assert_eq!(failure.code, "root_covered");
+    assert_eq!(failure.exit, ExitStatus::PreflightRefused);
+    assert_eq!(
+        failure.message,
+        "two filesystems are mounted at /mnt/data: one of type ext4, then one of type vfat \
+         over it. Nothing was written. Unmount the one that is not the volume, then run the \
+         command again."
+    );
+    // The volume alone, a second mount of the volume itself, and a disk over
+    // a parent of the root, which the scan reads like any other, are no cover.
+    for table in [
+        volume.to_string(),
+        format!("{volume}31 30 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n"),
+        format!("{volume}31 1 8:33 / /mnt rw - vfat /dev/sdc1 rw\n"),
+    ] {
+        assert!(
+            covered_root(&parse_mountinfo(&table), root).is_none(),
+            "{table}"
+        );
+    }
+}
+
+#[test]
 fn a_scan_in_the_planting_session_is_refused_unless_allowed() {
     let state = planted();
     let here = in_session(100);

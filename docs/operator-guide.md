@@ -1327,13 +1327,17 @@ desktop showed it. The token stays on the hidden volume
 
 `scan` reads every mounted decoy block device (and active swap) raw and
 read-only, without mounting anything, and searches allocated and unallocated
-space for the token in ASCII and UTF-16LE. It refuses to run inside the session
-the canary was planted in, which `plant` records by the session's entry time:
-on the decoy after `nails deactivate`, after a power-off or in a later session
-the scan runs, on every systemd version (`--allow-same-boot` overrides the
-check, but a scan in the planting session proves little). To rehearse the
-power-off exit instead, end the session with `nails deactivate --poweroff` and
-boot the decoy again before the scan. Exit `0` means the token was not found,
+space for the token in ASCII and UTF-16LE. It skips the hidden volume, which it
+tells by the device mounted at the hidden root, so without `--device` or
+`--offline` it refuses while a second filesystem is mounted over that root, as
+`plant` does: it cannot tell which of the two is the volume. It refuses to run
+inside the session the canary was planted in, which `plant` records by the
+session's entry time: on the decoy after `nails deactivate`, after a power-off
+or in a later session the scan runs, on every systemd version
+(`--allow-same-boot` overrides the check, but a scan in the planting session
+proves little). To rehearse the power-off exit instead, end the session with
+`nails deactivate --poweroff` and boot the decoy again before the scan. Exit
+`0` means the token was not found,
 `11` that it was (with the device and byte offset of each hit), `9` that a
 device could not be scanned completely (it could not be read, it is empty, or
 `--max-bytes` stopped it) or that its storage can hide the token from a raw
