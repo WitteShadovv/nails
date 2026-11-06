@@ -616,7 +616,7 @@ fn build(
     let mut warnings = Vec::new();
     if let Some(builder) = inputs.builder {
         activation_step(ActivationPhase::BuildSystem, building);
-        ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
+        nixos::ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
         let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
         crate::cancel::checkpoint()?;
         activation_step(ActivationPhase::KeepClosure, building);
@@ -785,20 +785,6 @@ fn keep_units_off(
         .filter_map(Decision::warning)
         .chain(unskipped)
         .collect())
-}
-
-/// Refuse a hidden NixOS build when the hidden volume holding `upper` has less
-/// than `floor_mb` free: the store delta of a full build is often several GB.
-fn ensure_build_space(upper: &Path, floor_mb: u64) -> Result<()> {
-    let stat = rustix::fs::statvfs(upper).map_err(|e| io(upper, e.into()))?;
-    let available_mb = stat.f_bavail.saturating_mul(stat.f_frsize) / (1024 * 1024);
-    if available_mb < floor_mb {
-        return Err(NailsError::InvalidState(format!(
-            "the hidden volume has {available_mb} MB free; the hidden NixOS build needs \
-             {floor_mb} MB (rebuild_space_mb)"
-        )));
-    }
-    Ok(())
 }
 
 /// The operator's home in the upper that covers it, before any overlay is

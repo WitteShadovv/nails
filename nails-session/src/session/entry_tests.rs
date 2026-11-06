@@ -91,14 +91,6 @@ fn a_stop_command_left_after_the_guard_refuses_the_entry() {
 }
 
 #[test]
-fn a_build_is_refused_below_the_space_floor() {
-    let dir = tempfile::tempdir().unwrap();
-    assert!(ensure_build_space(dir.path(), 0).is_ok());
-    let error = ensure_build_space(dir.path(), u64::MAX).unwrap_err();
-    assert!(error.to_string().contains("rebuild_space_mb"), "{error}");
-}
-
-#[test]
 fn a_root_that_cannot_be_mounted_again_is_refused() {
     for table in [
         "1 0 0:20 / / rw - tmpfs none rw\n",
