@@ -24,7 +24,22 @@ pub use nails_base::fstab::{
 /// A root without one has no entries; any other error is returned, never
 /// taken for an empty fstab, which would leave every entry undecided.
 pub fn read_in_root(root: &Path) -> std::io::Result<Vec<u8>> {
-    match nails_teardown::whole_root::nextroot::read_in_root(root, Path::new("/etc/fstab")) {
+    read_fstab_in_root(root, Path::new("/etc/fstab"))
+}
+
+/// The entries of the fstab that the NixOS toplevel `system` brings,
+/// `<system>/etc/fstab`, which its activation links as `/etc/fstab`: read in
+/// the root at `root`, whose store holds `system`, as [`read_in_root`] reads
+/// `/etc/fstab`, and resolved there ([`parse_in_root`]). The entry decides
+/// them before it activates the toplevel.
+pub fn of_system_in_root(root: &Path, system: &Path) -> std::io::Result<Vec<FstabEntry>> {
+    let text = read_fstab_in_root(root, &system.join("etc/fstab"))?;
+    Ok(parse_in_root(&text, root))
+}
+
+/// The fstab at `path` in the root at `root` ([`read_in_root`]).
+fn read_fstab_in_root(root: &Path, path: &Path) -> std::io::Result<Vec<u8>> {
+    match nails_teardown::whole_root::nextroot::read_in_root(root, path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         result => result,
     }

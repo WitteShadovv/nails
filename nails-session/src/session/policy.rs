@@ -192,7 +192,7 @@ pub enum Whose {
     /// it, as `check` and activation decide them.
     Decoy,
     /// The fstab of a hidden NixOS generation, which activation decides after
-    /// the build.
+    /// the build, before it activates the generation.
     HiddenSystem,
     /// The units outside the fstab that activation decides in the hidden
     /// root ([`super::mount_units`]): the decoy's, which `check` decided

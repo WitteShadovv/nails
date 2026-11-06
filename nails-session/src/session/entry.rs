@@ -25,14 +25,16 @@
 //!    rest masked at entry. This comes before the hidden build, because a
 //!    separate `/nix` (or a VM's store share) must be in place before anything
 //!    reads the next root's store;
-//! 6. on NixOS with a hidden configuration: the hidden toplevel built into the
-//!    next root's store, its closure copied onto the hidden volume so a decoy
+//! 6. on NixOS with a hidden configuration ([`hidden_build`]): the hidden
+//!    toplevel built into the next root's store, the fstab it brings decided,
+//!    so that a line the policy refuses refuses the entry before anything runs
+//!    from the build, its closure copied onto the hidden volume so a decoy
 //!    garbage collection cannot break it ([`super::store`]), and activated
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
-//!    generation's own fstab for what the decoy's did not cover; then the
-//!    mount, swap and automount units outside the fstabs that the targets of
-//!    the next root and of `/run` pull in, decided as fstab lines
-//!    ([`super::mount_units`]);
+//!    generation's own fstab, as the activated root resolves it, for what the
+//!    decoy's did not cover; then the mount, swap and automount units outside
+//!    the fstabs that the targets of the next root and of `/run` pull in,
+//!    decided as fstab lines ([`super::mount_units`]);
 //! 7. the masks and skips the entry transition writes at the switch: the
 //!    fstab policy's (a skip for a unit a boot target requires, see
 //!    [`super::policy`]), the units the hidden root does not need and the
@@ -613,59 +615,16 @@ fn build(
     decided.add(paths, &layout, &mut plan, elsewhere, more, inputs)?;
     crate::cancel::checkpoint()?;
 
-    let mut warnings = Vec::new();
-    if let Some(builder) = inputs.builder {
-        activation_step(ActivationPhase::BuildSystem, building);
-        nixos::ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
-        let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
-        crate::cancel::checkpoint()?;
-        activation_step(ActivationPhase::KeepClosure, building);
-        // Before anything runs from it: the decoy may garbage-collect its
-        // store before the next session, so the closure is kept on the
-        // hidden volume.
-        let kept = host.keep_hidden_closure(&nextroot, &system, &layout.store_kept())?;
-        tracing::debug!(
-            paths = kept.paths,
-            copied = kept.copied,
-            files = kept.files,
-            bytes = kept.bytes,
-            seconds = kept.elapsed.as_secs_f64(),
-            "hidden system kept on the hidden volume"
-        );
-        // The last stop before the activation, which runs to its end once it
-        // has begun.
-        crate::cancel::checkpoint()?;
-        activation_step(ActivationPhase::ActivateSystem, building);
-        host.activate_hidden_system(&nextroot, &system)?;
-        crate::cancel::checkpoint()?;
-        if let Some(decoy) = &plan.decoy.system
-            && nixos::kernel_of(&nextroot, &system) != nixos::kernel_of(&nextroot, decoy)
-        {
-            warnings.push(
-                "the hidden NixOS system was built for another kernel; kernel modules come \
-                 from the running (decoy) kernel"
-                    .to_string(),
-            );
-        }
-        plan.hidden = RootSide {
-            init: PathBuf::from(nixos::NIXOS_INIT),
-            system: Some(system),
-        };
-        // The hidden generation brings its own /etc/fstab: decide its entries
-        // too, resolved in the next root as the hidden systemd resolves them,
-        // and put in place what the decoy's fstab did not already cover.
-        let hidden_text = super::fstab::read_in_root(&nextroot)
-            .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
-        let hidden_fstab = super::fstab::parse_in_root(&hidden_text, &nextroot);
-        let more = decide_fstab(
-            &hidden_fstab,
-            &decoy_mounts,
-            hidden_root,
-            &present,
-            Whose::HiddenSystem,
-        )?;
-        decided.add(paths, &layout, &mut plan, hidden_fstab, more, inputs)?;
-    } else if !inputs.nixos {
+    let mut warnings = hidden_build::build(
+        paths,
+        inputs,
+        host,
+        &layout,
+        &mut plan,
+        &mut decided,
+        &decoy_mounts,
+    )?;
+    if inputs.builder.is_none() && !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
     activation_step(ActivationPhase::MaskUnits, building);
@@ -1138,6 +1097,8 @@ fn apply_mounts(
     }
     Ok(wanted)
 }
+
+mod hidden_build;
 
 #[cfg(test)]
 #[path = "entry_tests.rs"]

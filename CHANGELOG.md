@@ -558,17 +558,18 @@ of this changelog for that version becomes the release notes word for word, and
 
 - A decoy whose fstab mounts something at or below the hidden root is now refused: `check` fails
   `fstab-policy` (exit 4) and activation refuses the entry (see the upgrade notes). Such an entry
-  was left to the hidden systemd, which mounts it over the hidden volume or inside it, as the
-  volume is bound at its own path in the hidden session: a decoy disk read-write among the hidden
-  files, at boot or, for a `noauto` line, once a unit or a plain `mount` pulls it in. The refusal
-  covers an automount, a tmpfs and a line for the hidden volume itself as well, in the decoy's
-  fstab and in a hidden NixOS generation's, and a mount or automount unit that a boot target links
-  outside the fstab. It names the root and what to do: for the decoy's fstab, mount the hidden
-  volume where it mounts nothing, or move that line; for a hidden NixOS generation's, change the
-  hidden configuration in a session entered with `nails activate --overlay-only`. A mount unit that
-  only another unit pulls in is still not decided, and the session watcher alerts on a disk it
-  mounts read-write. A line that a link in the hidden root leads below the root is still kept
-  unmounted rather than refused.
+  was left to the hidden systemd, which mounts it over the hidden volume or inside it, as the volume
+  is bound at its own path in the hidden session: a decoy disk read-write among the hidden files, at
+  boot or, for a `noauto` line, once a unit or a plain `mount` pulls it in. The refusal covers an
+  automount, a tmpfs and a line for the hidden volume itself as well, in the decoy's fstab and in a
+  hidden NixOS generation's, which activation decides right after the build, before it keeps the
+  build's closure or activates it, and a mount or automount unit that a boot target links outside
+  the fstab. It names the root and what to do: for the decoy's fstab, mount the hidden volume where
+  it mounts nothing, or move that line; for a hidden NixOS generation's, change the hidden
+  configuration in a session entered with `nails activate --overlay-only`. A mount unit that only
+  another unit pulls in is still not decided, and the session watcher alerts on a disk it mounts
+  read-write. A line that a link in the hidden root leads below the root is still kept unmounted
+  rather than refused.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an
