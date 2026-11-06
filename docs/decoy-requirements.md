@@ -1148,9 +1148,22 @@ other mount point and how to unmount it, such as
 mount over it, which has to go first. A bind of the volume at the hidden root
 itself is no second mount, and neither is one below a next root mounted at
 `/run/nextroot`, where an activation binds the volume (`session-state` refuses
-while one is mounted). A hidden root on a filesystem the decoy uses,
-accepted with `--allow-decoy-storage`, is not judged this way: the decoy mounts
-that filesystem wherever it does.
+while one is mounted).
+
+A hidden root on a filesystem the decoy uses, accepted with
+`--allow-decoy-storage`, is judged as well, with two kinds of mounts left out.
+One is the decoy's own mounts of that filesystem: the one at `/`, and one that
+a line of `/etc/fstab` makes, a line for that mount point that names the
+mount's device, or a bind line whose source lies on that filesystem. The other
+is a mount that shows none of the root's folder, such as NixOS's read-only
+bind of `/nix/store` beside a bind of a folder of `/`, or another btrfs
+subvolume. So the check passes a bind of a folder of `/`, or a subvolume of a
+filesystem the fstab mounts, with the flag's warning, while a separate drive
+also mounted at `/srv` is refused with `sudo umount /srv`. A root is refused
+as well when a mount that no fstab line makes shows its folder, such as a bind
+of a folder of a `/home` or `/srv` partition that systemd-gpt-auto-generator
+mounts, or of ostree's `/sysroot`; the refusal then says not to unmount what
+this computer mounts by itself, and to use a volume of its own instead.
 
 Choose a hidden root that does not lie below a bind of a folder. systemd makes
 the mounts shared, so a bind that it mounts from fstab, or that a person makes

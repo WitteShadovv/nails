@@ -1407,8 +1407,14 @@ of this changelog for that version becomes the release notes word for word, and
   names each, says a desktop may have mounted it by itself, and gives the `sudo umount` line, the
   mount over one that this line cannot reach, and the advice to turn the automatic mounting of
   removable media off long before the next use. No flag lifts it. A bind of the volume at the root
-  itself passes, and so does a root on a filesystem the decoy uses that `--allow-decoy-storage`
-  accepted. A directory of a disk bound at the root now needs the disk's own mount gone.
+  itself passes. For a root on a filesystem the decoy uses that `--allow-decoy-storage` accepted,
+  the decoy's own mounts of that filesystem do not count, the one at `/` and those a line of
+  `/etc/fstab` makes, and neither does a mount that shows none of the root's folder (NixOS's
+  read-only bind of `/nix/store`, another btrfs subvolume). So the check passes a bind of a folder
+  of `/` and a subvolume of a filesystem the fstab mounts with the flag's warning, while a separate
+  drive also mounted at `/srv` is refused, and so is a root whose folder a mount that no fstab line
+  makes shows too (a `/home` or `/srv` partition that systemd-gpt-auto-generator mounts, ostree's
+  `/sysroot`). A directory of a disk bound at the root now needs the disk's own mount gone.
   `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the setting, which is
   not verified for every release. A VM test records whether udiskie mounts a drive that cryptsetup
   unlocked, and in it udiskie did.
