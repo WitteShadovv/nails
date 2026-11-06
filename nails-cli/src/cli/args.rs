@@ -322,9 +322,11 @@ pub struct ActivateArgs {
     /// lists but never mounts, or a device you know is served from such
     /// storage. It turns those refusals into a warning, adds a line to the
     /// logout confirmation and records the choice for `status`. A folder that
-    /// is no mount point, a root with a second filesystem mounted over it,
-    /// storage that cannot be judged (a ZFS volume among it), and a decoy entry
-    /// that opens the volume are still refused.
+    /// is no mount point, a root with a second filesystem mounted over it, a
+    /// root whose files another mount of its filesystem reaches too (one that
+    /// neither / nor a line of its fstab makes), storage that cannot be judged
+    /// (a ZFS volume among it), and a decoy entry that opens the volume are
+    /// still refused.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 
@@ -640,8 +642,10 @@ pub struct CheckArgs {
     /// Mirrors `activate --allow-decoy-storage`: a root this computer's own
     /// storage seems to hold, or one on a network or userspace block device
     /// (nbd, ublk), then warns instead of failing. A folder that is no mount
-    /// point, a covered root and storage that cannot be judged (a ZFS volume
-    /// among it) still fail.
+    /// point, a covered root, a root whose files another mount of its
+    /// filesystem reaches too (one that neither / nor a line of the fstab
+    /// makes) and storage that cannot be judged (a ZFS volume among it) still
+    /// fail.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 
