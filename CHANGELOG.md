@@ -1411,15 +1411,17 @@ of this changelog for that version becomes the release notes word for word, and
   effect until the helper restarts. A new fuzz target, `apt_conf`, drives the reader.
 - Activation refuses while a daily unattended-upgrade run is in progress (the
   `unattended-upgrade-run` check): `apt-daily-upgrade.service` is active, or a process holds
-  `/run/unattended-upgrades.lock`. At the switch unattended-upgrades' shutdown helper stopped such a
-  run and wrote `Unattended-upgrade in progress during shutdown` to its log on the decoy disk,
-  whatever `Unattended-Upgrade::InstallOnShutdown` said, and APT blocks shutdown only while dpkg
-  runs, so `shutdown-inhibitors` did not see it. The check reads the lock from `/proc/locks` by the
-  lock file's device and inode, without opening or locking the file, refuses when it cannot tell,
-  and says to try again in a few minutes; no flag lifts it. The entry looks again right before it
-  asks logind for the switch. A new distribution test, `<image>-apt-shutdown` on Debian 13, Ubuntu
-  24.04 and Ubuntu 26.04, holds a daily run with its lock taken and shows the refusal leaves no line
-  on the decoy disk, where a plain `systemctl soft-reboot` during the same run writes it.
+  `/run/unattended-upgrades.lock`. At the switch unattended-upgrades' shutdown helper stopped a run
+  that held the lock and wrote `Unattended-upgrade in progress during shutdown` to its log on the
+  decoy disk, whatever `Unattended-Upgrade::InstallOnShutdown` said, and APT blocks shutdown only
+  while dpkg runs, so `shutdown-inhibitors` did not see it. The check reads the lock from
+  `/proc/locks` by the lock file's device and inode, without opening or locking the file, refuses
+  when it cannot tell (a lock file that is a link or anything else but a plain file included, which
+  the helper takes for a held lock), and says to try again in a few minutes; no flag lifts it. The
+  entry looks again right before it asks logind for the switch. A new distribution test,
+  `<image>-apt-shutdown` on Debian 13, Ubuntu 24.04 and Ubuntu 26.04, holds a daily run with its
+  lock taken and shows the refusal leaves no line on the decoy disk, where a plain
+  `systemctl soft-reboot` during the same run writes it.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the
