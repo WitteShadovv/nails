@@ -29,8 +29,9 @@
 //! nothing is written. Where the lock file does not exist, no run took it
 //! since the boot, and `/proc/locks` is not read. The helper opens the lock
 //! file without following a link and takes one it cannot open for a held
-//! lock, so a lock file that is a link, a directory or anything else but a
-//! plain file leaves NAILS unable to tell, which refuses as well.
+//! lock, as it cannot open a link, a directory or a socket; a lock file that
+//! is anything but a plain file leaves NAILS unable to tell, which refuses as
+//! well.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::decoy_posture::unit_active;
@@ -154,9 +155,9 @@ pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
         let doubt = |e| UpgradeRun::Unknown(format!("{shown} cannot be looked up: {e}"));
         // The helper opens the lock file with O_NOFOLLOW (apt's GetLock())
         // and takes a lock file it cannot open for a held lock
-        // (unattended-upgrade-shutdown's iter()): a link, a directory or
-        // anything else that is no plain file can make it write its line at
-        // every switch, which /proc/locks does not show.
+        // (unattended-upgrade-shutdown's iter()): a link, a directory or a
+        // socket makes it write its line at every switch, which /proc/locks
+        // does not show. Any other file that is no plain file is not judged.
         match fs.is_symlink(&path) {
             Ok(false) => {}
             Ok(true) => {
