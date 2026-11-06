@@ -97,6 +97,48 @@ fn an_active_daily_upgrade_unit_refuses_until_it_ends() {
 }
 
 #[test]
+fn an_active_daily_download_unit_refuses_before_it_takes_the_lock() {
+    // apt-daily.service runs apt-get update, and only then its run of
+    // unattended-upgrade takes the lock: a switch made before that meets the
+    // lock when the helper looks for it.
+    let fs = MockFilesystem::new();
+    fs.create_symlink(
+        Path::new("8028a17235414b4e80c950b24a7487d7"), // pragma: allowlist secret
+        Path::new("/run/systemd/units/invocation:apt-daily.service"),
+    )
+    .unwrap();
+    let result = check(&fs);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("apt-daily.service is active, whose download run takes the lock"),
+        "{result:?}"
+    );
+    assert_eq!(result.remediation(), Some(RETRY));
+    // Seen in the cgroup tree too, and with the lock taken both signs show.
+    let fs = decoy_with_lock(HELD);
+    fs.mock_add_file(
+        "/sys/fs/cgroup/system.slice/apt-daily.service/cgroup.events",
+        "populated 1\nfrozen 0\n",
+    );
+    assert_eq!(
+        upgrade_run(&fs, Path::new("/")),
+        UpgradeRun::InProgress(vec![
+            "apt-daily.service is active, whose download run takes the lock".to_string(),
+            "PID 812 holds /run/unattended-upgrades.lock".to_string(),
+        ])
+    );
+    // Once its run ended the unit is inactive, and the row passes.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/sys/fs/cgroup/system.slice/apt-daily.service/cgroup.events",
+        "populated 0\nfrozen 0\n",
+    );
+    assert!(check(&fs).is_pass());
+}
+
+#[test]
 fn a_held_lock_refuses_and_names_its_holder_once() {
     let fs = decoy_with_lock(HELD);
     let result = check(&fs);

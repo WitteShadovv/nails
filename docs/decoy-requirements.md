@@ -131,7 +131,8 @@ the pending updates on the decoy disk at activation and logs that run there
 (see [Unattended upgrades](#unattended-upgrades)).
 
 The `unattended-upgrade-run` check refuses too, and no flag lifts its refusal:
-while a daily unattended-upgrade run is in progress, the switch would make
+while a daily unattended-upgrade run is in progress, or `apt-daily.service`
+runs before its download takes the lock, the switch would make
 unattended-upgrades' shutdown helper stop it and write
 `Unattended-upgrade in progress during shutdown` to its log on the decoy disk.
 Try again in a few minutes, once the run has ended (see
@@ -756,12 +757,15 @@ and the run writes that it stops to `unattended-upgrades.log`, whatever
 plans, downloads and between its install steps, but APT blocks shutdown only
 while dpkg runs, so `shutdown-inhibitors` does not see it.
 `apt-daily-upgrade.service` starts the daily run (its timer fires once a day,
-in the hour after 6:00, and after a boot that missed it), and
-`apt-daily.service` takes the lock for its download. The
-`unattended-upgrade-run` check refuses while `apt-daily-upgrade.service` is
-active or a process holds the lock, and activation looks again right before
-it asks logind for the switch. No flag lifts it: try again in a few minutes,
-once the run has ended
+in the hour after 6:00, and after a boot that missed it). `apt-daily.service`
+runs `apt-get update` and then, with unattended-upgrades installed,
+`unattended-upgrade --download-only`, which takes the same lock: a switch made
+before that, past NAILS's last look, meets the lock when the helper looks for
+it, at once with python3-gi and up to 3 seconds after the signal without it.
+The `unattended-upgrade-run` check refuses while `apt-daily-upgrade.service`
+or `apt-daily.service` is active or a process holds the lock, and activation
+looks again right before it asks logind for the switch. No flag lifts it: try
+again in a few minutes, once the run has ended
 (`systemctl status apt-daily.service apt-daily-upgrade.service`). It tells
 the lock is held from the kernel's list of file locks, `/proc/locks`, by the
 lock file's device and inode, so the lock file is neither opened nor locked.
@@ -878,16 +882,24 @@ line of its own in `nails status` on the decoy, which says that
 unattended-upgrades installs at shutdown or that NAILS cannot tell that it
 does not (`decoy_installs_at_shutdown` in `--json`).
 
-The distribution test `<image>-apt-shutdown` shows both on Debian 13, Ubuntu
+The distribution test `<image>-apt-shutdown` shows these on Debian 13, Ubuntu
 24.04 and Ubuntu 26.04: on the stock decoy both rows pass, with the setting
-off as `apt-config` reads it too; a daily run held with its lock taken makes
-`check` and `activate` refuse and leaves no line on the decoy disk, while a
-plain `systemctl soft-reboot` during the same run writes the helper's line
-there; with the setting on, as `apt-config` reads it, `check` and `activate`
-refuse, and with `--allow-persistent-decoy` the decoy's helper logs its
-shutdown-mode run at the switch; with the decoy's helper stopped but enabled,
-`check` only warns and the session's copy logs its shutdown-mode run into the
-upper at the way back.
+off as `apt-config` reads it too, but Debian 13, which has no python3-gi,
+warns of the helper's lines, which its way back then writes; a daily run held
+with its lock taken makes `check` and `activate` refuse and leaves no line on
+the decoy disk, while a plain `systemctl soft-reboot` during the same run
+writes the helper's line there; so does `apt-daily.service` held before its
+download takes the lock, where the control is a plain soft-reboot with the
+helper paused (SIGSTOP) until the download run holds the lock, the order of
+the race; with the setting on, as `apt-config` reads it, `check` and
+`activate` refuse and `status` names it, and with `--allow-persistent-decoy`
+the decoy's helper logs its shutdown-mode run at the switch; with the decoy's
+helper stopped but enabled, `check` only warns and the session's copy logs
+its shutdown-mode run into the upper at the way back; with the line deleted
+after the helper started, `apt-config` reads the setting off but `check`
+refuses, and with the override the helper logs its shutdown-mode run all the
+same; and with a file apt refuses, `check` refuses, and with the override the
+helper logs its two ERROR lines on the decoy disk and no shutdown-mode run.
 
 ## Decoys joined to a domain
 
@@ -1413,7 +1425,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Copy-on-write and compressed storage history](threat-model.md#residual-channels) (`btrfs-cow-history`) | old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs, zfs or an f2fs mount with compression | all | none: a copy-on-write or compressed decoy is a property of the decoy's own storage, not a session write | none: a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean: a mounted one (a zfs dataset included) by its mount, an image or an unmounted device by its superblock, and a whole disk partition by partition, where an encrypted partition, or one on which no filesystem is identified, is not checked either | Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean. | none: the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems |
 | [Fedora GRUB boot-success state](#session-time-records) (`grubenv-boot-success`) | `/boot/grub2/grubenv`, `/boot/efi/EFI/fedora/grubenv` | Fedora | none: Fedora's boot-success flag is written by the decoy's own boot after the switch; NAILS binds /boot and the ESP read-only during a session, so the session never writes it | path probe (info) | Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot. | none: asserted on the Fedora decoy by the cross-distro forensic probe once its image boots |
 | [unattended-upgrades set to install at shutdown](#unattended-upgrades) (`unattended-upgrades-install-on-shutdown`) | `/var/log/unattended-upgrades`, `/var/log/apt`, `/var/log/dpkg.log` | Debian | `decoy-persistence` (refuses) | none: the logs and the packages are the decoy's own, as after any shutdown that installs updates | Activation refuses while the decoy's helper runs with the setting on, or with an apt configuration NAILS cannot read or follow, one apt refuses, or one that changed since the helper started while no file sets the setting, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override |
-| [A daily unattended-upgrade run at the switch](#unattended-upgrades) (`unattended-upgrades-run-at-the-switch`) | `/var/log/unattended-upgrades` | Debian | `unattended-upgrade-run` (refuses) | none: the lines are the decoy's own logs, as after a shutdown during a daily run | Activation refuses while apt-daily-upgrade.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run |
+| [A daily unattended-upgrade run at the switch](#unattended-upgrades) (`unattended-upgrades-run-at-the-switch`) | `/var/log/unattended-upgrades` | Debian | `unattended-upgrade-run` (refuses) | none: the lines are the decoy's own logs, as after a shutdown during a daily run | Activation refuses while apt-daily-upgrade.service or apt-daily.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run |
 | [unattended-upgrades' shutdown helper without python3-gi](#unattended-upgrades) (`unattended-upgrades-polling-without-python3-gi`) | `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log` | Debian | `decoy-persistence` | none: the lines are the decoy's own log, as after any start of the helper | decoy-persistence warns while the decoy's helper is enabled and python3-gi is not installed. Install it: apt install python3-gi. | none: asserted on Debian 13 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose stock decoy warns of it and whose helper adds a pair at the way back |
 | [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | `preflight-checks` |
 | [sssd and the domain controller's records](#decoys-joined-to-a-domain) (`sssd-domain-records`) | the domain controller's own records of the logins and account lookups sssd makes on a decoy joined to a domain, and sssd's caches under /var/lib/sss and logs under /var/log/sssd | all | `decoy-persistence` | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: no VM test runs a domain controller; the warning is unit-tested |

@@ -41,13 +41,13 @@ pub(super) const ROWS: &[ResidueClass] = &[
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/log/unattended-upgrades"]),
         platforms: Platforms::DEBIAN,
-        risk: "While a run of unattended-upgrade holds its lock (a daily run planning, downloading or between its install steps, when APT blocks no shutdown), the switch makes unattended-upgrades' shutdown helper send it SIGTERM and write `Unattended-upgrade in progress during shutdown` to its log on the decoy disk, and the run logs that it stops, whatever Unattended-Upgrade::InstallOnShutdown says.",
+        risk: "While a run of unattended-upgrade holds its lock (a daily run planning, downloading or between its install steps, when APT blocks no shutdown, or the download run of apt-daily.service), the switch makes unattended-upgrades' shutdown helper send it SIGTERM and write `Unattended-upgrade in progress during shutdown` to its log on the decoy disk, and the run logs that it stops, whatever Unattended-Upgrade::InstallOnShutdown says.",
         preflight: Probe::Check("unattended-upgrade-run"),
         preflight_blocks: true,
         verify: Probe::None(
             "the lines are the decoy's own logs, as after a shutdown during a daily run",
         ),
-        mitigation: "Activation refuses while apt-daily-upgrade.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended.",
+        mitigation: "Activation refuses while apt-daily-upgrade.service or apt-daily.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended.",
         doc_anchor: "decoy-requirements.md#unattended-upgrades",
         e2e: E2e::None(
             "asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run",
