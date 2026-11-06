@@ -906,8 +906,9 @@ helper stopped but enabled, `check` only warns and the session's copy logs
 its shutdown-mode run into the upper at the way back; with the line deleted
 after the helper started, `apt-config` reads the setting off but `check`
 refuses, and with the override the helper logs its shutdown-mode run all the
-same; and with a file apt refuses, `check` refuses, and with the override the
-helper logs its two ERROR lines on the decoy disk and no shutdown-mode run.
+same; and with a file apt refuses, `check` refuses, with the override the
+helper logs its two ERROR lines on the decoy disk and no shutdown-mode run,
+and restarted with the file refused it logs its error to the journal instead.
 
 ## Decoys joined to a domain
 
