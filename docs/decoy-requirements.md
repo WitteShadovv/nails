@@ -244,6 +244,11 @@ volatile can count as persistent. Run them with sudo.
   the pending updates into the session's overlay on the hidden volume. It
   warns too where NAILS cannot tell what the session reads, as for a link
   among apt's files; see [Unattended upgrades](#unattended-upgrades).
+- **unattended-upgrades without python3-gi** — the decoy's shutdown helper
+  enabled while python3-gi is missing: each time it starts it writes two
+  WARNING lines to its log on the decoy disk, so every way back adds a pair
+  dated at the switch (`apt install python3-gi`); see
+  [Unattended upgrades](#unattended-upgrades).
 
 The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
@@ -478,7 +483,9 @@ logind.
   set it to `false`. With it on, the decoy's shutdown helper installs the
   pending updates on the decoy disk at every activation, as at every shutdown,
   and `decoy-persistence` refuses it (see
-  [Unattended upgrades](#unattended-upgrades)).
+  [Unattended upgrades](#unattended-upgrades)). Where the helper is enabled,
+  install python3-gi (`apt install python3-gi`), without which it writes two
+  lines to its log on the decoy disk at every way back.
 - If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
@@ -506,7 +513,9 @@ logind.
   set it to `false`. With it on, the decoy's shutdown helper installs the
   pending updates on the decoy disk at every activation, as at every shutdown,
   and `decoy-persistence` refuses it (see
-  [Unattended upgrades](#unattended-upgrades)).
+  [Unattended upgrades](#unattended-upgrades)). Where the helper is enabled,
+  install python3-gi (`apt install python3-gi`), without which it writes two
+  lines to its log on the decoy disk at every way back.
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
@@ -808,6 +817,16 @@ was removed, it still reads the files that line named, which NAILS does not
 read, so the setting NAILS reads need not be the one the helper reads. Restart
 the helper or reboot after removing such a line. NAILS reads only the files,
 so it cannot see what the running helper still holds.
+
+Without python3-gi, which unattended-upgrades only suggests and Debian 13's
+cloud image does not install, the helper cannot wait for logind's signal: each
+time it starts, it writes two WARNING lines to its log on the decoy disk,
+`Unable to monitor PrepareForShutdown() signal, polling instead.` and that
+python3-gi would let it wait. The decoy starts its enabled helper again at
+every way back, so each way back adds a pair, dated at the switch.
+`decoy-persistence` warns while the decoy's helper is enabled and
+`/usr/lib/python3/dist-packages/gi/__init__.py`, which python3-gi installs, is
+missing: install it (`apt install python3-gi`).
 
 When only the hidden session would install, `decoy-persistence` warns and does
 not refuse: the decoy's helper is stopped but the session starts its own copy,
@@ -1390,6 +1409,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Fedora GRUB boot-success state](#session-time-records) (`grubenv-boot-success`) | `/boot/grub2/grubenv`, `/boot/efi/EFI/fedora/grubenv` | Fedora | none: Fedora's boot-success flag is written by the decoy's own boot after the switch; NAILS binds /boot and the ESP read-only during a session, so the session never writes it | path probe (info) | Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot. | none: asserted on the Fedora decoy by the cross-distro forensic probe once its image boots |
 | [unattended-upgrades set to install at shutdown](#unattended-upgrades) (`unattended-upgrades-install-on-shutdown`) | `/var/log/unattended-upgrades`, `/var/log/apt`, `/var/log/dpkg.log` | Debian | `decoy-persistence` (refuses) | none: the logs and the packages are the decoy's own, as after any shutdown that installs updates | Activation refuses while the decoy's helper runs with the setting on, or with an apt configuration NAILS cannot read or follow, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override |
 | [A daily unattended-upgrade run at the switch](#unattended-upgrades) (`unattended-upgrades-run-at-the-switch`) | `/var/log/unattended-upgrades` | Debian | `unattended-upgrade-run` (refuses) | none: the lines are the decoy's own logs, as after a shutdown during a daily run | Activation refuses while apt-daily-upgrade.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run |
+| [unattended-upgrades' shutdown helper without python3-gi](#unattended-upgrades) (`unattended-upgrades-polling-without-python3-gi`) | `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log` | Debian | `decoy-persistence` | none: the lines are the decoy's own log, as after any start of the helper | decoy-persistence warns while the decoy's helper is enabled and python3-gi is not installed. Install it: apt install python3-gi. | none: asserted on Debian 13 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose stock decoy warns of it and whose helper adds a pair at the way back |
 | [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | `preflight-checks` |
 | [sssd and the domain controller's records](#decoys-joined-to-a-domain) (`sssd-domain-records`) | the domain controller's own records of the logins and account lookups sssd makes on a decoy joined to a domain, and sssd's caches under /var/lib/sss and logs under /var/log/sssd | all | `decoy-persistence` | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: no VM test runs a domain controller; the warning is unit-tested |
 <!-- residue-catalog:end session -->

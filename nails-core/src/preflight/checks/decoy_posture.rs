@@ -60,7 +60,11 @@
 //!   setting on. At the way back that copy installs the pending updates into
 //!   the session's overlay. Where NAILS cannot tell what the session reads,
 //!   as for a link among apt's files, it warns too (see
-//!   [`install_on_shutdown`]).
+//!   [`install_on_shutdown`]),
+//! - unattended-upgrades' shutdown helper enabled on the decoy without
+//!   python3-gi: it then writes two WARNING lines to its log on the decoy
+//!   disk each time it starts, so every way back adds a pair dated at the
+//!   switch.
 //!
 //! # No writes
 //!
@@ -423,6 +427,7 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
         let upgrades = install_on_shutdown::finding(fs, &self.root, self.upper.as_deref());
         let mut warnings = Self::warnings(fs, &self.root, self.is_nixos);
         warnings.extend(upgrades.warning);
+        warnings.extend(upgrades.polling);
         let logs = !log_blockers.is_empty();
         let kdump = kdump_blocker.is_some();
         let upgrade = upgrades.blocker.is_some();

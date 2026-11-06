@@ -61,8 +61,20 @@ fn enable_helper(root: &Path) {
 }
 
 /// A stock decoy of `release` (one of the fixtures), its helper enabled and
-/// running.
+/// running, with its release's python3-gi installed.
 fn stock(release: &[u8]) -> tempfile::TempDir {
+    let tmp = stock_without_gi(release);
+    let at = [DEBIAN_13, UBUNTU_24_04, UBUNTU_26_04]
+        .iter()
+        .position(|stock| *stock == release)
+        .expect("a stock release");
+    polling::tests::install(tmp.path(), polling::tests::PYTHON3_GI[at]);
+    tmp
+}
+
+/// A stock decoy of `release` as [`stock`], without python3-gi, as Debian
+/// 13's cloud image is.
+fn stock_without_gi(release: &[u8]) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     write(root, "etc/apt/apt.conf.d/01autoremove", AUTOREMOVE);
@@ -73,11 +85,17 @@ fn stock(release: &[u8]) -> tempfile::TempDir {
     tmp
 }
 
+/// python3-gi installed under `root`, as Debian 13 packages it.
+fn install_gi(root: &Path) {
+    polling::tests::install(root, polling::tests::PYTHON3_GI[0]);
+}
+
 /// A mock decoy whose helper runs (when `running`) and whose
 /// `apt.conf.d` holds `parts`: each name with its content, or with none
-/// for a file whose read fails.
+/// for a file whose read fails. python3-gi is installed.
 fn mock_decoy(running: bool, parts: &[(&str, Option<&str>)]) -> MockFilesystem {
     let fs = MockFilesystem::new();
+    fs.mock_add_file("/usr/lib/python3/dist-packages/gi/__init__.py", "");
     if running {
         fs.create_symlink(
             Path::new(INVOCATION_ID),
@@ -560,6 +578,7 @@ fn a_link_in_the_upper_on_the_way_to_apts_files_cannot_be_read() {
 fn the_session_enables_or_unmasks_the_helper_in_its_overlay() {
     // Not enabled on the decoy: the session enabled it.
     let tmp = tempfile::tempdir().unwrap();
+    install_gi(tmp.path());
     write(tmp.path(), "etc/apt/apt.conf.d/99on", ON.as_bytes());
     assert_eq!(find(tmp.path()), Finding::default());
     let upper = tempfile::tempdir().unwrap();
@@ -596,6 +615,7 @@ fn the_session_enables_or_unmasks_the_helper_in_its_overlay() {
         "/dev/null",
     );
     let unmasked = tempfile::tempdir().unwrap();
+    install_gi(unmasked.path());
     write(unmasked.path(), "etc/apt/apt.conf.d/99on", ON.as_bytes());
     enable_helper(unmasked.path());
     assert_eq!(
@@ -836,6 +856,7 @@ fn a_link_among_apts_files_leaves_the_sessions_setting_unknown() {
     // helper reads the edit through the overlay, NAILS the decoy's file.
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
+    install_gi(root);
     write(root, "etc/apt/apt.conf.d/50unattended-upgrades", DEBIAN_13);
     write(root, "etc/apt/x.conf", OFF.as_bytes());
     link(root, "etc/apt/apt.conf.d/99x", "../x.conf");
@@ -888,6 +909,7 @@ fn a_link_among_apts_files_leaves_the_sessions_setting_unknown() {
     // A directory on the way that is a link on the decoy.
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
+    install_gi(root);
     write(root, "srv/apt.conf.d/50unattended-upgrades", UBUNTU_24_04);
     std::fs::create_dir_all(root.join("etc/apt")).unwrap();
     link(root, "etc/apt/apt.conf.d", "../../srv/apt.conf.d");
@@ -1042,4 +1064,30 @@ fn what_nails_cannot_tell_of_the_session_is_said_so() {
          overlay on the hidden volume, when the session ends with deactivate (a lookup failed)"
     );
     assert_eq!(way_back(None), "");
+}
+
+#[test]
+fn a_stock_decoy_without_python3_gi_warns_of_the_helpers_lines() {
+    // Debian 13's cloud image: the helper enabled, python3-gi not installed.
+    let tmp = stock_without_gi(DEBIAN_13);
+    write(
+        tmp.path(),
+        "etc/systemd/journald.conf",
+        b"[Journal]\nStorage=volatile\n",
+    );
+    let found = find(tmp.path());
+    assert_eq!(found.blocker, None);
+    assert_eq!(found.warning, None);
+    let polling = found.polling.expect("a warning");
+    assert!(polling.contains("python3-gi is not installed"), "{polling}");
+    assert!(polling.ends_with("(apt install python3-gi)"), "{polling}");
+    // The check warns of it with the rest.
+    let result = DecoyPersistenceCheck::new(false, false)
+        .with_root(tmp.path())
+        .run(&RealFilesystem)
+        .unwrap();
+    assert!(
+        result.message().contains("python3-gi is not installed"),
+        "{result:?}"
+    );
 }
