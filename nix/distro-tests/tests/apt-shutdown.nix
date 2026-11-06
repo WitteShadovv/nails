@@ -44,7 +44,17 @@
 #     `check` only warns, the activation goes through, and the way back
 #     (`deactivate`, through logind) has the session's own copy of the helper
 #     log its shutdown-mode run into the upper on the hidden volume, while the
-#     decoy's log gains no such line.
+#     decoy's log gains no such line;
+#   - deletes the setting's line once the decoy's helper has started with it
+#     on: `apt-config` reads it off, but `check` refuses, as no file sets the
+#     setting and apt.conf.d changed after the helper started. With
+#     `--allow-persistent-decoy` the decoy's helper logs its shutdown-mode run
+#     at the switch all the same, the positive control;
+#   - writes a file apt refuses: `check` refuses, names the file and its line
+#     and says that the helper installs nothing but writes two ERROR lines.
+#     With `--allow-persistent-decoy` the decoy's helper, started before the
+#     file was written, logs those two lines on the decoy disk at the switch
+#     and no shutdown-mode run, the positive control.
 {
   self,
   pkgs,
@@ -101,8 +111,11 @@ distroVm.buildVmTest {
     IN_PROGRESS = "Unattended-upgrade in progress during shutdown"
     RUN_STOPS = "SIGTERM received, will stop"
     SHUTDOWN_MODE = "Running unattended-upgrades in shutdown mode"
-    # What the helper writes each time it starts without python3-gi.
+    # What the helper writes each time it starts without python3-gi, and at
+    # the signal while apt refuses a file of its configuration.
     POLLING = "Unable to monitor PrepareForShutdown() signal, polling instead."
+    APT_ERROR = "Apt returned an error thus shutdown mode is disabled"
+    APT_ERROR_MESSAGE = "error message: 'E:Syntax error"
     gi_module = "/usr/lib/python3/dist-packages/gi/__init__.py"
     # The lock a run holds from its start to its end, as unattended-upgrade
     # names it (/var/run is a link to /run).
@@ -183,6 +196,9 @@ distroVm.buildVmTest {
     # The setting turned on, in a file of its own.
     setting_file = "/etc/apt/apt.conf.d/99local-install-on-shutdown"
     setting_on = 'Unattended-Upgrade::InstallOnShutdown "true";\n'
+    # A file apt refuses: no `;`, which apt reports at its end, line 2.
+    refused_file = "/etc/apt/apt.conf.d/99local-refused"
+    refused_text = 'Nails::Fact "NAILS_FACT_SYNTAX"\n'
 
     # What the package's debconf answer writes when unattended upgrades are
     # turned on (data/20auto-upgrades).
@@ -419,6 +435,10 @@ distroVm.buildVmTest {
             vm.succeed(
                 f"printf %s {shlex.quote(auto_upgrades)} > /etc/apt/apt.conf.d/20auto-upgrades"
             )
+            # The helper keeps what it read when it started: a change of
+            # apt's configuration after that leaves NAILS unable to tell,
+            # until the helper reads it afresh.
+            vm.succeed("systemctl restart unattended-upgrades.service")
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         assert row("unattended-upgrade-run")["status"] == "pass"
@@ -549,6 +569,64 @@ distroVm.buildVmTest {
         print(f"the session's helper log in the upper:\n{tail(upper_helper_log)}")
         assert count(upper_helper_log, SHUTDOWN_MODE) > decoy_mode, tail(upper_helper_log)
         vm.succeed("""${hiddenRoot.closeHiddenRoot}""")
+
+    with subtest("a deleted line counts for the helper that read it, so check cannot tell"):
+        # The decoy's helper started at the way back with the setting on.
         vm.succeed(f"rm -f {setting_file}")
+        assert not apt_reads_setting(), "apt reads the deleted setting on"
+        refusal = row("decoy-persistence")
+        assert refusal["status"] == "fail", refusal
+        assert (
+            "no file of apt's configuration sets it now, but /etc/apt/apt.conf.d changed after "
+            + "the helper started"
+        ) in refusal["message"], refusal
+        mode_before = count(helper_log, SHUTDOWN_MODE)
+
+    with subtest("positive control: the helper installs at the switch with the line deleted"):
+        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        follow(
+            f"{nails_cmd} activate -y --allow-persistent-decoy > /mnt/data/activate-3.log 2>&1",
+            "activate-3",
+        )
+        session.assert_hidden_root(vm)
+        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-3")
+        assert_on_the_decoy()
+        print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
+        assert count(helper_log, SHUTDOWN_MODE) > mode_before, tail(helper_log)
+        # The helper started afresh at the way back reads no setting.
+        assert row("decoy-persistence")["status"] != "fail"
+
+    with subtest("a file apt refuses refuses check, which says what the helper writes"):
+        vm.succeed(
+            "if ! mountpoint -q /mnt/data && [ -e /dev/mapper/data ]; then cryptsetup close data; fi"
+        )
+        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed(f"printf %s {shlex.quote(refused_text)} > {refused_file}")
+        refusal = row("decoy-persistence")
+        assert refusal["status"] == "fail", refusal
+        assert (
+            f"apt refuses {refused_file}:2 (Extra junk at end of file)" in refusal["message"]
+        ), refusal
+        assert "installs nothing" in refusal["message"], refusal
+        assert f"what apt refuses at {refused_file}:2" in refusal["remediation"], refusal
+        errors_before = count(helper_log, APT_ERROR)
+        messages_before = count(helper_log, APT_ERROR_MESSAGE)
+        mode_before = count(helper_log, SHUTDOWN_MODE)
+
+    with subtest("positive control: with the override the helper writes two ERROR lines and installs nothing"):
+        # The helper started before the file was written, so it logs to its
+        # file on the decoy disk.
+        follow(
+            f"{nails_cmd} activate -y --allow-persistent-decoy > /mnt/data/activate-4.log 2>&1",
+            "activate-4",
+        )
+        session.assert_hidden_root(vm)
+        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-4")
+        assert_on_the_decoy()
+        print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
+        assert count(helper_log, APT_ERROR) > errors_before, tail(helper_log)
+        assert count(helper_log, APT_ERROR_MESSAGE) > messages_before, tail(helper_log)
+        assert count(helper_log, SHUTDOWN_MODE) == mode_before, tail(helper_log)
+        vm.succeed(f"rm -f {refused_file}")
   '';
 }

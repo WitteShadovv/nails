@@ -1122,6 +1122,23 @@ fn decoy_persistence_reads_what_hidden_sessions_see_through_the_upper() {
         Path::new("/run/systemd/units/invocation:unattended-upgrades.service"),
     )
     .unwrap();
+    // Its process, which started after every file of the mock changed, with
+    // no APT_CONFIG.
+    fs.mock_set_change_time(
+        "/run/systemd/units/invocation:unattended-upgrades.service",
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000),
+    );
+    fs.mock_add_file(
+        "/sys/fs/cgroup/system.slice/unattended-upgrades.service/cgroup.procs",
+        "412\n",
+    );
+    fs.mock_add_file(
+        "/proc/412/stat",
+        "412 (unattended-upgr) S 1 412 412 0 -1 4194560 3145 0 23 0 41 9 0 0 20 0 2 0 360000 \
+         47042560 4823 18446744073709551615 1 1 0 0 0 0 0 16781312 16386 0 0 0 17 1 0 0\n",
+    );
+    fs.mock_set_file_bytes("/proc/412/environ", b"LANG=C.UTF-8\0");
+    fs.mock_add_file("/proc/stat", "btime 1999996400\n");
     fs.mock_set_directory_contents(
         Path::new("/etc/systemd/system"),
         vec![PathBuf::from("/etc/systemd/system/multi-user.target.wants")],

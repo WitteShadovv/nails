@@ -22,19 +22,29 @@
 //! So a decoy whose helper runs at activation with the setting on is
 //! refused, a finding of its own that `--allow-persistent-decoy` turns into
 //! a warning for one run. The setting is read the way the helper reads it,
-//! through [`apt_conf`]: each file of `/etc/apt/apt.conf.d` apt reads, in
-//! apt's order, then `/etc/apt/apt.conf`, the last assignment winning. A file
-//! that cannot be read or that apt refuses, a line NAILS does not read the
-//! way apt does, whatever makes apt read other files than these
-//! (`#include`, a `Dir` or `RootDir` setting), and a file name or a value
-//! that apt reads by the system's locale (a byte beyond ASCII) leave the
-//! setting unknown, which is refused as if it were on. The helper reads the
-//! files again on the signal without forgetting what it read when it
-//! started, so a `false` there wins, while a line only deleted stays in
-//! effect until the helper restarts: the fix says to set it to false. Which
-//! files it reads on the signal is settled by what it read first, so after a
-//! `Dir` or `RootDir` line was removed it reads the files that line named
-//! until it restarts, which NAILS does not see.
+//! through [`apt_conf`]: the file the helper's `APT_CONFIG` names, if it runs
+//! with one ([`helper`]), then each file of `/etc/apt/apt.conf.d` apt reads,
+//! in apt's order, then `/etc/apt/apt.conf`, the last assignment winning. A
+//! file that cannot be read, a line NAILS does not read the way apt does,
+//! whatever makes apt read other files than these (`#include`, a `Dir` or
+//! `RootDir` setting), and a file name or a value that apt reads by the
+//! system's locale (a byte beyond ASCII) leave the setting unknown, which is
+//! refused as if it were on. So does a file apt refuses: the helper then
+//! installs nothing, but at the switch it writes two ERROR lines, to its log
+//! on the decoy disk unless it started with the file already refused, and
+//! the refusal says so.
+//!
+//! The helper reads the files again on the signal without forgetting what it
+//! read when it started, so a `false` (or a `#clear`) there wins, while a
+//! line only deleted stays in effect until the helper restarts. So when no
+//! file sets the setting, NAILS cannot tell whether the helper still holds a
+//! `true` when one of apt's files, `/etc/apt` or `/etc/apt/apt.conf.d`
+//! changed after the helper started, or one of them is reached through a
+//! symbolic link, and that is refused as well: the fix says to set it to
+//! false. Which files it
+//! reads on the signal is settled by what it read first, so after a `Dir` or
+//! `RootDir` line was removed it reads the files that line named until it
+//! restarts, which NAILS does not see.
 //!
 //! The hidden session runs its own copy of the helper wherever the unit is
 //! enabled and not masked, on the decoy or in the session's overlay. At the
@@ -52,10 +62,6 @@
 //! overlay, which NAILS does not follow, so it leaves the session's setting
 //! unknown.
 //!
-//! A decoy whose enabled helper starts without python3-gi, and so writes two
-//! lines to its log on the decoy disk at every start, is warned of too
-//! ([`polling`]).
-//!
 //! Every read is a lookup, a listing or a read of a file; nothing is
 //! written.
 
@@ -65,8 +71,9 @@ use crate::next_step::{NextStep, sudo_line};
 use nails_base::packages::apt_conf::{self, PartName, Statement};
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
+mod helper;
 mod polling;
 
 /// The helper's unit.
@@ -104,20 +111,28 @@ const FILE_LIMIT: u64 = 1 << 20;
 enum Setting {
     /// On, set at this place.
     On(String),
-    /// Off: set off, cleared, or not set at all.
+    /// Off: set off or cleared by a file.
     Off,
+    /// Off, as no file sets or clears it: what a running helper read when it
+    /// started still counts.
+    Unset,
+    /// apt refuses a file, at this place, for this reason.
+    Refused { at: String, reason: String },
     /// NAILS cannot tell, for this reason.
     Unknown(String),
 }
 
-/// One file apt reads: as the system it belongs to names it, where it lies
-/// (nothing for the decoy, or the session's overlay), and where it is read
-/// from.
+/// One file apt reads: as the system it belongs to names it (the file
+/// `APT_CONFIG` names as that), where it lies (nothing for the decoy, or the
+/// session's overlay), and where it is read from.
 struct Source {
     shown: String,
-    place: &'static str,
+    place: String,
     read: PathBuf,
 }
+
+/// How the texts name the file `APT_CONFIG` names, before its path.
+const BY_APT_CONFIG: &str = "the helper's APT_CONFIG file ";
 
 /// The file at `path`, at most [`FILE_LIMIT`] bytes of it.
 fn read_bounded<F: Filesystem>(fs: &F, path: &Path) -> Result<Vec<u8>, String> {
@@ -136,6 +151,8 @@ fn read_bounded<F: Filesystem>(fs: &F, path: &Path) -> Result<Vec<u8>, String> {
 /// The setting after apt reads `sources` in order.
 fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
     let mut value: Option<(Vec<u8>, String)> = None;
+    // Whether a file sets or clears the setting.
+    let mut touched = false;
     for source in sources {
         let at = |line: usize| format!("{}:{line}{}", source.shown, source.place);
         let bytes = match read_bounded(fs, &source.read) {
@@ -147,11 +164,10 @@ fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
         let parsed = match apt_conf::parse(&bytes) {
             Ok(parsed) => parsed,
             Err(e) if e.by_apt => {
-                return Setting::Unknown(format!(
-                    "{} is refused by apt ({})",
-                    at(e.line),
-                    e.reason
-                ));
+                return Setting::Refused {
+                    at: at(e.line),
+                    reason: e.reason.to_string(),
+                };
             }
             Err(e) => {
                 return Setting::Unknown(format!(
@@ -180,6 +196,7 @@ fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
                     }
                     if apt_conf::names(&item, KEY, false) {
                         value = Some((set, at(line)));
+                        touched = true;
                     }
                 }
                 Statement::Clear { name, line } => {
@@ -195,6 +212,7 @@ fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
                     }
                     if apt_conf::names(&name, KEY, true) {
                         value = None;
+                        touched = true;
                     }
                 }
                 Statement::Include { line } => {
@@ -218,7 +236,8 @@ fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
              locale"
         )),
         Some((set, at)) if apt_conf::string_to_bool(&set, false) => Setting::On(at),
-        _ => Setting::Off,
+        _ if touched => Setting::Off,
+        _ => Setting::Unset,
     }
 }
 
@@ -299,10 +318,68 @@ struct View<'a> {
     /// files resolves through the overlay ([`no_link`]). On the decoy it
     /// resolves as the decoy's helper resolves it, and is followed.
     session: bool,
+    /// The file the helper's `APT_CONFIG` names, relative to the root, which
+    /// apt reads first ([`apt_config_source`]).
+    apt_config: Option<&'a Path>,
+    /// The decoy root and, in the session's view, the upper, which the file
+    /// `APT_CONFIG` names is read through.
+    root: &'a Path,
+    upper: Option<&'a Path>,
+}
+
+/// The file `APT_CONFIG` names, at `rel` below the root, as `view` reads it:
+/// on the decoy where its links lead, as the decoy's helper reads it; in the
+/// session the upper's copy where the upper holds one, else the decoy's,
+/// which is read too where the upper deletes it, as that can only make the
+/// setting read on where it is off. A link on the way to it, in either
+/// layer, resolves in the session through the overlay, which NAILS does not
+/// follow. A file NAILS cannot read leaves the setting unknown: apt would
+/// skip it, but it cannot tell what was there when the helper read it.
+fn apt_config_source<F: Filesystem>(fs: &F, view: View<'_>, rel: &Path) -> Result<Source, String> {
+    let shown = format!("{BY_APT_CONFIG}/{}", rel.display());
+    let named = shown.clone();
+    if rel
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "{named} has a `..` in its path, which NAILS does not follow"
+        ));
+    }
+    if let (true, Some(upper)) = (view.session, view.upper) {
+        let mut prefix = PathBuf::new();
+        for component in rel.components() {
+            prefix.push(component);
+            let at = prefix.display();
+            no_link(fs, &view.root.join(&prefix), &format!("/{at} on the decoy"))?;
+            no_link(fs, &upper.join(&prefix), &format!("/{at}{IN_UPPER}"))?;
+        }
+        let in_upper = upper.join(rel);
+        if regular(fs, &in_upper, &format!("{named}{IN_UPPER}"))? {
+            return Ok(Source {
+                shown,
+                place: IN_UPPER.to_string(),
+                read: in_upper,
+            });
+        }
+    }
+    let read = view.root.join(rel);
+    if !regular(fs, &read, &named)? {
+        return Err(format!("{named} is no file NAILS can read"));
+    }
+    Ok(Source {
+        shown,
+        place: String::new(),
+        read,
+    })
 }
 
 /// The files apt reads in `view`, in its order.
 fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String> {
+    let mut found = Vec::new();
+    if let Some(rel) = view.apt_config {
+        found.push(apt_config_source(fs, view, rel)?);
+    }
     // Name -> where it is read from and whether the upper holds it; `None`
     // for a whiteout of the upper, which deletes the decoy's file.
     let mut parts: BTreeMap<Vec<u8>, Option<(PathBuf, bool)>> = BTreeMap::new();
@@ -335,7 +412,6 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
             parts.insert(name, (!whiteout).then_some((entry, upper)));
         }
     }
-    let mut found = Vec::new();
     for (name, read) in parts {
         let Some((read, upper)) = read else {
             continue;
@@ -358,7 +434,11 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
                  the system's locale"
             ));
         }
-        found.push(Source { shown, place, read });
+        found.push(Source {
+            shown,
+            place: place.to_string(),
+            read,
+        });
     }
     // The main file: the upper's, unless it is a whiteout there, else the
     // decoy's where the view shows it.
@@ -378,31 +458,54 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
             no_link(fs, &read, &format!("{shown}{place}"))?;
         }
         if regular(fs, &read, &format!("{shown}{place}"))? {
-            found.push(Source { shown, place, read });
+            found.push(Source {
+                shown,
+                place: place.to_string(),
+                read,
+            });
         }
     }
     Ok(found)
 }
 
-/// The setting on the decoy under `root`.
-fn decoy_setting<F: Filesystem>(fs: &F, root: &Path) -> Setting {
+/// The setting on the decoy under `root`, read first from the file at
+/// `apt_config` where the helper's `APT_CONFIG` names one, and the files it
+/// is read from.
+fn decoy_setting<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    apt_config: Option<&Path>,
+) -> (Setting, Vec<PathBuf>) {
     let view = View {
         parts_lower: Some(root),
         parts_upper: None,
         main_lower: Some(root),
         main_upper: None,
         session: false,
+        apt_config,
+        root,
+        upper: None,
     };
     match sources(fs, view) {
-        Ok(found) => evaluate(fs, &found),
-        Err(why) => Setting::Unknown(why),
+        Ok(found) => (
+            evaluate(fs, &found),
+            found.into_iter().map(|source| source.read).collect(),
+        ),
+        Err(why) => (Setting::Unknown(why), Vec::new()),
     }
 }
 
 /// The setting the session's copy of the helper reads: the decoy's files
 /// under `root` with `upper` on top, each way a directory of the upper may
-/// be read.
-fn session_setting<F: Filesystem>(fs: &F, root: &Path, upper: &Path) -> Setting {
+/// be read, the file at `apt_config` first where the decoy's helper runs with
+/// an `APT_CONFIG` naming one, as the session's copy is started with the
+/// environment the decoy's files give it.
+fn session_setting<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    upper: &Path,
+    apt_config: Option<&Path>,
+) -> Setting {
     let kinds = (|| {
         Ok::<_, String>((
             held(fs, upper, ETC)?,
@@ -415,8 +518,22 @@ fn session_setting<F: Filesystem>(fs: &F, root: &Path, upper: &Path) -> Setting 
         Err(why) => return Setting::Unknown(why),
     };
     if etc == Held::Gone || apt == Held::Gone {
-        // The session has no /etc/apt.
-        return Setting::Off;
+        // The session has no /etc/apt: apt reads only the file APT_CONFIG
+        // names, where it is named.
+        let view = View {
+            parts_lower: None,
+            parts_upper: None,
+            main_lower: None,
+            main_upper: None,
+            session: true,
+            apt_config,
+            root,
+            upper: Some(upper),
+        };
+        return match sources(fs, view) {
+            Ok(found) => evaluate(fs, &found),
+            Err(why) => Setting::Unknown(why),
+        };
     }
     // The decoy's directories on the way, which the session sees through
     // the overlay.
@@ -433,6 +550,9 @@ fn session_setting<F: Filesystem>(fs: &F, root: &Path, upper: &Path) -> Setting 
         main_lower: Some(root),
         main_upper,
         session: true,
+        apt_config,
+        root,
+        upper: Some(upper),
     }];
     if apt == Held::Dir {
         // /etc/apt, or /etc, made again in a session: the upper's files on
@@ -445,6 +565,9 @@ fn session_setting<F: Filesystem>(fs: &F, root: &Path, upper: &Path) -> Setting 
             main_lower: None,
             main_upper,
             session: true,
+            apt_config,
+            root,
+            upper: Some(upper),
         });
     }
     let mut unknown = None;
@@ -454,7 +577,10 @@ fn session_setting<F: Filesystem>(fs: &F, root: &Path, upper: &Path) -> Setting 
             Ok(Setting::Unknown(why)) | Err(why) => {
                 unknown.get_or_insert(why);
             }
-            Ok(Setting::Off) => {}
+            Ok(Setting::Refused { at, reason }) => {
+                unknown.get_or_insert(format!("{at} is refused by apt ({reason})"));
+            }
+            Ok(Setting::Off | Setting::Unset) => {}
         }
     }
     unknown.map_or(Setting::Off, Setting::Unknown)
@@ -514,6 +640,22 @@ fn session_starts_helper<F: Filesystem>(
     }))
 }
 
+/// What the decoy's helper does at the switch, as far as NAILS can tell:
+/// what the warning under `--allow-persistent-decoy` says of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AtTheSwitch {
+    /// The setting is on: it installs the pending updates on the decoy disk.
+    Installs,
+    /// apt refuses a file: it installs nothing, but writes two ERROR lines.
+    ErrorLines,
+    /// NAILS cannot tell.
+    Unknown,
+}
+
+/// What the warning under `--allow-persistent-decoy` adds for the ERROR
+/// lines of a file apt refuses.
+pub(super) const ERROR_LINES: &str = "At the switch unattended-upgrades' shutdown helper                                       installs nothing, as apt refuses a file of its                                       configuration, but writes two ERROR lines to its log on                                       the decoy disk, or to the journal if it started with the                                       file already refused.";
+
 /// A refusal of the check's.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Blocker {
@@ -521,10 +663,10 @@ pub(super) struct Blocker {
     pub(super) finding: String,
     /// What to do about it.
     pub(super) fix: String,
-    /// Whether it is for the setting found on, not for one NAILS cannot
-    /// tell: only then does the warning under `--allow-persistent-decoy` say
-    /// that the install runs.
-    pub(super) installs: bool,
+    /// What the helper does at the switch: only for the setting found on does
+    /// the warning under `--allow-persistent-decoy` say that the install
+    /// runs.
+    pub(super) at_the_switch: AtTheSwitch,
 }
 
 /// What the check makes of unattended-upgrades' install at shutdown.
@@ -636,6 +778,95 @@ fn session_warning(
             "{how}, and NAILS cannot tell whether {SETTING} is on there, which would make it \
              install the pending updates when the session ends with deactivate: {why}"
         )),
+        Setting::Refused { at, reason } => Some(format!(
+            "{how}, and NAILS cannot tell whether {SETTING} is on there, which would make it \
+             install the pending updates when the session ends with deactivate: {at} is refused \
+             by apt ({reason})"
+        )),
+        Setting::Off | Setting::Unset => None,
+    }
+}
+
+/// The refusal of a setting NAILS cannot tell, for this reason.
+fn cannot_tell(why: &str) -> Blocker {
+    Blocker {
+        finding: format!(
+            "NAILS cannot tell whether unattended-upgrades installs the pending updates at \
+             activation, as its shutdown helper does when {SETTING} is on, so it counts as on: \
+             {why}"
+        ),
+        fix: format!(
+            "fix or remove what keeps NAILS from reading the setting ({why}), and set `{SETTING} \
+             \"false\";` on the decoy if anything turns it on"
+        ),
+        at_the_switch: AtTheSwitch::Unknown,
+    }
+}
+
+/// The refusal of the decoy under `root` whose helper runs, its processes
+/// `pids` reading first the file at `apt_config`, `None` when there is none:
+/// `start` says how a session's own copy of the helper starts, for what the
+/// way back does.
+fn decoy_blocker<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    pids: &[u32],
+    apt_config: Option<&Path>,
+    start: Option<&Result<SessionStart, String>>,
+) -> Option<Blocker> {
+    let (decoy, read) = decoy_setting(fs, root, apt_config);
+    match decoy {
+        Setting::On(at) => Some(Blocker {
+            finding: format!(
+                "unattended-upgrades installs the pending updates when the system shuts down \
+                 ({SETTING} is on in {at}), and its shutdown helper takes a switch for a \
+                 shutdown: at activation it runs that install on the decoy disk and logs that run \
+                 there{}",
+                way_back(start)
+            ),
+            fix: turn_off(&at),
+            at_the_switch: AtTheSwitch::Installs,
+        }),
+        Setting::Refused { at, reason } => Some(Blocker {
+            finding: format!(
+                "apt refuses {at} ({reason}), so NAILS cannot tell whether unattended-upgrades \
+                 installs the pending updates at activation, as its shutdown helper does when \
+                 {SETTING} is on, and counts it as on: at activation the helper reads apt's \
+                 configuration again, installs nothing as apt refuses that file, and writes two \
+                 ERROR lines (`Apt returned an error thus shutdown mode is disabled` and apt's \
+                 message) to /var/log/unattended-upgrades/unattended-upgrades-shutdown.log on the \
+                 decoy disk, or to the journal if it started with the file already refused"
+            ),
+            fix: format!("fix what apt refuses at {at} ({reason}), or remove that file"),
+            at_the_switch: AtTheSwitch::ErrorLines,
+        }),
+        Setting::Unknown(why) => Some(cannot_tell(&why)),
+        Setting::Unset => {
+            // No file sets it now, but the helper keeps what it read when it
+            // started.
+            let changed = helper::started(fs, root, pids)
+                .and_then(|started| helper::changed_since_start(fs, root, &read, started));
+            match changed {
+                Ok(None) => None,
+                Ok(Some(what)) => Some(Blocker {
+                    finding: format!(
+                        "NAILS cannot tell whether unattended-upgrades installs the pending \
+                         updates at activation, as its shutdown helper does when {SETTING} is \
+                         on, so it counts as on: no file of apt's configuration sets it now, but \
+                         {what}, and the helper keeps what it read when it started, the value \
+                         of a line deleted since included, until it restarts"
+                    ),
+                    fix: format!(
+                        "set `{SETTING} \"false\";` on the decoy in a file of /{PARTS}, which \
+                         the helper reads again at the switch, where a false wins over what it \
+                         holds, or reboot the decoy so that the helper reads apt's \
+                         configuration afresh"
+                    ),
+                    at_the_switch: AtTheSwitch::Unknown,
+                }),
+                Err(why) => Some(cannot_tell(&why)),
+            }
+        }
         Setting::Off => None,
     }
 }
@@ -656,45 +887,22 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
             ..Finding::default()
         };
     }
-    let decoy = decoy_setting(fs, root);
+    // What the decoy's running helper reads first.
+    let mut apt_config = None;
     if running {
-        let way_back = way_back(start.as_ref());
-        match &decoy {
-            Setting::On(at) => {
-                return Finding {
-                    blocker: Some(Blocker {
-                        finding: format!(
-                            "unattended-upgrades installs the pending updates when the system \
-                             shuts down ({SETTING} is on in {at}), and its shutdown helper takes \
-                             a switch for a shutdown: at activation it runs that install on the \
-                             decoy disk and logs that run there{way_back}"
-                        ),
-                        fix: turn_off(at),
-                        installs: true,
-                    }),
-                    warning: None,
-                    polling,
-                };
+        let blocker = match helper::running(fs, root) {
+            Err(why) => Some(cannot_tell(&why)),
+            Ok((pids, read_first)) => {
+                apt_config = read_first;
+                decoy_blocker(fs, root, &pids, apt_config.as_deref(), start.as_ref())
             }
-            Setting::Unknown(why) => {
-                return Finding {
-                    blocker: Some(Blocker {
-                        finding: format!(
-                            "NAILS cannot tell whether unattended-upgrades installs the pending \
-                             updates at activation, as its shutdown helper does when {SETTING} \
-                             is on, so it counts as on: {why}"
-                        ),
-                        fix: format!(
-                            "fix or remove what keeps NAILS from reading the setting ({why}), \
-                             and set `{SETTING} \"false\";` on the decoy if anything turns it on"
-                        ),
-                        installs: false,
-                    }),
-                    warning: None,
-                    polling,
-                };
-            }
-            Setting::Off => {}
+        };
+        if blocker.is_some() {
+            return Finding {
+                blocker,
+                warning: None,
+                polling,
+            };
         }
     }
     let Some(start) = start else {
@@ -704,8 +912,8 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
         };
     };
     let session = match upper {
-        Some(upper) => session_setting(fs, root, upper),
-        None => decoy,
+        Some(upper) => session_setting(fs, root, upper, apt_config.as_deref()),
+        None => decoy_setting(fs, root, apt_config.as_deref()).0,
     };
     Finding {
         blocker: None,

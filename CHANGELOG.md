@@ -1401,21 +1401,30 @@ of this changelog for that version becomes the release notes word for word, and
   while the decoy's helper runs with the setting on, a finding of its own with its own fix, which
   `--allow-persistent-decoy` turns into a warning for one run; as for kdump, the window's launcher
   stays usable and `status` does not call the decoy persistent. It reads the setting as apt does:
+  first the file the running helper's `APT_CONFIG` names, which NAILS reads from the helper's
+  environment (`/proc/<pid>/environ`, which only root can read), keeping nothing else of it, then
   the files of `/etc/apt/apt.conf.d` apt reads, in its order and skipping those it skips by name,
-  then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file NAILS cannot read or
-  apt refuses, a line NAILS does not read the way apt does (longer than 4000 bytes, or with a NUL
-  byte), an `#include`, a `Dir` or `RootDir` setting, and a file name or a value of the setting
-  with a byte beyond ASCII, which apt reads by the system's locale, leave the setting unknown,
-  which is refused as if it were on. When only the hidden session would install (the decoy's
-  helper stopped while the decoy or the session's overlay enables it and nothing masks it as the
-  session sees it, or the session's overlay turning the setting on), it warns instead, and a link
-  among apt's files, which the session resolves through its overlay, makes it warn that it cannot
-  tell. It warns as well while the decoy's helper is enabled without python3-gi, Debian 13's cloud
-  image among them: the helper then writes two WARNING lines to its log on the decoy disk each
-  time it starts, so every way back adds a pair (`apt install python3-gi`). The decoy requirements
-  now say to set the setting to `false` rather than delete the line, which stays in effect until
-  the helper restarts, and to restart the helper after removing a `Dir` or `RootDir` line. A new
-  fuzz target, `apt_conf`, drives the reader.
+  then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file NAILS cannot read,
+  a line NAILS does not read the way apt does (longer than 4000 bytes, or with a NUL byte), an
+  `#include`, a `Dir` or `RootDir` setting, a file name or a value of the setting with a byte
+  beyond ASCII, which apt reads by the system's locale, and an `APT_CONFIG` NAILS cannot read or
+  follow leave the setting unknown, which is refused as if it were on. A file apt refuses is
+  refused too, and the refusal says what the helper does then: it installs nothing, but writes two
+  ERROR lines at every activation, to its log on the decoy disk, or to the journal if it started
+  with the file already refused, and the refusal names the file and line to fix. The helper keeps
+  what it read when it started, so a line deleted since stays in effect until it restarts: when no
+  file sets the setting and one of apt's files, `/etc/apt` or `/etc/apt/apt.conf.d` changed after
+  the helper started (by its change time, against the earlier of the unit's invocation marker and
+  its processes' start), NAILS cannot tell and refuses, until the setting is set to `false` or the
+  decoy reboots. When only the hidden session would install (the decoy's helper stopped while the
+  decoy or the session's overlay enables it and nothing masks it as the session sees it, or the
+  session's overlay turning the setting on), it warns instead, and a link among apt's files, which
+  the session resolves through its overlay, makes it warn that it cannot tell. It warns as well
+  while the decoy's helper is enabled without python3-gi, Debian 13's cloud image among them: the
+  helper then writes two WARNING lines to its log on the decoy disk each time it starts, so every
+  way back adds a pair (`apt install python3-gi`). The decoy requirements say to set the setting
+  to `false` rather than delete the line, and to restart the helper after removing a `Dir` or
+  `RootDir` line. A new fuzz target, `apt_conf`, drives the reader.
 - Activation refuses while a daily unattended-upgrade run is in progress (the
   `unattended-upgrade-run` check): `apt-daily-upgrade.service` is active, or a process holds
   `/run/unattended-upgrades.lock`. At the switch unattended-upgrades' shutdown helper stopped a run
