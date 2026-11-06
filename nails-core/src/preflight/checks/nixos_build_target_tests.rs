@@ -347,3 +347,28 @@ fn test_auto_discovery_does_not_probe_the_filesystem() {
         .unwrap();
     assert!(result.is_fail());
 }
+
+/// The flake directory discovery selected lies on the hidden volume. One
+/// whose lookup fails, or whose flake.nix does, stops the check with an error
+/// that names the path, where it read as a directory that is not there.
+#[test]
+fn a_selected_flake_directory_that_cannot_be_looked_up_stops_the_check() {
+    for failed in ["/mnt/data/nixos", "/mnt/data/nixos/flake.nix"] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/data/nixos", true);
+        fs.mock_set_path_exists("/mnt/data/nixos/flake.nix", true);
+        fs.mock_set_lookup_error(failed, std::io::ErrorKind::Other);
+        let check = NixOSBuildTargetCheck::with_selected_flake_dir(
+            None,
+            Some(PathBuf::from("/mnt/data/nixos")),
+            HostTarget::Flake(PathBuf::from("/mnt/data/nixos")),
+        );
+        let error = check
+            .run(&fs)
+            .expect_err("a lookup that fails stops the check");
+        assert_eq!(
+            error.to_string(),
+            format!("{failed}: Mock: the lookup fails here")
+        );
+    }
+}

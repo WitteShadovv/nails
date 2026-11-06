@@ -433,3 +433,32 @@ fn a_missing_root_upper_is_part_of_the_pass() {
          /mnt/data/root/upper with the decoy root's mode and owner"
     );
 }
+
+/// A required directory, or an overlay's lower, upper or work directory,
+/// whose lookup fails stops the check with an error that names the path,
+/// before anything is made there: such a directory used to read as a missing
+/// one, which the check then created over what it could not see.
+#[test]
+fn a_directory_that_cannot_be_looked_up_stops_the_check_and_makes_nothing() {
+    for failed in [
+        "/mnt/data/root/upper",
+        "/home",
+        "/mnt/data/home",
+        "/mnt/data/.work/home",
+    ] {
+        let fs = MockFilesystem::new();
+        setup_all_required_dirs(&fs);
+        setup_overlay_lower_dirs(&fs);
+        fs.mock_set_directory_creatable(failed, true);
+        fs.mock_set_lookup_error(failed, std::io::ErrorKind::PermissionDenied);
+        let error = make_check_with_overlays()
+            .run(&fs)
+            .expect_err("a lookup that fails stops the check");
+        assert_eq!(
+            error.to_string(),
+            format!("{failed}: Mock: the lookup fails here"),
+            "{failed}"
+        );
+        assert_eq!(fs.mock_get_permissions(Path::new(failed)), None, "{failed}");
+    }
+}
