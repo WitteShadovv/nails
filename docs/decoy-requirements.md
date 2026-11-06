@@ -803,14 +803,19 @@ explicit `false` wins on the signal. NAILS reads only the files, so it cannot
 see what the running helper still holds.
 
 When only the hidden session would install, `decoy-persistence` warns and does
-not refuse: the decoy's helper is stopped but enabled, so the session starts
-its own copy, or the session's overlay turns the setting on. It reads what the
-session sees: the decoy's files with the root overlay's upper on top. A
-directory the upper holds may be one a session deleted and made again, below
-which the decoy's files no longer show; NAILS does not read that mark, so it
-reads such a directory both ways and warns if either turns the setting on.
-Set the setting to `false`, or end the session with
-`nails deactivate --poweroff`.
+not refuse: the decoy's helper is stopped but the session starts its own copy,
+because the decoy or the session's overlay enables it and nothing masks it as
+the session sees it, or the session's overlay turns the setting on. It reads
+what the session sees: the decoy's files with the root overlay's upper on top.
+It counts anything the overlay holds in the place of the decoy's mask but
+another link to `/dev/null`, a unit file of the session's own included, as
+unmasking the helper. A directory the upper holds may be one a session deleted
+and made again, below which the decoy's files no longer show; NAILS does not
+read that mark, so it reads such a directory both ways and warns if either
+turns the setting on. A link among apt's files, or on the way to them,
+resolves in the session through the overlay, which NAILS does not follow, so
+it warns that it cannot tell. Set the setting to `false`, or end the session
+with `nails deactivate --poweroff`.
 
 As for kdump, the window's launcher stays usable with the setting on, and
 `nails status` does not call the decoy persistent for it; status does not show

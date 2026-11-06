@@ -1125,6 +1125,64 @@ fn unattended_upgrade_run_runs_right_after_shutdown_inhibitors() {
 }
 
 #[test]
+fn decoy_persistence_reads_what_hidden_sessions_see_through_the_upper() {
+    use std::path::{Path, PathBuf};
+    // The decoy's unattended-upgrades helper runs and is enabled, with the
+    // setting off on the decoy; only the root overlay's upper on the hidden
+    // volume turns it on, which the session's own copy reads at the way back.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.create_symlink(
+        Path::new("8028a17235414b4e80c950b24a7487d7"), // pragma: allowlist secret
+        Path::new("/run/systemd/units/invocation:unattended-upgrades.service"),
+    )
+    .unwrap();
+    fs.mock_set_directory_contents(
+        Path::new("/etc/systemd/system"),
+        vec![PathBuf::from("/etc/systemd/system/multi-user.target.wants")],
+    );
+    fs.mock_set_is_symlink(
+        "/etc/systemd/system/multi-user.target.wants/unattended-upgrades.service",
+        true,
+    );
+    let upper = crate::session::Layout::new(Path::new("/mnt/hidden")).upper();
+    for dir in ["etc", "etc/apt", "etc/apt/apt.conf.d"] {
+        fs.mock_set_path_type(
+            &upper.join(dir).display().to_string(),
+            crate::filesystem::PathKind::Dir,
+        );
+    }
+    let part = upper.join("etc/apt/apt.conf.d/99session");
+    fs.mock_add_file(
+        &part.display().to_string(),
+        "Unattended-Upgrade::InstallOnShutdown \"true\";\n",
+    );
+    fs.mock_set_directory_contents(&upper.join("etc/apt/apt.conf.d"), vec![part]);
+
+    let manager = manager_with(fs);
+    let registry = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds");
+    let (results, _) = registry.run_all_detailed(manager.filesystem());
+    let row = results
+        .iter()
+        .find(|(name, _)| name == "decoy-persistence")
+        .map(|(_, result)| result)
+        .expect("a decoy-persistence row");
+    assert!(!row.is_fail(), "{row:?}");
+    assert!(
+        row.message().contains(
+            "Unattended-Upgrade::InstallOnShutdown is on there \
+             (/etc/apt/apt.conf.d/99session:1 in the hidden session's overlay)"
+        ),
+        "{row:?}"
+    );
+}
+
+#[test]
 fn locate_database_runs_right_after_decoy_persistence() {
     let manager = manager_with(MockFilesystem::new());
     let names = manager
