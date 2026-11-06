@@ -36,6 +36,10 @@
 //! as root skips the advice rather than read the database the plain way and
 //! stamp its access time. A host whose version none of these names (rpm's database, which is
 //! not a format read here, or a cryptsetup built by hand) skips it as well.
+//! They are read through the automount guard ([`crate::filesystem::automount`]):
+//! a lookup that would mount an automount point that nothing is mounted on yet
+//! is not made, and where none of them names the version, the skipped advice
+//! names each path the guard did not look up and its automount point.
 //!
 //! # Keeping it current
 //!
@@ -46,6 +50,7 @@
 //! until both are updated together, which is the prompt to refresh this advice
 //! and the dated note.
 
+use crate::filesystem::automount::{Guarded, Snapshot, note};
 use crate::packages::{dpkg, pacman};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
@@ -313,8 +318,15 @@ impl<F: Filesystem> PreFlightCheck<F> for CryptsetupArgon2idCheck {
         if !self.privileged {
             return Ok(CheckResult::Pass(UNPRIVILEGED_SKIP.into()));
         }
-        let version = installed_cryptsetup_version(fs, &self.root);
-        Ok(argon2id_advice(version))
+        let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, &self.root));
+        let version = installed_cryptsetup_version(&guarded, &self.root);
+        let advice = argon2id_advice(version);
+        // Where no source names the version, a path the guard did not look
+        // up may have: the skip names it, and the advice stays a pass.
+        Ok(match (version, note(&guarded.skipped())) {
+            (None, Some(note)) => CheckResult::Pass(format!("{}\n{note}", advice.message())),
+            _ => advice,
+        })
     }
 }
 

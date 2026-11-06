@@ -28,11 +28,19 @@
 //! memory is not zeroed and stays an informational pass only when it cannot
 //! tell. It also notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe`
 //! module) when one is installed. Every probe reads; nothing here writes.
+//!
+//! The config files and dracut's modules are read through the automount
+//! guard ([`crate::filesystem::automount`]): a lookup that would mount an
+//! automount point that nothing is mounted on yet, such as a `/boot` that
+//! systemd mounts on demand, is not made. Where no source could be read, the
+//! informational pass names each path the guard did not look up and its
+//! automount point, and says how to mount it.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::kernel_cmdline::{self, BoolSpellings};
+use crate::filesystem::automount::{Guarded, Snapshot, note};
 use crate::{Filesystem, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // The gzip reader of `/proc/config.gz`. Public for the fuzz target that drives
 // it only; not part of any interface.
@@ -209,13 +217,16 @@ impl<F: Filesystem> PreFlightCheck<F> for MemoryWipeCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
+        // The command line and the release are the running kernel's own, in
+        // /proc; the config files and dracut's modules lie on the decoy.
         let cmdline = fs.read_file_content(&self.cmdline_path).ok();
         let release = self.release(fs);
         let spellings = BoolSpellings::of_release(release.as_deref());
-        let config = self.config.read(fs, release.as_deref());
+        let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
+        let config = self.config.read(&guarded, release.as_deref());
         let freed = freed_memory(cmdline.as_deref(), spellings, config.as_ref());
 
-        let ram_wipe_note = if self.ram_wipe_present(fs) {
+        let ram_wipe_note = if self.ram_wipe_present(&guarded) {
             " A RAM-wipe mechanism (the dracut ram-wipe module) is installed: the decoy wipes \
              RAM during reboot and shutdown, though not on a forced power loss."
         } else {
@@ -248,12 +259,17 @@ impl<F: Filesystem> PreFlightCheck<F> for MemoryWipeCheck {
                 "Add init_on_free=1 to the decoy kernel command line, and power off after a \
                  session rather than leaving the machine running.",
             )),
-            FreedMemory::Unknown => Ok(CheckResult::Pass(format!(
-                "Could not read whether the decoy kernel zeroes freed memory (init_on_free on \
-                 the command line, or CONFIG_INIT_ON_FREE_DEFAULT_ON in its config); whether \
-                 freed pages are zeroed is unknown. Recommended: add init_on_free=1 to the \
-                 decoy kernel command line.{ram_wipe_note}"
-            ))),
+            FreedMemory::Unknown => {
+                let unlooked = note(&guarded.skipped())
+                    .map(|note| format!("\n{note}"))
+                    .unwrap_or_default();
+                Ok(CheckResult::Pass(format!(
+                    "Could not read whether the decoy kernel zeroes freed memory (init_on_free on \
+                     the command line, or CONFIG_INIT_ON_FREE_DEFAULT_ON in its config); whether \
+                     freed pages are zeroed is unknown. Recommended: add init_on_free=1 to the \
+                     decoy kernel command line.{ram_wipe_note}{unlooked}"
+                )))
+            }
         }
     }
 }

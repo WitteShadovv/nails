@@ -263,6 +263,38 @@ fn nothing_that_names_the_version_skips_the_advice() {
     assert!(result.message().contains("could not read"), "{result:?}");
 }
 
+/// A package database behind an automount point that nothing is mounted on
+/// yet is not read: the advice stays an informational pass that says the
+/// version could not be read, names the paths and their point, and says how
+/// to mount it. Nothing at or below the point is looked up.
+#[test]
+fn a_database_behind_an_automount_point_is_named_in_the_skipped_advice() {
+    use crate::filesystem::automount::mount_fix;
+    use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/var/lib/dpkg/status",
+        &dpkg_status("installed", "2:2.7.5-2"),
+    );
+    with_automounts(&fs, &["/var"]);
+    let check = CryptsetupArgon2idCheck {
+        root: PathBuf::from("/"),
+        privileged: true,
+    };
+    let result = check.run(&fs).unwrap();
+    assert_eq!(
+        result,
+        CheckResult::Pass(format!(
+            "Skipping the VeraCrypt Argon2id advice: could not read the installed cryptsetup \
+             version from the NixOS system profile or the dpkg or pacman database\nNAILS cannot \
+             tell about everything it checks: NAILS does not look up /var/lib/dpkg/status, since \
+             the lookup would mount the automount point /var.\n{}",
+            mount_fix(&[Path::new("/var")])
+        ))
+    );
+    assert!(!reached(&fs, "/var"), "{:?}", fs.mock_lookups());
+}
+
 #[test]
 fn a_check_as_root_gives_the_advice_from_the_package_database() {
     let fs = MockFilesystem::new();

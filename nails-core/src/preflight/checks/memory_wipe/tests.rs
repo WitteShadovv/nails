@@ -491,3 +491,49 @@ fn the_description_names_what_it_reports() {
     assert!(!description.is_empty(), "{description:?}");
     assert!(description.contains("freed memory"), "{description:?}");
 }
+
+/// A `/boot` behind an automount point that nothing is mounted on yet, as
+/// systemd mounts an ESP on demand, is not read. Where no other source tells,
+/// the check stays an informational pass that names the path and its point,
+/// and says how to mount it; nothing at or below the point is looked up.
+/// Where another source tells, the verdict is that source's.
+#[test]
+fn a_config_behind_an_automount_point_is_named_in_the_informational_pass() {
+    use crate::filesystem::MockFilesystem;
+    use crate::filesystem::automount::mount_fix;
+    use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(PROC_OSRELEASE, "6.8.0-45-generic\n");
+    fs.mock_add_file(
+        "/boot/config-6.8.0-45-generic",
+        "CONFIG_INIT_ON_FREE_DEFAULT_ON=y\n",
+    );
+    with_automounts(&fs, &["/boot"]);
+    let result = MemoryWipeCheck::new().run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    assert!(
+        result.message().ends_with(&format!(
+            "Recommended: add init_on_free=1 to the decoy kernel command line.\nNAILS cannot tell \
+             about everything it checks: NAILS does not look up /boot/config-6.8.0-45-generic, \
+             since the lookup would mount the automount point /boot.\n{}",
+            mount_fix(&[Path::new("/boot")])
+        )),
+        "{result:?}"
+    );
+    assert!(!reached(&fs, "/boot"), "{:?}", fs.mock_lookups());
+
+    // The copy in /usr/lib/modules tells: no word of what was not read.
+    fs.mock_add_file(
+        "/usr/lib/modules/6.8.0-45-generic/config",
+        "CONFIG_INIT_ON_FREE_DEFAULT_ON=y\n",
+    );
+    let result = MemoryWipeCheck::new().run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .starts_with("The decoy kernel zeroes freed memory"),
+        "{result:?}"
+    );
+    assert!(!result.message().contains("/boot"), "{result:?}");
+}
