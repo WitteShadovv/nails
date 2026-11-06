@@ -124,17 +124,26 @@ pub fn load_config_for_teardown(config_override: Option<&Path>) -> (Config, Conf
     let runtime_copy_config = if file_config.is_some() {
         None
     } else {
-        match crate::runtime_copy::read_config_copy(&crate::RealFilesystem) {
-            Ok(copy) => copy,
-            Err(e) => {
-                tracing::warn!(error = %e, "could not read the runtime config copy; using defaults");
-                None
-            }
-        }
+        usable_copy(crate::runtime_copy::read_config_copy(
+            &crate::RealFilesystem,
+        ))
     };
 
     let defaults = || load_config_or_defaults(config_override).into_config();
     pick_teardown_config(file_config, runtime_copy_config, defaults)
+}
+
+/// The runtime copy a teardown may act on, from what reading it gave: a copy
+/// that is there but cannot be read is a warning naming it, and the teardown
+/// goes on without it, so nothing on `/run` can block an emergency.
+fn usable_copy(read: crate::Result<Option<Config>>) -> Option<Config> {
+    match read {
+        Ok(copy) => copy,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the runtime config copy; using defaults");
+            None
+        }
+    }
 }
 
 /// Choose the teardown configuration and record where it came from.
@@ -161,7 +170,10 @@ fn pick_teardown_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigSource, config_error_line, load_config_for_teardown, pick_teardown_config};
+    use super::{
+        ConfigSource, config_error_line, load_config_for_teardown, pick_teardown_config,
+        usable_copy,
+    };
     use crate::{Config, NailsError};
     use std::io::Write;
     use std::path::PathBuf;
@@ -348,5 +360,30 @@ mod tests {
             config.hidden_volume_root,
             PathBuf::from("/derived/from/binary")
         );
+    }
+
+    /// A runtime copy that is there but cannot be read never blocks a
+    /// teardown: it goes on with the defaults, as without a copy.
+    #[test]
+    fn an_unreadable_runtime_copy_leaves_the_teardown_its_defaults() {
+        let unreadable = Err(NailsError::io(
+            crate::runtime_copy::config_copy_path(),
+            std::io::Error::from_raw_os_error(nix::libc::EIO),
+        ));
+        let copy = usable_copy(unreadable);
+        assert!(copy.is_none());
+        let defaults = config_rooted_at("/derived/from/binary");
+        let (config, source) = pick_teardown_config(None, copy, || defaults.clone());
+        assert_eq!(source, ConfigSource::Defaults);
+        assert_eq!(
+            config.hidden_volume_root,
+            PathBuf::from("/derived/from/binary")
+        );
+        let copy = config_rooted_at("/mnt/data/copy");
+        assert_eq!(
+            usable_copy(Ok(Some(copy.clone()))).map(|config| config.hidden_volume_root),
+            Some(copy.hidden_volume_root)
+        );
+        assert!(usable_copy(Ok(None)).is_none());
     }
 }
