@@ -357,7 +357,7 @@ fn parts_are_read_by_the_names_apt_reads() {
         "A_b-C",
         "conf",
     ] {
-        assert!(part_name(name.as_bytes()), "{name}");
+        assert_eq!(part_name(name.as_bytes()), PartName::Read, "{name}");
     }
     for name in [
         ".hidden",
@@ -373,10 +373,54 @@ fn parts_are_read_by_the_names_apt_reads() {
         "x y",
         "x.CONF",
         "x.cfg",
-        "\u{fc}ber",
         "",
+        // A byte beyond ASCII changes nothing where another rule skips the
+        // name.
+        ".caf\u{e9}",
+        "caf\u{e9}.bak",
+        "x.c\u{f6}nf",
+        "caf\u{e9}.",
+        "caf\u{e9}~",
     ] {
-        assert!(!part_name(name.as_bytes()), "{name:?}");
+        assert_eq!(part_name(name.as_bytes()), PartName::Skipped, "{name:?}");
+    }
+}
+
+#[test]
+fn a_part_name_beyond_ascii_is_left_to_the_locale() {
+    // apt's isalpha() takes 0xe9 for a letter in ISO-8859-1 and so reads
+    // `99caf\xe9`, which it skips in the C locale and in a UTF-8 one; the two
+    // bytes of UTF-8's `ü` are letters in ISO-8859-2 (`Ă` and `ź`).
+    for name in [
+        b"99caf\xe9".as_slice(),
+        "99\u{fc}ber".as_bytes(),
+        b"\xff.conf",
+        b"a\x80b",
+    ] {
+        assert_eq!(part_name(name), PartName::ByLocale, "{name:?}");
+    }
+}
+
+#[test]
+fn a_value_beyond_ascii_is_left_to_the_locale() {
+    // strcasecmp() lowercases 0xdd to `i` in tr_TR.ISO-8859-9, where
+    // `W\xddTH` is apt's `with`; the reader knows no word with such a byte.
+    for value in [b"W\xddTH".as_slice(), b"\xe9", b"tru\xe9", b"1\xe9"] {
+        assert!(value_by_locale(value), "{value:?}");
+        assert!(string_to_bool(value, true), "{value:?}");
+        assert!(!string_to_bool(value, false), "{value:?}");
+    }
+    // ASCII, or a byte beyond it only after the NUL at which apt stops
+    // comparing.
+    for value in [
+        b"true".as_slice(),
+        b"WITH",
+        b"",
+        b"0x1",
+        b"true\0\xe9",
+        b"\0\xdd",
+    ] {
+        assert!(!value_by_locale(value), "{value:?}");
     }
 }
 

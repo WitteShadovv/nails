@@ -786,8 +786,14 @@ then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file
 NAILS cannot read or that apt refuses, a line NAILS does not read the way apt
 does (one longer than 4000 bytes, or with a NUL byte in it), an `#include`,
 and a `Dir` or `RootDir` setting, which move the files apt reads, leave the
-setting unknown, and `decoy-persistence` refuses that as if it were on.
-NAILS does not read `APT_CONFIG`, which the helper's unit does not set.
+setting unknown, and `decoy-persistence` refuses that as if it were on. So do
+a file name and a value of the setting with a byte beyond ASCII: apt runs in
+the system's locale, which decides whether it takes such a byte for a letter
+of a name it reads (`é` in ISO-8859-1, but not in a UTF-8 locale) and for a
+letter of `true` or `with` (`İ` in ISO-8859-9 reads as the `i` of `with`), so
+NAILS cannot tell what apt makes of it. NAILS does not read `APT_CONFIG`,
+which the helper's unit does not set.
+
 
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a
