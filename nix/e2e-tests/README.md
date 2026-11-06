@@ -759,27 +759,48 @@ what it does at a switch and that the refusals keep it off the decoy disk
 It starts a daily run as `apt-daily-upgrade.timer` does and holds it at its
 first step, the power check, with a stand-in for `on_ac_power` on a tmpfs of
 its own, put first in the run's `PATH` by a runtime drop-in: the run holds its
-lock and runs no dpkg. It asserts that:
+lock and runs no dpkg. It starts `apt-daily.service` as `apt-daily.timer` does
+and holds it the same way twice, with a wrapper of `unattended-upgrade` that
+holds its download run before it starts, and with an `on_ac_power` that holds
+the started run once it holds the lock. It asserts that:
 
 - on the stock decoy, both the `unattended-upgrade-run` and the
-  `decoy-persistence` rows pass, and `apt-config` reads
-  `Unattended-Upgrade::InstallOnShutdown` as off, as NAILS does;
+  `decoy-persistence` rows pass, but where the image has no python3-gi
+  (Debian 13) `decoy-persistence` warns of the helper's two lines;
+  `apt-config` reads `Unattended-Upgrade::InstallOnShutdown` as off, as NAILS
+  does, and `status --json` says the decoy does not install at shutdown;
 - while the held run holds its lock, which `/proc/locks` shows, and nothing
   blocks shutdown, both `check` and `activate` refuse, and neither the
   helper's log nor the run's gains a line; a plain `systemctl --no-wall
   soft-reboot` during the same run, the call a switch makes, writes
   `Unattended-upgrade in progress during shutdown` on the decoy disk, the
   positive control, and once the run has ended the row passes;
+- while `apt-daily.service` is held before its download run, so that no
+  process holds the lock, `check` and `activate` refuse and the helper's log
+  gains no line; as the positive control, a plain soft-reboot, with the
+  decoy's helper paused by SIGSTOP and let go by a unit once logind's signal
+  came and the download run holds the lock, writes the helper's line on the
+  decoy disk: the order of the race the refusal closes;
 - with `Unattended-Upgrade::InstallOnShutdown` turned on in a file of its own,
   which `apt-config` reads as on, `check` and `activate` refuse and name the
-  file and its line, and the helper logs no shutdown-mode run; with
-  `--allow-persistent-decoy` the activation goes through and the decoy's
-  helper logs its shutdown-mode run on the decoy disk at the switch, the
-  positive control;
+  file and its line, `status --json` says the decoy installs at shutdown, and
+  the helper logs no shutdown-mode run; with `--allow-persistent-decoy` the
+  activation goes through and the decoy's helper logs its shutdown-mode run on
+  the decoy disk at the switch, the positive control, and on an image without
+  python3-gi the helper started again at the way back writes its two lines;
 - with the decoy's helper stopped but enabled and the setting still on,
   `check` only warns, the activation goes through, and at the way back
   (`deactivate`) the session's copy logs its shutdown-mode run into the upper
-  on the hidden volume, while the decoy's log gains none.
+  on the hidden volume, while the decoy's log gains none;
+- with the setting's line deleted after the decoy's helper started with it,
+  `apt-config` reads the setting off, but `check` refuses, as no file sets it
+  and `apt.conf.d` changed after the helper started; with
+  `--allow-persistent-decoy` the helper logs its shutdown-mode run at the
+  switch all the same, the positive control;
+- with a file apt refuses, `check` refuses, names the file and its line and
+  says that the helper installs nothing; with `--allow-persistent-decoy` the
+  decoy's helper, started before the file was written, logs its two ERROR
+  lines on the decoy disk and no shutdown-mode run, the positive control.
 
 It is one of the smoke scenarios of its images, so it runs with the smoke
 suite and is informational like the others. The guest has no network in the

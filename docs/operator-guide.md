@@ -207,9 +207,10 @@ Keep all of it `root`-owned on the hidden volume.
    update, is in the middle of something the switch would cut short; a logind
    that does not answer whether one does fails it too, unless PID 1 says
    logind does not run), `unattended-upgrade-run` (no daily unattended-upgrade
-   run is in progress, which the switch would make unattended-upgrades'
-   shutdown helper stop and log on the decoy disk; try again in a few minutes,
-   see [the decoy requirements](decoy-requirements.md#unattended-upgrades)),
+   run is in progress, nor `apt-daily.service`, whose download takes the same
+   lock, which the switch would make unattended-upgrades' shutdown helper stop
+   and log on the decoy disk; try again in a few minutes, see
+   [the decoy requirements](decoy-requirements.md#unattended-upgrades)),
    `fstab-policy`,
    `kernel-modules` (no hidden session deleted or replaced the running
    kernel's module tree or its index; it only warns, see
@@ -299,9 +300,9 @@ Keep all of it `root`-owned on the hidden volume.
    removes what it set up in `/run`, as a cancel does (below), with the
    decoy's shells and every other program left as they were.
    It stops here too while a daily unattended-upgrade run is in progress
-   (`apt-daily-upgrade.service` active, or a process holding
-   `/run/unattended-upgrades.lock`), looked at once more right before logind
-   is asked, as one can start while the entry is prepared.
+   (`apt-daily-upgrade.service` or `apt-daily.service` active, or a process
+   holding `/run/unattended-upgrades.lock`), looked at once more right before
+   logind is asked, as one can start while the entry is prepared.
    Otherwise it kills the decoy's interactive shells and soft-reboots the way
    `systemctl soft-reboot` does, through logind. logind first tells the
    programs that wait for its shutdown signal that the system is going down

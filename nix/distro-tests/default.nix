@@ -53,20 +53,21 @@ let
 
   # The unattended-upgrades scenario, keyed "<distro>-apt-shutdown"
   # (tests/apt-shutdown.nix): check and activate refuse during a held daily
-  # unattended-upgrade run, with a plain soft-reboot as the control; an
-  # activation while apt-daily.service runs meets its download run's lock
-  # taken during the switch; check and activate refuse with InstallOnShutdown
-  # on, with an activation under the override as the control, and only warn
-  # of a helper stopped but enabled. The images with unattended-upgrades run
-  # it, beside their smokes, in the same CI matrix.
+  # unattended-upgrade run and while apt-daily.service runs before its
+  # download takes the lock, each with a plain soft-reboot as the control;
+  # they refuse with InstallOnShutdown on, with the line deleted after the
+  # helper read it, and with a file apt refuses, each with an activation
+  # under the override as the control; and they only warn of a helper stopped
+  # but enabled, and of one without python3-gi. The images with
+  # unattended-upgrades run it, beside their smokes, in the same CI matrix.
   aptShutdownDistros = lib.filter (name: enabledImages ? ${name}) [
     "debian-13"
     "ubuntu-24.04"
     "ubuntu-26.04"
   ];
   aptShutdownName = name: "${name}-apt-shutdown";
-  # One boot, seven switches (a plain soft-reboot during the held run, then
-  # three sessions in and out), and waits of up to ten minutes for each daily
+  # One boot, ten switches (a plain soft-reboot during each held run, then
+  # four sessions in and out), and waits of up to ten minutes for each daily
   # run to reach its hold and five for it to end.
   aptShutdownTimeout = 2400;
   aptShutdowns = lib.listToAttrs (
