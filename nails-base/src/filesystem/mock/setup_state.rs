@@ -318,7 +318,9 @@ impl MockFilesystem {
     /// Mark a directory as unreadable, so
     /// [`Filesystem::scan_files_with_pattern`](crate::Filesystem::scan_files_with_pattern)
     /// reports it under [`PatternScan::unreadable`](crate::filesystem::PatternScan::unreadable)
-    /// rather than walking it. Models an `EACCES` on `/tmp/systemd-private-*`.
+    /// rather than walking it, and
+    /// [`Filesystem::list_directory`](crate::Filesystem::list_directory) fails
+    /// with `PermissionDenied`. Models an `EACCES` on `/tmp/systemd-private-*`.
     pub fn mock_set_unreadable_dir(&self, dir: &str) {
         self.unreadable_dirs
             .lock()

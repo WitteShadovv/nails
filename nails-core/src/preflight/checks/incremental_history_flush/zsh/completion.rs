@@ -8,17 +8,22 @@
 //! without reading either. So it doubts what may make zsh run code of the
 //! files' own instead: a completion function, a file whose name starts with
 //! `_`, in any other directory of `fpath` (`fpath=(~/zc $fpath)`), which
-//! `compinit` marks to be autoloaded, and a completer, a completion widget's
-//! function or a `compdef`'s that is no function of zsh's own, or that a file
-//! defines in place of one (`zstyle ':completion:*' completer _w`,
+//! `compinit` marks to be autoloaded, and a file there named like one of
+//! zsh's own functions (`compinstall`), which zsh may load in its place; a
+//! completer, a completion widget's function or a `compdef`'s that is no
+//! function of zsh's own, or that the files define or autoload from a file of
+//! their own in place of one (`zstyle ':completion:*' completer _w`,
 //! `zle -C w complete-word _w`, `compdef _w cmd`), or is code
-//! (`compdef '...' cmd`). A function the files define named like a completion
-//! function, with a `_` first, counts as a hook, as zsh's completion
-//! functions run such names, and a file that sets a parameter the completion
-//! system runs code or functions from (`_comps[cmd]=...`, `comppostfuncs`,
-//! `_comp_setup`) is a doubt. Without `compinit` too, `compctl` and bash's
-//! `complete` (`bashcompinit`) name what zsh runs as you complete a word in
-//! words the check does not read: a doubt.
+//! (`compdef '...' cmd`); a file that sets a parameter the completion system
+//! runs code or functions from, or the options it completes with
+//! (`_comps[cmd]=...`, `comppostfuncs`, `compcontext`, `_comp_options`); and a
+//! style whose value zsh's own completion functions may run as code
+//! ([`super::walk::Event::Style`]). Every function of the files' own counts
+//! as a hook there, as zsh's own completion functions run commands by name
+//! as you complete a word, the one you complete among them (`ls --help` for
+//! `ls <Tab>`), and functions whose names start with `_`. Without `compinit`
+//! too, `compctl` and bash's `complete` (`bashcompinit`) name what zsh runs
+//! as you complete a word in words the check does not read: a doubt.
 
 use super::backstop::Forms;
 use super::walk::PROFILE_DIRS;
@@ -66,6 +71,10 @@ pub(super) struct Seen {
     parameters: Vec<(&'static str, String)>,
     /// The doubts of the styles the files set ([`super::walk::Event::Style`]).
     styles: Vec<String>,
+    /// The functions the files define by name, each beside the file that
+    /// defines it, and those they autoload, each beside its file
+    /// ([`super::walk::Event::Function`]).
+    functions: Vec<(String, PathBuf)>,
 }
 
 impl Seen {
@@ -97,6 +106,15 @@ impl Seen {
     pub(super) fn style(&mut self, doubt: String) {
         if !self.styles.contains(&doubt) {
             self.styles.push(doubt);
+        }
+    }
+
+    /// Note the function `name` that the file at `place` defines, or whose
+    /// code it is, autoloaded.
+    pub(super) fn function(&mut self, name: String, place: &str) {
+        let entry = (name, PathBuf::from(place));
+        if !self.functions.contains(&entry) {
+            self.functions.push(entry);
         }
     }
 }
@@ -180,8 +198,16 @@ impl<F: Filesystem> Reader<'_, F> {
         if !self.compinit {
             return;
         }
-        self.own_completion_dirs();
         let stock = self.stock_names();
+        self.own_completion_dirs(&stock);
+        // The functions of the files' own: those they define, and those they
+        // autoload from a file outside zsh's own directory and the Nix
+        // profiles'.
+        let own: Vec<String> = std::mem::take(&mut self.completion.functions)
+            .into_iter()
+            .filter(|(_, file)| !file.parent().is_some_and(|dir| self.exempt(dir)))
+            .map(|(name, _)| name)
+            .collect();
         let mut named = std::mem::take(&mut self.completion.names);
         for (name, args, place) in self.calls.clone() {
             if name != "compdef" {
@@ -205,7 +231,10 @@ impl<F: Filesystem> Reader<'_, F> {
                     "it cannot tell which function `{what}` in {place} makes zsh run as you \
                      complete a word"
                 ));
-            } else if !stock.contains(&function.text) || self.defined.contains(&function.text) {
+            } else if !stock.contains(&function.text)
+                || self.defined.contains(&function.text)
+                || own.contains(&function.text)
+            {
                 self.doubt(format!(
                     "it cannot tell what `{}`, which `{what}` in {place} makes zsh run as you \
                      complete a word, writes, as it is no completion function of zsh's own",
@@ -213,10 +242,12 @@ impl<F: Filesystem> Reader<'_, F> {
                 ));
             }
         }
-        // zsh's completion functions run functions by names that start with
-        // `_`, one the files define in place of one of them among them.
-        for name in self.defined.clone() {
-            if name.starts_with('_') && !self.hooks.contains(&name) {
+        // zsh's own completion functions run commands by name as you complete
+        // a word, the one you complete among them (`_ls` runs `ls --help`),
+        // and functions by names that start with `_`, so a function of the
+        // files' own may run there as a hook would.
+        for name in own {
+            if !self.hooks.contains(&name) {
                 self.hooks.push(name);
             }
         }
@@ -254,9 +285,11 @@ impl<F: Filesystem> Reader<'_, F> {
     /// function, a file whose name starts with `_`, which `compinit` marks to
     /// be autoloaded and zsh then runs as you complete a word (a `#compdef`
     /// first line names the commands it completes) or in place of one of
-    /// zsh's own of its name, and for each such directory the check could not
-    /// read.
-    fn own_completion_dirs(&mut self) {
+    /// zsh's own of its name, or a file named like one of zsh's own functions
+    /// (`stock`, `compinstall`, `zmv`), which zsh may load in its place where
+    /// its own code runs that one by name, and for each such directory the
+    /// check could not read.
+    fn own_completion_dirs(&mut self, stock: &[String]) {
         let mut dirs: Vec<PathBuf> = Vec::new();
         for entry in &self.fpath {
             if let Ok((dir, _)) = entry
@@ -275,17 +308,35 @@ impl<F: Filesystem> Reader<'_, F> {
                         .filter(|name| name.as_encoded_bytes().starts_with(b"_"))
                         .map(|name| name.to_string_lossy().into_owned())
                         .collect();
-                    if names.is_empty() {
-                        continue;
-                    }
+                    let mut shadows: Vec<String> = entries
+                        .iter()
+                        .filter_map(|entry| entry.file_name()?.to_str())
+                        .filter(|name| {
+                            !name.starts_with('_') && stock.iter().any(|own| own == name)
+                        })
+                        .map(str::to_string)
+                        .collect();
                     names.sort();
-                    self.doubt(format!(
-                        "it cannot tell what the completion functions in {} write ({}), which \
-                         zsh runs as you complete a word once compinit marks them, as that \
-                         directory of fpath is neither zsh's own nor a Nix profile's",
-                        dir.display(),
-                        shown(&names)
-                    ));
+                    shadows.sort();
+                    if !names.is_empty() {
+                        self.doubt(format!(
+                            "it cannot tell what the completion functions in {} write ({}), \
+                             which zsh runs as you complete a word once compinit marks them, as \
+                             that directory of fpath is neither zsh's own nor a Nix profile's",
+                            dir.display(),
+                            shown(&names)
+                        ));
+                    }
+                    if !shadows.is_empty() {
+                        self.doubt(format!(
+                            "it cannot tell what the functions in {} write ({}), which zsh may \
+                             run in place of zsh's own of their names where its own code runs \
+                             one by name, as that directory of fpath is neither zsh's own nor a \
+                             Nix profile's",
+                            dir.display(),
+                            shown(&shadows)
+                        ));
+                    }
                 }
                 Err(error)
                     if matches!(

@@ -29,6 +29,10 @@ impl<F: Filesystem> Reader<'_, F> {
                         let name = file
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned());
+                        if let Some(name) = &name {
+                            self.completion
+                                .function(name.clone(), &file.to_string_lossy());
+                        }
                         self.file_in(&file, false, name);
                     }
                 }
