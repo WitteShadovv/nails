@@ -2,12 +2,12 @@
 # does at a switch, and the refusals that keep it off the decoy disk.
 #
 # unattended-upgrades' shutdown helper waits for logind's shutdown signal,
-# which a switch sends as `systemctl soft-reboot` does. When the signal comes
-# while a run of unattended-upgrade holds its lock, the helper sends the run
-# SIGTERM and writes `Unattended-upgrade in progress during shutdown` to its
-# log on the decoy disk, whatever `Unattended-Upgrade::InstallOnShutdown`
-# says. With that setting on, it runs an install of the pending updates on
-# the signal instead.
+# which a switch through logind sends as `systemctl soft-reboot` does. When
+# the signal comes while a run of unattended-upgrade holds its lock, the
+# helper sends the run SIGTERM and writes `Unattended-upgrade in progress
+# during shutdown` to its log on the decoy disk, whatever
+# `Unattended-Upgrade::InstallOnShutdown` says. With that setting on, it runs
+# an install of the pending updates on the signal instead.
 #
 # The scenario, on each image with unattended-upgrades:
 #
@@ -337,7 +337,7 @@ distroVm.buildVmTest {
         print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
         assert count(helper_log, SHUTDOWN_MODE) > mode_before, tail(helper_log)
 
-    with subtest("a helper stopped but enabled only warns, and installs at the way back"):
+    with subtest("a helper stopped but enabled only warns, and logs its shutdown-mode run at the way back"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         vm.succeed("systemctl stop unattended-upgrades.service")
         vm.succeed("systemctl is-enabled unattended-upgrades.service")

@@ -5,7 +5,7 @@
 //! run is in progress.
 //!
 //! unattended-upgrades (Debian, Ubuntu) runs a shutdown helper that waits for
-//! logind's shutdown signal, which every switch sends as `systemctl
+//! logind's shutdown signal, which activation sends as `systemctl
 //! soft-reboot` does. When the signal comes while a run of
 //! unattended-upgrade holds its lock, `/run/unattended-upgrades.lock`, the
 //! helper sends the run SIGTERM and writes `Unattended-upgrade in progress

@@ -358,7 +358,7 @@ pub fn build_registry<F: Filesystem>(
     // the overlays are mounted would survive on the decoy disk, an armed
     // kdump, whose crash kernel writes the memory of a session that crashed to
     // the decoy disk, or unattended-upgrades set to install at shutdown, which
-    // a switch is to it) unless the operator allows the risk for this run with
+    // activation is to it) unless the operator allows the risk for this run with
     // --allow-persistent-decoy. Lower-severity findings (atime, a disk
     // core_pattern, a systemd-coredump that keeps cores, pstore records, sudo
     // logging, sssd in use, maintenance timers, unattended-upgrades installing
