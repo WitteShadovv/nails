@@ -64,7 +64,10 @@
 //! from the upper of that filesystem's overlay. Every read of the decoy goes
 //! through the [`Filesystem`] seam ([`nails_base::packages`] on access times),
 //! and each lookup below the decoy root passes only through entries already
-//! seen not to be symbolic links. Only root reads the decoy's database without
+//! seen not to be symbolic links. The check reads through the automount guard
+//! ([`Guarded`]): it makes no lookup that would mount an automount point that
+//! nothing is mounted on yet, and without the mount table it looks up
+//! nothing. Only root reads the decoy's database without
 //! changing its access time, unless the filesystem it is on is mounted
 //! `noatime`, so a `nails check` that is not running as root says it cannot
 //! tell, and names the `sudo` line, whenever hidden sessions keep a copy to
@@ -73,7 +76,9 @@
 //! [`Verdict::Unknown`] is left for what no reading decides without a trace:
 //! that read without root where atimes are kept, a symbolic link on the way to the decoy's database
 //! (a lookup through it changes the link's access time, and no open flag
-//! spares it), a file or a directory that cannot be read, a database whose
+//! spares it), a path that cannot be looked up for another reason than that
+//! nothing is there, or that the guard does not look up, a file or a
+//! directory that cannot be read, a database whose
 //! format does not hold or that needs more memory than the reader keeps,
 //! links in rpm's records on the way to a package's file that make a loop or
 //! lead to a path longer than any system resolves, an rpm transaction stopped
@@ -86,6 +91,7 @@
 
 use crate::error::Result;
 use crate::filesystem::Filesystem;
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, settle};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_base::next_step::{NextStep, shell_word, sudo_line, sudo_line_for};
 use nails_base::packages::{dpkg, pacman, rpm};
@@ -747,12 +753,24 @@ impl<F: Filesystem> PreFlightCheck<F> for PackageDriftCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let report = self.report(fs);
-        Ok(match (report.warns, report.fix) {
+        // The decoy is read through the automount guard; without the table a
+        // lookup could mount an automount point, so none is made.
+        let snapshot = Snapshot::read(fs, &self.root);
+        if let Some(error) = snapshot.unreadable() {
+            return Ok(CheckResult::Warn(format!(
+                "could not tell whether hidden sessions' package database follows the decoy's: \
+                 NAILS cannot read the mount table ({error}), which shows where a lookup would \
+                 mount an automount point, so it looks up nothing"
+            )));
+        }
+        let guarded = Guarded::new(fs.clone(), &snapshot);
+        let report = self.report(&guarded);
+        let result = match (report.warns, report.fix) {
             (false, _) => CheckResult::Pass(report.message),
             (true, Some(fix)) => CheckResult::warn_with(report.message, fix),
             (true, None) => CheckResult::Warn(report.message),
-        })
+        };
+        Ok(settle(result, &guarded.skipped(), OnSkip::Warn))
     }
 }
 

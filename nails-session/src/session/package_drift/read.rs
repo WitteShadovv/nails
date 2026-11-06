@@ -91,6 +91,9 @@ enum OnDecoy {
     Linked(String),
     /// What was asked for.
     Present,
+    /// A lookup on the way failed, or was not made, for the reason given:
+    /// what is there cannot be told.
+    Unreadable(String),
 }
 
 /// What the upper holds of dpkg's journal.
@@ -188,22 +191,31 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Look up `rel` below the decoy root: a file, or a directory when `dir`.
+    /// A lookup that fails for another reason than that nothing is there, or
+    /// that the automount guard does not make, tells nothing.
     fn on_decoy(&self, rel: &str, dir: bool) -> OnDecoy {
         let mut path = self.root.to_path_buf();
         let mut shown = PathBuf::from("/");
+        let unreadable = |shown: &Path, e: &NailsError| {
+            OnDecoy::Unreadable(unseen(&on_the_decoy(shown), "looked up", e))
+        };
         for component in Path::new(rel).components() {
             path.push(component);
             shown.push(component);
-            if self.fs.is_symlink(&path).unwrap_or(false) {
-                return OnDecoy::Linked(shown.display().to_string());
+            match self.fs.is_symlink(&path) {
+                Ok(true) => return OnDecoy::Linked(shown.display().to_string()),
+                Ok(false) => {}
+                Err(e) => return unreadable(&shown, &e),
             }
         }
-        let present = self.fs.path_exists(&path).unwrap_or(false)
-            && self.fs.is_directory(&path).unwrap_or(false) == dir;
-        if present {
-            OnDecoy::Present
-        } else {
-            OnDecoy::Missing
+        match self
+            .fs
+            .path_exists(&path)
+            .and_then(|exists| Ok(exists && self.fs.is_directory(&path)? == dir))
+        {
+            Ok(true) => OnDecoy::Present,
+            Ok(false) => OnDecoy::Missing,
+            Err(e) => unreadable(&shown, &e),
         }
     }
 
@@ -304,9 +316,10 @@ impl<F: Filesystem> Reader<'_, F> {
                 Ok(None) => {}
                 Err(e) if !self.privileged && denied(&e) => return InUpper::NeedsRoot,
                 Err(e) => {
-                    return InUpper::Unreadable(format!(
-                        "what hidden sessions keep at {} cannot be read ({e})",
-                        shown.display()
+                    return InUpper::Unreadable(unseen(
+                        &format!("what hidden sessions keep at {}", shown.display()),
+                        "read",
+                        &e,
                     ));
                 }
             }
@@ -337,9 +350,10 @@ impl<F: Filesystem> Reader<'_, F> {
             return Ok(Some(gone(false)));
         }
         if !fs.path_exists(path)? {
-            // A lookup that fails says the entry is missing, so the
-            // directory's listing tells a missing entry from one that cannot
-            // be looked up.
+            // A lookup that fails for another reason than that nothing is
+            // there is an error above; the listing catches an entry that
+            // came in between, or that the lookup says is missing all the
+            // same.
             self.not_listed(path)?;
             // Nothing below an entry the upper lacks.
             return Ok(last.then_some(InUpper::Nothing));
@@ -502,6 +516,7 @@ impl<F: Filesystem> Reader<'_, F> {
                     "{at} on the decoy is a symbolic link"
                 ))));
             }
+            OnDecoy::Unreadable(reason) => return Err(Verdict::Unknown(Doubt::Other(reason))),
             OnDecoy::Present => {}
         }
         let entries = self
@@ -586,10 +601,20 @@ impl<F: Filesystem> Reader<'_, F> {
         let beside = |suffix: &str| format!("{rel}{suffix}");
         for suffix in [rpm::WAL, rpm::JOURNAL] {
             let path = self.root.join(beside(suffix));
-            if self.fs.is_symlink(&path).unwrap_or(false) {
-                return Err(Verdict::Unknown(Doubt::Other(format!(
-                    "{at}{suffix} on the decoy is a symbolic link"
-                ))));
+            match self.fs.is_symlink(&path) {
+                Ok(false) => {}
+                Ok(true) => {
+                    return Err(Verdict::Unknown(Doubt::Other(format!(
+                        "{at}{suffix} on the decoy is a symbolic link"
+                    ))));
+                }
+                Err(e) => {
+                    return Err(Verdict::Unknown(Doubt::Other(unseen(
+                        &format!("{at}{suffix} on the decoy"),
+                        "looked up",
+                        &e,
+                    ))));
+                }
             }
         }
         let decoy = rpm::Files::beside(self.fs, &on_decoy)
@@ -792,6 +817,7 @@ fn decoy_verdict(on_decoy: OnDecoy) -> Option<Verdict> {
         OnDecoy::Linked(at) => Some(Verdict::Unknown(Doubt::Other(format!(
             "{at} on the decoy is a symbolic link"
         )))),
+        OnDecoy::Unreadable(reason) => Some(Verdict::Unknown(Doubt::Other(reason))),
     }
 }
 
@@ -830,7 +856,23 @@ fn too_much(at: &str, reason: &str) -> Verdict {
 
 /// The verdict for `what` that cannot be read.
 fn unreadable(what: &str, error: &NailsError) -> Verdict {
-    Verdict::Unknown(Doubt::Other(format!("{what} cannot be read ({error})")))
+    Verdict::Unknown(Doubt::Other(unseen(what, "read", error)))
+}
+
+/// Why `what` cannot be `done` (read, looked up), from `error`. A lookup the
+/// automount guard did not make is told in the guard's words, which name the
+/// place it did not look up and the automount point.
+fn unseen(what: &str, done: &str, error: &NailsError) -> String {
+    if error.not_looked_up().is_some() {
+        error.to_string()
+    } else {
+        format!("{what} cannot be {done} ({error})")
+    }
+}
+
+/// `shown`, a path as hidden sessions see it, on the decoy.
+fn on_the_decoy(shown: &Path) -> String {
+    format!("{} on the decoy", shown.display())
 }
 
 /// Whether `error` says a path, or a directory on its way, does not exist.
