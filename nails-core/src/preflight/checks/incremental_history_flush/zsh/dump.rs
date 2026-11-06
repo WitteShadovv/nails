@@ -23,13 +23,20 @@ const ARRAYS: [&str; 5] = [
     "_compautos=(",
 ];
 
+/// The arrays of [`ARRAYS`] whose values are code that zsh's completion
+/// system runs (`_dispatch` runs each with `eval`), which the stock
+/// `compdump` writes as the names of completion functions alone, a
+/// `_patcomps` one after the service it gives (`=service=_name`).
+const RUN: [&str; 3] = ["_comps=(", "_patcomps=(", "_postpatcomps=("];
+
 /// Where a line of a dump file stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     /// Between the parts.
     Top,
-    /// In an array, before its `)`.
-    Array,
+    /// In an array, before its `)`; `run` when its values are code
+    /// ([`RUN`]).
+    Array { run: bool },
     /// In the names of an `autoload` whose line ended with a backslash.
     Names,
 }
@@ -60,12 +67,27 @@ fn quoted(text: &str) -> Option<&str> {
 }
 
 /// Whether `line` is a pair of words in single quotes, as an array's line of
-/// a dump file holds: `'key' 'value'`.
-fn pair(line: &str) -> bool {
-    quoted(line)
-        .and_then(|rest| rest.strip_prefix(' '))
-        .and_then(quoted)
-        .is_some_and(str::is_empty)
+/// a dump file holds: `'key' 'value'`; with `run`, one whose value is the
+/// name of a completion function, after a service in `=...=` or not, as the
+/// stock `compdump` writes those of the arrays whose values are code
+/// ([`RUN`]), and no other code.
+fn pair(line: &str, run: bool) -> bool {
+    let Some(value) = quoted(line).and_then(|rest| rest.strip_prefix(' ')) else {
+        return false;
+    };
+    if !quoted(value).is_some_and(str::is_empty) {
+        return false;
+    }
+    let value = &value[1..value.len() - 1];
+    let function = match value
+        .strip_prefix('=')
+        .and_then(|rest| rest.split_once('='))
+    {
+        Some((service, function)) if completion_name(&format!("_{service}")) => function,
+        Some(_) => return !run,
+        None => value,
+    };
+    !run || completion_name(function)
 }
 
 /// Whether `line` holds words in single quotes alone, each after a blank.
@@ -179,9 +201,9 @@ pub(super) fn marks(text: &str) -> Option<Vec<String>> {
     let mut state = State::Top;
     for line in lines {
         state = match state {
-            State::Array if line == ")" => State::Top,
-            State::Array if pair(line) => State::Array,
-            State::Array => return None,
+            State::Array { .. } if line == ")" => State::Top,
+            State::Array { run } if pair(line, run) => State::Array { run },
+            State::Array { .. } => return None,
             State::Names => {
                 let (words, more) = match line.strip_suffix(" \\") {
                     Some(words) => (words, true),
@@ -195,7 +217,9 @@ pub(super) fn marks(text: &str) -> Option<Vec<String>> {
             }
             State::Top if line.is_empty() || line == "zmodload -i zsh/complist" => State::Top,
             State::Top if line == "typeset -gUa _comp_assocs" => State::Top,
-            State::Top if ARRAYS.contains(&line) => State::Array,
+            State::Top if ARRAYS.contains(&line) => State::Array {
+                run: RUN.contains(&line),
+            },
             State::Top if widget(line) || binding(line) => State::Top,
             State::Top => {
                 if let Some(values) = line.strip_prefix("_comp_assocs=(") {
@@ -331,6 +355,14 @@ _comp_assocs=( '' )
             ("bindkey '^X^R' _read_comp", "bindkey '^X^R'  _read_comp"),
             ("bindkey '^X^R'", "bindkey -s '^X^R'"),
             ("_abcde \\\n", "_abcde\n"),
+            // A value of an array of code that is no name of a completion
+            // function, which `_dispatch` runs with `eval`.
+            ("'eval' '_precommand'", "'eval' 'print $BUFFER >> ~/.zl'"),
+            ("'eval' '_precommand'", "'eval' 'precommand'"),
+            ("'eval' '_precommand'", "'eval' '_precommand;x'"),
+            ("'*/(init|rc[0-9S]#).d/*' '_init_d'", "'x*' '=s v=_init_d'"),
+            ("'*/(init|rc[0-9S]#).d/*' '_init_d'", "'x*' '=svc=init_d'"),
+            ("'(p[bgpn]m*|*top[bgpn]m)' '_pbm'", "'x*' '_p'\\''bm'"),
             ("_zstyle _ztodo _zypper", "_zstyle _ztodo $f"),
             ("_zstyle _ztodo _zypper", "_zstyle _ztodo zypper"),
             (
@@ -376,6 +408,14 @@ _comp_assocs=( '' )
         );
         assert_eq!(marks("_comps=(\n)\n"), None);
         assert_eq!(marks("#files: 1\tversion: 5.9.2\n_comps=(\n"), None);
+        // A pattern's completion after the service it gives, and a
+        // service's name, are data.
+        for (from, to) in [
+            ("'*/(init|rc[0-9S]#).d/*' '_init_d'", "'x*' '=svc=_init_d'"),
+            ("'bzcat' 'bunzip2'", "'bzcat' 'b z'"),
+        ] {
+            assert!(marks(&DUMP.replacen(from, to, 1)).is_some(), "{to}");
+        }
         // `zmodload -i zsh/complist` is one compdump writes.
         let text = DUMP.replace("bindkey '^X^R'", "zmodload -i zsh/complist\nbindkey '^X^R'");
         assert!(marks(&text).is_some());

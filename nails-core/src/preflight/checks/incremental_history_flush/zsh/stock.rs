@@ -19,7 +19,8 @@
 //!   completion widget is pressed (Tab), or when code runs them by name; the
 //!   check reads one as a hook where a key typed in a line may run it
 //!   (`compdef -k`, a widget's function), and doubts a key binding of a first
-//!   line other than zsh's own ([`KEY_LINES`]). It names none of the three
+//!   line other than zsh's own ([`KEY_LINES`]) and completion code that is
+//!   none of zsh's own ([`super::completion`]). It names none of the three
 //!   options and holds no `fc` that writes the history file.
 //! - `compaudit` checks the owners and modes of the `fpath` directories and
 //!   may put the directories under one that holds a `Base` directory at the

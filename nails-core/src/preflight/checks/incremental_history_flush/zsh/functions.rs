@@ -116,6 +116,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 break;
             }
         }
+        self.completions();
         if self.install.fpath.is_some() {
             // zsh looks in no directory the check does not read: a function
             // none holds is one zsh cannot load either.

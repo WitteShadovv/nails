@@ -18,6 +18,10 @@ mod dircolors;
 #[path = "zsh_fpath_tests.rs"]
 mod fpath;
 
+// What zsh may run as you complete a word that is no code of zsh's own.
+#[path = "zsh_completion_tests.rs"]
+mod completion;
+
 /// A zsh 5.9.2 from the Nix store.
 const ZSH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-zsh-5.9.2";
 
@@ -78,6 +82,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
         install(&fs, &[("USER", "alice")]),
         Install {
             fpath: Some(vec![PathBuf::from(OWN)]),
+            functions: Some(PathBuf::from(OWN)),
             version: Some("5.9.2".to_string()),
             env: Some(super::super::install::Env {
                 user: Some("alice".to_string()),
@@ -100,6 +105,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
         Install::of(&fs, Some(Path::new(&format!("{ZSH}/bin/zsh"))), None),
         Install {
             fpath: None,
+            functions: Some(PathBuf::from(OWN)),
             version: Some("5.9.2".to_string()),
             env: None,
         }
@@ -472,19 +478,27 @@ fn a_function_add_zsh_hook_or_compdef_a_autoloads_is_read() {
             "{line}"
         );
     }
-    // One that takes a hook away autoloads none, and a compdef without -a
-    // names a function completion runs.
-    for line in [
-        "autoload -Uz add-zsh-hook && add-zsh-hook -d precmd lines",
-        "autoload -Uz compinit && compinit && compdef lines cmd",
-    ] {
-        seed(
-            &fs,
-            "/home/alice/.zshrc",
-            &format!("fpath=(~/.zfunc $fpath)\n{line}\n"),
-        );
-        assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{line}");
-    }
+    // One that takes a hook away autoloads none.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "fpath=(~/.zfunc $fpath)\nautoload -Uz add-zsh-hook && add-zsh-hook -d precmd lines\n",
+    );
+    assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default());
+    // A compdef without -a names a function completion runs, which is no
+    // completion function of zsh's own.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "fpath=(~/.zfunc $fpath)\nautoload -Uz compinit && compinit && compdef lines cmd\n",
+    );
+    assert_eq!(
+        scan_with(&fs, UNKNOWN, &known).doubts,
+        [
+            "it cannot tell what `lines`, which `compdef lines cmd` in /home/alice/.zshrc makes \
+             zsh run as you complete a word, writes, as it is no completion function of zsh's own"
+        ]
+    );
     seed(
         &fs,
         "/home/alice/.zshrc",
@@ -492,7 +506,11 @@ fn a_function_add_zsh_hook_or_compdef_a_autoloads_is_read() {
     );
     assert_eq!(
         scan_with(&fs, UNKNOWN, &known).doubts,
-        ["it cannot tell which function `compdef -a $f cmd` in /home/alice/.zshrc autoloads"]
+        [
+            "it cannot tell which function `compdef -a $f cmd` in /home/alice/.zshrc autoloads",
+            "it cannot tell which function `compdef -a $f cmd` in /home/alice/.zshrc makes zsh \
+             run as you complete a word, as zsh may expand `$f` into other words"
+        ]
     );
 }
 
@@ -1102,15 +1120,29 @@ fn a_stock_dump_holds_data_in_which_zsh_expands_no_alias() {
     assert!(warned(&scan_with(&fs, UNKNOWN, &known)));
 }
 
+/// A Nix profile in the store, whose completion functions the check reads
+/// as those a package put there.
+const PROFILE: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-profile"; // pragma: allowlist secret
+
+/// Its directory of completion functions.
+const PROFILE_COMP: &str =
+    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-profile/share/zsh/site-functions";
+
+/// What the check knows of the zsh at `ZSH` started with `PROFILE` in its
+/// `NIX_PROFILES`.
+fn profiled(fs: &MockFilesystem) -> Install {
+    install(fs, &[("NIX_PROFILES", PROFILE)])
+}
+
 #[test]
 fn compinit_s_marks_by_the_first_line_of_a_completion_function_are_read() {
     let fs = MockFilesystem::new();
     nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
-    let known = install(&fs, &[]);
+    let known = profiled(&fs);
     seed(
         &fs,
         "/home/alice/.zshrc",
-        "fpath=(~/zcomp $fpath)\nautoload -Uz compinit && compinit -D\n",
+        &format!("fpath=({PROFILE_COMP} $fpath)\nautoload -Uz compinit && compinit -D\n"),
     );
     // zsh 5.9.2 marks the functions of a compiled file with `-w`, a hook
     // among them, which runs after each command.
@@ -1120,10 +1152,10 @@ fn compinit_s_marks_by_the_first_line_of_a_completion_function_are_read() {
         "#autoload +X -w",
         "#autoload\t-m",
     ] {
-        seed(&fs, "/home/alice/zcomp/_b", &format!("{line}\n:\n"));
+        seed(&fs, &format!("{PROFILE_COMP}/_b"), &format!("{line}\n:\n"));
         fs.mock_set_directory_contents(
-            Path::new("/home/alice/zcomp"),
-            vec![PathBuf::from("/home/alice/zcomp/_b")],
+            Path::new(PROFILE_COMP),
+            vec![PathBuf::from(format!("{PROFILE_COMP}/_b"))],
         );
         assert!(warned(&scan_with(&fs, UNKNOWN, &known)), "{line}");
     }
@@ -1139,13 +1171,26 @@ fn compinit_s_marks_by_the_first_line_of_a_completion_function_are_read() {
         // name here, and Enter stays accept-line.
         "#compdef git -k complete-word ^M",
     ] {
-        seed(&fs, "/home/alice/zcomp/_b", &format!("{line}\n:\n"));
+        seed(&fs, &format!("{PROFILE_COMP}/_b"), &format!("{line}\n:\n"));
         assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{line}");
     }
+    // In a directory of the files' own, any completion function is a doubt,
+    // whatever its first line says.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "fpath=(~/zcomp $fpath)\nautoload -Uz compinit && compinit -D\n",
+    );
+    seed(&fs, "/home/alice/zcomp/_b", "#compdef git\n:\n");
+    fs.mock_set_directory_contents(
+        Path::new("/home/alice/zcomp"),
+        vec![PathBuf::from("/home/alice/zcomp/_b")],
+    );
+    assert!(warned(&scan_with(&fs, UNKNOWN, &known)));
     // Keys a first line binds the function to are zsh's own, in its own
     // function, or a doubt: compinit binds a key that has no widget, which a
     // file may make Space or Enter (`bindkey -r ' '`).
-    let rc = "fpath=(~/zcomp $fpath)\nautoload -Uz compinit && compinit -D\n";
+    let rc = format!("fpath=({PROFILE_COMP} $fpath)\nautoload -Uz compinit && compinit -D\n");
     for (name, line) in [
         ("_b", "#compdef -k complete-word \\C-xt"),
         ("_complete_tag", "#compdef -k complete-word \\C-xa"),
@@ -1166,29 +1211,29 @@ fn compinit_s_marks_by_the_first_line_of_a_completion_function_are_read() {
     ] {
         let fs = MockFilesystem::new();
         nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
-        let path = format!("/home/alice/zcomp/{name}");
-        seed(&fs, "/home/alice/.zshrc", rc);
+        let path = format!("{PROFILE_COMP}/{name}");
+        seed(&fs, "/home/alice/.zshrc", &rc);
         seed(&fs, &path, &format!("{line}\n:\n"));
-        fs.mock_set_directory_contents(Path::new("/home/alice/zcomp"), vec![PathBuf::from(&path)]);
-        let known = install(&fs, &[]);
+        fs.mock_set_directory_contents(Path::new(PROFILE_COMP), vec![PathBuf::from(&path)]);
+        let known = profiled(&fs);
         assert!(warned(&scan_with(&fs, UNKNOWN, &known)), "{name}: {line}");
     }
     let fs = MockFilesystem::new();
     nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
-    let known = install(&fs, &[]);
-    seed(&fs, "/home/alice/.zshrc", rc);
+    let known = profiled(&fs);
+    seed(&fs, "/home/alice/.zshrc", &rc);
     seed(
         &fs,
-        "/home/alice/zcomp/_complete_tag",
+        &format!("{PROFILE_COMP}/_complete_tag"),
         "#compdef -k complete-word \\C-xt\n:\n",
     );
     fs.mock_set_directory_contents(
-        Path::new("/home/alice/zcomp"),
-        vec![PathBuf::from("/home/alice/zcomp/_complete_tag")],
+        Path::new(PROFILE_COMP),
+        vec![PathBuf::from(format!("{PROFILE_COMP}/_complete_tag"))],
     );
     assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default());
     // A dump file that marks with `-w` is read as code, a doubt.
-    seed(&fs, "/home/alice/zcomp/_b", "#autoload\n:\n");
+    seed(&fs, &format!("{PROFILE_COMP}/_b"), "#autoload\n:\n");
     seed(
         &fs,
         "/home/alice/.zcompdump",
