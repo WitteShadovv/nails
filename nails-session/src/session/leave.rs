@@ -13,7 +13,13 @@
 //! and its mapping closes on its own, because it was marked for deferred
 //! removal: nothing of the hidden session survives the switch. `--poweroff`
 //! powers off instead, and needs no way back.
+//!
+//! Before it prepares anything it refuses while a program blocks shutdown,
+//! and a return to the decoy unless the hidden session's PID 1 still holds the
+//! runtime guards the entry installed ([`may_leave`]): the hidden system's own
+//! configuration, or a change in the session, can undo one.
 
+use super::guards::{self, GuardHost};
 use super::layout::Paths;
 use crate::error::{NailsError, Result};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
@@ -23,8 +29,9 @@ use nails_teardown::whole_root::{disk_guard, logind, network, ret, tools};
 use rustix::mount::UnmountFlags;
 use std::path::{Path, PathBuf};
 
-/// Enqueues a systemd target: tests replace it.
-pub trait TargetHost {
+/// Enqueues a systemd target: tests replace it. It asks PID 1 whether the
+/// runtime guards hold as a [`GuardHost`].
+pub trait TargetHost: GuardHost {
     /// Enqueue `target`. An error means it is known not to have been taken:
     /// nothing is left that would start it later.
     fn start_target(&self, target: &str) -> Result<()>;
@@ -115,6 +122,26 @@ impl RealTargetHost {
                 NailsError::InvalidState(format!("the soft-reboot was not started: {why}")),
             ),
         }
+    }
+}
+
+/// PID 1, asked with the plan's `systemctl`, as the switch is enqueued: in
+/// the hidden session the hidden session's own.
+impl GuardHost for RealTargetHost {
+    fn unit_stop_commands(&self, unit: &str) -> Result<String> {
+        guards::show_property(self.systemctl.as_deref(), Some(unit), "ExecStop")
+    }
+
+    fn job_timeout_action(&self, unit: &str) -> Result<String> {
+        guards::show_property(self.systemctl.as_deref(), Some(unit), "JobTimeoutAction")
+    }
+
+    fn job_timeout(&self, unit: &str) -> Result<String> {
+        guards::show_property(self.systemctl.as_deref(), Some(unit), "JobTimeoutUSec")
+    }
+
+    fn service_watchdogs(&self) -> Result<String> {
+        guards::show_property(self.systemctl.as_deref(), None, "ServiceWatchdogs")
     }
 }
 
@@ -333,6 +360,21 @@ pub fn way_back_foresees(root: &Path, decoy_system: Option<&Path>) -> network::F
     network::foresee(&places, &tools, record.as_deref())
 }
 
+/// Whether the way back `to` may start now: not while a program blocks
+/// shutdown ([`TargetHost::may_switch`]), and a return to the decoy not
+/// unless every runtime guard holds in the hidden session's PID 1
+/// ([`guards::check_way_back`]), so that a return that hangs until its job
+/// timeout powers off rather than going on by force without its last step. A
+/// power-off goes through no soft-reboot, and `poweroff.target` powers off by
+/// force at its own job timeout.
+pub fn may_leave(to: LeaveTo, host: &dyn TargetHost) -> Result<()> {
+    host.may_switch()?;
+    if to == LeaveTo::Decoy {
+        guards::check_way_back(host)?;
+    }
+    Ok(())
+}
+
 /// Prepare the way back and enqueue the soft-reboot (or power off).
 pub fn leave(
     paths: &Paths,
@@ -342,7 +384,7 @@ pub fn leave(
 ) -> Result<LeaveReport> {
     // Before anything is prepared for the switch, so a refusal leaves the
     // session as it was.
-    host.may_switch()?;
+    may_leave(to, host)?;
     if to == LeaveTo::Poweroff {
         host.start_target("poweroff.target")?;
         return Ok(LeaveReport::default());
@@ -581,6 +623,140 @@ mod tests {
         }
         assert!(session.armed.is_none());
         assert!(calls(dir.path()).is_empty());
+    }
+
+    /// The real host asks PID 1 with its `systemctl` for the guarded units'
+    /// loaded properties and for PID 1's own, and cannot ask without one,
+    /// which refuses the return.
+    #[test]
+    fn the_real_host_asks_pid_1_about_the_guards_with_its_systemctl() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().display();
+        let host = real_host(dir.path(), "exit 0");
+        nails_base::test_support::write_executable(
+            host.systemctl.as_deref().unwrap(),
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {d}/calls\n\
+                 case \"$*\" in\n\
+                 'show --property=JobTimeoutAction --value soft-reboot.target') \
+                 echo poweroff-force ;;\n\
+                 'show --property=JobTimeoutUSec --value soft-reboot.target') echo 30min ;;\n\
+                 'show --property=ServiceWatchdogs --value') echo yes ;;\n\
+                 esac\nexit 0\n"
+            ),
+            0o755,
+        );
+        guards::check_way_back(&host).unwrap();
+        assert_eq!(
+            calls(dir.path()),
+            [
+                "show --property=ExecStop --value blk-availability.service",
+                "show --property=JobTimeoutAction --value soft-reboot.target",
+                "show --property=ServiceWatchdogs --value",
+                "show --property=JobTimeoutUSec --value soft-reboot.target",
+            ]
+        );
+        let without = RealTargetHost {
+            systemctl: None,
+            ..host
+        };
+        let error = guards::check_way_back(&without).unwrap_err();
+        let NailsError::PreFlightCheckFailed(failures) = &error else {
+            panic!("{error}")
+        };
+        assert_eq!(failures[0].0, "stop-guard");
+        assert!(failures[0].1.contains("systemctl not found"), "{error}");
+    }
+
+    /// A host whose PID 1 reports `unheld`, a (property, value), in place of
+    /// what its guard sets, and holds every other guard; it records the
+    /// targets it is asked to start, and starts none, a power-off least of
+    /// all.
+    #[derive(Default)]
+    struct Guarded {
+        unheld: Option<(&'static str, &'static str)>,
+        started: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Guarded {
+        fn answer(&self, property: &str, held: &str) -> Result<String> {
+            Ok(match self.unheld {
+                Some((unheld, value)) if unheld == property => value,
+                _ => held,
+            }
+            .to_string())
+        }
+    }
+
+    impl GuardHost for Guarded {
+        fn unit_stop_commands(&self, _: &str) -> Result<String> {
+            self.answer("ExecStop", "")
+        }
+        fn job_timeout_action(&self, _: &str) -> Result<String> {
+            self.answer("JobTimeoutAction", "poweroff-force")
+        }
+        fn job_timeout(&self, _: &str) -> Result<String> {
+            self.answer("JobTimeoutUSec", "30min")
+        }
+        fn service_watchdogs(&self) -> Result<String> {
+            self.answer("ServiceWatchdogs", "yes")
+        }
+    }
+
+    impl TargetHost for Guarded {
+        fn start_target(&self, target: &str) -> Result<()> {
+            self.started.borrow_mut().push(target.to_string());
+            Ok(())
+        }
+    }
+
+    /// A return goes on only when every runtime guard holds in the hidden
+    /// session's PID 1. Otherwise it is refused before anything is prepared,
+    /// with the plan unarmed, nothing mounted and nothing enqueued, and the
+    /// refusal names the power-off and the emergency. A power-off asks about
+    /// none of them and goes on.
+    #[test]
+    fn a_return_is_refused_before_anything_is_prepared_unless_the_guards_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: dir.path().join("root"),
+            run: dir.path().join("run"),
+        };
+        assert!(may_leave(LeaveTo::Decoy, &Guarded::default()).is_ok());
+        for (property, value, check) in [
+            (
+                "ExecStop",
+                "{ path=/usr/sbin/blkdeactivate ; argv[]=/usr/sbin/blkdeactivate -u ; }",
+                "stop-guard",
+            ),
+            ("JobTimeoutAction", "soft-reboot-force", "switch-timeout"),
+            ("ServiceWatchdogs", "no", "switch-timeout"),
+            ("JobTimeoutUSec", "infinity", "switch-timeout"),
+        ] {
+            let host = Guarded {
+                unheld: Some((property, value)),
+                ..Guarded::default()
+            };
+            let mut session = plan();
+            let error = leave(&paths, &mut session, LeaveTo::Decoy, &host).unwrap_err();
+            let NailsError::PreFlightCheckFailed(failures) = &error else {
+                panic!("{property}: {error}")
+            };
+            assert_eq!(failures.len(), 1, "{property}: {error}");
+            assert_eq!(failures[0].0, check, "{property}: {error}");
+            assert!(failures[0].1.contains(value), "{property}: {error}");
+            let fix = failures[0].2.as_deref().unwrap_or_default();
+            assert!(
+                fix.contains(" deactivate --poweroff`, which powers off, or with `sudo ")
+                    && fix.ends_with(" emergency`"),
+                "{property}: {fix}"
+            );
+            assert!(session.armed.is_none(), "{property}");
+            assert!(host.started.borrow().is_empty(), "{property}");
+            assert!(!paths.nextroot().exists(), "{property}");
+            leave(&paths, &mut session, LeaveTo::Poweroff, &host).unwrap();
+            assert_eq!(*host.started.borrow(), ["poweroff.target"], "{property}");
+        }
     }
 
     #[test]

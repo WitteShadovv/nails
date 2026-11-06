@@ -41,6 +41,28 @@ fn refused() -> NailsError {
     NailsError::InvalidState("systemctl could not enqueue soft-reboot.target".to_string())
 }
 
+/// The refusal of a return whose hidden PID 1 has service watchdogs off, so
+/// that its job timeout would not power off, as the session layer gives it.
+fn unguarded() -> NailsError {
+    use nails_core::session::GuardHost;
+    struct WatchdogsOff;
+    impl GuardHost for WatchdogsOff {
+        fn unit_stop_commands(&self, _: &str) -> nails_core::Result<String> {
+            Ok(String::new())
+        }
+        fn job_timeout_action(&self, _: &str) -> nails_core::Result<String> {
+            Ok("poweroff-force".to_string())
+        }
+        fn job_timeout(&self, _: &str) -> nails_core::Result<String> {
+            Ok("30min".to_string())
+        }
+        fn service_watchdogs(&self) -> nails_core::Result<String> {
+            Ok("no".to_string())
+        }
+    }
+    nails_core::session::guards::check_way_back(&WatchdogsOff).unwrap_err()
+}
+
 /// The refusal of a way back while a program blocks shutdown.
 fn blocked() -> NailsError {
     NailsError::InvalidState(
@@ -125,9 +147,11 @@ fn subprocess_deactivate_entrypoint() {
         drop(root);
         crate::cli::chokepoint::exit_process(status.code());
     }
-    if let Some(settings) = match case.as_str() {
-        "human-blocked" => Some(ascii),
-        "json-blocked" => Some(json()),
+    if let Some((settings, refusal)) = match case.as_str() {
+        "human-blocked" => Some((ascii, blocked())),
+        "json-blocked" => Some((json(), blocked())),
+        "human-unguarded" => Some((ascii, unguarded())),
+        "json-unguarded" => Some((json(), unguarded())),
         _ => None,
     } {
         let status = super::leave_and_report(
@@ -135,7 +159,7 @@ fn subprocess_deactivate_entrypoint() {
             LeaveTo::Decoy,
             Vec::new(),
             None,
-            Err(blocked()),
+            Err(refusal),
             |_| {
                 crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
                 Ok(LeaveReport::default())
@@ -556,6 +580,48 @@ fn a_blocked_way_back_is_refused_before_its_banner() {
     let value = envelope("deactivate", &lines[0]);
     assert_eq!(value["ok"], false, "{value}");
     assert_eq!(value["error"]["code"], "invalid_state", "{value}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
+/// A return whose guards do not hold in the hidden session's PID 1 is refused
+/// before anything is printed, as a blocked one is: a person reads why and
+/// the two other ways to end the session, and under `--json` it is the one
+/// envelope, with the power-off as the next step.
+#[test]
+fn an_unguarded_way_back_is_refused_before_its_banner() {
+    use nails_core::next_step::{NextStep, sudo_line};
+    let output = run_subprocess("human-unguarded");
+    assert!(stdout_lines(&output).is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert!(
+        lines[0].starts_with(
+            "error: the way back is refused: PID 1 has service watchdogs turned off \
+             (ServiceWatchdogs=no), and then takes no action at a job timeout"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(
+        lines[1],
+        format!(
+            "  End the session with `{}`, which powers off, or with `{}`",
+            sudo_line(NextStep::DeactivatePoweroff),
+            sudo_line(NextStep::Emergency)
+        )
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    let output = run_subprocess("json-unguarded");
+    let lines = stdout_lines(&output);
+    assert_eq!(lines.len(), 1, "one envelope: {output:?}");
+    let value = envelope("deactivate", &lines[0]);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "not_ready", "{value}");
+    assert_eq!(
+        value["error"]["next"]["command"], "deactivate --poweroff",
+        "{value}"
+    );
     assert_eq!(output.status.code(), Some(1), "{output:?}");
 }
 

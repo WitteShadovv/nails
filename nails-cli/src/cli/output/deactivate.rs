@@ -79,6 +79,27 @@ pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
             format!("unmount failed: {}: {reason}", path.display()),
         )
         .with_hint("check if the overlay is in use and retry"),
+        // The hidden session's PID 1 does not hold a runtime guard the switch
+        // needs, or could not be asked: refused before anything was prepared.
+        // The fix names the power-off and the emergency.
+        NailsError::PreFlightCheckFailed(failures) => {
+            let reasons: Vec<&str> = failures
+                .iter()
+                .map(|(_, reason, _)| reason.as_str())
+                .collect();
+            let fix = failures
+                .iter()
+                .find_map(|(_, _, fix)| fix.clone())
+                .unwrap_or_default();
+            ErrorBody::new(
+                "not_ready",
+                format!("the way back is refused: {}", reasons.join("; ")),
+            )
+            .with_hint(fix)
+            .with_next(NextStep::new(
+                nails_core::next_step::NextStep::DeactivatePoweroff.command(),
+            ))
+        }
         // A plain emergency returns to the decoy only where it can prepare the
         // return, as this way back could not: otherwise it powers off.
         NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone())

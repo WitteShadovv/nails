@@ -514,9 +514,16 @@ device-mapper stack for deferred removal, records the state as inactive and
 soft-reboots, through logind as activation does. A program that holds a
 shutdown block inhibitor in the session, or a logind that does not answer
 whether one does, makes it refuse before it starts, with the session running
-on (`emergency` does not wait for it). When the soft-reboot is not started
-after all (logind refuses or drops it), the session runs on as well, but the
-disks it unmounted for the switch stay unmounted: `deactivate` names them. A device it cannot mark (the hidden session removed `dmsetup`,
+on (`emergency` does not wait for it). So does a hidden session's PID 1 that
+no longer holds the runtime guards activation installed, which the hidden
+system's own configuration or a change in the session can undo: `deactivate`
+asks it about them before it prepares anything, as activation asks the
+decoy's (the stop guards, and a timeout that powers the machine off, with
+service watchdogs on and a timeout set), and its refusal names
+`deactivate --poweroff` and `emergency`, neither of which asks. When the
+soft-reboot is not started after all (logind refuses or drops it), the
+session runs on as well, but the disks it unmounted for the switch stay
+unmounted: `deactivate` names them. A device it cannot mark (the hidden session removed `dmsetup`,
 say) stays open after the switch, its key in RAM, until power-off:
 `deactivate` and `emergency` name it once the soft-reboot is enqueued
 (`backend_left_open` under `--json`). The orderly shutdown stops every hidden
@@ -2043,8 +2050,10 @@ where nothing would happen by itself: when service watchdogs are turned off
 (`systemd.service_watchdogs=0` on the kernel command line, or
 `systemctl service-watchdogs no`), as systemd then takes no action at a job
 timeout, and when a drop-in sets `JobTimeoutSec=infinity` for
-`soft-reboot.target`. A drop-in with another value moves the 30 minutes. Once
-the machine is off, the decoy comes up as after a power loss (see below).
+`soft-reboot.target`. `deactivate` refuses the same in the hidden session; a
+plain `emergency` does not ask. A drop-in with another value moves the 30
+minutes. Once the machine is off, the decoy comes up as after a power loss
+(see below).
 
 systemd fixed that issue in 259.10, 260.6, 261.4 and 262.1. The releases before
 them in each series have it (259 to 259.9, 260 to 260.5, 261 to 261.3 and 262).
