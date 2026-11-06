@@ -160,6 +160,26 @@ fn probe_fails_when_the_hidden_root_is_gone() {
     );
 }
 
+/// A hidden root that cannot be looked up is a failed backend, never a
+/// healthy one: the probe gives no answer the backend did not give.
+#[test]
+fn probe_fails_when_the_hidden_root_cannot_be_looked_up() {
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::Other,
+    ] {
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        mounted(&fs, "/home", true);
+        fs.mock_set_lookup_error("/mnt/data", kind);
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home"])),
+            BackendProbe::Failed,
+            "{kind:?}"
+        );
+    }
+}
+
 #[test]
 fn probe_fails_when_the_backend_errors_in_place() {
     // A dm error target (or yanked disk) leaves the mount point and inode
