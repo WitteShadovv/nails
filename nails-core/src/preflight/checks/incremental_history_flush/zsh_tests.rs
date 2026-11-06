@@ -410,6 +410,59 @@ fn a_parameter_whose_name_starts_like_home_is_another_one() {
 }
 
 #[test]
+fn a_modifier_or_a_subscript_on_home_or_zdotdir_makes_a_path_the_check_cannot_follow() {
+    // zsh 5.9.2 applies the modifier to the value (`$HOME:a` is the home),
+    // so it sources ~/.zlocal, which turns the option on.
+    for line in [
+        "source $HOME:a/.zlocal",
+        "source $HOME:A/.zlocal",
+        ". $HOME:a/.zlocal",
+        "source $HOME:h/alice/.zlocal",
+        "source $HOME[1,-1]/.zlocal",
+        "source $XDG_CONFIG_HOME:h/.zlocal",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        seed(&fs, "/home/alice/.zlocal", "setopt incappendhistory\n");
+        seed(&fs, "/home/alice:a/.zlocal", "HISTSIZE=1\n");
+        let path = line
+            .split_once(' ')
+            .map(|(_, path)| path)
+            .unwrap_or_default();
+        assert_eq!(
+            scan(&fs, NOT_LOGIN).doubts,
+            [format!(
+                "it cannot follow the file /home/alice/.zshrc sources as `{path}`"
+            )],
+            "{line}"
+        );
+    }
+    // A ZDOTDIR and a function file named so.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "ZDOTDIR=$HOME:a/.config/zsh\nautoload -Uz $HOME:a/zf/sudo\n",
+    );
+    let doubts = scan(&fs, NOT_LOGIN).doubts;
+    for doubt in [
+        "it cannot follow the ZDOTDIR that /home/alice/.zshenv sets (`$HOME:a/.config/zsh`)",
+        "it cannot follow the function file that /home/alice/.zshenv autoloads as \
+         `$HOME:a/zf/sudo`",
+    ] {
+        assert!(doubts.iter().any(|found| found == doubt), "{doubts:?}");
+    }
+    // A `$HOME` that a `/` follows is read as before.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "source $HOME/.zlocal\n");
+    seed(&fs, "/home/alice/.zlocal", "setopt incappendhistory\n");
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zlocal names INC_APPEND_HISTORY"]
+    );
+}
+
+#[test]
 fn a_zdotdir_or_a_source_the_check_cannot_read_is_a_doubt() {
     for (line, doubt) in [
         (
