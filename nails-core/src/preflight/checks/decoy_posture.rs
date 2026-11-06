@@ -209,6 +209,17 @@ impl DecoyPersistenceCheck {
         Self::kdump_finding(fs, Path::new("/")).is_some()
     }
 
+    /// Read-only probe: whether the decoy's unattended-upgrades installs at
+    /// shutdown, so that an activation runs that install on the decoy disk,
+    /// or NAILS cannot tell that it does not (which the pre-flight check
+    /// refuses as if it did). Shared with `status`. Independent of the
+    /// operator override, and performs no writes.
+    pub fn decoy_installs_at_shutdown<F: Filesystem>(fs: &F) -> bool {
+        install_on_shutdown::finding(fs, Path::new("/"), None)
+            .blocker
+            .is_some()
+    }
+
     /// The kdump blocker, if kdump is armed or its state cannot be told.
     ///
     /// A loaded crash kernel dumps memory to the decoy disk on panic. Ubuntu

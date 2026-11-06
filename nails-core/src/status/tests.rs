@@ -382,6 +382,60 @@ fn an_armed_kdump_is_reported_on_the_decoy_and_never_in_the_session() {
 }
 
 #[test]
+fn an_install_at_shutdown_is_reported_on_the_decoy_and_never_in_the_session() {
+    use std::path::Path;
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = SessionView::Hidden(Box::new(plan(dir.path())));
+    // The decoy's helper runs, started after every file of the mock
+    // changed, and a file of apt's configuration turns the setting on, or
+    // turns nothing on.
+    let installs = |setting: &str, view: &SessionView| {
+        let fs = crate::filesystem::MockFilesystem::new();
+        let marker = "/run/systemd/units/invocation:unattended-upgrades.service";
+        fs.create_symlink(
+            Path::new("8028a17235414b4e80c950b24a7487d7"),
+            Path::new(marker),
+        )
+        .unwrap();
+        fs.mock_set_change_time(
+            marker,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000),
+        );
+        fs.mock_add_file(
+            "/sys/fs/cgroup/system.slice/unattended-upgrades.service/cgroup.procs",
+            "412\n",
+        );
+        fs.mock_add_file(
+            "/proc/412/stat",
+            "412 (unattended-upgr) S 1 412 412 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 2 0 360000 0 0\n",
+        );
+        fs.mock_set_file_bytes("/proc/412/environ", b"LANG=C.UTF-8\0");
+        fs.mock_add_file("/proc/stat", "btime 1999996400\n");
+        fs.mock_set_path_type("/etc/apt/apt.conf.d", crate::filesystem::PathKind::Dir);
+        fs.mock_add_file("/etc/apt/apt.conf.d/99local", setting);
+        fs.mock_set_directory_contents(
+            Path::new("/etc/apt/apt.conf.d"),
+            vec![PathBuf::from("/etc/apt/apt.conf.d/99local")],
+        );
+        command_on(fs, dir.path())
+            .report(view, &[], Utc::now())
+            .unwrap()
+            .decoy_installs_at_shutdown
+    };
+    let on = "Unattended-Upgrade::InstallOnShutdown \"true\";\n";
+    let off = "Unattended-Upgrade::InstallOnShutdown \"false\";\n";
+    assert!(installs(on, &SessionView::Decoy), "the setting on");
+    assert!(!installs(off, &SessionView::Decoy), "the setting off");
+    // NAILS cannot tell: a file apt refuses.
+    assert!(
+        installs("Foo \"x\"\n", &SessionView::Decoy),
+        "a file apt refuses"
+    );
+    // In the session the field is about a decoy that is not running.
+    assert!(!installs(on, &hidden));
+}
+
+#[test]
 fn an_entry_the_soft_reboot_refused_is_named_with_its_reason_and_time() {
     // The entry recorded Active before the soft-reboot, the transition refused
     // the switch and kept why on the hidden volume: the record is explained by
