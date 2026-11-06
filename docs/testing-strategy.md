@@ -155,10 +155,13 @@ it, goes on by force into the decoy, which comes up with the session's files
 still in `/run`. With a plain `poweroff` set for the timeout instead, PID 1
 skips that action during the switch ("Shutdown is already active"), and a
 switch held up for 90 seconds goes on only when the hold ends: why the drop-in
-powers off by force. In the same test activation refuses with service
-watchdogs off and with no timeout, and `deactivate` refuses with service
-watchdogs off, with no timeout and without the drop-in, the session going on
-each time.
+powers off by force. In the same test activation refuses with no timeout and
+goes on after a `systemctl service-watchdogs no`, which its own reload undoes,
+and `deactivate` refuses with service watchdogs off, with no timeout and
+without the drop-in, the session going on each time. Activation's refusal with
+service watchdogs off, which only `systemd.service_watchdogs=0` on the kernel
+command line leaves after its reload, is a unit test and a real-kernel test:
+in a VM it would take a node booted with that parameter.
 
 ### (d) Contract tests: one body, mock and real
 
