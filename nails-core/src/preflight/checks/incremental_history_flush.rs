@@ -240,8 +240,10 @@ impl InspectedShell {
 /// loader is set, kept as [`zsh::LOADER`] without its value. `None` when one
 /// of them holds what is no UTF-8, a path the check cannot name as zsh reads
 /// it; the value of a prompt, `MAILPATH`, `NULLCMD` or `READNULLCMD`, which
-/// the check reads only for an expansion in it or not at all, is kept with
-/// what is no UTF-8 replaced ([`zsh::lossy`]).
+/// the check reads only for an expansion in it or not at all, and of a
+/// parameter zsh reads as arithmetic each time it uses it (`TMOUT`), which
+/// it reads only for whether it is a number, is kept with what is no UTF-8
+/// replaced ([`zsh::lossy`]).
 fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
     let mut found: Vec<(String, String)> = Vec::new();
     for entry in bytes.split(|byte| *byte == 0) {

@@ -1316,6 +1316,17 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
                 .to_vec()
         )
     );
+    // A parameter zsh reads as arithmetic each time it uses it is kept, what
+    // is no UTF-8 in it replaced, as the check reads it only for whether it
+    // is a number.
+    assert_eq!(
+        environment(b"TMOUT=9\xff\0REPORTTIME=5\0"),
+        Some(
+            [("TMOUT", "9\u{fffd}"), ("REPORTTIME", "5")]
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .to_vec()
+        )
+    );
     assert_eq!(environment(b"OLD_PATH=/x\0").map(|env| env.len()), Some(0));
     // The prompts zsh takes from its environment are kept, and a prompt's
     // or MAILPATH's value that is no UTF-8 with it replaced, as the check

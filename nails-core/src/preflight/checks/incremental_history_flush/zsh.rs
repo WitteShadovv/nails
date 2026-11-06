@@ -836,6 +836,17 @@ pub(super) fn zsh<F: Filesystem>(
                 .to_string(),
         );
     }
+    for (name, _) in install
+        .env
+        .iter()
+        .flat_map(|env| &env.numbers)
+        .filter(|(_, value)| !arith::plain_number(value))
+    {
+        scan.doubts.push(format!(
+            "it cannot tell what code `{name}` in the shell's environment runs, which zsh reads \
+             as arithmetic each time it uses it"
+        ));
+    }
     for name in install.env.iter().flat_map(|env| &env.nullcmds) {
         scan.doubts.push(format!(
             "it cannot tell what code the command that {name} in the shell's environment names \

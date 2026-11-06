@@ -22,6 +22,7 @@
 //! of the code as the lexer reads them, which a line that starts with `#`
 //! inside a quote does not hide. What the most of them name counts.
 
+use super::arith::READ_AS_NUMBER;
 use super::lexer::{Token, lex};
 use super::walk::{HOOKS, PROMPTS, option};
 
@@ -54,6 +55,9 @@ pub(super) struct Named {
     /// A prompt (`PS1`, `PROMPT`, ...) where it is not read
     /// ([`prompt_writes`]).
     pub(super) prompts: usize,
+    /// A parameter zsh reads as arithmetic each time it uses it (`TMOUT`)
+    /// where it is not read ([`number_writes`]).
+    pub(super) numbers: usize,
     /// A parameter that holds aliases (`aliases`, `galiases`) where it is
     /// not read ([`alias_writes`]).
     pub(super) alias_params: usize,
@@ -82,6 +86,7 @@ impl Named {
             indirects: self.indirects.max(other.indirects),
             hooks: self.hooks.max(other.hooks),
             prompts: self.prompts.max(other.prompts),
+            numbers: self.numbers.max(other.numbers),
             alias_params: self.alias_params.max(other.alias_params),
             function_params: self.function_params.max(other.function_params),
             arith: self.arith.max(other.arith),
@@ -105,6 +110,7 @@ impl Named {
         self.indirects += indirect_assignments(piece);
         self.hooks += hook_writes(piece);
         self.prompts += prompt_writes(piece);
+        self.numbers += number_writes(piece);
         self.arith += piece.matches("((").count() + piece.matches("$[").count();
         let alone = matches!(
             piece,
@@ -1017,6 +1023,13 @@ fn parameter_writes(text: &str, name: &str) -> usize {
                 && is_write(text, at, found.len())
         })
         .count()
+}
+
+/// How often `text` names a parameter zsh reads as arithmetic each time it
+/// uses it ([`READ_AS_NUMBER`]: `TMOUT`, `PERIOD`) otherwise than to read it
+/// ([`writes`]).
+pub(super) fn number_writes(text: &str) -> usize {
+    READ_AS_NUMBER.iter().map(|name| writes(text, name)).sum()
 }
 
 /// How often `text` names `fpath` or `FPATH` otherwise than to read it

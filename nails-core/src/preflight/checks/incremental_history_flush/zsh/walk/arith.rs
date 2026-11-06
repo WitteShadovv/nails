@@ -16,6 +16,7 @@
 //! ([`super::super::arith`]). The `((` and `$[` the tokens' texts hold are
 //! counted, so that what the lines hold beyond them is a doubt.
 
+use super::super::arith::READ_AS_NUMBER;
 use super::super::lexer::{Token, Word};
 use super::command::assigned;
 use super::names::{option_arguments, targets};
@@ -508,6 +509,7 @@ impl Walker<'_> {
                         continue;
                     }
                     let name = assigned(&arg.text);
+                    self.numbers += usize::from(READ_AS_NUMBER.contains(&name) && !arg.expands);
                     self.events.push(Event::Unset(if arg.expands {
                         String::new()
                     } else {

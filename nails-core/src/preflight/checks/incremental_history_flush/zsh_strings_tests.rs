@@ -545,3 +545,80 @@ fn an_alias_whose_value_leaves_a_definition_or_a_structure_open_is_a_doubt() {
         assert_eq!(read(rc), Scan::default(), "{rc}");
     }
 }
+
+#[test]
+fn a_parameter_zsh_reads_as_arithmetic_each_time_it_uses_it_holds_a_number() {
+    // zsh 5.9.2 runs the command substitution in the subscript each time it
+    // reads TMOUT at a prompt, PERIOD before one, REPORTTIME after a command
+    // and the rest where it uses them, which may write each line typed so
+    // far (`fc -W`) to the history file.
+    for set in [
+        "TMOUT='pipestatus[$(logit)1]'",
+        "export TMOUT='pipestatus[$(logit)1]'",
+        "typeset -g TMOUT=x",
+        "TMOUT=$v",
+        "TMOUT+=x",
+        "TMOUT[1]=a",
+        "read TMOUT < ~/.t",
+        "print -v TMOUT x",
+        ": ${TMOUT::=x}",
+        "f() { local REPORTTIME=x; }",
+        "PERIOD=x",
+        "BAUD=x",
+        "REPORTTIME=x",
+        "REPORTMEMORY=x",
+        "DIRSTACKSIZE=x",
+        "MENUSCROLL=x",
+        "LOGCHECK=x",
+        "ZFTP_TMOUT=x",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("logit() {{ fc -W }}\n{set}\n"),
+        );
+        let doubts = scan(&fs, UNKNOWN).doubts;
+        assert!(
+            doubts
+                .iter()
+                .any(|doubt| doubt.contains("as arithmetic each time it uses")),
+            "{set}: {doubts:?}"
+        );
+    }
+    // A number, declared, made read-only, exported or unset, is none, as a
+    // hardened /etc/profile sets TMOUT.
+    for rc in [
+        "TMOUT=900\nreadonly TMOUT\nexport TMOUT\n",
+        "typeset -i TMOUT=900\n",
+        "REPORTTIME=10\nPERIOD=3600\nDIRSTACKSIZE=20\n",
+        "unset TMOUT\n",
+        "TMOUT=\n",
+        "MENUSCROLL=-2\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+    // One the shell's environment holds is read as it is, unless a file
+    // sets it.
+    for (value, doubts) in [("pipestatus[$(logit)1]", true), ("900", false)] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", "HISTSIZE=100\n");
+        let install = Install::of(&fs, None, Some(&[("TMOUT".to_string(), value.to_string())]));
+        let found = zsh(&fs, &[PathBuf::from(HOME)], UNKNOWN, &install).doubts;
+        assert_eq!(
+            found,
+            if doubts {
+                vec![
+                    "it cannot tell what code `TMOUT` in the shell's environment runs, which zsh \
+                     reads as arithmetic each time it uses it"
+                        .to_string(),
+                ]
+            } else {
+                Vec::new()
+            },
+            "{value}"
+        );
+    }
+}

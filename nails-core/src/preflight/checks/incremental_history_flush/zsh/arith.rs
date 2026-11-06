@@ -45,6 +45,34 @@ pub(super) const NUMERIC: &[&str] = &[
     "ZSH_SUBSHELL",
 ];
 
+/// The parameters zsh keeps a string in and reads as arithmetic each time
+/// it uses them, as zsh 5.9 and its modules do (`getiparam`, `mathevali`):
+/// the time it waits at a prompt and while it reads a line (`TMOUT`), between
+/// two `periodic` hooks, the speed it draws at, the time and memory past
+/// which it reports a command, how many directories `cd` keeps, how far menu
+/// selection scrolls, and the times of `zsh/watch` and `zsh/zftp`. A value
+/// other than a number, as a file sets it or the shell's environment holds it,
+/// may run code each time (`TMOUT='a[$(cmd)]'`).
+pub(super) const READ_AS_NUMBER: [&str; 9] = [
+    "TMOUT",
+    "PERIOD",
+    "BAUD",
+    "REPORTTIME",
+    "REPORTMEMORY",
+    "DIRSTACKSIZE",
+    "MENUSCROLL",
+    "LOGCHECK",
+    "ZFTP_TMOUT",
+];
+
+/// Whether `value`, one a parameter of [`READ_AS_NUMBER`] holds, is a
+/// number zsh reads as arithmetic without running anything: digits, a sign
+/// before them, or nothing.
+pub(super) fn plain_number(value: &str) -> bool {
+    let digits = value.strip_prefix(['-', '+']).unwrap_or(value);
+    value.is_empty() || (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// The arrays of zsh and its modules whose keys are strings: a subscript of
 /// one is no arithmetic.
 const KEYED: &[&str] = &[
@@ -443,11 +471,27 @@ impl<F: Filesystem> Reader<'_, F> {
             match &kind {
                 Arith::Keyed(name) if self.keyed(name) => continue,
                 Arith::Value(name)
-                    if !NUMERIC.contains(&name.as_str()) && !self.integers.contains(name) =>
+                    if !NUMERIC.contains(&name.as_str())
+                        && !READ_AS_NUMBER.contains(&name.as_str())
+                        && !self.integers.contains(name) =>
                 {
                     continue;
                 }
                 _ => {}
+            }
+            if let Arith::Value(name) = &kind
+                && READ_AS_NUMBER.contains(&name.as_str())
+            {
+                // zsh reads it as arithmetic each time it uses it, past what
+                // the check reads.
+                if !plain_number(expr.trim()) {
+                    self.doubt(format!(
+                        "it cannot tell what code the value `{}` that {place} gives {name} runs, \
+                         as zsh reads it as arithmetic each time it uses {name}",
+                        expr.trim()
+                    ));
+                }
+                continue;
             }
             if let Some(why) = self.judge(&expr, hidden) {
                 self.doubt(format!(
