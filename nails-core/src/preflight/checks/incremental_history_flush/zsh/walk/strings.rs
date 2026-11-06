@@ -12,6 +12,7 @@
 
 use super::super::backstop::{FC_WRITES, KEPT, braces, history_path, is_fc_flag};
 use super::super::lexer::{Token, Word, lex};
+use super::styles::{completion_context, style_doubt};
 use super::{Event, Walker, walk_text_in};
 
 /// The commands that take the words after them as options, code, names or
@@ -504,12 +505,25 @@ impl Walker<'_> {
     /// `-e` the code that makes them, which may name any
     /// ([`Event::Completes`]). The code a `command` style gives, which
     /// `_call_program` runs past a `-` it starts with, is read as a hook's,
-    /// and one with an expansion is a doubt.
+    /// and one with an expansion is a doubt. Where the pattern may match a
+    /// context of zsh's completion system ([`completion_context`]), a value
+    /// that may make zsh's own completion functions run code, and any style
+    /// whose uses the check has not read, is a doubt where the files run the
+    /// stock `compinit` ([`style_doubt`], [`Event::Style`]).
     fn completion_style(&mut self, args: &[Word], at: usize, unconditional: bool) {
         let eval = args.first().is_some_and(|flag| flag.text == "-e");
         let style = args[at].text.as_str();
         let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
         let what = format!("zstyle {}", words.join(" "));
+        if completion_context(&args[at - 1])
+            && let Some(how) = style_doubt(style, &args[at + 1..], eval)
+        {
+            self.events.push(Event::Style(format!(
+                "it cannot tell what code zsh's own completion functions run as you complete a \
+                 word with `{what}` in {}, as {how}",
+                self.place
+            )));
+        }
         for value in &args[at + 1..] {
             if FUNCTION_STYLES.contains(&style) || (eval && style == "command") {
                 let function = if eval {

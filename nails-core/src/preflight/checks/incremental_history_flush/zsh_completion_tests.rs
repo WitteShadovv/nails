@@ -351,3 +351,112 @@ fn a_dump_file_whose_completion_is_code_is_read_as_code() {
         Scan::default()
     );
 }
+
+#[test]
+fn a_completion_style_whose_value_zsh_s_own_code_may_run_is_a_doubt() {
+    // zsh 5.9.2 runs the backquote in `_files`'s `eval` of file-patterns,
+    // the subscript in `_main_complete`'s arithmetic on menu's number,
+    // `_history`'s on range, complist's on MENUSCROLL and `zformat`'s on a
+    // `%(`'s test, and `_retrieve_cache` sources the cache files where
+    // use-cache is on: each may append the line to the history file.
+    for line in [
+        "zstyle ':completion:*' file-patterns '`logit`*:all-files'",
+        "zstyle ':completion:*' file-patterns \"$p\"",
+        "zstyle ':completion:*' menu 'select=1+pipestatus[$(logit)1]'",
+        "zstyle ':completion:*' menu 'yes=1+x'",
+        "zstyle ':completion:*' menu \"select=$n\"",
+        "zstyle ':completion:*' range 'pipestatus[$(logit)1]'",
+        "zstyle ':completion:*' range 5:x",
+        "zstyle ':completion:*' select-scroll x",
+        "zstyle ':completion:*:descriptions' format '%(d.%d.)'",
+        "zstyle ':completion:*:warnings' format '%5(D.a.b)'",
+        "zstyle ':completion:*' tag-order 'files:f:%(d.x.y)'",
+        "zstyle ':completion:*' use-cache on",
+        "zstyle ':completion:*' use-cache $c",
+        "zstyle ':completion:*' environ 'LISTMAX=x'",
+        "zstyle ':completion:*:git:*' max-verbose 'pipestatus[$(logit)1]'",
+        "zstyle ':completion:*' something-new x",
+        "zstyle -e ':completion:*' menu 'reply=(select=1+x)'",
+        "zstyle '*' menu 'select=1+x'",
+        "zstyle -- \"$ctx\" menu 'select=1+x'",
+    ] {
+        let ours = |found: &Scan| {
+            found.doubts.iter().any(|doubt| {
+                doubt.starts_with(
+                    "it cannot tell what code zsh's own completion functions run as you \
+                     complete a word with `zstyle ",
+                )
+            })
+        };
+        let got = found(&format!("{COMPINIT}{line}\n"));
+        assert!(ours(&got), "{line}: {got:?}");
+        // Without compinit, no completion function reads it.
+        assert!(!ours(&found_plain(line)), "{line}");
+    }
+    // The common lines, values zsh's own code reads as data or as a plain
+    // number, and a context of no completion pass.
+    for line in [
+        "zstyle ':completion:*' menu select",
+        "zstyle ':completion:*' menu select=2",
+        "zstyle ':completion:*' menu select=long-list",
+        "zstyle ':completion:*:*:kill:*' menu yes select",
+        "zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'",
+        "zstyle ':completion:*' list-colors \"${(s.:.)LS_COLORS}\"",
+        "zstyle ':completion:*' group-name ''",
+        "zstyle ':completion:*:descriptions' format '%F{yellow}-- %d --%f'",
+        "zstyle ':completion:*' verbose yes",
+        "zstyle ':completion:*' rehash true",
+        "zstyle ':completion:*' special-dirs true",
+        "zstyle ':completion:*' squeeze-slashes true",
+        "zstyle ':completion:*' accept-exact '*(N)'",
+        "zstyle ':completion:*' insert-tab pending=2",
+        "zstyle ':completion:*' max-errors 2 numeric",
+        "zstyle ':completion:*' range 20:5",
+        "zstyle ':completion:*' select-scroll -2",
+        "zstyle ':completion:*' file-patterns '*(-/):directories' '*.txt:text'",
+        "zstyle ':completion:*' use-cache off",
+        "zstyle ':completion:*' cache-path ~/.zcache",
+        "zstyle ':completion:*' tag-order local-directories directory-stack",
+        "zstyle -e ':completion:*' verbose 'reply=(yes)'",
+        "zstyle ':chpwd:*' menu 'select=1+x'",
+        "zstyle :compinstall filename ~/.zshrc",
+    ] {
+        assert_eq!(
+            found(&format!("{COMPINIT}{line}\n")),
+            Scan::default(),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_parameter_that_gives_the_completion_system_code_or_options_is_a_doubt() {
+    // zsh 5.9.2 runs compcontext's action with `eval`, `_sort_tags` by its
+    // name, and with `aliases` among `_comp_options` a global alias named
+    // like the completion function it runs (`alias -g _ls=logit`).
+    for line in [
+        "compcontext='x:y:{logit}'",
+        "typeset -g compcontext='x:y: logit'",
+        "_sort_tags=logit",
+        "_comp_options+=(aliases)",
+        "_comp_options=(${_comp_options:#NO_aliases})",
+        "_comp_options+=(globdots) # dotfiles",
+    ] {
+        let got = found(&format!("{COMPINIT}{line}\n"));
+        assert!(
+            got.doubts
+                .iter()
+                .any(|doubt| doubt.contains("which zsh's completion system runs code or")),
+            "{line}: {got:?}"
+        );
+    }
+    // GLOB_DOTS alone makes it complete the files whose names start with a
+    // dot, which runs nothing.
+    for line in ["_comp_options+=(globdots)", "_comp_options+=( GLOB_DOTS )"] {
+        assert_eq!(
+            found(&format!("{COMPINIT}{line}\n")),
+            Scan::default(),
+            "{line}"
+        );
+    }
+}
