@@ -301,13 +301,15 @@ drop-ins (those of its name's prefixes, such as `srv-.mount.d`, and of its type,
 type and options would get: a filesystem the decoy has mounted now is bound
 read-only or overlaid, one not mounted now is kept unmounted, skipped where it
 is linked in a target's `.requires` directory, and RAM and kernel filesystems
-(such as `tmp.mount`) are left to the hidden systemd. The automount of a
-filesystem put in place is kept off. A unit the decoy masks is left alone, and
-one whose unit files cannot be read, or that names its source by a specifier, is
-masked; where a target requires it, `nails check` and `nails activate` warn that
-the target will not be reached. A copy of a generated unit outside the
-generator's directory, such as the one `systemctl edit --full` writes to
-`/etc/systemd/system`, is decided as a unit of its own, and so is a generated
+elsewhere (such as `tmp.mount`) are left to the hidden systemd, while a unit
+whose mount point lies at or below the hidden root is refused, a RAM one
+included (see above). The automount of a filesystem put in place is kept off. A
+unit the decoy masks is left alone, and one whose unit files cannot be read, or
+that names its source by a specifier, is masked; where a target requires it,
+`nails check` and `nails activate` warn that the target will not be reached. A
+copy of a generated unit outside the generator's directory, such as the one
+`systemctl edit --full` writes to `/etc/systemd/system`, is decided as a unit
+of its own, and so is a generated
 unit of a line the policy leaves as it is (a drop-in can make a tmpfs line's
 unit mount a disk, and a link can pull in a `noauto` line's unit) or of a line
 the fstab no longer has. A directory of unit links that NAILS cannot list
@@ -370,9 +372,10 @@ it in the hidden session's root, where a symlink a session changed can lead
 elsewhere, and decides the entry at that path too, which is `home.mount` once a
 session replaced the link with a directory. The hidden systemd finds the entry
 kept off or in place there as well. A path that a link leads into the hidden
-volume is kept unmounted, not bound with the volume: the entry still names a
-decoy filesystem, which the hidden systemd would otherwise mount inside the
-hidden volume.
+volume is kept unmounted rather than refused: the entry still names a decoy
+filesystem, which the hidden systemd would otherwise mount inside the hidden
+volume. A RAM or kernel filesystem a link leads there is left to the hidden
+systemd, as one elsewhere is.
 
 The hidden volume must be storage of its own, because everything nails writes
 there would otherwise land on the decoy disk. The attach gate refuses a plain

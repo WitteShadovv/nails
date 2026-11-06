@@ -671,6 +671,9 @@ the hidden root included, and `[session_mounts] read_only` makes every disk the
 session does not use read-only for the session, including disks attached during
 it; `nails deactivate` unmounts them before the way back (see
 [Disks mounted during the session](configuration.md#disks-mounted-during-the-session)).
+None of that holds for a disk mounted below `<hidden-root>/root`, where NAILS
+keeps its layers and every mount counts as the session's own: mount nothing
+there.
 `verify` cannot tell what a session wrote there, but
 [`nails rehearse`](operator-guide.md#rehearsing-before-you-rely-on-it) scans
 every mounted disk for its canary.

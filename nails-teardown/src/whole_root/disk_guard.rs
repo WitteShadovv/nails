@@ -28,8 +28,8 @@
 //! filesystems: [`Plan::is_hidden_storage`]) or mounted at a policy target
 //! (the read-only ESP), all of their device-mapper and RAID members and the
 //! disks they sit on, and every device without hardware below it (loop,
-//! device mapper, md, zram). A disk someone mounts below the hidden root is
-//! guarded like any other.
+//! device mapper, md, zram). A disk someone mounts below the hidden root,
+//! outside `<root>/root`, is guarded like any other.
 //!
 //! The devices set read-only are recorded in the runtime directory, and the
 //! way back (the leave transition) makes exactly those writable again before
