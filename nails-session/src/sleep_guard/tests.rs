@@ -474,3 +474,205 @@ fn a_refused_inhibitor_fails_both_guarding_modes() {
         assert!(!called);
     });
 }
+
+/// Run the guard of a session whose settings cannot be read on a thread, as
+/// [`spawn_guard`] runs the others.
+fn spawn_untold_guard(lid: LidSwitch) -> (mpsc::Receiver<Result<()>>, mpsc::Receiver<()>) {
+    let (result_tx, result_rx) = mpsc::channel();
+    let (teardown_tx, teardown_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = run_untold_guard(lid, move || teardown_tx.send(()).unwrap());
+        let _ = result_tx.send(result);
+    });
+    (result_rx, teardown_rx)
+}
+
+/// The three inhibitors of a guard that cannot read its settings: block's
+/// two, then teardown's.
+fn untold_inhibitors() -> [InhibitCall; 3] {
+    [
+        ["sleep:idle", INHIBITOR_WHO, INHIBITOR_WHY_BLOCK, "block"].map(String::from),
+        [
+            "handle-lid-switch",
+            INHIBITOR_WHO,
+            INHIBITOR_WHY_BLOCK,
+            "block",
+        ]
+        .map(String::from),
+        ["sleep", INHIBITOR_WHO, INHIBITOR_WHY_DELAY, "delay"].map(String::from),
+    ]
+}
+
+/// A guard that cannot read its settings holds what both modes hold: an
+/// ordinary sleep is refused by the block inhibitors, and a sleep that
+/// starts anyway runs the teardown (here a closure that records the call,
+/// never a power action) before it happens.
+#[test]
+fn untold_settings_block_sleep_and_tear_down_on_a_sleep_forced_past_it() {
+    let _ = Rerun::new(nails_base::test_path!(
+        untold_settings_block_sleep_and_tear_down_on_a_sleep_forced_past_it
+    ))
+    .run(|| {
+        let bus = FakeSystemBus::start(|_| false);
+        let (result, teardown) = spawn_untold_guard(LidSwitch::Take);
+
+        assert_eq!(bus.await_inhibits(3), untold_inhibitors());
+        // A resume notification is not a sleep: everything stays held.
+        bus.prepare_for_sleep(&(false,));
+        assert!(teardown.recv_timeout(Duration::from_millis(200)).is_err());
+        for index in 0..3 {
+            assert!(bus.inhibitor_held_at(index), "inhibitor {index}");
+        }
+
+        bus.prepare_for_sleep(&(true,));
+        teardown
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the teardown runs before the sleep");
+        result
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the guard returns after the teardown")
+            .unwrap();
+        assert!(!bus.inhibitor_held_at(2), "the delay inhibitor is released");
+        assert!(teardown.try_recv().is_err(), "the teardown runs once");
+    });
+}
+
+/// A lid action that does not sleep is left to logind here too.
+#[test]
+fn untold_settings_leave_a_lid_switch_that_does_not_sleep_to_logind() {
+    let _ = Rerun::new(nails_base::test_path!(
+        untold_settings_leave_a_lid_switch_that_does_not_sleep_to_logind
+    ))
+    .run(|| {
+        let bus = FakeSystemBus::start(|_| false);
+        let (result, _teardown) = spawn_untold_guard(LidSwitch::Leave);
+        let [sleep, _, delay] = untold_inhibitors();
+        assert_eq!(bus.await_inhibits(2), [sleep, delay]);
+        assert!(result.recv_timeout(Duration::from_millis(200)).is_err());
+    });
+}
+
+/// Without the delay inhibitor the guard still blocks sleep, as `block`
+/// does, and never returns on its own.
+#[test]
+fn untold_settings_still_block_sleep_without_the_delay_inhibitor() {
+    let _ = Rerun::new(nails_base::test_path!(
+        untold_settings_still_block_sleep_without_the_delay_inhibitor
+    ))
+    .run(|| {
+        let log = capture_log();
+        let bus = FakeSystemBus::start(|what| what == "sleep");
+        let (result, teardown) = spawn_untold_guard(LidSwitch::Take);
+
+        await_log(
+            &log,
+            "A sleep forced past the inhibitors can still suspend the session",
+        );
+        assert_eq!(bus.await_inhibits(3), untold_inhibitors());
+        assert!(result.recv_timeout(Duration::from_millis(200)).is_err());
+        assert!(
+            bus.inhibitor_held_at(0),
+            "the sleep/idle inhibitor stays held"
+        );
+        assert!(bus.inhibitor_held_at(1), "the lid switch's stays held");
+        assert!(teardown.try_recv().is_err());
+    });
+}
+
+/// Without the block inhibitor the guard still tears down on a sleep, as
+/// `teardown` does.
+#[test]
+fn untold_settings_still_tear_down_on_sleep_without_the_block_inhibitor() {
+    let _ = Rerun::new(nails_base::test_path!(
+        untold_settings_still_tear_down_on_sleep_without_the_block_inhibitor
+    ))
+    .run(|| {
+        let log = capture_log();
+        let bus = FakeSystemBus::start(|what| what == "sleep:idle");
+        let (result, teardown) = spawn_untold_guard(LidSwitch::Take);
+
+        await_log(
+            &log,
+            "A sleep request is not refused; a sleep powers the machine off instead",
+        );
+        let calls = bus.await_inhibits(2);
+        assert_eq!(calls[0][0], "sleep:idle");
+        assert_eq!(calls[1], untold_inhibitors()[2]);
+        bus.prepare_for_sleep(&(true,));
+        teardown
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the teardown runs before the sleep");
+        result
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the guard returns after the teardown")
+            .unwrap();
+    });
+}
+
+/// When the bus goes away without a sleep, the block inhibitors stay held:
+/// they do not depend on the bus.
+#[test]
+fn untold_settings_keep_blocking_sleep_when_the_bus_goes_away() {
+    let _ = Rerun::new(nails_base::test_path!(
+        untold_settings_keep_blocking_sleep_when_the_bus_goes_away
+    ))
+    .run(|| {
+        let log = capture_log();
+        let mut bus = FakeSystemBus::start(|_| false);
+        let (result, teardown) = spawn_untold_guard(LidSwitch::Take);
+        await_log(&log, "Holding the block and the delay inhibitors");
+
+        bus.daemon.kill().unwrap();
+        bus.daemon.wait().unwrap();
+
+        await_log(&log, "Holding a sleep/idle block inhibitor for the session");
+        assert!(
+            result.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the guard keeps the block inhibitors"
+        );
+        assert!(bus.inhibitor_held_at(0));
+        assert!(teardown.try_recv().is_err(), "no sleep, no teardown");
+    });
+}
+
+/// Neither part can be taken without the bus: the guard says why.
+#[test]
+fn an_unreachable_system_bus_fails_the_untold_guard() {
+    let _ = Rerun::new(nails_base::test_path!(
+        an_unreachable_system_bus_fails_the_untold_guard
+    ))
+    .run(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let address = format!("unix:path={}", dir.path().join("missing").display());
+        #[allow(unsafe_code)]
+        // SAFETY: the re-executed child runs this one test on one thread.
+        unsafe {
+            std::env::set_var("DBUS_SYSTEM_BUS_ADDRESS", address);
+        }
+        let mut called = false;
+        let message = bus_error(run_untold_guard(LidSwitch::Take, || called = true));
+        assert!(
+            message.starts_with("could not connect to the system D-Bus"),
+            "{message}"
+        );
+        assert!(!called);
+    });
+}
+
+/// Both parts refused: the guard says why and runs nothing.
+#[test]
+fn refused_inhibitors_fail_the_untold_guard() {
+    let _ = Rerun::new(nails_base::test_path!(
+        refused_inhibitors_fail_the_untold_guard
+    ))
+    .run(|| {
+        let _bus = FakeSystemBus::start(|_| true);
+        let mut called = false;
+        let message = bus_error(run_untold_guard(LidSwitch::Take, || called = true));
+        assert!(
+            message.starts_with("logind Inhibit (delay) failed"),
+            "{message}"
+        );
+        assert!(!called);
+    });
+}
