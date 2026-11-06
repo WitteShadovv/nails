@@ -22,6 +22,16 @@
 #     soft-reboot` during the same run, the call a switch makes, makes the
 #     helper write its line on the decoy disk. Once the run has ended, the
 #     row passes again;
+#   - starts apt-daily.service the way apt-daily.timer does and holds it
+#     before its download run, `unattended-upgrade --download-only`, takes the
+#     same lock: the unit is active and no process holds the lock, so the
+#     `unattended-upgrade-run` row passes. It pauses the decoy's helper
+#     (SIGSTOP) and activates; once logind sends its signal, a unit lets the
+#     download run start, waits until it holds the lock and lets the helper go
+#     on (SIGCONT). That is the order of the race the row does not see: the
+#     lock taken after the activation's last look and before the helper's
+#     first, which without python3-gi the helper takes up to 3 seconds after
+#     the signal. The helper then writes its line on the decoy disk;
 #   - turns the setting on in a file of `/etc/apt/apt.conf.d`, which
 #     `apt-config` reads as on: `check` and `activate` refuse, naming the file
 #     and its line. With
@@ -118,6 +128,52 @@ distroVm.buildVmTest {
             "",
         )
     )
+
+    # apt-daily.service's run, held twice, with stand-ins on a tmpfs of their
+    # own that a runtime drop-in puts first in the unit's PATH: a wrapper of
+    # unattended-upgrade holds its download run before it starts the real
+    # one, which then takes the lock, and an on_ac_power, which the real run
+    # calls once it holds the lock, holds it there.
+    daily_hook_dir = "/run/uu-hook-daily"
+    download_hold = "/run/uu-download-hold"
+    download_held = "/run/uu-download-held"
+    locked_hold = "/run/uu-locked-hold"
+    locked_held = "/run/uu-locked-held"
+    daily_dropin_dir = "/run/systemd/system/apt-daily.service.d"
+    daily_dropin = "\n".join(
+        (
+            "[Service]",
+            f"Environment=PATH={daily_hook_dir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "",
+        )
+    )
+    locked_on_ac_power = "\n".join(
+        (
+            "#!/bin/sh",
+            f"touch {locked_held}",
+            f"while [ -e {locked_hold} ]; do sleep 0.2; done",
+            "exit 0",
+            "",
+        )
+    )
+
+
+    def download_wrapper(real):
+        # Holds only the download run; `--help`, which apt.systemd.daily
+        # reads first, goes straight to the real program.
+        return "\n".join(
+            (
+                "#!/bin/sh",
+                'case " $* " in',
+                '*" --download-only "*)',
+                f"  touch {download_held}",
+                f"  while [ -e {download_hold} ]; do sleep 0.2; done",
+                "  ;;",
+                "esac",
+                f'exec {real} "$@"',
+                "",
+            )
+        )
 
     # The setting turned on, in a file of its own.
     setting_file = "/etc/apt/apt.conf.d/99local-install-on-shutdown"
@@ -264,6 +320,85 @@ distroVm.buildVmTest {
         vm.succeed(f"systemd-run --unit=uu-release --collect sh -c {shlex.quote(release)}")
 
 
+    def start_daily_download():
+        # apt-daily.service as apt-daily.timer starts it, held before its
+        # download run starts: active, with no process holding the lock.
+        # A fresh stamp of the package lists skips `apt-get update`, and no
+        # stamp of the download makes it run.
+        real = vm.succeed("command -v unattended-upgrade").strip()
+        vm.succeed(
+            f"mkdir -p {daily_hook_dir} && {{ mountpoint -q {daily_hook_dir} || "
+            + f"mount -t tmpfs -o size=1m,mode=0755 hook-daily {daily_hook_dir}; }}"
+        )
+        vm.succeed(
+            f"printf %s {shlex.quote(download_wrapper(real))} > {daily_hook_dir}/unattended-upgrade && "
+            + f"printf %s {shlex.quote(locked_on_ac_power)} > {daily_hook_dir}/on_ac_power && "
+            + f"chmod 0755 {daily_hook_dir}/unattended-upgrade {daily_hook_dir}/on_ac_power"
+        )
+        vm.succeed(
+            f"mkdir -p {daily_dropin_dir} && printf %s {shlex.quote(daily_dropin)} "
+            + f"> {daily_dropin_dir}/hold.conf && systemctl daemon-reload"
+        )
+        vm.succeed(
+            f"touch {download_hold} {locked_hold} && rm -f {download_held} {locked_held} "
+            + "/var/lib/apt/periodic/download-upgradeable-stamp && "
+            + "touch /var/lib/apt/periodic/update-stamp"
+        )
+        vm.succeed("systemctl start --no-block apt-daily.service")
+        vm.wait_until_succeeds(f"test -e {download_held}", timeout=600)
+        holders = lock_holders()
+        state = vm.succeed("systemctl show -P ActiveState apt-daily.service").strip()
+        print(f"apt-daily.service is {state}; the lock is held by {holders}")
+        assert state == "activating", f"apt-daily.service is {state}"
+        assert not holders, f"the lock is held before the download run starts: {holders}"
+
+
+    def race_at_the_signal(lines_before):
+        # The order of the race: the download run takes the lock after the
+        # switch's last look and before the helper's first. The decoy's
+        # helper is paused before the switch; once logind sends its signal, a
+        # unit lets the download run start, waits until the run holds the
+        # lock at its power check and lets the helper go on, which then finds
+        # the lock held. Once the helper has logged that, the run is let go:
+        # it stops, and the helper with it. Each wait gives up after a minute,
+        # within logind's delay of 30 seconds and its own time to start.
+        pid = vm.succeed("systemctl show -P MainPID unattended-upgrades.service").strip()
+        assert pid not in ("", "0"), f"unattended-upgrades.service has no main process: {pid!r}"
+        lines = f"$(grep -c -F {shlex.quote(IN_PROGRESS)} {helper_log} 2>/dev/null || true)"
+        race = "; ".join(
+            (
+                "n=0",
+                "until busctl get-property org.freedesktop.login1 /org/freedesktop/login1 "
+                + "org.freedesktop.login1.Manager PreparingForShutdown | grep -q true; "
+                + "do sleep 0.1; done",
+                f"rm -f {download_hold}",
+                f"until [ -e {locked_held} ] || [ $n -ge 600 ]; do sleep 0.1; n=$((n+1)); done",
+                f"kill -CONT {pid}",
+                "n=0",
+                f'until [ "{lines}" -gt {lines_before} ] || [ $n -ge 300 ]; '
+                + "do sleep 0.2; n=$((n+1)); done",
+                f"rm -f {locked_hold}",
+            )
+        )
+        vm.succeed(f"kill -STOP {pid}")
+        vm.succeed(f"systemd-run --unit=uu-race --collect sh -c {shlex.quote(race)}")
+
+
+    def end_daily_download():
+        # The run ended with the old userspace: wait for its unit, take the
+        # drop-in away and close the mapping a switch can leave open, so a
+        # fresh hidden root can take the name.
+        vm.wait_until_succeeds(
+            "systemctl show -P ActiveState apt-daily.service | grep -qx -e inactive -e failed",
+            timeout=300,
+        )
+        vm.succeed(f"rm -rf {daily_dropin_dir} && systemctl daemon-reload")
+        vm.succeed(
+            "if ! mountpoint -q /mnt/data && [ -e /dev/mapper/data ]; then cryptsetup close data; fi"
+        )
+        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+
+
     vm.wait_for_unit("multi-user.target")
     prepare_boot()
 
@@ -329,6 +464,22 @@ distroVm.buildVmTest {
         )
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         assert row("unattended-upgrade-run")["status"] == "pass"
+
+    with subtest("an activation while apt-daily.service runs meets its download run's lock"):
+        lines_before = count(helper_log, IN_PROGRESS)
+        start_daily_download()
+        # The unit is active and no process holds the lock: the row passes.
+        assert row("unattended-upgrade-run")["status"] == "pass"
+        race_at_the_signal(lines_before)
+        follow(f"{nails_cmd} activate -y > /mnt/data/activate-race.log 2>&1", "activate-race")
+        print(vm.succeed("cat /mnt/data/activate-race.log || true"))
+        session.assert_hidden_root(vm)
+        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-race")
+        assert_on_the_decoy()
+        print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
+        print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
+        assert count(helper_log, IN_PROGRESS) > lines_before, tail(helper_log)
+        end_daily_download()
 
     with subtest("InstallOnShutdown on refuses check and activation"):
         vm.succeed(f"printf %s {shlex.quote(setting_on)} > {setting_file}")
