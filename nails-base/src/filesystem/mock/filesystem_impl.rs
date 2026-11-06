@@ -29,46 +29,57 @@ impl Filesystem for MockFilesystem {
     }
 
     fn path_exists(&self, path: &Path) -> Result<bool> {
+        self.looked_at(path);
         self.path_exists_impl(path)
     }
 
     fn is_directory(&self, path: &Path) -> Result<bool> {
+        self.looked_at(path);
         self.is_directory_impl(path)
     }
 
     fn is_regular_file(&self, path: &Path) -> Result<bool> {
+        self.looked_at(path);
         self.is_regular_file_impl(path)
     }
 
     fn device_id(&self, path: &Path) -> Result<u64> {
+        self.looked_at(path);
         self.device_id_impl(path)
     }
 
     fn inode(&self, path: &Path) -> Result<Option<u64>> {
+        self.looked_at(path);
         self.inode_impl(path)
     }
 
     fn record_lock_holder(&self, path: &Path) -> Result<Option<i32>> {
+        self.looked_at(path);
         self.record_lock_holder_impl(path)
     }
 
     fn loop_record(&self, node: &Path) -> Result<LoopRecord> {
+        self.looked_at(node);
         self.loop_record_impl(node)
     }
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {
+        self.looked_at(path);
         self.is_symlink_impl(path)
     }
 
     fn read_link(&self, path: &Path) -> Result<PathBuf> {
+        self.looked_at(path);
         self.read_link_impl(path)
     }
 
     fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
+        self.looked_at(path);
         self.is_overlay_whiteout_impl(path)
     }
 
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+        self.looked_at(path);
         self.canonicalize_impl(path)
     }
 
@@ -77,6 +88,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn disk_usage(&self, path: &Path) -> Result<crate::filesystem::DiskUsage> {
+        self.looked_at(path);
         self.disk_usage_impl(path)
     }
 
@@ -89,14 +101,17 @@ impl Filesystem for MockFilesystem {
     }
 
     fn get_permissions(&self, path: &Path) -> Result<u32> {
+        self.looked_at(path);
         self.get_permissions_impl(path)
     }
 
     fn is_readable(&self, path: &Path) -> Result<bool> {
+        self.looked_at(path);
         self.is_readable_impl(path)
     }
 
     fn is_writable(&self, path: &Path) -> Result<bool> {
+        self.looked_at(path);
         self.is_writable_impl(path)
     }
 
@@ -105,14 +120,17 @@ impl Filesystem for MockFilesystem {
     }
 
     fn read_file_content(&self, path: &Path) -> Result<String> {
+        self.looked_at(path);
         self.read_file_content_impl(path)
     }
 
     fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
+        self.looked_at(path);
         self.read_file_bytes_impl(path)
     }
 
     fn mount_root(&self, path: &Path) -> Result<crate::filesystem::MountRoot> {
+        self.looked_at(path);
         // A path that does not exist is an error here too, as for `statx`.
         if let Some(error) = self.lookup_error(path) {
             return Err(error);
@@ -136,6 +154,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
+        self.looked_at(dir);
         self.find_files_with_pattern_impl(dir, pattern)
     }
 
@@ -144,6 +163,7 @@ impl Filesystem for MockFilesystem {
         dir: &Path,
         pattern: &str,
     ) -> Result<super::super::PatternScan> {
+        self.looked_at(dir);
         self.scan_files_with_pattern_impl(dir, pattern)
     }
 
@@ -166,10 +186,12 @@ impl Filesystem for MockFilesystem {
     }
 
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        self.looked_at(dir);
         self.list_directory_impl(dir)
     }
 
     fn file_size(&self, path: &Path) -> Result<u64> {
+        self.looked_at(path);
         self.file_size_impl(path)
     }
 
@@ -198,14 +220,17 @@ impl Filesystem for MockFilesystem {
     }
 
     fn supports_symlinks(&self, dir: &Path) -> Result<bool> {
+        self.looked_at(dir);
         self.supports_symlinks_impl(dir)
     }
 
     fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime> {
+        self.looked_at(path);
         self.modified_time_impl(path)
     }
 
     fn change_time(&self, path: &Path) -> Result<std::time::SystemTime> {
+        self.looked_at(path);
         self.change_time_impl(path)
     }
 
