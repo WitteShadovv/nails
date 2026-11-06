@@ -564,9 +564,9 @@ soft-reboots with `py/nails_e2e/session.py`:
   both before the way back, as its log on the hidden volume records, and with
   `[session_mounts] read_only` the disk read-only from the hidden boot on, a
   disk hot-plugged during the session made read-only by the udev rule alone,
-  every write failing, the third disk, set writable by hand and mounted below
-  the hidden root, swept read-only again, and every disk writable again after
-  the way back, the second unchanged;
+  every write failing, the third disk, mounted read-only below the hidden root
+  and set writable by hand, swept read-only again, and every disk writable
+  again after the way back, the second unchanged;
 - `session-readme-captures`: the source of the README's `check`, `activate`
   and `status --json` captures (`docs/assets/screenshots/`). The standard VM
   is set up as `docs/decoy-requirements.md` recommends for a clean decoy (a
