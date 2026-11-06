@@ -90,7 +90,7 @@ use nails_teardown::whole_root::skips::SKIP_DROPIN_NAME;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use unit_dirs::Load;
-pub use unit_dirs::{UnitDirs, Unlisted};
+pub use unit_dirs::{Guard, UnitDirs, Unlisted};
 use unit_file::{UnitFile, without_specifiers};
 
 /// What the fstab generator writes as `SourcePath=` of a unit it made from

@@ -21,7 +21,11 @@
 //!   boot target a mask keeps from being reached. A mount the hidden systemd
 //!   starts otherwise (a unit only another unit pulls in) is not decided.
 //!   Activation decides again on the hidden root, whose own units the check
-//!   does not see;
+//!   does not see. The check asks the automount guard before each lookup: a
+//!   unit directory or a mount point it does not look up, behind an
+//!   automount point that nothing is mounted on yet, refuses the entry and
+//!   names the point, while a mount point that is such a point itself keeps
+//!   its decision;
 //! - `kernel-modules`: no hidden session deleted or replaced the running
 //!   kernel's module tree or its index ([`super::kernel_modules`]); it only
 //!   warns.
@@ -30,7 +34,7 @@
 //! directly. `systemd-version` judges the version it is built with; the others
 //! read the live system in `run`.
 
-use super::fstab::{parse_in_root, read_in_root as read_fstab};
+use super::fstab::{parse_in_root_guarded, read_in_root as read_fstab};
 use super::layout::Paths;
 use super::mount_units;
 use super::policy::{self, Decision};
@@ -38,11 +42,13 @@ use super::probe::{self, SessionView};
 use super::systemd::{self, MIN_SYSTEMD};
 use crate::error::Result;
 use crate::filesystem::Filesystem;
+use crate::filesystem::automount::{Guarded, Lookup, OnSkip, Skipped, Snapshot, settle};
 use crate::platform::{HostProfile, upgrade_hint};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use nails_teardown::whole_root::logind;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub use super::kernel_modules::KernelModulesCheck;
 
@@ -301,10 +307,26 @@ impl<F: Filesystem> PreFlightCheck<F> for ShutdownInhibitorsCheck {
 /// Judge the fstab decisions, with `unskipped`, the warnings for the skips
 /// masked instead ([`mount_units::kept_off`]).
 pub fn judge_fstab(decisions: &[Decision], unskipped: &[String]) -> CheckResult {
+    judge_fstab_not_looked_up(decisions, unskipped, &|_| false)
+}
+
+/// [`judge_fstab`], where `not_looked_up` tells a path the automount guard
+/// did not look up: a refusal of one is left without a fix of its own, since
+/// the check's [`settle`] gives the one that mounts the automount point.
+fn judge_fstab_not_looked_up(
+    decisions: &[Decision],
+    unskipped: &[String],
+    not_looked_up: &dyn Fn(&Path) -> bool,
+) -> CheckResult {
     if let Some(refused) = decisions
         .iter()
         .find(|d| matches!(d, Decision::Refuse { .. }))
     {
+        if let Decision::Refuse { target, .. } = refused
+            && not_looked_up(target)
+        {
+            return CheckResult::fail(refused.describe());
+        }
         return CheckResult::fail_with(
             refused.describe(),
             "Fix the fstab entry or the unit directory it names, or remove it, before activating."
@@ -396,39 +418,89 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
     fn description(&self) -> &'static str {
         "every decoy filesystem has a safe decision in the hidden root"
     }
-    fn run(&self, _fs: &F) -> Result<CheckResult> {
-        let text = match read_fstab(&self.root) {
+    fn run(&self, fs: &F) -> Result<CheckResult> {
+        let snapshot = Snapshot::read(fs, &self.root);
+        Ok(self.judge(fs, &snapshot, &read_mountinfo().unwrap_or_default()))
+    }
+}
+
+impl FstabPolicyCheck {
+    /// The result for the decoy root, given the decoy's mount table `mounts`,
+    /// with each lookup on the running system asked of `snapshot` first. A
+    /// lookup the guard does not make refuses the entry, and so does a table
+    /// that cannot be read: no lookup is made then.
+    fn judge<F: Filesystem>(
+        &self,
+        fs: &F,
+        snapshot: &Arc<Snapshot>,
+        mounts: &[MountEntry],
+    ) -> CheckResult {
+        if let Some(error) = snapshot.unreadable() {
+            return CheckResult::fail(format!(
+                "NAILS cannot tell whether every decoy filesystem has a safe decision: NAILS \
+                 cannot read the mount table ({error}), which shows where a lookup would mount \
+                 an automount point, so it looks up nothing"
+            ));
+        }
+        let guarded = Guarded::new(fs.clone(), snapshot);
+        let ask = |path: &Path, lookup: Lookup| guarded.ask(path, lookup);
+        let guard = mount_units::Guard(&ask);
+        let fstab = self.root.join("etc/fstab");
+        let unread = |e: &dyn std::fmt::Display| format!("{} cannot be read: {e}", fstab.display());
+        let text = match guard.ask(
+            &self.root,
+            Path::new("/etc/fstab"),
+            Lookup::Enters { follow: true },
+        ) {
+            // The guard gives the fix for a lookup it did not make.
+            Err(e) if e.not_looked_up().is_some() => {
+                return refused_where_not_looked_up(
+                    CheckResult::fail(unread(&e)),
+                    &guarded.skipped(),
+                );
+            }
+            Err(e) => Err(unread(&e)),
+            Ok(_) => read_fstab(&self.root).map_err(|e| unread(&e)),
+        };
+        let text = match text {
             Ok(text) => text,
-            Err(e) => {
-                return Ok(CheckResult::fail_with(
-                    format!(
-                        "{} cannot be read: {e}",
-                        self.root.join("etc/fstab").display()
-                    ),
+            Err(message) => {
+                return CheckResult::fail_with(
+                    message,
                     "Every decoy filesystem needs a decision before the switch; make the \
                      decoy's fstab readable by root and retry.",
-                ));
+                );
             }
         };
         // Resolved in the decoy root, as activation decides them first.
-        let entries = parse_in_root(&text, &self.root);
-        let mounts = read_mountinfo().unwrap_or_default();
-        let mut decisions = policy::decide_all(
-            &entries,
-            &mounts,
-            &self.hidden_root,
-            &policy::device_present,
-        );
+        let entries = parse_in_root_guarded(&text, &self.root, Some(guard));
+        let mut decisions =
+            policy::decide_all(&entries, mounts, &self.hidden_root, &policy::device_present);
         let run = self.root.join("run");
         let dirs = mount_units::UnitDirs {
             root: &self.root,
             run: &run,
+            guard: Some(guard),
         };
-        let native = decoy_units(dirs, &decisions, &mounts, &self.hidden_root);
+        let native = decoy_units(dirs, &decisions, mounts, &self.hidden_root);
         decisions.extend(native);
         let (_, unskipped) = mount_units::kept_off(dirs, &entries, &decisions);
-        Ok(judge_fstab(&decisions, &unskipped))
+        let skipped = guarded.skipped();
+        let root = &self.root;
+        let not_looked_up = |target: &Path| {
+            let at = root.join(target.strip_prefix("/").unwrap_or(target));
+            skipped.iter().any(|skip| skip.path == at)
+        };
+        let result = judge_fstab_not_looked_up(&decisions, &unskipped, &not_looked_up);
+        refused_where_not_looked_up(result, &skipped)
     }
+}
+
+/// `result`, with `skipped`, the lookups the guard did not make, accounted
+/// for: each automount point named and the fix that mounts them given once,
+/// and a refusal, since a filesystem or a unit there would go undecided.
+fn refused_where_not_looked_up(result: CheckResult, skipped: &[Skipped]) -> CheckResult {
+    settle(result, skipped, OnSkip::Refuse(None))
 }
 
 #[cfg(test)]

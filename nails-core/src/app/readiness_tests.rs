@@ -4,6 +4,7 @@
 //! Unit tests for the readiness report.
 
 use super::*;
+use crate::filesystem::automount::Snapshot;
 use crate::platform::FakePlatform;
 use crate::{MockFilesystem, NailsManager};
 use std::path::PathBuf;
@@ -208,7 +209,14 @@ fn decoy_filesystems_list_each_decision_but_the_entries_left_as_they_are() {
          3 1 8:3 / /srv/data rw - ext4 /dev/vda3 rw\n",
     );
 
-    let rows = decoy_filesystems(root.path(), &mounts, Path::new("/mnt/data"));
+    let snapshot = Snapshot::read(&RealFilesystem, root.path());
+    let rows = decoy_filesystems(
+        &RealFilesystem,
+        &snapshot,
+        root.path(),
+        &mounts,
+        Path::new("/mnt/data"),
+    );
     // Each row is `<path>: <decision>`, a mask followed by its reason in
     // the policy's own words.
     let decisions: Vec<&str> = rows
@@ -225,6 +233,87 @@ fn decoy_filesystems_list_each_decision_but_the_entries_left_as_they_are() {
         ],
         "{rows:?}"
     );
+}
+
+/// The listing asks the automount guard before each lookup, as the
+/// fstab-policy row does: a unit directory behind an automount point that
+/// nothing is mounted on yet is not listed, and the line names the point;
+/// an `x-systemd.automount` mount point that is such a point keeps its path.
+/// Without the mount table nothing is looked up.
+#[test]
+fn decoy_filesystems_make_no_lookup_behind_an_automount_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(
+        root.join("etc/fstab"),
+        "/dev/vda2 / ext4 defaults 0 1\n\
+         /dev/vda1 /boot/efi vfat noauto,x-systemd.automount 0 2\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("usr/local/lib/systemd/system")).unwrap();
+    std::fs::create_dir_all(root.join("srv/elsewhere")).unwrap();
+    std::fs::create_dir_all(root.join("boot")).unwrap();
+    // Looked up, the point would lead elsewhere: it is not.
+    std::os::unix::fs::symlink("../srv/elsewhere", root.join("boot/efi")).unwrap();
+    let point = |at: &str, id: u32| {
+        format!(
+            "{id} 1 0:{id} / {} rw,relatime - autofs systemd-1 rw,fd={id},pgrp=1,timeout=0,\
+             minproto=5,maxproto=5,direct,pipe_ino={id}\n",
+            root.join(at).display()
+        )
+    };
+    let table = nails_teardown::mountinfo::parse_mountinfo(&format!(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n{}{}",
+        point("usr/local", 40),
+        point("boot/efi", 41)
+    ));
+    let snapshot = Snapshot::from_table(table);
+    let mounts = nails_teardown::mountinfo::parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+
+    let rows = decoy_filesystems(
+        &RealFilesystem,
+        &snapshot,
+        &root,
+        &mounts,
+        Path::new("/mnt/data"),
+    );
+    let usr_local = root.join("usr/local");
+    assert!(
+        rows.iter().any(
+            |row| row.starts_with("/usr/local/lib/systemd/system/: refused")
+                && row.ends_with(&format!(
+                    "the lookup would mount the automount point {})",
+                    usr_local.display()
+                ))
+        ),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.starts_with("/boot/efi: ")),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| !row.contains("elsewhere")),
+        "{rows:?}"
+    );
+
+    let unreadable = crate::MockFilesystem::new();
+    unreadable.mock_set_mount_table_error("permission denied");
+    let snapshot = Snapshot::read(&unreadable, Path::new("/"));
+    let rows = decoy_filesystems(
+        &unreadable,
+        &snapshot,
+        Path::new("/"),
+        &mounts,
+        Path::new("/mnt/data"),
+    );
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(
+        rows[0].starts_with("NAILS cannot tell how each decoy filesystem would be handled"),
+        "{rows:?}"
+    );
+    assert!(unreadable.mock_lookups().is_empty());
 }
 
 /// `count` tallies exactly the entries whose status matches the one asked

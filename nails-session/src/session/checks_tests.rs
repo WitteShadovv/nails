@@ -289,6 +289,191 @@ fn an_unreadable_fstab_fails_the_policy_check() {
     assert!(result.is_pass(), "{result:?}");
 }
 
+/// The mount table line of a direct automount point at `point` that nothing
+/// is mounted on yet, as systemd makes one for `x-systemd.automount`.
+fn automount_line(point: &Path, id: u32) -> String {
+    format!(
+        "{id} 1 0:{id} / {} rw,relatime - autofs systemd-1 \
+         rw,fd={id},pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino={id}\n",
+        point.display()
+    )
+}
+
+/// A snapshot of the decoy's root and an automount point at each of
+/// `points` below `root`, nothing mounted on any.
+fn automounts_below(root: &Path, points: &[&str]) -> Arc<Snapshot> {
+    let mut table = "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n".to_string();
+    for (id, point) in (40..).zip(points) {
+        table.push_str(&automount_line(&root.join(point), id));
+    }
+    Snapshot::from_table(parse_mountinfo(&table))
+}
+
+/// A unit directory behind an automount point that nothing is mounted on
+/// yet is not looked up: the check refuses, naming the point, and gives
+/// the fix that mounts it. With the point at mode 0 the refusal still names
+/// the point, not a permission error, so no lookup below it was tried.
+#[test]
+fn a_unit_directory_behind_an_automount_point_refuses_naming_the_point() {
+    use crate::filesystem::RealFilesystem;
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        // Root looks into any directory, so a lookup would not show.
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(root.join("etc/fstab"), "/dev/vda2 / ext4 defaults 0 1\n").unwrap();
+    let units = root.join("usr/local/lib/systemd/system/local-fs.target.wants");
+    std::fs::create_dir_all(&units).unwrap();
+    let usr_local = root.join("usr/local");
+    std::fs::set_permissions(&usr_local, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let check = FstabPolicyCheck::new(root.clone(), PathBuf::from("/mnt/data"));
+    let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+
+    let result = check.judge(
+        &RealFilesystem,
+        &automounts_below(&root, &["usr/local"]),
+        &mounts,
+    );
+    std::fs::set_permissions(&usr_local, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "/usr/local/lib/systemd/system/: refused (NAILS cannot list this unit directory: \
+             NAILS does not look up {root}/usr/local/lib/systemd/system, since the lookup would \
+             mount the automount point {root}/usr/local)",
+            root = root.display()
+        )
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(crate::filesystem::automount::mount_fix(&[usr_local.as_path()]).as_str())
+    );
+    assert!(!result.message().contains("ermission"), "{result:?}");
+    assert_eq!(result.allowable(), None);
+}
+
+/// An fstab mount point that is a direct automount point nothing is
+/// mounted on yet, as an `x-systemd.automount` ESP is, is resolved from the
+/// table without a lookup: it keeps its path and its decision. Looked up,
+/// this one would lead elsewhere.
+#[test]
+fn an_automount_esp_in_the_fstab_keeps_its_decision_and_is_not_looked_up() {
+    use crate::filesystem::RealFilesystem;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(
+        root.join("etc/fstab"),
+        "/dev/vda2 / ext4 defaults 0 1\n\
+         /dev/vda1 /boot/efi vfat noauto,x-systemd.automount,umask=0077 0 2\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("boot")).unwrap();
+    std::fs::create_dir_all(root.join("srv/elsewhere")).unwrap();
+    std::os::unix::fs::symlink("../srv/elsewhere", root.join("boot/efi")).unwrap();
+    let check = FstabPolicyCheck::new(root.clone(), PathBuf::from("/mnt/data"));
+    let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+
+    let guarded = check.judge(
+        &RealFilesystem,
+        &automounts_below(&root, &["boot/efi"]),
+        &mounts,
+    );
+    assert!(!guarded.is_fail(), "{guarded:?}");
+    assert!(
+        guarded.message().contains("/boot/efi: ") && !guarded.message().contains("elsewhere"),
+        "{guarded:?}"
+    );
+    // Without the point in the table the lookup is made, and follows the
+    // link, as before.
+    let unguarded = check.judge(
+        &RealFilesystem,
+        &Snapshot::read(&RealFilesystem, &root),
+        &mounts,
+    );
+    assert!(
+        unguarded.message().contains("/srv/elsewhere: "),
+        "{unguarded:?}"
+    );
+}
+
+/// An fstab the guard does not look up refuses the entry with the guard's
+/// reason and the fix that mounts the point, never the fix for a file root
+/// cannot read.
+#[test]
+fn an_fstab_behind_an_automount_point_refuses_with_the_mount_fix() {
+    use crate::filesystem::RealFilesystem;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(root.join("etc/fstab"), "/dev/vda2 / ext4 defaults 0 1\n").unwrap();
+    let check = FstabPolicyCheck::new(root.clone(), PathBuf::from("/mnt/data"));
+    let result = check.judge(
+        &RealFilesystem,
+        &automounts_below(&root, &["etc"]),
+        &parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n"),
+    );
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "{root}/etc/fstab cannot be read: NAILS does not look up {root}/etc/fstab, since the \
+             lookup would mount the automount point {root}/etc",
+            root = root.display()
+        )
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(crate::filesystem::automount::mount_fix(&[root.join("etc").as_path()]).as_str())
+    );
+}
+
+/// Without the mount table nothing is looked up, and the check refuses.
+#[test]
+fn without_the_mount_table_the_policy_check_looks_up_nothing() {
+    let fs = crate::filesystem::MockFilesystem::new();
+    fs.mock_set_mount_table_error("permission denied");
+    let check = FstabPolicyCheck::new(PathBuf::from("/"), PathBuf::from("/mnt/data"));
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "NAILS cannot tell whether every decoy filesystem has a safe decision: NAILS cannot \
+             read the mount table ("
+        ),
+        "{result:?}"
+    );
+    assert!(fs.mock_lookups().is_empty(), "{:?}", fs.mock_lookups());
+}
+
+/// A decision for a path the guard did not look up asks only for the mount;
+/// any other refusal keeps its own fix.
+#[test]
+fn a_refusal_of_a_path_not_looked_up_leaves_the_fix_to_the_guard() {
+    let refused = vec![Decision::Refuse {
+        target: PathBuf::from("/usr/local/lib/systemd/system"),
+        reason: "NAILS cannot list this unit directory: it is not looked up".to_string(),
+    }];
+    let skipped = |target: &Path| target == Path::new("/usr/local/lib/systemd/system");
+    let result = judge_fstab_not_looked_up(&refused, &[], &skipped);
+    assert!(result.is_fail());
+    assert_eq!(result.remediation(), None);
+    let result = judge_fstab_not_looked_up(&refused, &[], &|_| false);
+    assert!(
+        result
+            .remediation()
+            .is_some_and(|fix| fix.starts_with("Fix the fstab entry")),
+        "{result:?}"
+    );
+}
+
 fn inhibitor(what: &str, mode: &str) -> logind::Inhibitor {
     logind::Inhibitor {
         what: what.to_string(),
@@ -361,6 +546,7 @@ fn the_decoy_s_units_outside_its_fstab_are_decided_as_activation_decides_them() 
     let dirs = crate::session::mount_units::UnitDirs {
         root: root.path(),
         run: run.path(),
+        guard: None,
     };
     let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
     // Its disk is not on this host, and a target only wants it: masked.
