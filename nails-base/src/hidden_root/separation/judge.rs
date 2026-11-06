@@ -137,6 +137,7 @@ fn verdict(
             return Verdict::OnDecoyFilesystem {
                 how: sharing(hidden),
                 at: at.clone(),
+                in_fstab: in_fstab(scene, hidden, top, at),
             };
         }
         if let Some(top) = top
@@ -148,6 +149,7 @@ fn verdict(
             return Verdict::OnDecoyFilesystem {
                 how: Sharing::Filesystem,
                 at: at.clone(),
+                in_fstab: in_fstab(scene, hidden, Some(top), at),
             };
         }
     }
@@ -573,6 +575,25 @@ fn shows_what_it_mounts(entry: &FstabEntry, mount: &MountEntry) -> bool {
         return sharing(mount) != Sharing::Bind;
     }
     mount.root == Path::new("/")
+}
+
+/// Whether a line of the decoy's fstab mounts the filesystem of `hidden`,
+/// whose device is `top`, at `at`: a line for that mount point, of a kind
+/// the claims count, whose spec names `top` or another device of its btrfs
+/// filesystem, or for a filesystem with no device, such as a ZFS dataset, is
+/// `hidden`'s source. A claim through a bind line, or through a mount at `/`
+/// or at a system folder that no line names, has none.
+fn in_fstab(scene: &Scene<'_>, hidden: &MountEntry, top: Option<&str>, at: &Path) -> bool {
+    let devices = scene.devices;
+    scene
+        .fstab
+        .iter()
+        .filter(|entry| entry.file == at && !entry.is_bind() && mounts_storage(entry))
+        .any(|entry| match (devices.node_of_spec(&entry.spec), top) {
+            (Some(named), Some(top)) => named == top || devices.same_btrfs(named, top),
+            (None, None) => Path::new(&entry.spec) == hidden.source.as_path(),
+            _ => false,
+        })
 }
 
 /// Where the decoy mounts the filesystem of `holder`, if it is claimed.

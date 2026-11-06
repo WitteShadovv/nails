@@ -467,6 +467,11 @@ pub enum Verdict {
         how: Sharing,
         /// Where the decoy mounts that filesystem.
         at: PathBuf,
+        /// Whether a line of the decoy's fstab mounts that filesystem at
+        /// `at`, one for that mount point that names its device. A mount at
+        /// `/` or at a system folder that no line names, such as one made by
+        /// hand, has none, and neither does a claim through a bind line.
+        in_fstab: bool,
     },
     /// The root shares a device with the decoy's storage.
     InsideDecoyStorage {
@@ -559,7 +564,7 @@ impl Verdict {
                 "{} could not be read, so where it lives cannot be told",
                 join(unreadable)
             ),
-            Verdict::OnDecoyFilesystem { how, at } => match how {
+            Verdict::OnDecoyFilesystem { how, at, in_fstab } => match how {
                 Sharing::Bind => format!("it is a bind mount of a folder of {}", at.display()),
                 Sharing::Subvolume => {
                     format!(
@@ -567,8 +572,12 @@ impl Verdict {
                         at.display()
                     )
                 }
-                Sharing::Filesystem => format!(
+                Sharing::Filesystem if *in_fstab => format!(
                     "it is the filesystem this computer mounts at {} per {FSTAB}",
+                    at.display()
+                ),
+                Sharing::Filesystem => format!(
+                    "it is the filesystem this computer has mounted at {}",
                     at.display()
                 ),
             },

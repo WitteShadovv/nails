@@ -36,18 +36,21 @@ pub(crate) fn every_refusal(root: &Path) -> Vec<Refusal> {
             verdict: Verdict::OnDecoyFilesystem {
                 how: Sharing::Subvolume,
                 at: at(),
+                in_fstab: true,
             },
         },
         RefusalKind::DecoyStorage {
             verdict: Verdict::OnDecoyFilesystem {
                 how: Sharing::Bind,
                 at: at(),
+                in_fstab: true,
             },
         },
         RefusalKind::DecoyStorage {
             verdict: Verdict::OnDecoyFilesystem {
                 how: Sharing::Filesystem,
                 at: PathBuf::from("/srv"),
+                in_fstab: true,
             },
         },
         RefusalKind::DecoyStorage {
@@ -475,6 +478,7 @@ fn the_override_warning_names_the_storage() {
             verdict: Verdict::OnDecoyFilesystem {
                 how: Sharing::Subvolume,
                 at: PathBuf::from("/pool"),
+                in_fstab: true,
             },
         },
         Path::new("/mnt"),
@@ -558,6 +562,7 @@ fn a_filesystem_the_boot_mounts_first_asks_to_drop_its_fstab_line() {
             verdict: Verdict::OnDecoyFilesystem {
                 how: Sharing::Filesystem,
                 at: PathBuf::from("/srv"),
+                in_fstab: true,
             },
         },
         Path::new("/srv"),
