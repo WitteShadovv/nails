@@ -416,24 +416,43 @@ fn session_starts_helper<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path
     !masked_there
 }
 
+/// A refusal of the check's.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Blocker {
+    /// What it found.
+    pub(super) finding: String,
+    /// What to do about it.
+    pub(super) fix: String,
+    /// Whether it is for the setting found on, not for one NAILS cannot
+    /// tell: only then does the warning under `--allow-persistent-decoy` say
+    /// that the install runs.
+    pub(super) installs: bool,
+}
+
 /// What the check makes of unattended-upgrades' install at shutdown.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Finding {
-    /// The refusal, with its fix, when the decoy's helper would install at
-    /// activation, or NAILS cannot tell.
-    pub(super) blocker: Option<(String, String)>,
+    /// The refusal, when the decoy's helper would install at activation, or
+    /// NAILS cannot tell.
+    pub(super) blocker: Option<Blocker>,
     /// The warning, when only the session's copy would install, at the way
     /// back.
     pub(super) warning: Option<String>,
 }
 
-/// The fix of a setting turned on at `at`.
+/// The fix of a setting turned on at `at`, a file of the decoy and a line.
 fn turn_off(at: &str) -> String {
     let file = at.rsplit_once(':').map_or(at, |(file, _)| file);
+    // apt reads its main file after every part, so no part can turn off
+    // what the main file turns on.
+    let place = if file.strip_prefix('/') == Some(MAIN) {
+        file.to_string()
+    } else {
+        format!("{file} or in a file of /{PARTS} that apt reads after it")
+    };
     format!(
-        "set `{SETTING} \"false\";` on the decoy, in {file} or in a file of /etc/apt/apt.conf.d \
-         that apt reads after it (a line only deleted stays in effect until \
-         unattended-upgrades.service restarts)"
+        "set `{SETTING} \"false\";` on the decoy, in {place} (a line only deleted stays in \
+         effect until unattended-upgrades.service restarts)"
     )
 }
 
@@ -456,31 +475,33 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
         match &decoy {
             Setting::On(at) => {
                 return Finding {
-                    blocker: Some((
-                        format!(
+                    blocker: Some(Blocker {
+                        finding: format!(
                             "unattended-upgrades installs the pending updates when the system \
                              shuts down ({SETTING} is on in {at}), and its shutdown helper takes \
                              a switch for a shutdown: at activation it runs that install on the \
                              decoy disk and logs that run there{way_back}"
                         ),
-                        turn_off(at),
-                    )),
+                        fix: turn_off(at),
+                        installs: true,
+                    }),
                     warning: None,
                 };
             }
             Setting::Unknown(why) => {
                 return Finding {
-                    blocker: Some((
-                        format!(
+                    blocker: Some(Blocker {
+                        finding: format!(
                             "NAILS cannot tell whether unattended-upgrades installs the pending \
                              updates at activation, as its shutdown helper does when {SETTING} \
                              is on, so it counts as on: {why}"
                         ),
-                        format!(
-                            "fix or remove what NAILS cannot read of apt's configuration ({why}), \
+                        fix: format!(
+                            "fix or remove what keeps NAILS from reading the setting ({why}), \
                              and set `{SETTING} \"false\";` on the decoy if anything turns it on"
                         ),
-                    )),
+                        installs: false,
+                    }),
                     warning: None,
                 };
             }

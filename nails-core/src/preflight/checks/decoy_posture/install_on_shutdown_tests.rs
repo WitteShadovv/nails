@@ -117,7 +117,7 @@ fn blocker(finding: &Finding) -> &str {
         .blocker
         .as_ref()
         .unwrap_or_else(|| panic!("no refusal: {finding:?}"))
-        .0
+        .finding
 }
 
 #[test]
@@ -148,14 +148,50 @@ fn the_setting_on_with_the_helper_running_is_refused() {
         message.contains("when a session ends with deactivate"),
         "{message}"
     );
-    let fix = &found.blocker.as_ref().unwrap().1;
+    let fix = &found.blocker.as_ref().unwrap().fix;
     assert!(
         fix.contains("`Unattended-Upgrade::InstallOnShutdown \"false\";`"),
         "{fix}"
     );
-    assert!(fix.contains("/etc/apt/apt.conf.d/99local"), "{fix}");
+    assert!(
+        fix.contains(
+            "in /etc/apt/apt.conf.d/99local or in a file of /etc/apt/apt.conf.d that apt reads \
+             after it"
+        ),
+        "{fix}"
+    );
     assert!(fix.contains("a line only deleted"), "{fix}");
+    assert!(found.blocker.as_ref().unwrap().installs);
     assert!(found.warning.is_none());
+}
+
+#[test]
+fn the_fix_of_the_setting_in_apt_conf_names_that_file_alone() {
+    // apt reads /etc/apt/apt.conf after every part, so no part can turn off
+    // what it turns on.
+    let tmp = stock(DEBIAN_13);
+    write(tmp.path(), "etc/apt/apt.conf", ON.as_bytes());
+    let found = find(tmp.path());
+    let fix = &found.blocker.as_ref().expect("a refusal").fix;
+    assert!(
+        fix.contains(
+            "`Unattended-Upgrade::InstallOnShutdown \"false\";` on the decoy, in \
+             /etc/apt/apt.conf (a line only deleted"
+        ),
+        "{fix}"
+    );
+    assert!(!fix.contains("reads after it"), "{fix}");
+
+    // A part that turns it off before apt.conf turns it on again does not.
+    write(tmp.path(), "etc/apt/apt.conf.d/99off", OFF.as_bytes());
+    assert!(find(tmp.path()).blocker.is_some());
+    // Set off in apt.conf itself, as the fix says, it is off.
+    write(
+        tmp.path(),
+        "etc/apt/apt.conf",
+        [ON, OFF].concat().as_bytes(),
+    );
+    assert_eq!(find(tmp.path()), Finding::default());
 }
 
 #[test]
@@ -288,15 +324,14 @@ fn what_nails_cannot_read_as_apt_reads_it_is_refused_as_if_on() {
         assert!(message.starts_with("NAILS cannot tell"), "{message}");
         assert!(message.contains("so it counts as on"), "{message}");
         assert!(message.contains(why), "{why}: {message}");
+        let fix = &found.blocker.as_ref().unwrap().fix;
         assert!(
-            found
-                .blocker
-                .as_ref()
-                .unwrap()
-                .1
-                .starts_with("fix or remove"),
-            "{found:?}"
+            fix.starts_with(&format!(
+                "fix or remove what keeps NAILS from reading the setting ({why}"
+            )),
+            "{fix}"
         );
+        assert!(!found.blocker.as_ref().unwrap().installs, "{found:?}");
     }
 }
 
@@ -618,6 +653,41 @@ fn the_check_refuses_and_the_override_warns() {
         "{message}"
     );
     assert!(!message.contains("Records written before"), "{message}");
+}
+
+#[test]
+fn the_override_of_a_setting_nails_cannot_tell_says_no_install_runs_for_certain() {
+    // A file apt refuses: the helper then installs nothing at the signal,
+    // so the warning does not say that it does.
+    let tmp = stock(UBUNTU_26_04);
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/journald.conf",
+        b"[Journal]\nStorage=volatile\n",
+    );
+    write(root, "sys/kernel/kexec_crash_loaded", b"0\n");
+    write(root, "etc/apt/apt.conf.d/99local", b"Nails::Fact \"x\"\n");
+    let refused = DecoyPersistenceCheck::new(false, false)
+        .with_root(root)
+        .run(&RealFilesystem)
+        .unwrap();
+    assert!(refused.is_fail(), "{refused:?}");
+    let allowed = DecoyPersistenceCheck::new(true, false)
+        .with_root(root)
+        .run(&RealFilesystem)
+        .unwrap();
+    assert!(allowed.is_warn(), "{allowed:?}");
+    let message = allowed.message();
+    assert!(
+        message.contains("NAILS cannot tell whether unattended-upgrades installs"),
+        "{message}"
+    );
+    assert!(
+        message.contains("/etc/apt/apt.conf.d/99local:2 is refused by apt"),
+        "{message}"
+    );
+    assert!(!message.contains("At the switch"), "{message}");
 }
 
 #[test]
