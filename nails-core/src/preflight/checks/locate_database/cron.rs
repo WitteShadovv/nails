@@ -306,7 +306,11 @@ fn dir_files<F: Filesystem>(
 ) -> Vec<PathBuf> {
     match files.list(dir) {
         Ok(mut entries) => {
-            entries.retain(|entry| !fs.is_directory(entry).unwrap_or(false));
+            // Only an entry seen to be a directory is left: one whose lookup
+            // fails is read as a file, which names why NAILS cannot read it,
+            // so a crontab or script it cannot look up warns instead of
+            // being passed over.
+            entries.retain(|entry| !matches!(fs.is_directory(entry), Ok(true)));
             entries.sort();
             entries
         }

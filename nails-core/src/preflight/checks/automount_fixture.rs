@@ -10,10 +10,11 @@ use crate::filesystem::MockFilesystem;
 pub(crate) const ROOT_MOUNT: &str = "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n";
 
 /// The mount table line of a direct automount point at `point`, as systemd
-/// makes one for `x-systemd.automount`, that nothing is mounted on yet.
-pub(crate) fn direct(point: &str, id: usize) -> String {
+/// makes one for `x-systemd.automount`, that nothing is mounted on yet: the
+/// `id`th of a table whose root has the mount id `parent`.
+pub(crate) fn direct(point: &str, id: usize, parent: usize) -> String {
     format!(
-        "{} 1 0:{} / {point} rw,relatime - autofs systemd-1 \
+        "{} {parent} 0:{} / {point} rw,relatime - autofs systemd-1 \
          rw,fd={id},pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino={id}\n",
         30 + id,
         50 + id
@@ -25,7 +26,7 @@ pub(crate) fn direct(point: &str, id: usize) -> String {
 pub(crate) fn with_automounts(fs: &MockFilesystem, points: &[&str]) {
     let mut table = ROOT_MOUNT.to_string();
     for (id, point) in points.iter().enumerate() {
-        table.push_str(&direct(point, id));
+        table.push_str(&direct(point, id, 1));
     }
     fs.mock_set_mount_table(&table);
 }
