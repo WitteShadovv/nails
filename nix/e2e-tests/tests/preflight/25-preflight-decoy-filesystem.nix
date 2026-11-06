@@ -10,7 +10,9 @@
 #      (exit 4), and the folder stays empty with its mtime and ctime unchanged;
 #   2. a btrfs subvolume of /pool mounted on its own is refused; its mount
 #      table line shows the same device as /pool's, while stat shows another
-#      (the judge relies on the first);
+#      (the judge relies on the first); check with --allow-decoy-storage
+#      passes it with a warning, as /pool, the other mount of that
+#      filesystem, is the one the fstab makes;
 #   3. a bind mount of a folder of /srv is refused;
 #   4. /srv itself, the filesystem the decoy's fstab mounts there, is refused;
 #   5. an unencrypted ext4 image on /srv, loop-mounted, is refused, also with a
@@ -25,10 +27,16 @@
 #   8. a zram device that writes its pages back to a loop device over an
 #      image on /srv is refused as that image file;
 #   9. `init --allow-decoy-storage` uses the bind of the /srv folder with a
-#      warning, while the folder itself stays refused;
+#      warning, while the folder itself stays refused; check with that flag
+#      passes it with a warning beside /srv, the fstab's mount of the
+#      filesystem, and refuses it as mounted a second time once that
+#      filesystem is mounted at another folder too;
 #  10. a LUKS container file on /srv passes the hidden-volume check with a
 #      warning that names /srv and its copy-on-write snapshots;
 #  11. a LUKS volume on the separate data disk passes the hidden-volume check;
+#      mounted at /opt as well, which no fstab line makes, it is refused as
+#      the decoy's storage, and with --allow-decoy-storage as mounted a second
+#      time, naming `sudo umount /opt`, until that mount is gone;
 #  12. a tmpfs mounted over that volume is refused with root_covered, and
 #      neither the tmpfs nor the volume below receives anything;
 #  13. a decoy crypttab line that opens the data disk, then one with
@@ -207,6 +215,21 @@ in
             "nails init --no-hardware-config /mnt/sub",
             ["it is a subvolume of the btrfs filesystem at /pool"],
         )
+        # Accepted with the flag, the subvolume is judged for second mounts:
+        # /pool shows it too, and the fstab makes that mount, by a link to the
+        # disk, while the mount table names the filesystem by no device number
+        # of the disk's.
+        result = run_command_capture(
+            "gate-subvol-allow",
+            f"nails --config {config_for('/mnt/sub')} --json check --overlay-only "
+            "--allow-decoy-storage",
+        )
+        row = check_row(last_json(result), "hidden-volume")
+        assert row["status"] == "warn", row
+        assert row["message"].startswith(
+            "--allow-decoy-storage: using /mnt/sub although it is a subvolume of the btrfs "
+            "filesystem at /pool"
+        ), row
         machine.succeed("umount /mnt/sub")
 
     with subtest("a bind mount of a decoy folder is refused"):
@@ -412,6 +435,40 @@ in
             ],
         )
         machine.succeed("test -f /srv/x/state.json")
+
+    with subtest("check with --allow-decoy-storage leaves out only the decoy's own mount"):
+        # /srv, the mount the fstab makes, shows the folder bound at /mnt/bind:
+        # it is no second mount.
+        bind_check = (
+            f"nails --config {config_for('/mnt/bind')} --json check --overlay-only "
+            "--allow-decoy-storage"
+        )
+        result = run_command_capture("gate-allow-check", bind_check)
+        row = check_row(last_json(result), "hidden-volume")
+        assert row["status"] == "warn", row
+        assert row["message"].startswith(
+            "--allow-decoy-storage: using /mnt/bind although it is a bind mount of a "
+            "folder of /srv"
+        ), row
+        # The same filesystem mounted at another folder as well is one.
+        machine.succeed("mkdir -p /mnt/again && mount /dev/disk/by-id/virtio-srv /mnt/again")
+        result = run_command_capture("gate-allow-check-again", bind_check)
+        assert_exit_code(result, 4)
+        row = check_row(last_json(result), "hidden-volume")
+        assert row["status"] == "fail", row
+        assert row["message"] == (
+            "the filesystem of /mnt/bind, which --allow-decoy-storage accepted, is also mounted "
+            "at /mnt/again, where neither / nor a line of /etc/fstab mounts it"
+        ), row
+        assert row["remediation"].startswith(
+            "Run `sudo umount /mnt/again`, then run the command again.\n"
+            "If this computer mounts it at /mnt/again by itself, do not unmount it there: use a "
+            "volume on a disk or partition of its own instead.\n"
+        ), row
+        assert "allowable" not in row or row["allowable"] is None, row
+        machine.succeed("umount /mnt/again")
+        result = run_command_capture("gate-allow-check-gone", bind_check)
+        assert check_row(last_json(result), "hidden-volume")["status"] == "warn", result
         machine.succeed("umount /mnt/bind && rm -rf /srv/x")
 
     with subtest("an encrypted container file on a decoy filesystem only warns"):
@@ -447,6 +504,42 @@ in
         assert "refusal" not in report["data"], report
         assert check_row(report, "hidden-volume")["status"] == "pass", report
         assert check_row(report, "backend-entries")["status"] == "pass", report
+
+    with subtest("the volume also mounted at a system folder is refused, with the flag too"):
+        # The gate counts what is mounted at /opt as the decoy's, so the volume
+        # mounted there as well is the decoy's storage. Accepted with the flag,
+        # it is mounted a second time: no fstab line makes the mount at /opt.
+        machine.succeed("mkdir -p /opt && mount /dev/mapper/data /opt")
+        result = run_command_capture(
+            "gate-system-folder", f"nails --config {data_config} --json check --overlay-only"
+        )
+        assert_exit_code(result, 4)
+        row = check_row(last_json(result), "hidden-volume")
+        assert row["status"] == "fail", row
+        assert "it is the filesystem this computer mounts at /opt" in row["message"], row
+        assert row["allowable"] == "decoy_storage", row
+        result = run_command_capture(
+            "gate-system-folder-allow",
+            f"nails --config {data_config} --json check --overlay-only --allow-decoy-storage",
+        )
+        assert_exit_code(result, 4)
+        row = check_row(last_json(result), "hidden-volume")
+        assert row["status"] == "fail", row
+        assert row["message"] == (
+            "the filesystem of /mnt/data, which --allow-decoy-storage accepted, is also mounted "
+            "at /opt, where neither / nor a line of /etc/fstab mounts it"
+        ), row
+        assert row["remediation"].startswith(
+            "Run `sudo umount /opt`, then run the command again.\n"
+        ), row
+        assert "allowable" not in row or row["allowable"] is None, row
+        assert "/dev/" not in row["message"] + row["remediation"], row
+        machine.succeed("umount /opt")
+        result = run_command_capture(
+            "gate-system-folder-gone",
+            f"nails --config {data_config} --json check --overlay-only",
+        )
+        assert check_row(last_json(result), "hidden-volume")["status"] == "pass", result
 
     with subtest("a second filesystem over the volume is refused"):
         volume_listing = machine.succeed("ls -A /mnt/data")
