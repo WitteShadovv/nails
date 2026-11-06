@@ -135,6 +135,20 @@ pub fn build_into(
         .ok_or_else(|| NailsError::NixOSError("the build printed no store path".to_string()))
 }
 
+/// Refuse a hidden NixOS build when the hidden volume holding `upper` has less
+/// than `floor_mb` free: the store delta of a full build is often several GB.
+pub fn ensure_build_space(upper: &Path, floor_mb: u64) -> Result<()> {
+    let stat = rustix::fs::statvfs(upper).map_err(|e| NailsError::io(upper, e.into()))?;
+    let available_mb = stat.f_bavail.saturating_mul(stat.f_frsize) / (1024 * 1024);
+    if available_mb < floor_mb {
+        return Err(NailsError::InvalidState(format!(
+            "the hidden volume has {available_mb} MB free; the hidden NixOS build needs \
+             {floor_mb} MB (rebuild_space_mb)"
+        )));
+    }
+    Ok(())
+}
+
 /// Why a build failed, from its output: nix's last `error:` and what
 /// follows it up to the `nix log` hint (the build log tail included), else the
 /// last line.
@@ -241,6 +255,14 @@ pub fn activate_in(root: &Path, system: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_is_refused_below_the_space_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(ensure_build_space(dir.path(), 0).is_ok());
+        let error = ensure_build_space(dir.path(), u64::MAX).unwrap_err();
+        assert!(error.to_string().contains("rebuild_space_mb"), "{error}");
+    }
 
     #[test]
     fn a_failed_build_reports_nix_error_line_not_the_log_hint() {
