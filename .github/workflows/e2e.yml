@@ -277,9 +277,9 @@ jobs:
             read -ra targets <<< "$TESTS"
           else
             case "$MODE" in
-              # The heavy group would lengthen every pull request's
-              # pipeline; pushes, the nightly run and the full-e2e label
-              # (mode all) run it.
+              # The heavy group would lengthen the pipeline of every pull
+              # request that changes nails; pushes, the nightly run and the
+              # full-e2e label (mode all) run it.
               affected) targets=(--affected "$BASE" --exclude heavy) ;;
               ci) targets=(ci) ;;
               all | execute) targets=(all) ;;
