@@ -30,11 +30,11 @@
 //!   or `1`, the check cannot tell and refuses as if kdump were armed. A kernel
 //!   without the file has no crash kernel support, so nothing is loaded,
 //! - unattended-upgrades' shutdown helper running with
-//!   `Unattended-Upgrade::InstallOnShutdown` on: a switch is a shutdown to it,
-//!   so at activation it installs the pending updates on the decoy disk and
-//!   logs that run there. An apt configuration NAILS
-//!   cannot read leaves the setting unknown, which is refused as if it were on
-//!   (see [`install_on_shutdown`]).
+//!   `Unattended-Upgrade::InstallOnShutdown` on: a switch through logind is a
+//!   shutdown to it, so at activation it installs the pending updates on the
+//!   decoy disk and logs that run there. An apt configuration NAILS cannot
+//!   read or does not follow leaves the setting unknown, which is refused as
+//!   if it were on (see [`install_on_shutdown`]).
 //!
 //! Warn (surface the hazard, never block):
 //! - an atime policy that records read access on the decoy (`strictatime` /
@@ -419,10 +419,19 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
         let upgrades = install_on_shutdown::finding(fs, &self.root, self.upper.as_deref());
         let mut warnings = Self::warnings(fs, &self.root, self.is_nixos);
         warnings.extend(upgrades.warning);
-        let (upgrade_blocker, upgrade_fix) = upgrades.blocker.unzip();
         let logs = !log_blockers.is_empty();
         let kdump = kdump_blocker.is_some();
-        let upgrade = upgrade_blocker.is_some();
+        let upgrade = upgrades.blocker.is_some();
+        // What the override lets happen is said only when NAILS found the
+        // setting on, not when it cannot tell.
+        let installs = upgrades
+            .blocker
+            .as_ref()
+            .is_some_and(|blocker| blocker.installs);
+        let (upgrade_blocker, upgrade_fix) = upgrades
+            .blocker
+            .map(|blocker| (blocker.finding, blocker.fix))
+            .unzip();
 
         if logs || kdump || upgrade {
             let findings = log_blockers
@@ -447,7 +456,7 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
                          /var/crash on the decoy disk.",
                     );
                 }
-                if upgrade {
+                if installs {
                     msg.push_str(
                         " At the switch unattended-upgrades installs the pending updates on the \
                          decoy disk and logs that run there.",

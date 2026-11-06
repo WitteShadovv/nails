@@ -67,12 +67,22 @@ fn an_active_daily_upgrade_unit_refuses_until_it_ends() {
         message.contains("apt-daily-upgrade.service is active"),
         "{message}"
     );
+    // The unit is apt's, and its run may not hold the lock yet: the line is
+    // what the helper writes when it runs and finds the lock held.
     assert!(
-        message.contains("`Unattended-upgrade in progress during shutdown`"),
+        message.contains(
+            "the shutdown helper of unattended-upgrades, if it runs, stops a run that holds the \
+             lock and writes `Unattended-upgrade in progress during shutdown` to its log on the \
+             decoy disk"
+        ),
         "{message}"
     );
-    assert!(message.contains("on the decoy disk"), "{message}");
     assert_eq!(result.remediation(), Some(RETRY));
+    // apt-daily.service takes the lock for its download, too.
+    assert!(
+        RETRY.contains("`systemctl status apt-daily.service apt-daily-upgrade.service`"),
+        "{RETRY}"
+    );
     // No flag lifts it.
     assert!(
         !matches!(
@@ -97,7 +107,7 @@ fn a_held_lock_refuses_and_names_its_holder_once() {
         "{message}"
     );
     // /var/run/unattended-upgrades.lock is the same file.
-    assert_eq!(message.matches("holds").count(), 1, "{message}");
+    assert_eq!(message.matches(" holds /").count(), 1, "{message}");
     assert_eq!(result.remediation(), Some(RETRY));
 }
 
@@ -150,6 +160,59 @@ fn what_cannot_be_read_refuses_as_unknown() {
         matches!(&unknown, UpgradeRun::Unknown(why) if why.contains(LOCK)),
         "{unknown:?}"
     );
+}
+
+#[test]
+fn a_lock_file_that_is_no_plain_file_refuses_as_unknown() {
+    // The helper opens the lock file without following a link and takes
+    // one it cannot open for a held lock, which /proc/locks does not show.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("run")).unwrap();
+    std::fs::create_dir_all(root.join("srv")).unwrap();
+    std::fs::write(root.join("srv/lock"), "").unwrap();
+    std::fs::create_dir_all(root.join("proc")).unwrap();
+    std::fs::write(root.join("proc/locks"), "").unwrap();
+    let lock = root.join("run/unattended-upgrades.lock");
+    let check = UpgradeRunCheck::with_root(root);
+    const LINK: &str = "/run/unattended-upgrades.lock is a symbolic link, not a plain file";
+    for (kind, why) in [
+        ("a link that leads nowhere", LINK),
+        ("a link to a plain file", LINK),
+        (
+            "a directory",
+            "/run/unattended-upgrades.lock is not a plain file",
+        ),
+    ] {
+        match kind {
+            "a link that leads nowhere" => {
+                std::os::unix::fs::symlink("/nonexistent/lock", &lock).unwrap();
+            }
+            "a link to a plain file" => {
+                std::os::unix::fs::symlink(root.join("srv/lock"), &lock).unwrap();
+            }
+            _ => std::fs::create_dir(&lock).unwrap(),
+        }
+        let result = PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
+        assert!(result.is_fail(), "{kind}: {result:?}");
+        let message = result.message();
+        assert!(
+            message.starts_with(&format!(
+                "NAILS cannot tell whether a daily unattended-upgrade run is in progress ({why})"
+            )),
+            "{kind}: {message}"
+        );
+        assert_eq!(result.remediation(), Some(UNREAD), "{kind}");
+        if lock.is_dir() {
+            std::fs::remove_dir(&lock).unwrap();
+        } else {
+            std::fs::remove_file(&lock).unwrap();
+        }
+    }
+    // A plain file nobody locks passes.
+    std::fs::write(&lock, "").unwrap();
+    let result = PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
+    assert!(result.is_pass(), "{result:?}");
 }
 
 #[test]

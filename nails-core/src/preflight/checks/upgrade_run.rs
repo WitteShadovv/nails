@@ -27,7 +27,10 @@
 //! lock with the device and inode of its file, against those of the lock
 //! file: the lock file is looked up but neither opened nor locked, and
 //! nothing is written. Where the lock file does not exist, no run took it
-//! since the boot, and `/proc/locks` is not read.
+//! since the boot, and `/proc/locks` is not read. The helper opens the lock
+//! file without following a link and takes one it cannot open for a held
+//! lock, so a lock file that is a link, a directory or anything else but a
+//! plain file leaves NAILS unable to tell, which refuses as well.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::decoy_posture::unit_active;
@@ -59,21 +62,25 @@ pub enum UpgradeRun {
     Unknown(String),
 }
 
+/// What the switch makes of a run: the signs of one need not mean the helper
+/// writes its line (unattended-upgrades may not be installed, or the run may
+/// not hold the lock yet), so it says what the helper does when it does.
+const AT_THE_SWITCH: &str = "at the switch, the shutdown helper of unattended-upgrades, if it \
+                             runs, stops a run that holds the lock and writes `Unattended-upgrade \
+                             in progress during shutdown` to its log on the decoy disk";
+
 impl UpgradeRun {
     /// Why it refuses a switch, `None` when it does not.
     pub fn refusal(&self) -> Option<String> {
         match self {
             UpgradeRun::Idle => None,
             UpgradeRun::InProgress(signs) => Some(format!(
-                "a daily unattended-upgrade run is in progress ({}): at the switch, \
-                 unattended-upgrades' shutdown helper stops it and writes `Unattended-upgrade in \
-                 progress during shutdown` to its log on the decoy disk",
+                "a daily unattended-upgrade run is in progress ({}): {AT_THE_SWITCH}",
                 signs.join(", and ")
             )),
             UpgradeRun::Unknown(why) => Some(format!(
-                "NAILS cannot tell whether a daily unattended-upgrade run is in progress ({why}), \
-                 which unattended-upgrades' shutdown helper would stop at the switch and write \
-                 to its log on the decoy disk"
+                "NAILS cannot tell whether a daily unattended-upgrade run is in progress \
+                 ({why}): {AT_THE_SWITCH}"
             )),
         }
     }
@@ -144,14 +151,34 @@ pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
     for lock in LOCKS {
         let path = root.join(lock);
         let shown = format!("/{lock}");
+        let doubt = |e| UpgradeRun::Unknown(format!("{shown} cannot be looked up: {e}"));
+        // The helper opens the lock file with O_NOFOLLOW (apt's GetLock())
+        // and takes a lock file it cannot open for a held lock
+        // (unattended-upgrade-shutdown's iter()): a link, a directory or
+        // anything else that is no plain file can make it write its line at
+        // every switch, which /proc/locks does not show.
+        match fs.is_symlink(&path) {
+            Ok(false) => {}
+            Ok(true) => {
+                return UpgradeRun::Unknown(format!(
+                    "{shown} is a symbolic link, not a plain file"
+                ));
+            }
+            Err(e) => return doubt(e),
+        }
         let inode = match fs.inode(&path) {
             Ok(Some(inode)) => inode,
             Ok(None) => continue,
-            Err(e) => return UpgradeRun::Unknown(format!("{shown} cannot be looked up: {e}")),
+            Err(e) => return doubt(e),
         };
+        match fs.is_regular_file(&path) {
+            Ok(true) => {}
+            Ok(false) => return UpgradeRun::Unknown(format!("{shown} is not a plain file")),
+            Err(e) => return doubt(e),
+        }
         let dev = match fs.device_id(&path) {
             Ok(dev) => dev,
-            Err(e) => return UpgradeRun::Unknown(format!("{shown} cannot be looked up: {e}")),
+            Err(e) => return doubt(e),
         };
         let file = (major(dev), minor(dev), inode);
         // The same file under its other name.
@@ -192,11 +219,12 @@ pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
 
 /// What to do: wait for the run to end.
 pub const RETRY: &str = "Try again in a few minutes, once the run has ended \
-                         (`systemctl status apt-daily-upgrade.service` shows it).";
+                         (`systemctl status apt-daily.service apt-daily-upgrade.service` shows \
+                         the daily runs).";
 
 /// What to do when NAILS cannot tell.
-const UNREAD: &str = "Make sure /proc is mounted and the lock file can be looked up, then \
-                      activate again.";
+const UNREAD: &str = "Make sure /proc is mounted and /run/unattended-upgrades.lock, where it \
+                      exists, is a plain file that can be looked up, then activate again.";
 
 /// `unattended-upgrade-run`: refuses activation while a daily
 /// unattended-upgrade run is in progress.
