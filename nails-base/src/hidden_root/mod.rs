@@ -378,27 +378,97 @@ impl HiddenRoot {
         fs: &F,
         root: &Path,
     ) -> Result<Option<MountedElsewhere>> {
-        let table = fs.mount_table()?;
-        let canonical = fs.canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        if root_is_hidden_overlay(&table, &canonical).is_some() {
-            return Ok(None);
-        }
-        let Some(visible) = top_mount_at(&table, &canonical) else {
-            return Ok(None);
-        };
-        let mounts: Vec<SecondMount> = second_mounts(&table, visible)
-            .into_iter()
-            .map(|mount| SecondMount {
-                mount_point: mount.mount_point.clone(),
-                hidden_under: hidden_under(&table, mount),
-            })
-            .collect();
-        Ok((!mounts.is_empty()).then(|| MountedElsewhere {
-            mounts,
-            root_shows: separation::sharing(visible),
-            root_folder: visible.root.clone(),
-        }))
+        found_elsewhere(fs, root, false)
     }
+
+    /// [`mounted_elsewhere`](Self::mounted_elsewhere) for a root that
+    /// [`assess`](Self::assess) placed on a filesystem the decoy uses
+    /// ([`separation::Verdict::OnDecoyFilesystem`]), which the operator
+    /// accepted with `--allow-decoy-storage`. Two kinds of other mounts of
+    /// that filesystem do not count. One is the decoy's own mounts of it,
+    /// which the gate's warning is about: the one at `/`, and one that a line
+    /// of the decoy's fstab makes ([`separation::fstab_mounts`]). The other is
+    /// a mount that shows none of the root's folder, neither that folder nor
+    /// one above or inside it: NixOS's read-only bind of `/nix/store` beside a
+    /// bind of a folder of `/`, say, or another subvolume of a btrfs
+    /// filesystem. Every other mount counts, as for a volume of its own: a
+    /// separate drive mounted at `/srv` by hand as well, which made the gate
+    /// place the root on the decoy's storage, and a mount the decoy makes with
+    /// no fstab line, such as the `/home` or `/srv` partition that
+    /// systemd-gpt-auto-generator mounts, or ostree's `/sysroot`.
+    ///
+    /// It reads the judge's inputs again through `fs`, as the gate does
+    /// ([`separation::collect`]), and fails when one that exists cannot be
+    /// read now.
+    pub fn mounted_elsewhere_on_a_decoy_filesystem<F: Filesystem>(
+        fs: &F,
+        root: &Path,
+    ) -> Result<Option<MountedElsewhere>> {
+        found_elsewhere(fs, root, true)
+    }
+}
+
+/// [`HiddenRoot::mounted_elsewhere`], and with `decoy_filesystem`
+/// [`HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem`].
+fn found_elsewhere<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    decoy_filesystem: bool,
+) -> Result<Option<MountedElsewhere>> {
+    let table = fs.mount_table()?;
+    let canonical = fs.canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if root_is_hidden_overlay(&table, &canonical).is_some() {
+        return Ok(None);
+    }
+    let Some(visible) = top_mount_at(&table, &canonical) else {
+        return Ok(None);
+    };
+    let mut second = second_mounts(&table, visible);
+    if decoy_filesystem {
+        let collected = separation::collect(fs, &table, Path::new("/"));
+        if !collected.unreadable.is_empty() {
+            let unreadable: Vec<String> = collected
+                .unreadable
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            return Err(crate::NailsError::InvalidState(format!(
+                "{} could not be read, so where this computer mounts the filesystem at {} \
+                 cannot be told",
+                unreadable.join(", "),
+                root.display()
+            )));
+        }
+        let scene = collected.scene(&table);
+        second.retain(|mount| shows_some_of(mount, visible) && !decoys_own(&scene, mount));
+    }
+    let mounts: Vec<SecondMount> = second
+        .into_iter()
+        .map(|mount| SecondMount {
+            mount_point: mount.mount_point.clone(),
+            hidden_under: hidden_under(&table, mount),
+        })
+        .collect();
+    Ok((!mounts.is_empty()).then(|| MountedElsewhere {
+        mounts,
+        root_shows: separation::sharing(visible),
+        root_folder: visible.root.clone(),
+    }))
+}
+
+/// Whether `mount`, a mount of the filesystem that `visible` shows at a
+/// hidden root, shows some of the folder of it that `visible` shows: that
+/// folder, a folder above it, or one inside it. A bind of a folder beside it,
+/// or another btrfs subvolume, shows none of it: its files cannot be reached
+/// there.
+fn shows_some_of(mount: &MountEntry, visible: &MountEntry) -> bool {
+    visible.root.starts_with(&mount.root) || mount.root.starts_with(&visible.root)
+}
+
+/// Whether `mount` is one of the decoy's own mounts in `scene`: the one at
+/// `/`, or one a line of its fstab makes ([`separation::fstab_mounts`]).
+fn decoys_own(scene: &separation::Scene<'_>, mount: &MountEntry) -> bool {
+    mount.mount_point == Path::new("/") || separation::fstab_mounts(scene, mount)
 }
 
 /// The volume at a hidden root, mounted at other places too (see
@@ -497,7 +567,10 @@ fn covering_parent<'a>(
 /// kinds do not count: a mount at the root's own mount point, so a bind of the
 /// volume stacked at the root is the root, and one in the tree of the next
 /// root while one is mounted at [`NEXTROOT`], where an entry binds the volume
-/// at its own path (the session-state check refuses that tree by itself).
+/// at its own path (the session-state check refuses that tree by itself). For
+/// a root on a filesystem the decoy uses, which the operator accepted,
+/// [`HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem`] leaves out the
+/// decoy's own mounts of it and those that show none of the root's folder.
 pub fn second_mounts<'a>(table: &'a [MountEntry], visible: &MountEntry) -> Vec<&'a MountEntry> {
     let nextroot = Path::new(NEXTROOT);
     let next_root_mounted = table.iter().any(|m| m.mount_point == nextroot);

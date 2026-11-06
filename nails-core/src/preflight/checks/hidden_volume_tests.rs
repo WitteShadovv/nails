@@ -695,6 +695,23 @@ fn a_btrfs_subvolume_of_the_volume_mounted_elsewhere_fails() {
 }
 
 #[test]
+fn another_subvolume_of_a_volume_of_its_own_counts_though_it_shows_none_of_the_root() {
+    // Only for a root accepted on a filesystem the decoy uses is a mount
+    // that shows none of the root's folder left out.
+    let result = run_on(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 0:45 /data /mnt/data rw - btrfs /dev/mapper/data rw,subvol=/data\n\
+         40 1 0:45 /other /run/media/u/X rw - btrfs /dev/mapper/data rw,subvol=/other\n",
+    );
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(
+        result.message(),
+        "the volume at /mnt/data is also mounted at /run/media/u/X: a desktop may have mounted \
+         it there by itself when it was unlocked"
+    );
+}
+
+#[test]
 fn every_other_mount_is_named_and_unmounted_deepest_first_and_quoted() {
     let fs = mounted_with(
         "40 1 253:0 / /media/u/My\\040Drive rw - ext4 /dev/mapper/data rw\n\
@@ -889,10 +906,18 @@ fn the_sessions_own_mounts_of_the_volume_pass() {
 }
 
 #[test]
-fn a_root_on_a_decoy_filesystem_the_operator_accepted_is_not_mounted_twice() {
-    // A bind of a folder of /, and a btrfs subvolume of /home: the decoy
-    // mounts that filesystem, which the gate's warning names, and that is
-    // all the second mount is.
+fn a_root_on_a_decoy_filesystem_the_operator_accepted_passes_beside_the_decoys_own_mounts() {
+    // A bind of a folder of /, beside NixOS's read-only bind of /nix/store,
+    // and a btrfs subvolume beside the /home subvolume the fstab mounts: the
+    // decoy's / and /home are where it mounts that filesystem, which the
+    // gate's warning names, and neither /nix/store nor /home shows the
+    // root's folder.
+    let bind = bind_of_a_decoy_folder();
+    bind.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         5 1 8:1 /nix/store /nix/store ro - ext4 /dev/vda1 rw\n\
+         30 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n",
+    );
     let subvolume = MockFilesystem::new();
     subvolume.mock_set_path_exists(NEUTRAL_ROOT, true);
     subvolume.mock_set_writable(NEUTRAL_ROOT, true);
@@ -901,7 +926,8 @@ fn a_root_on_a_decoy_filesystem_the_operator_accepted_is_not_mounted_twice() {
          2 1 0:40 /home /home rw - btrfs /dev/vda2 rw,subvol=/home\n\
          30 1 0:40 /vault /mnt/data rw - btrfs /dev/vda2 rw,subvol=/vault\n",
     );
-    for fs in [bind_of_a_decoy_folder(), subvolume] {
+    subvolume.mock_set_file_content("/etc/fstab", "/dev/vda2 /home btrfs subvol=/home 0 0\n");
+    for fs in [bind_of_a_decoy_folder(), bind, subvolume] {
         let result = run_allowing(&fs, Allow::DecoyStorage);
         assert!(result.is_warn(), "got {result:?}");
         assert!(
@@ -912,4 +938,116 @@ fn a_root_on_a_decoy_filesystem_the_operator_accepted_is_not_mounted_twice() {
             result.message()
         );
     }
+}
+
+/// The failure of a root the operator accepted on a filesystem the decoy
+/// uses, mounted at `places` as well.
+fn on_a_decoy_filesystem_also_at(places: &str) -> String {
+    format!(
+        "the filesystem of /mnt/data, which --allow-decoy-storage accepted, is also mounted at \
+         {places}, where neither / nor a line of /etc/fstab mounts it"
+    )
+}
+
+/// The fix of that failure for one other mount at `place`, which `umount`
+/// reaches by its path.
+fn on_a_decoy_filesystem_fix(place: &str) -> String {
+    format!(
+        "Run `sudo umount {place}`, then run the command again.\n\
+         If this computer mounts it at {place} by itself, do not unmount it there: use a \
+         volume on a disk or partition of its own instead.\n{ADVICE}"
+    )
+}
+
+#[test]
+fn a_separate_drive_also_mounted_at_a_system_folder_is_refused_with_the_flag_too() {
+    // The drive at the root is mounted at /srv as well, which no fstab line
+    // makes: the gate counts /srv as the decoy's and refuses it as decoy
+    // storage, and accepted with the flag it is a second mount.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n\
+         40 1 8:17 / /srv rw - ext4 /dev/sdb1 rw\n",
+    );
+    let refused = run_allowing(&fs, Allow::Nothing);
+    assert!(refused.is_fail(), "got {refused:?}");
+    assert!(
+        refused
+            .message()
+            .contains("it is the filesystem this computer mounts at /srv"),
+        "{}",
+        refused.message()
+    );
+    assert_eq!(refused.allowable(), Some(Allowable::DecoyStorage));
+
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(result.message(), on_a_decoy_filesystem_also_at("/srv"));
+    assert_eq!(
+        result.remediation().unwrap(),
+        on_a_decoy_filesystem_fix("/srv")
+    );
+    // No flag lifts it, and nothing was probed.
+    assert_eq!(result.allowable(), None);
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+
+    // Mounted at /srv by a line of the fstab, it is the decoy's own mount
+    // (the backend-entries check refuses that line by itself).
+    fs.mock_set_file_content("/etc/fstab", "/dev/sdb1 /srv ext4 defaults 0 2\n");
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_warn(), "got {result:?}");
+}
+
+#[test]
+fn a_root_on_a_filesystem_the_decoy_mounts_without_an_fstab_line_is_refused() {
+    // A bind of a folder of /home, a partition the decoy mounts with no line
+    // (as systemd-gpt-auto-generator does): /home shows the root's folder.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         2 1 8:2 / /home rw - ext4 /dev/vda2 rw\n\
+         30 1 8:2 /u/vault /mnt/data rw - ext4 /dev/vda2 rw\n",
+    );
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(result.message(), on_a_decoy_filesystem_also_at("/home"));
+    assert_eq!(
+        result.remediation().unwrap(),
+        on_a_decoy_filesystem_fix("/home")
+    );
+    assert_eq!(result.allowable(), None);
+    // With a line that mounts the partition at /home, it passes with the
+    // warning.
+    fs.mock_set_file_content("/etc/fstab", "/dev/vda2 /home ext4 defaults 0 2\n");
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_warn(), "got {result:?}");
+}
+
+#[test]
+fn a_second_mount_that_shows_the_folder_of_an_accepted_root_is_refused() {
+    // A folder of / bound at the root, and a folder above it bound under
+    // /media too: the decoy's files of the root are reached there.
+    let fs = bind_of_a_decoy_folder();
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n\
+         40 1 8:1 /srv /media/u/srv rw - ext4 /dev/vda1 rw\n",
+    );
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(
+        result.message(),
+        on_a_decoy_filesystem_also_at("/media/u/srv")
+    );
+    assert_eq!(
+        result.remediation().unwrap(),
+        on_a_decoy_filesystem_fix("/media/u/srv")
+    );
+    assert_eq!(result.allowable(), None);
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 }

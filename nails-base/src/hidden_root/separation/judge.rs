@@ -470,6 +470,40 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
     }
 }
 
+/// Whether a line of the decoy's fstab makes the mount `mount`: a line for
+/// its mount point, of a filesystem the claims count (no swap, RAM, kernel,
+/// host-share, network or overlay line), whose spec names the device `mount`
+/// is on or another device of its btrfs filesystem, or a bind line whose
+/// source lies on its filesystem. A spec that leads to no device here names
+/// none. A filesystem mounted at a folder that the fstab names for another
+/// device is no mount the fstab makes, whether it is mounted over that
+/// device's mount or in its place.
+pub fn fstab_mounts(scene: &Scene<'_>, mount: &MountEntry) -> bool {
+    let devices = scene.devices;
+    let node = devices.node_of_mount(mount);
+    scene
+        .fstab
+        .iter()
+        .filter(|entry| entry.file == mount.mount_point)
+        .filter(|entry| {
+            !(entry.is_swap()
+                || entry.is_virtual()
+                || entry.is_host_share()
+                || entry.is_network()
+                || entry.vfstype == "overlay")
+        })
+        .any(|entry| {
+            if entry.is_bind() {
+                return mount_holding(scene.mounts, Path::new(&entry.spec))
+                    .is_some_and(|holder| holder.dev == mount.dev);
+            }
+            match (devices.node_of_spec(&entry.spec), node) {
+                (Some(named), Some(node)) => named == node || devices.same_btrfs(named, node),
+                _ => false,
+            }
+        })
+}
+
 /// Where the decoy mounts the filesystem of `holder`, if it is claimed.
 fn claimed_holder(claims: &[Claim], devices: &DeviceMap, holder: &MountEntry) -> Option<PathBuf> {
     let node = devices.node_of_mount(holder);

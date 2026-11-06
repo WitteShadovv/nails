@@ -344,8 +344,18 @@ fn a_btrfs_subvolume_of_the_volume_elsewhere_is_a_second_mount() {
     let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
                  10 1 0:45 /data /mnt/data rw - btrfs /dev/mapper/data rw,subvol=/data\n\
                  20 1 0:45 / /run/media/u/X rw - btrfs /dev/mapper/data rw,subvol=/\n\
-                 21 1 0:46 / /run/media/u/Y rw - btrfs /dev/sdc1 rw,subvol=/\n";
-    assert_eq!(elsewhere(table), vec![PathBuf::from("/run/media/u/X")]);
+                 21 1 0:46 / /run/media/u/Y rw - btrfs /dev/sdc1 rw,subvol=/\n\
+                 22 1 0:45 /other /run/media/u/Z rw - btrfs /dev/mapper/data rw,subvol=/other\n";
+    // On a volume of its own, a subvolume that shows none of the root's
+    // folder counts too: the drive is mounted where the decoy's desktop
+    // reaches it.
+    assert_eq!(
+        elsewhere(table),
+        vec![
+            PathBuf::from("/run/media/u/X"),
+            PathBuf::from("/run/media/u/Z")
+        ]
+    );
 }
 
 #[test]
@@ -518,6 +528,12 @@ fn the_sessions_own_mounts_are_no_second_mount() {
             .unwrap()
             .is_none()
     );
+    // Nor for a root the operator accepted on a filesystem the decoy uses.
+    assert!(
+        HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem(&fs, Path::new("/mnt/data"))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -529,6 +545,242 @@ fn nothing_mounted_at_the_root_is_mounted_elsewhere_and_a_table_error_is_an_erro
     let fs = fs_with(&decoy_table(""));
     fs.mock_set_mount_table_error("permission denied");
     assert!(HiddenRoot::mounted_elsewhere(&fs, Path::new("/mnt/data")).is_err());
+    assert!(
+        HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem(&fs, Path::new("/mnt/data")).is_err()
+    );
+}
+
+// ------------------------------------------------------------------------
+// A second mount of a root the operator accepted on a decoy filesystem
+// ------------------------------------------------------------------------
+
+/// A mock where `/mnt/data` exists, with `table` as its mount table and
+/// `fstab` as the decoy's `/etc/fstab`.
+fn decoy_fs(table: &str, fstab: &str) -> MockFilesystem {
+    let fs = fs_with(table);
+    fs.mock_set_file_content("/etc/fstab", fstab);
+    fs
+}
+
+/// Where [`HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem`] finds the
+/// filesystem at `/mnt/data` mounted besides, on `fs`.
+fn elsewhere_on_the_decoy(fs: &MockFilesystem) -> Vec<PathBuf> {
+    HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem(fs, Path::new("/mnt/data"))
+        .unwrap()
+        .map(|found| {
+            assert!(!found.mounts.is_empty(), "{found:?}");
+            found.mounts.into_iter().map(|m| m.mount_point).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The decoy's `/` on `/dev/vda1`, its folder `/srv/x` bound at the root, and
+/// NixOS's read-only bind of `/nix/store`, plus `extra` mount lines.
+fn bind_of_a_folder_of_root(extra: &str) -> String {
+    format!(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         5 1 8:1 /nix/store /nix/store ro - ext4 /dev/vda1 rw\n\
+         30 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n{extra}"
+    )
+}
+
+#[test]
+fn on_a_decoy_filesystem_only_mounts_that_show_the_roots_folder_and_are_not_the_decoys_count() {
+    // For a volume of its own, the decoy's / and the bind of /nix/store
+    // would be second mounts; on the decoy's own filesystem, / is where the
+    // decoy mounts it, and /nix/store shows none of /srv/x.
+    let table = bind_of_a_folder_of_root("");
+    assert_eq!(
+        elsewhere(&table),
+        vec![PathBuf::from("/"), PathBuf::from("/nix/store")]
+    );
+    let fs = decoy_fs(&table, "/dev/vda1 / ext4 defaults 0 1\n");
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+    // A bind of a folder above the root's folder, or of one inside it, shows
+    // the root's files; a bind of a folder beside it does not.
+    let fs = decoy_fs(
+        &bind_of_a_folder_of_root(
+            "40 1 8:1 /srv /media/u/srv rw - ext4 /dev/vda1 rw\n\
+             41 1 8:1 /srv/x/sub /run/media/u/sub rw - ext4 /dev/vda1 rw\n\
+             42 1 8:1 /srv/xy /mnt/xy rw - ext4 /dev/vda1 rw\n\
+             43 1 8:1 /srv/y /mnt/y rw - ext4 /dev/vda1 rw\n",
+        ),
+        "/dev/vda1 / ext4 defaults 0 1\n",
+    );
+    assert_eq!(
+        elsewhere_on_the_decoy(&fs),
+        vec![
+            PathBuf::from("/media/u/srv"),
+            PathBuf::from("/run/media/u/sub")
+        ]
+    );
+    // / is the decoy's without an fstab line too.
+    let fs = decoy_fs(&table, "");
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+}
+
+#[test]
+fn on_a_decoy_filesystem_a_separate_drive_also_mounted_at_a_system_folder_counts() {
+    // The gate places a drive mounted at /srv too on the decoy's storage;
+    // with no fstab line for /srv, that mount is no mount of the decoy's.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 30 1 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n\
+                 40 1 8:17 / /srv rw - ext4 /dev/sdb1 rw\n";
+    let fs = decoy_fs(table, "/dev/vda1 / ext4 defaults 0 1\n");
+    assert_eq!(elsewhere_on_the_decoy(&fs), vec![PathBuf::from("/srv")]);
+    // A line that mounts that drive at /srv makes it the decoy's own mount.
+    let fs = decoy_fs(
+        table,
+        "/dev/vda1 / ext4 defaults 0 1\n/dev/sdb1 /srv ext4 defaults 0 2\n",
+    );
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+    // So does a line that names it by a link udev made for it.
+    let fs = decoy_fs(table, "UUID=b1 /srv ext4 defaults 0 2\n");
+    fs.create_symlink(Path::new("/dev/sdb1"), Path::new("/dev/disk/by-uuid/b1"))
+        .unwrap();
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+    // A line for another device at /srv, one whose spec leads to no device,
+    // or one of a kind the judge claims nothing by (swap, RAM, kernel, a
+    // host share, a network or an overlay), does not, though its spec names
+    // the drive.
+    for fstab in [
+        "/dev/sdc1 /srv ext4 defaults 0 2\n",
+        "UUID=c1 /srv ext4 defaults 0 2\n",
+        "UUID=gone /srv ext4 defaults 0 2\n",
+        "/dev/sdb1 /srv swap defaults 0 0\n",
+        "/dev/sdb1 /srv tmpfs defaults 0 0\n",
+        "/dev/sdb1 /srv virtiofs defaults 0 0\n",
+        "/dev/sdb1 /srv ext4 _netdev 0 0\n",
+        "/dev/sdb1 /srv overlay defaults 0 0\n",
+    ] {
+        let fs = decoy_fs(table, fstab);
+        fs.create_symlink(Path::new("/dev/sdc1"), Path::new("/dev/disk/by-uuid/c1"))
+            .unwrap();
+        assert_eq!(
+            elsewhere_on_the_decoy(&fs),
+            vec![PathBuf::from("/srv")],
+            "{fstab}"
+        );
+    }
+    // The drive mounted by hand over the decoy's own /srv is not the mount
+    // its line makes, though the one below it is.
+    let stacked = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                   20 1 8:33 / /srv rw - ext4 /dev/sdc1 rw\n\
+                   30 1 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n\
+                   40 20 8:17 / /srv rw - ext4 /dev/sdb1 rw\n";
+    let fs = decoy_fs(stacked, "/dev/sdc1 /srv ext4 defaults 0 2\n");
+    assert_eq!(elsewhere_on_the_decoy(&fs), vec![PathBuf::from("/srv")]);
+}
+
+#[test]
+fn on_a_decoy_filesystem_a_btrfs_subvolume_counts_only_the_mounts_that_show_its_folder() {
+    // A subvolume of the decoy's btrfs beside its /home subvolume: every
+    // subvolume mounted from it shows the same device in the table.
+    let table = |extra: &str| {
+        format!(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             2 1 0:40 /home /home rw - btrfs /dev/vda2 rw,subvol=/home\n\
+             30 1 0:40 /vault /mnt/data rw - btrfs /dev/vda2 rw,subvol=/vault\n{extra}"
+        )
+    };
+    let home = "/dev/vda2 /home btrfs subvol=/home 0 0\n";
+    let fs = decoy_fs(&table(""), home);
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+    // Its top, mounted by hand, shows every subvolume; one the fstab mounts
+    // is the decoy's.
+    let top = "50 1 0:40 / /mnt/pool rw - btrfs /dev/vda2 rw,subvolid=5,subvol=/\n";
+    let fs = decoy_fs(&table(top), home);
+    assert_eq!(
+        elsewhere_on_the_decoy(&fs),
+        vec![PathBuf::from("/mnt/pool")]
+    );
+    let fs = decoy_fs(
+        &table(top),
+        &format!("{home}/dev/vda2 /mnt/pool btrfs subvolid=5 0 0\n"),
+    );
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+
+    // A subvolume nested in /home is reached through the decoy's /home: the
+    // fstab line makes that mount the decoy's, and without one (a partition
+    // systemd-gpt-auto-generator mounts at /home, say) it counts.
+    let nested = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                  2 1 0:40 /home /home rw - btrfs /dev/vda2 rw,subvol=/home\n\
+                  30 1 0:40 /home/u/vault /mnt/data rw - btrfs /dev/vda2 \
+                  rw,subvol=/home/u/vault\n";
+    let fs = decoy_fs(nested, home);
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+    let fs = decoy_fs(nested, "");
+    assert_eq!(elsewhere_on_the_decoy(&fs), vec![PathBuf::from("/home")]);
+
+    // A line that names another device of the same btrfs filesystem mounts
+    // it too: the link for the filesystem's UUID leads to one of them.
+    let fs = decoy_fs(nested, "UUID=pool /home btrfs subvol=/home 0 0\n");
+    fs.create_symlink(Path::new("/dev/vdb2"), Path::new("/dev/disk/by-uuid/pool"))
+        .unwrap();
+    fs.mock_set_file_content("/sys/class/block/vdb2/dev", "8:18\n");
+    assert_eq!(elsewhere_on_the_decoy(&fs), vec![PathBuf::from("/home")]);
+    fs.mock_set_directory_contents(
+        Path::new("/sys/fs/btrfs"),
+        vec![PathBuf::from("/sys/fs/btrfs/f1")],
+    );
+    fs.mock_set_directory_contents(
+        Path::new("/sys/fs/btrfs/f1/devices"),
+        vec![
+            PathBuf::from("/sys/fs/btrfs/f1/devices/vda2"),
+            PathBuf::from("/sys/fs/btrfs/f1/devices/vdb2"),
+        ],
+    );
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+}
+
+#[test]
+fn on_a_decoy_filesystem_a_bind_line_of_the_fstab_makes_its_mount() {
+    // /persist is the decoy's, and its fstab binds /persist/home at /home;
+    // the root is a bind of a folder below that.
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 2 1 8:17 / /persist rw - ext4 /dev/vdb1 rw\n\
+                 3 1 8:17 /home /home rw - ext4 /dev/vdb1 rw\n\
+                 30 1 8:17 /home/u/vault /mnt/data rw - ext4 /dev/vdb1 rw\n";
+    let persist = "/dev/vdb1 /persist ext4 defaults 0 2\n";
+    let fs = decoy_fs(
+        table,
+        &format!("{persist}/persist/home /home none bind 0 0\n"),
+    );
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+    // Without the bind line /home is no mount of the decoy's; a bind line
+    // whose source lies on another filesystem does not make it either.
+    for fstab in [
+        persist.to_string(),
+        format!("{persist}/srv/home /home none bind 0 0\n"),
+    ] {
+        let fs = decoy_fs(table, &fstab);
+        assert_eq!(
+            elsewhere_on_the_decoy(&fs),
+            vec![PathBuf::from("/home")],
+            "{fstab}"
+        );
+    }
+}
+
+#[test]
+fn on_a_decoy_filesystem_an_input_that_cannot_be_read_now_is_an_error() {
+    // The gate read it a moment ago; a fstab or crypttab that exists but
+    // cannot be read now cannot tell which mounts are the decoy's.
+    let fs = decoy_fs(&bind_of_a_folder_of_root(""), "");
+    fs.mock_set_path_exists("/etc/crypttab", true);
+    let error = HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem(&fs, Path::new("/mnt/data"))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "/etc/crypttab could not be read, so where this computer mounts the filesystem at \
+             /mnt/data cannot be told"
+        ),
+        "{error}"
+    );
+    // A root with nothing mounted at it reads nothing.
+    let fs = decoy_fs("1 0 8:1 / / rw - ext4 /dev/vda1 rw\n", "");
+    fs.mock_set_path_exists("/etc/crypttab", true);
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
 }
 
 #[test]

@@ -25,10 +25,12 @@ use std::path::{Component, Path, PathBuf};
 ///    table ([`HiddenRoot::mounted_elsewhere`]): a desktop that mounts a drive
 ///    by itself mounts the unlocked volume again under `/media` or
 ///    `/run/media`, where the decoy's desktop reaches its files. No flag lifts
-///    that, and a root on a filesystem the decoy uses, accepted with
-///    `--allow-decoy-storage`, is let be: the decoy mounts that filesystem
-///    wherever it does. Nothing is probed before both pass, so `check` writes
-///    no probe file onto the decoy's storage.
+///    that. For a root on a filesystem the decoy uses, accepted with
+///    `--allow-decoy-storage`, the decoy's own mounts of that filesystem, at
+///    `/` and by its fstab, and mounts that show none of the root's folder do
+///    not count ([`HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem`]).
+///    Nothing is probed before both pass, so `check` writes no probe file
+///    onto the decoy's storage.
 /// 3. **Write Permission**: Path must be writable to store overlay directories
 /// 4. **Neutral naming**: once mounted and writable, the mount path, the
 ///    device-mapper name and the filesystem label are scanned for words that
@@ -51,7 +53,10 @@ use std::path::{Component, Path, PathBuf};
 /// - **Mounted elsewhere too**: the `sudo umount` line for the other mounts,
 ///   what hides one that `umount` cannot reach by its path, and turning the
 ///   desktop's automatic mounting of removable media off long before the next
-///   use
+///   use. For a root the operator accepted on a filesystem the decoy uses,
+///   the failure says that neither `/` nor a line of the fstab makes the
+///   other mounts, and the fix says not to unmount one the computer makes by
+///   itself but to use a volume of its own
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example
@@ -152,13 +157,22 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
         }
 
         // Step 2b: mounted nowhere else, before anything is probed. A root on
-        // a filesystem the decoy uses, which the operator accepted, is mounted
-        // where the decoy mounts that filesystem: the gate's warning is about
-        // exactly that.
-        if !decoy_filesystem
-            && let Some(elsewhere) = HiddenRoot::mounted_elsewhere(fs, &self.hidden_volume_root)?
-        {
-            return Ok(mounted_twice(fs, &self.hidden_volume_root, &elsewhere));
+        // a filesystem the decoy uses, which the operator accepted, is also
+        // mounted where the decoy mounts that filesystem, at / or by a line of
+        // its fstab, which the gate's warning is about: only those mounts, and
+        // those that show none of the root's folder, are left out.
+        let elsewhere = if decoy_filesystem {
+            HiddenRoot::mounted_elsewhere_on_a_decoy_filesystem(fs, &self.hidden_volume_root)?
+        } else {
+            HiddenRoot::mounted_elsewhere(fs, &self.hidden_volume_root)?
+        };
+        if let Some(elsewhere) = elsewhere {
+            return Ok(mounted_twice(
+                fs,
+                &self.hidden_volume_root,
+                &elsewhere,
+                decoy_filesystem,
+            ));
         }
 
         // Step 3: Check path is writable
@@ -221,10 +235,20 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 /// The `umount` line names the mounts a lookup of their path reaches (see
 /// [`unmount_line`]). One that another mount hides gets a line of its own,
 /// which names the mount over it: `umount` given its path would reach that
-/// one, or none.
-fn mounted_twice<F: Filesystem>(fs: &F, root: &Path, elsewhere: &MountedElsewhere) -> CheckResult {
+/// one, or none. For a root on a filesystem the decoy uses, which the
+/// operator accepted (`decoy_filesystem`), the failure says that neither `/`
+/// nor a line of the fstab makes the other mounts, and a line says that one
+/// the computer makes by itself is not to be unmounted: the root then needs a
+/// volume of its own.
+fn mounted_twice<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    elsewhere: &MountedElsewhere,
+    decoy_filesystem: bool,
+) -> CheckResult {
     use crate::catalog::{
-        CHECK_MOUNTED_TWICE, CHECK_MOUNTED_TWICE_ADVICE, CHECK_MOUNTED_TWICE_HIDDEN,
+        CHECK_MOUNTED_TWICE, CHECK_MOUNTED_TWICE_ADVICE, CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM,
+        CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM_FIX, CHECK_MOUNTED_TWICE_HIDDEN,
     };
     let shown_root = root.display().to_string();
     let others: Vec<&Path> = elsewhere
@@ -232,8 +256,13 @@ fn mounted_twice<F: Filesystem>(fs: &F, root: &Path, elsewhere: &MountedElsewher
         .iter()
         .map(|mount| mount.mount_point.as_path())
         .collect();
-    let message =
-        CHECK_MOUNTED_TWICE.render(&[("root", &shown_root), ("places", &places(&others))]);
+    let others = places(&others);
+    let failure = if decoy_filesystem {
+        CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM
+    } else {
+        CHECK_MOUNTED_TWICE
+    };
+    let message = failure.render(&[("root", &shown_root), ("places", &others)]);
 
     let mut fix = Vec::new();
     let reachable: Vec<&Path> = elsewhere
@@ -252,6 +281,9 @@ fn mounted_twice<F: Filesystem>(fs: &F, root: &Path, elsewhere: &MountedElsewher
                 ("cover", &cover.display().to_string()),
             ]));
         }
+    }
+    if decoy_filesystem {
+        fix.push(CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM_FIX.render(&[("places", &others)]));
     }
     fix.push(CHECK_MOUNTED_TWICE_ADVICE.render(&[]));
     CheckResult::fail_with(message, fix.join("\n"))
