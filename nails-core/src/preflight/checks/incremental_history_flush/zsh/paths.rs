@@ -30,7 +30,8 @@ impl<F: Filesystem> Reader<'_, F> {
     /// shell's environment nor a file sets being empty, as zsh expands it
     /// (`$ZDOTDIR/x` is `/x`), and a `$HOME` that a letter, a digit or a `_`
     /// follows being another parameter (`$HOMEBREW`); `None` when it names
-    /// anything else the check cannot know, or no absolute path.
+    /// anything else the check cannot know, a modifier or a subscript on one
+    /// of them among it (`$HOME:a`, `$ZDOTDIR:h`), or no absolute path.
     pub(super) fn resolve_in(&self, value: &Word, config: Option<&str>) -> Option<PathBuf> {
         let home = self.home?.to_string_lossy().into_owned();
         let default_config = format!("{home}/.config");
@@ -137,8 +138,10 @@ impl<F: Filesystem> Reader<'_, F> {
 
 /// `text` with each `pattern`, a parameter's expansion as written (`$HOME`,
 /// `${HOME}`), put as `with`, but where a letter, a digit or a `_` follows a
-/// `$name` form, which makes it another parameter's name (`$HOMEBREW`) and
-/// stays as written.
+/// `$name` form, which makes it another parameter's name (`$HOMEBREW`), or a
+/// `:` or a `[`, with which zsh applies a modifier (`$HOME:a`, `$HOME:h`) or
+/// a subscript (`$HOME[1,-1]`) to the value: it stays as written, a path the
+/// check cannot know.
 fn replace_parameter(text: &str, pattern: &str, with: &str) -> String {
     let braced = pattern.ends_with('}');
     let mut out = String::new();
@@ -146,7 +149,10 @@ fn replace_parameter(text: &str, pattern: &str, with: &str) -> String {
     while let Some(at) = rest.find(pattern) {
         let after = &rest[at + pattern.len()..];
         out.push_str(&rest[..at]);
-        if braced || !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+        if braced
+            || !after
+                .starts_with(|c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '['))
+        {
             out.push_str(with);
         } else {
             out.push_str(pattern);
