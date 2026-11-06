@@ -627,7 +627,19 @@ fn claims(
         let node = devices.node_of_spec(&entry.spec);
         if let Some(node) = node.filter(|n| stack.iter().any(|s| s == n)) {
             let own = Some(node) == stack.first().map(String::as_str);
-            let why = if own {
+            let elsewhere = !entry.file.starts_with(&hidden.mount_point);
+            // A line for the root's own device that mounts it at another
+            // place, while the root shows only a folder or a subvolume of it
+            // (a bind of a folder of /, say), mounts the whole filesystem the
+            // root is part of, not the volume alone.
+            let part_of =
+                own && elsewhere && !entry.is_swap() && sharing(hidden) != Sharing::Filesystem;
+            let why = if part_of {
+                format!(
+                    "it mounts the filesystem the volume at {} is part of",
+                    hidden.mount_point.display()
+                )
+            } else if own {
                 format!("it mounts the volume at {}", hidden.mount_point.display())
             } else {
                 format!(
@@ -635,12 +647,15 @@ fn claims(
                     hidden.mount_point.display()
                 )
             };
-            // A line the boot mounts for a device below the volume, outside
-            // the hidden root, mounts one of the decoy's own filesystems or
-            // its swap.
-            let boot_needs = !own
-                && !entry.is_noauto()
-                && (entry.is_swap() || !entry.file.starts_with(&hidden.mount_point));
+            // A line the boot mounts outside the hidden root, for a device
+            // below the volume or for the filesystem the root is part of,
+            // mounts one of the decoy's own filesystems or its swap.
+            let boot_needs = !entry.is_noauto()
+                && if own {
+                    part_of
+                } else {
+                    entry.is_swap() || elsewhere
+                };
             entries.push(blocking(FSTAB, line, why, boot_needs));
             // An entry the boot mounts (or swaps on) makes the device the
             // decoy's own storage as well; only a `noauto` one is a mere

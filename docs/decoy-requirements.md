@@ -1160,9 +1160,13 @@ never a folder bound there by hand. Or it is a bind line whose source lies on
 another of the decoy's own mounts of that filesystem, and the mount shows that
 source's folder. The other is a mount that shows none of the root's folder,
 such as NixOS's read-only bind of `/nix/store` beside a bind of a folder of
-`/`, or another btrfs subvolume. So the check passes a bind of a folder of `/`,
-or a subvolume of a filesystem the fstab mounts, with the flag's warning, while
-a separate drive also mounted at `/srv` is refused with `sudo umount /srv`.
+`/`, or another btrfs subvolume. So the `hidden-volume` check passes a bind of
+a folder of `/`, or a subvolume of a filesystem the fstab mounts, with the
+flag's warning, while a separate drive also mounted at `/srv` is refused with
+`sudo umount /srv`. The `backend-entries` check still refuses such a root
+while a line of the fstab names the device of its filesystem, as the line for
+`/` or `/home` does on most decoys, and says to put the hidden root on storage
+of its own instead, so `check` and activation refuse it there.
 
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that

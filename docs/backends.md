@@ -46,7 +46,10 @@ Whatever the backend, the filesystem at the hidden root must:
   included (a `/home` or `/srv` partition that systemd-gpt-auto-generator
   mounts, ostree's `/sysroot`, a ZFS dataset that ZFS mounts by its
   mountpoint property), and so does a copy that mount propagation makes at a
-  bind line's mount point of a mount at or below its source. An encrypted container
+  bind line's mount point of a mount at or below its source. Such a root
+  passes `hidden-volume` with the flag's warning, but `backend-entries` still
+  refuses it while a line of the fstab names the device of its filesystem, as
+  the line for `/` or `/home` does on most decoys. An encrypted container
   file on a filesystem the decoy uses is accepted with a warning: that
   filesystem's journal and copy-on-write snapshots (btrfs, snapper) can keep old
   copies of the parts of the container that changed, so a whole device or a

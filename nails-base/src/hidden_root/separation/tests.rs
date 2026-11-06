@@ -1120,6 +1120,78 @@ fn an_fstab_line_for_a_filesystem_of_the_decoys_below_the_volume_is_one_its_boot
 }
 
 #[test]
+fn the_line_for_the_filesystem_a_root_is_part_of_is_one_the_decoys_boot_needs() {
+    // A bind of a folder of /, and a subvolume of the btrfs the decoy mounts
+    // at /home: the decoy's line names the root's own device, but it mounts
+    // the whole filesystem, which removing it would take from the decoy.
+    let bind = plain_decoy("5 1 8:1 /srv/x /mnt rw - ext4 /dev/sda1 rw\n").judge("/mnt");
+    assert_eq!(
+        entry_needs(&bind),
+        [(EntryKind::Blocking, "/dev/sda1 / ext4", true)]
+    );
+    assert_eq!(
+        bind.entries[0].why,
+        "it mounts the filesystem the volume at /mnt is part of"
+    );
+    let subvolume = World::new(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         2 1 0:40 /home /home rw - btrfs /dev/sda2 rw,subvol=/home\n\
+         5 1 0:40 /vault /mnt rw - btrfs /dev/sda2 rw,subvol=/vault\n",
+    )
+    .disk("sda", "8:0")
+    .part("sda1", "8:1", "sda")
+    .part("sda2", "8:2", "sda")
+    .btrfs(&["sda2"])
+    .fstab("/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home btrfs subvol=/home 0 0\n")
+    .judge("/mnt");
+    assert_eq!(
+        entry_needs(&subvolume),
+        [(EntryKind::Blocking, "/dev/sda2 /home btrfs", true)]
+    );
+    // One the boot does not mount is no line it needs, and one for the root
+    // itself mounts the volume, as one for a root that shows the whole
+    // filesystem does wherever it mounts it.
+    let noauto = plain_decoy("5 1 8:1 /srv/x /mnt rw - ext4 /dev/sda1 rw\n")
+        .fstab("/dev/sda1 /srv ext4 noauto 0 0\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&noauto),
+        [(EntryKind::Blocking, "/dev/sda1 /srv ext4", false)]
+    );
+    let at_the_root = World::new(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         5 1 0:40 /vault /mnt rw - btrfs /dev/sdb1 rw,subvol=/vault\n",
+    )
+    .disk("sda", "8:0")
+    .part("sda1", "8:1", "sda")
+    .disk("sdb", "8:16")
+    .part("sdb1", "8:17", "sdb")
+    .btrfs(&["sdb1"])
+    .fstab("/dev/sdb1 /mnt btrfs subvol=/vault 0 0\n")
+    .judge("/mnt");
+    assert_eq!(
+        entry_needs(&at_the_root),
+        [(EntryKind::Blocking, "/dev/sdb1 /mnt btrfs", false)]
+    );
+    assert_eq!(at_the_root.entries[0].why, "it mounts the volume at /mnt");
+    // A line for a device below the root's own, under a bind of a folder of
+    // a partition of a loop device over the decoy's /home partition, mounts
+    // that device.
+    let below = plain_decoy("5 1 259:8 /x /mnt rw - ext4 /dev/loop1p1 rw\n")
+        .node("loop1", "7:1", NodeKind::Loop { file: None }, &["sda2"])
+        .part("loop1p1", "259:8", "loop1")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&below),
+        [(EntryKind::Blocking, "/dev/sda2 /home ext4", true)]
+    );
+    assert_eq!(
+        below.entries[0].why,
+        "it mounts a device the volume at /mnt is stored on"
+    );
+}
+
+#[test]
 fn lines_that_open_and_mount_the_volume_at_boot_are_none_the_decoy_needs() {
     // The decoy's boot opens the hidden volume and mounts it at the hidden
     // root: both lines serve the hidden drive alone.

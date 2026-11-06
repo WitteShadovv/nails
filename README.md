@@ -191,7 +191,8 @@ Also refused by the pre-flight checks:
   of the root's folder are left out (`hidden-volume`, see
   [Attaching the drive](docs/decoy-requirements.md#attaching-the-drive));
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
-  volume (`backend-entries`);
+  volume, or the filesystem that a root `--allow-decoy-storage` accepted is a
+  folder or a subvolume of, such as the line for `/` (`backend-entries`);
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
 - running inside a container or another mount namespace than PID 1's

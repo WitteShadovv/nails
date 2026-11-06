@@ -817,6 +817,12 @@ of this changelog for that version becomes the release notes word for word, and
   decoy, so the check now says to put the hidden root on storage of its own instead. Where it also
   flags lines only the hidden volume needs, it still says to remove those, since once the hidden
   root moves they are flagged no more and would stay behind naming it.
+- `backend-entries` no longer says to remove the decoy's fstab line for the filesystem that a root
+  accepted with `--allow-decoy-storage` is a folder or a subvolume of, such as the line for `/`
+  below a bind of a folder of `/`. That line names the root's device, so the check took it for a
+  line that mounts the volume itself, while it mounts the decoy's own filesystem, which removing it
+  would break. It now says it mounts the filesystem the volume is part of and that the decoy's own
+  boot needs it, and to put the hidden root on storage of its own instead.
 - `verify --offline` refuses a `--root` that does not exist, is not a folder or holds no `etc`
   folder before anything is scanned: the error `nothing_to_scan`, exit 1, and its message says how
   to mount the decoy first. Every offline check looks for a path of the decoy system below the
@@ -1412,14 +1418,15 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/fstab` makes (a line that names the mount's device, or the ZFS dataset, and mounts what it
   shows, or a bind line from another of the decoy's own mounts of it), and neither does a mount
   that shows none of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs
-  subvolume). So the check passes a bind of a folder of `/` and a subvolume of a filesystem the
-  fstab mounts with the flag's warning. A separate drive also mounted at `/srv` is refused, and so
-  is the copy that mount propagation makes of a mount at or below a bind line's source, and a root
-  whose folder a mount that no fstab line makes shows too (a `/home` or `/srv` partition that
-  systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a ZFS dataset that ZFS mounts by its
-  mountpoint property). That refusal first says not to unmount a mount the computer makes by
-  itself, then how to unmount one made by hand. A directory of a disk bound at the root now needs
-  the disk's own mount gone.
+  subvolume). So the `hidden-volume` check passes a bind of a folder of `/` and a subvolume of a
+  filesystem the fstab mounts with the flag's warning, though `backend-entries` still refuses such
+  a root while a line of the fstab names its filesystem's device. A separate drive also mounted at
+  `/srv` is refused, and so is the copy that mount propagation makes of a mount at or below a bind
+  line's source, and a root whose folder a mount that no fstab line makes shows too (a `/home` or
+  `/srv` partition that systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a ZFS dataset that
+  ZFS mounts by its mountpoint property). That refusal first says not to unmount a mount the
+  computer makes by itself, then how to unmount one made by hand. A directory of a disk bound at
+  the root now needs the disk's own mount gone.
   `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the setting, which is
   not verified for every release. A VM test records whether udiskie mounts a drive that cryptsetup
   unlocked, and in it udiskie did.
