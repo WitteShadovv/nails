@@ -420,7 +420,13 @@ impl Readiness {
         };
 
         let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
-        let filesystems = decoy_filesystems(Path::new("/"), &mounts, &config.hidden_volume_root);
+        let filesystems = decoy_filesystems(
+            manager.filesystem(),
+            &crate::filesystem::automount::Snapshot::read(manager.filesystem(), Path::new("/")),
+            Path::new("/"),
+            &mounts,
+            &config.hidden_volume_root,
+        );
         let profile = profile_summary(
             manager
                 .discover_host_target(options.overlay_only)
@@ -476,21 +482,55 @@ fn attach_refusal<F: Filesystem>(
 /// root as activation resolves them, given the decoy's mount table `mounts`,
 /// and with the decoy's mount, swap and automount units outside its fstab. An
 /// entry the policy leaves as it is, such as the root itself, is not listed.
-fn decoy_filesystems(root: &Path, mounts: &[MountEntry], hidden_root: &Path) -> Vec<String> {
+///
+/// Each lookup is asked of the automount guard by `snapshot` first, as the
+/// `fstab-policy` row asks it: what lies behind an automount point that
+/// nothing is mounted on yet is not looked up, and a line names it; without
+/// the mount table nothing is looked up.
+fn decoy_filesystems<F: Filesystem>(
+    fs: &F,
+    snapshot: &std::sync::Arc<crate::filesystem::automount::Snapshot>,
+    root: &Path,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+) -> Vec<String> {
+    use crate::filesystem::automount::{Guarded, Lookup, unnamed};
     use crate::session::{checks, fstab, mount_units, policy};
-    let text = nails_teardown::whole_root::nextroot::read_in_root(root, Path::new("/etc/fstab"))
-        .unwrap_or_default();
-    let entries = fstab::parse_in_root(&text, root);
+    if let Some(error) = snapshot.unreadable() {
+        return vec![format!(
+            "NAILS cannot tell how each decoy filesystem would be handled: NAILS cannot read the \
+             mount table ({error}), which shows where a lookup would mount an automount point, \
+             so it looks up nothing"
+        )];
+    }
+    let guarded = Guarded::new(fs.clone(), snapshot);
+    let ask = |path: &Path, lookup: Lookup| guarded.ask(path, lookup);
+    let guard = mount_units::Guard(&ask);
+    let fstab = Path::new("/etc/fstab");
+    let text = match guard.ask(root, fstab, Lookup::Enters { follow: true }) {
+        Ok(_) => {
+            nails_teardown::whole_root::nextroot::read_in_root(root, fstab).unwrap_or_default()
+        }
+        Err(_) => Vec::new(),
+    };
+    let entries = fstab::parse_in_root_guarded(&text, root, Some(guard));
     let mut decisions = policy::decide_all(&entries, mounts, hidden_root, &policy::device_present);
     let run = root.join("run");
-    let dirs = mount_units::UnitDirs { root, run: &run };
+    let dirs = mount_units::UnitDirs {
+        root,
+        run: &run,
+        guard: Some(guard),
+    };
     let native = checks::decoy_units(dirs, &decisions, mounts, hidden_root);
     decisions.extend(native);
-    decisions
+    let mut lines: Vec<String> = decisions
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
         .map(policy::Decision::describe)
-        .collect()
+        .collect();
+    let named = lines.join("\n");
+    lines.extend(unnamed(&named, &guarded.skipped()));
+    lines
 }
 
 /// The NixOS profile summary for a build target.
