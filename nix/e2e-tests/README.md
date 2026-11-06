@@ -763,7 +763,9 @@ the started run once it holds the lock. It asserts that:
 - with a file apt refuses, `check` refuses, names the file and its line and
   says that the helper installs nothing; with `--allow-persistent-decoy` the
   decoy's helper, started before the file was written, logs its two ERROR
-  lines on the decoy disk and no shutdown-mode run, the positive control.
+  lines on the decoy disk and no shutdown-mode run, the positive control;
+  restarted with the file refused, the helper logs its error to the journal,
+  and its file on the decoy disk gains no such line.
 
 It is one of the smoke scenarios of its images, so it runs with the smoke
 suite and is informational like the others. The guest has no network in the

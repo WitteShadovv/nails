@@ -56,7 +56,9 @@
 #     and says that the helper installs nothing but writes two ERROR lines.
 #     With `--allow-persistent-decoy` the decoy's helper, started before the
 #     file was written, logs those two lines on the decoy disk at the switch
-#     and no shutdown-mode run, the positive control.
+#     and no shutdown-mode run, the positive control. Restarted with the file
+#     refused, the helper logs its error to the journal and its file on the
+#     decoy disk gains no such line.
 {
   self,
   pkgs,
@@ -118,6 +120,8 @@ distroVm.buildVmTest {
     POLLING = "Unable to monitor PrepareForShutdown() signal, polling instead."
     APT_ERROR = "Apt returned an error thus shutdown mode is disabled"
     APT_ERROR_MESSAGE = "error message: 'E:Syntax error"
+    # What it writes when it starts while apt refuses a file.
+    START_ERROR = "Apt returned an error when loading configuration"
     gi_module = "/usr/lib/python3/dist-packages/gi/__init__.py"
     # The lock a run holds from its start to its end, as unattended-upgrade
     # names it (/var/run is a link to /run).
@@ -652,6 +656,24 @@ distroVm.buildVmTest {
         assert count(helper_log, APT_ERROR) > errors_before, tail(helper_log)
         assert count(helper_log, APT_ERROR_MESSAGE) > messages_before, tail(helper_log)
         assert count(helper_log, SHUTDOWN_MODE) == mode_before, tail(helper_log)
+
+    with subtest("a helper that starts with the file refused logs to the journal, not its file"):
+        # The helper started again at the way back with the file refused: it
+        # logs to its standard error, which systemd gives the journal, for
+        # its whole run, its ERROR lines at a switch among them. A restart
+        # shows it: the helper's start error is in the journal, and its file
+        # on the decoy disk gains no such line.
+        lines_before = len(vm.succeed(f"cat {helper_log}").splitlines())
+        vm.succeed("systemctl restart unattended-upgrades.service")
+        vm.wait_until_succeeds(
+            "journalctl -b -u unattended-upgrades.service --no-pager -o cat "
+            + f"| grep -q -F {shlex.quote(START_ERROR)}",
+            timeout=60,
+        )
+        written = vm.succeed(f"cat {helper_log}").splitlines()[lines_before:]
+        print("the helper's lines on the decoy disk since the restart:")
+        print("\n".join(written))
+        assert not any("Apt returned an error" in line for line in written), written
         vm.succeed(f"rm -f {refused_file}")
   '';
 }
