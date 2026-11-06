@@ -67,7 +67,7 @@ impl EntryHost for FakeEntryHost {
     }
 }
 
-/// Its PID 1 holds every runtime guard.
+/// Its PID 1 holds the guards the switch is checked for.
 impl GuardHost for FakeEntryHost {
     fn unit_stop_commands(&self, _: &str) -> Result<String> {
         Ok(String::new())
@@ -85,7 +85,8 @@ impl GuardHost for FakeEntryHost {
 
 /// Records the targets started; refuses them when `refuse` is set, and
 /// refuses any switch when `blocked` is (a program blocks shutdown). Its
-/// PID 1 holds the runtime guards unless `unguarded` is set.
+/// PID 1 holds the guards the switch is checked for unless `unguarded` is
+/// set.
 #[derive(Default)]
 struct FakeTarget {
     started: RefCell<Vec<String>>,
@@ -94,7 +95,7 @@ struct FakeTarget {
     unguarded: bool,
 }
 
-/// Its PID 1 holds every runtime guard as [`FakeEntryHost`]'s does, but has
+/// Its PID 1 holds the guards as [`FakeEntryHost`]'s does, but has
 /// service watchdogs off when `unguarded` is set, so that a switch's job
 /// timeout would do nothing.
 impl GuardHost for FakeTarget {

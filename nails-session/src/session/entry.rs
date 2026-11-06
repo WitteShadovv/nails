@@ -96,7 +96,8 @@ pub const CONFIG_COPY_NAME: &str = "settings.toml";
 const FHS_INITS: &[&str] = &["/usr/lib/systemd/systemd", "/lib/systemd/systemd"];
 
 /// What the host does for the entry beyond mounts: tests replace it. It asks
-/// the decoy's PID 1 whether the runtime guards hold as a [`GuardHost`].
+/// the decoy's PID 1 whether the guards the entry checks hold as a
+/// [`GuardHost`].
 pub trait EntryHost: GuardHost {
     /// Reload the service manager after the drop-in is written.
     fn daemon_reload(&self) -> Result<()>;

@@ -584,9 +584,10 @@ fn a_blocked_way_back_is_refused_before_its_banner() {
 }
 
 /// A return whose guards do not hold in the hidden session's PID 1 is refused
-/// before anything is printed, as a blocked one is: a person reads why and
-/// the two other ways to end the session, and under `--json` it is the one
-/// envelope, with the power-off as the next step.
+/// before anything is printed, as a blocked one is: a person reads why, what
+/// the session can change itself, and the two other ways to end the session,
+/// and under `--json` it is the one envelope, with the power-off as the next
+/// step.
 #[test]
 fn an_unguarded_way_back_is_refused_before_its_banner() {
     use nails_core::next_step::{NextStep, sudo_line};
@@ -605,7 +606,8 @@ fn an_unguarded_way_back_is_refused_before_its_banner() {
     assert_eq!(
         lines[1],
         format!(
-            "  End the session with `{}`, which powers off, or with `{}`",
+            "  Turn service watchdogs back on with `sudo systemctl service-watchdogs yes` and \
+             deactivate again, or end the session with `{}`, which powers off, or with `{}`",
             sudo_line(NextStep::DeactivatePoweroff),
             sudo_line(NextStep::Emergency)
         )

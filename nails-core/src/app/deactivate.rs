@@ -173,10 +173,13 @@ pub struct LockedDeactivation {
 impl LockedDeactivation {
     /// Whether the way back `to` may start now: not while a program blocks
     /// shutdown, or while logind does not answer whether one does, and a
-    /// return to the decoy not unless the hidden session's PID 1 holds every
-    /// runtime guard ([`may_leave`](crate::session::leave::may_leave)).
-    /// [`leave`](Self::leave) asks again itself; a caller that shows a person
-    /// what comes asks first, so that a refusal comes before it.
+    /// return to the decoy not unless the hidden session's PID 1 holds the
+    /// guards the entry checked, the stop guard of `blk-availability.service`
+    /// and the switch's timeout guard
+    /// ([`may_leave`](crate::session::leave::may_leave)). It asks the host
+    /// [`leave`](Self::leave) would leave with. `leave` asks again itself; a
+    /// caller that shows a person what comes asks first, so that a refusal
+    /// comes before it.
     pub fn may_leave(&self, to: LeaveTo) -> Result<(), NailsError> {
         let view = self.ready.manager.session_view();
         let host = RealTargetHost::for_plan(match &view {
