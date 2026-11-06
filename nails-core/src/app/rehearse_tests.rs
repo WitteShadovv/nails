@@ -629,3 +629,72 @@ fn a_plant_for_a_missing_account_is_refused_first() {
     assert_eq!(failure.code, "no_such_user");
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
 }
+
+mod kernel_tests {
+    use super::*;
+    use crate::test_support::{Rerun, ScratchTmpfs};
+
+    /// The code of a scan that could not run, which `ScanOutcome` keeps from
+    /// being shown whole.
+    fn refusal_of(rehearsal: &Rehearsal, options: &ScanOptions) -> RehearseFailure {
+        match rehearsal.scan(options) {
+            Ok(_) => panic!("the scan ran"),
+            Err(failure) => failure,
+        }
+    }
+
+    /// A scan of the mounted devices refuses a hidden root that a second
+    /// filesystem covers, before it reads the rehearsal state through it. A
+    /// scan that names its devices or images skips no hidden volume and is
+    /// not refused for it.
+    #[test]
+    fn a_scan_of_the_mounted_devices_refuses_a_covered_hidden_root() {
+        let _ = Rerun::new(crate::test_path!(
+            a_scan_of_the_mounted_devices_refuses_a_covered_hidden_root
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let volume = ScratchTmpfs::new("");
+            let root = volume.path().canonicalize().unwrap();
+            let rehearsal = rooted_at(&root);
+            let default = ScanOptions::default();
+            // Not covered: the scan goes on, and finds no rehearsal state.
+            assert_eq!(refusal_of(&rehearsal, &default).code, "no_token");
+
+            let cover = ScratchTmpfs::new("");
+            nix::mount::mount(
+                Some(cover.path()),
+                &root,
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .expect("bind another tmpfs over the hidden root");
+            let failure = refusal_of(&rehearsal, &default);
+            assert_eq!(failure.code, "root_covered");
+            assert_eq!(failure.exit, ExitStatus::PreflightRefused);
+            assert!(
+                failure.message.starts_with(&format!(
+                    "two filesystems are mounted at {}: one of type tmpfs, then one of type \
+                     tmpfs over it.",
+                    root.display()
+                )),
+                "{}",
+                failure.message
+            );
+            for named in [
+                ScanOptions {
+                    offline: true,
+                    ..ScanOptions::default()
+                },
+                ScanOptions {
+                    devices: vec![PathBuf::from("/dev/null")],
+                    ..ScanOptions::default()
+                },
+            ] {
+                assert_eq!(refusal_of(&rehearsal, &named).code, "no_token", "{named:?}");
+            }
+            nix::mount::umount(&root).unwrap();
+        });
+    }
+}
