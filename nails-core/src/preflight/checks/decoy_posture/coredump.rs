@@ -144,8 +144,8 @@ impl CoredumpSettings {
         if let Some(unread) = &self.unread {
             return Some(format!(
                 "NAILS cannot tell whether systemd-coredump keeps core dumps on the decoy disk: \
-                 {unread}; {}",
-                unread.advice()
+                 {}",
+                unread.with_advice()
             ));
         }
         if self.keeps_cores_off_disk() {

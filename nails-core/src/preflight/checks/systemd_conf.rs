@@ -85,7 +85,8 @@
 //! test as much as a read, can still update their access times
 //! ([`nails_teardown::noatime`]).
 
-use crate::Filesystem;
+use crate::error::Skip;
+use crate::{Filesystem, NailsError};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -133,7 +134,7 @@ pub struct Unread {
 }
 
 /// Why a configuration is [`Unread`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnreadCause {
     /// A main file or drop-in that is not a regular file once its links are
     /// followed: a directory, a device such as `/dev/null`, a FIFO, a socket,
@@ -147,6 +148,15 @@ pub enum UnreadCause {
     /// earlier releases do not, while NAILS cannot read which release runs,
     /// and reading it changes what is applied.
     UnknownRelease,
+    /// A main file or drop-in whose lookup failed with this error, for
+    /// another reason than that nothing is there, that NAILS may not make
+    /// it, or a loop of links: an I/O error, a name too long.
+    LookupFailed(String),
+    /// A main file, drop-in or drop-in directory NAILS did not look up, for
+    /// this reason: the lookup would mount an automount point that nothing
+    /// is mounted on yet, or the mount table that shows where one would
+    /// cannot be read.
+    NotLookedUp(Skip),
 }
 
 impl Unread {
@@ -157,33 +167,50 @@ impl Unread {
         }
     }
 
-    /// What the operator can do about it, to follow the description.
-    pub fn advice(&self) -> &'static str {
-        match self.cause {
-            UnreadCause::NotRegular => {
+    /// What the operator can do about it, to follow the description; none
+    /// for a lookup the automount guard did not make, whose description
+    /// names the automount point and whose check gives the fix once.
+    pub fn advice(&self) -> Option<&'static str> {
+        match &self.cause {
+            UnreadCause::NotRegular => Some(
                 "systemd releases do not read a configuration with such an entry alike, and from \
                  260 a directory or a device there leaves all of it unread; put a regular file \
-                 there (an empty one masks a vendor file of the same name)"
-            }
-            UnreadCause::CannotRead => "run the command again with sudo",
+                 there (an empty one masks a vendor file of the same name)",
+            ),
+            UnreadCause::CannotRead => Some("run the command again with sudo"),
             UnreadCause::UnknownRelease => {
-                "put the main file in /etc/systemd, where every release reads it"
+                Some("put the main file in /etc/systemd, where every release reads it")
             }
+            UnreadCause::LookupFailed(_) => {
+                Some("find out why it cannot be looked up, then run the command again")
+            }
+            UnreadCause::NotLookedUp(_) => None,
+        }
+    }
+
+    /// The description and, when there is one, the advice, as one clause:
+    /// `<description>; <advice>`.
+    pub fn with_advice(&self) -> String {
+        match self.advice() {
+            Some(advice) => format!("{self}; {advice}"),
+            None => self.to_string(),
         }
     }
 }
 
 impl std::fmt::Display for Unread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.cause {
-            UnreadCause::NotRegular => write!(f, "{} is not a regular file", self.path.display()),
-            UnreadCause::CannotRead => write!(f, "NAILS cannot read {}", self.path.display()),
+        let path = self.path.display();
+        match &self.cause {
+            UnreadCause::NotRegular => write!(f, "{path} is not a regular file"),
+            UnreadCause::CannotRead => write!(f, "NAILS cannot read {path}"),
             UnreadCause::UnknownRelease => write!(
                 f,
-                "only systemd 256 and later read the main file {}, and NAILS cannot read which \
-                 release runs",
-                self.path.display()
+                "only systemd 256 and later read the main file {path}, and NAILS cannot read \
+                 which release runs"
             ),
+            UnreadCause::LookupFailed(error) => write!(f, "NAILS cannot look up {path} ({error})"),
+            UnreadCause::NotLookedUp(reason) => f.write_str(&reason.sentence(&self.path)),
         }
     }
 }
@@ -201,27 +228,43 @@ enum Entry {
     Unread(UnreadCause),
 }
 
+/// Why a configuration is unread whose lookup failed with `error`, for
+/// another reason than that nothing is there: one NAILS may not make is a
+/// file it cannot read, a loop of links an entry systemd does not read alike,
+/// one the automount guard did not make is one it did not look up, and any
+/// other is named by its error.
+fn cause_of(error: &NailsError) -> UnreadCause {
+    if let Some((_, reason)) = error.not_looked_up() {
+        return UnreadCause::NotLookedUp(reason.clone());
+    }
+    match error {
+        NailsError::IoError { source, .. }
+            if source.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            UnreadCause::CannotRead
+        }
+        NailsError::IoError { source, .. } if source.raw_os_error() == Some(nix::libc::ELOOP) => {
+            UnreadCause::NotRegular
+        }
+        NailsError::IoError { source, .. } => UnreadCause::LookupFailed(source.to_string()),
+        other => UnreadCause::LookupFailed(other.to_string()),
+    }
+}
+
 /// Classify `path` without opening it: a FIFO would block the open, and a
 /// device can be read without end. A lookup that fails for another reason
-/// than that nothing is there leaves the configuration unread: one NAILS may
-/// not make as a file it cannot read, any other (a loop of links among them)
-/// as an entry systemd does not read alike.
+/// than that nothing is there leaves the configuration unread, its cause
+/// taken from the error ([`cause_of`]).
 fn entry<F: Filesystem>(fs: &F, path: &Path) -> Entry {
-    let failed = |error: crate::NailsError| {
-        Entry::Unread(match error.io_kind() {
-            Some(std::io::ErrorKind::PermissionDenied) => UnreadCause::CannotRead,
-            _ => UnreadCause::NotRegular,
-        })
-    };
     match fs.is_regular_file(path) {
         Ok(true) => return Entry::Regular,
         Ok(false) => {}
-        Err(error) => return failed(error),
+        Err(error) => return Entry::Unread(cause_of(&error)),
     }
     match fs.path_exists(path) {
         Ok(true) => return Entry::Unread(UnreadCause::NotRegular),
         Ok(false) => {}
-        Err(error) => return failed(error),
+        Err(error) => return Entry::Unread(cause_of(&error)),
     }
     // Nothing that a lookup reaches: no file, a link to nothing, or a path
     // below a file, where systemd's open fails with another error than
@@ -233,10 +276,22 @@ fn entry<F: Filesystem>(fs: &F, path: &Path) -> Entry {
         Ok(_) => Entry::Missing,
         Err(e) => match e.io_kind() {
             Some(std::io::ErrorKind::NotFound) => Entry::Missing,
-            Some(std::io::ErrorKind::PermissionDenied) => Entry::Unread(UnreadCause::CannotRead),
-            _ => Entry::Unread(UnreadCause::NotRegular),
+            Some(std::io::ErrorKind::NotADirectory) => Entry::Unread(UnreadCause::NotRegular),
+            _ => Entry::Unread(cause_of(&e)),
         },
     }
+}
+
+/// Why a drop-in directory whose listing failed with `error` leaves the
+/// configuration unread, if it does: NAILS may not list it, or the automount
+/// guard did not let it. systemd skips a directory it cannot open for any
+/// other reason, and so does NAILS.
+fn unread_listing(error: &NailsError) -> Option<UnreadCause> {
+    if let Some((_, reason)) = error.not_looked_up() {
+        return Some(UnreadCause::NotLookedUp(reason.clone()));
+    }
+    (error.io_kind() == Some(std::io::ErrorKind::PermissionDenied))
+        .then_some(UnreadCause::CannotRead)
 }
 
 /// The main file and the drop-ins of a configuration, as [`listing`] finds
@@ -293,11 +348,12 @@ fn listing<F: Filesystem>(
         let entries = match fs.list_directory(&dir) {
             Ok(entries) => entries,
             // systemd skips a drop-in directory it cannot open, but it runs as
-            // root: one that only NAILS cannot open may hold drop-ins it reads.
-            Err(e) if e.io_kind() == Some(std::io::ErrorKind::PermissionDenied) => {
-                return Err(Unread::new(&dir, UnreadCause::CannotRead));
-            }
-            Err(_) => continue,
+            // root: one that only NAILS cannot open may hold drop-ins it reads,
+            // and so may one the automount guard did not let it list.
+            Err(e) => match unread_listing(&e) {
+                Some(cause) => return Err(Unread::new(&dir, cause)),
+                None => continue,
+            },
         };
         for listed in entries {
             let Some(file_name) = listed.file_name() else {
@@ -447,7 +503,12 @@ fn read_listed_config<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<Strin
             Some(std::io::ErrorKind::InvalidData) => read_config_bytes_noatime(path)
                 .map(|bytes| Some(decode_config_bytes(&bytes)))
                 .map_err(|_| unread()),
-            _ => Err(unread()),
+            _ => match e.not_looked_up() {
+                Some((_, reason)) => {
+                    Err(Unread::new(path, UnreadCause::NotLookedUp(reason.clone())))
+                }
+                None => Err(unread()),
+            },
         },
     }
 }
