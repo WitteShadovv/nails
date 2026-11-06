@@ -703,3 +703,35 @@ fn a_style_whose_pattern_may_match_a_completion_context_by_its_options_is_read()
         );
     }
 }
+
+#[test]
+fn a_compiled_digest_an_element_of_fpath_names_is_a_doubt() {
+    // zsh 5.9.2 loads the functions in `~/zc.zwc` from the digest itself
+    // (`fpath=(~/zc.zwc $fpath)`), `_files` or `compinit` among them, whose
+    // code the check cannot read.
+    for setter in [
+        "fpath=(~/zc.zwc $fpath)",
+        "FPATH=~/zc.zwc:$FPATH",
+        "fpath=(~/.zwc $fpath)",
+    ] {
+        let fs = MockFilesystem::new();
+        let digest = if setter.contains("/.zwc") {
+            "/home/alice/.zwc"
+        } else {
+            "/home/alice/zc.zwc"
+        };
+        fs.mock_set_file_bytes(digest, b"\x07\x06\x05\x04zwc");
+        let got = found_with(&fs, &format!("{setter}\n{COMPINIT}"));
+        assert!(
+            got.doubts.contains(&format!(
+                "it cannot read the compiled code in {digest} that zsh may run"
+            )),
+            "{setter}: {got:?}"
+        );
+    }
+    // One that is not there is none.
+    assert_eq!(
+        found(&format!("fpath=(~/zc.zwc $fpath)\n{COMPINIT}")),
+        Scan::default()
+    );
+}
