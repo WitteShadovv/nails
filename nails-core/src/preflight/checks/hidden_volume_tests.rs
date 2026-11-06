@@ -114,6 +114,53 @@ fn a_root_that_cannot_be_looked_up_fails_naming_the_error() {
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 }
 
+/// A root behind an automount point that nothing is mounted on yet, or one
+/// that is such a point itself, is not looked up: the gate refuses it naming
+/// the point and how to mount it, nothing is probed, and nothing at or below
+/// the point is looked up.
+#[test]
+fn a_root_behind_an_automount_point_fails_without_a_lookup() {
+    use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+    for point in ["/mnt", NEUTRAL_ROOT] {
+        let fs = MockFilesystem::new();
+        mount_ok(&fs, NEUTRAL_ROOT);
+        with_automounts(&fs, &[point]);
+        let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail(), "{point}: {result:?}");
+        assert_eq!(
+            result.message(),
+            format!(
+                "nothing shows that /mnt/data is a volume of its own: it is not looked up, since \
+                 the lookup would mount the automount point {point}"
+            )
+        );
+        assert_eq!(
+            result.remediation(),
+            Some(
+                format!("Mount {point} (for example `ls {point}`), then run the command again.")
+                    .as_str()
+            )
+        );
+        assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+        assert!(!reached(&fs, point), "{:?}", fs.mock_lookups());
+
+        // The probe that only checks the root is attached skips it.
+        let probe = crate::preflight::UpperFsCapabilityCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .run(&fs)
+            .unwrap();
+        assert!(probe.is_skipped(), "{probe:?}");
+        assert!(
+            probe.message().contains(&format!(
+                "since the lookup would mount the automount point {point}"
+            )),
+            "{probe:?}"
+        );
+        assert!(!reached(&fs, point), "{:?}", fs.mock_lookups());
+    }
+}
+
 #[test]
 fn test_hidden_volume_check_fail_when_not_mounted() {
     let fs = MockFilesystem::new();
