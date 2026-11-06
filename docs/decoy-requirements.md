@@ -1167,9 +1167,12 @@ a separate drive also mounted at `/srv` is refused with `sudo umount /srv`.
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that
 systemd-gpt-auto-generator mounts, of ostree's `/sysroot`, or of a ZFS dataset
-that ZFS mounts by its mountpoint property. The refusal then says not to
-unmount what this computer mounts by itself, and to use a volume of its own
-instead.
+that ZFS mounts by its mountpoint property. The refusal then first says not to
+unmount a mount this computer makes by itself but to use a volume of its own
+instead, and only then how to unmount one made by hand. Do not unmount such a
+mount: once a `/home` or `/srv` partition that no fstab line names is no
+longer mounted, nothing shows the check that a root on it lies on this
+computer's storage.
 
 Choose a hidden root that lies neither at nor below either place of a bind of
 a folder. systemd makes the mounts shared, so a bind that it mounts from

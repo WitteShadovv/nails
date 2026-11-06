@@ -746,10 +746,16 @@ fn run_on(table: &str) -> CheckResult {
     run_allowing(&fs, Allow::Nothing)
 }
 
-/// The two lines every fix for a second mount ends with.
+/// The two lines every fix for a second mount of a volume of its own ends
+/// with.
 const ADVICE: &str = "Long before the next use, turn off the automatic mounting of removable \
                       media.\n\
                       Read \"Attaching the drive\" in the decoy requirements on another device.";
+
+/// The last line of every fix for a second mount, and the only one after the
+/// unmount lines for a root accepted on a decoy filesystem that is mounted
+/// nowhere under /media or /run/media.
+const READ: &str = "Read \"Attaching the drive\" in the decoy requirements on another device.";
 
 #[test]
 fn a_second_mount_that_holds_the_root_is_unmounted_after_the_root() {
@@ -950,12 +956,23 @@ fn on_a_decoy_filesystem_also_at(places: &str) -> String {
 }
 
 /// The fix of that failure for one other mount at `place`, which `umount`
-/// reaches by its path.
+/// reaches by its path: first not to unmount a mount this computer makes by
+/// itself, then how to unmount one made by hand, and the advice about
+/// removable media only for a place under /media or /run/media.
 fn on_a_decoy_filesystem_fix(place: &str) -> String {
+    let advice = if ["/media", "/run/media"]
+        .iter()
+        .any(|at| Path::new(place).starts_with(at))
+    {
+        ADVICE
+    } else {
+        READ
+    };
     format!(
-        "Run `sudo umount {place}`, then run the command again.\n\
-         If this computer mounts it at {place} by itself, do not unmount it there: use a \
-         volume on a disk or partition of its own instead.\n{ADVICE}"
+        "If this computer mounts it at {place} by itself, do not unmount it there: use a \
+         volume on a disk or partition of its own instead.\n\
+         If it was mounted there by hand, unmount it:\n\
+         Run `sudo umount {place}`, then run the command again.\n{advice}"
     )
 }
 
@@ -1026,6 +1043,20 @@ fn a_root_on_a_filesystem_the_decoy_mounts_without_an_fstab_line_is_refused() {
     fs.mock_set_file_content("/etc/fstab", "/dev/vda2 /home ext4 defaults 0 2\n");
     let result = run_allowing(&fs, Allow::DecoyStorage);
     assert!(result.is_warn(), "got {result:?}");
+    // Without the line and once /home is unmounted, nothing shows that the
+    // partition is the decoy's: the root passes with no warning at all, which
+    // is why the fix says first to keep that mount.
+    let gone = MockFilesystem::new();
+    gone.mock_set_path_exists(NEUTRAL_ROOT, true);
+    gone.mock_set_writable(NEUTRAL_ROOT, true);
+    gone.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 8:2 /u/vault /mnt/data rw - ext4 /dev/vda2 rw\n",
+    );
+    for allow in [Allow::Nothing, Allow::DecoyStorage] {
+        let result = run_allowing(&gone, allow);
+        assert!(result.is_pass(), "{allow:?}: {result:?}");
+    }
 }
 
 #[test]
@@ -1061,6 +1092,38 @@ fn decoy_with(table: &str, fstab: &str) -> MockFilesystem {
     fs.mock_set_mount_table(table);
     fs.mock_set_file_content("/etc/fstab", fstab);
     fs
+}
+
+#[test]
+fn an_ostree_layout_is_refused_first_saying_not_to_unmount_what_it_mounts_itself() {
+    // ostree binds the deployment at / and its var at /var, and mounts the
+    // whole filesystem at /sysroot, with no fstab line for either: a folder
+    // of var bound at the root is reached through both.
+    let fs = decoy_with(
+        "1 0 8:3 /ostree/deploy/fedora/deploy/abc.0 / rw - xfs /dev/vda3 rw\n\
+         2 1 8:3 / /sysroot ro - xfs /dev/vda3 rw\n\
+         3 1 8:3 /ostree/deploy/fedora/var /var rw - xfs /dev/vda3 rw\n\
+         4 1 8:3 /ostree/deploy/fedora/deploy/abc.0/usr /usr ro - xfs /dev/vda3 rw\n\
+         5 1 8:2 / /boot rw - ext4 /dev/vda2 rw\n\
+         30 1 8:3 /ostree/deploy/fedora/var/data /mnt/data rw - xfs /dev/vda3 rw\n",
+        "/dev/vda3 / xfs defaults 0 0\n/dev/vda2 /boot ext4 defaults 1 2\n",
+    );
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "got {result:?}");
+    assert_eq!(
+        result.message(),
+        on_a_decoy_filesystem_also_at("/sysroot and /var")
+    );
+    assert_eq!(
+        result.remediation().unwrap(),
+        format!(
+            "If this computer mounts it at /sysroot and /var by itself, do not unmount it \
+             there: use a volume on a disk or partition of its own instead.\n\
+             If it was mounted there by hand, unmount it:\n\
+             Run `sudo umount /sysroot /var`, then run the command again.\n{READ}"
+        )
+    );
+    assert_eq!(result.allowable(), None);
 }
 
 #[test]

@@ -461,9 +461,10 @@ in
             "at /mnt/again, where neither / nor a line of /etc/fstab mounts it"
         ), row
         assert row["remediation"].startswith(
-            "Run `sudo umount /mnt/again`, then run the command again.\n"
             "If this computer mounts it at /mnt/again by itself, do not unmount it there: use a "
             "volume on a disk or partition of its own instead.\n"
+            "If it was mounted there by hand, unmount it:\n"
+            "Run `sudo umount /mnt/again`, then run the command again.\n"
         ), row
         assert "allowable" not in row or row["allowable"] is None, row
         machine.succeed("umount /mnt/again")
@@ -530,6 +531,9 @@ in
             "at /opt, where neither / nor a line of /etc/fstab mounts it"
         ), row
         assert row["remediation"].startswith(
+            "If this computer mounts it at /opt by itself, do not unmount it there: use a "
+            "volume on a disk or partition of its own instead.\n"
+            "If it was mounted there by hand, unmount it:\n"
             "Run `sudo umount /opt`, then run the command again.\n"
         ), row
         assert "allowable" not in row or row["allowable"] is None, row

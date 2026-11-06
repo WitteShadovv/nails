@@ -55,8 +55,9 @@ use std::path::{Component, Path, PathBuf};
 ///   desktop's automatic mounting of removable media off long before the next
 ///   use. For a root the operator accepted on a filesystem the decoy uses,
 ///   the failure says that neither `/` nor a line of the fstab makes the
-///   other mounts, and the fix says not to unmount one the computer makes by
-///   itself but to use a volume of its own
+///   other mounts, and the fix first says not to unmount one the computer
+///   makes by itself but to use a volume of its own, then how to unmount one
+///   made by hand
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example
@@ -235,11 +236,18 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 /// The `umount` line names the mounts a lookup of their path reaches (see
 /// [`unmount_line`]). One that another mount hides gets a line of its own,
 /// which names the mount over it: `umount` given its path would reach that
-/// one, or none. For a root on a filesystem the decoy uses, which the
-/// operator accepted (`decoy_filesystem`), the failure says that neither `/`
-/// nor a line of the fstab makes the other mounts, and a line says that one
-/// the computer makes by itself is not to be unmounted: the root then needs a
-/// volume of its own.
+/// one, or none. The advice to turn off the automatic mounting of removable
+/// media and the section to read come last.
+///
+/// For a root on a filesystem the decoy uses, which the operator accepted
+/// (`decoy_filesystem`), the failure says that neither `/` nor a line of the
+/// fstab makes the other mounts. Its fix starts by saying that one the
+/// computer makes by itself is not to be unmounted, as the root then needs a
+/// volume of its own: once a partition the computer mounts with no fstab line
+/// is unmounted, the check can no longer tell that a root on it lies on the
+/// computer's storage. Only then come the unmount lines, for a mount made by
+/// hand, and the advice about removable media only when one of the mounts
+/// lies under `/media` or `/run/media`.
 fn mounted_twice<F: Filesystem>(
     fs: &F,
     root: &Path,
@@ -249,6 +257,7 @@ fn mounted_twice<F: Filesystem>(
     use crate::catalog::{
         CHECK_MOUNTED_TWICE, CHECK_MOUNTED_TWICE_ADVICE, CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM,
         CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM_FIX, CHECK_MOUNTED_TWICE_HIDDEN,
+        CHECK_MOUNTED_TWICE_READ,
     };
     let shown_root = root.display().to_string();
     let others: Vec<&Path> = elsewhere
@@ -265,6 +274,9 @@ fn mounted_twice<F: Filesystem>(
     let message = failure.render(&[("root", &shown_root), ("places", &others)]);
 
     let mut fix = Vec::new();
+    if decoy_filesystem {
+        fix.push(CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM_FIX.render(&[("places", &others)]));
+    }
     let reachable: Vec<&Path> = elsewhere
         .mounts
         .iter()
@@ -282,12 +294,21 @@ fn mounted_twice<F: Filesystem>(
             ]));
         }
     }
-    if decoy_filesystem {
-        fix.push(CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM_FIX.render(&[("places", &others)]));
+    let removable_media = elsewhere.mounts.iter().any(|mount| {
+        REMOVABLE_MEDIA
+            .iter()
+            .any(|at| mount.mount_point.starts_with(at))
+    });
+    if !decoy_filesystem || removable_media {
+        fix.push(CHECK_MOUNTED_TWICE_ADVICE.render(&[]));
     }
-    fix.push(CHECK_MOUNTED_TWICE_ADVICE.render(&[]));
+    fix.push(CHECK_MOUNTED_TWICE_READ.render(&[]));
     CheckResult::fail_with(message, fix.join("\n"))
 }
+
+/// Where a desktop that mounts drives by itself mounts them: `/media/<user>`
+/// on Debian and Ubuntu, `/run/media/<user>` on most other distributions.
+const REMOVABLE_MEDIA: &[&str] = &["/media", "/run/media"];
 
 /// The `sudo umount` line for the other mounts at `reachable`, the deepest
 /// first, so a mount inside another goes before it, each quoted for the shell.

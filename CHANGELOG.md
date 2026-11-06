@@ -1417,8 +1417,9 @@ of this changelog for that version becomes the release notes word for word, and
   is the copy that mount propagation makes of a mount at or below a bind line's source, and a root
   whose folder a mount that no fstab line makes shows too (a `/home` or `/srv` partition that
   systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a ZFS dataset that ZFS mounts by its
-  mountpoint property). A directory of a disk bound at the root now needs the disk's own mount
-  gone.
+  mountpoint property). That refusal first says not to unmount a mount the computer makes by
+  itself, then how to unmount one made by hand. A directory of a disk bound at the root now needs
+  the disk's own mount gone.
   `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the setting, which is
   not verified for every release. A VM test records whether udiskie mounts a drive that cryptsetup
   unlocked, and in it udiskie did.
