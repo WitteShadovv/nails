@@ -73,14 +73,15 @@ only once `pkgs.nftables` is in `environment.systemPackages` (or
 `networking.nftables.enable` is set). Where the kernel does not load the
 dummy module on demand, run `sudo modprobe dummy` first.
 
-Four tests in `privileged_mounts.rs` need real root. Three need `trusted.*`
+Five tests in `privileged_mounts.rs` need real root. Three need `trusted.*`
 xattrs, which a user namespace cannot set: the whiteout and opaque-directory
 test, the test of the `kernel-modules` check against the kernel's own whiteouts
 and opaque directories, and the test of the whole upper-filesystem probe. The
-fourth binds a loop device, which only root of the initial namespace may, to
-read the loop driver's record of the file behind it. They are `#[ignore]`d and
-CI runs them in the dedicated `privileged-mounts` job of `ci.yml` on every PR,
-which `gate` aggregates.
+other two bind loop devices, which only root of the initial namespace may, to
+read the loop driver's record of the file behind one: on a tmpfs, and on a
+btrfs filesystem the test makes with `mkfs.btrfs` (btrfs-progs), which must be
+on `PATH`. They are `#[ignore]`d and CI runs them in the dedicated
+`privileged-mounts` job of `ci.yml` on every PR, which `gate` aggregates.
 
 The whole-root session's mechanics have a rootless real-kernel tier of their
 own, `nails-core/tests/whole_root_kernel.rs`. Each test re-runs itself in a
