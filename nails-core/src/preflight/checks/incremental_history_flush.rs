@@ -31,7 +31,8 @@
 //! change. It never reads a history file. Of the shell the command was typed
 //! into it also reads, from `/proc`, the program it runs and the few
 //! variables of its environment that tell where zsh finds the functions it
-//! autoloads and the user's startup files, and the prompts zsh takes from it
+//! autoloads and the user's startup files, the prompts zsh takes from it and
+//! the parameters it reads as arithmetic each time it uses them (`TMOUT`)
 //! ([`zsh::Install`]). What it cannot
 //! read or follow makes it warn that it cannot tell. Of zsh, any mention of an
 //! option counts as on, a turn-off too, as no reading of the files shows that

@@ -836,9 +836,11 @@ of this changelog for that version becomes the release notes word for word, and
   and `XDG_STATE_HOME` that NixOS's `/etc/zshenv` reads the Nix profiles with), `ARGV0`, `MAILPATH`,
   `NULLCMD`, `READNULLCMD`, whether a variable of the dynamic loader is set, and the prompts zsh
   takes from its environment (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`,
-  `RPS2`, `RPROMPT2`, `PS3`, `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and `PROMPT_EOL_MARK`); an
-  environment that holds one of them but a prompt, `MAILPATH`, `NULLCMD` or `READNULLCMD` as no
-  UTF-8 is one it cannot read. For a zsh from the Nix store as nixpkgs builds it, whose program
+  `RPS2`, `RPROMPT2`, `PS3`, `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and `PROMPT_EOL_MARK`), and
+  those zsh reads as arithmetic each time it uses them (`TMOUT`, `PERIOD`, `BAUD`, `REPORTTIME`,
+  `REPORTMEMORY`, `DIRSTACKSIZE`, `MENUSCROLL`, `LOGCHECK` and `ZFTP_TMOUT`); an environment that
+  holds one of them but a prompt, `MAILPATH`, `NULLCMD`, `READNULLCMD` or one zsh reads as
+  arithmetic as no UTF-8 is one it cannot read. For a zsh from the Nix store as nixpkgs builds it, whose program
   names one directory of zsh's own and no path a nixpkgs build does not name, `fpath` starts
   there, or in the directories an `FPATH` in its environment names, so a function that no directory
   holds is none zsh can run, as an element of `fpath` the check cannot follow is a doubt of its own
@@ -947,7 +949,13 @@ of this changelog for that version becomes the release notes word for word, and
   but of parameters zsh keeps a number in alone (`preexec() { LINE=$1; logger }`), at a `MAILPATH`,
   `NULLCMD` or `module_path` a file sets and a `MAILPATH`, `NULLCMD` or `READNULLCMD` in the
   environment, at a prompt in the environment that holds an expansion where `PROMPT_SUBST` may be on
-  (`PS1='$(fc -AI)%# '`), at a file the startup
+  (`PS1='$(fc -AI)%# '`), at a value of `TMOUT`, `PERIOD`, `BAUD`, `REPORTTIME`, `REPORTMEMORY`,
+  `DIRSTACKSIZE`, `MENUSCROLL`, `LOGCHECK` or `ZFTP_TMOUT` that is no number, which zsh reads as
+  arithmetic each time it uses it, at a prompt, after a command or at a `cd`, so that
+  `TMOUT='pipestatus[$(cmd)1]'` runs `cmd` at each prompt: one a file gives it, one set in a form
+  the walk does not read (`read TMOUT`, `print -v TMOUT`) and one the shell's environment holds, at
+  a `$HOME` that a letter, a digit or a `_` follows in a path (`$HOMEBREW_PREFIX/x`), which names
+  another parameter, at a file the startup
   code may make or write before zsh reads it (`cp ~/.src ~/.gen; . ~/.gen`, `>> $log`), at an
   `fpath` element quotes join into one, at a dump file with a carriage return or a count that is no
   number, and at a `#compdef -kn` first line. It reads every name of a function's definition
@@ -956,7 +964,9 @@ of this changelog for that version becomes the release notes word for word, and
   (`preexec() { >/dev/null }`), or with only words that may all expand to none
   (`/no/such*(N) >/dev/null`), as a run of `cat`, or of `more` for an input alone, which `NULLCMD`
   and `READNULLCMD` name by default, so a function of either name runs as a hook's code where a hook
-  holds one. It warns that it cannot tell, too, where a file may change how zsh reads code: at a
+  holds one, and a `$ZDOTDIR` that neither the shell's environment nor a file sets as empty, as zsh
+  expands it, so `fpath=($ZDOTDIR/zc $fpath)` names `/zc`, not a directory in the home. It warns
+  that it cannot tell, too, where a file may change how zsh reads code: at a
   `histchars` a file sets (`histchars='!^'` leaves zsh no comment character), at `RC_QUOTES` or
   csh's quotes, which change what a quote holds and so what an `eval` or an alias's value runs
   (`CSH_JUNKIE_QUOTES`, `emulate csh`), at a `}` after a command's words (`f() { : }`) where a file
@@ -982,20 +992,40 @@ of this changelog for that version becomes the release notes word for word, and
   wrote the line with each.
   zsh 5.9.2 ran a completion function of the files' own as Tab completed a word, from a directory
   they put in `fpath` or by a completer, a `compdef`, a widget or a parameter that names it, and so
-  wrote the line with one that appends it. Where the files autoload the stock `compinit`, the
+  wrote the line with one that appends it. It also ran code of the files' own that zsh's own
+  completion functions run: a function named like a command they run (`_ls` runs `ls --help` for
+  `ls <Tab>`, `_call_program` runs `locale`, so `locale() { ... }` with the `extra-verbose` style ran
+  as `sudo na<Tab>` completed the command), a file named like one of zsh's own functions in a
+  directory of `fpath` the files add (`compinstall` given as a completer, a `compdump` that compinit
+  runs), a backquote in a `file-patterns` value, which `_files` reads with `eval`, a command
+  substitution in a subscript or a parameter's name where menu's `select=N`, `range`,
+  `select-scroll` or `_git`'s `max-verbose` are read as arithmetic (`menu 'select=1+x'`), a
+  `tag-order` label's `%(d.a.b)`, whose test `zformat -f` reads as arithmetic, the cache files that
+  `use-cache` makes them source, the action of `compcontext`, `_sort_tags`, and a global alias where
+  `_comp_options` turns `aliases` on. Where the files autoload the stock `compinit`, the
   completion functions of zsh's own and of the Nix profiles in the store are still read as harmless,
   and completion code of the files' own is a doubt: a completion function (a file whose name starts
   with `_`) in another directory of `fpath` (`fpath=(~/zc $fpath)`, a Home Manager plugin's,
-  zsh-completions in a home), a completer, a completion widget's function or a `compdef`'s that is
-  no function of zsh's own or that a file defines in place of one
+  zsh-completions in a home) and a file there named like one of zsh's own functions, a completer,
+  a completion widget's function or a `compdef`'s that is no function of zsh's own or that a file
+  defines, or autoloads from a file of its own, in place of one
   (`zstyle ':completion:*' completer _w`, a `cache-policy` or `user-expand` style,
   `zle -C w complete-word _w`, `compdef _w cmd`, `compdef '...' cmd`), a `zstyle -e` of such a
   style, and a file that sets `_comps`, `_patcomps`, `_postpatcomps`, `_services`, `_compautos`,
-  `compprefuncs`, `comppostfuncs` or `_comp_setup`. A function the files define whose name starts
-  with `_` is a hook there, and the code of a `command` style is a hook's. A dump file whose
-  completion of a command or a pattern is no completion function's name is read as code, and
-  `compctl` and bash's `complete` are doubts wherever they stand. So a setup with completion
-  functions of its own warns again.
+  `compprefuncs`, `comppostfuncs`, `_comp_setup`, `compcontext`, `_sort_tags` or `_comp_options`
+  (but for `_comp_options+=(globdots)`). Every function of the files' own is a hook there, one they
+  define or autoload from a file of their own, and the code of a `command` style is a hook's, one
+  an expansion makes a doubt. A completion style is read as zsh's own completion functions read
+  it, where its pattern may match a completion context: one they only test for true or read as data
+  passes with any value (`verbose`, `list-colors`, `matcher-list`, `group-name` and 66 more), and a
+  value of `menu`, `range` or `select-scroll` that is no plain number, a
+  `format` or `tag-order` with a `%(`, a `file-patterns` value with an expansion, a `use-cache` that
+  may be on, `environ`, a value `zstyle -e` makes for any of them, and a style the check has not
+  read are doubts. A dump file whose completion of a command or a pattern is no completion
+  function's name is read as code, and `compctl` and bash's `complete` are doubts wherever they
+  stand. So a setup with completion functions or a style of its own the check has not read, with
+  `use-cache` on, or with a function of its own that writes a file or hands a program a word an
+  expansion makes (`mkcd() { mkdir -p "$1" }`) warns again.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

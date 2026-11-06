@@ -1484,17 +1484,21 @@ afterwards:
     directory it was built with, or in one that an `FPATH` from its environment
     names, which the check does not read. Of that environment it keeps `FPATH`,
     `NIX_PROFILES`, `USER`, `XDG_STATE_HOME`, `_compdir`, `HOME`, `ZDOTDIR`,
-    `ARGV0`, `MAILPATH`, `NULLCMD`, `READNULLCMD` and the prompts zsh takes
+    `ARGV0`, `MAILPATH`, `NULLCMD`, `READNULLCMD`, the prompts zsh takes
     from it (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`,
     `RPS2`, `RPROMPT2`, `PS3`, `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and
-    `PROMPT_EOL_MARK`), and whether a variable of the dynamic loader (`LD_...`)
-    is set, without its value; when one of them but a prompt, `MAILPATH`,
-    `NULLCMD` or `READNULLCMD` is no UTF-8, it reads the shell as one whose
-    environment it does not know. A `MAILPATH` there, whose messages zsh expands
-    before a prompt, is a doubt, and so are a `NULLCMD` and a `READNULLCMD`,
-    which name the command zsh runs for a redirection with none, and a prompt
-    there that holds an expansion holds code where `PROMPT_SUBST` may be on, as
-    zsh shows it unless a file sets it;
+    `PROMPT_EOL_MARK`) and the parameters zsh reads as arithmetic each time it
+    uses them (`TMOUT`, `PERIOD`, `BAUD`, `REPORTTIME`, `REPORTMEMORY`,
+    `DIRSTACKSIZE`, `MENUSCROLL`, `LOGCHECK`, `ZFTP_TMOUT`), and whether a
+    variable of the dynamic loader (`LD_...`) is set, without its value; when
+    one of them but a prompt, `MAILPATH`, `NULLCMD`, `READNULLCMD` or one zsh
+    reads as arithmetic is no UTF-8, it reads the shell as one whose environment
+    it does not know. A `MAILPATH` there, whose messages zsh expands before a
+    prompt, is a doubt, and so are a `NULLCMD` and a `READNULLCMD`, which name
+    the command zsh runs for a redirection with none, one of the parameters zsh
+    reads as arithmetic that is no number (see below), and a prompt there that
+    holds an expansion holds code where `PROMPT_SUBST` may be on, as zsh shows
+    it unless a file sets it;
   - zsh's own `compinit` and `promptinit`, and the `compaudit`, `compdump`,
     `add-zsh-hook` and `add-zle-hook-widget` they run, it knows by their bytes
     as zsh 5.9, 5.9.1 and 5.9.2 ship them, and reads for what that code does,
@@ -1530,24 +1534,49 @@ afterwards:
     complete a word is a doubt: a completion function, a file whose name starts
     with `_`, in any other directory of `fpath` (one your files add, as
     `fpath=(~/zc $fpath)`, a Home Manager plugin's or zsh-completions in your
-    home, or one an `FPATH` in the shell's environment names), and a completer,
-    a completion widget's function or a `compdef`'s that is no function of zsh's
-    own directory, or that a file defines in place of one
+    home, or one an `FPATH` in the shell's environment names), and a file there
+    named like one of zsh's own functions (`compinstall`, `compdump`, `zmv`),
+    which zsh may load in place of zsh's own where its own code runs it by
+    name; a completer, a completion widget's function or a `compdef`'s that is
+    no function of zsh's own directory, or that a file defines or autoloads
+    from a file of its own in place of one
     (`zstyle ':completion:*' completer _w`, a `cache-policy` or `user-expand`
     style, `zle -C w complete-word _w`, `compdef _w cmd`, and
     `compdef '...' cmd`, whose code zsh runs), a `zstyle -e` of one of those
     styles, and a file that sets a parameter zsh's completion system runs code
-    or functions from (`_comps`, `_patcomps`, `_postpatcomps`, `_services`,
-    `_compautos`, `compprefuncs`, `comppostfuncs`, `_comp_setup`). A function
-    your files define whose name starts with `_`, as zsh's completion functions
-    run such names, is a hook there, and the code of a `command` style, which
-    `_call_program` runs, is a hook's wherever it stands. In a dump file, a
-    completion of a command or a pattern that is no completion function's name
-    is code, which makes the check read the file as code. `compctl`, whose
-    completion runs without `compinit`, and bash's `complete`, which
-    `bashcompinit` defines, are doubts wherever they stand. So a setup with
-    completion functions of its own warns. `compaudit`
-    may put the directories under one that holds a `Base` directory at the end
+    or functions from, or the options it completes with (`_comps`,
+    `_patcomps`, `_postpatcomps`, `_services`, `_compautos`, `compprefuncs`,
+    `comppostfuncs`, `_comp_setup`, `compcontext`, `_sort_tags` and
+    `_comp_options`, but for the line `_comp_options+=(globdots)`). Every
+    function of your own is a hook there, one your files define and one they
+    autoload from a file outside zsh's own directory and the Nix profiles', as
+    zsh's own completion functions run commands by name as you complete a
+    word: the one you complete (`_ls` runs `ls --help` for `ls <Tab>`), and
+    others (`_call_program` runs `locale`, so a function named `locale` runs as
+    `sudo na<Tab>` completes a command where the `extra-verbose` style is on).
+    The code of a `command` style, which `_call_program` runs, is a hook's
+    wherever it stands, and one an expansion makes is a doubt. A completion
+    style, one whose pattern may match a context of zsh's completion system
+    (`':completion:*'`, `'*'`), is read as zsh's own completion functions read
+    its value: a style they only test for true or read as data passes with any
+    value (`verbose`, `list-colors`, `matcher-list`, `group-name`,
+    `special-dirs`, `rehash` and the like), a value of `menu`, `range` or
+    `select-scroll`, which they read as arithmetic, that is no plain number is
+    a doubt (`menu 'select=1+x'`, while `select=2` and `select=long` pass),
+    and so are a `%(` in a `format` or a `tag-order` value, whose test `zformat`
+    reads as arithmetic, an expansion in a `file-patterns` value, which `_files`
+    reads with `eval`, a `use-cache` that may be on, with which they source the
+    files of the completion cache, `environ`, which `_sudo` sets parameters by,
+    a value `zstyle -e` makes for any of those, and any style the check has not
+    read (`max-verbose`). In a dump file, a completion of a command or a pattern
+    that is no completion function's name is code, which makes the check read
+    the file as code. `compctl`, whose completion runs without `compinit`, and
+    bash's `complete`, which `bashcompinit` defines, are doubts wherever they
+    stand. So a setup with completion functions of its own, with a style the
+    check has not read or `use-cache` on, or with a function of its own that
+    writes a file or hands a program a word an expansion makes
+    (`mkcd() { mkdir -p "$1" }`), warns. `compaudit` may put the directories
+    under one that holds a `Base` directory at the end
     of `fpath`, which the check reads too (a `_compdir` a file names or the
     shell's environment holds, which picks that directory, is a doubt).
     `promptinit` marks the prompt themes in `fpath` the same way, and `prompt`
@@ -1587,7 +1616,16 @@ afterwards:
     for a subscript of an array whose keys are strings (`commands`, `terminfo`,
     one a file declares with `typeset -A` outside a function and does not
     unset). A parameter declared to hold numbers where no function makes it its
-    own (`integer n`) is evaluated as it is declared, which is a doubt too;
+    own (`integer n`) is evaluated as it is declared, which is a doubt too.
+    zsh keeps `TMOUT`, `PERIOD`, `BAUD`, `REPORTTIME`, `REPORTMEMORY`,
+    `DIRSTACKSIZE`, `MENUSCROLL`, `LOGCHECK` and `ZFTP_TMOUT` as strings and
+    reads them as arithmetic each time it uses them, at a prompt, after a
+    command or at a `cd`, where a command substitution in a subscript runs
+    (`TMOUT='pipestatus[$(cmd)1]'` runs `cmd` at each prompt), so a value
+    that is no number is a doubt, one your files give one of them and one the
+    shell's environment holds, and so is one set in a form the check does not
+    read (`read TMOUT`, `print -v TMOUT`); a number, as a hardened
+    `/etc/profile` sets `TMOUT=900` with `readonly` and `export`, passes;
   - a file the check would read that is not there now is a doubt where a file
     it reads, but for the stock functions it knows by their SHA-256, names it
     beyond the commands that source it, the tests that ask about it and a
@@ -1689,11 +1727,12 @@ afterwards:
   dash (dash keeps no history file). It does not see a setting made by a plugin
   manager's function, one you typed into the shell, the completion functions a
   package puts in a Nix profile, which zsh runs as you complete a word (Tab,
-  `^D` or one of the keys zsh's own completion functions bind), a function or an
-  alias named like another command than those you type a NAILS command with
-  (`mount`, `cryptsetup`), which zsh runs in that command's place where you type
-  it, and, for a function, where zsh's own completion functions run that command
-  as you complete a word (`ls <Tab>` runs a function named `ls`), a global alias
+  `^D` or one of the keys zsh's own completion functions bind), and what those
+  do with the styles your files set, a function or an alias named like another
+  command than those you type a NAILS command with (`mount`, `cryptsetup`),
+  which zsh runs in that command's place where you type it (where your files
+  run zsh's own `compinit`, a function of your own counts as a hook, see
+  above), a global alias
   named like another word you type (the value you give an option or a
   setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
   program named like the command you type that zsh finds first in `PATH` or
