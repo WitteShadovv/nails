@@ -32,6 +32,36 @@ impl MockFilesystem {
         paths
     }
 
+    /// Every path a read was asked about, in the order it was asked: the
+    /// lookups (`path_exists`, `is_directory`, `is_regular_file`,
+    /// `is_symlink`, `inode`, `mount_root`, `canonicalize`, `read_link` and
+    /// the others that look at what is at a path), the file reads, the
+    /// listings and the walks. The mount queries, which read the mount
+    /// table, are not among them, nor are writes.
+    pub fn mock_lookups(&self) -> Vec<PathBuf> {
+        self.lookups
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clone()
+    }
+
+    /// Forget the reads [`mock_lookups`](Self::mock_lookups) recorded so
+    /// far.
+    pub fn mock_clear_lookups(&self) {
+        self.lookups
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+    }
+
+    /// Record a read of `path` for [`mock_lookups`](Self::mock_lookups).
+    pub(super) fn looked_at(&self, path: &Path) {
+        self.lookups
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(path.to_path_buf());
+    }
+
     /// Get operation log for verifying call ordering in tests
     pub fn mock_ops(&self) -> Vec<MockOp> {
         self.op_log

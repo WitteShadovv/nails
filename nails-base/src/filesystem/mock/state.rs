@@ -126,6 +126,9 @@ pub struct MockFilesystem {
     /// of these paths, or of a path below one, fails with an error of its
     /// kind.
     pub(super) lookup_errors: Arc<Mutex<HashMap<PathBuf, std::io::ErrorKind>>>,
+    /// Every path a read looked up, in order
+    /// ([`mock_lookups`](Self::mock_lookups)).
+    pub(super) lookups: Arc<Mutex<Vec<PathBuf>>>,
     /// Paths whose `is_mounted` check fails, mapped to the error message to
     /// return. Lets tests exercise the status command's handling of an
     /// unreadable mount table without a bespoke fake filesystem.
@@ -224,6 +227,7 @@ impl MockFilesystem {
             read_only_mounts: Arc::new(Mutex::new(HashSet::new())),
             paths: Arc::new(Mutex::new(HashMap::new())),
             lookup_errors: Arc::new(Mutex::new(HashMap::new())),
+            lookups: Arc::new(Mutex::new(Vec::new())),
             is_mounted_errors: Arc::new(Mutex::new(HashMap::new())),
             nails_process_matches: Arc::new(Mutex::new(None)),
             unreadable_dirs: Arc::new(Mutex::new(HashSet::new())),
@@ -296,6 +300,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.lookup_errors
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.lookups
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
