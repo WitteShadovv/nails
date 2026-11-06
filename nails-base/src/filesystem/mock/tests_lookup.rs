@@ -224,3 +224,85 @@ fn an_entry_is_whatever_is_at_the_path_itself() {
         (PathBuf::from("/srv/x"), ErrorKind::PermissionDenied)
     );
 }
+
+/// Each read records the path it was asked about, in order; the mount
+/// queries and the writes record none, and clearing forgets what was
+/// recorded.
+#[test]
+fn every_read_records_the_path_it_was_asked_about() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", "root:x:0:0::/root:/bin/sh\n");
+    fs.mock_set_directory_contents(Path::new("/etc"), vec![PathBuf::from("/etc/passwd")]);
+    let path = Path::new("/etc/passwd");
+    let reads: Vec<(&str, crate::Result<()>)> = vec![
+        ("path_exists", fs.path_exists(path).map(drop)),
+        ("is_directory", fs.is_directory(path).map(drop)),
+        ("is_regular_file", fs.is_regular_file(path).map(drop)),
+        ("is_symlink", fs.is_symlink(path).map(drop)),
+        ("inode", fs.inode(path).map(drop)),
+        ("mount_root", fs.mount_root(path).map(drop)),
+        ("canonicalize", fs.canonicalize(path).map(drop)),
+        ("read_link", fs.read_link(path).map(drop)),
+        (
+            "is_overlay_whiteout",
+            fs.is_overlay_whiteout(path).map(drop),
+        ),
+        ("read_file_content", fs.read_file_content(path).map(drop)),
+        ("read_file_bytes", fs.read_file_bytes(path).map(drop)),
+        ("read_file_range", fs.read_file_range(path, 0, 1).map(drop)),
+        ("file_size", fs.file_size(path).map(drop)),
+        ("modified_time", fs.modified_time(path).map(drop)),
+        ("device_id", fs.device_id(path).map(drop)),
+        ("loop_record", fs.loop_record(path).map(drop)),
+        ("get_permissions", fs.get_permissions(path).map(drop)),
+        ("disk_usage", fs.disk_usage(path).map(drop)),
+        ("is_readable", fs.is_readable(path).map(drop)),
+        ("is_writable", fs.is_writable(path).map(drop)),
+        ("supports_symlinks", fs.supports_symlinks(path).map(drop)),
+        (
+            "list_directory",
+            fs.list_directory(Path::new("/etc")).map(drop),
+        ),
+        (
+            "find_files_with_pattern",
+            fs.find_files_with_pattern(Path::new("/etc"), "pass")
+                .map(drop),
+        ),
+        (
+            "scan_files_with_pattern",
+            fs.scan_files_with_pattern(Path::new("/etc"), "pass")
+                .map(drop),
+        ),
+    ];
+    let mut expected: Vec<PathBuf> = reads
+        .iter()
+        .map(|(read, _)| match *read {
+            "list_directory" | "find_files_with_pattern" | "scan_files_with_pattern" => {
+                PathBuf::from("/etc")
+            }
+            _ => path.to_path_buf(),
+        })
+        .collect();
+    assert_eq!(fs.mock_lookups(), expected);
+
+    // The reads a default method makes through another are recorded once.
+    fs.read_file_in_root(Path::new("/"), path).unwrap();
+    expected.push(path.to_path_buf());
+    assert_eq!(fs.mock_lookups(), expected);
+
+    let _ = fs.is_mounted(path);
+    let _ = fs.get_filesystem_type(path);
+    let _ = fs.mount_source(path);
+    let _ = fs.is_mount_read_only(path);
+    let _ = fs.mount_table();
+    fs.write_file_content(Path::new("/etc/new"), "x").unwrap();
+    let _ = fs.create_directory(Path::new("/etc/dir"));
+    assert_eq!(fs.mock_lookups(), expected);
+
+    fs.mock_clear_lookups();
+    assert!(fs.mock_lookups().is_empty());
+    fs.path_exists(path).unwrap();
+    assert_eq!(fs.mock_lookups(), vec![path.to_path_buf()]);
+    fs.reset();
+    assert!(fs.mock_lookups().is_empty());
+}
