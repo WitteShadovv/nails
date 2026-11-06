@@ -616,9 +616,11 @@ writes.
   overlays, the ESP is a read-only bind, and below the hidden root the session
   owns the hidden volume, told by its device (the volume, a bind of a folder of
   it, and a disk image on it mounted straight from its loop device, but not a
-  partition of such a loop device or a mapping over one, and on btrfs, where a
-  file shows its subvolume's own device number, only while the path the loop
-  driver shows for the image leads to it), and every mount below
+  partition of such a loop device or a mapping over one, nor an image while the
+  path the loop driver shows for it runs through an automount point or a FUSE
+  or network filesystem, which NAILS does not ask, and on btrfs, where a file
+  shows its subvolume's own device number, only while that path leads to the
+  image), and every mount below
   `<hidden_volume_root>/root`, told by its path: there NAILS keeps its layers
   and carries the decoy filesystems the way back needs. A mount outside
   the hidden root alerts even when it shows the hidden volume. A mount made
