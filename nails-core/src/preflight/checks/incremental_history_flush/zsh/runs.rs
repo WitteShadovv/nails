@@ -115,12 +115,14 @@ impl<F: Filesystem> Reader<'_, F> {
     /// Whether a function named `function` is one zsh runs as a hook: by its
     /// name (`preexec`, `TRAPDEBUG`), as the dispatcher that the stock
     /// `add-zle-hook-widget` runs as each line is entered (`azhw:...`), as
-    /// the files make it one or a hook runs it (`hooked`), or as it is named
+    /// the files make it one or a hook runs it (`hooked`), as it is named
     /// like a builtin, which zsh's own code runs as each line is entered
-    /// (`zstyle`, `zle`).
+    /// (`zstyle`, `zle`), or like the command a NAILS command is typed with
+    /// (`sudo`, `nails`), which runs with that line ([`builtins::typed`]).
     pub(super) fn is_hook(function: &str, hooked: &[String]) -> bool {
         walk::HOOKS.contains(&function)
             || builtins::builtin(function)
+            || builtins::typed(function)
             || function.starts_with("TRAP")
             || function.starts_with("azhw:")
             || hooked.iter().any(|hook| hook == function)
@@ -269,13 +271,24 @@ impl<F: Filesystem> Reader<'_, F> {
     /// in place of that word as it reads the code, which may then run, set or
     /// define anything (`set -A X w`, `function X`, `read X`, `print -r -- "$1"
     /// X`). An alias defined twice alike counts once, so the second is a use.
-    /// One whose uses the check cannot count ([`uncountable`]) is a doubt
-    /// wherever it is defined.
+    /// One named like a word of the NAILS commands the operator types
+    /// ([`builtins::typed_word`]: `sudo`, `activate`, `--yes`) counts as used,
+    /// as zsh puts its value in place of that word of the line. One whose uses
+    /// the check cannot count ([`uncountable`]) is a doubt wherever it is
+    /// defined.
     fn global_alias_uses(&mut self) {
         let mut definitions = std::mem::take(&mut self.global_alias_defs);
         definitions.sort();
         definitions.dedup();
         for (name, text, place) in &definitions {
+            if builtins::typed_word(name) {
+                self.doubt(format!(
+                    "it cannot tell what the global alias `{text}` in {place} runs as you enter a \
+                     NAILS command, as zsh puts its value in place of a word of that line named \
+                     like it (`sudo`, `activate`, `--yes`)"
+                ));
+                continue;
+            }
             if uncountable(name) {
                 self.doubt(format!(
                     "it cannot tell what code the global alias `{text}` in {place} runs, as zsh \

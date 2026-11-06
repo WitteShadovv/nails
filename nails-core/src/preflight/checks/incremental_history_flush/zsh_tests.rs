@@ -32,6 +32,10 @@ mod strings;
 #[path = "zsh_reading_tests.rs"]
 mod reading;
 
+// What zsh runs with the line a NAILS command is typed in.
+#[path = "zsh_typed_tests.rs"]
+mod typed;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
