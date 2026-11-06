@@ -539,3 +539,21 @@ fn the_network_tools_check_skips_in_test_context_without_a_probe() {
         "the description must name what the row is about"
     );
 }
+
+/// A detection that fails warns, as network-tools only warns: NAILS cannot
+/// tell which tools the way back needs. It was a refusal through `?`.
+#[test]
+fn a_host_that_cannot_be_detected_warns() {
+    let check = NetworkToolsCheck::new(Paths::system());
+    let error = crate::NailsError::io(
+        "/etc/os-release",
+        std::io::Error::from(std::io::ErrorKind::Other),
+    );
+    assert_eq!(
+        check.on_host(Err(error)),
+        CheckResult::Warn(
+            "NAILS cannot tell which tools the way back needs: /etc/os-release: other error"
+                .to_string()
+        )
+    );
+}

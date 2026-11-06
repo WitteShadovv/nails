@@ -7,7 +7,10 @@
 
 use std::path::PathBuf;
 
-use crate::{Config, HostTarget, NailsManager, NixOSBuilder, RealFilesystem, RuntimeEnv};
+use crate::platform::HostProfile;
+use crate::{
+    Config, Filesystem, HostTarget, NailsManager, NixOSBuilder, RealFilesystem, RuntimeEnv,
+};
 
 /// Build a [`NailsManager`] with the NixOS build target activation would pick
 /// for the same configuration.
@@ -20,8 +23,10 @@ use crate::{Config, HostTarget, NailsManager, NixOSBuilder, RealFilesystem, Runt
 /// NixOS; a host without a declarative config layer has no build target at all.
 /// Activation, readiness and the `nixos-build-target` check all go through this
 /// one discovery on the same host profile, so none of them can report a
-/// different build target than the others. A failed detection leaves no profile,
-/// and discovery then runs the NixOS cascade as it always has.
+/// different build target than the others. A detection that fails leaves the
+/// profile of a host NAILS cannot tell ([`HostProfile::undetected`]): the
+/// platform gate of activation refuses it, and the platform row of `check`
+/// fails, naming the error.
 pub fn build_nixos_manager(
     config: Config,
     state_path: PathBuf,
@@ -30,9 +35,7 @@ pub fn build_nixos_manager(
 ) -> NailsManager<RealFilesystem> {
     let mut manager =
         NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
-    if let Err(e) = manager.initialize_platform() {
-        tracing::debug!(error = %e, "platform detection failed; continuing without a host profile");
-    }
+    detect_or_refuse(&mut manager);
 
     let target = manager
         .discover_host_target(overlay_only)
@@ -41,6 +44,16 @@ pub fn build_nixos_manager(
         manager.set_nixos_builder(builder);
     }
     manager
+}
+
+/// Detect the host of `manager`; one whose detection fails is kept as a host
+/// NAILS refuses, never as one without a profile, which the platform gate
+/// would let pass.
+fn detect_or_refuse<F: Filesystem>(manager: &mut NailsManager<F>) {
+    if let Err(error) = manager.initialize_platform() {
+        tracing::debug!(%error, "platform detection failed; the host is refused");
+        manager.set_host_profile(HostProfile::undetected(&error));
+    }
 }
 
 /// The builder of a build target. Overlay-only, no target and the refused decoy
@@ -59,6 +72,32 @@ mod tests {
     use super::nixos_builder_for;
     use crate::HostTarget;
     use std::path::{Path, PathBuf};
+
+    /// A host whose detection failed is refused by the platform gate and the
+    /// platform row, naming the error, where it used to be one without a
+    /// profile, which the gate let pass.
+    #[test]
+    fn a_host_that_cannot_be_detected_is_refused() {
+        use crate::preflight::{PlatformCheck, PreFlightCheck};
+        let error = crate::NailsError::io(
+            "/etc/os-release",
+            std::io::Error::from(std::io::ErrorKind::Other),
+        );
+        let profile = super::HostProfile::undetected(&error);
+        let reason = "NAILS cannot tell which platform this is: /etc/os-release: other error";
+        match profile.require_supported() {
+            Err(crate::NailsError::UnsupportedPlatform { reason: refused }) => {
+                assert_eq!(refused, reason);
+            }
+            other => panic!("{other:?}"),
+        }
+        let row = PreFlightCheck::<crate::MockFilesystem>::run(
+            &PlatformCheck::new(profile),
+            &crate::MockFilesystem::new(),
+        )
+        .unwrap();
+        assert_eq!(row, crate::preflight::CheckResult::fail(reason));
+    }
 
     /// Activation builds nothing for the refused decoy flake, as for
     /// overlay-only and no target; every other target gets its builder.

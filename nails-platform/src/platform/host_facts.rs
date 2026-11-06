@@ -94,11 +94,14 @@ pub(crate) fn read_lsms<F: Filesystem>(fs: &F) -> Vec<String> {
         .collect()
 }
 
-/// The host's SELinux status, or `None` when SELinux is not present.
+/// The host's SELinux status, or `None` when SELinux is not present. A
+/// `/sys/fs/selinux` whose lookup fails for another reason than that nothing
+/// is there counts as there: SELinux may run, so the labels are required
+/// unless the mount table shows no selinuxfs.
 pub(crate) fn read_selinux<F: Filesystem>(fs: &F) -> Option<SelinuxStatus> {
     let selinuxfs = read_selinuxfs(fs);
-    let fs_present =
-        selinuxfs == Selinuxfs::Mounted || fs.path_exists(Path::new(SELINUX_FS)).unwrap_or(false);
+    let fs_present = selinuxfs == Selinuxfs::Mounted
+        || !matches!(fs.path_exists(Path::new(SELINUX_FS)), Ok(false));
     let enforce = read_optional(fs, SELINUX_ENFORCE).and_then(|raw| match raw.trim() {
         "1" => Some(SelinuxMode::Enforcing),
         "0" => Some(SelinuxMode::Permissive),
@@ -242,6 +245,25 @@ mod tests {
         fs.mock_set_file_content(SELF_MOUNTS, PLAIN_MOUNTS);
         let status = read_selinux(&fs).expect("the directory marks SELinux present");
         assert_eq!(status.selinuxfs, Selinuxfs::NotMounted);
+    }
+
+    /// A `/sys/fs/selinux` NAILS cannot look up may be there, so SELinux may
+    /// run: with a mount table that cannot be read, nothing rules it out and
+    /// the labels are required, where SELinux used to count as absent.
+    #[test]
+    fn a_selinux_directory_that_cannot_be_looked_up_counts_as_there() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error(SELINUX_FS, std::io::ErrorKind::PermissionDenied);
+        let status = read_selinux(&fs).expect("SELinux may be present");
+        assert_eq!(status.selinuxfs, Selinuxfs::Unknown);
+        // A mount table that lists no selinuxfs says SELinux does not run.
+        fs.mock_set_file_content(SELF_MOUNTS, PLAIN_MOUNTS);
+        let status = read_selinux(&fs).expect("SELinux may be present");
+        assert_eq!(status.selinuxfs, Selinuxfs::NotMounted);
+        // Nothing there is no SELinux, as before.
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error(SELINUX_FS, std::io::ErrorKind::NotFound);
+        assert_eq!(read_selinux(&fs), None);
     }
 
     #[test]
