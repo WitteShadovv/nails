@@ -40,6 +40,12 @@
 //! `eval` in bash's files makes (zsh's it reads, or warns of), or one in the
 //! files of a shell started with others (`--rcfile`, a `ZDOTDIR` from its
 //! environment).
+//!
+//! It reads through the automount guard ([`crate::filesystem::automount`]): a
+//! lookup that would mount an automount point that nothing is mounted on yet,
+//! such as a home an automounter serves, is not made, and the check warns
+//! that it cannot tell, naming the point. Without a readable mount table it
+//! looks up nothing, and warns.
 
 mod startup;
 mod zsh;
@@ -47,6 +53,7 @@ mod zsh;
 use std::path::{Path, PathBuf};
 
 use super::super::{CheckResult, PreFlightCheck};
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle};
 use crate::{Filesystem, Result, TargetUser};
 
 /// How the check found the shell whose settings it reads.
@@ -443,13 +450,29 @@ fn same_shell(a: &str, b: &str) -> bool {
 
 /// The result for the shells `first`, then bash, zsh and, when one of their
 /// homes has its configuration, fish, each that `first` does not hold already;
-/// `preface` says why the check reads them all.
+/// `preface` says why the check reads them all. A home where NAILS cannot
+/// tell whether fish keeps its configuration warns that it cannot tell
+/// whether fish writes each command line as it runs.
 fn every_shell<F: Filesystem>(fs: &F, first: Vec<Judged>, preface: &str) -> CheckResult {
     let homes = first.first().map_or(&[][..], |shell| shell.homes);
-    let has_fish = homes
-        .iter()
-        .any(|home| fs.path_exists(&home.join(".config/fish")).unwrap_or(false));
+    let mut has_fish = false;
+    let mut fish_untold: Vec<String> = Vec::new();
+    for home in homes {
+        let settings = home.join(".config/fish");
+        match fs.path_exists(&settings) {
+            Ok(present) => has_fish |= present,
+            Err(error) => {
+                let shown = settings.display().to_string();
+                fish_untold.push(format!(
+                    "NAILS cannot tell whether fish keeps its settings in {shown}, so it cannot \
+                     tell whether fish writes each command line as it runs: {}.",
+                    describe(&shown, &error).sentence
+                ));
+            }
+        }
+    }
     let mut shells = first;
+    let fish_known = shells.iter().any(|shell| same_shell(shell.program, "fish"));
     for other in ["bash", "zsh", "fish"] {
         let known = shells.iter().any(|shell| same_shell(shell.program, other));
         if !known && (other != "fish" || has_fish) {
@@ -457,10 +480,18 @@ fn every_shell<F: Filesystem>(fs: &F, first: Vec<Judged>, preface: &str) -> Chec
         }
     }
     let results: Vec<CheckResult> = shells.iter().map(|shell| judge_one(fs, shell)).collect();
+    // Fish read as one of the shells says more than a home that may hold its
+    // configuration.
+    let fish_untold = if fish_known || has_fish {
+        Vec::new()
+    } else {
+        fish_untold
+    };
     let warnings: Vec<&str> = results
         .iter()
         .filter(|result| matches!(result, CheckResult::Warn(_)))
         .map(CheckResult::message)
+        .chain(fish_untold.iter().map(String::as_str))
         .collect();
     if warnings.is_empty() {
         let passes: Vec<&str> = results.iter().map(CheckResult::message).collect();
@@ -480,16 +511,31 @@ impl<F: Filesystem> PreFlightCheck<F> for IncrementalHistoryFlushCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        Ok(match self.shell.as_ref() {
-            Some(shell) => judge(fs, shell),
-            None => CheckResult::Pass(
+        let Some(shell) = self.shell.as_ref() else {
+            return Ok(CheckResult::Pass(
                 "Target user could not be resolved; shell history-flush settings were not \
                  inspected"
                     .into(),
-            ),
-        })
+            ));
+        };
+        // Without the table a lookup could mount an automount point, so none
+        // is made.
+        let snapshot = Snapshot::read(fs, Path::new("/"));
+        if let Some(error) = snapshot.unreadable() {
+            return Ok(CheckResult::Warn(format!(
+                "The check cannot tell whether the shell the decoy commands are typed into \
+                 writes each command line to its history file as it runs: NAILS cannot read the \
+                 mount table ({error}), which shows where a lookup would mount an automount \
+                 point, so it looks up nothing."
+            )));
+        }
+        let guarded = Guarded::new(fs.clone(), &snapshot);
+        let result = judge(&guarded, shell);
+        Ok(settle(result, &guarded.skipped(), OnSkip::Warn))
     }
 }
 
+#[cfg(test)]
+mod lookup_tests;
 #[cfg(test)]
 mod tests;
