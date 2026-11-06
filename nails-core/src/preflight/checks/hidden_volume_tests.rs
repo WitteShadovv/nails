@@ -572,11 +572,14 @@ fn only_a_root_on_a_decoy_filesystem_carries_the_decoys_label() {
         )
     };
     for how in [Sharing::Bind, Sharing::Subvolume, Sharing::Filesystem] {
-        let verdict = Verdict::OnDecoyFilesystem {
-            how,
-            at: PathBuf::from("/home"),
-        };
-        assert!(on_a_decoy_filesystem(&refusal(verdict)), "{how:?}");
+        for in_fstab in [true, false] {
+            let verdict = Verdict::OnDecoyFilesystem {
+                how,
+                at: PathBuf::from("/home"),
+                in_fstab,
+            };
+            assert!(on_a_decoy_filesystem(&refusal(verdict)), "{how:?}");
+        }
     }
     // On the decoy's storage, but a filesystem of its own, with its own label.
     for verdict in [
@@ -991,12 +994,20 @@ fn a_separate_drive_also_mounted_at_a_system_folder_is_refused_with_the_flag_too
     );
     let refused = run_allowing(&fs, Allow::Nothing);
     assert!(refused.is_fail(), "got {refused:?}");
+    assert_eq!(
+        refused.message(),
+        "/mnt/data is not a volume of its own: it is the filesystem this computer has mounted \
+         at /srv"
+    );
+    // No line mounts it there, so the hint says to unmount it, not to remove
+    // a line.
     assert!(
-        refused
-            .message()
-            .contains("it is the filesystem this computer mounts at /srv"),
-        "{}",
-        refused.message()
+        refused.remediation().unwrap().starts_with(
+            "If /mnt/data is the volume you prepared and it was mounted at /srv by hand, run \
+             `sudo umount /srv`, then run the command again.\n"
+        ),
+        "{:?}",
+        refused.remediation()
     );
     assert_eq!(refused.allowable(), Some(Allowable::DecoyStorage));
 

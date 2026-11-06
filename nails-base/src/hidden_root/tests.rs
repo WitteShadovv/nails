@@ -931,6 +931,44 @@ fn on_a_decoy_filesystem_a_zfs_dataset_is_named_by_its_source() {
 }
 
 #[test]
+fn the_hint_for_a_root_that_is_the_decoys_filesystem_undoes_what_made_it_the_decoys() {
+    let hint = |at: &str, in_fstab: bool| {
+        let verdict = separation::Verdict::OnDecoyFilesystem {
+            how: separation::Sharing::Filesystem,
+            at: PathBuf::from(at),
+            in_fstab,
+        };
+        Refusal::new(
+            RefusalKind::DecoyStorage { verdict },
+            Path::new("/mnt/data"),
+        )
+        .hint(None)
+    };
+    // The boot mounts it by a line of the fstab: the line goes.
+    assert_eq!(
+        hint("/srv", true)[0],
+        "If /mnt/data is the volume you prepared, remove its line from /etc/fstab long before \
+         the next use, and mount it by hand each time."
+    );
+    // No line mounts it at that system folder: the mount there goes.
+    assert_eq!(
+        hint("/srv", false)[0],
+        "If /mnt/data is the volume you prepared and it was mounted at /srv by hand, run \
+         `sudo umount /srv`, then run the command again."
+    );
+    assert!(
+        hint("/srv/my data", false)[0].contains("run `sudo umount '/srv/my data'`, then"),
+        "{:?}",
+        hint("/srv/my data", false)
+    );
+    // Neither the line for / nor a mount that holds the root is to go.
+    for (at, in_fstab) in [("/", true), ("/", false), ("/mnt", false)] {
+        let hint = hint(at, in_fstab);
+        assert!(hint[0].starts_with("Setting up here"), "{at}: {hint:?}");
+    }
+}
+
+#[test]
 fn on_a_decoy_filesystem_an_input_that_cannot_be_read_now_is_an_error() {
     // The gate read it a moment ago; a fstab or crypttab that exists but
     // cannot be read now cannot tell which mounts are the decoy's.

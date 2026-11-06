@@ -93,6 +93,7 @@ mod tests {
                 Verdict::OnDecoyFilesystem {
                     how: Sharing::Subvolume,
                     at: home(),
+                    in_fstab: true,
                 },
             ),
             (
@@ -100,6 +101,7 @@ mod tests {
                 Verdict::OnDecoyFilesystem {
                     how: Sharing::Bind,
                     at: home(),
+                    in_fstab: true,
                 },
             ),
             (
@@ -107,6 +109,7 @@ mod tests {
                 Verdict::OnDecoyFilesystem {
                     how: Sharing::Filesystem,
                     at: PathBuf::from("/srv"),
+                    in_fstab: true,
                 },
             ),
             (
@@ -240,6 +243,7 @@ mod tests {
         let storage = on(Verdict::OnDecoyFilesystem {
             how: Sharing::Bind,
             at: PathBuf::from("/"),
+            in_fstab: true,
         });
         for command in ["activate", "check", "init", "discard"] {
             let body = refusal_error_of(command, &storage, None);

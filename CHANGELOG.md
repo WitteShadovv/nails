@@ -823,6 +823,12 @@ of this changelog for that version becomes the release notes word for word, and
   line that mounts the volume itself, while it mounts the decoy's own filesystem, which removing it
   would break. It now says it mounts the filesystem the volume is part of and that the decoy's own
   boot needs it, and to put the hidden root on storage of its own instead.
+- The attach gate no longer says `per /etc/fstab` of a root whose filesystem is mounted at `/` or at
+  one of the system folders it counts as the decoy's (`/srv`, `/home`, `/opt` and the like) when no
+  fstab line mounts it there, a separate drive mounted at `/srv` by hand, say. It says the computer
+  has mounted it there, and for a system folder it says, in place of the advice to remove a line
+  that does not exist, to run `sudo umount` for that folder if the volume was mounted there by
+  hand. It never says to remove the line for `/`.
 - `verify --offline` refuses a `--root` that does not exist, is not a folder or holds no `etc`
   folder before anything is scanned: the error `nothing_to_scan`, exit 1, and its message says how
   to mount the decoy first. Every offline check looks for a path of the decoy system below the

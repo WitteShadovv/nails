@@ -293,17 +293,31 @@ impl Refusal {
                 verdict:
                     Verdict::OnDecoyFilesystem {
                         how: Sharing::Filesystem,
-                        ..
+                        at,
+                        in_fstab,
                     },
             } => {
                 // A volume prepared elsewhere that the boot mounts through
-                // fstab is the computer's storage too, until its line goes.
-                let mut lines = vec![format!(
-                    "If {} is the volume you prepared, remove its line from {} long before the \
-                     next use, and mount it by hand each time.",
-                    self.root.display(),
-                    super::separation::FSTAB
-                )];
+                // fstab is the computer's storage too, until its line goes,
+                // and so is one mounted at a system folder by hand, until it
+                // is unmounted there. The line for / and a mount that holds
+                // the root are none to remove.
+                let root = self.root.display();
+                let mut lines = Vec::new();
+                if *in_fstab && at != Path::new("/") {
+                    lines.push(format!(
+                        "If {root} is the volume you prepared, remove its line from {} long \
+                         before the next use, and mount it by hand each time.",
+                        super::separation::FSTAB
+                    ));
+                } else if !*in_fstab && !self.root.starts_with(at) {
+                    lines.push(format!(
+                        "If {root} is the volume you prepared and it was mounted at {} by hand, \
+                         run `sudo umount {}`, then run the command again.",
+                        at.display(),
+                        crate::next_step::shell_word(at.as_os_str())
+                    ));
+                }
                 lines.extend(self.redirect(exe));
                 lines
             }
@@ -376,18 +390,21 @@ mod tests {
                 verdict: Verdict::OnDecoyFilesystem {
                     how: Sharing::Subvolume,
                     at: at(),
+                    in_fstab: true,
                 },
             },
             RefusalKind::DecoyStorage {
                 verdict: Verdict::OnDecoyFilesystem {
                     how: Sharing::Bind,
                     at: at(),
+                    in_fstab: true,
                 },
             },
             RefusalKind::DecoyStorage {
                 verdict: Verdict::OnDecoyFilesystem {
                     how: Sharing::Filesystem,
                     at: PathBuf::from("/srv"),
+                    in_fstab: true,
                 },
             },
             RefusalKind::DecoyStorage {
@@ -815,6 +832,7 @@ mod tests {
                 verdict: Verdict::OnDecoyFilesystem {
                     how: Sharing::Subvolume,
                     at: PathBuf::from("/pool"),
+                    in_fstab: true,
                 },
             },
             Path::new("/mnt"),
@@ -896,6 +914,7 @@ mod tests {
                 verdict: Verdict::OnDecoyFilesystem {
                     how: Sharing::Filesystem,
                     at: PathBuf::from("/srv"),
+                    in_fstab: true,
                 },
             },
             Path::new("/srv"),
