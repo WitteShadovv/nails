@@ -1547,7 +1547,17 @@ afterwards:
     or functions from, or the options it completes with (`_comps`,
     `_patcomps`, `_postpatcomps`, `_services`, `_compautos`, `compprefuncs`,
     `comppostfuncs`, `_comp_setup`, `compcontext`, `_sort_tags` and
-    `_comp_options`, but for the line `_comp_options+=(globdots)`). Every
+    `_comp_options`, but for the line `_comp_options+=(globdots)`), one zsh's
+    own completion functions read as code (`debug_fd`, which `_call_program`
+    reads as arithmetic, and `MODULEPATH`, which `_module` expands once more),
+    or one by whose name they keep their caches and the specifications they
+    hand `_arguments`, whose actions it runs: a name that starts with `_` and,
+    past any more `_`, a lower-case letter or a digit (`_patch_args`,
+    `_args_cache_curl`), `cmd_` or `args_` (`args_<tool>` for
+    `valgrind --tool`), set in any form but as a function's own (`local`, or a
+    `typeset` without `-g` in a function). The shell's environment that holds
+    one of those is a doubt too, but for a `debug_fd` that is a plain number
+    and a `MODULEPATH` without an expansion. Every
     function of your own is a hook there, one your files define and one they
     autoload from a file outside zsh's own directory and the Nix profiles', as
     zsh's own completion functions run commands by name as you complete a
@@ -1557,14 +1567,18 @@ afterwards:
     The code of a `command` style, which `_call_program` runs, is a hook's
     wherever it stands, and one an expansion makes is a doubt. A completion
     style, one whose pattern may match a context of zsh's completion system
-    (`':completion:*'`, `'*'`), is read as zsh's own completion functions read
+    (`':completion:*'`, `'*'`, one with a `|`, which zsh reads as parting
+    alternatives anywhere in it, and one that `KSH_GLOB` or `EXTENDED_GLOB`,
+    on as `zstyle` runs, may make match, as `@(:completion):*` or
+    `x#:completion:*`), is read as zsh's own completion functions read
     its value: a style they only test for true or read as data passes with any
     value (`verbose`, `list-colors`, `matcher-list`, `group-name`,
     `special-dirs`, `rehash` and the like), a value of `menu`, `range` or
     `select-scroll`, which they read as arithmetic, that is no plain number is
     a doubt (`menu 'select=1+x'`, while `select=2` and `select=long` pass),
-    and so are a `%(` in a `format` or a `tag-order` value, whose test `zformat`
-    reads as arithmetic, an expansion in a `file-patterns` value, which `_files`
+    and so are a `%(` or an expansion (`$'...'`, `"%F{$c}"`) in a `format` or
+    a `tag-order` value, as `zformat` reads a `%(`'s test as arithmetic, an
+    expansion in a `file-patterns` value, which `_files`
     reads with `eval`, a `use-cache` that may be on, with which they source the
     files of the completion cache, a `cache-path`, which names their directory,
     `environ`, which `_sudo` sets parameters by,
@@ -1577,8 +1591,9 @@ afterwards:
     the file as code. `compctl`, whose completion runs without `compinit`, and
     bash's `complete`, which `bashcompinit` defines, are doubts wherever they
     stand. So a setup with completion functions of its own, with a style the
-    check has not read or `use-cache` on, or with a function of its own that
-    writes a file or hands a program a word an expansion makes
+    check has not read, a `format` an expansion makes or `use-cache` on, with
+    a parameter of its own whose name starts with `_`, or with a function of
+    its own that writes a file or hands a program a word an expansion makes
     (`mkcd() { mkdir -p "$1" }`), warns. `compaudit` may put the directories
     under one that holds a `Base` directory at the end
     of `fpath`, which the check reads too (a `_compdir` a file names or the
@@ -1629,7 +1644,11 @@ afterwards:
     that is no number is a doubt, one your files give one of them and one the
     shell's environment holds, and so is one set in a form the check does not
     read (`read TMOUT`, `print -v TMOUT`); a number, as a hardened
-    `/etc/profile` sets `TMOUT=900` with `readonly` and `export`, passes;
+    `/etc/profile` sets `TMOUT=900` with `readonly` and `export`, passes. A
+    tie (`typeset -T TMOUT tmout`), by which zsh sets a parameter by the other
+    name too (`tmout=(...)`), is a doubt where it names one of them,
+    `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`, `fpath` or an array of hook
+    functions, whose values the check reads;
   - a file the check would read that is not there now is a doubt where a file
     it reads, but for the stock functions it knows by their SHA-256, names it
     beyond the commands that source it, the tests that ask about it and a
@@ -1698,13 +1717,16 @@ afterwards:
   one in the environment of the shell you typed the command into) and a file or
   the command line may turn `PROMPT_SUBST` on (or `PROMPT_VARS`, its other
   name), when a sourced file's path or a `ZDOTDIR` does not resolve (as for
-  `source <(tool init zsh)`) or zsh expands
+  `source <(tool init zsh)`, or a modifier or a subscript on `$HOME`,
+  `$ZDOTDIR` or `$XDG_CONFIG_HOME`, as `$HOME:a/x`) or zsh expands
   it into others (a glob, `{a,b}`), when a function they autoload may be in a
   directory added to `fpath` that does not resolve (as for NixOS's profiles,
   `$p/share/zsh/site-functions`, where it cannot tell the profiles
   `NIX_PROFILES` names), when the dump file a `compinit -d` names does not
   resolve, when zsh may run compiled code in place of a file (the `.zwc` that
-  `zcompile` writes beside a file or for an `fpath` directory), when a `source`
+  `zcompile` writes beside a file or for an `fpath` directory, and one an
+  element of `fpath` names, which zsh reads as the functions it holds), when a
+  `source`
   names no file, when `ZDOTDIR` is set otherwise than by an assignment
   (`: ${ZDOTDIR:=...}`), when a quote, an expansion or a here-document runs to
   the end of the file without closing, when an expansion holds what it cannot
@@ -1740,7 +1762,12 @@ afterwards:
   named like another word you type (the value you give an option or a
   setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
   program named like the command you type that zsh finds first in `PATH` or
-  that `hash` names (a `sudo` script in `~/bin`), a file a bash
+  that `hash` names (a `sudo` script in `~/bin`), a program that zsh's own
+  completion functions run and whose output they run as code where your files
+  run zsh's own `compinit` (a `locale` in a directory of `PATH` before the
+  system's, whose `LC_CTYPE` line `_comp_locale` evaluates as `_call_program`
+  runs a command for `ls <Tab>`, or for `sudo na<Tab>` with the
+  `extra-verbose` style), a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), nor a history tool

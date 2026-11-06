@@ -594,7 +594,9 @@ history yourself so an interactive shell has nowhere to write:
   `NULLCMD` or `READNULLCMD` of any value in the environment you start the shell
   from, a `TMOUT`, `PERIOD` or `REPORTTIME` (and the like) that is no number,
   which zsh reads as arithmetic each time it uses it, in your files or in that
-  environment, a file your startup files write before zsh reads it, a function
+  environment, or tied to another name (`typeset -T TMOUT tmout`), a file your
+  files source by a path with a modifier on `$HOME` (`source $HOME:a/x`), a
+  file your startup files write before zsh reads it, a function
   or an alias named `sudo`, `doas`, `run0`, `pkexec`, `su` or `nails` (or the
   path you start `nails` by) that writes a file or hands a program a word an
   expansion makes (`nails() { sudo /mnt/data/nails "$@" }`; one that only runs
@@ -612,11 +614,18 @@ history yourself so an interactive shell has nowhere to write:
   program a word an expansion makes (`mkcd() { mkdir -p "$1" }`), as zsh's own
   completion functions run commands by name (`ls <Tab>` runs a function named
   `ls`), a completion style whose value they may run as code or arithmetic
-  (`menu 'select=1+x'`, a `%(` in `tag-order`), one the check has not read,
-  `use-cache` on, a `cache-path` or files in `~/.zcompcache`, which they
-  source, a parameter that gives the completion system code
-  (`compcontext`, `_sort_tags`, `_comp_options` but for
-  `_comp_options+=(globdots)`), and `compctl` or bash's `complete`. For any
+  (`menu 'select=1+x'`, a `%(` in `tag-order`, a `format` an expansion makes,
+  under a pattern `KSH_GLOB` or `EXTENDED_GLOB` may make match too), one the
+  check has not read, `use-cache` on, a `cache-path` or files in
+  `~/.zcompcache`, which they source, a parameter that gives the completion
+  system code (`compcontext`, `_sort_tags`, `_comp_options` but for
+  `_comp_options+=(globdots)`, `debug_fd`, `MODULEPATH`, and any whose name
+  starts with `_` and a lower-case letter, as `_patch_args`, by which they
+  keep the specifications they run code from) in your files or in the
+  environment you start the shell from, and `compctl` or bash's `complete`.
+  The check does not see a program of your own that they run and whose output
+  they run as code (a `locale` in a directory of `PATH` before the system's,
+  which `_comp_locale` runs). For any
   other zsh, and when the check finds no shell
   you typed into, it cannot tell where zsh finds `compinit`, and `zsh -f` is
   the one that passes. With Home Manager's `programs.zsh`, only `zsh -f`

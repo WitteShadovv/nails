@@ -954,10 +954,14 @@ of this changelog for that version becomes the release notes word for word, and
   arithmetic each time it uses it, at a prompt, after a command or at a `cd`, so that
   `TMOUT='pipestatus[$(cmd)1]'` runs `cmd` at each prompt: one a file gives it, one set in a form
   the walk does not read (`read TMOUT`, `print -v TMOUT`) and one the shell's environment holds, at
+  a tie (`typeset -T TMOUT tmout`) of one of them, of `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`,
+  `fpath` or of an array of hook functions, by which zsh sets it by the other name too, at
   a `$HOME` that a letter, a digit or a `_` follows in a path (`$HOMEBREW_PREFIX/x`), which names
-  another parameter, at a file the startup
+  another parameter, or a `:` or a `[`, with which zsh applies a modifier or a subscript to the home
+  (`source $HOME:a/x`, and so for `$ZDOTDIR` and `$XDG_CONFIG_HOME`), at a file the startup
   code may make or write before zsh reads it (`cp ~/.src ~/.gen; . ~/.gen`, `>> $log`), at an
-  `fpath` element quotes join into one, at a dump file with a carriage return or a count that is no
+  `fpath` element quotes join into one, at one whose name ends in `.zwc` (`fpath=(~/zc.zwc $fpath)`),
+  which zsh reads as the compiled functions it holds, at a dump file with a carriage return or a count that is no
   number, and at a `#compdef -kn` first line. It reads every name of a function's definition
   (`function a b`, `a b ()`), counts what a `bindkey -s` string types for the names the files use,
   and reads what `print -z` puts in the line as a hook's code, and a redirection with no command
@@ -1001,8 +1005,13 @@ of this changelog for that version becomes the release notes word for word, and
   substitution in a subscript or a parameter's name where menu's `select=N`, `range`,
   `select-scroll` or `_git`'s `max-verbose` are read as arithmetic (`menu 'select=1+x'`), a
   `tag-order` label's `%(d.a.b)`, whose test `zformat -f` reads as arithmetic, the cache files that
-  `use-cache` makes them source, the action of `compcontext`, `_sort_tags`, and a global alias where
-  `_comp_options` turns `aliases` on. Where the files autoload the stock `compinit`, the
+  `use-cache` makes them source, the action of `compcontext`, `_sort_tags`, a global alias where
+  `_comp_options` turns `aliases` on, the action of a specification that `_patch`, `_telnet`,
+  `_finger`, `_valgrind` or `_arguments`' cache takes from a parameter the files or the shell's
+  environment set (`_patch_args`, `_args_cache_curl`, `args_<tool>`), a command substitution in
+  `debug_fd`'s subscript, which `_call_program` reads as arithmetic, and a style whose pattern
+  `KSH_GLOB`, `EXTENDED_GLOB` or a `|` make match a completion context (`@(:completion):*`,
+  `x#:completion:*`, `x|:completion:*`). Where the files autoload the stock `compinit`, the
   completion functions of zsh's own and of the Nix profiles in the store are still read as harmless,
   and completion code of the files' own is a doubt: a completion function (a file whose name starts
   with `_`) in another directory of `fpath` (`fpath=(~/zc $fpath)`, a Home Manager plugin's,
@@ -1013,21 +1022,30 @@ of this changelog for that version becomes the release notes word for word, and
   `zle -C w complete-word _w`, `compdef _w cmd`, `compdef '...' cmd`), a `zstyle -e` of such a
   style, and a file that sets `_comps`, `_patcomps`, `_postpatcomps`, `_services`, `_compautos`,
   `compprefuncs`, `comppostfuncs`, `_comp_setup`, `compcontext`, `_sort_tags` or `_comp_options`
-  (but for `_comp_options+=(globdots)`). Every function of the files' own is a hook there, one they
+  (but for `_comp_options+=(globdots)`), `debug_fd` or `MODULEPATH`, or a parameter whose name
+  starts with `_` and, past any more `_`, a lower-case letter or a digit, `cmd_` or `args_`, by
+  which zsh's own completion functions keep their caches and the specifications they hand
+  `_arguments`, set as no function's own, and one of those in the shell's environment (but a
+  `debug_fd` that is a plain number and a `MODULEPATH` without an expansion). Every function of the files' own is a hook there, one they
   define or autoload from a file of their own, and the code of a `command` style is a hook's, one
   an expansion makes a doubt. A completion style is read as zsh's own completion functions read
-  it, where its pattern may match a completion context: one they only test for true or read as data
+  it, where its pattern may match a completion context (one with a `|`, and one `KSH_GLOB` or
+  `EXTENDED_GLOB` may make match): one they only test for true or read as data
   passes with any value (`verbose`, `list-colors`, `matcher-list`, `group-name` and 65 more), and a
   value of `menu`, `range` or `select-scroll` that is no plain number, a
-  `format` or `tag-order` with a `%(`, a `file-patterns` value with an expansion, a `use-cache` that
+  `format` or `tag-order` with a `%(` or an expansion (`$'...'`, `"%F{$c}"`), a `file-patterns`
+  value with an expansion, a `use-cache` that
   may be on, a `cache-path`, `environ`, a value `zstyle -e` makes for any of them, and a style the
   check has not read are doubts, and so are files in `.zcompcache` in each `ZDOTDIR` the files may
   set, which they source where `use-cache` is on and as you complete `composer`, `zypper` or
   `luarocks` whatever it says. A dump file whose completion of a command or a pattern is no completion
   function's name is read as code, and `compctl` and bash's `complete` are doubts wherever they
   stand. So a setup with completion functions or a style of its own the check has not read, with
-  `use-cache` on, or with a function of its own that writes a file or hands a program a word an
-  expansion makes (`mkcd() { mkdir -p "$1" }`) warns again.
+  `use-cache` on or a `format` an expansion makes, with a parameter of its own whose name starts
+  with `_`, or with a function of its own that writes a file or hands a program a word an
+  expansion makes (`mkcd() { mkdir -p "$1" }`) warns again. A program of the files' own that zsh's
+  own completion functions run and whose output they run as code (a `locale` in a directory of
+  `PATH` before the system's, whose `LC_CTYPE` line `_comp_locale` evaluates) is not read.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
