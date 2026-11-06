@@ -31,6 +31,13 @@
 //!   inhibitor. The `sleep-guard` command passes a teardown that powers the
 //!   machine off, so the machine powers off instead of sleeping.
 //!
+//! When the guard cannot read its settings it cannot tell which of the two
+//! modes the operator chose, so it does both ([`run_untold_guard`]): it holds
+//! `block`'s inhibitors, so an ordinary sleep request is refused and nothing
+//! powers off on its own, and `teardown`'s delay inhibitor, so a sleep that
+//! starts anyway, forced past the block inhibitors (`systemctl suspend -i`),
+//! powers the machine off first. No sleep then leaves the session in RAM.
+//!
 //! # Threat model
 //!
 //! The unit name and the inhibitors' `who`/`why` strings are neutral: they appear
@@ -111,22 +118,100 @@ pub fn run_guard<F: FnOnce()>(
     }
 }
 
+/// Run the guard of a session whose sleep policy cannot be read: it holds
+/// what `block` holds (the sleep/idle block inhibitor, and the lid switch's
+/// when `lid` is [`LidSwitch::Take`]), so an ordinary sleep request is
+/// refused, and what `teardown` holds (the sleep delay inhibitor), so a
+/// sleep forced past the block inhibitors runs `on_prepare_for_sleep` before
+/// it happens, then releases the delay inhibitor and returns.
+///
+/// Either part is kept when the other cannot be taken: without the delay
+/// inhibitor the guard parks holding the block ones, as `block` does, and
+/// without the block one it waits for a sleep, as `teardown` does. When the
+/// signal stream ends without a sleep, the block inhibitors stay held. An
+/// error only when neither part can be taken.
+pub fn run_untold_guard<F: FnOnce()>(lid: LidSwitch, on_prepare_for_sleep: F) -> Result<()> {
+    let conn = system_bus()?;
+    let proxy = logind_proxy(&conn)?;
+    let blocking = take_block(&proxy, lid);
+    let delay = take_delay(&proxy);
+    let delay = match (delay, blocking.as_ref()) {
+        (Ok(delay), _) => delay,
+        (Err(e), Ok(blocking)) => {
+            tracing::warn!(
+                error = %e,
+                "A sleep forced past the inhibitors can still suspend the session"
+            );
+            tracing::info!(
+                unit = SLEEP_GUARD_UNIT_NAME,
+                lid_switch = blocking.lid.is_some(),
+                "Holding a sleep/idle block inhibitor for the session"
+            );
+            park();
+        }
+        (Err(e), Err(blocked)) => {
+            tracing::warn!(error = %blocked, "The sleep/idle block inhibitor could not be taken");
+            return Err(e);
+        }
+    };
+    match &blocking {
+        Ok(blocking) => tracing::info!(
+            unit = SLEEP_GUARD_UNIT_NAME,
+            lid_switch = blocking.lid.is_some(),
+            "Holding the block and the delay inhibitors; a sleep that starts anyway powers off"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "A sleep request is not refused; a sleep powers the machine off instead"
+        ),
+    }
+    let slept = await_sleep(delay, on_prepare_for_sleep);
+    match (slept, blocking) {
+        (Ok(true), _) => Ok(()),
+        (ended, Ok(_blocking)) => {
+            if let Err(e) = ended {
+                tracing::warn!(error = %e, "No longer waiting for the host to sleep");
+            }
+            tracing::info!("Holding a sleep/idle block inhibitor for the session");
+            park();
+        }
+        (ended, Err(_)) => ended.map(drop),
+    }
+}
+
+/// Connect to the system bus.
+fn system_bus() -> Result<zbus::blocking::Connection> {
+    zbus::blocking::Connection::system()
+        .map_err(|e| dbus_error("could not connect to the system D-Bus", e))
+}
+
 /// Connect to the system bus and build the logind Manager proxy.
 fn logind_proxy(conn: &zbus::blocking::Connection) -> Result<zbus::blocking::Proxy<'static>> {
     zbus::blocking::Proxy::new(conn, LOGIND_DESTINATION, LOGIND_PATH, LOGIND_MANAGER)
         .map_err(|e| dbus_error("could not open the logind D-Bus proxy", e))
 }
 
-/// Take the sleep/idle *block* inhibitor, and the lid switch's when `lid` says
-/// so, and hold them until the process is stopped.
-fn hold_block_inhibitors(lid: LidSwitch) -> Result<()> {
-    let conn = zbus::blocking::Connection::system()
-        .map_err(|e| dbus_error("could not connect to the system D-Bus", e))?;
-    let proxy = logind_proxy(&conn)?;
+/// Park forever. The inhibitors live exactly as long as this process;
+/// systemd stops the unit at deactivation, which closes the fds and
+/// releases them.
+fn park() -> ! {
+    loop {
+        std::thread::park();
+    }
+}
 
-    // The returned fds must stay open for the inhibitors to hold; they are
-    // released together when the process exits (unit stopped at deactivation).
-    let _sleep: zbus::zvariant::OwnedFd = proxy
+/// The block inhibitors `block` holds. The fds must stay open for the
+/// inhibitors to hold; they are released together when the process exits
+/// (unit stopped at deactivation).
+struct Blocking {
+    _sleep: zbus::zvariant::OwnedFd,
+    lid: Option<zbus::zvariant::OwnedFd>,
+}
+
+/// Take the sleep/idle *block* inhibitor, and the lid switch's when `lid`
+/// says so.
+fn take_block(proxy: &zbus::blocking::Proxy<'static>, lid: LidSwitch) -> Result<Blocking> {
+    let sleep: zbus::zvariant::OwnedFd = proxy
         .call(
             "Inhibit",
             &("sleep:idle", INHIBITOR_WHO, INHIBITOR_WHY_BLOCK, "block"),
@@ -135,7 +220,7 @@ fn hold_block_inhibitors(lid: LidSwitch) -> Result<()> {
 
     // logind ignores the sleep inhibitor above for a closed lid by default
     // (LidSwitchIgnoreInhibited=yes), but always honours this one.
-    let lid_fd: Option<zbus::zvariant::OwnedFd> = match lid {
+    let lid = match lid {
         LidSwitch::Leave => None,
         LidSwitch::Take => match proxy.call(
             "Inhibit",
@@ -156,45 +241,52 @@ fn hold_block_inhibitors(lid: LidSwitch) -> Result<()> {
             }
         },
     };
-
-    tracing::info!(
-        unit = SLEEP_GUARD_UNIT_NAME,
-        lid_switch = lid_fd.is_some(),
-        "Holding a sleep/idle block inhibitor for the session"
-    );
-
-    // Park forever. The inhibitors live exactly as long as this process; systemd
-    // stops the unit at deactivation, which closes the fds and releases them.
-    loop {
-        std::thread::park();
-    }
+    Ok(Blocking { _sleep: sleep, lid })
 }
 
-/// Take a sleep *delay* inhibitor, then on the first imminent sleep run
-/// `on_prepare_for_sleep` within the delay window and release the inhibitor.
-fn wait_for_sleep_then<F: FnOnce()>(on_prepare_for_sleep: F) -> Result<()> {
-    let conn = zbus::blocking::Connection::system()
-        .map_err(|e| dbus_error("could not connect to the system D-Bus", e))?;
+/// Take the sleep/idle *block* inhibitor, and the lid switch's when `lid` says
+/// so, and hold them until the process is stopped.
+fn hold_block_inhibitors(lid: LidSwitch) -> Result<()> {
+    let conn = system_bus()?;
     let proxy = logind_proxy(&conn)?;
+    let blocking = take_block(&proxy, lid)?;
+    tracing::info!(
+        unit = SLEEP_GUARD_UNIT_NAME,
+        lid_switch = blocking.lid.is_some(),
+        "Holding a sleep/idle block inhibitor for the session"
+    );
+    park();
+}
 
-    // Subscribe before taking the inhibitor so the PrepareForSleep signal can
-    // never slip through between acquiring the lock and starting to listen.
-    let mut signals = proxy
+/// The delay inhibitor `teardown` holds, and the stream of `PrepareForSleep`
+/// signals it waits on.
+struct Delay {
+    signals: zbus::blocking::proxy::SignalIterator<'static>,
+    fd: zbus::zvariant::OwnedFd,
+}
+
+/// Subscribe to `PrepareForSleep` and take a sleep *delay* inhibitor:
+/// subscribed first, so the signal can never slip through between acquiring
+/// the lock and starting to listen.
+fn take_delay(proxy: &zbus::blocking::Proxy<'static>) -> Result<Delay> {
+    let signals = proxy
         .receive_signal("PrepareForSleep")
         .map_err(|e| dbus_error("could not subscribe to PrepareForSleep", e))?;
-
     let fd: zbus::zvariant::OwnedFd = proxy
         .call(
             "Inhibit",
             &("sleep", INHIBITOR_WHO, INHIBITOR_WHY_DELAY, "delay"),
         )
         .map_err(|e| dbus_error("logind Inhibit (delay) failed", e))?;
+    Ok(Delay { signals, fd })
+}
 
-    tracing::info!(
-        unit = SLEEP_GUARD_UNIT_NAME,
-        "Holding a sleep delay inhibitor; waiting for the host to sleep"
-    );
-
+/// Wait on `delay` for the first imminent sleep, run `on_prepare_for_sleep`
+/// within the delay window and release the inhibitor: `true` when a sleep
+/// came, `false` when the signal stream ended first (the bus closed), which
+/// releases the inhibitor too.
+fn await_sleep<F: FnOnce()>(delay: Delay, on_prepare_for_sleep: F) -> Result<bool> {
+    let Delay { mut signals, fd } = delay;
     for message in signals.by_ref() {
         let going_to_sleep: bool = message
             .body()
@@ -208,14 +300,27 @@ fn wait_for_sleep_then<F: FnOnce()>(on_prepare_for_sleep: F) -> Result<()> {
             // Release the delay inhibitor so the suspend proceeds now that the
             // hidden session is torn down.
             drop(fd);
-            return Ok(());
+            return Ok(true);
         }
         // going_to_sleep == false is a resume notification; keep waiting.
     }
-
-    // The signal stream ended without a sleep (bus closed): release and exit.
     drop(fd);
-    Ok(())
+    Ok(false)
+}
+
+/// Take a sleep *delay* inhibitor, then on the first imminent sleep run
+/// `on_prepare_for_sleep` within the delay window and release the inhibitor.
+fn wait_for_sleep_then<F: FnOnce()>(on_prepare_for_sleep: F) -> Result<()> {
+    let conn = system_bus()?;
+    let proxy = logind_proxy(&conn)?;
+    let delay = take_delay(&proxy)?;
+    tracing::info!(
+        unit = SLEEP_GUARD_UNIT_NAME,
+        "Holding a sleep delay inhibitor; waiting for the host to sleep"
+    );
+    // The signal stream may end without a sleep (bus closed): the inhibitor
+    // is released and the guard exits.
+    await_sleep(delay, on_prepare_for_sleep).map(drop)
 }
 
 #[cfg(test)]
