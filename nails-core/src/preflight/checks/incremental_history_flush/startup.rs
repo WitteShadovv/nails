@@ -68,8 +68,10 @@ pub(super) fn read<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>,
         Ok(Some(_)) => {}
         Err(error) => return Err(failed(error)),
     }
-    if !fs.is_regular_file(path).unwrap_or(false) {
-        return Err(unread("not a regular file".to_string()));
+    match fs.is_regular_file(path) {
+        Ok(true) => {}
+        Ok(false) => return Err(unread("not a regular file".to_string())),
+        Err(error) => return Err(failed(error)),
     }
     match fs.file_size(path) {
         Ok(size) if size > READ_LIMIT => {
