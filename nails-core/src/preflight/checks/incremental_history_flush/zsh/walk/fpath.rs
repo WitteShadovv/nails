@@ -9,6 +9,14 @@ use super::super::lexer::Word;
 use super::command::assigned;
 use super::{Event, Frame, Walker};
 
+/// The directories of each Nix profile that NixOS's `/etc/zshenv` puts in
+/// front of `fpath`, past the profile.
+pub(in super::super) const PROFILE_DIRS: [&str; 3] = [
+    "/share/zsh/site-functions",
+    "/share/zsh/$ZSH_VERSION/functions",
+    "/share/zsh/vendor-completions",
+];
+
 /// Where an element given `fpath` stands: among an array's elements
 /// (`fpath=(...)`), as the one value of an element (`fpath+=x`,
 /// `fpath[1]=x`), or as a part of `FPATH`'s value (`FPATH=a:b`).
@@ -144,17 +152,15 @@ impl Walker<'_> {
     /// the three directories under every profile, in front of the others
     /// ([`Event::ProfileFpath`]). Whether they are.
     pub(super) fn profiles_fpath(&mut self, items: &[Word]) -> bool {
-        const RESTS: [&str; 3] = [
-            "/share/zsh/site-functions",
-            "/share/zsh/$ZSH_VERSION/functions",
-            "/share/zsh/vendor-completions",
-        ];
         let in_loop = self
             .frames
             .last()
             .is_some_and(|open| matches!(open.frame, Frame::Loop { profiles: true, .. }));
         let texts: Vec<&str> = items.iter().map(|item| item.text.as_str()).collect();
-        let written: Vec<String> = RESTS.iter().map(|rest| format!("$p{rest}")).collect();
+        let written: Vec<String> = PROFILE_DIRS
+            .iter()
+            .map(|rest| format!("$p{rest}"))
+            .collect();
         let exact = texts.len() == 4
             && texts[..3]
                 .iter()
@@ -165,7 +171,7 @@ impl Walker<'_> {
         if !in_loop || !exact || !self.pending.words.is_empty() {
             return false;
         }
-        for (rest, written) in RESTS.iter().zip(written) {
+        for (rest, written) in PROFILE_DIRS.iter().zip(written) {
             // An array's element, which SH_WORD_SPLIT splits.
             self.events.push(Event::FpathSplits(written.clone()));
             self.events.push(Event::ProfileFpath {

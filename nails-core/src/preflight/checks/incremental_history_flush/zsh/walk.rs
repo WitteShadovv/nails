@@ -29,6 +29,7 @@ mod strings;
 
 pub(super) use super::builtins::HOOKS;
 pub(super) use event::{Arith, Event, Input};
+pub(super) use fpath::PROFILE_DIRS;
 pub(super) use hooks::may_expand;
 pub(super) use strings::{PROMPTS, expands};
 

@@ -131,6 +131,11 @@ pub(in super::super) enum Event {
     /// it be a hook, as `doubt` says (`zle complete-word`, which runs the
     /// completion functions the check does not read).
     HookDoubt { function: String, doubt: String },
+    /// zsh's completion system runs `function`, by its name, as you complete
+    /// a word, where `what`, as written, gives it (`zstyle ':completion:*'
+    /// completer _w`, `zle -C w complete-word _w`); one an expansion makes,
+    /// or code that makes it, may be any.
+    Completes { function: Word, what: String },
     /// A global alias is defined, named `name` as written, by the word
     /// `text` (`G=| grep`). zsh puts its value in place of any token of code
     /// that is its name, a redirection's target (`/dev/tty`) or an operator
