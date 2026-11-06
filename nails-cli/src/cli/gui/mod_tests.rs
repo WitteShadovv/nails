@@ -12,7 +12,13 @@ const ENGINE: &str = "/mnt/nails";
 
 fn decoy(persistence: &[&str], desktop: Option<&str>) -> DecoyFacts {
     DecoyFacts {
-        persistence: persistence.iter().map(ToString::to_string).collect(),
+        persistence: persistence
+            .iter()
+            .map(|sentence| nails_core::preflight::PersistenceFinding {
+                sentence: (*sentence).to_string(),
+                untold: None,
+            })
+            .collect(),
         desktop: desktop.map(str::to_string),
     }
 }
@@ -77,6 +83,31 @@ fn a_persistent_decoy_refuses_even_an_admitted_desktop_and_names_each_record() {
         "This decoy keeps a record on its disk, so the window does not open here:\n\
          - journald keeps a journal\n\
          - auditd is active\n\
+         Fix this first: sudo /mnt/nails check lists every finding.\n\
+         Use: sudo /mnt/nails activate"
+    );
+}
+
+/// A record NAILS cannot tell about refuses the window as one it found, and
+/// the heading says the decoy keeps, or may keep, a record.
+#[test]
+fn a_record_nails_cannot_tell_about_refuses_and_says_the_decoy_may_keep_it() {
+    let mut facts = decoy(&["auditd is active"], Some("GNOME"));
+    facts
+        .persistence
+        .push(nails_core::preflight::PersistenceFinding {
+            sentence: "NAILS cannot tell where systemd-journald keeps the journal".to_string(),
+            untold: Some("NAILS cannot read /var/log/journal".to_string()),
+        });
+    let refused = refusal(&facts, &["GNOME"]);
+    assert_eq!(refused.status, ExitStatus::PreflightRefused);
+    assert_eq!(refused.body.code, "decoy_persistent");
+    assert_eq!(
+        refused.body.message,
+        "This decoy keeps, or may keep, a record on its disk, so the window does not open \
+         here:\n\
+         - auditd is active\n\
+         - NAILS cannot tell where systemd-journald keeps the journal\n\
          Fix this first: sudo /mnt/nails check lists every finding.\n\
          Use: sudo /mnt/nails activate"
     );

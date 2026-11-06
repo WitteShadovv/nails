@@ -10,7 +10,8 @@
 //!
 //! - the decoy keeps no persistent record (a volatile journal, no syslog or
 //!   audit daemon): the findings of the activation pre-flight's
-//!   decoy-persistence check, read without writing anything;
+//!   decoy-persistence check, read without writing anything, where one NAILS
+//!   cannot tell about counts as a record the decoy may keep;
 //! - the desktop is one whose disk, journal and D-Bus trace test has passed
 //!   ([`ADMITTED_DESKTOPS`]), named by `XDG_CURRENT_DESKTOP`.
 //!
@@ -20,7 +21,7 @@
 
 use std::path::Path;
 
-use nails_core::preflight::DecoyPersistenceCheck;
+use nails_core::preflight::{DecoyPersistenceCheck, PersistenceFinding};
 use nails_core::session::SessionView;
 use nails_core::{NailsManager, RealFilesystem, RuntimeEnv};
 
@@ -53,8 +54,9 @@ pub(super) const ADMITTED_DESKTOPS: &[&str] = &[];
 /// What the gate knows about a decoy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DecoyFacts {
-    /// Each persistent record the decoy keeps, with its fix.
-    pub(super) persistence: Vec<String>,
+    /// Each persistent record the decoy keeps, or may keep where NAILS cannot
+    /// tell, with its fix.
+    pub(super) persistence: Vec<PersistenceFinding>,
     /// `XDG_CURRENT_DESKTOP`, when set.
     pub(super) desktop: Option<String>,
 }
@@ -95,7 +97,7 @@ fn session_view(env: &RuntimeEnv, config: Option<&Path>) -> SessionView {
 /// anything, and the desktop `XDG_CURRENT_DESKTOP` names.
 fn decoy_facts(env: &RuntimeEnv) -> DecoyFacts {
     DecoyFacts {
-        persistence: DecoyPersistenceCheck::persistence_findings(&RealFilesystem),
+        persistence: DecoyPersistenceCheck::persistence(&RealFilesystem),
         desktop: env
             .inherited
             .iter()
@@ -133,14 +135,24 @@ pub(super) fn decide_on_decoy(
     let binary = nails_core::next_step::shell_word(engine.as_os_str());
     let mut lines = Vec::new();
     if !facts.persistence.is_empty() {
-        lines.push(
-            "This decoy keeps a record on its disk, so the window does not open here:".to_string(),
-        );
+        // A record NAILS cannot tell about counts, and the decoy may keep it.
+        let keeps = if facts
+            .persistence
+            .iter()
+            .any(|finding| finding.untold.is_some())
+        {
+            "keeps, or may keep,"
+        } else {
+            "keeps"
+        };
+        lines.push(format!(
+            "This decoy {keeps} a record on its disk, so the window does not open here:"
+        ));
         lines.extend(
             facts
                 .persistence
                 .iter()
-                .map(|finding| format!("- {finding}")),
+                .map(|finding| format!("- {}", finding.sentence)),
         );
     }
     if !desktop_admitted {

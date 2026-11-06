@@ -43,7 +43,7 @@ pub use backend_detect::CryptsetupArgon2idCheck;
 pub use backend_entries::BackendEntriesCheck;
 pub use binary_location::BinaryLocationCheck;
 pub use decoy_nix_trace::DecoyNixTraceCheck;
-pub use decoy_posture::DecoyPersistenceCheck;
+pub use decoy_posture::{DecoyPersistenceCheck, PersistenceFinding};
 pub use dma_protection::DmaProtectionCheck;
 pub use hidden_volume::HiddenVolumeCheck;
 pub use host_tools::{HostToolsCheck, NetworkToolsCheck};

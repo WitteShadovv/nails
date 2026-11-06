@@ -238,22 +238,13 @@ impl DecoyPersistenceCheck {
     }
 
     /// Read-only probe: each way the decoy keeps a persistent log or audit
-    /// store, one sentence with its fix each, or none on an amnesic decoy, as
-    /// [`Self::persistence`] finds them. The window's launcher refuses to
-    /// open on a decoy with any, and names them. Performs no writes.
-    pub fn persistence_findings<F: Filesystem>(fs: &F) -> Vec<String> {
-        Self::persistence(fs)
-            .into_iter()
-            .map(|finding| finding.sentence)
-            .collect()
-    }
-
-    /// Read-only probe: each way the decoy keeps a persistent log or audit
-    /// store, or may keep one where NAILS cannot tell, read through the
+    /// store, one sentence with its fix each, or may keep one where NAILS
+    /// cannot tell, or none on an amnesic decoy. It reads through the
     /// automount guard as the pre-flight check reads it: a path the guard did
     /// not look up, or one whose lookup failed, is one NAILS cannot tell
-    /// about. Shared with `status` and the window's launcher so that both
-    /// track the same detection as this pre-flight check.
+    /// about. Shared with `status` and the window's launcher, which refuses
+    /// to open on a decoy with any and names them, so that both track the
+    /// same detection as this pre-flight check.
     ///
     /// Independent of the operator override: the decoy is physically persistent
     /// whether or not the operator accepted the risk, so an accepted run still
