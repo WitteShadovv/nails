@@ -174,11 +174,14 @@ fn enabled_syslog_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<Persiste
 /// Only a path that is a link is resolved, so a decoy without the alias (the
 /// amnesic one NAILS asks for) has nothing read beyond its metadata.
 ///
+/// A link that names no other service, such as a mask, or one that cannot
+/// be resolved, names none, and the next unit directory is looked in.
+///
 /// # Errors
 ///
 /// Why NAILS cannot tell which daemon the alias names: the lookup of the
-/// alias in a unit directory failed, or was not made, and the first link
-/// found in the order systemd reads the directories names the unit.
+/// alias in a unit directory failed, or was not made, before a link that
+/// names a service was found.
 fn resolve_alias<F: Filesystem>(
     fs: &F,
     root: &Path,
@@ -196,14 +199,16 @@ fn resolve_alias<F: Filesystem>(
                 ));
             }
         }
-        let Ok(target) = fs.canonicalize(&link) else {
-            return Ok(None);
-        };
-        return Ok(target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|unit| *unit != alias && unit.ends_with(".service"))
-            .map(str::to_string));
+        let unit = fs.canonicalize(&link).ok().and_then(|target| {
+            target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|unit| *unit != alias && unit.ends_with(".service"))
+                .map(str::to_string)
+        });
+        if unit.is_some() {
+            return Ok(unit);
+        }
     }
     Ok(None)
 }
