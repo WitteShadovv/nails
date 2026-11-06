@@ -21,7 +21,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "/var/log/dpkg.log",
         ]),
         platforms: Platforms::DEBIAN,
-        risk: "With Unattended-Upgrade::InstallOnShutdown on, unattended-upgrades' shutdown helper takes every switch for a shutdown: at activation it installs the pending updates on the decoy disk and logs that run there, so the decoy keeps the record of a shutdown at the time of the switch, and its packages change. At the way back the hidden session's own copy installs them into the session's overlay.",
+        risk: "With Unattended-Upgrade::InstallOnShutdown on, unattended-upgrades' shutdown helper takes a switch through logind for a shutdown: at activation it installs the pending updates on the decoy disk and logs that run there, so the decoy keeps the record of a shutdown at the time of the switch, and its packages change. At the way back with nails deactivate the hidden session's own copy installs them into the session's overlay.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: true,
         verify: Probe::None(

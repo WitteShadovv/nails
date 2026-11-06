@@ -51,17 +51,21 @@ let
     ) nixTraceDistros
   );
 
-  # The unattended-upgrades scenario, keyed "<distro>-apt-shutdown": an
-  # activation during a daily unattended-upgrade run (tests/apt-shutdown.nix).
-  # The images with unattended-upgrades run it, beside their smokes, in the
-  # same CI matrix.
+  # The unattended-upgrades scenario, keyed "<distro>-apt-shutdown"
+  # (tests/apt-shutdown.nix): check and activate refuse during a held daily
+  # unattended-upgrade run, with a plain soft-reboot as the control, and with
+  # InstallOnShutdown on, with an activation under the override as the
+  # control, and only warn of a helper stopped but enabled. The images with
+  # unattended-upgrades run it, beside their smokes, in the same CI matrix.
   aptShutdownDistros = lib.filter (name: enabledImages ? ${name}) [
     "debian-13"
     "ubuntu-24.04"
     "ubuntu-26.04"
   ];
   aptShutdownName = name: "${name}-apt-shutdown";
-  # One boot and a few switches, each waiting out a held run.
+  # One boot, five switches (a plain soft-reboot during the held run, then
+  # two sessions in and out), and waits of up to ten minutes for the daily
+  # run to reach its hold and five for it to end.
   aptShutdownTimeout = 2400;
   aptShutdowns = lib.listToAttrs (
     map (

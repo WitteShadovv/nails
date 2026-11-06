@@ -119,7 +119,7 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 | [Classic syslog daemon](#fail-closed-activation-is-refused) | A syslog daemon (rsyslog, syslog-ng, a syslogd, metalog or socklog) writes every logged line to /var/log on the decoy disk, outside the journal. |
 | [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. |
 | [Armed kdump](#fail-closed-activation-is-refused) | If the kernel crashes during a hidden session, kdump's crash kernel mounts the decoy root by its device, outside the session's overlay, and writes a dump of kernel memory (which can hold the hidden volume's key) and the session's kernel log to /var/crash on the decoy disk. |
-| [unattended-upgrades set to install at shutdown](#unattended-upgrades) | With Unattended-Upgrade::InstallOnShutdown on, unattended-upgrades' shutdown helper takes every switch for a shutdown: at activation it installs the pending updates on the decoy disk and logs that run there, so the decoy keeps the record of a shutdown at the time of the switch, and its packages change. At the way back the hidden session's own copy installs them into the session's overlay. |
+| [unattended-upgrades set to install at shutdown](#unattended-upgrades) | With Unattended-Upgrade::InstallOnShutdown on, unattended-upgrades' shutdown helper takes a switch through logind for a shutdown: at activation it installs the pending updates on the decoy disk and logs that run there, so the decoy keeps the record of a shutdown at the time of the switch, and its packages change. At the way back with nails deactivate the hidden session's own copy installs them into the session's overlay. |
 <!-- residue-catalog:end fail-closed -->
 
 Override these per run with `--allow-persistent-decoy` on `activate`/`check`,
@@ -738,9 +738,11 @@ activation, which can take minutes.
 ## Unattended upgrades
 
 unattended-upgrades (Debian, Ubuntu) runs a shutdown helper,
-`unattended-upgrades.service`, that waits for logind's shutdown signal. Every
-switch sends that signal, as `systemctl soft-reboot` does, and the helper does
-not ask what kind of shutdown comes. Two things then reach the decoy disk.
+`unattended-upgrades.service`, that waits for logind's shutdown signal.
+Activation sends that signal, as `systemctl soft-reboot` does, and so does the
+way back with `nails deactivate`; `deactivate --poweroff` and `emergency` ask
+PID 1 directly and send none. The helper does not ask what kind of shutdown
+comes. At activation two things then reach the decoy disk.
 
 **A daily run in progress.** When the signal comes while a run of
 unattended-upgrade holds its lock, `/run/unattended-upgrades.lock`, the helper
@@ -771,10 +773,9 @@ of the pending updates its settings allow: at activation on the decoy disk,
 the overlays already mounted on it, and it logs that run there. With
 python3-gi installed the helper holds the switch back while the install runs;
 without it the helper polls for the signal and exits right after it starts the
-install, which then runs on into the switch. At the way back
-(`nails deactivate`, which goes through logind as well) the hidden session's
-own copy of the helper installs them into the session's overlay.
-`deactivate --poweroff` and `emergency` send no such signal. `decoy-persistence` refuses while the decoy's
+install, which then runs on into the switch. At the way back with
+`nails deactivate` the hidden session's own copy of the helper installs them
+into the session's overlay. `decoy-persistence` refuses while the decoy's
 helper runs with the setting on, and `--allow-persistent-decoy` turns that
 into a warning for one run. It reads the setting as apt reads it: each file of
 `/etc/apt/apt.conf.d` that apt reads, in apt's order (a name with an

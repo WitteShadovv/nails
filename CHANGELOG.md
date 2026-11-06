@@ -1576,10 +1576,10 @@ of this changelog for that version becomes the release notes word for word, and
   The distribution smoke tests check that the hidden PID 1 has the drop-in loaded and that the
   decoy has its own unit again after each way back.
 - Activation refuses a decoy whose unattended-upgrades (Debian, Ubuntu) installs the pending updates
-  at shutdown. Its shutdown helper takes every switch for a shutdown, so with
+  at shutdown. Its shutdown helper takes a switch through logind for a shutdown, so with
   `Unattended-Upgrade::InstallOnShutdown` on it ran that install on the decoy disk at activation and
   logged it there, and the hidden session's own copy did the same into the session's overlay at the
-  way back. No check read the setting. `decoy-persistence` now refuses
+  way back with `deactivate`. No check read the setting. `decoy-persistence` now refuses
   while the decoy's helper runs with the setting on, a finding of its own with its own fix, which
   `--allow-persistent-decoy` turns into a warning for one run; as for kdump, the window's launcher
   stays usable and `status` does not call the decoy persistent. It reads the setting as apt does:
