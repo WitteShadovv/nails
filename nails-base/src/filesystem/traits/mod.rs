@@ -506,6 +506,15 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// Get the modification time of a file.
     fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime>;
 
+    /// The status change time (`st_ctime`) of `path` itself, as `lstat(2)`
+    /// reads it: when its inode last changed, by a write, a rename, a link
+    /// made or removed, or a change of its owner or mode. A link at `path` is
+    /// not followed; a link on the way to it is. Unlike the modification
+    /// time, which `touch -d` sets and dpkg sets to a file's time in its
+    /// package, nothing but a change of the system clock sets it back. An
+    /// error when `path` cannot be looked up, a missing one included.
+    fn change_time(&self, path: &Path) -> Result<std::time::SystemTime>;
+
     // ------------------------------------------------------------------------
     // Copy Operations
     // ------------------------------------------------------------------------
