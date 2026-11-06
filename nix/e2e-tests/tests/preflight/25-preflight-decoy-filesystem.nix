@@ -10,9 +10,11 @@
 #      (exit 4), and the folder stays empty with its mtime and ctime unchanged;
 #   2. a btrfs subvolume of /pool mounted on its own is refused; its mount
 #      table line shows the same device as /pool's, while stat shows another
-#      (the judge relies on the first); check with --allow-decoy-storage
-#      passes it with a warning, as /pool, the other mount of that
-#      filesystem, is the one the fstab makes;
+#      (the judge relies on the first); with --allow-decoy-storage the
+#      hidden-volume check passes it with a warning, as /pool, the other
+#      mount of that filesystem, is the one the fstab makes, while
+#      backend-entries refuses it (exit 4): the fstab line for /pool names its
+#      disk, and the decoy's boot needs that line;
 #   3. a bind mount of a folder of /srv is refused;
 #   4. /srv itself, the filesystem the decoy's fstab mounts there, is refused;
 #   5. an unencrypted ext4 image on /srv, loop-mounted, is refused, also with a
@@ -27,10 +29,11 @@
 #   8. a zram device that writes its pages back to a loop device over an
 #      image on /srv is refused as that image file;
 #   9. `init --allow-decoy-storage` uses the bind of the /srv folder with a
-#      warning, while the folder itself stays refused; check with that flag
-#      passes it with a warning beside /srv, the fstab's mount of the
-#      filesystem, and refuses it as mounted a second time once that
-#      filesystem is mounted at another folder too;
+#      warning, while the folder itself stays refused; with that flag the
+#      hidden-volume check passes it with a warning beside /srv, the fstab's
+#      mount of the filesystem, and backend-entries refuses it for the line
+#      of /srv, and hidden-volume refuses it as mounted a second time once
+#      that filesystem is mounted at another folder too;
 #  10. a LUKS container file on /srv passes the hidden-volume check with a
 #      warning that names /srv and its copy-on-write snapshots;
 #  11. a LUKS volume on the separate data disk passes the hidden-volume check;
@@ -142,6 +145,21 @@ in
         return rows[0]
 
 
+    def assert_decoys_own_line(report, root):
+        # The decoy's line for the filesystem the root is part of is one its
+        # boot needs: the fix keeps it and moves the hidden root instead.
+        row = check_row(report, "backend-entries")
+        assert row["status"] == "fail", row
+        assert (
+            f"(it mounts the filesystem the volume at {root} is part of, and the decoy's own "
+            "boot needs it)"
+        ) in row["message"], row
+        assert row["remediation"] == (
+            "Do not remove a line the decoy's own boot needs: put the hidden root on storage of "
+            "its own instead."
+        ), row
+
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mountpoint -q /srv && mountpoint -q /pool")
@@ -224,12 +242,17 @@ in
             f"nails --config {config_for('/mnt/sub')} --json check --overlay-only "
             "--allow-decoy-storage",
         )
-        row = check_row(last_json(result), "hidden-volume")
+        report = last_json(result)
+        row = check_row(report, "hidden-volume")
         assert row["status"] == "warn", row
         assert row["message"].startswith(
             "--allow-decoy-storage: using /mnt/sub although it is a subvolume of the btrfs "
             "filesystem at /pool"
         ), row
+        # backend-entries refuses it for the fstab line of /pool, which the
+        # flag never covers, and says to keep that line.
+        assert_exit_code(result, 4)
+        assert_decoys_own_line(report, "/mnt/sub")
         machine.succeed("umount /mnt/sub")
 
     with subtest("a bind mount of a decoy folder is refused"):
@@ -444,12 +467,15 @@ in
             "--allow-decoy-storage"
         )
         result = run_command_capture("gate-allow-check", bind_check)
-        row = check_row(last_json(result), "hidden-volume")
+        report = last_json(result)
+        row = check_row(report, "hidden-volume")
         assert row["status"] == "warn", row
         assert row["message"].startswith(
             "--allow-decoy-storage: using /mnt/bind although it is a bind mount of a "
             "folder of /srv"
         ), row
+        assert_exit_code(result, 4)
+        assert_decoys_own_line(report, "/mnt/bind")
         # The same filesystem mounted at another folder as well is one.
         machine.succeed("mkdir -p /mnt/again && mount /dev/disk/by-id/virtio-srv /mnt/again")
         result = run_command_capture("gate-allow-check-again", bind_check)

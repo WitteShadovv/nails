@@ -192,6 +192,31 @@ fn a_line_the_decoys_own_boot_needs_says_to_move_the_hidden_root_instead() {
 }
 
 #[test]
+fn the_decoys_line_for_the_filesystem_a_root_is_a_folder_of_is_never_to_be_removed() {
+    // A folder of / bound at the root, which --allow-decoy-storage accepted:
+    // the decoy's line for / names the root's device, and removing it would
+    // break the decoy.
+    let result = Decoy::new(
+        "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
+         5 1 259:3 /srv/x /mnt rw - ext4 /dev/nvme0n1p3 rw\n",
+    )
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .file("/etc/fstab", "/dev/nvme0n1p3 / ext4 defaults 0 1\n")
+    .run();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "/etc/fstab: '/dev/nvme0n1p3 / ext4' (it mounts the filesystem the volume at /mnt \
+             is part of, and the decoy's own boot needs it)"
+        ),
+        "{}",
+        result.message()
+    );
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+}
+
+#[test]
 fn lines_of_both_kinds_get_both_instructions() {
     // A noauto fstab line mounts md0p1 at /mnt for the hidden volume alone.
     // Once the hidden root moves, it is flagged no more and would stay
