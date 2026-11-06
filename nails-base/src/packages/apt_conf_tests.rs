@@ -374,6 +374,10 @@ fn parts_are_read_by_the_names_apt_reads() {
         "x.CONF",
         "x.cfg",
         "",
+        // A hidden name, which apt skips first, though its extension is
+        // one apt reads.
+        ".conf",
+        ".99local.conf",
         // A byte beyond ASCII changes nothing where another rule skips the
         // name.
         ".caf\u{e9}",
