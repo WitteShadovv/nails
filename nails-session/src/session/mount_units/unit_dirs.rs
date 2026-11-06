@@ -11,8 +11,14 @@
 //! of links, a directory NAILS may not search) does not count as nothing:
 //! systemd, which reads the same paths as root, may read what NAILS cannot.
 //! Such a unit is [`Load::Unreadable`], and such a directory [`Unlisted`].
+//!
+//! A check that reads the running system asks the automount guard before
+//! each lookup ([`UnitDirs::guard`]): a lookup it does not make counts as one
+//! that failed, so a unit directory behind an automount point that nothing is
+//! mounted on yet is [`Unlisted`], with the guard's reason.
 
 use super::unit_file::{self, UnitFile};
+use crate::filesystem::automount::Lookup;
 use crate::session::policy::Decision;
 use nails_teardown::whole_root::nextroot::{
     canonical_in_root, list_in_root, read_in_root, read_link_in_root, regular_file_in_root,
@@ -67,7 +73,38 @@ pub struct UnitDirs<'a> {
     pub root: &'a Path,
     /// The `/run` the soft-reboot carries.
     pub run: &'a Path,
+    /// The automount guard each lookup is asked of first, for a check that
+    /// reads the running system; `None` at entry, which reads the next root.
+    pub guard: Option<Guard<'a>>,
 }
+
+/// The automount guard of a check that makes its lookups itself: it tells,
+/// for the path a lookup reaches on the running system and how the lookup
+/// treats its end, whether it may be made, as
+/// [`Guarded::ask`](crate::filesystem::automount::Guarded::ask) does, and
+/// keeps each lookup it does not make in that view's ledger. `Ok(None)` when
+/// the lookup may be made; `Ok(Some(point))` when it only resolves a path
+/// that ends at the direct automount point `point`, which is answered
+/// without a lookup; `Err` with why it is not made.
+#[derive(Clone, Copy)]
+pub struct Guard<'a>(pub &'a dyn Fn(&Path, Lookup) -> crate::Result<Option<PathBuf>>);
+
+impl std::fmt::Debug for Guard<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Guard")
+    }
+}
+
+impl Guard<'_> {
+    /// Ask about a lookup of `path` below `root`, made as `lookup`.
+    pub fn ask(&self, root: &Path, path: &Path, lookup: Lookup) -> crate::Result<Option<PathBuf>> {
+        (self.0)(&root.join(path.strip_prefix("/").unwrap_or(path)), lookup)
+    }
+}
+
+/// How a read of a unit directory, a unit file or a drop-in treats its end:
+/// it opens what is there.
+const ENTERS: Lookup = Lookup::Enters { follow: true };
 
 /// A directory of units or links that NAILS cannot list: the hidden systemd
 /// may start units linked there that NAILS never decided.
@@ -230,6 +267,38 @@ impl UnitDirs<'_> {
         (root, Path::new("/").join(dir).join(name))
     }
 
+    /// Ask the guard, if there is one, about a lookup of `path` below
+    /// `root` made as `lookup` ([`Guard::ask`]).
+    fn ask(&self, root: &Path, path: &Path, lookup: Lookup) -> crate::Result<Option<PathBuf>> {
+        match self.guard {
+            Some(guard) => guard.ask(root, path, lookup),
+            None => Ok(None),
+        }
+    }
+
+    /// The names in the directory `path` below `root`: `None` when there is
+    /// none; why not, when it is there but cannot be listed, or the guard
+    /// does not look it up.
+    fn names_in(&self, root: &Path, path: &Path) -> Result<Option<Vec<OsString>>, String> {
+        self.ask(root, path, ENTERS).map_err(|e| e.to_string())?;
+        match list_in_root(root, path) {
+            Ok(entries) => Ok(Some(entries)),
+            Err(e) if missing(&e) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Whether the entry at `path` below `root` is a mask: a link to
+    /// `/dev/null`. `Err` when the guard does not resolve it; a direct
+    /// automount point at its end is a directory, never a mask.
+    fn masks(&self, root: &Path, path: &Path) -> Result<bool, ()> {
+        match self.ask(root, path, Lookup::Resolves { follow: true }) {
+            Ok(None) => Ok(canonical_in_root(root, path) == Path::new("/dev/null")),
+            Ok(Some(_)) => Ok(false),
+            Err(_) => Err(()),
+        }
+    }
+
     /// The names in `name` of every unit directory, the directories in
     /// priority order and the names of each sorted. `Err` names the first
     /// one that is there but cannot be listed.
@@ -271,23 +340,20 @@ impl UnitDirs<'_> {
         let mut names = Vec::new();
         for &(base, dir) in UNIT_DIRS {
             let (root, path) = self.locate(base, dir, name);
-            let mut here: Vec<String> = match list_in_root(root, &path) {
-                Ok(entries) => entries
+            let mut here: Vec<String> = match self.names_in(root, &path) {
+                Ok(Some(entries)) => entries
                     .into_iter()
                     .filter_map(|entry| entry.into_string().ok())
                     .collect(),
-                Err(e) if missing(&e) => continue,
-                Err(e) => {
+                Ok(None) => continue,
+                Err(error) => {
                     let dir = match base {
                         Base::Root => path,
                         Base::Run => {
                             Path::new("/run").join(path.strip_prefix("/").unwrap_or(&path))
                         }
                     };
-                    return Err(Unlisted {
-                        dir,
-                        error: e.to_string(),
-                    });
+                    return Err(Unlisted { dir, error });
                 }
             };
             here.sort();
@@ -300,9 +366,13 @@ impl UnitDirs<'_> {
     }
 
     /// The file at `path` below `root`: `Ok(None)` when there is none, `Err`
-    /// when it is not a regular file or cannot be read. A FIFO would block
-    /// the read, and a link to a device such as `/dev/zero` never end it.
-    fn read_file(root: &Path, path: &Path) -> Result<Option<Vec<u8>>, ()> {
+    /// when it is not a regular file, cannot be read, or the guard does not
+    /// look it up. A FIFO would block the read, and a link to a device such
+    /// as `/dev/zero` never end it.
+    fn read_file(&self, root: &Path, path: &Path) -> Result<Option<Vec<u8>>, ()> {
+        if self.ask(root, path, ENTERS).is_err() {
+            return Err(());
+        }
         match regular_file_in_root(root, path) {
             Ok(true) => {}
             Err(e) if missing(&e) => return Ok(None),
@@ -358,9 +428,9 @@ impl UnitDirs<'_> {
         let mut found: Vec<Dropin> = Vec::new();
         for (rank, (base, dir, sub)) in Self::dropin_dirs(name).into_iter().enumerate() {
             let (root, path) = self.locate(base, dir, &sub);
-            let entries = match list_in_root(root, &path) {
-                Ok(entries) => entries,
-                Err(e) if missing(&e) => continue,
+            let entries = match self.names_in(root, &path) {
+                Ok(Some(entries)) => entries,
+                Ok(None) => continue,
                 Err(_) => return Err(()),
             };
             for entry in entries {
@@ -388,10 +458,10 @@ impl UnitDirs<'_> {
     pub(super) fn read_dropin(&self, dropin: &Dropin) -> Result<Option<Vec<u8>>, ()> {
         let (root, dir) = self.locate(dropin.base, dropin.dir, &dropin.sub);
         let path = dir.join(&dropin.name);
-        if canonical_in_root(root, &path) == Path::new("/dev/null") {
+        if self.masks(root, &path)? {
             return Ok(None);
         }
-        Self::read_file(root, &path)
+        self.read_file(root, &path)
     }
 
     /// The unit `name` as systemd loads it: the first unit directory that
@@ -422,10 +492,12 @@ impl UnitDirs<'_> {
         let mut fragment = None;
         for &(base, dir) in UNIT_DIRS {
             let (root, path) = self.locate(base, dir, file);
-            if canonical_in_root(root, &path) == Path::new("/dev/null") {
-                return Load::Masked;
+            match self.masks(root, &path) {
+                Ok(true) => return Load::Masked,
+                Ok(false) => {}
+                Err(()) => return Load::Unreadable,
             }
-            match Self::read_file(root, &path) {
+            match self.read_file(root, &path) {
                 Ok(Some(bytes)) => {
                     fragment = Some((bytes, generator_dir(base, dir)));
                     break;
@@ -503,6 +575,12 @@ impl UnitDirs<'_> {
     fn link_of(&self, name: &str) -> Result<Option<Option<(String, bool)>>, ()> {
         for &(base, dir) in UNIT_DIRS {
             let (root, path) = self.locate(base, dir, name);
+            match self.ask(root, &path, Lookup::Resolves { follow: false }) {
+                Ok(None) => {}
+                // An automount point is a directory, never a link.
+                Ok(Some(_)) => return Ok(Some(None)),
+                Err(_) => return Err(()),
+            }
             let target = match read_link_in_root(root, &path) {
                 Ok(target) => target,
                 Err(e) if missing(&e) => continue,
