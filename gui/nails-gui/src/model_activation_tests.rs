@@ -690,7 +690,7 @@ fn an_allowed_risk_reaches_the_activation_and_its_question() {
         body.lines().collect::<Vec<_>>(),
         [
             text::ACTIVATE_CONSEQUENCE,
-            "Allowed by you: a persistent record on this computer's disk."
+            "Allowed by you: a record that may persist on this computer's disk."
         ]
     );
 }
