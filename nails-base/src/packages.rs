@@ -15,9 +15,6 @@
 //!   reads with its own reader ([`sqlite`]): each package's name, version,
 //!   architecture and files ([`rpm::read_packages`]).
 //!
-//! [`apt_conf`] reads apt's configuration files, where unattended-upgrades
-//! takes its settings from, the way apt reads them.
-//!
 //! Each of them holds whatever the decoy's disk holds, or what a hidden
 //! session wrote, so the parsers take any input: a line, a stanza or an entry
 //! they cannot read is left out, never an error. rpm's database is read
@@ -26,6 +23,12 @@
 //! memory than any of rpm's do ([`rpm::read_packages`]). The
 //! `dpkg_status`, `pacman_local` and `rpmdb` fuzz targets drive them with
 //! hostile input.
+//!
+//! [`apt_conf`] reads apt's configuration files, where unattended-upgrades
+//! takes its settings from, the way apt reads them. It reads a file whole or
+//! not at all too: a line apt refuses, or one NAILS does not read the way apt
+//! does, is an error, which the check that reads the setting refuses on. The
+//! `apt_conf` fuzz target drives it.
 //!
 //! # Reading without a trace
 //!

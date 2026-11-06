@@ -1593,8 +1593,8 @@ of this changelog for that version becomes the release notes word for word, and
   session sees it, or the session's overlay turning the setting on), it warns instead, and a link
   among apt's files, which the session resolves through its overlay, makes it warn that it cannot
   tell. The decoy requirements now say to set the setting to `false` rather than delete the line,
-  which stays in effect until the helper restarts. A new fuzz target, `apt_conf`, drives the
-  reader.
+  which stays in effect until the helper restarts, and to restart the helper after removing a
+  `Dir` or `RootDir` line. A new fuzz target, `apt_conf`, drives the reader.
 - Activation refuses while a daily unattended-upgrade run is in progress (the
   `unattended-upgrade-run` check): `apt-daily-upgrade.service` is active, or a process holds
   `/run/unattended-upgrades.lock`. At the switch unattended-upgrades' shutdown helper stopped a run
@@ -1602,8 +1602,9 @@ of this changelog for that version becomes the release notes word for word, and
   decoy disk, whatever `Unattended-Upgrade::InstallOnShutdown` said, and APT blocks shutdown only
   while dpkg runs, so `shutdown-inhibitors` did not see it. The check reads the lock from
   `/proc/locks` by the lock file's device and inode, without opening or locking the file, refuses
-  when it cannot tell (a lock file that is a link or anything else but a plain file included, which
-  the helper takes for a held lock), and says to try again in a few minutes; no flag lifts it. The
+  when it cannot tell (a lock file that is anything but a plain file included: the helper cannot
+  open a link, a directory or a socket there and takes that for a held lock), and says to try
+  again in a few minutes; no flag lifts it. The
   entry looks again right before it asks logind for the switch. A new distribution test,
   `<image>-apt-shutdown` on Debian 13, Ubuntu 24.04 and Ubuntu 26.04, holds a daily run with its
   lock taken and shows the refusal leaves no line on the decoy disk, where a plain
