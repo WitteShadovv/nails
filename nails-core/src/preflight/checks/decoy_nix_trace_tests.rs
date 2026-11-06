@@ -1020,13 +1020,187 @@ fn a_lookup_follows_as_many_links_as_the_kernel_and_ends_at_a_loop() {
     fs.create_symlink(Path::new("/home/bob"), Path::new("/home/bob"))
         .unwrap();
     fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{NET_MAP}"));
-    let line = first_line(&fs);
+    assert_eq!(
+        first_line(&fs),
+        "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS cannot look \
+         into /home/bob (/home/bob: Too many levels of symbolic links (os error 40))."
+    );
+}
+
+/// The direct automount point at `/usr/local`, as systemd makes one for
+/// `x-systemd.automount`, that nothing is mounted on yet.
+const USR_LOCAL: &str = "30 1 0:50 / /usr/local rw,relatime - autofs systemd-1 \
+                         rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n";
+
+/// The check's result on `fs`, read as the running system.
+fn run_on(fs: &MockFilesystem) -> CheckResult {
+    DecoyNixTraceCheck::new(PathBuf::from("/mnt/data"), false)
+        .run(fs)
+        .unwrap()
+}
+
+/// Whether `fs` looked up `point` or a path below it.
+fn reached(fs: &MockFilesystem, point: &str) -> bool {
+    fs.mock_lookups().iter().any(|path| path.starts_with(point))
+}
+
+/// Each automount point the check did not look behind is named, and the
+/// warning ends with one fix that mounts them all and runs the check
+/// again; nothing at or below a point is looked up, the guard's own
+/// reading of the way included.
+#[test]
+fn the_warning_says_once_to_mount_each_point_and_nothing_behind_one_is_looked_up() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", BOB_PASSWD);
+    fs.create_symlink(Path::new("/net/srv/bob"), Path::new("/home/bob"))
+        .unwrap();
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{USR_LOCAL}{NET_MAP}"));
+    let result = run_on(&fs);
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
     assert!(
-        line.starts_with(
-            "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS cannot look \
-             up /home/bob/.nix-profile ("
+        message.contains(
+            "NAILS does not look up /usr/local/bin/nix, since the lookup would mount the \
+             automount point /usr/local"
         ),
-        "{line}"
+        "{message}"
+    );
+    assert!(
+        message.contains(
+            "NAILS does not look into /home/bob, since the lookup would mount the automount \
+             point /net/srv"
+        ),
+        "{message}"
+    );
+    let lines: Vec<&str> = message.lines().collect();
+    assert_eq!(
+        lines[1..],
+        [
+            "See docs/decoy-requirements.md#nix-on-the-decoy.".to_string(),
+            crate::filesystem::automount::mount_fix(&[
+                Path::new("/usr/local"),
+                Path::new("/net/srv")
+            ])
+        ]
+    );
+    assert!(!reached(&fs, "/usr/local"), "{:?}", fs.mock_lookups());
+    assert!(!reached(&fs, "/net/srv"), "{:?}", fs.mock_lookups());
+}
+
+/// A trace is whatever is at its path: a link counts as there without its
+/// target being looked up, also where that target cannot be.
+#[test]
+fn a_link_counts_as_a_trace_whatever_it_leads_to() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", ROOT_PASSWD);
+    fs.mock_set_lookup_error("/srv/locked", std::io::ErrorKind::PermissionDenied);
+    fs.create_symlink(Path::new("/srv/locked/nix"), Path::new("/nix"))
+        .unwrap();
+    fs.mock_set_mount_table(ROOT_MOUNT);
+    assert_eq!(
+        first_line(&fs),
+        "Nix is installed on the decoy, or was: it holds /nix."
+    );
+}
+
+/// A path that cannot be looked up is named by why: one NAILS may not look
+/// up asks for sudo, any other names its error, and neither is taken for a
+/// path that is not there.
+#[test]
+fn a_path_that_cannot_be_looked_up_is_named_by_why() {
+    for (kind, reason) in [
+        (
+            std::io::ErrorKind::PermissionDenied,
+            "NAILS cannot look up /etc/nix; run the command again with sudo",
+        ),
+        (
+            std::io::ErrorKind::Other,
+            "NAILS cannot look up /etc/nix (/etc/nix: Mock: the lookup fails here)",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/passwd", ROOT_PASSWD);
+        fs.mock_set_lookup_error("/etc/nix", kind);
+        fs.mock_set_mount_table(ROOT_MOUNT);
+        assert_eq!(
+            first_line(&fs),
+            format!("NAILS cannot tell whether a Nix install left traces on the decoy: {reason}."),
+            "{kind:?}"
+        );
+    }
+}
+
+/// A home that cannot be looked into is named once, by why, and nothing in
+/// it is looked up.
+#[test]
+fn a_home_that_cannot_be_looked_into_is_named_once() {
+    for (kind, reason) in [
+        (
+            std::io::ErrorKind::PermissionDenied,
+            "NAILS cannot look into /home/alice; run the command again with sudo",
+        ),
+        (
+            std::io::ErrorKind::Other,
+            "NAILS cannot look into /home/alice (/home/alice: Mock: the lookup fails here)",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/passwd", STOCK_PASSWD);
+        fs.mock_set_lookup_error("/home/alice", kind);
+        fs.mock_set_mount_table(ROOT_MOUNT);
+        assert_eq!(
+            first_line(&fs),
+            format!("NAILS cannot tell whether a Nix install left traces on the decoy: {reason}."),
+            "{kind:?}"
+        );
+        let home = Path::new("/home/alice");
+        assert!(
+            !fs.mock_lookups()
+                .iter()
+                .any(|path| path.starts_with(home) && path != home),
+            "{:?}",
+            fs.mock_lookups()
+        );
+    }
+}
+
+/// A link on the way that cannot be read, or a directory on the way that
+/// cannot be looked up, is the lookup's error: it is named, never taken for
+/// a way that passes no automount point, and the lookup is not made.
+#[test]
+fn a_way_that_cannot_be_read_is_named_with_its_error() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", ROOT_PASSWD);
+    // A link the guard cannot read: the mock has no target for it.
+    fs.mock_set_path_type("/usr/local", PathKind::Symlink);
+    fs.mock_set_mount_table(ROOT_MOUNT);
+    let result = run_on(&fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("NAILS cannot look up /usr/local/bin/nix (/usr/local/bin/nix: invalid input"),
+        "{result:?}"
+    );
+    assert!(
+        !fs.mock_lookups()
+            .contains(&PathBuf::from("/usr/local/bin/nix"))
+    );
+
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", ROOT_PASSWD);
+    fs.mock_set_lookup_error("/usr/local", std::io::ErrorKind::PermissionDenied);
+    fs.mock_set_mount_table(ROOT_MOUNT);
+    let result = run_on(&fs);
+    assert!(
+        result
+            .message()
+            .contains("NAILS cannot look up /usr/local/bin/nix; run the command again with sudo"),
+        "{result:?}"
+    );
+    assert!(
+        !fs.mock_lookups()
+            .contains(&PathBuf::from("/usr/local/bin/nix"))
     );
 }
 
@@ -1112,8 +1286,8 @@ fn what_cannot_be_read_warns_and_never_passes() {
     );
 }
 
-/// A lookup that fails for a reason other than a missing or a refused path
-/// is named with its error, and the rest of that home is left.
+/// A home that cannot be looked into for a reason other than a missing or a
+/// refused path is named once with its error, and the rest of it is left.
 #[test]
 fn a_lookup_that_fails_otherwise_is_named_with_its_error() {
     let decoy = Decoy::stock();
@@ -1126,11 +1300,15 @@ fn a_lookup_that_fails_otherwise_is_named_with_its_error() {
     assert!(
         message.starts_with(
             "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS cannot \
-             look up /home/eve/.nix-profile ("
+             look into /home/eve ("
         ),
         "{result:?}"
     );
-    assert!(!message.contains(".nix-defexpr"), "{result:?}");
+    assert!(
+        message.contains("Too many levels of symbolic links"),
+        "{result:?}"
+    );
+    assert!(!message.contains(".nix-profile"), "{result:?}");
 }
 
 /// A file whose link leads onto the hidden volume is not read, and says so.

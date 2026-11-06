@@ -52,24 +52,27 @@
 //! reads one ([`DecoyFiles`]): opened with `O_NOATIME`, so that run as root
 //! its access time stays, and never where a link leads onto the hidden
 //! volume. A link a lookup follows on the way still gets its access time.
-//! Before each lookup the check reads the links on the way one by one,
-//! without following them, and asks the mount table whether the lookup would
-//! pass an automount point that nothing is mounted on yet, a direct one or a
-//! name in the directory of an indirect map, which the lookup would mount.
-//! Where it would, the check makes no lookup, and the warning names that
-//! path, or that home, and the automount point instead; once something is
-//! mounted there, the path is looked up. Where the check cannot read the
-//! running system's mount table, it looks up nothing.
+//! Every lookup goes through the automount guard
+//! ([`crate::filesystem::automount`]): before it, the links on the way are
+//! read one by one, without following them, and the mount table, as read
+//! when the check starts, is asked whether the lookup would pass an
+//! automount point that nothing is mounted on yet, a direct or offset one or
+//! a name in the directory of an indirect map, which the lookup would mount.
+//! Where it would, the check makes no lookup: the warning names that path,
+//! or that home, and the automount point instead, and says to mount it and
+//! run the check again; once something is mounted there, the path is looked
+//! up. A lookup on the way that fails is named with its error, as the lookup
+//! would fail. Where the check cannot read the running system's mount table,
+//! it looks up nothing.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::locate_database::files::{DecoyFile, DecoyFiles};
 use super::locate_database::hidden_locations;
-use crate::filesystem::mountinfo::{MountEntry, root_is_hidden_overlay};
-use crate::{Filesystem, Result};
+use crate::filesystem::automount::{Guarded, Lookup, OnSkip, Snapshot, describe, settle};
+use crate::filesystem::mountinfo::root_is_hidden_overlay;
+use crate::{Filesystem, NailsError, Result};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-
-mod automount;
 
 /// Where the docs explain the check.
 const DOC: &str = "docs/decoy-requirements.md#nix-on-the-decoy";
@@ -224,20 +227,6 @@ impl DecoyNixTraceCheck {
         self.root = root.to_path_buf();
         self
     }
-
-    /// The running system's mount table, which says whether `/` is the
-    /// overlay of a hidden session and where an automount point is. A tree
-    /// read under another root has none.
-    ///
-    /// # Errors
-    ///
-    /// Why the running system's table cannot be read.
-    fn mount_table<F: Filesystem>(&self, fs: &F) -> Result<Option<Vec<MountEntry>>> {
-        if self.root != Path::new("/") {
-            return Ok(None);
-        }
-        fs.mount_table().map(Some)
-    }
 }
 
 /// Whether a path is there, as `lstat(2)` sees it.
@@ -254,14 +243,13 @@ enum Seen {
 
 /// What the check found under the root.
 struct Traces<'a, F: Filesystem> {
-    fs: &'a F,
-    files: DecoyFiles<'a, F>,
+    /// The decoy, read through the automount guard.
+    fs: &'a Guarded<F>,
+    files: DecoyFiles<'a, Guarded<F>>,
     root: &'a Path,
     /// The hidden volume's locations, resolved: what lies there is not the
     /// decoy's.
     hidden: &'a [PathBuf],
-    /// The running system's mount table, when it is read and can be.
-    table: Option<&'a [MountEntry]>,
     /// Each trace, as the warning names it.
     found: Vec<String>,
     /// Why NAILS cannot tell about the rest.
@@ -269,20 +257,14 @@ struct Traces<'a, F: Filesystem> {
 }
 
 impl<'a, F: Filesystem> Traces<'a, F> {
-    /// The traces under `root`; `hidden` are the hidden volume's locations,
-    /// and `table` the mount table of the system read.
-    fn read(
-        fs: &'a F,
-        root: &'a Path,
-        hidden: &'a [PathBuf],
-        table: Option<&'a [MountEntry]>,
-    ) -> Self {
+    /// The traces under `root`, read through `fs`; `hidden` are the hidden
+    /// volume's locations.
+    fn read(fs: &'a Guarded<F>, root: &'a Path, hidden: &'a [PathBuf]) -> Self {
         let mut traces = Self {
             fs,
             files: DecoyFiles::new(fs, root, hidden),
             root,
             hidden,
-            table,
             found: Vec::new(),
             unread: Vec::new(),
         };
@@ -304,38 +286,15 @@ impl<'a, F: Filesystem> Traces<'a, F> {
         self.files.shown(path)
     }
 
-    /// Why NAILS does not look up `path`: the lookup would mount the
-    /// automount point `point`.
-    fn behind(&self, path: &Path, point: &Path) -> String {
-        format!(
-            "NAILS does not look up {}, since the lookup would mount the automount point {}",
-            self.shown(path),
-            self.shown(point)
-        )
-    }
-
     /// Whether `path` is there. A link is not followed, so a link to nothing
-    /// is there as well.
+    /// is there as well, and so is one whose target cannot be looked up. A
+    /// lookup NAILS may not make asks for sudo, one the guard did not make
+    /// names the automount point, and any other that fails names its error.
     fn seen(&self, path: &Path) -> Seen {
-        if let Some(point) = self.automount_on_the_way(path, false) {
-            return Seen::Unknown(self.behind(path, &point));
-        }
-        if self.fs.is_symlink(path).unwrap_or(false) || self.fs.path_exists(path).unwrap_or(false) {
-            return Seen::Present;
-        }
-        // Neither lookup saw it: it is missing, or one of them failed, which
-        // only the error of resolving it tells.
-        match self.fs.canonicalize(path) {
-            Err(e) => match e.io_kind() {
-                Some(ErrorKind::NotFound | ErrorKind::NotADirectory) => Seen::Absent,
-                Some(ErrorKind::PermissionDenied) => Seen::Unknown(format!(
-                    "NAILS cannot look up {}; run the command again with sudo",
-                    self.shown(path)
-                )),
-                _ => Seen::Unknown(format!("NAILS cannot look up {} ({e})", self.shown(path))),
-            },
-            // Resolved after both lookups missed it: it appeared just now.
-            Ok(_) => Seen::Absent,
+        match self.fs.entry_exists(path) {
+            Ok(true) => Seen::Present,
+            Ok(false) => Seen::Absent,
+            Err(error) => Seen::Unknown(describe(&self.shown(path), &error).sentence),
         }
     }
 
@@ -368,13 +327,10 @@ impl<'a, F: Filesystem> Traces<'a, F> {
         let mut read: Vec<PathBuf> = Vec::new();
         for dir in UNIT_DIRS {
             let dir = self.root.join(dir);
-            // Where resolving it would mount an automount point, each unit
-            // below names that point.
-            let real = match self.automount_on_the_way(&dir, true) {
-                Some(_) => None,
-                None => self.fs.canonicalize(&dir).ok(),
-            };
-            if let Some(real) = real {
+            // A directory that cannot be resolved, one behind an automount
+            // point too, is no reason to skip its units: each is looked up on
+            // its own and names why it cannot be.
+            if let Ok(real) = self.fs.canonicalize(&dir) {
                 if read.contains(&real) {
                     continue;
                 }
@@ -388,11 +344,7 @@ impl<'a, F: Filesystem> Traces<'a, F> {
         for unit in DAEMON_UNITS {
             self.note(&admin.join(format!("{unit}.d")));
         }
-        let listed = match self.automount_on_the_way(&admin, true) {
-            Some(point) => Err(self.behind(&admin, &point)),
-            None => self.files.list(&admin),
-        };
-        match listed {
+        match self.files.list(&admin) {
             Ok(mut entries) => {
                 // In a fixed order: a directory lists its entries in none.
                 entries.sort();
@@ -418,10 +370,6 @@ impl<'a, F: Filesystem> Traces<'a, F> {
     /// The text of `path`, a file under the root, or `None` when it is not
     /// there; why NAILS cannot read it goes to the reasons.
     fn read_text(&mut self, path: &Path) -> Option<Vec<u8>> {
-        if let Some(point) = self.automount_on_the_way(path, true) {
-            self.unread.push(self.behind(path, &point));
-            return None;
-        }
         match self.files.read(path) {
             DecoyFile::Text(text) => Some(text),
             DecoyFile::Absent | DecoyFile::Null => None,
@@ -526,31 +474,32 @@ impl<'a, F: Filesystem> Traces<'a, F> {
         self.hidden.iter().any(|hidden| path.starts_with(hidden))
     }
 
-    /// The automount point that a lookup of `path` would mount, following
-    /// the link at its end too when `follow` ([`automount::on_the_way`]).
-    /// None where there is no mount table: a tree read under another root.
-    fn automount_on_the_way(&self, path: &Path, follow: bool) -> Option<PathBuf> {
-        automount::on_the_way(self.fs, self.table?, path, follow)
-    }
-
     /// What Nix keeps in each of `homes`, and the hooks in its shell
-    /// startup files. A home on the hidden volume is left, as named or where
-    /// its links lead, and so is one whose lookup would mount an automount
-    /// point: the reasons name that one. Once NAILS cannot look into a home,
-    /// the rest of it is not looked up.
+    /// startup files, with one reason at most for each home NAILS cannot
+    /// tell about. A home on the hidden volume is left, as named or where its
+    /// links lead, and so is one whose lookup would mount an automount point:
+    /// the reason names that one. Once NAILS cannot look into a home, the
+    /// rest of it is not looked up.
     fn homes(&mut self, homes: &[String]) {
         for home in homes {
             let home = self.root.join(home.trim_start_matches('/'));
             if self.on_hidden(&home) {
                 continue;
             }
-            if let Some(point) = self.automount_on_the_way(&home, true) {
-                self.unread.push(format!(
-                    "NAILS does not look into {}, since the lookup would mount the automount \
-                     point {}",
-                    self.shown(&home),
-                    self.shown(&point)
-                ));
+            // Asked once for the home, not for each path in it. A home whose
+            // way cannot be read fails its lookup below, which names the error.
+            if let Err(error) = self.fs.ask(&home, Lookup::Enters { follow: true })
+                && let Some((_, reason)) = error.not_looked_up()
+            {
+                self.unread.push(match reason.point() {
+                    Some(point) => format!(
+                        "NAILS does not look into {}, since the lookup would mount the \
+                         automount point {}",
+                        self.shown(&home),
+                        self.shown(point)
+                    ),
+                    None => describe(&self.shown(&home), &error).sentence,
+                });
                 continue;
             }
             if self
@@ -560,15 +509,18 @@ impl<'a, F: Filesystem> Traces<'a, F> {
             {
                 continue;
             }
-            let mut seen = true;
-            for path in HOME_PATHS {
-                if !self.note(&home.join(path)) {
-                    seen = false;
-                    break;
+            let is_directory = match self.fs.is_directory(&home) {
+                Ok(is_directory) => is_directory,
+                Err(error) => {
+                    self.unread.push(self.unseen_home(&home, &error));
+                    continue;
                 }
+            };
+            if !HOME_PATHS.iter().all(|path| self.note(&home.join(path))) {
+                continue;
             }
             // A home that is no directory, such as /dev/null, holds no file.
-            if !seen || !self.fs.is_directory(&home).unwrap_or(false) {
+            if !is_directory {
                 continue;
             }
             for file in HOME_HOOKED_FILES {
@@ -579,6 +531,17 @@ impl<'a, F: Filesystem> Traces<'a, F> {
                 }
             }
         }
+    }
+
+    /// Why NAILS cannot look into `home`, whose lookup failed with `error`.
+    /// The guard was asked about the home before, so this is no lookup it
+    /// did not make.
+    fn unseen_home(&self, home: &Path, error: &NailsError) -> String {
+        let shown = self.shown(home);
+        if error.io_kind() == Some(ErrorKind::PermissionDenied) {
+            return format!("NAILS cannot look into {shown}; run the command again with sudo");
+        }
+        format!("NAILS cannot look into {shown} ({error})")
     }
 }
 
@@ -667,21 +630,19 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyNixTraceCheck {
         }
         // Without the table a lookup could mount an automount point, so none
         // is made.
-        let table = match self.mount_table(fs) {
-            Ok(table) => table,
-            Err(e) => {
-                return Ok(verdict(
-                    &[],
-                    &[format!(
-                        "NAILS cannot read the mount table ({e}), which shows whether a hidden \
-                         session is running and where a lookup would mount an automount point, \
-                         so it looks up nothing"
-                    )],
-                ));
-            }
-        };
-        if table
-            .as_ref()
+        let snapshot = Snapshot::read(fs, &self.root);
+        if let Some(error) = snapshot.unreadable() {
+            return Ok(verdict(
+                &[],
+                &[format!(
+                    "NAILS cannot read the mount table ({error}), which shows whether a hidden \
+                     session is running and where a lookup would mount an automount point, so \
+                     it looks up nothing"
+                )],
+            ));
+        }
+        if snapshot
+            .table()
             .is_some_and(|table| root_is_hidden_overlay(table, &self.hidden_root).is_some())
         {
             return Ok(CheckResult::skipped(
@@ -689,12 +650,17 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyNixTraceCheck {
                  check on the decoy",
             ));
         }
-        let hidden: Vec<PathBuf> = hidden_locations(fs, &self.hidden_root)
+        let guarded = Guarded::new(fs.clone(), &snapshot);
+        let hidden: Vec<PathBuf> = hidden_locations(&guarded, &self.hidden_root)
             .into_iter()
             .map(|location| location.path)
             .collect();
-        let traces = Traces::read(fs, &self.root, &hidden, table.as_deref());
-        Ok(verdict(&traces.found, &traces.unread))
+        let traces = Traces::read(&guarded, &self.root, &hidden);
+        Ok(settle(
+            verdict(&traces.found, &traces.unread),
+            &guarded.skipped(),
+            OnSkip::Warn,
+        ))
     }
 }
 
