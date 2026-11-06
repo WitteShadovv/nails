@@ -10,7 +10,7 @@
 //! module reads them back: the configuration for `emergency`, `recover` and
 //! the sleep guard, and the hidden root the backend watcher probes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::filesystem::Filesystem;
@@ -64,11 +64,30 @@ impl RuntimeManifest {
     }
 }
 
+/// The text of the file at `path`, read at once: `None` when there is no
+/// such file (nothing at the path, or a file on the way to it), an error
+/// naming the path when it is there but cannot be read.
+fn read_if_there<F: Filesystem>(filesystem: &F, path: &Path) -> Result<Option<String>> {
+    match filesystem.read_file_content(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(e)
+            if matches!(
+                e.io_kind(),
+                Some(std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Read the watcher's manifest from the session plan in the runtime copy, if
 /// one is present.
 ///
 /// `Ok(None)` when no plan exists (no activation wrote one, or it was already
-/// torn down); an error only on a present-but-unusable plan.
+/// torn down); an error naming the plan when it is there but cannot be read
+/// or does not parse.
 pub fn read_manifest<F: Filesystem>(filesystem: &F) -> Result<Option<RuntimeManifest>> {
     Ok(read_plan(filesystem)?.map(|plan| RuntimeManifest::from_plan(&plan)))
 }
@@ -79,10 +98,9 @@ pub fn read_plan<F: Filesystem>(
     filesystem: &F,
 ) -> Result<Option<nails_teardown::whole_root::plan::Plan>> {
     let path = plan_path();
-    if !filesystem.path_exists(&path)? {
+    let Some(content) = read_if_there(filesystem, &path)? else {
         return Ok(None);
-    }
-    let content = filesystem.read_file_content(&path)?;
+    };
     nails_teardown::whole_root::plan::Plan::from_json(&content)
         .map(Some)
         .map_err(|e| NailsError::io(&path, std::io::Error::other(e.to_string())))
@@ -91,13 +109,14 @@ pub fn read_plan<F: Filesystem>(
 /// Load the mirrored configuration from the runtime copy, if one is present.
 ///
 /// Used as a fallback by `emergency`/`recover` when the hidden volume (and so the
-/// real config file) can no longer be read. `Ok(None)` when no copy exists.
+/// real config file) can no longer be read. `Ok(None)` when no copy exists; an
+/// error naming the copy when it is there but cannot be read or does not
+/// parse.
 pub fn read_config_copy<F: Filesystem>(filesystem: &F) -> Result<Option<Config>> {
     let path = config_copy_path();
-    if !filesystem.path_exists(&path)? {
+    let Some(content) = read_if_there(filesystem, &path)? else {
         return Ok(None);
-    }
-    let content = filesystem.read_file_content(&path)?;
+    };
     let config: Config = toml::from_str(&content).map_err(|e| {
         NailsError::ConfigError(format!(
             "runtime config copy at {} is unparseable: {e}",
@@ -191,5 +210,59 @@ mod tests {
         let fs = MockFilesystem::new();
         assert!(read_manifest(&fs).unwrap().is_none());
         assert!(read_config_copy(&fs).unwrap().is_none());
+    }
+
+    /// A copy is read at once, with no lookup before it: one that is not
+    /// there is none, also where a file stands on the way to it.
+    #[test]
+    fn a_copy_that_is_not_there_is_none() {
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::NotADirectory,
+        ] {
+            let fs = MockFilesystem::new();
+            fs.mock_set_lookup_error(RUNTIME_COPY_DIR, kind);
+            assert!(read_manifest(&fs).unwrap().is_none(), "{kind:?}");
+            assert!(read_config_copy(&fs).unwrap().is_none(), "{kind:?}");
+        }
+    }
+
+    /// A copy that is there but cannot be read is an error that names it,
+    /// never taken for no copy.
+    #[test]
+    fn a_copy_that_cannot_be_read_is_an_error_naming_it() {
+        let fs = MockFilesystem::new();
+        let plan = plan_path();
+        let copy = config_copy_path();
+        for path in [&plan, &copy] {
+            fs.mock_set_file_content(path.to_str().unwrap(), "unused");
+            fs.mock_set_lookup_error(path.to_str().unwrap(), std::io::ErrorKind::Other);
+        }
+        for error in [
+            read_manifest(&fs).unwrap_err(),
+            read_config_copy(&fs).unwrap_err(),
+        ] {
+            let NailsError::IoError { path, source } = &error else {
+                panic!("not an I/O error: {error:?}");
+            };
+            assert!(*path == plan || *path == copy, "{error}");
+            assert_eq!(source.kind(), std::io::ErrorKind::Other, "{error}");
+            assert!(error.to_string().contains(&path.display().to_string()));
+        }
+    }
+
+    /// A copy that does not parse is an error that names it too.
+    #[test]
+    fn a_copy_that_does_not_parse_is_an_error_naming_it() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_file_content(plan_path().to_str().unwrap(), "{ not a plan");
+        fs.mock_set_file_content(config_copy_path().to_str().unwrap(), "= not toml");
+        let plan = read_manifest(&fs).unwrap_err().to_string();
+        assert!(plan.contains(&plan_path().display().to_string()), "{plan}");
+        let config = read_config_copy(&fs).unwrap_err().to_string();
+        assert!(
+            config.contains(&config_copy_path().display().to_string()),
+            "{config}"
+        );
     }
 }
