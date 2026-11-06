@@ -4,7 +4,7 @@
 //! Real overlay and teardown behaviour against the kernel.
 //!
 //! These tests drive the overlay, bind and tmpfs mounts the session builds
-//! against a real overlayfs. All but four run in the normal test run, each as
+//! against a real overlayfs. All but five run in the normal test run, each as
 //! root of its own unprivileged user + mount namespace (`rootless`, built on
 //! `nails_core::test_support::Rerun`), so every mount is private to the child
 //! and vanishes with it, even after a panic. Each test still builds its own
@@ -13,12 +13,14 @@
 //! user namespaces from a skip into a failure.
 //!
 //! Three tests need `trusted.*` xattrs, which a user namespace cannot set,
-//! and one binds a loop device, which only root of the initial namespace may,
+//! and two bind loop devices, which only root of the initial namespace may,
 //! so they alone stay `#[ignore]`d and run as real root in the
 //! privileged-mounts CI job: the whiteout and opaque-directory test, the test
 //! of the `kernel-modules` check against the kernel's own whiteouts and opaque
-//! directories, the test of the whole upper-filesystem probe, and the test of
-//! the loop driver's record of the file behind a loop device:
+//! directories, the test of the whole upper-filesystem probe, and the two
+//! tests of the loop driver's record of the file behind a loop device, one on
+//! a tmpfs and one on a btrfs filesystem it makes with `mkfs.btrfs`, which
+//! must be on `PATH` (btrfs-progs):
 //!
 //! ```sh
 //! cargo test -p nails-core --test privileged_mounts --no-run
@@ -915,5 +917,118 @@ fn the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file() {
         "{} is still bound",
         node.display()
     );
+    root.teardown();
+}
+
+/// On btrfs a file shows its subvolume's own device number, which no mount
+/// line shows: the mount table writes the filesystem's. The loop driver
+/// records the file's number, so the filesystem that holds a loop device's
+/// file is found through the path the driver shows for it: the mount that
+/// path leads to, when it leads to the recorded file. A session whose hidden
+/// volume is that btrfs counts an image on it, mounted below the hidden root
+/// from its loop device, as its own storage, and not while a tmpfs mounted
+/// over the image's folder holds what the path leads to.
+#[test]
+#[ignore = "root only: binding a loop device needs CAP_SYS_ADMIN in the initial namespace, and mkfs.btrfs"]
+fn a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows() {
+    use nails_teardown::loop_device::{backing_filesystem, record};
+    use nails_teardown::mountinfo::{parse_mountinfo, read_mountinfo, top_mount_at};
+    use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
+    use std::os::unix::fs::MetadataExt;
+
+    // The hidden volume: a btrfs filesystem in an image on the tmpfs, on a
+    // loop device of its own.
+    let root = TmpfsRoot::new();
+    let at = root.root.canonicalize().expect("canonical tmpfs root");
+    let volume_image = at.join("volume.img");
+    std::fs::File::create(&volume_image)
+        .and_then(|file| file.set_len(256 << 20))
+        .expect("create the volume's image file");
+    let made = std::process::Command::new("mkfs.btrfs")
+        .arg("-q")
+        .arg(&volume_image)
+        .status()
+        .expect("run mkfs.btrfs, from btrfs-progs");
+    assert!(made.success(), "mkfs.btrfs: {made}");
+    let volume_device = LoopDevice::attach(&volume_image);
+    let volume = at.join("volume");
+    mkdir(&volume);
+    nix::mount::mount(
+        Some(volume_device.node.as_path()),
+        &volume,
+        Some("btrfs"),
+        MsFlags::empty(),
+        None::<&str>,
+    )
+    .expect("mount the btrfs volume");
+    let table = read_mountinfo().expect("read mountinfo");
+    let volume_dev = top_mount_at(&table, &volume)
+        .expect("the btrfs volume")
+        .dev
+        .clone();
+
+    // An image on it, bound to a loop device: the file shows the
+    // subvolume's own number, and the driver records that one.
+    let folder = volume.join("images");
+    mkdir(&folder);
+    let image = folder.join("disk.img");
+    std::fs::File::create(&image)
+        .and_then(|file| file.set_len(1 << 20))
+        .expect("create the image file");
+    let file = std::fs::metadata(&image).expect("stat the image");
+    assert_ne!(
+        format!(
+            "{}:{}",
+            rustix::fs::major(file.dev()),
+            rustix::fs::minor(file.dev())
+        ),
+        volume_dev,
+        "a file on btrfs shows a number of its own"
+    );
+    let device = LoopDevice::attach(&image);
+    let recorded = record(&device.node).expect("the loop driver's record");
+    assert_eq!((recorded.device, recorded.inode), (file.dev(), file.ino()));
+
+    let mounts = parse_mountinfo(&format!(
+        "1 0 {dev} / {volume}/vm rw - ext4 {node} rw\n",
+        dev = device.dev,
+        node = device.node.display(),
+        volume = volume.display(),
+    ));
+    let plan = Plan::from_json(
+        &serde_json::json!({
+            "version": PLAN_VERSION,
+            "hidden_root": volume,
+            "hidden_dev": volume_dev,
+            "upper": volume.join("root/upper"),
+            "work": volume.join("root/work"),
+            "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
+            "decoy": {"init": "/sbin/init"},
+            "hidden": {"init": "/sbin/init"},
+        })
+        .to_string(),
+    )
+    .expect("a session plan");
+    assert_eq!(backing_filesystem(&mounts[0]), Some(volume_dev.clone()));
+    assert!(plan.is_hidden_storage(&mounts[0]));
+
+    // A tmpfs over the image's folder, with a file of its own where the
+    // path the driver shows leads: that file is on another device.
+    Mounts
+        .mount_tmpfs(&folder, "1M")
+        .expect("mount a tmpfs over the folder");
+    write(&image, "");
+    assert_eq!(backing_filesystem(&mounts[0]), None);
+    assert!(!plan.is_hidden_storage(&mounts[0]));
+    Mounts
+        .unmount(&folder, false)
+        .expect("unmount the tmpfs over the folder");
+    assert_eq!(backing_filesystem(&mounts[0]), Some(volume_dev));
+
+    drop(device);
+    Mounts
+        .unmount(&volume, false)
+        .expect("unmount the btrfs volume");
+    drop(volume_device);
     root.teardown();
 }
