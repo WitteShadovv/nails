@@ -944,6 +944,40 @@ fn every_failure_has_a_code_a_status_and_a_sentence() {
     assert!(Failure::Busy(path).error().is_none());
 }
 
+/// The gate admits a volume by a NAILS marker on it. A marker whose lookup
+/// fails may be there: with no other marker the edit is refused naming that
+/// error, where it was refused as a volume with no layout; with the other
+/// marker there, it is admitted.
+#[test]
+fn a_marker_nails_cannot_look_up_refuses_the_edit_naming_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = machine(dir.path());
+    let root = Path::new("/mnt/data");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/data", true);
+    fs.mock_set_device_id(Path::new("/"), 1);
+    fs.mock_set_device_id(root, 42);
+    fs.mock_set_mount_table(
+        "22 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 22 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    fs.mock_set_lookup_error("/mnt/data/state.json", std::io::ErrorKind::PermissionDenied);
+    let config = root.join("config/nails.toml");
+    let failure = admit(&fs, &paths, root, &config).unwrap_err();
+    match &failure {
+        Failure::Read(error) => assert_eq!(
+            error.to_string(),
+            "/mnt/data/state.json: Mock: the lookup fails here"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(failure.code(), "config");
+
+    fs.mock_set_path_exists("/mnt/data/config/nails.toml", true);
+    let target = admit(&fs, &paths, root, &config).expect("the config marker admits");
+    assert_eq!(target.mount_id, Some(30));
+}
+
 mod kernel_tests {
     use super::*;
     use crate::test_support::{Rerun, ScratchTmpfs};

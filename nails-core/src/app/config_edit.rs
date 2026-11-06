@@ -289,10 +289,13 @@ pub(crate) fn admit<F: Filesystem>(
         Ok(Assessment::Attached | Assessment::Warned(_)) => {}
         Err(error) => return Err(Failure::Read(error)),
     }
-    let marked = |relative: &Path| fs.path_exists(&root.join(relative)).unwrap_or(false);
-    let config = Path::new(MARKER_CONFIG_DIR).join(MARKER_CONFIG_FILE);
-    if !marked(Path::new(MARKER_STATE_FILE)) && !marked(&config) {
-        return Err(Failure::NoLayout(root.to_path_buf()));
+    // A marker that is there admits; with none there, one whose lookup
+    // failed may be, so the edit is refused naming that error, not taken for
+    // a volume with no layout.
+    match HiddenRoot::has_marker(fs, root) {
+        Ok(true) => {}
+        Ok(false) => return Err(Failure::NoLayout(root.to_path_buf())),
+        Err(error) => return Err(Failure::Read(error)),
     }
     let table = fs.mount_table().map_err(Failure::Read)?;
     let mount_id = top_mount_at(&table, root).and_then(|mount| u64::try_from(mount.mount_id).ok());

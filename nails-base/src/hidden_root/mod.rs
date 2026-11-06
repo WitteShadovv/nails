@@ -384,7 +384,11 @@ impl HiddenRoot {
     /// Whether `root` carries a NAILS marker: the state file or the config
     /// file. Either one found counts; with neither found, the error of a
     /// lookup that failed, since that marker may be there.
-    fn has_marker<F: Filesystem>(fs: &F, root: &Path) -> Result<bool> {
+    ///
+    /// # Errors
+    ///
+    /// The error of a lookup of a marker that failed, with neither found.
+    pub fn has_marker<F: Filesystem>(fs: &F, root: &Path) -> Result<bool> {
         let config = || fs.path_exists(&root.join(MARKER_CONFIG_DIR).join(MARKER_CONFIG_FILE));
         match fs.path_exists(&root.join(MARKER_STATE_FILE)) {
             Ok(true) => Ok(true),
