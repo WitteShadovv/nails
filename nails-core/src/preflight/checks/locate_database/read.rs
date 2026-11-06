@@ -38,6 +38,7 @@ use super::judge::{Entry, List, Lists, Run, Start};
 use super::options::{Invocation, ListChange, Scan, invocation};
 use super::units::units;
 use crate::Filesystem;
+use crate::filesystem::automount::describe;
 use std::collections::BTreeSet;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -181,8 +182,9 @@ pub struct RunReader<'a, F: Filesystem> {
     files: &'a DecoyFiles<'a, F>,
     /// The lists of `/etc/updatedb.conf`, read once.
     base: Result<Lists, String>,
-    /// Whether a bare `updatedb` is findutils' on the decoy.
-    bare_findutils: bool,
+    /// Whether a bare `updatedb` is findutils' on the decoy, or why NAILS
+    /// cannot tell.
+    bare_findutils: Result<bool, String>,
 }
 
 impl<'a, F: Filesystem> RunReader<'a, F> {
@@ -190,13 +192,24 @@ impl<'a, F: Filesystem> RunReader<'a, F> {
     pub fn new(fs: &'a F, files: &'a DecoyFiles<'a, F>) -> Self {
         let base = conf_lists(&read_conf(files, Path::new(UPDATEDB_CONF)), UPDATEDB_CONF);
         let root = files.root();
-        let bare_findutils = PROGRAMS
+        let mut bare_findutils = Ok(false);
+        for program in PROGRAMS
             .iter()
             .filter(|program| program.ends_with("/updatedb"))
-            .any(|program| {
-                fs.canonicalize(&root.join(program))
-                    .is_ok_and(|resolved| resolved.as_os_str().as_bytes().ends_with(b"findutils"))
-            });
+        {
+            match findutils_at(fs, files, &root.join(program)) {
+                Ok(true) => {
+                    bare_findutils = Ok(true);
+                    break;
+                }
+                Ok(false) => {}
+                Err(why) => {
+                    if bare_findutils == Ok(false) {
+                        bare_findutils = Err(why);
+                    }
+                }
+            }
+        }
         Self {
             fs,
             files,
@@ -208,37 +221,50 @@ impl<'a, F: Filesystem> RunReader<'a, F> {
     /// Whether `program` is findutils' updatedb, which reads no
     /// `updatedb.conf`: by its own name, by the path it leads to, or as a
     /// bare `updatedb` where the decoy's is findutils'.
-    fn findutils(&self, program: &[u8]) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// Why NAILS cannot tell: the path the program names, or a bare
+    /// `updatedb` of the decoy, lies behind an automount point the guard did
+    /// not let it resolve, or without a mount table.
+    fn findutils(&self, program: &[u8]) -> Result<bool, String> {
         let path = Path::new(std::ffi::OsStr::from_bytes(program));
         if program.ends_with(b"findutils") {
-            return true;
+            return Ok(true);
         }
         if path.is_absolute() {
             let root = self.files.root();
-            return self
-                .fs
-                .canonicalize(&root.join(path.strip_prefix("/").unwrap_or(path)))
-                .is_ok_and(|resolved| resolved.as_os_str().as_bytes().ends_with(b"findutils"));
+            return findutils_at(
+                self.fs,
+                self.files,
+                &root.join(path.strip_prefix("/").unwrap_or(path)),
+            );
         }
-        self.bare_findutils
+        self.bare_findutils.clone()
     }
 
     /// [`Self::with_options`] for an updatedb `command`, which is no
-    /// plocate or mlocate when it is findutils'.
+    /// plocate or mlocate when it is findutils'. A command NAILS cannot tell
+    /// is findutils' or not has lists it cannot tell.
     pub fn command(
         &self,
         command: &ExecCommand,
         whose: &str,
         cwd: &Cwd,
     ) -> (Result<Lists, String>, Option<String>, Option<Scan>) {
-        if self.findutils(&command.program) {
-            return (
-                Err(format!(
-                    "{whose} runs findutils' updatedb, whose prune options NAILS does not read"
-                )),
-                None,
-                None,
-            );
+        match self.findutils(&command.program) {
+            Ok(true) => {
+                return (
+                    Err(format!(
+                        "{whose} runs findutils' updatedb, whose prune options NAILS does not \
+                         read"
+                    )),
+                    None,
+                    None,
+                );
+            }
+            Ok(false) => {}
+            Err(why) => return (Err(format!("{why} ({whose})")), None, None),
         }
         self.with_options(&command.args, whose, cwd)
     }
@@ -328,6 +354,31 @@ impl<'a, F: Filesystem> RunReader<'a, F> {
                 dir.display()
             )),
         }
+    }
+}
+
+/// Whether the program at `path`, a path under the root of `files`, leads to
+/// findutils' updatedb. A path that cannot be resolved for another reason
+/// leads to none NAILS can tell of.
+///
+/// # Errors
+///
+/// Why NAILS cannot tell: the automount guard did not let it resolve the
+/// path.
+fn findutils_at<F: Filesystem>(
+    fs: &F,
+    files: &DecoyFiles<'_, F>,
+    path: &Path,
+) -> Result<bool, String> {
+    match fs.canonicalize(path) {
+        Ok(resolved) => Ok(resolved.as_os_str().as_bytes().ends_with(b"findutils")),
+        Err(error) if error.not_looked_up().is_some() => Err(format!(
+            "NAILS cannot tell whether {} is findutils' updatedb, whose prune options NAILS does \
+             not read: {}",
+            files.shown(path),
+            describe(&files.shown(path), &error).sentence
+        )),
+        Err(_) => Ok(false),
     }
 }
 
@@ -587,13 +638,26 @@ fn cron<F: Filesystem>(
     }
 }
 
-/// The runs a person starts with an updatedb program.
+/// The runs a person starts with an updatedb program. A program NAILS cannot
+/// tell is there may be an updatedb, which may start a run it cannot tell
+/// about.
 fn programs<F: Filesystem>(fs: &F, root: &Path, reader: &RunReader<'_, F>, found: &mut Found) {
     let mut seen: Vec<PathBuf> = Vec::new();
     for program in PROGRAMS {
         let path = root.join(program);
-        if !fs.path_exists(&path).unwrap_or(false) {
-            continue;
+        match fs.path_exists(&path) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                found.installed = true;
+                let shown = format!("/{program}");
+                found.runs.push(Run {
+                    lists: Err(describe(&shown, &error).sentence),
+                    start: Start::Unread(shown),
+                    database: None,
+                });
+                continue;
+            }
         }
         let resolved = fs.canonicalize(&path).unwrap_or_else(|_| path.clone());
         if seen.contains(&resolved) {
