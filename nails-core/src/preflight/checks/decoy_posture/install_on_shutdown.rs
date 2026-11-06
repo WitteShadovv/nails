@@ -31,7 +31,10 @@
 //! setting unknown, which is refused as if it were on. The helper reads the
 //! files again on the signal without forgetting what it read when it
 //! started, so a `false` there wins, while a line only deleted stays in
-//! effect until the helper restarts: the fix says to set it to false.
+//! effect until the helper restarts: the fix says to set it to false. Which
+//! files it reads on the signal is settled by what it read first, so after a
+//! `Dir` or `RootDir` line was removed it reads the files that line named
+//! until it restarts, which NAILS does not see.
 //!
 //! The hidden session runs its own copy of the helper wherever the unit is
 //! enabled and not masked, on the decoy or in the session's overlay. At the

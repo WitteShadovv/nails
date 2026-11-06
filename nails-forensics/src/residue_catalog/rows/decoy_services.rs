@@ -27,7 +27,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         verify: Probe::None(
             "the logs and the packages are the decoy's own, as after any shutdown that installs updates",
         ),
-        mitigation: "Activation refuses while the decoy's helper runs with the setting on, or when NAILS cannot read or follow apt's configuration, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false.",
+        mitigation: "Activation refuses while the decoy's helper runs with the setting on, or with an apt configuration NAILS cannot read or follow, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false.",
         doc_anchor: "decoy-requirements.md#unattended-upgrades",
         e2e: E2e::None(
             "asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override",
