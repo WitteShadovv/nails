@@ -56,6 +56,34 @@ exclude_re = [
     # a `|` share a bit and `^` in its place gives the same value.
     'nails-core/src/preflight/checks/locate_database/exec\.rs:\d+:\d+: replace \| with \^ in unescape$',
 
+    # The apt configuration reader's skip_spaces() skips the spaces at the
+    # start of a word, as apt's word parsers do, but statement() never calls
+    # one at a space: a statement starts with none, and each word is read up
+    # to the white space after it, which is skipped with it. So the loop
+    # never runs, and `>` in place of its `<`, or `-=` or `*=` in place of
+    # its `+=`, changes nothing.
+    'nails-base/src/packages/apt_conf\.rs:\d+:\d+: replace < with > in skip_spaces$',
+    'nails-base/src/packages/apt_conf\.rs:\d+:\d+: replace \+= with -= in skip_spaces$',
+    'nails-base/src/packages/apt_conf\.rs:\d+:\d+: replace \+= with \*= in skip_spaces$',
+
+    # parse_quote_word() decodes `%xx` as the first digit shifted four bits
+    # up and the second below them, which share no bit, so `^` in place of
+    # the `|` between them gives the same byte.
+    'nails-base/src/packages/apt_conf\.rs:\d+:\d+: replace \| with \^ in parse_quote_word$',
+
+    # read_fragment() trims the white space before a statement up to the
+    # byte that ends it, a `{`, `;` or `}`, which is no white space, so `<=`
+    # in place of the `<` that keeps it before that byte stops at the same
+    # place.
+    'nails-base/src/packages/apt_conf\.rs:\d+:\d+: replace < with <= in Reader::read_fragment$',
+
+    # strtol_whole() reads `0x` as the start of a hexadecimal number only
+    # when a hex digit follows. When none does, the octal reading it falls
+    # back on stops at the `x`, and a hexadecimal one would read no digit:
+    # neither reads the whole text, so with the guard `true` the value is no
+    # number all the same.
+    'nails-base/src/packages/apt_conf\.rs:\d+:\d+: replace match guard digit\.is_ascii_hexdigit\(\) with true in strtol_whole$',
+
     # --- Near-equivalent ---
 
     # `&` in place of the first `|` of read_config_bytes_noatime's flags

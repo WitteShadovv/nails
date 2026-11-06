@@ -777,12 +777,12 @@ into a warning for one run. It reads the setting as apt reads it: each file of
 extension other than `.conf`, such as `.bak` or `.dpkg-old`, one starting with
 a dot, one with other characters than letters, digits, `_`, `-`, `:` and `.`,
 one ending with a dot, and what is not a file are skipped, as apt skips them),
-then `/etc/apt/apt.conf`,
-with apt's syntax, the last setting winning. A file NAILS cannot read or that
-apt refuses, an `#include`, and a `Dir` or `RootDir` setting, which move the
-files apt reads, leave the setting unknown, and `decoy-persistence` refuses
-that as if it were on. NAILS does not read `APT_CONFIG`, which the helper's
-unit does not set.
+then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file
+NAILS cannot read or that apt refuses, a line NAILS does not read the way apt
+does (one longer than 4000 bytes, or with a NUL byte in it), an `#include`,
+and a `Dir` or `RootDir` setting, which move the files apt reads, leave the
+setting unknown, and `decoy-persistence` refuses that as if it were on.
+NAILS does not read `APT_CONFIG`, which the helper's unit does not set.
 
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a

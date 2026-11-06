@@ -54,7 +54,7 @@ fn the_stock_files_parse_and_leave_the_setting_alone() {
         ("ubuntu-24.04", UBUNTU_24_04),
         ("ubuntu-26.04", UBUNTU_26_04),
     ] {
-        let parsed = parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let parsed = parse(text).unwrap_or_else(|e| panic!("{name}: {e:?}"));
         assert_eq!(parsed.open_blocks, 0, "{name}");
         assert!(!parsed.in_comment, "{name}");
         assert!(!parsed.statements.is_empty(), "{name}");
@@ -131,6 +131,19 @@ fn the_setting_reads_in_each_form_apt_takes() {
         "Unattended-Upgrade::InstallOnShutdown \"tr\"\"ue\";",
         "Unattended-Upgrade::InstallOnShutdown \"true\" { };",
         "/* off */ Unattended-Upgrade::InstallOnShutdown \"true\"; /* still",
+        // A statement over several lines: its `;` alone on the next one, and
+        // its value on a line of its own between empty ones.
+        "Unattended-Upgrade::InstallOnShutdown \"true\"\n;",
+        "Unattended-Upgrade::InstallOnShutdown\n\n\"true\"\n\n;",
+        // A block that closes with no `;` before it.
+        "Foo {\n}\nUnattended-Upgrade::InstallOnShutdown \"true\";",
+        // A statement that starts after another's `;` and ends on the next
+        // line, the white space before it stripped.
+        "Foo \"x\";   Unattended-Upgrade::InstallOnShutdown\n\"true\";",
+        // A `/*` inside a quoted string opens no comment, the one after it
+        // does; an empty comment closes where it opens.
+        "Foo \"/*\" /* c */; Unattended-Upgrade::InstallOnShutdown \"true\";",
+        "Foo \"x\"; /**/ Unattended-Upgrade::InstallOnShutdown \"true\";",
     ] {
         assert_eq!(key_values(text.as_bytes()), [b"true".to_vec()], "{text:?}");
     }
@@ -145,6 +158,10 @@ fn comments_hide_the_setting() {
         "/*\nUnattended-Upgrade::InstallOnShutdown \"true\";\n*/",
         "Foo \"x\"; // Unattended-Upgrade::InstallOnShutdown \"true\";",
         "Foo \"x\"; # Unattended-Upgrade::InstallOnShutdown \"true\";",
+        // A `#` after a quoted one starts a comment all the same.
+        "Foo \"a # b\"; # Unattended-Upgrade::InstallOnShutdown \"true\";",
+        // `/*/` opens a comment and does not close it.
+        "/*/ Unattended-Upgrade::InstallOnShutdown \"true\"; */",
     ] {
         assert!(key_values(text.as_bytes()).is_empty(), "{text:?}");
     }
@@ -174,6 +191,18 @@ fn a_comment_that_opens_on_a_line_closes_on_a_later_one() {
 #[test]
 fn values_of_several_quoted_strings_join_with_one_space() {
     assert_eq!(statements("Foo \"a\"  \"b\";"), [set("Foo", "a b", 1)]);
+    // White space after the last string counts too: a vertical tab that a
+    // comment kept from the end of its line.
+    assert_eq!(statements("Foo \"a\"\x0b// c\n;"), [set("Foo", "a ", 2)]);
+}
+
+#[test]
+fn a_word_keeps_its_brackets_and_decodes_its_escapes_as_apt_does() {
+    // A `[...]` holds white space; a `%` and two hex digits are one byte,
+    // anything shorter stays as it is.
+    assert_eq!(statements("Foo[a b] \"x\";"), [set("Foo[a b]", "x", 1)]);
+    assert_eq!(statements("Foo %41%4;"), [set("Foo", "A%4", 1)]);
+    assert_eq!(statements("Foo bar%4;"), [set("Foo", "bar%4", 1)]);
 }
 
 #[test]
@@ -227,16 +256,44 @@ fn what_apt_refuses_is_refused_on_its_line() {
             "clear directive requires an option tree as argument",
         ),
         ("Foo[x \"y\";", 1, "Malformed tag"),
+        // A quote left open at the line's end.
+        ("Foo \"abc\n;", 2, "Extra junk after value"),
     ] {
-        assert_eq!(refused(text), SyntaxError { line, reason }, "{text:?}");
+        assert_eq!(
+            refused(text),
+            SyntaxError {
+                line,
+                reason,
+                by_apt: true
+            },
+            "{text:?}"
+        );
     }
 }
 
 #[test]
-fn a_line_apt_reads_in_pieces_is_refused() {
-    let long = format!("// {}\nFoo \"x\";", "x".repeat(MAX_LINE));
-    assert_eq!(refused(&long).line, 1);
-    assert_eq!(refused("Foo \"x\";\nBar \"y\0\";").line, 2);
+fn a_line_nails_does_not_read_is_refused_but_not_as_apts_refusal() {
+    // apt reads a line in pieces and can join the next line to it, so a
+    // line past MAX_LINE bytes is not read; one of MAX_LINE bytes is.
+    let long = format!("// {}\nFoo \"x\";", "x".repeat(MAX_LINE - 2));
+    let error = refused(&long);
+    assert_eq!((error.line, error.by_apt), (1, false), "{error:?}");
+    assert!(error.reason.contains(&MAX_LINE.to_string()), "{error:?}");
+    let longest = format!(
+        "// {}\nUnattended-Upgrade::InstallOnShutdown \"true\";",
+        "x".repeat(MAX_LINE - 3)
+    );
+    assert_eq!(key_values(longest.as_bytes()), [b"true".to_vec()]);
+    // apt stops reading a line at a NUL byte.
+    let error = refused("Foo \"x\";\nBar \"y\0\";");
+    assert_eq!(
+        error,
+        SyntaxError {
+            line: 2,
+            reason: "a NUL byte",
+            by_apt: false
+        }
+    );
 }
 
 #[test]
@@ -351,8 +408,12 @@ fn booleans_read_as_apt_reads_them() {
         ("4294967296", false),
         // A long that strtol() takes as LONG_MIN is 0 in an int.
         ("-99999999999999999999", false),
-        // apt reads up to the first NUL.
-        ("1\0x", true),
+        // 4294967297 in octal.
+        ("040000000001", true),
+        (" 0x1", true),
+        // A word compares up to the first NUL.
+        ("true\0x", true),
+        ("OFF\0x", false),
     ] {
         assert_eq!(string_to_bool(value.as_bytes(), !read), read, "{value:?}");
     }
@@ -362,16 +423,20 @@ fn booleans_read_as_apt_reads_them() {
         "2",
         "-1",
         "1 ",
+        "  ",
         "0x",
         "08",
         "ture",
         "99999999999999999999",
         "y",
+        // strtol() stops at a NUL, so it never reads such a value whole,
+        // and no word is empty or a number.
+        "1\0x",
+        "0\0",
+        "\0x",
+        "\0",
     ] {
         assert!(string_to_bool(value.as_bytes(), true), "{value:?}");
         assert!(!string_to_bool(value.as_bytes(), false), "{value:?}");
     }
-    // A value that is not empty but has nothing before its NUL: strtol()
-    // reads all of nothing, as 0.
-    assert!(!string_to_bool(b"\0x", true));
 }
