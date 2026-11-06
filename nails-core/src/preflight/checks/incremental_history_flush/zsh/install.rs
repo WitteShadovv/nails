@@ -93,6 +93,9 @@ pub(in super::super) struct Install {
     /// environment names, else the one its program was built with; `None`
     /// when the check cannot tell.
     pub fpath: Option<Vec<PathBuf>>,
+    /// The directory of zsh's own functions its program was built with, where
+    /// it ships its completion functions, when the check can tell.
+    pub functions: Option<PathBuf>,
     /// The version zsh holds in `ZSH_VERSION`, when the check can tell.
     pub version: Option<String>,
     /// What its environment holds of [`ENVIRONMENT`] but `FPATH`, when the
@@ -146,6 +149,7 @@ impl Install {
         });
         Self {
             fpath,
+            functions: own.as_ref().map(|(dir, _)| dir.clone()),
             version: own.map(|(_, version)| version),
             env: environment.map(|_| Env {
                 nix_profiles: get("NIX_PROFILES"),

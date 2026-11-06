@@ -31,7 +31,10 @@
 //! its code does ([`stock`]): `compinit` and `promptinit` mark functions that
 //! zsh runs only when they are run by name, as hooks or, for completion
 //! functions, as a word is completed, which the check reads where the files
-//! run them. NixOS's dircolors line in `/etc/zshrc` is left out while nothing
+//! run them. Those of zsh's own and of the Nix profiles it takes for
+//! harmless, and what may make zsh run completion code of the files' own as
+//! a word is completed is a doubt ([`completion`]). NixOS's dircolors line in
+//! `/etc/zshrc` is left out while nothing
 //! that runs before it may change what it runs ([`shadows`]). zsh runs
 //! compiled code in place of a file, or of a
 //! directory's functions, when a `.zwc` is beside it, and the check cannot read
@@ -96,6 +99,7 @@ mod arith;
 mod backstop;
 mod builtins;
 mod command_line;
+mod completion;
 mod dump;
 mod functions;
 mod install;
@@ -310,6 +314,9 @@ struct Reader<'a, F: Filesystem> {
     keys_splits: Vec<(String, String, String)>,
     /// What the files read may change of how zsh reads code ([`reading`]).
     reading: reading::Reading,
+    /// What the files hold that zsh's completion system may run
+    /// ([`completion`]).
+    completion: completion::Seen,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -539,6 +546,7 @@ impl<F: Filesystem> Reader<'_, F> {
         self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
         let forms = self.lines(text, &place);
+        self.completion.parameters(&forms, &place);
         self.reading(text, &forms, &place);
         self.shadows(&forms, &place, outer.as_deref());
         if backstop::names_any(text, &["globsubst"]) {
@@ -650,6 +658,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
             }
             Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
+            Event::Completes { function, what } => self.completion.completes(function, what, place),
             event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
                 self.reading_event(event, place);
             }
@@ -1064,6 +1073,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         fpath_splits: Vec::new(),
         keys_splits: Vec::new(),
         reading: reading::Reading::default(),
+        completion: completion::Seen::default(),
     };
     // The prompts zsh takes from its environment, which it shows as they
     // are unless a file sets them: code where PROMPT_SUBST may be on.

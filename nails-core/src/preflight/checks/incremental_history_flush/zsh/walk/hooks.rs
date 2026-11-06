@@ -342,7 +342,17 @@ impl Walker<'_> {
                 "it cannot tell which function `zle ... {}` in {} makes a hook",
                 function.text, self.place
             ))),
-            Some(function) => self.events.push(Event::Hook(function.text.clone())),
+            Some(function) => {
+                self.events.push(Event::Hook(function.text.clone()));
+                // A completion widget's function, which zsh runs as a word is
+                // completed with it.
+                if op == Some('C') {
+                    self.events.push(Event::Completes {
+                        function: (*function).clone(),
+                        what: format!("zle {}", line()),
+                    });
+                }
+            }
             None => {}
         }
     }
