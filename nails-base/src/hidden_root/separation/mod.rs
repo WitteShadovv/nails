@@ -27,10 +27,12 @@
 //! the root stays safe) and the `backend-entries` check reports it. It is no
 //! claim, except an fstab entry the boot mounts or swaps on: that device is the
 //! decoy's own storage too. A finding the decoy's own boot needs, an fstab
-//! entry that mounts another of its filesystems or its swap or a crypttab entry
-//! that opens a device below one of them, is marked so: the hidden root then
-//! lies on the decoy's own storage and has to move, since removing the entry
-//! would break the decoy.
+//! entry that mounts another of its filesystems or its swap, or the whole
+//! filesystem a root bound from a folder of it or a subvolume of it lies on
+//! (the decoy's line for `/` below a bind of a folder of `/`), or a crypttab
+//! entry that opens a device below one of them, is marked so: the hidden root
+//! then lies on the decoy's own storage and has to move, since removing the
+//! entry would break the decoy.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read, or
 //! what a claimed filesystem keeps data on besides its device cannot be told;
