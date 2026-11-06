@@ -211,7 +211,8 @@ distroVm.buildVmTest {
         )
         vm.succeed(f"test -x {nails}")
         write_config()
-        vm.succeed("systemctl stop apt-daily.timer apt-daily-upgrade.timer")
+        vm.succeed("""${hiddenRoot.stopAptTimers}""")
+        vm.wait_until_succeeds("""${hiddenRoot.aptRunsEnded}""", timeout=900)
 
 
     def follow(trigger, label):
