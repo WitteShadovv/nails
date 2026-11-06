@@ -366,10 +366,19 @@ fn prunefs_naming_the_volumes_type_passes() {
         message(&result).contains("lists EXT4, the type of the filesystem mounted at /mnt/data"),
         "{result:?}"
     );
-    // Without a mount table the type is not known, so it covers nothing.
+    // Without a mount table nothing is looked up, so NAILS cannot tell.
     let decoy = debian(&conf);
     decoy.fs.mock_set_mount_table_error("no mount table");
-    assert!(decoy.check(false).is_fail());
+    let result = decoy.check(false);
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        message(&result),
+        "the decoy's locate database may list the hidden volume: NAILS cannot read the mount \
+         table (/proc/self/mountinfo: no mount table), which shows where a lookup would mount \
+         an automount point, so it looks up nothing. See \
+         docs/decoy-requirements.md#the-locate-database."
+    );
+    assert_eq!(decoy.fs.mock_lookups(), Vec::<PathBuf>::new());
 }
 
 #[test]
