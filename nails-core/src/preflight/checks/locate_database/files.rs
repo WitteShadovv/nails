@@ -8,6 +8,7 @@
 //! volume.
 
 use crate::Filesystem;
+use crate::filesystem::automount::describe;
 use std::path::{Path, PathBuf};
 
 /// The largest file read: far beyond any real configuration, unit or cron
@@ -64,13 +65,17 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
     /// What `path` holds. A FIFO or device is never opened: the first would
     /// block the read and the second can be read without end. A lookup that
     /// fails for another reason than that nothing is there is named by its
-    /// error, and one NAILS may not make asks for sudo.
+    /// error, one NAILS may not make asks for sudo, and one the automount
+    /// guard did not make gives the guard's reason.
     pub fn read(&self, path: &Path) -> DecoyFile {
         let shown = path.display();
         let unseen = |error: crate::NailsError| match error.io_kind() {
             Some(std::io::ErrorKind::PermissionDenied) => DecoyFile::Unread(format!(
                 "NAILS cannot look up {shown}; run the command again with sudo"
             )),
+            _ if error.not_looked_up().is_some() => {
+                DecoyFile::Unread(describe(&shown.to_string(), &error).sentence)
+            }
             _ => DecoyFile::Unread(format!("NAILS cannot follow {shown} ({error})")),
         };
         let regular = match self.fs.is_regular_file(path) {
@@ -96,6 +101,9 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
                     Some(std::io::ErrorKind::PermissionDenied) => DecoyFile::Unread(format!(
                         "NAILS cannot read {shown}; run the command again with sudo"
                     )),
+                    _ if e.not_looked_up().is_some() => {
+                        DecoyFile::Unread(describe(&shown.to_string(), &e).sentence)
+                    }
                     _ => DecoyFile::Unread(format!("NAILS cannot read {shown} ({e})")),
                 },
             };
@@ -134,8 +142,9 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
     ///
     /// # Errors
     ///
-    /// Why NAILS cannot list it: it may not, the listing fails, or the
-    /// directory lies on the hidden volume.
+    /// Why NAILS cannot list it: it may not, the listing fails, the
+    /// automount guard did not let it be made, or the directory lies on the
+    /// hidden volume.
     pub fn list(&self, dir: &Path) -> Result<Vec<PathBuf>, String> {
         if self.onto_hidden(dir) {
             return Err(format!("{} leads onto the hidden volume", dir.display()));
@@ -150,6 +159,9 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
                     "NAILS cannot list {}; run the command again with sudo",
                     dir.display()
                 )),
+                _ if e.not_looked_up().is_some() => {
+                    Err(describe(&dir.display().to_string(), &e).sentence)
+                }
                 _ => Err(format!("NAILS cannot list {} ({e})", dir.display())),
             },
         }
