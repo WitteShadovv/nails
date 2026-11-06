@@ -1566,9 +1566,13 @@ afterwards:
     and so are a `%(` in a `format` or a `tag-order` value, whose test `zformat`
     reads as arithmetic, an expansion in a `file-patterns` value, which `_files`
     reads with `eval`, a `use-cache` that may be on, with which they source the
-    files of the completion cache, `environ`, which `_sudo` sets parameters by,
+    files of the completion cache, a `cache-path`, which names their directory,
+    `environ`, which `_sudo` sets parameters by,
     a value `zstyle -e` makes for any of those, and any style the check has not
-    read (`max-verbose`). In a dump file, a completion of a command or a pattern
+    read (`max-verbose`). So are files in the cache's directory,
+    `.zcompcache` in each directory `ZDOTDIR` may name, which they source where
+    `use-cache` is on and as you complete `composer`, `zypper` or `luarocks`
+    whatever it says. In a dump file, a completion of a command or a pattern
     that is no completion function's name is code, which makes the check read
     the file as code. `compctl`, whose completion runs without `compinit`, and
     bash's `complete`, which `bashcompinit` defines, are doubts wherever they

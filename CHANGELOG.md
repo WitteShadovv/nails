@@ -1017,11 +1017,13 @@ of this changelog for that version becomes the release notes word for word, and
   define or autoload from a file of their own, and the code of a `command` style is a hook's, one
   an expansion makes a doubt. A completion style is read as zsh's own completion functions read
   it, where its pattern may match a completion context: one they only test for true or read as data
-  passes with any value (`verbose`, `list-colors`, `matcher-list`, `group-name` and 66 more), and a
+  passes with any value (`verbose`, `list-colors`, `matcher-list`, `group-name` and 65 more), and a
   value of `menu`, `range` or `select-scroll` that is no plain number, a
   `format` or `tag-order` with a `%(`, a `file-patterns` value with an expansion, a `use-cache` that
-  may be on, `environ`, a value `zstyle -e` makes for any of them, and a style the check has not
-  read are doubts. A dump file whose completion of a command or a pattern is no completion
+  may be on, a `cache-path`, `environ`, a value `zstyle -e` makes for any of them, and a style the
+  check has not read are doubts, and so are files in `.zcompcache` in each `ZDOTDIR` the files may
+  set, which they source where `use-cache` is on and as you complete `composer`, `zypper` or
+  `luarocks` whatever it says. A dump file whose completion of a command or a pattern is no completion
   function's name is read as code, and `compctl` and bash's `complete` are doubts wherever they
   stand. So a setup with completion functions or a style of its own the check has not read, with
   `use-cache` on, or with a function of its own that writes a file or hands a program a word an

@@ -16,14 +16,16 @@
 //! `zle -C w complete-word _w`, `compdef _w cmd`), or is code
 //! (`compdef '...' cmd`); a file that sets a parameter the completion system
 //! runs code or functions from, or the options it completes with
-//! (`_comps[cmd]=...`, `comppostfuncs`, `compcontext`, `_comp_options`); and a
+//! (`_comps[cmd]=...`, `comppostfuncs`, `compcontext`, `_comp_options`); a
 //! style whose value zsh's own completion functions may run as code
-//! ([`super::walk::Event::Style`]). Every function of the files' own counts
-//! as a hook there, as zsh's own completion functions run commands by name
-//! as you complete a word, the one you complete among them (`ls --help` for
-//! `ls <Tab>`), and functions whose names start with `_`. Without `compinit`
-//! too, `compctl` and bash's `complete` (`bashcompinit`) name what zsh runs
-//! as you complete a word in words the check does not read: a doubt.
+//! ([`super::walk::Event::Style`]); and files in the completion cache's
+//! directory (`~/.zcompcache`), which they source. Every function of the
+//! files' own counts as a hook there, as zsh's own completion functions run
+//! commands by name as you complete a word, the one you complete among them
+//! (`ls --help` for `ls <Tab>`), and functions whose names start with `_`.
+//! Without `compinit` too, `compctl` and bash's `complete` (`bashcompinit`)
+//! name what zsh runs as you complete a word in words the check does not
+//! read: a doubt.
 
 use super::backstop::Forms;
 use super::walk::PROFILE_DIRS;
@@ -254,10 +256,19 @@ impl<F: Filesystem> Reader<'_, F> {
         for doubt in std::mem::take(&mut self.completion.styles) {
             self.doubt(doubt);
         }
+        for dir in self.zdotdirs_seen.clone() {
+            self.cache_files(&dir.join(".zcompcache"));
+        }
         for (name, place) in std::mem::take(&mut self.completion.parameters) {
+            let what = if name == "_comp_options" {
+                "takes the options it completes with from, which may make it expand an alias in \
+                 the code it runs"
+            } else {
+                "runs code or functions from"
+            };
             self.doubt(format!(
                 "it cannot tell what {place} makes zsh run as you complete a word, as it sets \
-                 `{name}`, which zsh's completion system runs code or functions from"
+                 `{name}`, which zsh's completion system {what}"
             ));
         }
     }
@@ -352,6 +363,52 @@ impl<F: Filesystem> Reader<'_, F> {
                         .map_or_else(|| error.to_string(), |kind| kind.to_string())
                 )),
             }
+        }
+    }
+
+    /// Note a doubt where `dir`, the completion cache's directory by default
+    /// (`${ZDOTDIR:-$HOME}/.zcompcache`), holds files, which zsh's own
+    /// completion functions source as you complete a word where `use-cache`
+    /// is on, and as you complete a command they turn it on for or that reads
+    /// its cache itself (`composer`, `zypper`, `luarocks`), or where the
+    /// check cannot read it.
+    fn cache_files(&mut self, dir: &Path) {
+        let names: Vec<String> = match self.fs.list_directory(dir) {
+            Ok(entries) => entries
+                .iter()
+                .filter_map(|entry| entry.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect(),
+            Err(error)
+                if matches!(
+                    error.io_kind(),
+                    Some(ErrorKind::NotFound | ErrorKind::NotADirectory)
+                ) =>
+            {
+                return;
+            }
+            Err(error) => {
+                self.doubt(format!(
+                    "it could not read the directory {} ({}), whose files zsh's own completion \
+                     functions may source as you complete a word",
+                    dir.display(),
+                    error
+                        .io_kind()
+                        .map_or_else(|| error.to_string(), |kind| kind.to_string())
+                ));
+                return;
+            }
+        };
+        if !names.is_empty() {
+            let mut names = names;
+            names.sort();
+            self.doubt(format!(
+                "it cannot tell what the files of the completion cache in {} run ({}), which \
+                 zsh's own completion functions source as you complete some commands \
+                 (`composer`, `zypper`, `luarocks`) or a word where `use-cache` is on",
+                dir.display(),
+                shown(&names)
+            ));
         }
     }
 

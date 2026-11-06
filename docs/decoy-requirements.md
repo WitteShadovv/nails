@@ -613,7 +613,8 @@ history yourself so an interactive shell has nowhere to write:
   completion functions run commands by name (`ls <Tab>` runs a function named
   `ls`), a completion style whose value they may run as code or arithmetic
   (`menu 'select=1+x'`, a `%(` in `tag-order`), one the check has not read,
-  `use-cache` on, a parameter that gives the completion system code
+  `use-cache` on, a `cache-path` or files in `~/.zcompcache`, which they
+  source, a parameter that gives the completion system code
   (`compcontext`, `_sort_tags`, `_comp_options` but for
   `_comp_options+=(globdots)`), and `compctl` or bash's `complete`. For any
   other zsh, and when the check finds no shell
