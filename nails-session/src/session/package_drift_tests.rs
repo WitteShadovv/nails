@@ -841,6 +841,136 @@ fn a_copy_listed_but_not_looked_up_cannot_be_judged() {
     );
 }
 
+/// The twin of the test above with the lookup failing as a real one fails:
+/// a copy NAILS cannot look up is not taken for none.
+#[test]
+fn a_copy_that_cannot_be_looked_up_cannot_be_judged() {
+    let fs = debian(
+        &status(&[("libc6", "2.41-13")]),
+        Some(&status(&[("libc6", "2.41-12")])),
+    );
+    let copy = format!("{UPPER}/var/lib/dpkg/status");
+    fs.mock_set_lookup_error(&copy, std::io::ErrorKind::Other);
+    let result = run(&check(), &fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().ends_with(&format!(
+            "follows the decoy's: what hidden sessions keep at /var/lib/dpkg/status cannot be \
+             read ({copy}: Mock: the lookup fails here)"
+        )),
+        "{result:?}"
+    );
+    // One this process may not look up needs root.
+    fs.mock_set_lookup_error(&copy, std::io::ErrorKind::PermissionDenied);
+    let result = run(&check().as_privileged(false), &fs);
+    assert!(result.message().contains("only root reads"), "{result:?}");
+}
+
+/// A path on the decoy that cannot be looked up, on the way to a database
+/// or at it, tells nothing: the check and the entry's advisory say they
+/// cannot tell, and neither refuses.
+#[test]
+fn a_decoy_path_that_cannot_be_looked_up_cannot_be_judged() {
+    let fs = debian(
+        &status(&[("libc6", "2.41-13")]),
+        Some(&status(&[("libc6", "2.41-12")])),
+    );
+    fs.mock_set_lookup_error(&format!("{ROOT}/var/lib/dpkg"), std::io::ErrorKind::Other);
+    let result = run(&check(), &fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "could not tell whether hidden sessions' copy of the dpkg package database \
+         (/var/lib/dpkg/status) follows the decoy's: /var/lib/dpkg on the decoy cannot be looked \
+         up (/decoy/var/lib/dpkg: Mock: the lookup fails here)"
+    );
+    let layout = Layout::new(Path::new(HIDDEN));
+    let advisory =
+        advisory(&fs, Path::new(ROOT), &layout, Some(&[]), false).expect("the advisory warns");
+    assert_eq!(advisory.text(), result.message());
+
+    // dpkg's journal on the decoy, where hidden sessions keep a copy.
+    let record = status(&[("libc6", "2.41-13")]);
+    let fs = debian(&record, Some(&record));
+    fs.mock_set_lookup_error(
+        &format!("{ROOT}/var/lib/dpkg/updates"),
+        std::io::ErrorKind::Other,
+    );
+    let result = run(&check(), &fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().ends_with(
+            "/var/lib/dpkg/updates on the decoy cannot be looked up (/decoy/var/lib/dpkg/updates: \
+             Mock: the lookup fails here)"
+        ),
+        "{result:?}"
+    );
+}
+
+/// The decoy at `/`, with dpkg's `decoy` record and hidden sessions with
+/// `hidden`'s copy of it in the root upper.
+fn debian_at_the_root(decoy: &str, hidden: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/var/lib/dpkg/status", decoy);
+    fs.mock_add_file(&format!("{UPPER}/var/lib/dpkg/status"), hidden);
+    fs
+}
+
+/// On the running system the check reads through the automount guard: a
+/// database behind an automount point that nothing is mounted on yet is not
+/// looked up, and the check names the point and how to mount it, once.
+#[test]
+fn a_database_behind_an_automount_point_is_not_looked_up() {
+    let fs = debian_at_the_root(
+        &status(&[("libc6", "2.41-13")]),
+        &status(&[("libc6", "2.41-12")]),
+    );
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw
+         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw
+         31 1 0:51 / /var rw,relatime - autofs systemd-1          rw,fd=1,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=1
+",
+    );
+    fs.mock_clear_lookups();
+    let check =
+        PackageDriftCheck::new(PathBuf::from("/"), PathBuf::from(HIDDEN)).as_privileged(true);
+    let result = run(&check, &fs);
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.starts_with(
+            "could not tell whether hidden sessions' copy of the dpkg package database \
+             (/var/lib/dpkg/status) follows the decoy's: NAILS does not look up /var, since the \
+             lookup would mount the automount point /var"
+        ),
+        "{message}"
+    );
+    let fix = crate::filesystem::automount::mount_fix(&[Path::new("/var")]);
+    assert!(message.ends_with(&format!("\n{fix}")), "{message}");
+    assert_eq!(message.matches(&fix).count(), 1, "{message}");
+    assert!(
+        fs.mock_lookups()
+            .iter()
+            .all(|path| !path.starts_with("/var")),
+        "{:?}",
+        fs.mock_lookups()
+    );
+
+    // Without the mount table it looks up nothing.
+    fs.mock_set_mount_table_error("permission denied");
+    fs.mock_clear_lookups();
+    let result = run(&check, &fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "could not tell whether hidden sessions' package database follows the decoy's: NAILS \
+             cannot read the mount table ("
+        ),
+        "{result:?}"
+    );
+    assert!(fs.mock_lookups().is_empty(), "{:?}", fs.mock_lookups());
+}
+
 /// An upper this process may not look into is not taken for one without a
 /// copy: without root it names the `sudo` line, as root it says why.
 #[test]
