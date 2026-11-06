@@ -37,7 +37,7 @@ fn masks_land_in_the_home_owned_by_the_operator() {
         mode: PersonaMode::SharedHome,
         mask_inherited: vec!["dropbox".into(), "syncthing.service".into()],
     };
-    let written = write_masks(dir.path(), &persona, &me(Path::new("/home/alice")));
+    let written = write_masks(dir.path(), &persona, &me(Path::new("/home/alice"))).written;
     assert_eq!(written.len(), 2, "{written:?}");
     let mask = std::fs::read_to_string(home.join(".config/autostart/dropbox.desktop")).unwrap();
     assert!(mask.contains("Hidden=true"));
@@ -65,7 +65,7 @@ fn a_named_entry_the_inventory_misses_is_masked_by_its_suffix() {
             "../escape".into(),
         ],
     };
-    let written = write_masks(dir.path(), &persona, &me(Path::new("/home/alice")));
+    let written = write_masks(dir.path(), &persona, &me(Path::new("/home/alice"))).written;
     assert_eq!(written.len(), 2, "{written:?}");
     let mask =
         std::fs::read_to_string(home.join(".config/autostart/org.kde.kdeconnect.daemon.desktop"))
@@ -86,12 +86,18 @@ fn a_named_entry_the_inventory_misses_is_masked_by_its_suffix() {
 fn nothing_is_written_without_a_mask_list_or_a_home() {
     let dir = tempfile::tempdir().unwrap();
     let persona = PersonaConfig::default();
-    assert!(write_masks(dir.path(), &persona, &me(Path::new("/"))).is_empty());
+    assert_eq!(
+        write_masks(dir.path(), &persona, &me(Path::new("/"))),
+        Masks::default()
+    );
     let persona = PersonaConfig {
         mode: PersonaMode::SharedHome,
         mask_inherited: vec!["dropbox".into()],
     };
-    assert!(write_masks(dir.path(), &persona, &me(Path::new("/home/alice"))).is_empty());
+    assert_eq!(
+        write_masks(dir.path(), &persona, &me(Path::new("/home/alice"))),
+        Masks::default()
+    );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 
@@ -130,16 +136,19 @@ fn masks_follow_absolute_links_inside_the_next_root() {
     // outside the next root is the running system's.
     let source = InNextRoot { root: root.path() };
     let home = root.path().join("home/alice");
-    assert!(source.is_file(&home.join(".config/autostart/dropbox.desktop")));
-    assert!(!source.is_file(&home.join(".config/autostart")));
+    assert_eq!(
+        source.is_file(&home.join(".config/autostart/dropbox.desktop")),
+        Ok(true)
+    );
+    assert_eq!(source.is_file(&home.join(".config/autostart")), Ok(false));
     let outside = tempfile::NamedTempFile::new().unwrap();
-    assert!(source.is_file(outside.path()));
-    assert!(!source.is_file(Path::new("/dev/null")));
+    assert_eq!(source.is_file(outside.path()), Ok(true));
+    assert_eq!(source.is_file(Path::new("/dev/null")), Ok(false));
     let persona = PersonaConfig {
         mode: PersonaMode::SharedHome,
         mask_inherited: vec!["dropbox".into(), "syncthing.service".into()],
     };
-    let written = write_masks(root.path(), &persona, &me(Path::new("/home/alice")));
+    let written = write_masks(root.path(), &persona, &me(Path::new("/home/alice"))).written;
     assert_eq!(written.len(), 2, "{written:?}");
     let mask = std::fs::read_to_string(dotfiles.join("dropbox.desktop")).unwrap();
     assert!(
@@ -156,8 +165,84 @@ fn masks_follow_absolute_links_inside_the_next_root() {
     );
     // A dangling link is never written through.
     std::fs::remove_dir_all(root.path().join("nails-test-dotfiles")).unwrap();
-    assert!(write_masks(root.path(), &persona, &me(Path::new("/home/alice"))).is_empty());
+    assert!(
+        write_masks(root.path(), &persona, &me(Path::new("/home/alice")))
+            .written
+            .is_empty()
+    );
     assert!(!root.path().join("nails-test-dotfiles").exists());
+}
+
+/// An autostart entry the inventory cannot look up refuses nothing: under
+/// `"*"` it is masked in the hidden home, under a list of names only where
+/// it is named, and the entry warns once, naming the file and why.
+#[test]
+fn an_entry_the_inventory_cannot_look_up_is_masked_under_a_star_with_one_warning() {
+    use crate::filesystem::MockFilesystem;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home/alice");
+    std::fs::create_dir_all(&home).unwrap();
+    // The inventory reads a mock decoy: its home in the next root has an
+    // entry it cannot look up, which no file further down decides.
+    let fs = MockFilesystem::new();
+    let autostart = home.join(".config/autostart");
+    let unread = autostart.join("sync.desktop");
+    fs.mock_set_directory_contents(&autostart, vec![unread.clone()]);
+    fs.mock_set_file_content(unread.to_str().unwrap(), "[Desktop Entry]\n");
+    fs.mock_set_lookup_error(unread.to_str().unwrap(), std::io::ErrorKind::Other);
+    fs.mock_set_directory_contents(
+        Path::new("/etc/xdg/autostart"),
+        vec![PathBuf::from("/etc/xdg/autostart/sync.desktop")],
+    );
+    fs.mock_set_file_content("/etc/xdg/autostart/sync.desktop", "[Desktop Entry]\n");
+    let operator = me(Path::new("/home/alice"));
+
+    let star = PersonaConfig {
+        mode: PersonaMode::SharedHome,
+        mask_inherited: vec!["*".into()],
+    };
+    let masks = write_masks_read_from(&fs, root.path(), &star, &operator);
+    assert_eq!(
+        masks.written,
+        [PathBuf::from("/home/alice/.config/autostart/sync.desktop")]
+    );
+    let mask = std::fs::read_to_string(&unread).unwrap();
+    assert!(mask.contains("Hidden=true"), "{mask}");
+    let shown = unread.display();
+    assert_eq!(
+        masks.warning.as_deref(),
+        Some(
+            format!(
+                "NAILS could not read everything the hidden session inherits from the decoy: \
+                 NAILS cannot look up {shown} ({shown}: Mock: the lookup fails here). An \
+                 autostart entry it could not read is masked only where [persona] \
+                 mask_inherited names it or holds \"*\""
+            )
+            .as_str()
+        )
+    );
+
+    // A list of names masks it only where it is named.
+    std::fs::remove_file(&unread).unwrap();
+    let named = PersonaConfig {
+        mode: PersonaMode::SharedHome,
+        mask_inherited: vec!["dropbox".into()],
+    };
+    let masks = write_masks_read_from(&fs, root.path(), &named, &operator);
+    assert_eq!(
+        masks.written,
+        [PathBuf::from(
+            "/home/alice/.config/autostart/dropbox.desktop"
+        )]
+    );
+    assert!(!unread.exists(), "an undecided name it does not name");
+    assert!(masks.warning.is_some());
+    // Nothing was written outside the next root's home.
+    assert_eq!(
+        std::fs::read_dir(root.path()).unwrap().count(),
+        1,
+        "only the home's tree"
+    );
 }
 
 /// A FIFO among the autostart entries of the next root's home is skipped
@@ -666,7 +751,7 @@ mod kernel_tests {
                 let before = tree(decoy.path());
                 let hidden = ScratchTmpfs::new("");
                 let next = next_root(decoy.path(), &hidden);
-                let written = write_masks(&next, &masks(), &me(Path::new("/home/alice")));
+                let written = write_masks(&next, &masks(), &me(Path::new("/home/alice"))).written;
                 assert_eq!(written.len(), 2, "{upper_config}: {written:?}");
                 let upper = hidden.path().join("upper").join(upper_config);
                 let mask =
@@ -717,7 +802,7 @@ mod kernel_tests {
                 mask_inherited: vec!["*".into()],
             };
 
-            let written = write_masks(&next, &everything, &me(Path::new("/home/alice")));
+            let written = write_masks(&next, &everything, &me(Path::new("/home/alice"))).written;
 
             // The test host's own system entries are masked too.
             assert!(

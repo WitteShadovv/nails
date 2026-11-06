@@ -447,3 +447,115 @@ fn the_check_writes_nothing() {
     assert!(fs.mock_written_paths().is_empty());
     assert_eq!(fs.mock_ops().len(), before, "{:?}", fs.mock_ops());
 }
+
+#[test]
+fn a_place_not_read_warns_even_with_nothing_to_review() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/var/lib/systemd/linger/alice", true);
+    fs.mock_set_lookup_error(
+        "/var/lib/systemd/linger",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let result = shared_home().run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "NAILS cannot tell what the hidden session would inherit: NAILS cannot look up \
+         /var/lib/systemd/linger/alice; run the command again with sudo"
+    );
+
+    // Beside what it found, the check names both.
+    seed_user_autostart(&fs, &["dropbox"]);
+    let result = shared_home().run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.starts_with("Hidden session would inherit 1 decoy item to review: dropbox"),
+        "{message}"
+    );
+    assert!(
+        message.ends_with(
+            " NAILS cannot tell what else the hidden session would inherit: NAILS cannot look up \
+             /var/lib/systemd/linger/alice; run the command again with sudo"
+        ),
+        "{message}"
+    );
+
+    // With nothing to review, what it handled is counted too.
+    let masked = check_for("alice", persona(PersonaMode::SharedHome, &["dropbox"]))
+        .run(&fs)
+        .unwrap();
+    assert!(masked.is_warn(), "{masked:?}");
+    assert!(
+        masked
+            .message()
+            .ends_with("run the command again with sudo (1 masked with [persona] mask_inherited)"),
+        "{masked:?}"
+    );
+}
+
+#[test]
+fn a_long_list_of_places_not_read_names_six_and_counts_the_rest() {
+    let fs = MockFilesystem::new();
+    let names = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"];
+    seed_user_autostart(&fs, &names);
+    for name in names {
+        fs.mock_set_lookup_error(
+            &format!("/home/alice/.config/autostart/{name}.desktop"),
+            std::io::ErrorKind::Other,
+        );
+    }
+    let result = shared_home().run(&fs).unwrap();
+    let message = result.message();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(message.contains("a6.desktop ("), "{message}");
+    assert!(!message.contains("a7.desktop"), "{message}");
+    assert!(message.ends_with("; and 2 more"), "{message}");
+}
+
+/// A home behind an automount point that nothing is mounted on yet is not
+/// looked up: the check warns, names the point and gives the fix once.
+#[test]
+fn a_home_behind_an_automount_point_warns_with_the_fix_and_is_not_looked_up() {
+    use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+    let fs = ubuntu_gnome_decoy();
+    seed_user_autostart(&fs, &["dropbox"]);
+    with_automounts(&fs, &["/home/alice"]);
+    fs.mock_clear_lookups();
+    let result = shared_home().run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.starts_with(
+            "NAILS cannot tell what else the hidden session would inherit: NAILS does not look \
+             up /home/alice/.config/autostart, since the lookup would mount the automount point \
+             /home/alice; NAILS does not look up /home/alice/.config/systemd/user, since the \
+             lookup would mount the automount point /home/alice"
+        ),
+        "{message}"
+    );
+    let fix = crate::filesystem::automount::mount_fix(&[Path::new("/home/alice")]);
+    assert!(message.ends_with(&format!("\n{fix}")), "{message}");
+    assert_eq!(message.matches(&fix).count(), 1, "{message}");
+    assert!(!message.contains("dropbox"), "{message}");
+    assert!(!reached(&fs, "/home/alice"), "{:?}", fs.mock_lookups());
+}
+
+/// Without the mount table nothing is looked up, and the check says why.
+#[test]
+fn without_the_mount_table_nothing_is_looked_up() {
+    let fs = ubuntu_gnome_decoy();
+    seed_user_autostart(&fs, &["dropbox"]);
+    fs.mock_set_mount_table_error("permission denied");
+    fs.mock_clear_lookups();
+    let result = shared_home().run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "NAILS cannot tell what the hidden session would inherit from the decoy: NAILS cannot \
+             read the mount table ("
+        ),
+        "{result:?}"
+    );
+    assert!(fs.mock_lookups().is_empty(), "{:?}", fs.mock_lookups());
+}

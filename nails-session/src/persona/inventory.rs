@@ -16,8 +16,11 @@
 //! [`Filesystem`], or the next root at entry), so the same collector backs
 //! the Warn-only `inherited-autostart` pre-flight check (in `nails-core`),
 //! the full listing in `nails check`, and the activation-time masking of
-//! inherited entries. It never writes and never fails: an unreadable or missing
-//! source contributes nothing rather than aborting the inventory.
+//! inherited entries. It never writes and never fails: a missing source
+//! contributes nothing, and a place it cannot look up, or that the automount
+//! guard does not look up, is listed as not read ([`NotRead`]) while the rest
+//! is read on. A directory that cannot be listed and a file that cannot be
+//! read for another reason still contribute nothing.
 //!
 //! # Scope and honesty
 //!
@@ -27,43 +30,158 @@
 //! or distribution ships. Neither makes a claim about signed-in state or about
 //! what an entry actually does. System services are never classified.
 
-use std::path::Path;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 
 use super::classify::{is_desktop_component, is_trace_writer};
 use super::{autologin, autostart};
-use crate::Filesystem;
+use crate::filesystem::automount::describe;
+use crate::{Filesystem, NailsError};
 
 /// What the inventory reads. Every [`Filesystem`] is one; activation reads the
 /// operator's home through the next root instead, resolved as the hidden root
 /// will resolve it.
+///
+/// A place the source cannot look up, or that the automount guard does not
+/// look up ([`Guarded`](crate::filesystem::automount::Guarded)), is an
+/// [`Err`]: never taken for one that is not there. A directory that cannot be
+/// listed and a file that cannot be read for another reason stay empty.
 pub trait PersonaSource {
-    /// The entries of `dir`, as paths below it; empty when it cannot be listed.
-    fn entries(&self, dir: &Path) -> Vec<std::path::PathBuf>;
-    /// The text of the file at `path`, `None` when it cannot be read.
-    fn text(&self, path: &Path) -> Option<String>;
-    /// Whether `path` exists.
-    fn exists(&self, path: &Path) -> bool;
+    /// The entries of `dir`, as paths below it; empty when it cannot be
+    /// listed, `Err` when the guard does not look it up.
+    fn entries(&self, dir: &Path) -> Result<Vec<PathBuf>, NotRead>;
+    /// The text of the file at `path`, `None` when it cannot be read, `Err`
+    /// when the guard does not look it up.
+    fn text(&self, path: &Path) -> Result<Option<String>, NotRead>;
+    /// Whether `path` exists; `Err` when it cannot be looked up.
+    fn exists(&self, path: &Path) -> Result<bool, NotRead>;
     /// Whether `path` is a regular file once its symlinks are followed. A
     /// FIFO, socket or device is not one: reading it could block, or never
-    /// end.
-    fn is_file(&self, path: &Path) -> bool;
+    /// end. `Err` when it cannot be looked up.
+    fn is_file(&self, path: &Path) -> Result<bool, NotRead>;
+    /// Note `not_read`, a place a reader of this source could not read, for
+    /// the inventory's list ([`PersonaInventory::not_read`]). A source read
+    /// on its own, outside an inventory, keeps nothing.
+    fn note(&self, _not_read: NotRead) {}
 }
 
 impl<F: Filesystem> PersonaSource for F {
-    fn entries(&self, dir: &Path) -> Vec<std::path::PathBuf> {
-        self.list_directory(dir).unwrap_or_default()
+    fn entries(&self, dir: &Path) -> Result<Vec<PathBuf>, NotRead> {
+        match self.list_directory(dir) {
+            Ok(entries) => Ok(entries),
+            Err(e) if e.not_looked_up().is_some() => Err(NotRead::of(dir, &e)),
+            Err(_) => Ok(Vec::new()),
+        }
     }
 
-    fn text(&self, path: &Path) -> Option<String> {
-        self.read_file_content(path).ok()
+    fn text(&self, path: &Path) -> Result<Option<String>, NotRead> {
+        match self.read_file_content(path) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.not_looked_up().is_some() => Err(NotRead::of(path, &e)),
+            Err(_) => Ok(None),
+        }
     }
 
-    fn exists(&self, path: &Path) -> bool {
-        self.path_exists(path).unwrap_or(false)
+    fn exists(&self, path: &Path) -> Result<bool, NotRead> {
+        self.path_exists(path).map_err(|e| NotRead::of(path, &e))
     }
 
-    fn is_file(&self, path: &Path) -> bool {
-        self.is_regular_file(path).unwrap_or(false)
+    fn is_file(&self, path: &Path) -> Result<bool, NotRead> {
+        self.is_regular_file(path)
+            .map_err(|e| NotRead::of(path, &e))
+    }
+}
+
+/// A place the inventory could not read: a lookup that failed for another
+/// reason than that nothing is there, or one the automount guard did not
+/// make. What lies there may be inherited too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotRead {
+    /// The path, as the source names it.
+    pub path: PathBuf,
+    /// Why it was not read, naming the path: the lookup's error, or the
+    /// guard's reason ([`describe`]).
+    pub reason: String,
+    /// The automount point the lookup would have mounted, where that is why
+    /// it was not made.
+    pub automount_point: Option<PathBuf>,
+    /// The autostart entry whose file this is, when it is one: its name is
+    /// left undecided, since no file further down the search path decides
+    /// it while this one might.
+    pub entry: Option<(String, InheritedSource)>,
+}
+
+impl NotRead {
+    /// `path`, whose lookup failed with `error` or was not made.
+    pub fn of(path: &Path, error: &NailsError) -> Self {
+        let unseen = describe(&path.display().to_string(), error);
+        Self {
+            path: path.to_path_buf(),
+            reason: unseen.sentence,
+            automount_point: unseen.automount_point,
+            entry: None,
+        }
+    }
+
+    /// The same place, as the file of the autostart entry `name` from
+    /// `source`, which it leaves undecided.
+    pub fn of_entry(self, name: &str, source: InheritedSource) -> Self {
+        Self {
+            entry: Some((name.to_string(), source)),
+            ..self
+        }
+    }
+}
+
+/// A source whose readers' notes are kept: the one an inventory reads
+/// through.
+struct Noting<'a, S: ?Sized> {
+    source: &'a S,
+    not_read: RefCell<Vec<NotRead>>,
+}
+
+impl<'a, S: PersonaSource + ?Sized> Noting<'a, S> {
+    fn new(source: &'a S) -> Self {
+        Self {
+            source,
+            not_read: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The places noted, each path once: where it was noted twice, the note
+    /// that names an undecided entry is kept.
+    fn into_not_read(self) -> Vec<NotRead> {
+        let mut kept: Vec<NotRead> = Vec::new();
+        for not_read in self.not_read.into_inner() {
+            match kept.iter_mut().find(|seen| seen.path == not_read.path) {
+                Some(seen) if seen.entry.is_none() => *seen = not_read,
+                Some(_) => {}
+                None => kept.push(not_read),
+            }
+        }
+        kept
+    }
+}
+
+impl<S: PersonaSource + ?Sized> PersonaSource for Noting<'_, S> {
+    fn entries(&self, dir: &Path) -> Result<Vec<PathBuf>, NotRead> {
+        self.source.entries(dir)
+    }
+
+    fn text(&self, path: &Path) -> Result<Option<String>, NotRead> {
+        self.source.text(path)
+    }
+
+    fn exists(&self, path: &Path) -> Result<bool, NotRead> {
+        self.source.exists(path)
+    }
+
+    fn is_file(&self, path: &Path) -> Result<bool, NotRead> {
+        self.source.is_file(path)
+    }
+
+    fn note(&self, not_read: NotRead) {
+        self.not_read.borrow_mut().push(not_read);
     }
 }
 
@@ -185,12 +303,27 @@ pub struct PersonaInventory {
     /// The inherited entries, grouped by source in a stable order and sorted by
     /// name within each group.
     pub entries: Vec<PersonaEntry>,
+    /// The places the inventory could not read, in the order it came to
+    /// them: what lies there may be inherited too. An autostart entry whose
+    /// file is among them is undecided ([`Self::undecided`]).
+    pub not_read: Vec<NotRead>,
 }
 
 impl PersonaInventory {
-    /// Whether nothing is inherited.
+    /// Whether no inherited entry was found. Something may still be inherited
+    /// from a place the inventory could not read ([`Self::not_read`]).
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The autostart entries the inventory could not decide, each with the
+    /// source of the directory whose file it could not read: the hidden
+    /// session may start them.
+    pub fn undecided(&self) -> impl Iterator<Item = (&str, InheritedSource)> {
+        self.not_read
+            .iter()
+            .filter_map(|not_read| not_read.entry.as_ref())
+            .map(|(name, source)| (name.as_str(), *source))
     }
 
     /// How many entries were found.
@@ -227,14 +360,17 @@ impl PersonaInventory {
 /// desktop reads (see [`autostart`]): for a name found in several, the most
 /// important directory wins, and `Hidden=true` there hides the name everywhere.
 ///
-/// This is read-only and infallible: a missing or unreadable source simply
-/// contributes nothing.
+/// This is read-only and infallible: a missing source contributes nothing,
+/// and a place it cannot look up is listed in [`PersonaInventory::not_read`]
+/// while the rest is read on.
 pub fn collect_inherited_persona<F: PersonaSource>(
-    fs: &F,
+    source: &F,
     home: &Path,
     user: &str,
     fresh_home: bool,
 ) -> PersonaInventory {
+    let noting = Noting::new(source);
+    let fs = &noting;
     let mut entries = Vec::new();
 
     let started = autostart::collect(fs, home, user, fresh_home);
@@ -265,13 +401,20 @@ pub fn collect_inherited_persona<F: PersonaSource>(
         &mut entries,
     );
 
-    if !user.is_empty() && fs.exists(&Path::new("/var/lib/systemd/linger").join(user)) {
-        entries.push(PersonaEntry::new(user, InheritedSource::Linger));
+    if !user.is_empty() {
+        match fs.exists(&Path::new("/var/lib/systemd/linger").join(user)) {
+            Ok(true) => entries.push(PersonaEntry::new(user, InheritedSource::Linger)),
+            Ok(false) => {}
+            Err(not_read) => fs.note(not_read),
+        }
     }
 
     collect_autologin(fs, user, &mut entries);
 
-    PersonaInventory { entries }
+    PersonaInventory {
+        entries,
+        not_read: noting.into_not_read(),
+    }
 }
 
 /// The final path component as an owned string, lossily decoded. A directory
@@ -321,10 +464,13 @@ fn collect_autologin<F: PersonaSource>(fs: &F, user: &str, entries: &mut Vec<Per
     );
 }
 
-/// List a directory, treating any error (missing, unreadable) as empty so the
-/// inventory stays best-effort.
-pub(super) fn list_dir<F: PersonaSource>(fs: &F, dir: &Path) -> Vec<std::path::PathBuf> {
-    fs.entries(dir)
+/// List a directory: one that is missing or cannot be listed is empty, and
+/// one the source does not look up is noted as not read.
+pub(super) fn list_dir<F: PersonaSource>(fs: &F, dir: &Path) -> Vec<PathBuf> {
+    fs.entries(dir).unwrap_or_else(|not_read| {
+        fs.note(not_read);
+        Vec::new()
+    })
 }
 
 /// Sort and de-duplicate names, then append them as entries of one source.

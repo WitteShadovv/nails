@@ -25,11 +25,18 @@
 //! skipped unread, and a file of the same name further down the path
 //! decides. Read, a FIFO would block until a writer came along, and a device
 //! might never end.
+//!
+//! What NAILS cannot look up counts the way that misses nothing: a
+//! `/run/current-system` it cannot look up counts as NixOS, so the profile
+//! directories are searched as well, and a file of a name it cannot look up
+//! leaves the name undecided, since that file may decide it: no file further
+//! down the path does, and the source notes the file as not read with the
+//! name ([`NotRead::of_entry`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::inventory::{InheritedSource, PersonaSource, file_name_of, list_dir};
+use super::inventory::{InheritedSource, NotRead, PersonaSource, file_name_of, list_dir};
 
 /// The live system link that marks a NixOS host.
 const NIXOS_CURRENT_SYSTEM: &str = "/run/current-system";
@@ -56,13 +63,24 @@ impl AutostartDir {
     }
 }
 
+/// Whether the host is NixOS, as far as the source tells: one whose
+/// `/run/current-system` cannot be looked up counts as NixOS, and the place is
+/// noted as not read.
+fn on_nixos<F: PersonaSource>(fs: &F) -> bool {
+    fs.exists(Path::new(NIXOS_CURRENT_SYSTEM))
+        .unwrap_or_else(|not_read| {
+            fs.note(not_read);
+            true
+        })
+}
+
 /// The autostart directories for `user` in `home`, most important first.
 fn search_path<F: PersonaSource>(fs: &F, home: &Path, user: &str) -> Vec<AutostartDir> {
     let mut dirs = vec![
         AutostartDir::home(home, ".config/autostart"),
         AutostartDir::system("/etc/xdg/autostart"),
     ];
-    if fs.exists(Path::new(NIXOS_CURRENT_SYSTEM)) {
+    if on_nixos(fs) {
         dirs.push(AutostartDir::home(home, ".nix-profile/etc/xdg/autostart"));
         dirs.push(AutostartDir::home(
             home,
@@ -83,21 +101,31 @@ fn search_path<F: PersonaSource>(fs: &F, home: &Path, user: &str) -> Vec<Autosta
     dirs
 }
 
+/// What the most important file of a name makes of it.
+enum Winner {
+    /// It starts, from this source.
+    Starts(InheritedSource),
+    /// It is hidden (`Hidden=true`).
+    Hidden,
+    /// The source cannot tell: the file could not be looked up.
+    Undecided,
+}
+
 /// The autostart entries a session of `user` would start, as `.desktop` stems
 /// with the source of the file that wins for each.
 ///
 /// In fresh-home mode the directories in the home are skipped: the hidden home
 /// does not carry them, so neither their entries nor their `Hidden=true`
-/// overrides apply. NAILS' own legacy notification entry is never listed.
+/// overrides apply. NAILS' own legacy notification entry is never listed. A
+/// name whose most important file cannot be looked up is not listed either:
+/// it is undecided, and noted with its file ([`NotRead::of_entry`]).
 pub(super) fn collect<F: PersonaSource>(
     fs: &F,
     home: &Path,
     user: &str,
     fresh_home: bool,
 ) -> Vec<(String, InheritedSource)> {
-    // For each name, the source of the winning file, or None when the winning
-    // file hides the name.
-    let mut winners: BTreeMap<String, Option<InheritedSource>> = BTreeMap::new();
+    let mut winners: BTreeMap<String, Winner> = BTreeMap::new();
 
     for dir in search_path(fs, home, user) {
         if fresh_home && dir.in_home {
@@ -115,18 +143,34 @@ pub(super) fn collect<F: PersonaSource>(
             };
             if file_name == crate::artifacts::LEGACY_NOTIFY_AUTOSTART_FILE
                 || winners.contains_key(stem)
-                || !fs.is_file(&path)
             {
                 continue;
             }
-            let hidden = desktop_entry_hidden(&fs.text(&path).unwrap_or_default());
-            winners.insert(stem.to_string(), (!hidden).then_some(source));
+            let undecided = |not_read: NotRead| {
+                fs.note(not_read.of_entry(stem, source));
+                Winner::Undecided
+            };
+            let winner = match fs.is_file(&path) {
+                Ok(false) => continue,
+                Ok(true) => match fs.text(&path) {
+                    Ok(text) if desktop_entry_hidden(text.as_deref().unwrap_or_default()) => {
+                        Winner::Hidden
+                    }
+                    Ok(_) => Winner::Starts(source),
+                    Err(not_read) => undecided(not_read),
+                },
+                Err(not_read) => undecided(not_read),
+            };
+            winners.insert(stem.to_string(), winner);
         }
     }
 
     winners
         .into_iter()
-        .filter_map(|(name, source)| source.map(|source| (name, source)))
+        .filter_map(|(name, winner)| match winner {
+            Winner::Starts(source) => Some((name, source)),
+            Winner::Hidden | Winner::Undecided => None,
+        })
         .collect()
 }
 

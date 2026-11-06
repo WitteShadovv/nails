@@ -35,10 +35,14 @@
 //! every machine has it. Only regular files are read, once their links are
 //! followed: a FIFO, socket or device in these places could block the read,
 //! or never end it. A file the source cannot give as text, such as one that
-//! is not valid UTF-8, counts as missing. LightDM reads a directory's files
-//! in the byte order of their names. SDDM and Plasma Login Manager sort them
-//! by the collation of the locale they run in, which the files do not tell,
-//! so they are read in each order a collation may give ([`collation`]).
+//! is not valid UTF-8, counts as missing. A file or directory the source
+//! cannot look up counts as missing too, and is noted as not read
+//! ([`PersonaSource::note`]): the accounts the other files name are still
+//! reported, and the inventory says it may lack one. LightDM reads a
+//! directory's files in the byte order of their names. SDDM and Plasma Login
+//! Manager sort them by the collation of the locale they run in, which the
+//! files do not tell, so they are read in each order a collation may give
+//! ([`collation`]).
 //!
 //! Where the files alone do not tell, an account counts whenever it could be
 //! the one logged in: the account any of those orders ends with; both
@@ -57,7 +61,7 @@ mod sddm;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use super::inventory::PersonaSource;
+use super::inventory::{PersonaSource, list_dir};
 use kconfig::Frameworks;
 use sddm::Qt;
 
@@ -229,7 +233,7 @@ impl QtConfig {
                     .into_iter()
                     .filter_map(|path| {
                         let name = path.file_name()?.as_bytes().to_vec();
-                        Some((name, fs.text(&path)?))
+                        Some((name, text_of(fs, &path)?))
                     })
                     .collect()
             })
@@ -284,7 +288,7 @@ fn lightdm<F: PersonaSource>(fs: &F) -> Vec<String> {
     let drop_ins: Vec<keyfile::Parsed> = LIGHTDM_DIRS
         .iter()
         .flat_map(|dir| files(fs, Path::new(dir), conf))
-        .filter_map(|path| fs.text(&path))
+        .filter_map(|path| text_of(fs, &path))
         .map(|text| keyfile::parse(&text))
         .collect();
     let main = file_text(fs, Path::new(LIGHTDM_FILE)).map(|text| keyfile::parse(&text));
@@ -411,13 +415,13 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
 }
 
 /// The regular files of `dir` whose names `keep` accepts, sorted by the
-/// bytes of their names.
+/// bytes of their names. One the source cannot look up is left out and
+/// noted as not read.
 fn files<F: PersonaSource>(fs: &F, dir: &Path, keep: impl Fn(&[u8]) -> bool) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = fs
-        .entries(dir)
+    let mut files: Vec<PathBuf> = list_dir(fs, dir)
         .into_iter()
         .filter(|path| path.file_name().is_some_and(|name| keep(name.as_bytes())))
-        .filter(|path| fs.is_file(path))
+        .filter(|path| regular(fs, path))
         .collect();
     files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     files
@@ -425,11 +429,29 @@ fn files<F: PersonaSource>(fs: &F, dir: &Path, keep: impl Fn(&[u8]) -> bool) -> 
 
 /// The text of the regular file at `path`, if it can be read.
 fn file_text<F: PersonaSource>(fs: &F, path: &Path) -> Option<String> {
-    if fs.is_file(path) {
-        fs.text(path)
+    if regular(fs, path) {
+        text_of(fs, path)
     } else {
         None
     }
+}
+
+/// Whether `path` is a regular file; one the source cannot look up is not,
+/// and is noted as not read.
+fn regular<F: PersonaSource>(fs: &F, path: &Path) -> bool {
+    fs.is_file(path).unwrap_or_else(|not_read| {
+        fs.note(not_read);
+        false
+    })
+}
+
+/// The text of the file at `path`, if it can be read; one the source does
+/// not look up is noted as not read.
+fn text_of<F: PersonaSource>(fs: &F, path: &Path) -> Option<String> {
+    fs.text(path).unwrap_or_else(|not_read| {
+        fs.note(not_read);
+        None
+    })
 }
 
 #[cfg(test)]

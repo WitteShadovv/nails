@@ -139,6 +139,19 @@ pub struct InheritedEntry {
     pub status: &'static str,
 }
 
+/// A place the inventory could not read: what lies there may be inherited
+/// too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NotReadEntry {
+    /// The path.
+    pub path: String,
+    /// Why it was not read, naming the path.
+    pub reason: String,
+    /// The automount point a lookup there would have mounted, where that is
+    /// why it was not made; `null` for a lookup that failed.
+    pub automount_point: Option<String>,
+}
+
 /// The decoy persona state the hidden session would inherit.
 #[derive(Debug, Serialize)]
 pub struct InheritedSummary {
@@ -151,6 +164,9 @@ pub struct InheritedSummary {
     /// The `[persona] mask_inherited` names that match no inherited autostart
     /// entry or user unit; activation masks them anyway.
     pub unmatched_masks: Vec<String>,
+    /// The places the inventory could not read, in the order it came to
+    /// them: a lookup that failed, or one the automount guard did not make.
+    pub not_read: Vec<NotReadEntry>,
 }
 
 impl InheritedSummary {
@@ -161,6 +177,25 @@ impl InheritedSummary {
             entries: Vec::new(),
             remote_linked: Vec::new(),
             unmatched_masks: Vec::new(),
+            not_read: Vec::new(),
+        }
+    }
+
+    /// The summary of an inventory that read nothing, since the mount table,
+    /// which shows where a lookup would mount an automount point, cannot be
+    /// read (`error`): the table is the one place listed as not read.
+    pub fn without_mount_table(error: &str) -> Self {
+        Self {
+            inspected: true,
+            not_read: vec![NotReadEntry {
+                path: nails_teardown::mountinfo::SELF_MOUNTINFO.to_string(),
+                reason: format!(
+                    "NAILS cannot read the mount table ({error}), which shows where a lookup \
+                     would mount an automount point, so it looks up nothing"
+                ),
+                automount_point: None,
+            }],
+            ..Self::not_inspected()
         }
     }
 
@@ -183,7 +218,38 @@ impl InheritedSummary {
             entries,
             remote_linked: inventory.remote_linked_names(),
             unmatched_masks: inventory.unmatched_masks(persona),
+            not_read: inventory
+                .not_read
+                .iter()
+                .map(|not_read| NotReadEntry {
+                    path: not_read.path.display().to_string(),
+                    reason: not_read.reason.clone(),
+                    automount_point: not_read
+                        .automount_point
+                        .as_ref()
+                        .map(|point| point.display().to_string()),
+                })
+                .collect(),
         }
+    }
+
+    /// Add each lookup of `skipped` the guard did not make whose path is not
+    /// listed as not read yet: the inventory names every place it could not
+    /// read, so this only keeps a lookup a reader took for nothing from
+    /// passing unseen.
+    pub fn with_skipped(mut self, skipped: &[crate::filesystem::automount::Skipped]) -> Self {
+        for skip in skipped {
+            let path = skip.path.display().to_string();
+            if self.not_read.iter().any(|not_read| not_read.path == path) {
+                continue;
+            }
+            self.not_read.push(NotReadEntry {
+                path,
+                reason: skip.reason.sentence(&skip.path),
+                automount_point: skip.reason.point().map(|point| point.display().to_string()),
+            });
+        }
+        self
     }
 
     /// How many entries end in `status`.
@@ -471,14 +537,23 @@ pub fn profile_summary(target: HostTarget) -> ProfileSummary {
 /// target user cannot be resolved the inventory is reported as "not inspected"
 /// rather than surfaced as an error. In fresh-home mode only system-level
 /// inherited state is listed, matching what that mode actually carries over.
+/// The decoy is read through the automount guard, as the
+/// `inherited-autostart` row reads it; without the mount table nothing is
+/// looked up.
 fn inherited_summary<F: Filesystem>(config: &Config, fs: &F, env: &RuntimeEnv) -> InheritedSummary {
+    use crate::filesystem::automount::{Guarded, Snapshot};
     let Ok(user) = TargetUser::resolve_with(env) else {
         return InheritedSummary::not_inspected();
     };
 
+    let snapshot = Snapshot::read(fs, Path::new("/"));
+    if let Some(error) = snapshot.unreadable() {
+        return InheritedSummary::without_mount_table(error);
+    }
+    let guarded = Guarded::new(fs.clone(), &snapshot);
     let fresh_home = config.persona.mode == PersonaMode::FreshHome;
-    let inventory = collect_inherited_persona(fs, user.home(), &user.name, fresh_home);
-    InheritedSummary::from_inventory(&inventory, &config.persona)
+    let inventory = collect_inherited_persona(&guarded, user.home(), &user.name, fresh_home);
+    InheritedSummary::from_inventory(&inventory, &config.persona).with_skipped(&guarded.skipped())
 }
 
 #[cfg(test)]
@@ -737,6 +812,7 @@ mod tests {
             entries,
             remote_linked: Vec::new(),
             unmatched_masks: Vec::new(),
+            not_read: Vec::new(),
         };
 
         // The real matching count is returned (not a fixed 0 or 1), and it
@@ -847,6 +923,94 @@ mod tests {
             .refusal()
             .expect("a root that does not exist is refused");
         assert_eq!(refusal.code, "not_separate_volume");
+    }
+
+    /// The inherited list names each place it could not read, with the
+    /// automount point where the guard did not look it up, and looks
+    /// nothing up below that point; without the mount table it names the
+    /// table and looks up nothing.
+    #[test]
+    fn inherited_summary_lists_the_places_it_could_not_read() {
+        use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+        let env = RuntimeEnv::empty().with_target_uid("0");
+        let user = TargetUser::resolve_with(&env)
+            .expect("uid 0 resolves against the passwd database on any host");
+        let home = user.home().display().to_string();
+        let fs = MockFilesystem::new();
+        with_automounts(&fs, &[home.as_str()]);
+
+        let summary = inherited_summary(&Config::default(), &fs, &env);
+        assert!(summary.inspected);
+        let autostart = format!("{home}/.config/autostart");
+        let place = summary
+            .not_read
+            .iter()
+            .find(|place| place.path == autostart)
+            .unwrap_or_else(|| panic!("{:?}", summary.not_read));
+        assert_eq!(
+            place.reason,
+            format!(
+                "NAILS does not look up {autostart}, since the lookup would mount the \
+                 automount point {home}"
+            )
+        );
+        assert_eq!(place.automount_point.as_deref(), Some(home.as_str()));
+        assert!(!reached(&fs, &home), "{:?}", fs.mock_lookups());
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["not_read"][0]["path"], autostart);
+        assert_eq!(json["not_read"][0]["automount_point"], home);
+
+        fs.mock_set_mount_table_error("permission denied");
+        fs.mock_clear_lookups();
+        let summary = inherited_summary(&Config::default(), &fs, &env);
+        assert!(summary.inspected);
+        assert_eq!(
+            summary.not_read,
+            [NotReadEntry {
+                path: "/proc/self/mountinfo".to_string(),
+                reason: "NAILS cannot read the mount table (/proc/self/mountinfo: permission \
+                         denied), which shows where a lookup would mount an automount point, so \
+                         it looks up nothing"
+                    .to_string(),
+                automount_point: None,
+            }]
+        );
+        assert!(fs.mock_lookups().is_empty(), "{:?}", fs.mock_lookups());
+        let json = serde_json::to_value(&summary).unwrap();
+        assert!(json["not_read"][0]["automount_point"].is_null(), "{json}");
+    }
+
+    /// A lookup the guard did not make that the inventory does not list is
+    /// listed too, once.
+    #[test]
+    fn a_skip_the_inventory_does_not_list_is_listed_once() {
+        use crate::filesystem::automount::Skipped;
+        use nails_base::error::Skip;
+        let skip = |path: &str| Skipped {
+            path: PathBuf::from(path),
+            reason: Skip::Automount {
+                point: PathBuf::from("/home/bob"),
+            },
+        };
+        let summary = InheritedSummary::from_inventory(
+            &PersonaInventory::default(),
+            &PersonaConfig::default(),
+        )
+        .with_skipped(&[
+            skip("/home/bob/.config"),
+            skip("/home/bob/.config"),
+            skip("/home/bob/.config/autostart"),
+        ]);
+        let paths: Vec<&str> = summary
+            .not_read
+            .iter()
+            .map(|place| place.path.as_str())
+            .collect();
+        assert_eq!(paths, ["/home/bob/.config", "/home/bob/.config/autostart"]);
+        assert_eq!(
+            summary.not_read[0].automount_point.as_deref(),
+            Some("/home/bob")
+        );
     }
 
     /// `inherited_summary` honours the persona mode: in shared-home the decoy's
