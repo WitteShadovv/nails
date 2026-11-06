@@ -38,8 +38,9 @@
 #      warning that names /srv and its copy-on-write snapshots;
 #  11. a LUKS volume on the separate data disk passes the hidden-volume check;
 #      mounted at /opt as well, which no fstab line makes, it is refused as
-#      the decoy's storage, and with --allow-decoy-storage as mounted a second
-#      time, naming `sudo umount /opt`, until that mount is gone;
+#      the decoy's storage, naming `sudo umount /opt`, and with
+#      --allow-decoy-storage as mounted a second time, until that mount is
+#      gone;
 #  12. a tmpfs mounted over that volume is refused with root_covered, and
 #      neither the tmpfs nor the volume below receives anything;
 #  13. a decoy crypttab line that opens the data disk, then one with
@@ -543,7 +544,16 @@ in
         assert_exit_code(result, 4)
         row = check_row(last_json(result), "hidden-volume")
         assert row["status"] == "fail", row
-        assert "it is the filesystem this computer mounts at /opt" in row["message"], row
+        assert row["message"] == (
+            "/mnt/data is not a volume of its own: it is the filesystem this computer has "
+            "mounted at /opt"
+        ), row
+        # No line mounts it there, so the fix unmounts it rather than remove a
+        # line.
+        assert row["remediation"].startswith(
+            "If /mnt/data is the volume you prepared and it was mounted at /opt by hand, run "
+            "`sudo umount /opt`, then run the command again.\n"
+        ), row
         assert row["allowable"] == "decoy_storage", row
         result = run_command_capture(
             "gate-system-folder-allow",

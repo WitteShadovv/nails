@@ -301,7 +301,8 @@ fn a_zfs_volume_decides_before_the_decoys_filesystem_on_it() {
         itself.verdict("/mnt"),
         Verdict::OnDecoyFilesystem {
             how: Sharing::Filesystem,
-            at: PathBuf::from("/mnt")
+            at: PathBuf::from("/mnt"),
+            in_fstab: true,
         }
     );
 }

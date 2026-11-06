@@ -211,6 +211,7 @@ fn a_subvolume_of_the_decoy_root_is_refused() {
         Verdict::OnDecoyFilesystem {
             how: Sharing::Subvolume,
             at: PathBuf::from("/"),
+            in_fstab: true,
         }
     );
     assert_eq!(verdict.severity(), Severity::Refuse);
@@ -293,6 +294,7 @@ fn a_debian_bind_of_a_home_folder_on_lvm_is_refused() {
         Verdict::OnDecoyFilesystem {
             how: Sharing::Bind,
             at: PathBuf::from("/home"),
+            in_fstab: true,
         }
     );
 }
@@ -311,6 +313,7 @@ fn the_filesystem_the_decoy_mounts_elsewhere_is_refused_at_the_root() {
         Verdict::OnDecoyFilesystem {
             how: Sharing::Filesystem,
             at: PathBuf::from("/data"),
+            in_fstab: true,
         }
     );
     assert_eq!(
@@ -320,6 +323,85 @@ fn the_filesystem_the_decoy_mounts_elsewhere_is_refused_at_the_root() {
     // The fstab line mounts the volume at the root at every boot: a claim, and
     // an entry for that drive as well.
     assert_eq!(entry_kinds(&judgement), vec![(EntryKind::Blocking, FSTAB)]);
+}
+
+#[test]
+fn a_drive_mounted_at_a_system_folder_that_no_line_names_is_not_mounted_per_fstab() {
+    // A separate drive mounted at /srv as well, by hand: the decoy's own
+    // storage by the rule for system folders, but no line mounts it there.
+    let world = |fstab: &str| {
+        plain_decoy(
+            "4 1 8:17 / /srv rw - ext4 /dev/sdb1 rw\n\
+             5 1 8:17 / /mnt rw - ext4 /dev/sdb1 rw\n",
+        )
+        .disk("sdb", "8:16")
+        .part("sdb1", "8:17", "sdb")
+        .disk("sdc", "8:32")
+        .part("sdc1", "8:33", "sdc")
+        .fstab(fstab)
+    };
+    let by_hand = world("/dev/sda1 / ext4 defaults 0 1\n").verdict("/mnt");
+    assert_eq!(
+        by_hand,
+        Verdict::OnDecoyFilesystem {
+            how: Sharing::Filesystem,
+            at: PathBuf::from("/srv"),
+            in_fstab: false,
+        }
+    );
+    assert_eq!(
+        by_hand.reason(),
+        "it is the filesystem this computer has mounted at /srv"
+    );
+    // Neither does a line for another device at /srv, the drive mounted by
+    // hand over that device's mount, nor a bind line from /srv; a line that
+    // names the drive does.
+    for (fstab, in_fstab) in [
+        ("/dev/sdc1 /srv ext4 defaults 0 2\n", false),
+        ("/srv/a /media/a none bind 0 0\n", false),
+        ("/dev/sdb1 /srv ext4 defaults 0 2\n", true),
+    ] {
+        assert_eq!(
+            world(fstab).verdict("/mnt"),
+            Verdict::OnDecoyFilesystem {
+                how: Sharing::Filesystem,
+                at: PathBuf::from("/srv"),
+                in_fstab,
+            },
+            "{fstab}"
+        );
+    }
+}
+
+#[test]
+fn a_zfs_dataset_is_mounted_per_fstab_where_a_line_names_it() {
+    // A dataset with a legacy mount point, which NixOS mounts at /home by an
+    // fstab line that names the dataset, mounted at the root as well.
+    let world = |fstab: &str| {
+        World::new(
+            "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+             2 1 0:51 / /home rw - zfs rpool/home rw,xattr\n\
+             5 1 0:51 / /mnt rw - zfs rpool/home rw,xattr\n",
+        )
+        .disk("sda", "8:0")
+        .part("sda1", "8:1", "sda")
+        .fstab(fstab)
+    };
+    for (fstab, in_fstab) in [
+        ("rpool/home /home zfs defaults 0 0\n", true),
+        ("rpool/srv /home zfs defaults 0 0\n", false),
+        ("", false),
+    ] {
+        assert_eq!(
+            world(fstab).verdict("/mnt"),
+            Verdict::OnDecoyFilesystem {
+                how: Sharing::Filesystem,
+                at: PathBuf::from("/home"),
+                in_fstab,
+            },
+            "{fstab}"
+        );
+    }
 }
 
 #[test]
@@ -522,6 +604,7 @@ fn a_bind_entry_claims_the_filesystem_holding_its_source() {
         Verdict::OnDecoyFilesystem {
             how: Sharing::Bind,
             at: PathBuf::from("/media/disk"),
+            in_fstab: false,
         }
     );
 }
@@ -598,6 +681,7 @@ fn another_member_of_a_btrfs_filesystem_the_decoy_mounts_by_hand_is_refused() {
         Verdict::OnDecoyFilesystem {
             how: Sharing::Filesystem,
             at: PathBuf::from("/pool"),
+            in_fstab: true,
         }
     );
 }
@@ -1031,6 +1115,7 @@ fn a_bind_of_a_data_mount_whose_fstab_spec_does_not_resolve_is_refused() {
         Verdict::OnDecoyFilesystem {
             how: Sharing::Bind,
             at: PathBuf::from("/data"),
+            in_fstab: false,
         }
     );
 }
