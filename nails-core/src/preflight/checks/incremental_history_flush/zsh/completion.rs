@@ -31,9 +31,13 @@ use std::path::{Path, PathBuf};
 /// pick it, as you complete a word: the completion of each command and
 /// pattern, which `_dispatch` runs with `eval`, the service each command is
 /// completed as, the flags of the functions marked to be autoloaded, the
-/// functions `_main_complete` runs before and after it completes, and the
-/// code it runs first.
-const PARAMETERS: [&str; 8] = [
+/// functions `_main_complete` runs before and after it completes, the code
+/// it runs first, the context `_complete` completes in instead, whose action
+/// it runs with `eval`, the function `_tags` sorts the tags with, and the
+/// options it completes with, which may make it expand an alias in the code
+/// it runs with `eval` (`aliases`): all of them but `_comp_options+=(globdots)`,
+/// with which it completes the files whose names start with a dot.
+const PARAMETERS: [&str; 11] = [
     "_comps",
     "_patcomps",
     "_postpatcomps",
@@ -42,6 +46,9 @@ const PARAMETERS: [&str; 8] = [
     "compprefuncs",
     "comppostfuncs",
     "_comp_setup",
+    "compcontext",
+    "_sort_tags",
+    "_comp_options",
 ];
 
 /// How many of a directory's completion functions a doubt names.
@@ -57,6 +64,8 @@ pub(super) struct Seen {
     names: Vec<(Word, String, String)>,
     /// The parameters of [`PARAMETERS`] a file sets, and where.
     parameters: Vec<(&'static str, String)>,
+    /// The doubts of the styles the files set ([`super::walk::Event::Style`]).
+    styles: Vec<String>,
 }
 
 impl Seen {
@@ -67,16 +76,42 @@ impl Seen {
     }
 
     /// Note the parameters of [`PARAMETERS`] that `forms`, of the file at
-    /// `place`, name otherwise than to read them, in any form zsh may read a
-    /// word in.
-    pub(super) fn parameters(&mut self, forms: &Forms, place: &str) {
+    /// `place` whose code is `text`, name otherwise than to read them, in any
+    /// form zsh may read a word in, beyond the lines of `text` that are
+    /// `_comp_options+=(globdots)` alone.
+    pub(super) fn parameters(&mut self, text: &str, forms: &Forms, place: &str) {
         for name in PARAMETERS {
             let entry = (name, place.to_string());
-            if forms.writes(name) > 0 && !self.parameters.contains(&entry) {
+            let allowed = if name == "_comp_options" {
+                text.lines().filter(|line| globdots(line)).count()
+            } else {
+                0
+            };
+            if forms.writes(name) > allowed && !self.parameters.contains(&entry) {
                 self.parameters.push(entry);
             }
         }
     }
+
+    /// Note `doubt`, of a style a file sets ([`super::walk::Event::Style`]).
+    pub(super) fn style(&mut self, doubt: String) {
+        if !self.styles.contains(&doubt) {
+            self.styles.push(doubt);
+        }
+    }
+}
+
+/// Whether `line` adds no option but `GLOB_DOTS` to those zsh's completion
+/// system completes with: `_comp_options+=(globdots)`, in any of the
+/// option's spellings, alone on the line.
+fn globdots(line: &str) -> bool {
+    line.trim()
+        .strip_prefix("_comp_options+=(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .is_some_and(|option| {
+            let option: String = option.trim().chars().filter(|c| *c != '_').collect();
+            option.eq_ignore_ascii_case("globdots")
+        })
 }
 
 /// The word a `compdef` of `args` gives the completion system to run, as
@@ -184,6 +219,9 @@ impl<F: Filesystem> Reader<'_, F> {
             if name.starts_with('_') && !self.hooks.contains(&name) {
                 self.hooks.push(name);
             }
+        }
+        for doubt in std::mem::take(&mut self.completion.styles) {
+            self.doubt(doubt);
         }
         for (name, place) in std::mem::take(&mut self.completion.parameters) {
             self.doubt(format!(
