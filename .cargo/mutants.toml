@@ -84,6 +84,20 @@ exclude_re = [
     # number all the same.
     'nails-base/src/packages/apt_conf\.rs:\d+:\d+: replace match guard digit\.is_ascii_hexdigit\(\) with true in strtol_whole$',
 
+    # The unattended-upgrade-run check's major() and minor() join the bits of
+    # a device number glibc's makedev() keeps in two places: the low part
+    # masked to the bits below the high part's, so the two operands of the
+    # `|` share no bit and `^` in its place gives the same number.
+    'nails-core/src/preflight/checks/upgrade_run\.rs:\d+:\d+: replace \| with \^ in major$',
+    'nails-core/src/preflight/checks/upgrade_run\.rs:\d+:\d+: replace \| with \^ in minor$',
+
+    # upgrade_run() names a lock holder by its PID when the PID is above 0,
+    # and an open file description lock, whose PID the kernel lists as -1,
+    # as a process. The kernel lists no lock whose holder has the PID 0 in
+    # the reader's namespace (locks_show() skips it, fs/locks.c 6.8 to 6.17),
+    # so `>=` in place of the `>` names every holder alike.
+    'nails-core/src/preflight/checks/upgrade_run\.rs:\d+:\d+: replace > with >= in upgrade_run$',
+
     # --- Near-equivalent ---
 
     # `&` in place of the first `|` of read_config_bytes_noatime's flags

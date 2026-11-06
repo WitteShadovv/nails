@@ -236,8 +236,16 @@ fn the_lock_list_is_read_as_the_kernel_writes_it() {
 
 #[test]
 fn device_numbers_decode_as_glibc_decodes_them() {
-    // 259:5 (an NVMe partition), 8:0x12345 (a minor past 255), 0:25 (tmpfs).
-    for (major_number, minor_number) in [(259u64, 5u64), (8, 0x12345), (0, 25), (0xfff, 0xfffff)] {
+    // 259:5 (an NVMe partition), 8:0x12345 (a minor past 255), 0:25 (tmpfs),
+    // and the most of each that glibc's makedev() keeps, 32 bits.
+    for (major_number, minor_number) in [
+        (259u64, 5u64),
+        (8, 0x12345),
+        (0, 25),
+        (0xfff, 0xfffff),
+        (0x1234_5678, 0x9abc_def0),
+        (0xffff_ffff, 0xffff_ffff),
+    ] {
         let dev = (minor_number & 0xff)
             | ((major_number & 0xfff) << 8)
             | ((minor_number & !0xff) << 12)
