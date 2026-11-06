@@ -3,13 +3,13 @@
 
 //! The loop driver's record of what a loop device is bound to.
 //!
-//! The driver keeps the device of the filesystem that holds a loop device's
-//! backing file, and `LOOP_GET_STATUS64` reads it back. That tells where the
-//! file's data lies by device number, not by the path the driver shows, so a
-//! mount made over the file's folder later does not make it look like a file
-//! of that mount. The record is read here, in the crate that depends on no
-//! other NAILS crate, so this crate can read it too, and the base crate's
-//! filesystem seam reads its loop records through it.
+//! The driver keeps the file a loop device is bound to, and
+//! `LOOP_GET_STATUS64` reads back the device and inode that file shows. That
+//! tells where the file's data lies by device number, not by the path the
+//! driver shows, so a mount made over the file's folder later does not make it
+//! look like a file of that mount. The record is read here, in the crate that
+//! depends on no other NAILS crate, so this crate can read it too, and the
+//! base crate's filesystem seam reads its loop records through it.
 //!
 //! The recorded device is the one the file itself shows (its `st_dev`). For
 //! most filesystems that is the number the mount table shows, but btrfs gives
@@ -18,6 +18,14 @@
 //! the attach gate does, and takes the mount the path leads to only when it
 //! leads to the recorded file (its device and inode), so after a mount over
 //! the file's folder it names no filesystem.
+//!
+//! The driver asks the file's filesystem for that device and inode each time
+//! the record is read, and a lookup of the path asks each filesystem on the
+//! way. A FUSE daemon or a network server that stops answering holds either
+//! call, and its caller, until it answers. So [`backing_filesystem`] reads no
+//! record and looks up nothing where the path the driver shows runs through
+//! an automount point, a FUSE filesystem or a network filesystem, by the
+//! mounts the table shows on it, and names no filesystem for it.
 
 use crate::mountinfo::{MountEntry, top_mount_at};
 use std::io;
@@ -66,7 +74,9 @@ const LOOP_GET_STATUS64: rustix::ioctl::Opcode = 0x4C05;
 
 /// The loop driver's record of the backing file of the loop device at
 /// `node`. The node is opened read-only and never written; a node that is
-/// no loop device, or one bound to nothing, is an error.
+/// no loop device, or one bound to nothing, is an error. The driver reads the
+/// file's device and inode from the file's filesystem, so this waits for that
+/// filesystem to answer.
 #[allow(unsafe_code)]
 pub fn record(node: &Path) -> io::Result<LoopRecord> {
     let file = std::fs::OpenOptions::new()
@@ -96,13 +106,15 @@ pub fn record(node: &Path) -> io::Result<LoopRecord> {
 /// ([`holding_filesystem`]). `None` for a mount whose filesystem is on no
 /// loop device (a partition of a loop device is not recognised), for a loop
 /// device bound to a device node, which reads that device, when the driver
-/// does not answer, as for a caller that may not open the node, and when no
-/// mount the table shows is found to hold the file.
+/// does not answer, as for a caller that may not open the node, when the
+/// driver shows no path for the file or one that runs through an automount
+/// point, a FUSE filesystem or a network filesystem, which is not asked
+/// (the record is not read then), and when no mount the table shows is found
+/// to hold the file.
 pub fn backing_filesystem(mount: &MountEntry) -> Option<String> {
     let (node, number) = loop_node(mount)?;
-    let record = record(&node).ok()?;
     let mounts = crate::mountinfo::read_mountinfo().ok()?;
-    holding_filesystem(record, &mounts, || shown_file(number), reach)
+    holding_filesystem(&mounts, shown_file(number), || record(&node).ok(), reach)
 }
 
 /// The number the mount table writes for the device `dev`, `major:minor`.
@@ -121,28 +133,49 @@ struct Reached {
 }
 
 /// The filesystem (`major:minor`, as `mounts` writes it) that holds the file
-/// a loop device is bound to, by the loop driver's `record` of it.
+/// a loop device is bound to, by the loop driver's record of it (`record`)
+/// and the path the driver shows for the file (`file`).
+///
+/// The mounts on the path come first: by the table, a lookup of the path
+/// reaches the visible mount at `/` and at each of its folders that is a
+/// mount point, and the deepest of them holds the file. Where one of them
+/// is an automount point, which a lookup would mount, a FUSE filesystem or a
+/// network filesystem ([`served_from_outside`]), no record is read, no
+/// lookup is made and no filesystem is named: the driver would ask that
+/// filesystem for the record when the file lies there, and a lookup asks
+/// each filesystem on the way.
 ///
 /// A mount of the recorded device shows that filesystem. Where none does,
 /// as for a file on btrfs, which shows its subvolume's own device while the
-/// table writes the filesystem's number, the path the driver shows for the
-/// file (`file`) is looked up (`lookup`). Its holder is the mount a lookup of
-/// the path reaches by the table: the visible mount at the deepest of its
-/// folders that is a mount point. That mount is the filesystem only
-/// when the lookup ends on it, at the recorded file (its device and inode).
-/// The lookup follows no link, and none is made when the holder is an
-/// automount point, which a lookup would mount. A path that leads elsewhere,
-/// such as through a mount made over the file's folder, through a link, or
-/// out of view, names no filesystem.
+/// table writes the filesystem's number, the path is looked up (`lookup`).
+/// The mount that holds the path is the filesystem only when the lookup
+/// ends on it, at the recorded file (its device and inode). The lookup
+/// follows no link. A path that leads elsewhere, such as through a mount
+/// made over the file's folder, through a link, or out of view, names no
+/// filesystem.
 ///
 /// A loop device bound to a device node reads the device the node is, not
 /// the filesystem that holds the node: it names none.
 fn holding_filesystem(
-    record: LoopRecord,
     mounts: &[MountEntry],
-    file: impl FnOnce() -> Option<PathBuf>,
+    file: Option<PathBuf>,
+    record: impl FnOnce() -> Option<LoopRecord>,
     lookup: impl FnOnce(&Path) -> Option<Reached>,
 ) -> Option<String> {
+    let file = file?;
+    // The deepest first: the mount that holds the file, then those above it.
+    let on_the_way: Vec<&MountEntry> = file
+        .ancestors()
+        .filter_map(|folder| top_mount_at(mounts, folder))
+        .collect();
+    let holder = *on_the_way.first()?;
+    if on_the_way
+        .iter()
+        .any(|mount| served_from_outside(&mount.fstype))
+    {
+        return None;
+    }
+    let record = record()?;
     if record.rdevice != 0 {
         return None;
     }
@@ -150,17 +183,48 @@ fn holding_filesystem(
     if mounts.iter().any(|m| m.dev == number) {
         return Some(number);
     }
-    let file = file()?;
-    let holder = file
-        .ancestors()
-        .find_map(|folder| top_mount_at(mounts, folder))?;
-    if holder.fstype == "autofs" {
-        return None;
-    }
     let reached = lookup(&file)?;
     let on_holder = u64::try_from(holder.mount_id).is_ok_and(|id| id == reached.mount_id);
     let at_file = reached.device == record.device && reached.inode == record.inode;
     (on_holder && at_file).then(|| holder.dev.clone())
+}
+
+/// The filesystem types a server outside the kernel answers for: systemd's
+/// network filesystems (`fstype_is_network()`) and the shares a virtual
+/// machine's host serves.
+const SERVED: &[&str] = &[
+    "9p",
+    "afs",
+    "ceph",
+    "cifs",
+    "davfs",
+    "gfs",
+    "gfs2",
+    "glusterfs",
+    "lustre",
+    "ncp",
+    "ncpfs",
+    "nfs",
+    "nfs4",
+    "ocfs2",
+    "orangefs",
+    "pvfs2",
+    "smb3",
+    "smbfs",
+    "sshfs",
+    "vboxsf",
+    "virtiofs",
+];
+
+/// Whether the kernel waits for someone outside it to look up a path through
+/// a mount of the type `fstype`, as the mount table writes it, or to tell a
+/// file's attributes there: the automounter for an automount point, the
+/// daemon of a FUSE filesystem (`fuse`, `fuseblk`, and either with the name
+/// of its program after a dot, `fuse.sshfs`), and the server of a network
+/// filesystem or of a share of a virtual machine's host ([`SERVED`]).
+fn served_from_outside(fstype: &str) -> bool {
+    let kind = fstype.split_once('.').map_or(fstype, |(kind, _)| kind);
+    matches!(kind, "autofs" | "fuse" | "fuseblk") || SERVED.contains(&kind)
 }
 
 /// The path the loop driver shows for the file the loop device `number` is

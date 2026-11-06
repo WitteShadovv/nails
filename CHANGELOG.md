@@ -789,7 +789,10 @@ of this changelog for that version becomes the release notes word for word, and
   volume, by the device the session plan records, a bind of a folder of it included, and a disk
   image on it mounted straight from its loop device (not a partition of one, or a mapping over one).
   On btrfs, where a file shows its subvolume's own device number, the image counts while the path
-  the loop driver shows for it leads to it. By path it also counts every mount below
+  the loop driver shows for it leads to it. On any filesystem, an image does not count while that
+  path runs through an automount point or a FUSE or network filesystem: NAILS does not ask such a
+  filesystem about it, as one whose server stops answering would keep the watcher, the read-only
+  guard and `nails deactivate` waiting. By path it also counts every mount below
   `<hidden-root>/root`, where NAILS keeps its layers and carries the decoy's filesystems for the way
   back. Any other mount below the hidden root is a disk mounted during the session, and a mount
   outside the hidden root is one as before, also where it shows the hidden volume. `rehearse` tells

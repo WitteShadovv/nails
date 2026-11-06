@@ -90,9 +90,9 @@ fn reached(mount_id: u64, device: u64, inode: u64) -> Option<Reached> {
 #[test]
 fn a_file_on_btrfs_is_held_by_the_mount_its_path_leads_to() {
     let held = holding_filesystem(
-        on_subvolume(),
         &btrfs_session(),
-        || Some(PathBuf::from(IMAGE)),
+        Some(PathBuf::from(IMAGE)),
+        || Some(on_subvolume()),
         |path| {
             assert_eq!(path, Path::new(IMAGE));
             reached(40, subvolume(), INODE)
@@ -110,9 +110,9 @@ fn a_file_on_a_filesystem_the_table_shows_needs_no_lookup() {
         rdevice: 0,
     };
     let held = holding_filesystem(
-        on_root,
         &btrfs_session(),
-        || unreachable!("no path is read"),
+        Some(PathBuf::from("/var/lib/images/disk.img")),
+        || Some(on_root),
         |_| unreachable!("no lookup is made"),
     );
     assert_eq!(held.as_deref(), Some("254:0"));
@@ -123,9 +123,9 @@ fn a_path_that_leads_elsewhere_names_no_filesystem() {
     let mounts = btrfs_session();
     let held = |file: &str, reached: Option<Reached>| {
         holding_filesystem(
-            on_subvolume(),
             &mounts,
-            || Some(PathBuf::from(file)),
+            Some(PathBuf::from(file)),
+            || Some(on_subvolume()),
             |_| reached,
         )
     };
@@ -148,31 +148,112 @@ fn a_path_that_leads_elsewhere_names_no_filesystem() {
     assert_eq!(held(IMAGE, None), None);
 }
 
+/// What the filesystem that holds `file` is named by `mounts`, where the
+/// driver's record of it is never read and its path never looked up.
+fn unasked(mounts: &[MountEntry], file: Option<&str>) -> Option<String> {
+    holding_filesystem(
+        mounts,
+        file.map(PathBuf::from),
+        || unreachable!("no record is read"),
+        |_| unreachable!("no lookup is made"),
+    )
+}
+
 #[test]
-fn no_lookup_is_made_without_a_mount_to_reach_or_below_an_automount_point() {
+fn nothing_is_asked_without_a_mount_to_reach_or_below_an_automount_point() {
     let mounts = btrfs_session();
-    let unlooked = |file: Option<&str>| {
-        holding_filesystem(
-            on_subvolume(),
-            &mounts,
-            || file.map(PathBuf::from),
-            |_| unreachable!("no lookup is made"),
-        )
-    };
     // The driver shows no path, or one no mount the table shows holds.
-    assert_eq!(unlooked(None), None);
-    assert_eq!(unlooked(Some("disk.img")), None);
+    assert_eq!(unasked(&mounts, None), None);
+    assert_eq!(unasked(&mounts, Some("disk.img")), None);
     // A lookup below an automount point that nothing is mounted on would
     // mount it.
-    assert_eq!(unlooked(Some("/mnt/data/net/host/disk.img")), None);
+    assert_eq!(unasked(&mounts, Some("/mnt/data/net/host/disk.img")), None);
     // A table with no root.
-    let held = holding_filesystem(
-        on_subvolume(),
-        &[],
-        || Some(PathBuf::from(IMAGE)),
-        |_| unreachable!("no lookup is made"),
+    assert_eq!(unasked(&[], Some(IMAGE)), None);
+}
+
+/// The btrfs session of [`btrfs_session`], with a FUSE filesystem mounted
+/// over the image's folder (sshfs), and outside the hidden root an NFS
+/// share, a share of a virtual machine's host and a FUSE filesystem on a
+/// disk of its own (ntfs-3g).
+fn served_session() -> Vec<MountEntry> {
+    let mut mounts = btrfs_session();
+    mounts.extend(parse_mountinfo(
+        "44 40 0:53 / /mnt/data/images rw - fuse.sshfs host:/srv rw\n\
+         45 1 0:54 / /mnt/nas rw - nfs4 nas:/export rw\n\
+         46 1 0:55 / /mnt/host rw - virtiofs share rw\n\
+         47 1 8:49 / /mnt/win rw - fuseblk /dev/sdd1 rw\n",
+    ));
+    mounts
+}
+
+#[test]
+fn nothing_is_asked_through_a_fuse_or_network_filesystem() {
+    let mounts = served_session();
+    // The image's folder on the volume, now covered by sshfs: a lookup of
+    // the path would wait for its daemon, and so would the driver's record
+    // if the file were there.
+    assert_eq!(unasked(&mounts, Some(IMAGE)), None);
+    // A file on the NFS share, in a folder of the host's share, or on the
+    // FUSE disk.
+    for file in [
+        "/mnt/nas/disk.img",
+        "/mnt/host/vm/disk.img",
+        "/mnt/win/disk.img",
+    ] {
+        assert_eq!(unasked(&mounts, Some(file)), None, "{file}");
+    }
+}
+
+#[test]
+fn nothing_is_asked_below_a_network_filesystem_on_the_way() {
+    // The volume is mounted in a folder of an NFS share, and the image lies
+    // on the volume: a lookup of its path asks the share for the volume's
+    // folder.
+    let mounts = parse_mountinfo(
+        "1 0 254:0 / / rw - ext4 /dev/mapper/root rw\n\
+         30 1 0:60 / /srv rw - nfs nas:/srv rw\n\
+         40 30 0:47 / /srv/data rw - btrfs /dev/mapper/data rw\n",
     );
-    assert_eq!(held, None);
+    assert_eq!(unasked(&mounts, Some("/srv/data/images/disk.img")), None);
+    // Where the volume holds the file by the table, as on ext4, the record
+    // would name it, but it is not read either.
+    let ext4 = parse_mountinfo(
+        "1 0 254:0 / / rw - ext4 /dev/mapper/root rw\n\
+         30 1 0:60 / /srv rw - nfs nas:/srv rw\n\
+         40 30 253:1 / /srv/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    assert_eq!(unasked(&ext4, Some("/srv/data/disk.img")), None);
+}
+
+#[test]
+fn only_an_automount_point_fuse_and_a_network_filesystem_are_served_from_outside() {
+    for fstype in [
+        "autofs",
+        "fuse",
+        "fuse.sshfs",
+        "fuse.portal",
+        "fuseblk",
+        "fuseblk.ntfs-3g",
+        "nfs",
+        "nfs4",
+        "cifs",
+        "smb3",
+        "ceph",
+        "9p",
+        "virtiofs",
+        "vboxsf",
+        "glusterfs",
+    ] {
+        assert!(served_from_outside(fstype), "{fstype}");
+    }
+    // The FUSE control filesystem is the kernel's own, and so are these.
+    for fstype in [
+        "fusectl", "fuseblkx", "btrfs", "ext4", "xfs", "tmpfs", "overlay", "devtmpfs", "squashfs",
+        "",
+    ] {
+        assert!(!served_from_outside(fstype), "{fstype}");
+    }
 }
 
 #[test]
@@ -193,9 +274,9 @@ fn a_loop_device_bound_to_a_device_node_names_no_filesystem() {
     };
     for record in [shown, found] {
         let held = holding_filesystem(
-            record,
             &mounts,
-            || Some(PathBuf::from("/mnt/data/sdc")),
+            Some(PathBuf::from("/mnt/data/sdc")),
+            || Some(record),
             |_| reached(40, subvolume(), INODE),
         );
         assert_eq!(held, None, "{record:?}");
