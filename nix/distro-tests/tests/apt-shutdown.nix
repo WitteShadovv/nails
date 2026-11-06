@@ -11,8 +11,9 @@
 #
 # The scenario, on each image with unattended-upgrades:
 #
-#   - checks the stock decoy: both rows pass, and `apt-config` reads the
-#     setting off, as NAILS does;
+#   - checks the stock decoy: both rows pass, but where the image has no
+#     python3-gi (Debian 13), decoy-persistence warns of the helper's lines,
+#     and `apt-config` reads the setting off, as NAILS does;
 #   - starts a daily run the way apt-daily-upgrade.timer does
 #     (`apt-daily-upgrade.service`) and holds it at its first step, the power
 #     check, with a stand-in for powermgmt-base's `on_ac_power` that waits
@@ -37,7 +38,8 @@
 #     and its line. With
 #     `--allow-persistent-decoy` the activation goes through, and the decoy's
 #     helper logs its shutdown-mode run on the decoy disk at the switch, the
-#     positive control;
+#     positive control; without python3-gi, the helper the way back starts
+#     again writes its two lines;
 #   - stops the decoy's helper and leaves it enabled, the setting still on:
 #     `check` only warns, the activation goes through, and the way back
 #     (`deactivate`, through logind) has the session's own copy of the helper
@@ -99,6 +101,9 @@ distroVm.buildVmTest {
     IN_PROGRESS = "Unattended-upgrade in progress during shutdown"
     RUN_STOPS = "SIGTERM received, will stop"
     SHUTDOWN_MODE = "Running unattended-upgrades in shutdown mode"
+    # What the helper writes each time it starts without python3-gi.
+    POLLING = "Unable to monitor PrepareForShutdown() signal, polling instead."
+    gi_module = "/usr/lib/python3/dist-packages/gi/__init__.py"
     # The lock a run holds from its start to its end, as unattended-upgrade
     # names it (/var/run is a link to /run).
     uu_lock = "/var/run/unattended-upgrades.lock"
@@ -419,7 +424,14 @@ distroVm.buildVmTest {
         assert row("unattended-upgrade-run")["status"] == "pass"
         assert not apt_reads_setting(), "the stock decoy installs at shutdown"
         persistence = row("decoy-persistence")
-        assert persistence["status"] == "pass", persistence
+        if vm.execute(f"test -e {gi_module}")[0] == 0:
+            assert persistence["status"] == "pass", persistence
+        else:
+            # Debian 13's cloud image has no python3-gi, without which the
+            # helper writes two WARNING lines at every start.
+            assert persistence["status"] == "warn", persistence
+            assert "python3-gi is not installed" in persistence["message"], persistence
+            assert "(apt install python3-gi)" in persistence["message"], persistence
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
     with subtest("a daily unattended-upgrade run refuses check and activation"):
@@ -498,6 +510,7 @@ distroVm.buildVmTest {
         assert count(helper_log, SHUTDOWN_MODE) == mode_before, tail(helper_log)
 
     with subtest("positive control: with the override the helper runs its install at the switch"):
+        polling_before = count(helper_log, POLLING)
         follow(
             f"{nails_cmd} activate -y --allow-persistent-decoy > /mnt/data/activate.log 2>&1",
             "activate",
@@ -509,6 +522,10 @@ distroVm.buildVmTest {
         print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
         print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
         assert count(helper_log, SHUTDOWN_MODE) > mode_before, tail(helper_log)
+        # Without python3-gi, the helper the decoy started again at the way
+        # back wrote its two lines, dated at the switch.
+        if vm.execute(f"test -e {gi_module}")[0] != 0:
+            assert count(helper_log, POLLING) > polling_before, tail(helper_log)
 
     with subtest("a helper stopped but enabled only warns, and logs its shutdown-mode run at the way back"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")

@@ -316,6 +316,19 @@ fn the_unattended_upgrades_rows_say_how_they_are_caught() {
     let table = super::docs::render_block("fail-closed", "decoy-requirements.md").unwrap();
     assert!(table.contains(install.title), "{table}");
     assert!(!table.contains(run.title), "{table}");
+    // Without python3-gi the helper's own lines are only warned of.
+    let polling =
+        class("unattended-upgrades-polling-without-python3-gi").expect("the python3-gi row");
+    assert_eq!(polling.preflight, Probe::Check("decoy-persistence"));
+    assert!(!polling.preflight_blocks);
+    assert!(!polling.residual);
+    assert_eq!(polling.platforms, Platforms::DEBIAN);
+    assert_eq!(
+        polling.doc_anchor,
+        "decoy-requirements.md#unattended-upgrades"
+    );
+    assert!(polling.mitigation.contains("apt install python3-gi"));
+    assert!(!table.contains(polling.title), "{table}");
 }
 
 #[test]

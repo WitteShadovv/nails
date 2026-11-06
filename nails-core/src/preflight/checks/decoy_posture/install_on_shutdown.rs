@@ -52,6 +52,10 @@
 //! overlay, which NAILS does not follow, so it leaves the session's setting
 //! unknown.
 //!
+//! A decoy whose enabled helper starts without python3-gi, and so writes two
+//! lines to its log on the decoy disk at every start, is warned of too
+//! ([`polling`]).
+//!
 //! Every read is a lookup, a listing or a read of a file; nothing is
 //! written.
 
@@ -62,6 +66,8 @@ use nails_base::packages::apt_conf::{self, PartName, Statement};
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+
+mod polling;
 
 /// The helper's unit.
 const UNIT: &str = "unattended-upgrades.service";
@@ -530,6 +536,9 @@ pub(super) struct Finding {
     /// The warning, when only the session's copy would install, at the way
     /// back.
     pub(super) warning: Option<String>,
+    /// The warning of a decoy's helper that starts without python3-gi
+    /// ([`polling::warning`]).
+    pub(super) polling: Option<String>,
 }
 
 /// The fix of a setting turned on at `at`, a file of the decoy and a line.
@@ -634,6 +643,7 @@ fn session_warning(
 /// unattended-upgrades' install at shutdown on the decoy under `root`, with
 /// the root overlay's upper at `upper` (`None`: the decoy alone).
 pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) -> Finding {
+    let polling = polling::warning(fs, root);
     let running = loggers::unit_active(fs, root, UNIT);
     let start = match session_starts_helper(fs, root, upper) {
         Ok(start) => start.map(Ok),
@@ -641,7 +651,10 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
     };
     if !running && start.is_none() {
         // No helper reads the setting at a switch.
-        return Finding::default();
+        return Finding {
+            polling,
+            ..Finding::default()
+        };
     }
     let decoy = decoy_setting(fs, root);
     if running {
@@ -660,6 +673,7 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
                         installs: true,
                     }),
                     warning: None,
+                    polling,
                 };
             }
             Setting::Unknown(why) => {
@@ -677,13 +691,17 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
                         installs: false,
                     }),
                     warning: None,
+                    polling,
                 };
             }
             Setting::Off => {}
         }
     }
     let Some(start) = start else {
-        return Finding::default();
+        return Finding {
+            polling,
+            ..Finding::default()
+        };
     };
     let session = match upper {
         Some(upper) => session_setting(fs, root, upper),
@@ -692,6 +710,7 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
     Finding {
         blocker: None,
         warning: session_warning(&start, running, session),
+        polling,
     }
 }
 

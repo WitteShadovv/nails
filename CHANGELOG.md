@@ -1410,9 +1410,12 @@ of this changelog for that version becomes the release notes word for word, and
   helper stopped while the decoy or the session's overlay enables it and nothing masks it as the
   session sees it, or the session's overlay turning the setting on), it warns instead, and a link
   among apt's files, which the session resolves through its overlay, makes it warn that it cannot
-  tell. The decoy requirements now say to set the setting to `false` rather than delete the line,
-  which stays in effect until the helper restarts, and to restart the helper after removing a
-  `Dir` or `RootDir` line. A new fuzz target, `apt_conf`, drives the reader.
+  tell. It warns as well while the decoy's helper is enabled without python3-gi, Debian 13's cloud
+  image among them: the helper then writes two WARNING lines to its log on the decoy disk each
+  time it starts, so every way back adds a pair (`apt install python3-gi`). The decoy requirements
+  now say to set the setting to `false` rather than delete the line, which stays in effect until
+  the helper restarts, and to restart the helper after removing a `Dir` or `RootDir` line. A new
+  fuzz target, `apt_conf`, drives the reader.
 - Activation refuses while a daily unattended-upgrade run is in progress (the
   `unattended-upgrade-run` check): `apt-daily-upgrade.service` is active, or a process holds
   `/run/unattended-upgrades.lock`. At the switch unattended-upgrades' shutdown helper stopped a run
