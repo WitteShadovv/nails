@@ -26,6 +26,7 @@ mod names;
 mod options;
 mod sets;
 mod strings;
+mod unread;
 
 pub(super) use super::builtins::HOOKS;
 pub(super) use event::{Arith, Event, Input};
@@ -186,6 +187,9 @@ struct Walker<'a> {
     hooks: usize,
     /// How often it read a prompt set ([`backstop::prompt_writes`]).
     prompts: usize,
+    /// How often it read a parameter of [`super::arith::READ_AS_NUMBER`] set,
+    /// declared or unset ([`backstop::number_writes`]).
+    numbers: usize,
     /// The function the code walked runs in, for code a command of a
     /// function runs from a string (`eval`, a trap's).
     outer: Option<String>,
@@ -850,6 +854,7 @@ struct Walked {
     indirects: usize,
     hooks: usize,
     prompts: usize,
+    numbers: usize,
     alias_params: usize,
     function_params: usize,
     may_stop: bool,
@@ -892,6 +897,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         indirects: 0,
         hooks: 0,
         prompts: 0,
+        numbers: 0,
         outer,
         pending: Pending {
             feeders: Some(Vec::new()),
@@ -932,6 +938,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         indirects: walker.indirects,
         hooks: walker.hooks,
         prompts: walker.prompts,
+        numbers: walker.numbers,
         alias_params: walker.alias_params,
         function_params: walker.function_params,
         may_stop: walker.may_stop,
@@ -965,84 +972,14 @@ pub(super) fn events(text: &str, place: &str, outer: Option<String>) -> Read {
             read[at] += 1;
         }
     }
-    let walked = walk_text_in(text, place, outer);
-    let mut events = walked.events;
-    let named = backstop::named(text);
-    for (at, (&lines, &tokens)) in named.options.iter().zip(&read).enumerate() {
-        if lines > tokens {
-            events.push(Event::Unread(at));
-        }
-    }
-    if named.sources > walked.sources {
-        events.push(Event::Doubt(format!(
-            "it cannot follow a `source` or `.` that a line of {place} may run"
-        )));
-    }
-    if named.evals > walked.evals {
-        events.push(Event::Doubt(format!(
-            "it cannot follow an `eval` that a line of {place} may run"
-        )));
-    }
-    if named.zdotdirs > walked.zdotdirs {
-        events.push(Event::Doubt(format!(
-            "it cannot follow a ZDOTDIR that a line of {place} may set"
-        )));
-    }
-    if named.autoloads > walked.autoloads {
-        events.push(Event::Doubt(format!(
-            "it cannot follow an `autoload` that a line of {place} may run"
-        )));
-    }
-    if named.fpaths > walked.fpaths {
-        events.push(Event::Fpath {
-            dir: None,
-            first: false,
-        });
-    }
-    if named.fcs > walked.fcs {
-        events.push(Event::Doubt(format!(
-            "it cannot follow an `fc` that a line of {place} may run, which can write the \
-             history file"
-        )));
-    }
-    if named.nix_profiles > walked.nix_profiles {
-        events.push(Event::ProfilesUnknown);
-    }
-    if named.indirects > walked.indirects {
-        events.push(Event::Doubt(format!(
-            "it cannot tell which parameter a line of {place} may set by the name another one \
-             holds"
-        )));
-    }
-    if named.hooks > walked.hooks {
-        events.push(Event::Doubt(format!(
-            "it cannot tell which functions a line of {place} may make hooks, which zsh runs as \
-             each command is entered or ends"
-        )));
-    }
-    if named.prompts > walked.prompts {
-        events.push(Event::Prompt(format!(
-            "it cannot follow a prompt that a line of {place} may set, whose code zsh runs as it \
-             shows the prompt, as PROMPT_SUBST may be on"
-        )));
-    }
-    if named.alias_params > walked.alias_params {
-        events.push(Event::Doubt(format!(
-            "it cannot tell what alias a line of {place} may give by the parameters that hold \
-             them, which zsh then expands"
-        )));
-    }
-    if named.arith > walked.marks {
-        events.push(Event::Doubt(format!(
-            "it cannot follow arithmetic that a line of {place} may hold, which may set a \
-             parameter by a name the check cannot read"
-        )));
-    }
-    if named.function_params > walked.function_params {
-        events.push(Event::Doubt(format!(
-            "it cannot tell what code a line of {place} may give a function by `functions`"
-        )));
-    }
+    let mut walked = walk_text_in(text, place, outer);
+    let mut events = std::mem::take(&mut walked.events);
+    events.extend(unread::beyond(
+        &backstop::named(text),
+        &read,
+        &walked,
+        place,
+    ));
     Read {
         events,
         confused: walked.confused,

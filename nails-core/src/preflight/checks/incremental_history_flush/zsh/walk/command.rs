@@ -10,6 +10,7 @@
 //! other word names.
 
 use super::super::OH_MY_ZSH;
+use super::super::arith::READ_AS_NUMBER;
 use super::super::backstop::{
     self, FC_WRITES, history_path, is_fc_flag, qualifier_code, reexpands, zdotdir_writes,
 };
@@ -793,6 +794,16 @@ impl Walker<'_> {
     /// `fpath` or `FPATH`, and its mentions.
     pub(super) fn assignment(&mut self, word: &Word, unconditional: bool) {
         self.assignment_arithmetic(word);
+        // Its value, which zsh reads as arithmetic each time it uses it, the
+        // walk judges ([`Event::Arith`]); declared without one, it keeps its
+        // value.
+        let target = word
+            .text
+            .split_once('=')
+            .map_or(word.text.as_str(), |(target, _)| target);
+        if READ_AS_NUMBER.contains(&assigned(target)) && !target.contains('[') {
+            self.numbers += 1;
+        }
         if self.fpath_assignment(word) {
             return;
         }
