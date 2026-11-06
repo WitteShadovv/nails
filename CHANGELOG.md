@@ -1409,13 +1409,17 @@ of this changelog for that version becomes the release notes word for word, and
   skips that action while `shutdown.target` is active or queued, as it is during a switch. Once
   the drop-ins are loaded, the activation refuses when the timeout would not power the machine
   off: when the action is another one, which a later drop-in of the decoy's would cause, when
-  service watchdogs are turned off (`systemd.service_watchdogs=0` on the kernel command line, or
-  `systemctl service-watchdogs no`), as systemd then takes no action at a job timeout, and when
-  `JobTimeoutSec=infinity` turns the timeout off. Before it prepares the way back, `deactivate`
-  asks the hidden session's PID 1 the same, and whether the stop guards hold as activation checks
-  them, since the hidden system's own configuration or a change in the session can undo a guard:
-  it refuses unless they all hold, and names `deactivate --poweroff` and `emergency`, neither of
-  which asks. `verify` reports the drop-in if it is left on the decoy. The NixOS module text for
+  service watchdogs are off, as systemd then takes no action at a job timeout, and when
+  `JobTimeoutSec=infinity` turns the timeout off. Every reload of PID 1 sets service watchdogs to
+  what the kernel command line says, so after activation's reload only
+  `systemd.service_watchdogs=0` there turns them off: a `systemctl service-watchdogs no` before
+  activation does not count, and `systemctl service-watchdogs yes` does not lift the refusal.
+  Before it prepares the way back, `deactivate` asks the hidden session's PID 1 the same, where a
+  `systemctl service-watchdogs no` in the session counts until PID 1 next reloads, and whether the
+  stop guards hold as activation checks them, since the hidden system's own configuration or a
+  change in the session can undo a guard: it refuses unless they all hold, and names
+  `deactivate --poweroff` and `emergency`, neither of which asks. `verify` reports the drop-in if
+  it is left on the decoy. The NixOS module text for
   `soft-reboot.target` that `nails check` prints stays as it is: a drop-in under `/run` overrides
   the unit file wherever that lies. A plain `emergency` in the hidden session returns through the
   same switch, so the drop-in covers it too, and `deactivate --poweroff` and
@@ -1425,8 +1429,9 @@ of this changelog for that version becomes the release notes word for word, and
   back whose drop-in a unit's stop removed after `deactivate` had checked it goes on by force into
   the decoy, which then starts with the session's files in `/run`. With a plain `poweroff` set for
   the timeout instead, PID 1 skips the action and a switch held up for 90 seconds goes on when the
-  hold ends. In the same test activation refuses with service watchdogs off and with no timeout,
-  and `deactivate` refuses with service watchdogs off, with no timeout and without the drop-in.
+  hold ends. In the same test activation refuses with no timeout and goes on after a
+  `systemctl service-watchdogs no`, which its own reload undoes, and `deactivate` refuses with
+  service watchdogs off, with no timeout and without the drop-in.
   The distribution smoke tests check that the hidden PID 1 has the drop-in loaded and that the
   decoy has its own unit again after each way back.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics

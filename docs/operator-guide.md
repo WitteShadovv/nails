@@ -334,10 +334,12 @@ Keep all of it `root`-owned on the hidden volume.
    soft-reboot in that time, one you start by hand in the hidden session
    included. The activation refuses when, once loaded, the timeout would not
    power the machine off: a drop-in of the decoy's that sorts after it sets
-   the action again, service watchdogs are turned off (PID 1 then takes no
-   action at a job timeout; `sudo systemctl service-watchdogs yes` turns them
-   on), or `JobTimeoutSec=infinity` turns the timeout off. The way back
-   removes these drop-ins, and leaves any other drop-in the decoy had for
+   the action again, service watchdogs are off (PID 1 then takes no action at
+   a job timeout), or `JobTimeoutSec=infinity` turns the timeout off. Its own
+   reload sets service watchdogs to what the kernel command line says, as
+   every reload of PID 1 does, so they are off then only with
+   `systemd.service_watchdogs=0` there: remove that and boot again. The way
+   back removes these drop-ins, and leaves any other drop-in the decoy had for
    these units in place. Ctrl+C (or a
    SIGTERM) up to this point cancels the activation: it stops at the next step,
    takes down the next root and removes what it set up in `/run` (the runtime
@@ -2019,14 +2021,16 @@ the machine off instead, in both directions, from activation until the way
 back, so on the way in the hidden session never starts. The same holds for a
 switch that anything else holds up that long, such as a service whose stop
 never ends, and for any other soft-reboot in that time. Activation refuses
-where nothing would happen by itself: when service watchdogs are turned off
-(`systemd.service_watchdogs=0` on the kernel command line, or
-`systemctl service-watchdogs no`), as systemd then takes no action at a job
-timeout, and when a drop-in sets `JobTimeoutSec=infinity` for
-`soft-reboot.target`. `deactivate` refuses the same in the hidden session; a
-plain `emergency` does not ask. A drop-in with another value moves the 30
-minutes. Once the machine is off, the decoy comes up as after a power loss
-(see below).
+where nothing would happen by itself: when service watchdogs are off, as
+systemd then takes no action at a job timeout, and when a drop-in sets
+`JobTimeoutSec=infinity` for `soft-reboot.target`. After the reload activation
+makes, service watchdogs are off only with `systemd.service_watchdogs=0` on
+the kernel command line, as every reload of PID 1 sets them to what the
+command line says. `deactivate` refuses the same in the hidden session, where
+a `systemctl service-watchdogs no` counts until PID 1 next reloads; a plain
+`emergency` does not ask. A drop-in with another value moves the 30 minutes.
+Once the machine is off, the decoy comes up as after a power loss (see
+below).
 
 systemd fixed that issue in 259.10, 260.6, 261.4 and 262.1. The releases before
 them in each series have it (259 to 259.9, 260 to 260.5, 261 to 261.3 and 262).

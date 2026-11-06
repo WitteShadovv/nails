@@ -196,12 +196,18 @@ fn skipped_step(direction: Direction) -> &'static str {
 /// loaded. With the unit's own `soft-reboot-force` such a switch would go on
 /// by force without the transition step, and `none`, or a plain action that
 /// systemd skips while a shutdown runs, would leave it hung. Nor does it when
-/// PID 1 has service watchdogs off (`systemd.service_watchdogs=0` on the
-/// kernel command line, `systemctl service-watchdogs no`), in which case it
-/// takes no action at a job timeout ("Watchdog disabled! Not acting on: job
-/// timed out"), or when the unit has no timeout (`JobTimeoutSec=infinity`, or
-/// `0`): the switch would then stay hung, the hidden volume's key in RAM,
-/// until someone powers off. An answer it cannot read refuses as well.
+/// PID 1 has service watchdogs off, in which case it takes no action at a job
+/// timeout ("Watchdog disabled! Not acting on: job timed out"), or when the
+/// unit has no timeout (`JobTimeoutSec=infinity`, or `0`): the switch would
+/// then stay hung, the hidden volume's key in RAM, until someone powers off.
+/// An answer it cannot read refuses as well.
+///
+/// Every reload of PID 1 sets service watchdogs to what the kernel command
+/// line says (`systemd.service_watchdogs=`, on by default) before it reloads,
+/// so after the entry's reload a `systemctl service-watchdogs no` no longer
+/// counts and only the command line can turn them off; the fix names it. The
+/// way back reloads nothing, so there a `systemctl service-watchdogs no` in
+/// the session counts until the next reload.
 pub fn switch_timeout(
     host: &(impl GuardHost + ?Sized),
     direction: Direction,
@@ -243,7 +249,11 @@ pub fn switch_timeout(
                      stopped, the hidden volume's key in RAM, until the machine is powered off \
                      by hand"
                 ),
-                remedy: "Turn them on with `sudo systemctl service-watchdogs yes`".to_string(),
+                remedy: "Remove `systemd.service_watchdogs=0` from the kernel command line \
+                         (every reload of PID 1, the one activation makes included, sets service \
+                         watchdogs to what it says, so `systemctl service-watchdogs yes` does not \
+                         last), boot again"
+                    .to_string(),
             }));
         }
         other => {
