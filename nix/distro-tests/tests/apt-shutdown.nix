@@ -307,6 +307,13 @@ distroVm.buildVmTest {
             "systemctl show -P ActiveState apt-daily-upgrade.service | grep -qx -e inactive -e failed",
             timeout=300,
         )
+        # The soft-reboot unmounted the hidden root. The stop of
+        # blk-availability.service closed its mapping in one run and left it
+        # open in another: close what is left before a fresh hidden root
+        # takes the name.
+        vm.succeed(
+            "if ! mountpoint -q /mnt/data && [ -e /dev/mapper/data ]; then cryptsetup close data; fi"
+        )
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         assert row("unattended-upgrade-run")["status"] == "pass"
 
