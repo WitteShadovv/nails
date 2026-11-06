@@ -357,6 +357,54 @@ fn an_unread_configuration_may_suspend_the_host() {
     );
 }
 
+/// logind's drop-ins behind an automount point that nothing is mounted on
+/// yet are not looked up: the check warns that the host may suspend, names
+/// the point and says once how to mount it, and looks up nothing below it.
+/// Without a mount table it looks up nothing and warns.
+#[test]
+fn a_configuration_behind_an_automount_point_may_suspend_the_host() {
+    use crate::filesystem::automount::mount_fix;
+    use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        MAIN,
+        "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchExternalPower=lock\nIdleAction=lock\n",
+    );
+    with_automounts(&fs, &["/usr/local"]);
+    let result = SleepPolicyCheck::new(SleepPolicyMode::Warn)
+        .run(&fs)
+        .unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.contains(
+            "NAILS cannot tell what logind does on a closed lid or an idle session, so either \
+             may suspend the host: NAILS does not look up \
+             /usr/local/lib/systemd/logind.conf.d, since the lookup would mount the automount \
+             point /usr/local"
+        ),
+        "{message}"
+    );
+    let fix = mount_fix(&[Path::new("/usr/local")]);
+    assert_eq!(message.matches(fix.as_str()).count(), 1, "{message}");
+    assert!(!reached(&fs, "/usr/local"), "{:?}", fs.mock_lookups());
+
+    fs.mock_set_mount_table_error("no mountinfo");
+    let result = SleepPolicyCheck::new(SleepPolicyMode::Block)
+        .run(&fs)
+        .unwrap();
+    assert_eq!(
+        result,
+        CheckResult::Warn(
+            "NAILS cannot tell whether the host would suspend an active session or leave it \
+             unlocked behind a closed lid: NAILS cannot read the mount table \
+             (/proc/self/mountinfo: no mountinfo), which shows where a lookup would mount an \
+             automount point, so it looks up nothing."
+                .to_string()
+        )
+    );
+}
+
 #[test]
 fn safe_host_passes() {
     let fs = MockFilesystem::new();
