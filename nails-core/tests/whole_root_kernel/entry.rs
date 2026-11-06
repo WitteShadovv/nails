@@ -1426,6 +1426,9 @@ fn a_mount_point_behind_an_absolute_link_is_made_inside_the_next_root() {
 #[path = "entry_fresh_home.rs"]
 mod fresh_home;
 
+#[path = "entry_hidden_build.rs"]
+mod hidden_build;
+
 #[test]
 fn nothing_the_way_back_mounts_shows_below_the_hidden_volume() {
     // In the hidden session the carried filesystems are shared binds on

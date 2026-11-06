@@ -207,9 +207,12 @@ the fstab of a hidden NixOS generation. A mount or automount unit that a boot
 target links outside the fstab (see below) at such a path is refused the same
 way. Mount the hidden volume where the decoy mounts nothing, or move that mount
 out from below it. With `hidden_volume_root = "/mnt"`, a decoy whose fstab
-mounts a disk at `/mnt/backup` is refused. For an entry of a hidden NixOS
-generation's fstab, the refusal says to change the hidden configuration, in a
-session entered with `nails activate --overlay-only`.
+mounts a disk at `/mnt/backup` is refused. Activation decides the fstab of a
+hidden NixOS generation right after the build, before it keeps the build's
+closure or activates it, so a build refused for it never writes its `/etc` into
+the hidden root's upper, which a session entered without a build runs with. For
+an entry of that fstab, the refusal says to change the hidden configuration, in
+a session entered with `nails activate --overlay-only`.
 
 A unit kept off is masked in `/run`, or skipped where a boot target requires it:
 `local-fs.target` requires the mount of an entry without `nofail` (or its

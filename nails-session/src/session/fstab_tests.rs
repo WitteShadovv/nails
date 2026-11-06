@@ -100,6 +100,42 @@ fn only_a_missing_fstab_reads_as_empty() {
     assert_ne!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
 }
 
+/// The fstab a NixOS toplevel brings is read inside the root whose store
+/// holds it, through the toplevel's link to its etc by an absolute path, and
+/// its mount points are resolved there; a toplevel without one has none.
+#[test]
+fn a_toplevel_s_fstab_is_read_and_resolved_inside_the_root() {
+    let root = tempfile::tempdir().unwrap();
+    let store = root.path().join("nix/store");
+    std::fs::create_dir_all(store.join("bbb-etc/etc")).unwrap();
+    std::fs::write(
+        store.join("bbb-etc/etc/fstab"),
+        "/dev/sdb1 /mnt/data/archive ext4 defaults 0 2\n\
+         /dev/sdc1 /home ext4 defaults 0 2\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(store.join("aaa-nixos-system")).unwrap();
+    std::os::unix::fs::symlink("/nix/store/bbb-etc/etc", store.join("aaa-nixos-system/etc"))
+        .unwrap();
+    std::fs::create_dir_all(root.path().join("var/home")).unwrap();
+    std::os::unix::fs::symlink("var/home", root.path().join("home")).unwrap();
+    let system = Path::new("/nix/store/aaa-nixos-system");
+    let entries = of_system_in_root(root.path(), system).unwrap();
+    let files: Vec<&Path> = entries.iter().map(|entry| entry.file.as_path()).collect();
+    assert_eq!(
+        files,
+        [Path::new("/mnt/data/archive"), Path::new("/var/home")]
+    );
+    assert_eq!(entries[0].spec, "/dev/sdb1");
+
+    std::fs::create_dir_all(store.join("ccc-nixos-system/etc")).unwrap();
+    let bare = Path::new("/nix/store/ccc-nixos-system");
+    assert!(of_system_in_root(root.path(), bare).unwrap().is_empty());
+    std::fs::create_dir(store.join("ccc-nixos-system/etc/fstab")).unwrap();
+    let error = of_system_in_root(root.path(), bare).unwrap_err();
+    assert_ne!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+}
+
 /// What requires an entry's unit at boot, as systemd's fstab generator links
 /// it: the boot target unless `nofail`, nothing for `noauto` without an
 /// automount, the units `x-systemd.required-by=` names in the target's place.

@@ -440,6 +440,11 @@ names the choice under "NixOS profile". The build reads the decoy store through
 the lower and writes every new path, the Nix database included, into the upper;
 nothing reaches the decoy `/nix`.
 
+Right after the build, activation decides the fstab the hidden toplevel brings
+by the [fstab policy](configuration.md#what-the-session-covers). A line the
+policy refuses, such as one that mounts a disk below the hidden root, refuses
+the entry before anything runs from the build.
+
 Before it activates the toplevel, activation **copies the hidden system's
 whole closure onto the hidden volume**: every store path the hidden toplevel
 needs that is still read from the decoy store is copied up into the store
