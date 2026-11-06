@@ -8,7 +8,10 @@
 //! drop-in that sorts after a guard can undo it, and one of the guard's own
 //! name in `/etc` takes its place. The entry asks the decoy's PID 1 once the
 //! reload has loaded the guards ([`check_stop_guards`],
-//! [`check_switch_timeout`]), and refuses unless every guard holds.
+//! [`check_switch_timeout`]). The way back asks the hidden session's PID 1,
+//! whose own configuration, and whatever the session changed, can undo a guard
+//! as well, before it prepares anything ([`check_way_back`]). Each refuses
+//! unless every guard holds.
 
 use crate::error::{NailsError, Result};
 use nails_teardown::whole_root::plan::Direction;
@@ -70,7 +73,8 @@ pub struct Unheld {
     /// What PID 1 reports, and what the switch would do then.
     pub reason: String,
     /// What the decoy's owner changes for the guard to hold, for the entry's
-    /// refusal.
+    /// refusal; the way back names the two other ways to end the session
+    /// instead.
     pub remedy: String,
 }
 
@@ -300,6 +304,52 @@ pub fn check_stop_guards(host: &(impl GuardHost + ?Sized)) -> Result<()> {
 /// another action, service watchdogs off, or no timeout.
 pub fn check_switch_timeout(host: &(impl GuardHost + ?Sized)) -> Result<()> {
     refuse_entry(switch_timeout(host, Direction::Enter)?)
+}
+
+/// Refuse the way back unless every runtime guard holds in the hidden
+/// session's PID 1, as the entry checked them in the decoy's: the stop
+/// guards' units run no stop command ([`stop_guards`]), and a switch that
+/// hangs until its job timeout powers the machine off ([`switch_timeout`]).
+/// A PID 1 that cannot be asked refuses it too. The refusal names the two
+/// other ways to end the session ([`way_back_endings`]).
+pub fn check_way_back(host: &(impl GuardHost + ?Sized)) -> Result<()> {
+    let asked = |check: &'static str, found: Result<Option<Unheld>>| {
+        found.map_err(|error| match error {
+            NailsError::InvalidState(why) => (check, why),
+            other => (check, other.to_string()),
+        })
+    };
+    let unheld = asked(STOP_GUARD, stop_guards(host)).and_then(|unheld| match unheld {
+        Some(unheld) => Ok(Some(unheld)),
+        None => asked(SWITCH_TIMEOUT, switch_timeout(host, Direction::Leave)),
+    });
+    let (check, reason) = match unheld {
+        Ok(None) => return Ok(()),
+        Ok(Some(unheld)) => (unheld.check, unheld.reason),
+        Err((check, error)) => (
+            check,
+            format!(
+                "the hidden session's PID 1 could not be asked whether its guards hold: {error}"
+            ),
+        ),
+    };
+    Err(NailsError::PreFlightCheckFailed(vec![(
+        check.to_string(),
+        reason,
+        Some(way_back_endings()),
+    )]))
+}
+
+/// The two other ways to end the session that a refused way back names:
+/// `deactivate --poweroff`, whose power-off goes through no soft-reboot, and
+/// `emergency`, which does not ask PID 1 about the guards.
+fn way_back_endings() -> String {
+    use nails_base::next_step::{NextStep, sudo_line};
+    format!(
+        "End the session with `{}`, which powers off, or with `{}`",
+        sudo_line(NextStep::DeactivatePoweroff),
+        sudo_line(NextStep::Emergency)
+    )
 }
 
 #[cfg(test)]

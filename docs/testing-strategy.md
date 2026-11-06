@@ -139,18 +139,23 @@ action, service watchdogs on and a timeout set) are unit tests and real-kernel
 tests, and so is its removal on each path that removes it: the way back, a
 switch refused on the decoy, an entry rolled back (cancelled, failed, or
 refused before or at its soft-reboot), `recover` and an emergency on the
-decoy. The whole path is tested in a VM, by
+decoy. The way back's check of the same, and of the stop guards, in the
+hidden session's PID 1 is a unit test, down to the refusal `deactivate`
+prints, and a power-off asks nothing. The whole path is tested in a VM, by
 `session-switch-timeout`: a test-only unit whose stop never ends holds up the
 switch, and a test-only drop-in shortens the timeout to a minute. The way back
 and the way in each power the machine off, with PID 1's own line for it on the
 console and no userspace coming up first. Without the drop-in the same hold
 forces a plain soft-reboot of the decoy through, and a way back whose drop-in
-the test removed in the hidden session goes on by force into the decoy, which
-comes up with the session's files still in `/run`. With a plain `poweroff` set
-for the timeout instead, PID 1 skips that action during the switch ("Shutdown
-is already active"), and a switch held up for 90 seconds goes on only when the
-hold ends: why the drop-in powers off by force. In the same test activation
-refuses with service watchdogs off and with no timeout.
+a test-only unit's stop removes during the switch, after `deactivate` checked
+it, goes on by force into the decoy, which comes up with the session's files
+still in `/run`. With a plain `poweroff` set for the timeout instead, PID 1
+skips that action during the switch ("Shutdown is already active"), and a
+switch held up for 90 seconds goes on only when the hold ends: why the drop-in
+powers off by force. In the same test activation refuses with service
+watchdogs off and with no timeout, and `deactivate` refuses with service
+watchdogs off, with no timeout and without the drop-in, the session going on
+each time.
 
 ### (d) Contract tests: one body, mock and real
 

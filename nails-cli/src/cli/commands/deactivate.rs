@@ -174,7 +174,7 @@ pub(crate) fn lock_and_leave(
         Ok(locked) => locked,
         Err(error) => return super::report_lock_error(error, "deactivate", settings.is_json()),
     };
-    let may = locked.may_leave();
+    let may = locked.may_leave(to);
     leave_and_report(settings, to, warnings, bound.as_ref(), may, |to| {
         locked.leave(to)
     })
