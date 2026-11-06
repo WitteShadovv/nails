@@ -759,8 +759,8 @@ its own, put first in the run's `PATH` by a runtime drop-in: the run holds its
 lock and runs no dpkg. It asserts that:
 
 - on the stock decoy, both the `unattended-upgrade-run` and the
-  `decoy-persistence` rows pass, the image's apt configuration read as apt
-  reads it;
+  `decoy-persistence` rows pass, and `apt-config` reads
+  `Unattended-Upgrade::InstallOnShutdown` as off, as NAILS does;
 - while the held run holds its lock, which `/proc/locks` shows, and nothing
   blocks shutdown, both `check` and `activate` refuse, and neither the
   helper's log nor the run's gains a line; a plain `systemctl --no-wall
@@ -768,10 +768,11 @@ lock and runs no dpkg. It asserts that:
   `Unattended-upgrade in progress during shutdown` on the decoy disk, the
   positive control, and once the run has ended the row passes;
 - with `Unattended-Upgrade::InstallOnShutdown` turned on in a file of its own,
-  `check` and `activate` refuse and name the file and its line, and the
-  helper logs no shutdown-mode run; with `--allow-persistent-decoy` the
-  activation goes through and the decoy's helper logs its shutdown-mode run on
-  the decoy disk at the switch, the positive control;
+  which `apt-config` reads as on, `check` and `activate` refuse and name the
+  file and its line, and the helper logs no shutdown-mode run; with
+  `--allow-persistent-decoy` the activation goes through and the decoy's
+  helper logs its shutdown-mode run on the decoy disk at the switch, the
+  positive control;
 - with the decoy's helper stopped but enabled and the setting still on,
   `check` only warns, the activation goes through, and at the way back
   (`deactivate`) the session's copy logs its shutdown-mode run into the upper
