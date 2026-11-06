@@ -547,19 +547,22 @@ soft-reboots with `py/nails_e2e/session.py`:
   test-only unit holds up the switch for as long as its instance says (for
   good, or 90 seconds), and a test-only drop-in shortens the timeout to a
   minute. The hidden PID 1 has the session's drop-in with that timeout, and
-  the decoy after the way back has its own unit, on which the same hold
-  forces a plain soft-reboot through (the positive control). Activation
-  refuses with a test-only drop-in that turns the timeout off, and goes on
-  after a `systemctl service-watchdogs no`, which its own reload undoes; in a
-  session `deactivate` refuses with service watchdogs off, with no timeout
-  and without the session's drop-in, the session going on each time. When a
-  test-only unit's stop removes the drop-in during the switch, after
-  `deactivate` checked it, the same hold forces the way back through into
-  the decoy, which comes up with the session's files still in `/run` (the
-  positive control for the session's own switch; the entry refuses to stage
-  one for the way in). With a test-only drop-in that sets a plain `poweroff`
-  for the timeout instead, PID 1 skips that action during the switch, and a
-  switch held up for 90 seconds goes on only when the hold ends;
+  the decoy after the way back has its own unit, on which the same hold forces
+  a plain soft-reboot through (the positive control). Activation refuses with
+  a test-only drop-in that turns the timeout off, and goes on after a
+  `systemctl service-watchdogs no`, which its own reload undoes; in a session
+  `deactivate` refuses with service watchdogs off, with no timeout and without
+  the session's drop-in, each time before it says that the session ends, and
+  the session goes on each time. When a test-only unit's stop removes the
+  drop-in during the switch, after `deactivate` checked it, the same hold
+  forces the way back through into the decoy, which comes up with the
+  session's files still in `/run` (the positive control for the session's own
+  switch; the entry refuses to stage one for the way in). With a test-only
+  drop-in that sets a plain `poweroff` for the timeout instead, PID 1 skips
+  that action during the switch, and a switch held up for 90 seconds goes on
+  only when the hold ends. `deactivate --poweroff` in a session with service
+  watchdogs off, whose way back `deactivate` refuses, powers the machine off,
+  and the next cold boot is the plain decoy with the session's end recorded;
 - `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
   with its store on the root disk under NixOS's read-only bind, a store path
   bound after it, a read-only bind stacked on an fstab filesystem and its ESP

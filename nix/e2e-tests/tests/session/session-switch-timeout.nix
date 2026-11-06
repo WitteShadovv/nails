@@ -29,17 +29,19 @@
 #      service watchdogs back to what the kernel command line says, and the
 #      hidden PID 1 then has them on. Only that command line could turn them
 #      off for good, which would take a node of its own.
-#   4. In a session, deactivate refuses while the hidden PID 1 has service
-#      watchdogs off (nothing reloads it before the way back), has no
-#      timeout, or has lost the drop-in, and the session goes on each time.
-#      Then the positive control for the session's own
-#      switch: a test-only unit whose stop removes the drop-in and reloads
-#      PID 1 during the switch, after deactivate checked it, and a way back
-#      held up by the unit is forced through at the timeout into the decoy,
-#      which comes up with the session's files still in /run (its runtime
-#      directory and the transition's drop-in), as the way back's last step
-#      never ran. A cold boot clears them. The way in has no such control:
-#      the entry refuses unless PID 1 reports the drop-in's action.
+#   4. In a session, deactivate refuses while the hidden PID 1 has no
+#      timeout, has lost the drop-in, or has service watchdogs off (nothing
+#      reloads it before the way back), each time before it says that the
+#      session ends, and the session goes on each time. With watchdogs off it
+#      names `systemctl service-watchdogs yes` first, and once that turned
+#      them back on the way back goes on, as the positive control for the
+#      session's own switch: a test-only unit whose stop removes the drop-in
+#      and reloads PID 1 during the switch, after deactivate checked it, and
+#      a way back held up by the unit is forced through at the timeout into
+#      the decoy, which comes up with the session's files still in /run (its
+#      runtime directory and the transition's drop-in), as the way back's
+#      last step never ran. A cold boot clears them. The way in has no such
+#      control: the entry refuses unless PID 1 reports the drop-in's action.
 #   5. Why the drop-in powers off by force: with a test-only runtime drop-in
 #      that sets a plain poweroff for the timeout, PID 1 skips that action
 #      while the switch's shutdown runs, and a switch held up for 90 seconds
@@ -50,6 +52,10 @@
 #   7. An entry held up the same way powers off too, without the hidden
 #      session ever coming up; the next cold boot is the plain decoy, the
 #      record still says active, and `recover` resets it.
+#   8. `deactivate --poweroff`, which every refusal of the way back names,
+#      asks about no guard: in a session whose PID 1 has service watchdogs
+#      off, where the way back is refused, it powers the machine off, and the
+#      next cold boot is the plain decoy with the record inactive.
 #
 # PID 1 says on the console what its job timeout does ("Forcibly powering off:
 # job timed out"). The test VMs name the serial port first and the screen last,
@@ -66,10 +72,11 @@ in
     "security"
     "session"
   ];
-  # 467 s on a hosted runner: five waits for the one-minute timeout (one in a
-  # 90-second hold), two power-offs and a crash with their cold boots, seven
-  # soft-reboots and the refused activation and deactivations, which a slower
-  # runner stretches.
+  # About 520 s on a hosted runner (467 s measured before the session that
+  # deactivate --poweroff ends): five waits for the one-minute timeout (one in
+  # a 90-second hold), three power-offs and a crash with their cold boots,
+  # eight soft-reboots and the refused activation and deactivations, which a
+  # slower runner stretches.
   globalTimeout = 1200;
 
   nodes.machine =
@@ -135,6 +142,14 @@ in
     #: How long a follow may take: the timeout, the switch or the power-off,
     #: and room for a slow runner.
     DEADLINE_S = 60 + 240
+    #: The way back, what each of its refusals names instead, and what
+    #: deactivate says only once the way back may start.
+    DEACTIVATE = f"nails --config {CONFIG} deactivate -y"
+    ENDINGS = "deactivate --poweroff`, which powers off, or with `sudo "
+    ENDING = "Ending the hidden session"
+    #: What the way back's refusal names first where the session turned
+    #: service watchdogs off.
+    WATCHDOGS_BACK_ON = "Turn service watchdogs back on with `sudo systemctl service-watchdogs yes`"
 
 
     def unit(prop):
@@ -185,13 +200,16 @@ in
         assert not said(since, FORCED), f"{where}: the switch was forced through"
 
 
-    def assert_refused(command, code, *lines):
-        """`command` refuses with exit `code`, saying each of `lines`."""
+    def assert_refused(command, code, *lines, absent=()):
+        """`command` refuses with exit `code`, saying each of `lines` and
+        none of `absent`."""
         rc, out = machine.execute(f"{command} 2>&1")
         machine.log(out)
         assert rc == code, f"{command}: exit {rc}\n{out}"
         for line in lines:
             assert line in out, f"{command}: no {line!r} in\n{out}"
+        for line in absent:
+            assert line not in out, f"{command}: {line!r} in\n{out}"
 
 
     def without_timeout():
@@ -272,30 +290,45 @@ in
         canonical_activate(CONFIG, "--overlay-only", "activate-forced-back")
         assert manager("ServiceWatchdogs") == "yes", "the entry's reload left them off"
         assert_guard("the session whose way back the test unguards")
-        deactivate = f"nails --config {CONFIG} deactivate -y"
-        # What every refusal of the way back names instead.
-        endings = "deactivate --poweroff`, which powers off, or with `sudo "
-        machine.succeed("systemctl service-watchdogs no")
-        assert_refused(deactivate, 1, "ServiceWatchdogs=no", endings)
-        machine.succeed("systemctl service-watchdogs yes")
-        assert_session_goes_on("with service watchdogs off")
         without_timeout()
-        assert_refused(deactivate, 1, "JobTimeoutUSec=infinity", endings)
+        assert_refused(
+            DEACTIVATE,
+            1,
+            "JobTimeoutUSec=infinity",
+            ENDINGS,
+            absent=(ENDING, WATCHDOGS_BACK_ON),
+        )
         with_timeout_again()
         assert_session_goes_on("without a timeout")
         # Test only: the hidden PID 1 forgets the session's drop-in.
         machine.succeed(f"rm {GUARD} && systemctl daemon-reload")
         assert unit("JobTimeoutAction") == "soft-reboot-force", unit("JobTimeoutAction")
         assert_refused(
-            deactivate,
+            DEACTIVATE,
             1,
             "JobTimeoutAction=soft-reboot-force",
             "the decoy would start with the hidden session's files in /run",
-            endings,
+            ENDINGS,
+            absent=(ENDING, WATCHDOGS_BACK_ON),
         )
         assert_session_goes_on("without the drop-in")
         machine.succeed(f"printf '{GUARD_TEXT}' > {GUARD} && systemctl daemon-reload")
         assert_guard("the session with its drop-in back")
+        # Nothing reloads PID 1 from here to the switch: service watchdogs
+        # turned off in the session refuse the way back, and once they are
+        # turned back on as the refusal says, the way back goes on.
+        machine.succeed("systemctl service-watchdogs no")
+        assert_refused(
+            DEACTIVATE,
+            1,
+            "ServiceWatchdogs=no",
+            f"{WATCHDOGS_BACK_ON} and deactivate again, or end the session with `sudo ",
+            ENDINGS,
+            absent=(ENDING,),
+        )
+        assert_session_goes_on("with service watchdogs off")
+        machine.succeed("systemctl service-watchdogs yes")
+        assert manager("ServiceWatchdogs") == "yes"
         # Test only: once the switch has begun, and so after deactivate
         # checked the drop-in, this unit's stop removes it and reloads PID 1,
         # so the unit's own action holds when the switch's job times out.
@@ -309,7 +342,7 @@ in
         since = len(machine.full_console_log)
         session.follow_soft_reboot(
             machine,
-            f"nails --config {CONFIG} deactivate -y > {session.SERIAL_CONSOLE} 2>&1",
+            f"{DEACTIVATE} > {session.SERIAL_CONSOLE} 2>&1",
             "forced-back",
             deadline_s=DEADLINE_S,
         )
@@ -356,7 +389,7 @@ in
         since = len(machine.full_console_log)
         session.follow_power_off(
             machine,
-            f"nails --config {CONFIG} deactivate -y > {session.SERIAL_CONSOLE} 2>&1",
+            f"{DEACTIVATE} > {session.SERIAL_CONSOLE} 2>&1",
             "hold-back",
             deadline_s=DEADLINE_S,
         )
@@ -385,6 +418,28 @@ in
         assert data["place"] == "decoy", data
         assert data["attention"] == "ended_abnormally", data
         machine.succeed(f"nails --config {CONFIG} recover")
+        data = read_status_json(CONFIG)
+        assert data["place"] == "decoy", data
+        assert data["attention"] is None, data
+
+    with subtest("deactivate --poweroff ends a session whose way back is refused"):
+        canonical_activate(CONFIG, "--overlay-only", "activate-poweroff")
+        assert_guard("the session that powers off")
+        machine.succeed("systemctl service-watchdogs no")
+        assert_refused(DEACTIVATE, 1, "ServiceWatchdogs=no", absent=(ENDING,))
+        assert_session_goes_on("before the power-off")
+        since = len(machine.full_console_log)
+        session.follow_power_off(
+            machine,
+            f"{DEACTIVATE} --poweroff > {session.SERIAL_CONSOLE} 2>&1",
+            "poweroff-unguarded",
+            deadline_s=DEADLINE_S,
+        )
+        # An ordinary power-off: no job of it ran into its timeout.
+        assert not said(since, "job timed out"), "the power-off waited for a job timeout"
+        assert_cold_decoy("after deactivate --poweroff")
+        # The way back recorded the session's end before the power-off.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         data = read_status_json(CONFIG)
         assert data["place"] == "decoy", data
         assert data["attention"] is None, data
