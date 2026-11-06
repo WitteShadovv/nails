@@ -11,8 +11,8 @@
 #
 # The scenario, on each image with unattended-upgrades:
 #
-#   - checks the stock decoy: both rows pass, its apt configuration read as
-#     apt reads it;
+#   - checks the stock decoy: both rows pass, and `apt-config` reads the
+#     setting off, as NAILS does;
 #   - starts a daily run the way apt-daily-upgrade.timer does
 #     (`apt-daily-upgrade.service`) and holds it at its first step, the power
 #     check, with a stand-in for powermgmt-base's `on_ac_power` that waits
@@ -22,8 +22,9 @@
 #     soft-reboot` during the same run, the call a switch makes, makes the
 #     helper write its line on the decoy disk. Once the run has ended, the
 #     row passes again;
-#   - turns the setting on in a file of `/etc/apt/apt.conf.d`: `check` and
-#     `activate` refuse, naming the file and its line. With
+#   - turns the setting on in a file of `/etc/apt/apt.conf.d`, which
+#     `apt-config` reads as on: `check` and `activate` refuse, naming the file
+#     and its line. With
 #     `--allow-persistent-decoy` the activation goes through, and the decoy's
 #     helper logs its shutdown-mode run on the decoy disk at the switch, the
 #     positive control;
@@ -182,6 +183,17 @@ distroVm.buildVmTest {
         return found
 
 
+    def apt_reads_setting():
+        # The setting as apt itself reads it: `apt-config shell` prints
+        # nothing for a setting no file sets, which apt reads as off.
+        out = vm.succeed(
+            "apt-config shell V Unattended-Upgrade::InstallOnShutdown/b"
+        ).strip()
+        print(f"apt-config: {out!r}")
+        assert out in ("", "V='false'", "V='true'"), out
+        return out == "V='true'"
+
+
     def assert_on_the_decoy():
         vm.fail("mountpoint -q /run/nextroot")
         vm.fail("test -e /run/overlay-runtime")
@@ -269,8 +281,9 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         assert row("unattended-upgrade-run")["status"] == "pass"
+        assert not apt_reads_setting(), "the stock decoy installs at shutdown"
         persistence = row("decoy-persistence")
-        assert "unattended-upgrades" not in persistence["message"], persistence
+        assert persistence["status"] == "pass", persistence
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
     with subtest("a daily unattended-upgrade run refuses check and activation"):
@@ -319,6 +332,7 @@ distroVm.buildVmTest {
 
     with subtest("InstallOnShutdown on refuses check and activation"):
         vm.succeed(f"printf %s {shlex.quote(setting_on)} > {setting_file}")
+        assert apt_reads_setting(), "apt reads the setting off"
         refusal = row("decoy-persistence")
         assert refusal["status"] == "fail", refusal
         assert f"is on in {setting_file}:1" in refusal["message"], refusal
