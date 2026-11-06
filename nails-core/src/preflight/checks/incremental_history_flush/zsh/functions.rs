@@ -111,6 +111,13 @@ impl<F: Filesystem> Reader<'_, F> {
                     looked.push(path.clone());
                     if !digests.contains(&dir) {
                         digests.push(dir.clone());
+                        // zsh reads an element whose name ends in `.zwc` as
+                        // the compiled code of the functions it holds
+                        // (`fpath=(~/zc.zwc $fpath)`), and the `.zwc` beside
+                        // a directory as that directory's.
+                        if dir.as_os_str().as_encoded_bytes().ends_with(b".zwc") {
+                            self.compiled(&dir);
+                        }
                         self.compiled(&zwc(&dir));
                     }
                     self.function(&path, &name);
