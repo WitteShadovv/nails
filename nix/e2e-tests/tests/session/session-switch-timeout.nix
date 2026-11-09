@@ -72,11 +72,10 @@ in
     "security"
     "session"
   ];
-  # About 520 s on a hosted runner (467 s measured before the session that
-  # deactivate --poweroff ends): five waits for the one-minute timeout (one in
-  # a 90-second hold), three power-offs and a crash with their cold boots,
-  # eight soft-reboots and the refused activation and deactivations, which a
-  # slower runner stretches.
+  # 490 s on a hosted runner: five waits for the one-minute timeout (one in a
+  # 90-second hold), three power-offs and a crash with their cold boots, eight
+  # soft-reboots and the refused activation and deactivations, which a slower
+  # runner stretches.
   globalTimeout = 1200;
 
   nodes.machine =
