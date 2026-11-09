@@ -1258,6 +1258,102 @@ fn the_kernel_says_a_plain_directory_is_no_mount_point() {
     assert!(real.mount_root(&dir.path().join("missing")).is_err());
 }
 
+/// What a place is, from what `statx` said of it: a link is a link and an
+/// automount point by its attribute is one, whatever else; at the root of a
+/// mount an autofs on top is an automount point too, and the filesystem on
+/// top is asked only there. Its error is the place's.
+#[test]
+fn the_root_of_a_mount_is_an_automount_point_where_an_autofs_is_on_top() {
+    use super::file_ops::place;
+    const AUTOFS: i128 = 0x0187;
+    const TMPFS: i128 = 0x0102_1994;
+    let unasked = || -> crate::Result<i128> { panic!("the filesystem on top is not asked") };
+    assert_eq!(
+        place(true, Some(true), Some(true), unasked).unwrap(),
+        MountRoot::Link
+    );
+    assert_eq!(
+        place(false, Some(true), Some(true), unasked).unwrap(),
+        MountRoot::Automount
+    );
+    assert_eq!(
+        place(false, Some(false), Some(true), || Ok(AUTOFS)).unwrap(),
+        MountRoot::Automount
+    );
+    assert_eq!(
+        place(false, None, Some(true), || Ok(AUTOFS)).unwrap(),
+        MountRoot::Automount
+    );
+    assert_eq!(
+        place(false, Some(false), Some(true), || Ok(TMPFS)).unwrap(),
+        MountRoot::Entry(Some(true))
+    );
+    for root in [Some(false), None] {
+        assert_eq!(
+            place(false, Some(false), root, unasked).unwrap(),
+            MountRoot::Entry(root)
+        );
+    }
+    let error = place(false, Some(false), Some(true), || {
+        Err(NailsError::io(
+            "/srv/x",
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        ))
+    })
+    .unwrap_err();
+    assert_eq!(
+        error.io_kind(),
+        Some(std::io::ErrorKind::NotFound),
+        "{error}"
+    );
+}
+
+/// The filesystem on top at a place, as an `O_PATH` descriptor's `fstatfs`
+/// says, is the one `statfs` of the place names. The descriptor opens no
+/// file, so a folder its owner may not read is asked too, and follows no
+/// link: a link to `/proc` is told by the filesystem it lies on. A place
+/// that is not there is an error that names it.
+#[test]
+fn the_filesystem_on_top_is_the_one_statfs_names() {
+    use std::os::unix::fs::PermissionsExt;
+    for path in ["/", "/proc"] {
+        let expected = i128::from(rustix::fs::statfs(path).unwrap().f_type);
+        assert_eq!(
+            super::file_ops::on_top(Path::new(path)).unwrap(),
+            expected,
+            "{path}"
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let here = i128::from(rustix::fs::statfs(dir.path()).unwrap().f_type);
+    let closed = dir.path().join("closed");
+    fs::create_dir(&closed).unwrap();
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).unwrap();
+    let on_closed = super::file_ops::on_top(&closed);
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(on_closed.unwrap(), here);
+    let link = dir.path().join("proc");
+    std::os::unix::fs::symlink("/proc", &link).unwrap();
+    assert_ne!(
+        here,
+        i128::from(rustix::fs::statfs("/proc").unwrap().f_type)
+    );
+    assert_eq!(super::file_ops::on_top(&link).unwrap(), here);
+    let missing = dir.path().join("missing");
+    let error = super::file_ops::on_top(&missing).unwrap_err();
+    assert_eq!(
+        error.io_kind(),
+        Some(std::io::ErrorKind::NotFound),
+        "{error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with(&missing.display().to_string()),
+        "{error}"
+    );
+}
+
 #[test]
 fn read_link_gives_the_target_without_following_it() {
     let dir = tempfile::tempdir().unwrap();
