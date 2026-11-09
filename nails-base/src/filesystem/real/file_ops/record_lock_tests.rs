@@ -152,3 +152,30 @@ fn a_file_the_caller_may_not_read_is_an_error_but_to_root() {
         );
     }
 }
+
+#[test]
+fn the_query_changes_none_of_the_files_times() {
+    use std::os::unix::fs::MetadataExt;
+    use std::time::{Duration, SystemTime};
+    // An access time well behind the modification time, which relatime
+    // would move at a read.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("unattended-upgrades.lock");
+    std::fs::write(&path, "").unwrap();
+    let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    std::fs::File::open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_accessed(old))
+        .unwrap();
+    let times = |path: &Path| {
+        let meta = std::fs::metadata(path).unwrap();
+        [
+            (meta.atime(), meta.atime_nsec()),
+            (meta.mtime(), meta.mtime_nsec()),
+            (meta.ctime(), meta.ctime_nsec()),
+        ]
+    };
+    let before = times(&path);
+    assert_eq!(record_lock_holder(&path).unwrap(), None);
+    assert_eq!(times(&path), before);
+}
