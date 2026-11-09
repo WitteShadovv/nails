@@ -108,6 +108,15 @@ mod tests {
                 "fstab_filesystem",
                 Verdict::OnDecoyFilesystem {
                     how: Sharing::Filesystem,
+                    at: PathBuf::from("/backup"),
+                    in_fstab: true,
+                },
+            ),
+            // The decoy's own line for a system folder is none to remove.
+            (
+                "fstab_system_folder",
+                Verdict::OnDecoyFilesystem {
+                    how: Sharing::Filesystem,
                     at: PathBuf::from("/srv"),
                     in_fstab: true,
                 },

@@ -1018,9 +1018,9 @@ fn the_hint_for_a_root_that_is_the_decoys_filesystem_undoes_what_made_it_the_dec
         )
         .hint(None)
     };
-    // The boot mounts it by a line of the fstab: the line goes.
+    // The boot mounts it at a folder by a line of the fstab: the line goes.
     assert_eq!(
-        hint("/srv", true)[0],
+        hint("/backup", true)[0],
         "If /mnt/data is the volume you prepared, remove its line from /etc/fstab long before \
          the next use, and mount it by hand each time."
     );
@@ -1035,10 +1035,21 @@ fn the_hint_for_a_root_that_is_the_decoys_filesystem_undoes_what_made_it_the_dec
         "{:?}",
         hint("/srv/my data", false)
     );
-    // Neither the line for / nor a mount that holds the root is to go.
-    for (at, in_fstab) in [("/", true), ("/", false), ("/mnt", false)] {
+    // Neither the line for / or for a system folder, which is the decoy's
+    // own, nor a mount that holds the root is to go.
+    for (at, in_fstab) in [
+        ("/", true),
+        ("/", false),
+        ("/srv", true),
+        ("/home", true),
+        ("/mnt", false),
+    ] {
         let hint = hint(at, in_fstab);
         assert!(hint[0].starts_with("Setting up here"), "{at}: {hint:?}");
+        assert!(
+            !hint.iter().any(|line| line.contains("remove its line")),
+            "{at}: {hint:?}"
+        );
     }
 }
 

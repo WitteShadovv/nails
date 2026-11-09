@@ -95,8 +95,11 @@ data reaches a ZFS volume is never accepted, not even on a filesystem of the dec
 `backend-entries` check: remove it long
 before the next use and open the volume by hand each time. If the boot mounts
 the volume through such a line, the gate refuses it as the decoy's own
-filesystem and says to remove the line, unless it is on ZFS (a dataset or a
-volume), which the gate refuses as storage it cannot judge. A line the decoy's own boot needs, one
+filesystem and says to remove the line, unless the line is for `/` or for a
+system folder (`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`,
+`/nix`, `/opt`, unless the hidden root is that folder or lies above it), which
+is the decoy's own line and never one to remove, or the volume is on ZFS (a
+dataset or a volume), which the gate refuses as storage it cannot judge. A line the decoy's own boot needs, one
 that mounts its root or another of its filesystems or its swap or that opens a
 device below one of them, cannot go: the hidden root then lies on the decoy's
 own storage, and the check says to put it on storage of its own instead. The
