@@ -136,13 +136,12 @@ impl<F: Filesystem> Verifier<F> {
     /// and the session's own units or masks among the runtime unit files and
     /// generators. Inside
     /// the hidden root all of these are expected, so it reports that as
-    /// information instead.
-    pub(super) fn check_session_leftovers(
-        &self,
-        session: Option<&HiddenSession>,
-    ) -> Result<Vec<Finding>> {
+    /// information instead. A leftover's path that cannot be looked up is a
+    /// warning that verify cannot tell whether it is left ([`untold`]), never
+    /// a critical finding: that one keeps meaning that something was found.
+    pub(super) fn check_session_leftovers(&self, session: Option<&HiddenSession>) -> Vec<Finding> {
         if session.is_some() {
-            return Ok(vec![
+            return vec![
                 Finding::new(
                     Severity::Info,
                     "session",
@@ -155,11 +154,21 @@ impl<F: Filesystem> Verifier<F> {
                      check the decoy itself, {}",
                     check_decoy_offline()
                 )),
-            ]);
+            ];
         }
         let mut findings = Vec::new();
         let critical = |what: String| {
             Finding::new(Severity::Critical, "session", what).with_fix_guidance(recover_fix())
+        };
+        // A leftover verify cannot tell is there: what would be critical warns.
+        let untold_left = |what: String, path: &Path, error: &crate::NailsError| {
+            untold(
+                Severity::Critical,
+                "session",
+                &format!("Could not tell whether {what}"),
+                path,
+                error,
+            )
         };
         if nails_teardown::whole_root::nextroot::is_mount_point(
             &self.mount_table(),
@@ -171,37 +180,50 @@ impl<F: Filesystem> Verifier<F> {
         }
         findings.extend(self.leftover_hidden_overlays());
         let runtime = Path::new(RUNTIME_DIR);
-        if self.filesystem.path_exists(&runtime.join(PLAN_NAME))? {
-            findings.push(critical(format!(
-                "a session plan is left at {}",
-                runtime.join(PLAN_NAME).display()
-            )));
-        } else if self.filesystem.path_exists(runtime)? {
-            findings.push(critical(format!(
-                "the session runtime directory {RUNTIME_DIR} is left in RAM"
-            )));
+        let plan = runtime.join(PLAN_NAME);
+        let plan_left = format!("a session plan is left at {}", plan.display());
+        let plan_found = match self.filesystem.path_exists(&plan) {
+            Ok(found) => found,
+            Err(error) => {
+                findings.push(untold_left(plan_left.clone(), &plan, &error));
+                false
+            }
+        };
+        let runtime_left = format!("the session runtime directory {RUNTIME_DIR} is left in RAM");
+        if plan_found {
+            findings.push(critical(plan_left));
+        } else {
+            match self.filesystem.path_exists(runtime) {
+                Ok(true) => findings.push(critical(runtime_left)),
+                Ok(false) => {}
+                Err(error) => findings.push(untold_left(runtime_left, runtime, &error)),
+            }
         }
         let dropin = Path::new("/run").join(DROPIN_DIR).join(DROPIN_NAME);
-        if self.filesystem.path_exists(&dropin)? {
-            findings.push(critical(format!(
-                "the soft-reboot transition drop-in {} is left",
-                dropin.display()
-            )));
+        let dropin_left = format!(
+            "the soft-reboot transition drop-in {} is left",
+            dropin.display()
+        );
+        match self.filesystem.path_exists(&dropin) {
+            Ok(true) => findings.push(critical(dropin_left)),
+            Ok(false) => {}
+            Err(error) => findings.push(untold_left(dropin_left, &dropin, &error)),
         }
         for (unit, _) in runtime_guards() {
             let guard = Path::new("/run")
                 .join(stop_guard_dir(unit))
                 .join(STOP_GUARD_NAME);
-            if self.filesystem.path_exists(&guard)? {
-                findings.push(critical(format!(
-                    "the session's runtime guard {} is left: {unit} runs changed until \
-                     the next boot",
-                    guard.display()
-                )));
+            let guard_left = format!("the session's runtime guard {} is left", guard.display());
+            match self.filesystem.path_exists(&guard) {
+                Ok(true) => findings.push(critical(format!(
+                    "{guard_left}: {unit} runs changed until the next boot"
+                ))),
+                Ok(false) => {}
+                Err(error) => findings.push(untold_left(guard_left, &guard, &error)),
             }
         }
-        findings.extend(self.leftover_run_units()?);
-        Ok(findings)
+        findings.extend(self.leftover_run_units());
+        findings
     }
 
     /// Overlays outside `/run/nextroot` whose upper lies on the hidden volume:
@@ -243,13 +265,28 @@ impl<F: Filesystem> Verifier<F> {
     /// administrator's own (`systemctl mask --runtime`, or a link of their
     /// own), so it only warns. Also the session's skip drop-ins in
     /// `/run/systemd/system`, which only the session writes.
-    fn leftover_run_units(&self) -> Result<Vec<Finding>> {
+    fn leftover_run_units(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
         for dir in [RUN_UNIT_DIR, RUN_CONTROL_DIR, RUN_GENERATOR_DIR] {
-            findings.extend(self.leftover_units_in(Path::new(dir))?);
+            findings.extend(self.leftover_units_in(Path::new(dir)));
         }
-        findings.extend(self.leftover_skips()?);
-        Ok(findings)
+        findings.extend(self.leftover_skips());
+        findings
+    }
+
+    /// Whether `dir` is a directory to look into for leftovers; a lookup
+    /// that fails gives the finding that verify cannot tell whether `what`
+    /// is left there, as critical as the leftover, so a warning.
+    fn leftovers_dir(&self, dir: &Path, what: &str) -> std::result::Result<bool, Finding> {
+        self.filesystem.is_directory(dir).map_err(|error| {
+            untold(
+                Severity::Critical,
+                "session",
+                &format!("Could not tell whether {what} is left in {}", dir.display()),
+                dir,
+                &error,
+            )
+        })
     }
 
     /// The skip drop-ins the entry writes for the units a boot target
@@ -257,10 +294,12 @@ impl<F: Filesystem> Verifier<F> {
     /// whenever it is started, until the next boot. The session's other
     /// runtime drop-ins share the file name, so a drop-in counts when its
     /// text is the skip's.
-    fn leftover_skips(&self) -> Result<Vec<Finding>> {
+    fn leftover_skips(&self) -> Vec<Finding> {
         let dir = Path::new(RUN_UNIT_DIR);
-        if !self.filesystem.is_directory(dir)? {
-            return Ok(Vec::new());
+        match self.leftovers_dir(dir, "a skip drop-in of the session") {
+            Ok(true) => {}
+            Ok(false) => return Vec::new(),
+            Err(untold) => return vec![untold],
         }
         let mut findings = Vec::new();
         for path in self.filesystem.list_directory(dir).unwrap_or_default() {
@@ -291,7 +330,7 @@ impl<F: Filesystem> Verifier<F> {
                 );
             }
         }
-        Ok(findings)
+        findings
     }
 
     /// Whether the drop-in directory `dir` holds the drop-in an entry writes
@@ -302,9 +341,11 @@ impl<F: Filesystem> Verifier<F> {
             .is_ok_and(|text| text == QUIET_MOUNTS_TEXT)
     }
 
-    fn leftover_units_in(&self, dir: &Path) -> Result<Vec<Finding>> {
-        if !self.filesystem.is_directory(dir)? {
-            return Ok(Vec::new());
+    fn leftover_units_in(&self, dir: &Path) -> Vec<Finding> {
+        match self.leftovers_dir(dir, "a unit or a mask of the session") {
+            Ok(true) => {}
+            Ok(false) => return Vec::new(),
+            Err(untold) => return vec![untold],
         }
         let session_units = [
             WATCH_UNIT.to_string(),
@@ -337,23 +378,31 @@ impl<F: Filesystem> Verifier<F> {
                     )
                     .with_fix_guidance(recover_fix()),
                 );
-            } else if self.filesystem.is_symlink(&path)?
-                && self.filesystem.canonicalize(&path).ok().as_deref()
-                    == Some(Path::new("/dev/null"))
-            {
-                findings.push(
-                    Finding::new(
+            } else {
+                let masked = format!("{name} is masked at runtime ({})", path.display());
+                match self.filesystem.is_symlink(&path) {
+                    Ok(true)
+                        if self.filesystem.canonicalize(&path).ok().as_deref()
+                            == Some(Path::new("/dev/null")) =>
+                    {
+                        findings.push(
+                            Finding::new(Severity::Warn, "session", masked).with_fix_guidance(
+                                "If you did not mask it yourself, a hidden session left the \
+                                 mask: remove the link and run 'systemctl daemon-reload'",
+                            ),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => findings.push(untold(
                         Severity::Warn,
                         "session",
-                        format!("{name} is masked at runtime ({})", path.display()),
-                    )
-                    .with_fix_guidance(
-                        "If you did not mask it yourself, a hidden session left the mask: \
-                         remove the link and run 'systemctl daemon-reload'",
-                    ),
-                );
+                        &format!("Could not tell whether {masked}"),
+                        &path,
+                        &error,
+                    )),
+                }
             }
         }
-        Ok(findings)
+        findings
     }
 }

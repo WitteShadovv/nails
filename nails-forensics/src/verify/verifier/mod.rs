@@ -273,12 +273,12 @@ impl<F: Filesystem> Verifier<F> {
         // Live-only checks: these describe the running machine, not an image.
         if !offline {
             // 1. What an entry or a hidden session leaves in /run on the decoy.
-            findings.extend(self.check_session_leftovers(session.as_ref())?);
+            findings.extend(self.check_session_leftovers(session.as_ref()));
             ran.insert("session-leftovers");
         }
 
         // 2. Check for artifact files from the shared registry.
-        findings.extend(self.check_artifact_files(session.as_ref())?);
+        findings.extend(self.check_artifact_files(session.as_ref()));
         ran.insert("artifact-files");
 
         // 2b. The residue catalog's path probes for session residue.
