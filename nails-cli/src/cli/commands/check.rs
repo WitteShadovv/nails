@@ -109,12 +109,17 @@ pub(crate) fn readiness_report(
     if let Some(error) = readiness.refusal() {
         refusal(error);
     }
-    readiness.run().map_err(|e| {
-        (
-            ExitStatus::Failed,
-            ErrorBody::new("check_error", format!("could not assemble checks: {e}")),
-        )
-    })
+    readiness
+        .run()
+        .map_err(|e| (ExitStatus::Failed, assembly_error(&e)))
+}
+
+/// The error body of checks that could not be assembled, with the error's
+/// next step where it has one: for a lookup the automount guard did not
+/// make, the line that says to mount the point and run `check` again.
+fn assembly_error(error: &nails_core::NailsError) -> ErrorBody {
+    ErrorBody::new("check_error", format!("could not assemble checks: {error}"))
+        .with_hint(error.hint().unwrap_or_default())
 }
 
 /// The pre-flight options of `check`: what activation builds from the same
@@ -126,5 +131,67 @@ pub(super) fn preflight_options(args: &CheckArgs) -> PreflightOptions {
         allow_decoy_storage: args.allow_decoy_storage,
         allow_discards: args.allow_discards,
         ..PreflightOptions::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assembly_error;
+    use crate::cli::output::envelope::{error_envelope, write_human_error};
+    use nails_core::NailsError;
+    use nails_core::error::Skip;
+    use std::path::PathBuf;
+
+    /// Checks that cannot be assembled because the automount guard did not
+    /// look up a path, such as an explicit flake behind an automount point
+    /// that nothing is mounted on yet, name the path and the point, and say
+    /// to mount the point and run `check` again: for a person and in JSON.
+    #[test]
+    fn a_lookup_the_guard_did_not_make_says_to_mount_the_point() {
+        let point = PathBuf::from("/srv/flake");
+        let error = NailsError::NotLookedUp {
+            path: PathBuf::from("/srv/flake/flake.nix"),
+            reason: Skip::Automount {
+                point: point.clone(),
+            },
+        };
+        let fix = nails_core::filesystem::automount::mount_fix(&[point.as_path()]);
+        let body = assembly_error(&error);
+        assert_eq!(body.code, "check_error");
+        assert_eq!(
+            body.message,
+            format!(
+                "could not assemble checks: NAILS does not look up /srv/flake/flake.nix, since \
+                 the lookup would mount the automount point /srv/flake\n{fix}"
+            )
+        );
+
+        let mut human = Vec::new();
+        write_human_error(&mut human, &body);
+        assert_eq!(
+            String::from_utf8(human).unwrap(),
+            format!(
+                "error: could not assemble checks: NAILS does not look up /srv/flake/flake.nix, \
+                 since the lookup would mount the automount point /srv/flake\n  {fix}\n"
+            )
+        );
+        let json = serde_json::to_value(error_envelope("check", body)).unwrap();
+        assert_eq!(json["ok"], false, "{json}");
+        assert_eq!(json["error"]["code"], "check_error", "{json}");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.ends_with(&format!("\n{fix}"))),
+            "{json}"
+        );
+    }
+
+    /// An error with no next step is reported as it was, with nothing added.
+    #[test]
+    fn an_error_without_a_next_step_gets_no_hint() {
+        let error = NailsError::InvalidState("the state file is corrupt".into());
+        assert_eq!(error.hint(), None);
+        let body = assembly_error(&error);
+        assert_eq!(body.message, format!("could not assemble checks: {error}"));
     }
 }
