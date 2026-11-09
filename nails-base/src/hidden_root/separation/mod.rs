@@ -13,7 +13,9 @@
 //! - the mount at `/`;
 //! - every `/etc/fstab` entry, swap and `noauto` ones included, except RAM,
 //!   kernel, host-share, network and overlay filesystems; a bind (or a swap
-//!   file) is claimed through the mount that holds its source;
+//!   or image file) is claimed through the mount that holds its source, as
+//!   its links lead, or as written where they cannot be followed
+//!   ([`Unfollowed`]);
 //! - every `/etc/crypttab` source and its `/dev/mapper/<name>`;
 //! - the mounts at `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`,
 //!   `/boot/efi`, `/nix` and `/opt` that are not at or under the hidden root.
@@ -21,40 +23,42 @@
 //! An fstab or crypttab entry that resolves into the hidden mount's own device
 //! stack, or into another device of its btrfs filesystem and what lies below
 //! that, or names one of their mappings, is an entry for the hidden drive,
-//! reported as an [`EntryFinding`]; so is a crypttab entry with
-//! `tcrypt-hidden` for a device on the hidden drive or one that cannot be
-//! found, and an fstab bind line whose source lies in the volume, at the
-//! root's folder or inside it as the mount that holds the source shows it,
-//! which mounts the volume or a folder of it. Such an entry is an
-//! enabler stored on the decoy; the attach gate ignores the finding (writing to
-//! the root stays safe) and the `backend-entries` check reports it. A finding
-//! is no claim, except an fstab entry the boot mounts or swaps on, one for
-//! another device of the root's btrfs filesystem, which is the decoy's own
-//! storage too, and a line placed by its path: every bind line, a `noauto` one
-//! too, claims the filesystem its source lies on, and every swap or image file
-//! line the one that holds its file. A finding the decoy's own boot needs, an
-//! fstab entry that mounts another of its filesystems or its swap, or the whole
-//! filesystem a root bound from a folder of it or a subvolume of it lies on
-//! (the decoy's line for `/` below a bind of a folder of `/`), or one that
-//! mounts the root's own filesystem at `/` or at a system folder, whatever it
-//! mounts of it, or a crypttab entry that opens a device below one of them or
-//! makes one the root's own filesystem lies on while the decoy uses that
-//! filesystem (at `/`, at a system folder or by a line its boot needs), is
-//! marked so: the hidden root then lies on the decoy's own storage and has to
-//! move, since removing the entry would break the decoy. An fstab line the
-//! boot mounts at `/` or at a system folder for another part of the
-//! filesystem the root is a folder or a subvolume of, its top or a subvolume
-//! above or beside the root's, whose mount is there (the mount at its folder
-//! is of that filesystem and shows what the line names), is marked as the
-//! decoy's own line for it ([`EntryFinding::system_folder`]), which
-//! `backend-entries` lets be for a root that `--allow-decoy-storage` accepted
-//! on that filesystem; one that mounts the volume itself, whose subvolume
-//! cannot be told or whose mount is not there never is. So
-//! is a crypttab line the boot opens that makes a device that filesystem lies
-//! on, while the decoy mounts another part of it at `/`, by its mount there,
-//! or at a system folder, by such an fstab line; a `noauto` one, one with
-//! `tcrypt-hidden`, one for any other device and every line for a root that
-//! is the whole filesystem never are.
+//! reported as an [`EntryFinding`]; so is a crypttab entry with `tcrypt-hidden`
+//! for a device on the hidden drive or one that cannot be found, and an fstab
+//! bind line whose source, as its links lead, lies in the volume, at the root's
+//! folder or inside it as the mount that holds the source shows it, which
+//! mounts the volume or a folder of it. Such an entry is an enabler stored on
+//! the decoy; the attach gate ignores the finding (writing to the root stays
+//! safe) and the `backend-entries` check reports it. A bind line, or a swap or
+//! image file line, whose path cannot be followed ([`Unfollowed`]) may mount
+//! the volume too, and is reported as an entry where that cannot be told
+//! ([`EntryKind::Untold`]). A finding is no claim, except an fstab entry the
+//! boot mounts or swaps on, one for another device of the root's btrfs
+//! filesystem, which is the decoy's own storage too, and a line placed by its
+//! path: every bind line, a `noauto` one too, claims the filesystem its source
+//! lies on, and every swap or image file line the one that holds its file. A
+//! finding the decoy's own boot needs, an fstab entry that mounts another of
+//! its filesystems or its swap, or the whole filesystem a root bound from a
+//! folder of it or a subvolume of it lies on (the decoy's line for `/` below a
+//! bind of a folder of `/`), or one that mounts the root's own filesystem at
+//! `/` or at a system folder, whatever it mounts of it, or a crypttab entry
+//! that opens a device below one of them or makes one the root's own filesystem
+//! lies on while the decoy uses that filesystem (at `/`, at a system folder or
+//! by a line its boot needs), is marked so: the hidden root then lies on the
+//! decoy's own storage and has to move, since removing the entry would break
+//! the decoy. An fstab line the boot mounts at `/` or at a system folder for
+//! another part of the filesystem the root is a folder or a subvolume of, its
+//! top or a subvolume above or beside the root's, whose mount is there (the
+//! mount at its folder is of that filesystem and shows what the line names), is
+//! marked as the decoy's own line for it ([`EntryFinding::system_folder`]),
+//! which `backend-entries` lets be for a root that `--allow-decoy-storage`
+//! accepted on that filesystem; one that mounts the volume itself, whose
+//! subvolume cannot be told or whose mount is not there never is. So is a
+//! crypttab line the boot opens that makes a device that filesystem lies on,
+//! while the decoy mounts another part of it at `/`, by its mount there, or at
+//! a system folder, by such an fstab line; a `noauto` one, one with
+//! `tcrypt-hidden`, one for any other device and every line for a root that is
+//! the whole filesystem never are.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read, or
 //! what a claimed filesystem keeps data on besides its device cannot be told;
@@ -101,10 +105,11 @@
 //! one whose kind cannot be read is [`NodeKind::Unidentified`], and refused
 //! only when the root's data reaches it.
 //!
-//! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
-//! the block devices; [`judge`] reads no file. [`collect`] reads them through
-//! the [`Filesystem`](crate::Filesystem) trait, and [`judge_storage`] does
-//! both for the attach gate. [`claimed_devices`] lists the devices the claims
+//! The inputs are the mount table, the parsed files, where the paths the
+//! fstab names lead, and a [`DeviceMap`] of the block devices; [`judge`]
+//! reads no file. [`collect`] reads them through the
+//! [`Filesystem`](crate::Filesystem) trait, and [`judge_storage`] does both
+//! for the attach gate. [`claimed_devices`] lists the devices the claims
 //! hold, for a check that weighs the hidden root's own stack against them.
 //! [`decoys_own_mount`] tells whether the decoy makes a mount itself, at `/`
 //! or by a line of its fstab, for the rule that leaves the decoy's own mounts
@@ -114,12 +119,14 @@ mod collect;
 mod extra;
 mod judge;
 mod lines;
+mod paths;
 #[cfg(test)]
 mod tests;
 
 pub use collect::{Collected, collect, judge_storage};
 pub use judge::{claimed_devices, judge, shown_fstype};
 pub use lines::{decoys_own_mount, sharing};
+pub use paths::{FollowedPaths, Unfollowed};
 
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;
@@ -442,6 +449,21 @@ pub struct Scene<'a> {
     pub devices: &'a DeviceMap,
     /// Inputs that exist but could not be read (never taken as empty).
     pub unreadable: &'a [PathBuf],
+    /// Where the paths the fstab names lead: a bind line's source, a swap or
+    /// image file, followed through their links.
+    pub paths: &'a FollowedPaths,
+}
+
+impl<'a> Scene<'a> {
+    /// Where the path `spec` of an fstab line leads, as [`Scene::paths`]
+    /// holds it. One that was not looked up cannot be told.
+    fn followed(&self, spec: &str) -> Result<&'a Path, Unfollowed> {
+        match self.paths.get(spec) {
+            Some(Ok(path)) => Ok(path),
+            Some(Err(why)) => Err(why.clone()),
+            None => Err(Unfollowed::NotLookedUp),
+        }
+    }
 }
 
 /// How bad a verdict is.
@@ -681,6 +703,10 @@ pub enum EntryKind {
     Blocking,
     /// The entry opens only another volume on the same drive.
     OuterWarning,
+    /// Where the entry leads cannot be told ([`Unfollowed`]): a bind line, or
+    /// a swap or image file line, whose path cannot be followed, which may
+    /// mount the hidden volume.
+    Untold,
 }
 
 /// An fstab or crypttab entry of the decoy for the hidden drive.

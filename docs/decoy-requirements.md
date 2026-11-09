@@ -1158,8 +1158,9 @@ the mount's device (for a ZFS dataset, the dataset) and mounts what the mount
 shows: the filesystem's top, or the btrfs subvolume its `subvol=` or
 `subvolid=` names (with both, the one both name), as the mount table shows
 that subvolume's path and id, but never a folder bound there by hand. Or it is
-a bind line whose source lies on another of the decoy's own mounts of that
-filesystem, and the mount shows that source's folder. A line whose
+a bind line whose source, read through its links, lies on another of the
+decoy's own mounts of that filesystem, and the mount shows that source's
+folder; a source whose links cannot be followed makes none. A line whose
 `subvolid=` is no number makes no mount of the decoy's, and neither does a
 line with `subvolid=` for a mount whose id the mount table does not show, nor
 one that gives `subvol=` or `subvolid=` twice or a `subvol=` path with `..` in
@@ -1214,21 +1215,33 @@ and a btrfs line whose subvolume cannot be told, such as one that gives
 as one whose `subvol=` is a link, is no line whose mount is there, and neither
 is a btrfs line with neither option whose mount shows another subvolume than
 the top, as for a filesystem whose default subvolume is not its top. An fstab
-bind line whose source lies in the volume, at the root's folder or inside it
-as the mount that holds the source shows it, mounts the volume as well, and
-fails too. So does every crypttab line for a root that is the whole
-filesystem, and one for a filesystem that the decoy mounts neither at `/` nor
-at a system folder, such as an encrypted drive whose fstab line is for
-`/backup` or whose line for `/srv` is not mounted. A line that names another
-device of a btrfs filesystem of several devices counts as one for that
-filesystem. The check says to keep a line the boot mounts (no `noauto`) for
-`/` or a system folder, which the decoy's own boot needs, a line for another
-folder that mounts the filesystem a folder or subvolume root is part of, and a
-crypttab line, whatever its options, that opens the device such a line mounts
-or that one of the decoy's own filesystems lies on, and to put the hidden root
-on storage of its own instead. For a `noauto` fstab line, and for an fstab
-line for another folder that mounts the volume itself, it says to remove the
-line.
+bind line whose source, read through its links, lies in the volume, at the
+root's folder or inside it as the mount that holds the source shows it, mounts
+the volume as well, and fails too. So does every crypttab line for a root that
+is the whole filesystem, and one for a filesystem that the decoy mounts
+neither at `/` nor at a system folder, such as an encrypted drive whose fstab
+line is for `/backup` or whose line for `/srv` is not mounted. A line that
+names another device of a btrfs filesystem of several devices counts as one
+for that filesystem. The check says to keep a line the boot mounts (no
+`noauto`) for `/` or a system folder, which the decoy's own boot needs, a line
+for another folder that mounts the filesystem a folder or subvolume root is
+part of, and a crypttab line, whatever its options, that opens the device such
+a line mounts or that one of the decoy's own filesystems lies on, and to put
+the hidden root on storage of its own instead. For a `noauto` fstab line, and
+for an fstab line for another folder that mounts the volume itself, it says to
+remove the line.
+
+NAILS reads a bind line's source, and the path of a swap or image file,
+through its links, one place at a time, as `mount` and `swapon` follow them:
+a source that leads to the root's folder through a link lies in the volume,
+and a swap file whose path leads through a link onto a filesystem claims that
+filesystem as the decoy's storage. A line whose path cannot be followed fails
+`backend-entries`, with the flag or without it, as one that may mount the
+volume: a link on the way that leads to nothing, links that go round, a place
+on the way that cannot be looked up, and an automount point that nothing is
+mounted on yet, which the lookup would mount and which NAILS does not look
+past. Reading a link can change its access time, as the decoy's own boot does
+when it follows the link.
 
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that
@@ -1300,7 +1313,8 @@ volume: `nails check` and activation fail while a crypttab line opens it or a
 device it is stored on, while a crypttab line with `tcrypt-hidden` opens a
 device on the hidden volume's drive or one that cannot be found, or while an
 fstab line mounts it, a folder of it or a device below it, `noauto` lines and
-bind lines included. Where the
+bind lines included, a bind line's source read through its links, or names a
+path that cannot be followed, which may lead to it. Where the
 hidden volume is a btrfs filesystem of several devices, a line that names any
 of them, or a device below one, counts as such a line. A crypttab
 line that opens only another volume on the same drive (a VeraCrypt outer volume

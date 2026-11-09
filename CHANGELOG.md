@@ -846,7 +846,14 @@ of this changelog for that version becomes the release notes word for word, and
   volume, or a folder of it. It let such a line pass, and with `--allow-decoy-storage` the check
   passed a root bound from a folder of `/` that the decoy's own fstab binds at the root at every
   boot. It says to remove such a line, unless the boot mounts it at a system folder, where it says
-  to keep it and to put the hidden root on storage of its own instead.
+  to keep it and to put the hidden root on storage of its own instead. The judge reads a bind
+  line's source, and the path of a swap or image file, through its links, one place at a time, as
+  `mount` and `swapon` follow them, for the attach gate and the second-mount rule too, so a bind
+  line whose source leads to the root's folder through a link is refused as well, and a swap file
+  whose path leads through a link onto a filesystem claims that filesystem. A line whose path
+  cannot be followed (a link that leads to nothing, links that go round, a place that cannot be
+  looked up, an automount point that nothing is mounted on yet, which the lookup would mount) fails
+  `backend-entries` as one that may mount the volume, and the check says why.
 - `backend-entries` no longer says to remove the decoy's crypttab line for the volume that one of
   its own filesystems lies on when the hidden root is on that filesystem too: a bind of a folder of
   `/` on an encrypted decoy, say, or a subvolume of its encrypted btrfs. Such a line opens the hidden

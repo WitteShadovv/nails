@@ -11,6 +11,10 @@
 //! the threads that write them. `etc_root` is `/` for the running decoy;
 //! another root lets an offline scan judge a decoy's files.
 //!
+//! The paths the fstab names, a bind line's source and the path of a swap or
+//! image file, are followed through their links, as `mount` and `swapon`
+//! follow them, below `etc_root` (see the `paths` module).
+//!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
 //! unreadable and never taken as empty: init and check run without root, some
@@ -61,7 +65,7 @@
 #[path = "collect_tests.rs"]
 mod tests;
 
-use super::{DeviceMap, SYS_CLASS_BLOCK, Served, Untraced};
+use super::{DeviceMap, FollowedPaths, SYS_CLASS_BLOCK, Served, Untraced};
 use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
@@ -83,6 +87,8 @@ pub struct Collected {
     pub devices: DeviceMap,
     /// Inputs that exist but could not be read.
     pub unreadable: Vec<PathBuf>,
+    /// Where the paths the fstab names lead.
+    pub paths: FollowedPaths,
 }
 
 impl Collected {
@@ -94,6 +100,7 @@ impl Collected {
             crypttab: &self.crypttab,
             devices: &self.devices,
             unreadable: &self.unreadable,
+            paths: &self.paths,
         }
     }
 }
@@ -122,6 +129,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
     if let Some(text) = read_optional(fs, &fstab_path, &mut collected.unreadable) {
         collected.fstab = parse_fstab(&text);
     }
+    collected.paths = super::paths::follow_all(fs, mounts, etc_root, &collected.fstab);
     if let Some(text) = read_optional(fs, &crypttab_path, &mut collected.unreadable) {
         collected.crypttab = parse_crypttab(&text);
     }
