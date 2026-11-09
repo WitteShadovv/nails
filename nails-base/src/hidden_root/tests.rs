@@ -920,8 +920,9 @@ fn on_a_decoy_filesystem_a_line_that_names_a_subvolume_by_its_id_makes_only_that
         assert!(elsewhere_on_the_decoy(&fs).is_empty(), "{options}");
     }
     // Another id, one btrfs might read in another way or that is no number,
-    // and a line whose two names do not both name that subvolume make no
-    // mount of the decoy's.
+    // a line whose two names do not both name that subvolume, and one that
+    // gives an id twice, of which btrfs takes the last, make no mount of the
+    // decoy's.
     for options in [
         "subvolid=258",
         "subvolid=0257",
@@ -930,6 +931,7 @@ fn on_a_decoy_filesystem_a_line_that_names_a_subvolume_by_its_id_makes_only_that
         "subvolid=",
         "subvol=/home,subvolid=258",
         "subvol=/srv,subvolid=257",
+        "subvolid=257,subvolid=300",
     ] {
         let fs = decoy_fs(&nested(shown), &line(options));
         assert_eq!(

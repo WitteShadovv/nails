@@ -23,7 +23,9 @@
 //! that, or names one of their mappings, is an entry for the hidden drive,
 //! reported as an [`EntryFinding`]; so is a crypttab entry with
 //! `tcrypt-hidden` for a device on the hidden drive or one that cannot be
-//! found. Such an entry is an
+//! found, and an fstab bind line whose source lies in the volume, at the
+//! root's folder or inside it as the mount that holds the source shows it,
+//! which mounts the volume or a folder of it. Such an entry is an
 //! enabler stored on the decoy; the attach gate ignores the finding (writing to
 //! the root stays safe) and the `backend-entries` check reports it. It is no
 //! claim, except an fstab entry the boot mounts or swaps on, or one for another
@@ -40,10 +42,12 @@
 //! move, since removing the entry would break the decoy. An fstab line the
 //! boot mounts at `/` or at a system folder for another part of the
 //! filesystem the root is a folder or a subvolume of, its top or a subvolume
-//! above or beside the root's, is marked as the decoy's own line for it
-//! ([`EntryFinding::system_folder`]), which `backend-entries` lets be for a
-//! root that `--allow-decoy-storage` accepted on that filesystem; one that
-//! mounts the volume itself, or whose subvolume cannot be told, never is. So
+//! above or beside the root's, whose mount is there (the mount at its folder
+//! is of that filesystem and shows what the line names), is marked as the
+//! decoy's own line for it ([`EntryFinding::system_folder`]), which
+//! `backend-entries` lets be for a root that `--allow-decoy-storage` accepted
+//! on that filesystem; one that mounts the volume itself, whose subvolume
+//! cannot be told or whose mount is not there never is. So
 //! is a crypttab line the boot opens that makes a device that filesystem lies
 //! on, while the decoy mounts another part of it at `/`, by its mount there,
 //! or at a system folder, by such an fstab line; a `noauto` one, one with
@@ -107,11 +111,13 @@
 mod collect;
 mod extra;
 mod judge;
+mod lines;
 #[cfg(test)]
 mod tests;
 
 pub use collect::{Collected, collect, judge_storage};
-pub use judge::{claimed_devices, decoys_own_mount, judge, sharing, shown_fstype};
+pub use judge::{claimed_devices, judge, shown_fstype};
+pub use lines::{decoys_own_mount, sharing};
 
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;
@@ -694,7 +700,9 @@ pub struct EntryFinding {
     /// folder ([`is_system_folder`]) for the filesystem the volume is a folder
     /// or a subvolume of, one that names a device of it and mounts another
     /// part of it than the volume (its top, or a subvolume above or beside
-    /// the volume's), that folder. For a crypttab line the boot opens (no
+    /// the volume's), while its mount is there (the mount at that folder is of
+    /// that filesystem and shows what the line names), that folder. For a
+    /// crypttab line the boot opens (no
     /// `noauto`) that makes a device that filesystem lies on (its mapping is
     /// one of them, or one's name, or it opens a device below the one the
     /// filesystem is mounted from) and opens no hidden volume of a container
@@ -703,8 +711,9 @@ pub struct EntryFinding {
     /// such an fstab line), the first such folder. Such a line is the
     /// decoy's own, and a root that `--allow-decoy-storage` accepted on that
     /// filesystem lies there anyway. `None` for a line that mounts the volume
-    /// itself, for one whose subvolume cannot be told, for every line of a
-    /// volume that is the whole filesystem, and for any other crypttab line.
+    /// itself (a bind line among them), for one whose subvolume cannot be
+    /// told or whose mount is not there, for every line of a volume that is
+    /// the whole filesystem, and for any other crypttab line.
     pub system_folder: Option<PathBuf>,
 }
 

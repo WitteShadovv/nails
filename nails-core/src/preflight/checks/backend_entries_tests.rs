@@ -467,10 +467,11 @@ fn with_the_flag_the_decoys_own_lines_for_slash_and_a_system_folder_are_no_findi
         assert!(result.is_fail(), "{place}: {result:?}");
         assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{place}");
     }
-    // Lines for / and /home of that filesystem are named together.
+    // Lines for / and /home of that filesystem are named together, each
+    // with its mount there.
     let fs = rendered(
         "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
-         2 1 8:1 /home /home rw - ext4 /dev/vda1 rw\n\
+         2 1 8:1 / /home rw - ext4 /dev/vda1 rw\n\
          5 1 8:1 /srv/x /mnt rw - ext4 /dev/vda1 rw\n",
         "/dev/vda1 / ext4 defaults 0 1\n/dev/vda1 /home ext4 defaults 0 2\n",
     );
@@ -716,6 +717,132 @@ fn with_the_flag_a_line_that_mounts_the_volume_itself_still_fails() {
     }
 }
 
+#[test]
+fn with_the_flag_a_line_for_a_drive_whose_mount_is_not_there_still_fails() {
+    // A folder of a separate drive bound at the root, while nothing mounts
+    // the drive where its nofail line for a system folder would, as after it
+    // was plugged in: nothing shows that the decoy uses the drive, and the
+    // line may be the hidden drive's own. It mounts the filesystem the root
+    // is part of, so the check says to keep it. Once the drive is mounted
+    // there, the line is the decoy's own.
+    let table = |mounts: &str| {
+        format!(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n{mounts}\
+             5 1 8:17 /x /mnt rw - ext4 /dev/sdb1 rw\n"
+        )
+    };
+    for place in ["/srv", "/opt", "/home"] {
+        let fstab =
+            format!("/dev/vda1 / ext4 defaults 0 1\n/dev/sdb1 {place} ext4 defaults,nofail 0 2\n");
+        let fs = rendered(&table(""), &fstab);
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{place}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{place}: {result:?}");
+        assert!(
+            result.message().contains(&format!(
+                "/etc/fstab: '/dev/sdb1 {place} ext4' (it mounts the filesystem the volume at \
+                 /mnt is part of, and the decoy's own boot needs it)"
+            )),
+            "{place}: {}",
+            result.message()
+        );
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{place}");
+        let mounted = table(&format!("2 1 8:17 / {place} rw - ext4 /dev/sdb1 rw\n"));
+        let fs = rendered(&mounted, &fstab);
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{place}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_pass(), "{place}: {result:?}");
+        assert_eq!(result.message(), only_the_decoys_own_line(place));
+    }
+}
+
+#[test]
+fn with_the_flag_a_line_whose_text_does_not_tell_what_btrfs_mounts_still_fails() {
+    // A line for /srv beside the fstab's /home whose subvolume btrfs may read
+    // otherwise than its text: two subvol= (btrfs takes the last, the root's
+    // own here), with the /home subvolume mounted at /srv by hand too, two
+    // subvolid=, or a .. in the path. Only the line for /home is the decoy's
+    // own.
+    let home_at_srv = format!(
+        "{BESIDE_HOME}6 1 0:40 /home /srv rw - btrfs /dev/vda2 rw,subvolid=257,subvol=/home\n"
+    );
+    for (table, options) in [
+        (BESIDE_HOME, "subvol=/home,subvol=/vault"),
+        (home_at_srv.as_str(), "subvol=/home,subvol=/vault"),
+        (BESIDE_HOME, "subvolid=257,subvolid=300"),
+        (BESIDE_HOME, "subvol=/home/../vault"),
+    ] {
+        let fs = rendered(
+            table,
+            &format!(
+                "/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home btrfs subvol=/home 0 0\n\
+                 /dev/vda2 /srv btrfs {options},nofail 0 0\n"
+            ),
+        );
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{options}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{options}: {result:?}");
+        let message = result.message();
+        assert!(
+            message.contains(
+                "/etc/fstab: '/dev/vda2 /srv btrfs' (it mounts the filesystem the volume at /mnt \
+                 is part of, and the decoy's own boot needs it)"
+            ),
+            "{options}: {message}"
+        );
+        assert!(!message.contains("/home btrfs"), "{options}: {message}");
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{options}");
+    }
+}
+
+#[test]
+fn a_bind_line_that_mounts_the_volume_fails_with_the_flag_too() {
+    // A bind of a folder of / at the root, which a bind line of the decoy's
+    // fstab makes at every boot: with the flag the line for / is the decoy's
+    // own, but the bind line mounts the volume itself, and goes.
+    let fs = rendered(
+        BIND_OF_ROOT,
+        "/dev/vda1 / ext4 defaults 0 1\n/srv/x /mnt none bind 0 0\n",
+    );
+    assert!(hidden_volume_with_the_flag(&fs).is_warn());
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("/etc/fstab: '/srv/x /mnt none' (it mounts the volume at /mnt)"),
+        "{}",
+        result.message()
+    );
+    assert!(
+        !result.message().contains("/dev/vda1 / ext4"),
+        "{}",
+        result.message()
+    );
+    assert_eq!(result.remediation(), Some(REMEDIATION));
+    // Without the flag the line for / is named too, and kept.
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(result.remediation(), Some(REMOVE_AND_MOVE));
+    // A bind line for a folder of the volume of a drive of its own fails as
+    // well: it mounts that folder at every boot the drive is there.
+    let result = decoy()
+        .file(
+            "/etc/fstab",
+            "/dev/nvme0n1p3 / ext4 defaults 0 1\n/mnt/web /srv/web none bind,nofail 0 0\n",
+        )
+        .run();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "/etc/fstab: '/mnt/web /srv/web none' (it mounts a folder of the volume at /mnt)"
+        ),
+        "{}",
+        result.message()
+    );
+    assert_eq!(result.remediation(), Some(REMEDIATION));
+}
+
 /// What the mock lists in `/proc/devices` for the encrypted decoys.
 const PROC_DEVICES: &str =
     "Character devices:\n  1 mem\n\nBlock devices:\n  8 sd\n259 blkext\n254 device-mapper\n";
@@ -852,6 +979,30 @@ fn with_the_flag_a_noauto_crypttab_line_or_one_for_a_whole_root_still_fails() {
 }
 
 #[test]
+fn on_a_decoy_whose_root_lies_in_the_hidden_volume_of_a_container_its_line_is_kept() {
+    // The encrypted decoy's root in the hidden volume of a VeraCrypt
+    // container its crypttab opens, and a bind of a folder of / at the root:
+    // the line opens the hidden volume of a container, which the flag never
+    // lets be, but the decoy's own boot needs it, so the check says to keep
+    // it, with the flag or without.
+    let decoy = encrypted_decoy_with("/srv/x", "tcrypt-hidden");
+    assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn());
+    for allow in [Allow::DecoyStorage, Allow::Nothing] {
+        let result = run_allowing(&decoy.fs, allow);
+        assert!(result.is_fail(), "{result:?}");
+        assert!(
+            result.message().contains(
+                "/etc/crypttab: 'cryptroot /dev/nvme0n1p3' (it opens the hidden volume of a \
+                 TrueCrypt or VeraCrypt container, and the decoy's own boot needs it)"
+            ),
+            "{}",
+            result.message()
+        );
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+    }
+}
+
+#[test]
 fn on_lvm_on_luks_the_flag_lets_the_crypttab_line_be() {
     // The decoy's / on the logical volume vg-root in the LUKS volume its
     // crypttab opens, with the swap on another logical volume or in a file
@@ -979,6 +1130,27 @@ fn the_flag_lets_the_crypttab_line_of_a_drive_the_decoy_mounts_at_srv_be_but_not
         luks_drive_line(needed),
         "/etc/fstab: '/dev/mapper/data /backup ext4' (it mounts the filesystem the volume at \
          /mnt is part of, and the decoy's own boot needs it)"
+            .to_string(),
+    ] {
+        assert!(
+            result.message().contains(&finding),
+            "{finding}: {}",
+            result.message()
+        );
+    }
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+    // A folder of the drive bound at the root while the drive is mounted
+    // nowhere else, as after it was plugged in: nothing shows that the decoy
+    // uses it, so with the flag both lines still fail at /srv, and the check
+    // says to keep them.
+    let decoy = luks_drive("/srv", "5 1 254:9 /x /mnt rw - ext4 /dev/mapper/data rw\n");
+    assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn());
+    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    for finding in [
+        luks_drive_line(needed),
+        "/etc/fstab: '/dev/mapper/data /srv ext4' (it mounts the filesystem the volume at /mnt \
+         is part of, and the decoy's own boot needs it)"
             .to_string(),
     ] {
         assert!(

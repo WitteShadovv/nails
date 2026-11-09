@@ -121,16 +121,18 @@ use, such as another computer. It never covers a folder, a covered root, a root
 whose files another mount of its filesystem reaches too (one that neither `/`
 nor a line of the fstab makes), storage that cannot be judged (a ZFS volume
 among it, wherever the root's data reaches one) or a decoy entry for the
-volume, other than the decoy's own fstab lines that its boot mounts at `/` or
+volume, other than the decoy's own fstab lines that its boot mounted at `/` or
 at a system folder outside the hidden root (`/usr`, `/var`, `/home`, `/srv`,
 `/boot`, `/efi`, `/boot/efi`, `/nix`, `/opt`) for another part of the
-filesystem that a root it accepted is a folder or a subvolume of, and the
-crypttab lines its boot opens for the device that filesystem lies on while the
-decoy mounts another part of it at `/` or by such a line, as on an encrypted
-decoy. A line for
-that filesystem at any other folder, a line that mounts the volume itself (any
-line for a root that is the whole filesystem), a `noauto` crypttab line, one
-with `tcrypt-hidden` and any other crypttab line still fail `backend-entries`.
+filesystem that a root it accepted is a folder or a subvolume of, while the
+mount there shows it, and the crypttab lines its boot opens for the device
+that filesystem lies on while the decoy mounts another part of it at `/` or by
+such a line, as on an encrypted decoy. A line for that filesystem at any other
+folder, a line whose mount is not there (a drive mounted only at a folder
+bound at the root, say), a line that mounts the volume itself (a bind line
+from the root's folder, any line for a root that is the whole filesystem), a
+`noauto` crypttab line, one with `tcrypt-hidden` and any other crypttab line
+still fail `backend-entries`.
 See
 [the attach gate](threat-model.md#the-attach-gate) and
 [Attaching the drive](decoy-requirements.md#attaching-the-drive).

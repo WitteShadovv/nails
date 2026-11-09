@@ -818,23 +818,33 @@ of this changelog for that version becomes the release notes word for word, and
   flags lines only the hidden volume needs, it still says to remove those, since once the hidden
   root moves they are flagged no more and would stay behind naming it.
 - `backend-entries` no longer refuses a root that `--allow-decoy-storage` accepted as a folder or a
-  btrfs subvolume of a filesystem the decoy uses for the decoy's own fstab lines that the boot mounts
-  at `/` or at a system folder for another part of that filesystem (`/usr`, `/var`, `/home`, `/srv`,
-  `/boot`, `/efi`, `/boot/efi`, `/nix` and `/opt`, unless the hidden root is that folder or lies
-  above it): its top, or a subvolume above or beside the root's, such as the line for `/` below a
-  bind of a folder of `/`, or the line for the `/home` subvolume beside a btrfs subvolume at the
+  btrfs subvolume of a filesystem the decoy uses for the decoy's own fstab lines that the boot
+  mounted at `/` or at a system folder for another part of that filesystem (`/usr`, `/var`, `/home`,
+  `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix` and `/opt`, unless the hidden root is that folder or
+  lies above it): its top, or a subvolume above or beside the root's, such as the line for `/` below
+  a bind of a folder of `/`, or the line for the `/home` subvolume beside a btrfs subvolume at the
   root. Such a line names the root's device, so the check took it for a line that mounts the volume
   itself and said to remove it, while it mounts the decoy's own filesystem, which removing it would
-  break. A line that mounts the volume itself still fails the check, with the flag too: one for the
-  root's own subvolume or a subvolume inside it, by `subvol=` or by the `subvolid=` the mount table
-  shows for it, and any line for a root that is the whole filesystem, such as a separate drive that
-  the fstab mounts at `/srv`. So does a btrfs line whose subvolume cannot be told, and a line the
-  boot mounts for that filesystem at any other folder, which may name the hidden drive's disk; for a
-  folder or a subvolume root the check now says that it mounts the filesystem the volume is part of
-  and that the decoy's own boot needs it, and to put the hidden root on storage of its own instead.
-  A `noauto` line for that filesystem is still one to remove. A line for `/` or a system folder that
-  names the root's filesystem is one the decoy's own boot needs whatever it mounts of it, so the
-  check never says to remove it.
+  break. The line's mount has to be there: the mount at its folder is of that filesystem and shows
+  what the line names, as btrfs read the line. A line that mounts the volume itself still fails the
+  check, with the flag too: one for the root's own subvolume or a subvolume inside it, by `subvol=`
+  or by the `subvolid=` the mount table shows for it, and any line for a root that is the whole
+  filesystem, such as a separate drive that the fstab mounts at `/srv`. So do a line whose mount is
+  not there, such as the line for `/srv` of a separate drive that is mounted only at a folder bound
+  at the root, a btrfs line whose subvolume cannot be told (one that gives `subvol=` or `subvolid=`
+  twice, of which btrfs takes the last, or a `subvol=` path with `..`), and a line the boot mounts
+  for that filesystem at any other folder, which may name the hidden drive's disk; for a folder or a
+  subvolume root the check now says that it mounts the filesystem the volume is part of and that the
+  decoy's own boot needs it, and to put the hidden root on storage of its own instead. A `noauto`
+  line for that filesystem is still one to remove. A line the boot mounts (no `noauto`) for `/` or a
+  system folder that names the root's filesystem is one the decoy's own boot needs whatever it
+  mounts of it, so the check never says to remove it.
+- `backend-entries` now refuses an fstab bind line whose source lies in the hidden volume, at the
+  root's folder or inside it as the mount that holds the source shows it: such a line mounts the
+  volume, or a folder of it. It let such a line pass, and with `--allow-decoy-storage` the check
+  passed a root bound from a folder of `/` that the decoy's own fstab binds at the root at every
+  boot. It says to remove such a line, unless the boot mounts it at a system folder, where it says
+  to keep it and to put the hidden root on storage of its own instead.
 - `backend-entries` no longer says to remove the decoy's crypttab line for the volume that one of
   its own filesystems lies on when the hidden root is on that filesystem too: a bind of a folder of
   `/` on an encrypted decoy, say, or a subvolume of its encrypted btrfs. Such a line opens the hidden
@@ -849,7 +859,8 @@ of this changelog for that version becomes the release notes word for word, and
   folder of `/` or a subvolume beside `/home` passes the check with the flag, as on an unencrypted
   one. A `noauto` crypttab line, one with `tcrypt-hidden`, one for any other device, every line for
   a root that is the whole filesystem and one for a filesystem the decoy mounts only at another
-  folder still fail it.
+  folder, or by a line whose mount is not there, still fail it. The check says to keep a line with
+  `tcrypt-hidden` too where one of the decoy's own filesystems lies on what it opens.
 - `backend-entries` now refuses an fstab or crypttab line that names another device of the hidden
   root's btrfs filesystem than the one its mounts show, by its path or by a link such as `UUID=`
   that leads to it, as it refuses one for the device the mounts show: the volume lies on each of its
@@ -1456,26 +1467,26 @@ of this changelog for that version becomes the release notes word for word, and
   the decoy's own mounts of that filesystem do not count, the one at `/` and those a line of
   `/etc/fstab` makes (a line that names the mount's device, or the ZFS dataset, and mounts what it
   shows, on btrfs the subvolume its `subvol=` or `subvolid=` names as the mount table shows that
-  subvolume's path and id, so a `subvolid=` that cannot be read on either side makes none, or a
-  bind line from another of the decoy's own mounts of it), and neither does a mount that shows none
-  of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So
+  subvolume's path and id, so a `subvolid=` that cannot be read on either side makes none, or a bind
+  line from another of the decoy's own mounts of it), and neither does a mount that shows none of
+  the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So
   `hidden-volume` passes a bind of a folder of `/` and a subvolume beside the fstab's `/home` with
   the flag's warning, and so does `backend-entries`, which lets be the decoy's own fstab lines for
-  `/` and its system folders that mount another part of that filesystem and the crypttab lines its
-  boot opens for the device that filesystem lies on (see Fixed), on an encrypted decoy too, while a
-  line for another folder still fails it. On NixOS `suspicious-nails-reference` still refuses such a
-  root while the decoy's `/etc/nixos` names its filesystem's device, as `hardware-configuration.nix`
-  usually does. A separate drive that a line of the fstab mounts at `/srv` passes `hidden-volume`
-  with the flag's warning, and `backend-entries` refuses that line, which mounts the volume itself.
-  One also mounted at `/srv` by hand is refused, and so is the copy that mount propagation makes of
-  a mount at or below a bind line's source, and a root whose folder a mount that no fstab line makes
-  shows too (a `/home` or `/srv` partition that systemd-gpt-auto-generator mounts, ostree's
-  `/sysroot`, a ZFS dataset that ZFS mounts by its mountpoint property). That refusal first says not
-  to unmount a mount the computer makes by itself, then how to unmount one made by hand. A directory
-  of a disk bound at the root now needs the disk's own mount gone.
-  `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the setting, which is
-  not verified for every release. A VM test records whether udiskie mounts a drive that cryptsetup
-  unlocked, and in it udiskie did.
+  `/` and its system folders that mount another part of that filesystem, while their mounts are
+  there, and the crypttab lines its boot opens for the device that filesystem lies on (see Fixed),
+  on an encrypted decoy too, while a line for another folder still fails it. On NixOS
+  `suspicious-nails-reference` still refuses such a root while the decoy's `/etc/nixos` names its
+  filesystem's device, as `hardware-configuration.nix` usually does. A separate drive that a line of
+  the fstab mounts at `/srv` passes `hidden-volume` with the flag's warning, and `backend-entries`
+  refuses that line, which mounts the volume itself. One also mounted at `/srv` by hand is refused,
+  and so is the copy that mount propagation makes of a mount at or below a bind line's source, and a
+  root whose folder a mount that no fstab line makes shows too (a `/home` or `/srv` partition that
+  systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a ZFS dataset that ZFS mounts by its
+  mountpoint property). That refusal first says not to unmount a mount the computer makes by itself,
+  then how to unmount one made by hand. A directory of a disk bound at the root now needs the disk's
+  own mount gone. `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the
+  setting, which is not verified for every release. A VM test records whether udiskie mounts a drive
+  that cryptsetup unlocked, and in it udiskie did.
 - An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the

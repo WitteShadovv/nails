@@ -49,17 +49,19 @@ Whatever the backend, the filesystem at the hidden root must:
   bind line's mount point of a mount at or below its source. A root with no
   such other mount passes `hidden-volume` with the flag's warning. For a root
   that is a folder or a btrfs subvolume of that filesystem, `backend-entries`
-  lets be the decoy's own fstab lines that its boot mounts at `/` or at a
+  lets be the decoy's own fstab lines that its boot mounted at `/` or at a
   system folder (`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`,
   `/boot/efi`, `/nix`, `/opt`, unless the hidden root is that folder or lies
-  above it) for another part of that filesystem: its top, or a subvolume above
-  or beside the root's. While the decoy mounts another part of it at `/` or
-  by such a line, the check also lets be the crypttab lines its boot opens (no
-  `noauto`) for the device that filesystem lies on, as an encrypted decoy's
-  crypttab does. A line for that filesystem at any other folder, since it may
-  name the hidden drive's disk, a line that mounts the volume itself (the
-  root's own subvolume, or any line for a root that is the whole filesystem),
-  and any other crypttab line still fail `backend-entries` (see
+  above it) for another part of that filesystem, its top or a subvolume above
+  or beside the root's, while the mount there shows it. While the decoy mounts
+  another part of it at `/` or by such a line, the check also lets be the
+  crypttab lines its boot opens (no `noauto` and no `tcrypt-hidden`) for the
+  device that filesystem lies on, as an encrypted decoy's crypttab does. A
+  line for that filesystem at any other folder, since it may name the hidden
+  drive's disk, a line whose mount is not there, a line that mounts the volume
+  itself (the root's own subvolume, a bind line from the root's folder, or any
+  line for a root that is the whole filesystem), and any other crypttab line
+  still fail `backend-entries` (see
   [Attaching the drive](decoy-requirements.md#attaching-the-drive)). An
   encrypted container
   file on a filesystem the decoy uses is accepted with a warning: that

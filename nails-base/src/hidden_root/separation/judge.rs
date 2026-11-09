@@ -3,6 +3,7 @@
 
 //! The judge: the decoy's claims, then the first verdict that matches.
 
+use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
     LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Untraced, Verdict,
@@ -454,237 +455,6 @@ pub fn shown_fstype(fstype: &str) -> String {
     }
 }
 
-/// How a mount shows its filesystem: its root inside the filesystem tells a
-/// bind of a folder from the filesystem itself, and on btrfs a subvolume
-/// (`subvol=` names the mount's root) from a bind.
-pub fn sharing(mount: &MountEntry) -> Sharing {
-    let root = mount.root.to_string_lossy();
-    if root == "/" {
-        return Sharing::Filesystem;
-    }
-    if mount.fstype == "btrfs" && mount_option(mount, "subvol") == Some(root.as_ref()) {
-        Sharing::Subvolume
-    } else {
-        Sharing::Bind
-    }
-}
-
-/// Whether `mount`, a mount of the filesystem that `hidden` (the visible
-/// mount at the hidden root) shows, is one the decoy makes itself: the one at
-/// `/`, or one that a line of its fstab makes. Such a line is for `mount`'s
-/// mount point and of a kind the claims count (no swap, RAM, kernel,
-/// host-share, network or overlay line), and `mount` shows what it mounts:
-///
-/// - A device line names the device `mount` is on, or another device of its
-///   btrfs filesystem, and `mount` shows what the line mounts: the
-///   filesystem's top for a line with neither `subvol=` nor `subvolid=`, and
-///   otherwise the btrfs subvolume that each of these names, the id as the
-///   mount table shows it. Never a folder bound there, and no subvolume whose
-///   id cannot be read. A spec that leads to no device here names none,
-///   unless `mount` shows no device either, as a ZFS dataset does: then the
-///   spec is `mount`'s source and the line's type its type.
-/// - A bind line's source lies on another mount of that filesystem than
-///   `hidden`, one of the decoy's own itself, and `mount` shows the folder of
-///   it that the source names.
-///
-/// So the fstab makes none of these: a filesystem mounted at a folder that a
-/// line names for another device, in place of that device's mount or over
-/// it, a folder bound by hand where a line mounts the same filesystem, and
-/// the copy that mount propagation makes, at a bind line's mount point, of a
-/// mount at or below its source.
-pub fn decoys_own_mount(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry) -> bool {
-    // A chain of bind lines is no longer than the fstab.
-    decoys_own(scene, mount, hidden, scene.fstab.len())
-}
-
-/// [`decoys_own_mount`], following bind lines `depth` deep at most.
-fn decoys_own(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry, depth: usize) -> bool {
-    if mount.mount_point == Path::new("/") {
-        return true;
-    }
-    let devices = scene.devices;
-    let node = devices.node_of_mount(mount);
-    scene
-        .fstab
-        .iter()
-        .filter(|entry| entry.file == mount.mount_point)
-        .filter(|entry| mounts_storage(entry))
-        .any(|entry| {
-            if entry.is_bind() {
-                return depth > 0 && bind_makes(scene, entry, mount, hidden, depth - 1);
-            }
-            let named = match (devices.node_of_spec(&entry.spec), node) {
-                (Some(named), Some(node)) => named == node || devices.same_btrfs(named, node),
-                // A filesystem with no device, such as a ZFS dataset, is
-                // named by its source.
-                (None, None) => {
-                    entry.vfstype == mount.fstype
-                        && Path::new(&entry.spec) == mount.source.as_path()
-                }
-                _ => false,
-            };
-            named && shows_what_it_mounts(entry, mount)
-        })
-}
-
-/// Whether the bind line `entry` makes `mount`: its source lies on a mount of
-/// the same filesystem, neither `hidden` nor `mount` itself, that is one of
-/// the decoy's own, and `mount` shows the folder of it the source names.
-fn bind_makes(
-    scene: &Scene<'_>,
-    entry: &FstabEntry,
-    mount: &MountEntry,
-    hidden: &MountEntry,
-    depth: usize,
-) -> bool {
-    let source = Path::new(&entry.spec);
-    let Some(holder) = mount_holding(scene.mounts, source) else {
-        return false;
-    };
-    let Ok(below) = source.strip_prefix(&holder.mount_point) else {
-        return false;
-    };
-    holder.mount_id != hidden.mount_id
-        && holder.mount_id != mount.mount_id
-        && holder.dev == mount.dev
-        && mount.root == holder.root.join(below)
-        && decoys_own(scene, holder, hidden, depth)
-}
-
-/// Whether the fstab line `entry` mounts a filesystem the claims count: no
-/// swap, RAM, kernel, host-share, network or overlay line.
-fn mounts_storage(entry: &FstabEntry) -> bool {
-    !(entry.is_swap()
-        || entry.is_virtual()
-        || entry.is_host_share()
-        || entry.is_network()
-        || entry.vfstype == "overlay")
-}
-
-/// Whether `mount` shows what the device line `entry` mounts: the
-/// filesystem's top for a line with neither `subvol=` nor `subvolid=`, and
-/// otherwise the btrfs subvolume that each of these it gives names. A folder
-/// bound there is none of these, and neither is a subvolume whose id cannot
-/// be read from the line or from the mount table, which shows it in the
-/// mount's options.
-fn shows_what_it_mounts(entry: &FstabEntry, mount: &MountEntry) -> bool {
-    let path = entry.option_value("subvol");
-    let id = entry.option_value("subvolid");
-    if path.is_none() && id.is_none() {
-        return mount.root == Path::new("/");
-    }
-    mount.fstype == "btrfs"
-        && sharing(mount) != Sharing::Bind
-        && path.is_none_or(|path| mount.root == Path::new("/").join(path.trim_start_matches('/')))
-        && id.is_none_or(|id| {
-            matches!(
-                (subvolume_id(id), mount_option(mount, "subvolid").and_then(subvolume_id)),
-                (Some(named), Some(shown)) if named == shown
-            )
-        })
-}
-
-/// The subvolume a `subvolid=` option names, as btrfs reads it: `0` names
-/// the top, whose id is 5. None for anything but a plain decimal number,
-/// which btrfs could read in another way (a leading `0` as octal, say).
-fn subvolume_id(value: &str) -> Option<u64> {
-    let plain =
-        value.bytes().all(|b| b.is_ascii_digit()) && (value == "0" || !value.starts_with('0'));
-    let id: u64 = value.parse().ok().filter(|_| plain)?;
-    Some(if id == 0 { 5 } else { id })
-}
-
-/// Whether the device line `entry`, one that names a device of the
-/// filesystem of `hidden` (the visible mount at the hidden root), mounts the
-/// volume or a part of it: any line does for a root that is the whole
-/// filesystem, and for a root that is a folder or a btrfs subvolume of it, a
-/// line whose subvolume is that one or lies inside it. `Some(false)` for a
-/// line that mounts another part of the filesystem the root is part of: its
-/// top, or a subvolume above or beside the root's. `None` when what the line
-/// mounts cannot be told ([`line_shows`]).
-fn mounts_the_root(scene: &Scene<'_>, entry: &FstabEntry, hidden: &MountEntry) -> Option<bool> {
-    if sharing(hidden) == Sharing::Filesystem {
-        return Some(true);
-    }
-    line_shows(scene, entry, hidden).map(|shown| shown.starts_with(&hidden.root))
-}
-
-/// The path in the filesystem of `hidden` that the device line `entry`
-/// mounts, as the mount table writes a mount's root: `/`, the top, for a
-/// line with neither `subvol=` nor `subvolid=`, as [`shows_what_it_mounts`]
-/// takes it, and otherwise the btrfs subvolume these name, an id by the path
-/// that a mount of that filesystem with that id shows. `None` when that
-/// cannot be told: an id that is no plain number or that no such mount
-/// shows, options that name two subvolumes, or either option on a
-/// filesystem that is not btrfs.
-fn line_shows(scene: &Scene<'_>, entry: &FstabEntry, hidden: &MountEntry) -> Option<PathBuf> {
-    let path = entry.option_value("subvol");
-    let id = entry.option_value("subvolid");
-    if path.is_none() && id.is_none() {
-        return Some(PathBuf::from("/"));
-    }
-    if hidden.fstype != "btrfs" {
-        return None;
-    }
-    let by_path = path.map(|path| Path::new("/").join(path.trim_start_matches('/')));
-    let by_id = match id {
-        Some(id) => Some(subvolume_path(scene, hidden, subvolume_id(id)?)?),
-        None => None,
-    };
-    match (by_path, by_id) {
-        (Some(path), Some(id)) => (path == id).then_some(path),
-        (path, id) => path.or(id),
-    }
-}
-
-/// The path of the btrfs subvolume with the id `id` in the filesystem of
-/// `hidden`, as a mount of that filesystem at that subvolume shows it in the
-/// mount table: `/` for the top, whose id is 5.
-fn subvolume_path(scene: &Scene<'_>, hidden: &MountEntry, id: u64) -> Option<PathBuf> {
-    if id == 5 {
-        return Some(PathBuf::from("/"));
-    }
-    scene
-        .mounts
-        .iter()
-        .filter(|mount| {
-            mount.dev == hidden.dev
-                && mount.fstype == "btrfs"
-                && sharing(mount) == Sharing::Subvolume
-        })
-        .find(|mount| mount_option(mount, "subvolid").and_then(subvolume_id) == Some(id))
-        .map(|mount| mount.root.clone())
-}
-
-/// The value of the option `key=` of `mount`, from its filesystem's options
-/// or its own.
-fn mount_option<'a>(mount: &'a MountEntry, key: &str) -> Option<&'a str> {
-    mount
-        .super_opts
-        .split(',')
-        .chain(mount.mount_opts.split(','))
-        .find_map(|opt| opt.strip_prefix(key)?.strip_prefix('='))
-}
-
-/// Whether a line of the decoy's fstab mounts the filesystem of `hidden`,
-/// whose device is `top`, at `at`: a line for that mount point, of a kind
-/// the claims count, whose spec names `top` or another device of its btrfs
-/// filesystem, or for a filesystem with no device, such as a ZFS dataset, is
-/// `hidden`'s source. A claim through a bind line, or through a mount at `/`
-/// or at a system folder that no line names, has none.
-fn in_fstab(scene: &Scene<'_>, hidden: &MountEntry, top: Option<&str>, at: &Path) -> bool {
-    let devices = scene.devices;
-    scene
-        .fstab
-        .iter()
-        .filter(|entry| entry.file == at && !entry.is_bind() && mounts_storage(entry))
-        .any(|entry| match (devices.node_of_spec(&entry.spec), top) {
-            (Some(named), Some(top)) => named == top || devices.same_btrfs(named, top),
-            (None, None) => Path::new(&entry.spec) == hidden.source.as_path(),
-            _ => false,
-        })
-}
-
 /// Where the decoy mounts the filesystem of `holder`, if it is claimed.
 fn claimed_holder(claims: &[Claim], devices: &DeviceMap, holder: &MountEntry) -> Option<PathBuf> {
     let node = devices.node_of_mount(holder);
@@ -767,8 +537,12 @@ fn claims(
         let noauto = entry.is_noauto();
         let file_spec = entry.spec.starts_with('/') && !entry.spec.starts_with("/dev/");
         if entry.is_bind() || (node.is_none() && file_spec) {
-            // A bind, or a swap file: the filesystem holding the source.
+            // A bind, or a swap file: the filesystem holding the source. A
+            // bind of the volume or of a folder of it mounts the volume.
             if let Some(holder) = mount_holding(scene.mounts, Path::new(&entry.spec)) {
+                if entry.is_bind() {
+                    entries.extend(bind_finding(hidden, entry, holder));
+                }
                 claims.push(mount_claim(scene, holder, noauto));
             }
             continue;
@@ -810,10 +584,21 @@ fn claims(
                     .iter()
                     .any(|n| n.is_some_and(|n| within.iter().any(|s| s == n)))
         };
+        // It makes a device the root's own filesystem lies on, which the
+        // decoy may use itself: the mapping it lies on, or one opened from a
+        // device below the one it is mounted from. Or it opens a device
+        // below another filesystem of the decoy's.
+        let makes_own = mapping.is_some_and(|m| entry_stack.iter().any(|s| s == m))
+            || entry_names.contains(&entry.name.as_str())
+            || source.is_some_and(|s| entry_stack.iter().any(|n| n == s) && !own_device(s));
+        let needed = (own_needed && makes_own)
+            || boot_needs(devices, &claims, hidden, &own_device, [source, mapping]);
         // A line that opens the hidden volume of a container blocks when the
         // container is on the hidden drive, or when its device cannot be
         // found, so nothing shows it is not; one for another drive is that
-        // drive's business, and claims it like any other line.
+        // drive's business, and claims it like any other line. The decoy's
+        // own boot can need it all the same, where one of its filesystems
+        // lies on what it opens.
         if entry.is_tcrypt_hidden()
             && source.is_none_or(|s| stack.iter().any(|n| n == s) || same_drive(devices, s, stack))
         {
@@ -821,7 +606,7 @@ fn claims(
                 CRYPTTAB,
                 line,
                 "it opens the hidden volume of a TrueCrypt or VeraCrypt container".to_string(),
-                false,
+                needed,
             ));
             continue;
         }
@@ -838,15 +623,6 @@ fn claims(
                     hidden.mount_point.display()
                 )
             };
-            // It makes a device the root's own filesystem lies on, which the
-            // decoy may use itself: the mapping it lies on, or one opened
-            // from a device below the one it is mounted from. Or it opens a
-            // device below another filesystem of the decoy's.
-            let makes_own = mapping.is_some_and(|m| entry_stack.iter().any(|s| s == m))
-                || entry_names.contains(&entry.name.as_str())
-                || source.is_some_and(|s| entry_stack.iter().any(|n| n == s) && !own_device(s));
-            let boot_needs = (own_needed && makes_own)
-                || boot_needs(devices, &claims, hidden, &own_device, [source, mapping]);
             // A line the boot opens that makes a device of that filesystem,
             // while the decoy mounts another part of it at / or at a system
             // folder, is the decoy's own line for that place too. Never one
@@ -855,7 +631,7 @@ fn claims(
             let system_folder = own_place.clone().filter(|_| own);
             entries.push(EntryFinding {
                 system_folder,
-                ..blocking(CRYPTTAB, line, why, boot_needs)
+                ..blocking(CRYPTTAB, line, why, needed)
             });
             // One that opens only another device of the root's btrfs
             // filesystem claims it all the same.
@@ -970,9 +746,10 @@ fn fstab_finding(
     } else {
         format!("it mounts a device the volume at {root} is stored on")
     };
-    // A line for the root's own filesystem at / or at a system folder is one
-    // the decoy's boot needs, whatever it mounts of that filesystem, the
-    // volume too: it is never one to remove.
+    // A line for the root's own filesystem at / or at a system folder that
+    // the boot mounts (no noauto) is one the decoy's boot needs, whatever it
+    // mounts of that filesystem, the volume too: never one to remove. A
+    // noauto one is a recipe for the hidden drive, and goes.
     let system = own && !entry.is_swap() && is_system_folder(&entry.file, &hidden.mount_point);
     // A line the boot mounts outside the hidden root, for a device below the
     // volume or for the filesystem the root is part of, mounts one of the
@@ -985,14 +762,48 @@ fn fstab_finding(
             entry.is_swap() || elsewhere
         };
     // The decoy's own line for such a folder mounts another part of the
-    // filesystem the root is a folder or a subvolume of: never the volume
-    // itself, and never a line whose subvolume cannot be told.
-    let system_folder =
-        (system && !entry.is_noauto() && root_itself == Some(false)).then(|| entry.file.clone());
+    // filesystem the root is a folder or a subvolume of, and its mount is
+    // there: never the volume itself, never a line whose subvolume cannot be
+    // told, and never one whose mount is not there now, since nothing then
+    // shows that the decoy uses that filesystem there.
+    let system_folder = (system
+        && !entry.is_noauto()
+        && root_itself == Some(false)
+        && line_is_mounted(scene, entry, hidden))
+    .then(|| entry.file.clone());
     EntryFinding {
         system_folder,
         ..blocking(FSTAB, line, why, boot_needs)
     }
+}
+
+/// The finding for the bind line `entry`, whose source lies on the mount
+/// `holder`, when the line mounts the volume of `hidden` (the visible mount
+/// at the hidden root) or a folder of it: its source, as `holder` shows it
+/// now, lies at the volume's folder of that filesystem or inside it. It goes
+/// as any line does that mounts the volume itself, unless the boot mounts it
+/// at `/` or at a system folder, and it is never the decoy's own line.
+fn bind_finding(
+    hidden: &MountEntry,
+    entry: &FstabEntry,
+    holder: &MountEntry,
+) -> Option<EntryFinding> {
+    let below = Path::new(&entry.spec)
+        .strip_prefix(&holder.mount_point)
+        .ok()?;
+    let source = holder.root.join(below);
+    if holder.dev != hidden.dev || !source.starts_with(&hidden.root) {
+        return None;
+    }
+    let root = hidden.mount_point.display();
+    let why = if source == hidden.root {
+        format!("it mounts the volume at {root}")
+    } else {
+        format!("it mounts a folder of the volume at {root}")
+    };
+    let line = format!("{} {} {}", entry.spec, entry.file.display(), entry.vfstype);
+    let boot_needs = !entry.is_noauto() && is_system_folder(&entry.file, &hidden.mount_point);
+    Some(blocking(FSTAB, line, why, boot_needs))
 }
 
 fn blocking(file: &'static str, line: String, why: String, boot_needs: bool) -> EntryFinding {

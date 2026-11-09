@@ -194,12 +194,12 @@ Also refused by the pre-flight checks:
   volume or, for a root that `--allow-decoy-storage` accepted on a filesystem
   the decoy uses, that filesystem; for a root that is a folder or a btrfs
   subvolume of it, the flag lets be only the decoy's own fstab lines that its
-  boot mounts at `/` or at a system folder outside the hidden root (`/usr`,
+  boot mounted at `/` or at a system folder outside the hidden root (`/usr`,
   `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`, `/opt`) for
-  another part of that filesystem, and, while the decoy mounts another part
-  of it at `/` or by such a line, the crypttab lines its boot opens for the
-  device that filesystem lies on, as on an encrypted decoy
-  (`backend-entries`);
+  another part of that filesystem, while the mount there shows it, and, while
+  the decoy mounts another part of it at `/` or by such a line, the crypttab
+  lines without `tcrypt-hidden` that its boot opens for the device that
+  filesystem lies on, as on an encrypted decoy (`backend-entries`);
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
 - running inside a container or another mount namespace than PID 1's

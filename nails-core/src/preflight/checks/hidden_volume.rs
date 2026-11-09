@@ -54,10 +54,11 @@ use std::path::{Component, Path, PathBuf};
 ///   what hides one that `umount` cannot reach by its path, and turning the
 ///   desktop's automatic mounting of removable media off long before the next
 ///   use. For a root the operator accepted on a filesystem the decoy uses,
-///   the failure says that neither `/` nor a line of the fstab makes the
-///   other mounts, and the fix first says not to unmount one the computer
-///   makes by itself but to use a volume of its own, then how to unmount one
-///   made by hand
+///   the failure says that the other mounts are there beside the computer's
+///   own mounts of it, at `/` and by the lines of the fstab from its own
+///   storage, and the fix first says not to unmount one the computer makes
+///   by itself but to use a volume of its own, then how to unmount one made
+///   by hand
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example
@@ -240,8 +241,10 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 /// media and the section to read come last.
 ///
 /// For a root on a filesystem the decoy uses, which the operator accepted
-/// (`decoy_filesystem`), the failure says that neither `/` nor a line of the
-/// fstab makes the other mounts. Its fix starts by saying that one the
+/// (`decoy_filesystem`), the failure says that the other mounts are there
+/// beside the computer's own mounts of it, the one at `/` and those a line of
+/// the fstab makes from its own storage, which are left out. Its fix starts
+/// by saying that one the
 /// computer makes by itself is not to be unmounted, as the root then needs a
 /// volume of its own: once a partition the computer mounts with no fstab line
 /// is unmounted, the check can no longer tell that a root on it lies on the

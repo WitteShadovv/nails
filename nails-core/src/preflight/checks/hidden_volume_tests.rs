@@ -954,7 +954,8 @@ fn a_root_on_a_decoy_filesystem_the_operator_accepted_passes_beside_the_decoys_o
 fn on_a_decoy_filesystem_also_at(places: &str) -> String {
     format!(
         "the filesystem of /mnt/data, which --allow-decoy-storage accepted, is also mounted at \
-         {places}, where neither / nor a line of /etc/fstab mounts it"
+         {places}, beside this computer's own mounts of it, the one at / and those a line of \
+         /etc/fstab makes from its own storage"
     )
 }
 
@@ -1038,6 +1039,42 @@ fn a_separate_drive_also_mounted_at_a_system_folder_is_refused_with_the_flag_too
         entries.remediation(),
         Some(crate::preflight::checks::backend_entries::STORAGE_OF_ITS_OWN)
     );
+}
+
+#[test]
+fn a_subvolume_mounted_by_hand_over_the_fstabs_home_is_no_mount_the_fstab_makes() {
+    // The root's own subvolume, id 300, mounted by hand over the decoy's
+    // /home, whose line mounts subvolume 257, by its id or by its path: the
+    // fstab has a line for /home, but that line did not make this mount, and
+    // the failure says so.
+    for options in ["subvolid=257", "subvol=/home"] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+        fs.mock_set_writable(NEUTRAL_ROOT, true);
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             2 1 0:40 /home /home rw - btrfs /dev/vda2 rw,subvolid=257,subvol=/home\n\
+             30 1 0:40 /vault /mnt/data rw - btrfs /dev/vda2 rw,subvolid=300,subvol=/vault\n\
+             40 2 0:40 /vault /home rw - btrfs /dev/vda2 rw,subvolid=300,subvol=/vault\n",
+        );
+        fs.mock_set_file_content(
+            "/etc/fstab",
+            &format!("/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home btrfs {options} 0 0\n"),
+        );
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{options}: {result:?}");
+        assert_eq!(
+            result.message(),
+            on_a_decoy_filesystem_also_at("/home"),
+            "{options}"
+        );
+        assert_eq!(
+            result.remediation().unwrap(),
+            on_a_decoy_filesystem_fix("/home"),
+            "{options}"
+        );
+        assert_eq!(result.allowable(), None, "{options}");
+    }
 }
 
 #[test]

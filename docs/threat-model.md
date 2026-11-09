@@ -303,12 +303,13 @@ How the code upholds this:
   pre-flight check refuses activation while one exists. No flag overrides the
   check, except that for a root `--allow-decoy-storage` accepted as a folder or
   a btrfs subvolume of a filesystem the decoy uses, the check lets be the
-  decoy's own fstab lines that the boot mounts at `/` or at a system folder
-  outside the hidden root for another part of that filesystem, never one that
-  mounts the volume itself, and, while the decoy mounts another part of that
-  filesystem at `/` or by such a line, the crypttab lines the boot opens for
-  the device it lies on, never a `noauto` one or one for any other device. A
-  line that opens only another volume on the same drive warns.
+  decoy's own fstab lines that the boot mounted at `/` or at a system folder
+  outside the hidden root for another part of that filesystem, while the mount
+  there shows it, never one that mounts the volume itself, and, while the
+  decoy mounts another part of that filesystem at `/` or by such a line, the
+  crypttab lines the boot opens for the device it lies on, never a `noauto`
+  one, one with `tcrypt-hidden` or one for any other device. A line that opens
+  only another volume on the same drive warns.
 
 This invariant is checked by the end-to-end tests `uefi-esp-nvram-invariant`
 and `soft-reboot-mechanics`: they hash the ESP file listing and capture the EFI
@@ -423,10 +424,11 @@ covered root, a root whose files another mount of its filesystem reaches too
 (one that neither `/` nor a line of the fstab makes), storage that cannot be
 judged (a ZFS volume among it), or `backend-entries`, except that for a root it
 accepted as a folder or a btrfs subvolume of a filesystem the decoy uses, that
-check lets be the decoy's own fstab lines that the boot mounts at `/` or at a
-system folder outside the hidden root for another part of that filesystem, and
-the crypttab lines the boot opens for the device that filesystem lies on while
-the decoy mounts another part of it at `/` or by such a line.
+check lets be the decoy's own fstab lines that the boot mounted at `/` or at a
+system folder outside the hidden root for another part of that filesystem,
+while the mount there shows it, and the crypttab lines without `tcrypt-hidden`
+that the boot opens for the device that filesystem lies on while the decoy
+mounts another part of it at `/` or by such a line.
 
 In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or

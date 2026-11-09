@@ -15,16 +15,17 @@
 //! it. `--allow-decoy-storage` covers only the decoy's own lines for a root it
 //! accepted as a part of a filesystem the decoy uses (a bind of a folder of
 //! it, or a btrfs subvolume of it): the fstab lines that the decoy's boot
-//! mounts at `/` or at a system folder ([`separation::is_system_folder`]) for
-//! another part of that filesystem are no finding then
-//! ([`EntryFinding::system_folder`]), and neither are the crypttab lines its
-//! boot opens that make a device that filesystem lies on while the decoy
-//! mounts another part of it at `/` or by such an fstab line, as on an
-//! encrypted decoy. A line that mounts that filesystem at any other folder
-//! still is one, since it may name the hidden drive's disk, and so are a line
-//! that mounts the volume itself, a `noauto` crypttab line, one with
-//! `tcrypt-hidden`, one for any other device and every line for a root that
-//! is the whole filesystem.
+//! mounted at `/` or at a system folder ([`separation::is_system_folder`])
+//! for another part of that filesystem, while the mount there shows it, are
+//! no finding then ([`EntryFinding::system_folder`]), and neither are the
+//! crypttab lines its boot opens that make a device that filesystem lies on
+//! while the decoy mounts another part of it at `/` or by such an fstab line,
+//! as on an encrypted decoy. A line that mounts that filesystem at any other
+//! folder still is one, since it may name the hidden drive's disk, and so are
+//! a line whose mount is not there, a line that mounts the volume itself (a
+//! bind line from the root's folder among them), a `noauto` crypttab line,
+//! one with `tcrypt-hidden`, one for any other device and every line for a
+//! root that is the whole filesystem.
 //!
 //! An entry that opens only another volume on the same drive (a VeraCrypt
 //! outer volume of another partition) warns: the decoy is configured to open
