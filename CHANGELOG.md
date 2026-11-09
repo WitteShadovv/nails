@@ -582,18 +582,26 @@ of this changelog for that version becomes the release notes word for word, and
   mount the point (for example `ls /usr/local`) and run `check` again. A warn-only check warns, the
   residue catalog also for a channel it would only note; `decoy-persistence` refuses for the
   journal, a log daemon or kdump (`--allow-persistent-decoy` lifts it), `fstab-policy` refuses, and
-  so does the attach gate for a hidden root behind such a point; `memory-wipe` and the Argon2id
-  advice keep their informational pass and, where what they could read leaves the answer open, name
-  the path and the point. Without the mount table these checks look up nothing. So with an
-  `x-systemd.automount` line for `/usr/local` that nothing has mounted yet, `decoy-persistence` and
-  `fstab-policy` refuse until it is mounted. `check --json` lists the places the inherited decoy
-  state could not be looked up in as `inherited.not_read`, each with its `path`, `reason` and
-  `automount_point`, the report gives each a `not read:` line, and `inherited-autostart` warns that
-  NAILS cannot tell what else the hidden session would inherit. `status` and the window count a
-  decoy NAILS cannot tell about as one that keeps a record on its disk, and say it may keep one
-  (`decoy_persistent` and `decoy_kdump_armed` in `status --json` are true then too). The VM test
-  `check-no-automount` runs `check` on a NixOS decoy with such points at `/usr/local` and at two
-  homes, and shows that it leaves the mount table as it was.
+  so does `hidden-volume` in `check` for a hidden root behind such a point; `memory-wipe` and the
+  Argon2id advice keep their informational pass and, where what they could read leaves the answer
+  open, name the path and the point. Without the mount table these checks look up nothing. Where the
+  hidden root or the state file lies behind such a point, `check` assembles no checks, since each
+  would look the root up, and names the point. On NixOS, `suspicious-nails-reference` refuses where
+  its walk of `/etc/nixos` would pass such a point, and the discovery of the build target fails
+  there, naming it, as it does without the mount table, so that `check` without `--overlay-only`
+  assembles no checks. `upper-fs-capability` makes no trial where loading the overlay module would
+  make the kernel's modprobe or udevd read below such a point. So with an `x-systemd.automount` line
+  for `/usr/local` that nothing has mounted yet, `decoy-persistence` and `fstab-policy` refuse until
+  it is mounted, and so does `upper-fs-capability` where the overlay module is not loaded.
+  `check --json` lists the places the inherited decoy state could not be looked up in as
+  `inherited.not_read`, each with its `path`, `reason` and `automount_point`, the report gives each
+  a `not read:` line, and `inherited-autostart` warns that NAILS cannot tell what else the hidden
+  session would inherit. `status` and the window count a decoy NAILS cannot tell about as one that
+  keeps a record on its disk, and say it may keep one (`decoy_persistent` and `decoy_kdump_armed` in
+  `status --json` are true then too). The VM test `check-no-automount` runs `check` on a NixOS decoy
+  with such points at `/usr/local` and at two homes, without the overlay module loaded and with
+  udevd's queue of events held, and shows that it leaves the mount table outside `/run` as it was
+  and, while `/usr/local` is not mounted, loads no module.
 - The operator is now resolved from `PKEXEC_UID` before `SUDO_UID`. pkexec of polkit 127 and later
   sets both, and `PKEXEC_UID` names the account that asked it.
 - `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an
@@ -1412,24 +1420,28 @@ of this changelog for that version becomes the release notes word for word, and
 - At the question of `activate`, `deactivate` and `discard`, the end of the input (Ctrl+D) cancels
   as a "no" does, and its notice now starts on a line of its own. It began on the question's row,
   as the terminal echoes no newline for Ctrl+D.
-- `nails check` and activation no longer take a path they cannot look up for one that is not
-  there. A lookup that failed for any reason (no permission, an I/O error, a loop of links, an
-  automount whose mount failed) read as a missing path, so a check could pass on a path it never
-  saw: an unreadable `/var/log/journal` let `Storage=auto` count as volatile, an updatedb in
-  `/usr/local/bin` or a fish configuration could go unseen, and the attach gate called such a
-  hidden root missing. Now only a path that does not exist, or one below a file, is missing, and
-  any other failure makes the check say it cannot tell and name the path: a warn-only check
-  warns, `decoy-persistence` refuses for the journal, a log daemon or kdump
-  (`--allow-persistent-decoy` lifts it), and the attach gate refuses the root with the error
-  (`not_separate_volume`, exit 4). `init` and the staging of the hidden NixOS configuration write
-  nothing over a file whose lookup failed, `config set` and `config unset` refuse a volume where
-  they find no file of NAILS and cannot look one up, `discard` stops at a path it cannot look up,
-  the platform check refuses a host where a lookup it decides by fails (`/run/ostree-booted`,
-  `/run/composefs`, the links of the `/usr` merge, and `/run/current-system` where os-release does
-  not say NixOS), a log directory that cannot be looked up turns file logging off with a line that
-  says so, and `verify` reports a path it cannot look up as one
-  it could not tell about, never as one that is not there: as a finding at the severity of what it
-  looks for there but no more than a warning, or among the areas it did not check.
+- The lookups of `nails check` and activation that ask whether something is at a path, or whether it
+  is a directory, a regular file or a link, no longer take a path they cannot look up for one that
+  is not there. Such a lookup that failed for any reason (no permission, an I/O error, a loop of
+  links, an automount whose mount failed) read as a missing path, so a check could pass on a path it
+  never saw: an unreadable `/var/log/journal` let `Storage=auto` count as volatile, an updatedb in
+  `/usr/local/bin` or a fish configuration could go unseen, and the attach gate called such a hidden
+  root missing. Now only a path that does not exist, or one below a file, is missing, and any other
+  failure makes the check say it cannot tell and name the path: a warn-only check warns,
+  `decoy-persistence` refuses for the journal, a log daemon or kdump (`--allow-persistent-decoy`
+  lifts it), and the attach gate refuses the root with the error (`not_separate_volume`, exit 4).
+  `init` and the staging of the hidden NixOS configuration write nothing over a file whose lookup
+  failed, `config set` and `config unset` refuse a volume where they find no file of NAILS and
+  cannot look one up, `discard` stops at a path it cannot look up, the platform check refuses a host
+  where a lookup it decides by fails (`/run/ostree-booted`, `/run/composefs`, the links of the
+  `/usr` merge, and `/run/current-system` where os-release does not say NixOS), a log directory that
+  cannot be looked up turns file logging off with a line that says so, and `verify` reports a path
+  it cannot look up as one it could not tell about, never as one that is not there: as a finding at
+  the severity of what it looks for there but no more than a warning, or among the areas it did not
+  check. Some readers still take a place they cannot list, read or follow for an empty one, among
+  them the walk of the decoy's `/etc/nixos`, the lookups `soft-reboot-units` makes for its units in
+  the decoy's root and activation makes in the operator's home, and the readers of the sudoers files
+  and of `/proc/swaps`.
 - `nails deactivate` that cannot take its lock, a hidden root that cannot be looked up among the
   causes, refuses before the switch as before, and now names `emergency`, which ends the session
   without the lock: it returns to the decoy where it can prepare the return and powers off where it

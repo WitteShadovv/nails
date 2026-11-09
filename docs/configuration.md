@@ -537,9 +537,12 @@ for a lookup that failed:
 
 Where NAILS cannot read the mount table, which shows where a lookup would
 mount an automount point, it looks up nothing, and the one place listed is
-`/proc/self/mountinfo`. At activation, an autostart entry NAILS could not read
-is masked only where `persona.mask_inherited` names it or holds `"*"`, and
-activation warns once, naming what it could not read.
+`/proc/self/mountinfo`. For its masks, activation reads the inherited entries
+again, only where `persona.mask_inherited` is set. There an autostart entry
+NAILS could not look up is masked only where `persona.mask_inherited` names it
+or holds `"*"`, and activation warns once, naming what it could not look up.
+Below the home, which it reads then through the root it is about to enter, a
+place it cannot look up is still taken for an empty one.
 
 `persona.mask_inherited` lists entries to hide from the hidden session, or the
 single value `"*"` for every maskable entry:
