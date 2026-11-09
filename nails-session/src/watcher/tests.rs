@@ -411,7 +411,10 @@ fn run_loop_stops_after_an_automatic_emergency() {
         move || {
             let _ = alert.lock().map(|alert| alert.send(()));
         },
-        || emergencies += 1,
+        || {
+            emergencies += 1;
+            true
+        },
         || ticks += 1,
     );
     // The alert went out on a thread of its own.
@@ -479,6 +482,7 @@ fn an_alert_that_never_returns_delays_no_emergency() {
             },
             move || {
                 let _ = fired.send(());
+                true
             },
             || {},
         );
@@ -487,4 +491,42 @@ fn an_alert_that_never_returns_delays_no_emergency() {
         emergency.recv_timeout(Duration::from_secs(10)).is_ok(),
         "the emergency waited for the alert"
     );
+}
+
+/// An automatic emergency that found nothing to act on leaves the loop
+/// watching: the next failure, after a recovery, alerts and fires again.
+#[test]
+fn run_loop_watches_on_after_an_emergency_that_did_not_act() {
+    let config = BackendWatchConfig {
+        auto_emergency: true,
+        debounce_secs: 0,
+        poll_interval_secs: 0,
+        enabled: true,
+    };
+    // Fail, fire (nothing to act on), recover, fail, fire (acts).
+    let mut probes = vec![false, false, true, false, false].into_iter();
+    let (alert, alerts) = std::sync::mpsc::channel();
+    let alert = std::sync::Mutex::new(alert);
+    let mut emergencies = 0;
+    let mut ticks = 0;
+    run_loop(
+        &config,
+        || probes.next().unwrap_or(false),
+        move || {
+            let _ = alert.lock().map(|alert| alert.send(()));
+        },
+        || {
+            emergencies += 1;
+            emergencies == 2
+        },
+        || ticks += 1,
+    );
+    for failure in ["first", "second"] {
+        assert!(
+            alerts.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the {failure} failure alerts"
+        );
+    }
+    assert_eq!(emergencies, 2);
+    assert_eq!(ticks, 5, "the loop watched on after the first emergency");
 }

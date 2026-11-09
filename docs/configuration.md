@@ -612,11 +612,15 @@ their copies in `/run`. Where it cannot read the copy of the settings, it takes
 the configuration file it was started with or finds beside its binary, then
 the hidden volume's own `config/nails.toml` at the hidden root the plan names.
 Where it cannot read the plan, it watches the hidden root the settings name,
-though an automatic emergency needs the plan to return to the decoy. Where it
-can read no settings at all, it watches alert-only, whatever
-`backend_watch.auto_emergency` says, and tells you so in one alert; where it
-can read neither the plan nor the settings, one alert says that mounted
-volumes are not watched.
+alert-only: an automatic emergency needs the plan to return to the decoy, and
+without it would do nothing, so the watcher runs none and, where
+`backend_watch.auto_emergency` is on, tells you so in one alert. An automatic
+emergency that finds no plan when it fires does nothing either: the watcher
+then goes on watching and alerts that it took no action. Where it can read no
+settings at all, it watches alert-only, whatever `backend_watch.auto_emergency`
+says, and tells you so in one alert; where it can read neither the plan nor
+the settings, one alert says that mounted volumes are not watched, and it
+watches nothing.
 
 ## Disks mounted during the session
 

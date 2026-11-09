@@ -282,7 +282,7 @@ pub fn in_background(send: impl FnOnce() + Send + 'static) {
     }
 }
 
-/// Run the watch loop around a real sleep until an automatic emergency fires.
+/// Run the watch loop around a real sleep until an automatic emergency acts.
 ///
 /// The probe, alert and emergency effects are injected so the loop itself stays
 /// free of the host: the CLI's hidden `watch` subcommand supplies a real
@@ -290,9 +290,10 @@ pub fn in_background(send: impl FnOnce() + Send + 'static) {
 /// The alert is sent [in the background](in_background), so a notification
 /// daemon that never answers delays no probe and no emergency. `tick` runs at
 /// the start of every round, before the sleep (the mount watch and the
-/// read-only sweep). The loop returns once an automatic emergency has run;
-/// with alert-only configuration it runs until the process is stopped
-/// (deactivation and emergency stop the transient unit).
+/// read-only sweep). `emergency` says whether it acted: the loop returns once
+/// an automatic emergency has, and goes on watching after one that found
+/// nothing to act on. With alert-only configuration it runs until the process
+/// is stopped (deactivation and emergency stop the transient unit).
 pub fn run_loop<P, A, E, T>(
     config: &BackendWatchConfig,
     mut probe: P,
@@ -302,7 +303,7 @@ pub fn run_loop<P, A, E, T>(
 ) where
     P: FnMut() -> bool,
     A: Fn() + Send + Sync + 'static,
-    E: FnMut(),
+    E: FnMut() -> bool,
     T: FnMut(),
 {
     let alert = std::sync::Arc::new(alert);
@@ -318,8 +319,9 @@ pub fn run_loop<P, A, E, T>(
                 in_background(move || alert());
             }
             WatchAction::Emergency => {
-                emergency();
-                return;
+                if emergency() {
+                    return;
+                }
             }
         }
     }
