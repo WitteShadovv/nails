@@ -19,25 +19,31 @@
 //!   `/boot/efi`, `/nix` and `/opt` that are not at or under the hidden root.
 //!
 //! An fstab or crypttab entry that resolves into the hidden mount's own device
-//! stack or names one of its mappings is an entry for the hidden drive,
+//! stack, or into another device of its btrfs filesystem and what lies below
+//! that, or names one of their mappings, is an entry for the hidden drive,
 //! reported as an [`EntryFinding`]; so is a crypttab entry with
 //! `tcrypt-hidden` for a device on the hidden drive or one that cannot be
 //! found. Such an entry is an
 //! enabler stored on the decoy; the attach gate ignores the finding (writing to
 //! the root stays safe) and the `backend-entries` check reports it. It is no
-//! claim, except an fstab entry the boot mounts or swaps on: that device is the
-//! decoy's own storage too. A finding the decoy's own boot needs, an fstab
+//! claim, except an fstab entry the boot mounts or swaps on, or one for another
+//! device of the root's btrfs filesystem: that device is the decoy's own
+//! storage too. A finding the decoy's own boot needs, an fstab
 //! entry that mounts another of its filesystems or its swap, or the whole
 //! filesystem a root bound from a folder of it or a subvolume of it lies on
 //! (the decoy's line for `/` below a bind of a folder of `/`), or one that
-//! mounts the root's own filesystem at `/` or at a system folder, whatever the
-//! root shows of it, or a crypttab entry that opens a device below one of
-//! them, is marked so: the hidden root then lies on the decoy's own storage
-//! and has to move, since removing the entry would break the decoy. An fstab
-//! line the boot mounts at `/` or at a system folder for the root's own
-//! filesystem is marked as the decoy's own line for it
+//! mounts the root's own filesystem at `/` or at a system folder, whatever it
+//! mounts of it, or a crypttab entry that opens a device below one of them or
+//! makes one the root's own filesystem lies on while the decoy uses that
+//! filesystem (at `/`, at a system folder or by a line its boot needs), is
+//! marked so: the hidden root then lies on the decoy's own storage and has to
+//! move, since removing the entry would break the decoy. An fstab line the
+//! boot mounts at `/` or at a system folder for another part of the
+//! filesystem the root is a folder or a subvolume of, its top or a subvolume
+//! above or beside the root's, is marked as the decoy's own line for it
 //! ([`EntryFinding::system_folder`]), which `backend-entries` lets be for a
-//! root that `--allow-decoy-storage` accepted on that filesystem.
+//! root that `--allow-decoy-storage` accepted on that filesystem; one that
+//! mounts the volume itself, or whose subvolume cannot be told, never is.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read, or
 //! what a claimed filesystem keeps data on besides its device cannot be told;
@@ -680,10 +686,14 @@ pub struct EntryFinding {
     /// below one of them. The hidden root then lies on the decoy's storage.
     pub boot_needs: bool,
     /// For an fstab line that the decoy's boot mounts at `/` or at a system
-    /// folder ([`is_system_folder`]) for the filesystem the volume is, or is
-    /// a folder or a subvolume of, one that names the volume's own device,
-    /// that folder. Such a line is the decoy's own, and a root that
-    /// `--allow-decoy-storage` accepted on that filesystem lies there anyway.
+    /// folder ([`is_system_folder`]) for the filesystem the volume is a folder
+    /// or a subvolume of, one that names a device of it and mounts another
+    /// part of it than the volume (its top, or a subvolume above or beside
+    /// the volume's), that folder. Such a line is the decoy's own, and a root
+    /// that `--allow-decoy-storage` accepted on that filesystem lies there
+    /// anyway. `None` for a line that mounts the volume itself, as any line
+    /// does for a volume that is the whole filesystem, and for one whose
+    /// subvolume cannot be told.
     pub system_folder: Option<PathBuf>,
 }
 

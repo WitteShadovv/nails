@@ -594,6 +594,68 @@ fn subvolume_id(value: &str) -> Option<u64> {
     Some(if id == 0 { 5 } else { id })
 }
 
+/// Whether the device line `entry`, one that names a device of the
+/// filesystem of `hidden` (the visible mount at the hidden root), mounts the
+/// volume or a part of it: any line does for a root that is the whole
+/// filesystem, and for a root that is a folder or a btrfs subvolume of it, a
+/// line whose subvolume is that one or lies inside it. `Some(false)` for a
+/// line that mounts another part of the filesystem the root is part of: its
+/// top, or a subvolume above or beside the root's. `None` when what the line
+/// mounts cannot be told ([`line_shows`]).
+fn mounts_the_root(scene: &Scene<'_>, entry: &FstabEntry, hidden: &MountEntry) -> Option<bool> {
+    if sharing(hidden) == Sharing::Filesystem {
+        return Some(true);
+    }
+    line_shows(scene, entry, hidden).map(|shown| shown.starts_with(&hidden.root))
+}
+
+/// The path in the filesystem of `hidden` that the device line `entry`
+/// mounts, as the mount table writes a mount's root: `/`, the top, for a
+/// line with neither `subvol=` nor `subvolid=`, as [`shows_what_it_mounts`]
+/// takes it, and otherwise the btrfs subvolume these name, an id by the path
+/// that a mount of that filesystem with that id shows. `None` when that
+/// cannot be told: an id that is no plain number or that no such mount
+/// shows, options that name two subvolumes, or either option on a
+/// filesystem that is not btrfs.
+fn line_shows(scene: &Scene<'_>, entry: &FstabEntry, hidden: &MountEntry) -> Option<PathBuf> {
+    let path = entry.option_value("subvol");
+    let id = entry.option_value("subvolid");
+    if path.is_none() && id.is_none() {
+        return Some(PathBuf::from("/"));
+    }
+    if hidden.fstype != "btrfs" {
+        return None;
+    }
+    let by_path = path.map(|path| Path::new("/").join(path.trim_start_matches('/')));
+    let by_id = match id {
+        Some(id) => Some(subvolume_path(scene, hidden, subvolume_id(id)?)?),
+        None => None,
+    };
+    match (by_path, by_id) {
+        (Some(path), Some(id)) => (path == id).then_some(path),
+        (path, id) => path.or(id),
+    }
+}
+
+/// The path of the btrfs subvolume with the id `id` in the filesystem of
+/// `hidden`, as a mount of that filesystem at that subvolume shows it in the
+/// mount table: `/` for the top, whose id is 5.
+fn subvolume_path(scene: &Scene<'_>, hidden: &MountEntry, id: u64) -> Option<PathBuf> {
+    if id == 5 {
+        return Some(PathBuf::from("/"));
+    }
+    scene
+        .mounts
+        .iter()
+        .filter(|mount| {
+            mount.dev == hidden.dev
+                && mount.fstype == "btrfs"
+                && sharing(mount) == Sharing::Subvolume
+        })
+        .find(|mount| mount_option(mount, "subvolid").and_then(subvolume_id) == Some(id))
+        .map(|mount| mount.root.clone())
+}
+
 /// The value of the option `key=` of `mount`, from its filesystem's options
 /// or its own.
 fn mount_option<'a>(mount: &'a MountEntry, key: &str) -> Option<&'a str> {
@@ -646,6 +708,14 @@ fn claims(
     let devices = scene.devices;
     let mut claims = Vec::new();
     let mut entries = Vec::new();
+    // The root's own filesystem: the device it is mounted from and every
+    // other device of its btrfs filesystem, each of which holds the volume.
+    let top = stack.first().map(String::as_str);
+    let members = btrfs_members(devices, top);
+    let own_device = |node: &str| top == Some(node) || members.iter().any(|m| m.as_str() == node);
+    // An entry is for the hidden drive when it names a device of the root's
+    // stack, or another device of its btrfs filesystem or one below that.
+    let entry_stack = &with_stacks_of(devices, stack, &members)[..];
 
     let root_mount = top_mount_at(scene.mounts, Path::new("/"));
     let system = SYSTEM_MOUNTS.iter().filter_map(|point| {
@@ -654,11 +724,21 @@ fn claims(
             .then(|| top_mount_at(scene.mounts, point))
             .flatten()
     });
+    // Whether the decoy itself uses the root's own filesystem: it is mounted
+    // at / or at a system folder, or a line the boot needs mounts it. A
+    // crypttab line that opens a device of it is then one the boot needs.
+    let mut own_needed = false;
     for mount in root_mount.into_iter().chain(system) {
+        own_needed |=
+            mount.dev == hidden.dev || devices.node_of_mount(mount).is_some_and(own_device);
         claims.push(mount_claim(scene, mount, false));
     }
 
-    let hidden_names: Vec<&str> = stack
+    let stack_names: Vec<&str> = stack
+        .iter()
+        .filter_map(|n| devices.nodes.get(n).and_then(Node::dm_name))
+        .collect();
+    let entry_names: Vec<&str> = entry_stack
         .iter()
         .filter_map(|n| devices.nodes.get(n).and_then(Node::dm_name))
         .collect();
@@ -671,54 +751,16 @@ fn claims(
         {
             continue;
         }
-        let line = format!("{} {} {}", entry.spec, entry.file.display(), entry.vfstype);
         let node = devices.node_of_spec(&entry.spec);
-        if let Some(node) = node.filter(|n| stack.iter().any(|s| s == n)) {
-            let own = Some(node) == stack.first().map(String::as_str);
-            let elsewhere = !entry.file.starts_with(&hidden.mount_point);
-            // A line for the root's own device that mounts it at another
-            // place, while the root shows only a folder or a subvolume of it
-            // (a bind of a folder of /, say), mounts the whole filesystem the
-            // root is part of, not the volume alone.
-            let part_of =
-                own && elsewhere && !entry.is_swap() && sharing(hidden) != Sharing::Filesystem;
-            let why = if part_of {
-                format!(
-                    "it mounts the filesystem the volume at {} is part of",
-                    hidden.mount_point.display()
-                )
-            } else if own {
-                format!("it mounts the volume at {}", hidden.mount_point.display())
-            } else {
-                format!(
-                    "it mounts a device the volume at {} is stored on",
-                    hidden.mount_point.display()
-                )
-            };
-            // A line for the root's own filesystem at / or at a system
-            // folder is the decoy's own line for it, whatever the root shows
-            // of that filesystem, the whole of it too.
-            let system =
-                own && !entry.is_swap() && is_system_folder(&entry.file, &hidden.mount_point);
-            // A line the boot mounts outside the hidden root, for a device
-            // below the volume or for the filesystem the root is part of,
-            // mounts one of the decoy's own filesystems or its swap, and so
-            // does one the boot mounts at / or at a system folder.
-            let boot_needs = !entry.is_noauto()
-                && if own {
-                    part_of || system
-                } else {
-                    entry.is_swap() || elsewhere
-                };
-            let system_folder = (system && !entry.is_noauto()).then(|| entry.file.clone());
-            entries.push(EntryFinding {
-                system_folder,
-                ..blocking(FSTAB, line, why, boot_needs)
-            });
+        if let Some(node) = node.filter(|n| entry_stack.iter().any(|s| s == n)) {
+            let finding = fstab_finding(scene, hidden, entry, own_device(node));
+            own_needed |= own_device(node) && finding.boot_needs;
+            entries.push(finding);
             // An entry the boot mounts (or swaps on) makes the device the
             // decoy's own storage as well; only a `noauto` one is a mere
-            // recipe for the hidden drive.
-            if entry.is_noauto() {
+            // recipe for the hidden drive. One that names only another
+            // device of the root's btrfs filesystem claims it all the same.
+            if entry.is_noauto() && stack.iter().any(|s| s == node) {
                 continue;
             }
         }
@@ -758,7 +800,12 @@ fn claims(
         let line = format!("{} {}", entry.name, entry.source);
         let source = devices.node_of_spec(&entry.source);
         let mapping = devices.node_of_spec(&format!("/dev/mapper/{}", entry.name));
-        let in_stack = |n: &Option<&str>| n.is_some_and(|n| stack.iter().any(|s| s == n));
+        let opens = |within: &[String], names: &[&str]| {
+            names.contains(&entry.name.as_str())
+                || [source, mapping]
+                    .iter()
+                    .any(|n| n.is_some_and(|n| within.iter().any(|s| s == n)))
+        };
         // A line that opens the hidden volume of a container blocks when the
         // container is on the hidden drive, or when its device cannot be
         // found, so nothing shows it is not; one for another drive is that
@@ -774,7 +821,7 @@ fn claims(
             ));
             continue;
         }
-        if hidden_names.contains(&entry.name.as_str()) || in_stack(&source) || in_stack(&mapping) {
+        if opens(entry_stack, &entry_names) {
             let why = if entry.is_tcrypt() {
                 format!(
                     "it opens the device the volume at {} is opened from; whether that is the \
@@ -787,11 +834,22 @@ fn claims(
                     hidden.mount_point.display()
                 )
             };
-            let boot_needs = boot_needs(devices, &claims, hidden, stack, [source, mapping]);
+            // It makes a device the root's own filesystem lies on, which the
+            // decoy may use itself: the mapping it lies on, or one opened
+            // from a device below the one it is mounted from. Or it opens a
+            // device below another filesystem of the decoy's.
+            let makes_own = mapping.is_some_and(|m| entry_stack.iter().any(|s| s == m))
+                || entry_names.contains(&entry.name.as_str())
+                || source.is_some_and(|s| entry_stack.iter().any(|n| n == s) && !own_device(s));
+            let boot_needs = (own_needed && makes_own)
+                || boot_needs(devices, &claims, hidden, &own_device, [source, mapping]);
             entries.push(blocking(CRYPTTAB, line, why, boot_needs));
-            continue;
-        }
-        if entry.is_tcrypt() && source.is_some_and(|s| same_drive(devices, s, stack)) {
+            // One that opens only another device of the root's btrfs
+            // filesystem claims it all the same.
+            if opens(stack, &stack_names) {
+                continue;
+            }
+        } else if entry.is_tcrypt() && source.is_some_and(|s| same_drive(devices, s, stack)) {
             entries.push(EntryFinding {
                 kind: EntryKind::OuterWarning,
                 file: CRYPTTAB,
@@ -817,6 +875,90 @@ fn claims(
     (claims, entries)
 }
 
+/// The other devices of the btrfs filesystem that the device `top` is one
+/// of.
+fn btrfs_members<'a>(devices: &'a DeviceMap, top: Option<&str>) -> Vec<&'a String> {
+    let Some(top) = top else {
+        return Vec::new();
+    };
+    devices
+        .btrfs
+        .iter()
+        .filter(|members| members.contains(top))
+        .flatten()
+        .filter(|member| member.as_str() != top)
+        .collect()
+}
+
+/// `stack`, then each device below `members` that it does not hold yet.
+fn with_stacks_of(devices: &DeviceMap, stack: &[String], members: &[&String]) -> Vec<String> {
+    let mut all = stack.to_vec();
+    for member in members {
+        for node in devices.full_stack(member) {
+            if !all.contains(&node) {
+                all.push(node);
+            }
+        }
+    }
+    all
+}
+
+/// The finding for the fstab line `entry` for the hidden drive, `own` when
+/// it names a device of the root's own filesystem rather than one below it.
+fn fstab_finding(
+    scene: &Scene<'_>,
+    hidden: &MountEntry,
+    entry: &FstabEntry,
+    own: bool,
+) -> EntryFinding {
+    let line = format!("{} {} {}", entry.spec, entry.file.display(), entry.vfstype);
+    let root = hidden.mount_point.display();
+    let elsewhere = !entry.file.starts_with(&hidden.mount_point);
+    // What of the root's own filesystem the line mounts: the volume, or
+    // another part of the filesystem the root is part of.
+    let root_itself = if own {
+        mounts_the_root(scene, entry, hidden)
+    } else {
+        None
+    };
+    // A line for the root's own filesystem that mounts it at another place,
+    // while the root shows only a folder or a subvolume of it (a bind of a
+    // folder of /, say), mounts the filesystem the root is part of, not the
+    // volume alone, unless it mounts the root's own subvolume or one inside
+    // it.
+    let part_of = own && elsewhere && !entry.is_swap() && root_itself != Some(true);
+    let why = if part_of {
+        format!("it mounts the filesystem the volume at {root} is part of")
+    } else if own {
+        format!("it mounts the volume at {root}")
+    } else {
+        format!("it mounts a device the volume at {root} is stored on")
+    };
+    // A line for the root's own filesystem at / or at a system folder is one
+    // the decoy's boot needs, whatever it mounts of that filesystem, the
+    // volume too: it is never one to remove.
+    let system = own && !entry.is_swap() && is_system_folder(&entry.file, &hidden.mount_point);
+    // A line the boot mounts outside the hidden root, for a device below the
+    // volume or for the filesystem the root is part of, mounts one of the
+    // decoy's own filesystems or its swap, and so does one the boot mounts at
+    // / or at a system folder.
+    let boot_needs = !entry.is_noauto()
+        && if own {
+            part_of || system
+        } else {
+            entry.is_swap() || elsewhere
+        };
+    // The decoy's own line for such a folder mounts another part of the
+    // filesystem the root is a folder or a subvolume of: never the volume
+    // itself, and never a line whose subvolume cannot be told.
+    let system_folder =
+        (system && !entry.is_noauto() && root_itself == Some(false)).then(|| entry.file.clone());
+    EntryFinding {
+        system_folder,
+        ..blocking(FSTAB, line, why, boot_needs)
+    }
+}
+
 fn blocking(file: &'static str, line: String, why: String, boot_needs: bool) -> EntryFinding {
     EntryFinding {
         kind: EntryKind::Blocking,
@@ -831,18 +973,19 @@ fn blocking(file: &'static str, line: String, why: String, boot_needs: bool) -> 
 /// Whether the decoy's boot needs a volume opened from or as one of `named`:
 /// it lies below the decoy's root, another filesystem its boot mounts or its
 /// swap, as far down as their data goes (into an md array too, which the boot
-/// assembles from it). A mount of the hidden volume itself, at the hidden
-/// root or elsewhere, is no such need.
+/// assembles from it). A mount of the hidden volume's own filesystem, a
+/// device `own_device` names, at the hidden root or elsewhere, is no such
+/// need here: the judge counts the decoy's own use of it apart.
 fn boot_needs(
     devices: &DeviceMap,
     claims: &[Claim],
     hidden: &MountEntry,
-    stack: &[String],
+    own_device: &dyn Fn(&str) -> bool,
     named: [Option<&str>; 2],
 ) -> bool {
     claims
         .iter()
-        .filter(|claim| !claim.noauto && !claim.tops.iter().any(|t| stack.first() == Some(t)))
+        .filter(|claim| !claim.noauto && !claim.tops.iter().any(|t| own_device(t)))
         .filter(|claim| match &claim.what {
             Claimed::Mount(at) => !at.starts_with(&hidden.mount_point),
             Claimed::Swap(_) => true,
