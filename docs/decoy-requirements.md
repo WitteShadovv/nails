@@ -1167,10 +1167,16 @@ such as NixOS's read-only bind of `/nix/store` beside a bind of a folder of
 `/`, or another btrfs subvolume. So the `hidden-volume` check passes a bind of
 a folder of `/`, or a subvolume of a filesystem the fstab mounts, with the
 flag's warning, while a separate drive also mounted at `/srv` is refused with
-`sudo umount /srv`. The `backend-entries` check still refuses such a root
-while a line of the fstab names the device of its filesystem, as the line for
-`/` or `/home` does on most decoys, and says to put the hidden root on storage
-of its own instead, so `check` and activation refuse it there.
+`sudo umount /srv`. The `backend-entries` check lets be the decoy's own fstab
+lines that its boot mounts at `/` or at a system folder for such a root's
+filesystem: `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`,
+`/nix` and `/opt`, unless the hidden root is that folder or lies above it. So
+`check` passes a bind of a folder of `/`, or a subvolume beside the fstab's
+`/home`, with the flag's warning. A line that names the device of that
+filesystem for any other folder, such as `/pool`, `/var/log` or
+`/.snapshots`, still fails `backend-entries`, since it may name the hidden
+drive's disk, and the check says to put the hidden root on storage of its own
+instead.
 
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that
@@ -1251,7 +1257,9 @@ storage, and the check says to put it on storage of its own instead. The lines
 only the hidden volume needs still go, and where both kinds are flagged the
 check says both. If the check cannot read `/etc/crypttab` (some distributions
 make it readable by root only), it fails and asks you to run the command with
-sudo. `--allow-decoy-storage` does not cover it.
+sudo. `--allow-decoy-storage` covers only the decoy's own fstab lines that its
+boot mounts at `/` or at a system folder for the filesystem it accepted the
+hidden root on (see [Attaching the drive](#attaching-the-drive)).
 
 ### Encryption headers, high-entropy space and containers
 

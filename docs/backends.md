@@ -47,9 +47,13 @@ Whatever the backend, the filesystem at the hidden root must:
   mounts, ostree's `/sysroot`, a ZFS dataset that ZFS mounts by its
   mountpoint property), and so does a copy that mount propagation makes at a
   bind line's mount point of a mount at or below its source. A root with no
-  such other mount passes `hidden-volume` with the flag's warning, but
-  `backend-entries` still refuses it while a line of the fstab names the device
-  of its filesystem, as the line for `/` or `/home` does on most decoys. An
+  such other mount passes `hidden-volume` with the flag's warning, and
+  `backend-entries` lets be the decoy's own fstab lines that its boot mounts
+  at `/` or at a system folder (`/usr`, `/var`, `/home`, `/srv`, `/boot`,
+  `/efi`, `/boot/efi`, `/nix`, `/opt`, unless the hidden root is that folder
+  or lies above it) for that filesystem. A line that names the device of that
+  filesystem for any other folder still fails `backend-entries`, since it may
+  name the hidden drive's disk. An
   encrypted container
   file on a filesystem the decoy uses is accepted with a warning: that
   filesystem's journal and copy-on-write snapshots (btrfs, snapper) can keep old
@@ -359,8 +363,10 @@ Every backend leaves the same traces on the decoy side while you unlock it:
   `/etc/crypttab`, `/etc/fstab` or the decoy NixOS configuration
   (`boot.initrd.luks.devices`, `fileSystems`). The `backend-entries`
   pre-flight check refuses activation while a crypttab or fstab line opens or
-  mounts the hidden volume, or a device it is stored on; a line that opens only
-  another volume on the same drive warns (see
+  mounts the hidden volume, or a device it is stored on, except the decoy's
+  own lines for `/` and its system folders that `--allow-decoy-storage` lets
+  be (see above); a line that opens only another volume on the same drive
+  warns (see
   [crypttab and fstab](decoy-requirements.md#crypttab-and-fstab)).
 
 `nails deactivate` and `nails emergency` close the hidden backend themselves:

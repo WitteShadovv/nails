@@ -325,8 +325,9 @@ pub struct ActivateArgs {
     /// is no mount point, a root with a second filesystem mounted over it, a
     /// root whose files another mount of its filesystem reaches too (one that
     /// neither / nor a line of its fstab makes), storage that cannot be judged
-    /// (a ZFS volume among it), and a decoy entry that opens the volume are
-    /// still refused.
+    /// (a ZFS volume among it), and a decoy entry that opens the volume (other
+    /// than this computer's own fstab lines that mount the filesystem it
+    /// accepted at / or at a system folder) are still refused.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 

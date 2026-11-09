@@ -1022,11 +1022,17 @@ fn a_separate_drive_also_mounted_at_a_system_folder_is_refused_with_the_flag_too
     assert_eq!(result.allowable(), None);
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 
-    // Mounted at /srv by a line of the fstab, it is the decoy's own mount
-    // (the backend-entries check refuses that line by itself).
+    // Mounted at /srv by a line of the fstab, it is the decoy's own mount,
+    // and that line, the decoy's own for a system folder, is what the flag
+    // accepted: backend-entries lets it be too.
     fs.mock_set_file_content("/etc/fstab", "/dev/sdb1 /srv ext4 defaults 0 2\n");
     let result = run_allowing(&fs, Allow::DecoyStorage);
     assert!(result.is_warn(), "got {result:?}");
+    let entries = crate::preflight::BackendEntriesCheck::new(PathBuf::from(NEUTRAL_ROOT))
+        .allowing(Allow::DecoyStorage)
+        .run(&fs)
+        .unwrap();
+    assert!(entries.is_pass(), "got {entries:?}");
 }
 
 #[test]

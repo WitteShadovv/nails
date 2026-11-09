@@ -6,6 +6,7 @@
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
     LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Untraced, Verdict,
+    is_system_folder,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::fstab::FstabEntry;
@@ -703,7 +704,17 @@ fn claims(
                 } else {
                     entry.is_swap() || elsewhere
                 };
-            entries.push(blocking(FSTAB, line, why, boot_needs));
+            // One the boot mounts at / or at a system folder for the root's
+            // own filesystem is the decoy's own line for that filesystem.
+            let system_folder = (own
+                && !entry.is_swap()
+                && !entry.is_noauto()
+                && is_system_folder(&entry.file, &hidden.mount_point))
+            .then(|| entry.file.clone());
+            entries.push(EntryFinding {
+                system_folder,
+                ..blocking(FSTAB, line, why, boot_needs)
+            });
             // An entry the boot mounts (or swaps on) makes the device the
             // decoy's own storage as well; only a `noauto` one is a mere
             // recipe for the hidden drive.
@@ -787,6 +798,7 @@ fn claims(
                 line,
                 why: "the decoy is configured to open storage on this drive".to_string(),
                 boot_needs: false,
+                system_folder: None,
             });
             continue;
         }
@@ -812,6 +824,7 @@ fn blocking(file: &'static str, line: String, why: String, boot_needs: bool) -> 
         line,
         why,
         boot_needs,
+        system_folder: None,
     }
 }
 

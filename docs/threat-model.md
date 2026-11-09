@@ -300,9 +300,12 @@ How the code upholds this:
   `/etc/crypttab` or `/etc/fstab` that opens or mounts the hidden volume (or a
   device it is stored on), or carries `tcrypt-hidden` for a device on its drive
   or one that cannot be found, is such an enabler: the `backend-entries`
-  pre-flight check refuses activation while one exists, and no flag overrides
-  it. A line that opens only
-  another volume on the same drive warns.
+  pre-flight check refuses activation while one exists. No flag overrides the
+  check, except that for a root `--allow-decoy-storage` accepted on a
+  filesystem the decoy uses, the check lets be the decoy's own fstab lines
+  that the boot mounts at `/` or at a system folder outside the hidden root
+  for that filesystem. A line that opens only another volume on the same
+  drive warns.
 
 This invariant is checked by the end-to-end tests `uefi-esp-nvram-invariant`
 and `soft-reboot-mechanics`: they hash the ESP file listing and capture the EFI
@@ -414,7 +417,10 @@ program serves nothing shows where the canary lands. It also turns the refusal o
 device into a warning, for one you know is served from storage the decoy does
 not use, such as another computer. The override never covers a folder, a
 covered root, storage that cannot be judged (a ZFS volume among it), or
-`backend-entries`.
+`backend-entries`, except that for a root it accepted on a filesystem the
+decoy uses, that check lets be the decoy's own fstab lines that the boot
+mounts at `/` or at a system folder outside the hidden root for that
+filesystem.
 
 In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or

@@ -116,7 +116,11 @@ mounts), since everything written there lands on it. It turns the refusal of an
 program that serves the device keeps the data on storage this computer does not
 use, such as another computer. It never covers a folder, a covered root, storage
 that cannot be judged (a ZFS volume among it, wherever the root's data reaches
-one) or a decoy entry for the volume.
+one) or a decoy entry for the volume, other than the decoy's own fstab lines
+that its boot mounts at `/` or at a system folder outside the hidden root
+(`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`,
+`/opt`) for the filesystem it accepted the root on. A line for that filesystem
+at any other folder still fails `backend-entries`.
 See [the attach gate](threat-model.md#the-attach-gate).
 
 Read this guide on another device, not on the decoy: opening it there leaves

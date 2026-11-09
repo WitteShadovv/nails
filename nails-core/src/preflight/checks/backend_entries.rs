@@ -12,7 +12,13 @@
 //! decoy requirements say the hidden backend never has one. The attach gate
 //! ignores these entries (writing to the root stays safe); this check reports
 //! them, from the same judge ([`separation`]), so `check` and activation share
-//! it. `--allow-decoy-storage` never covers it.
+//! it. `--allow-decoy-storage` covers only the decoy's own lines for a root it
+//! accepted on a filesystem the decoy uses (a bind of a folder of it, a btrfs
+//! subvolume of it, or the filesystem itself): the fstab lines that the
+//! decoy's boot mounts at `/` or at a system folder for that filesystem
+//! ([`separation::is_system_folder`]) are no finding then. A line that mounts
+//! that filesystem at any other folder still is one, since it may name the
+//! hidden drive's disk.
 //!
 //! An entry that opens only another volume on the same drive (a VeraCrypt
 //! outer volume of another partition) warns: the decoy is configured to open
@@ -26,7 +32,8 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::filesystem::mountinfo::top_mount_at;
-use crate::hidden_root::separation::{self, EntryFinding, EntryKind};
+use crate::hidden_root::Allow;
+use crate::hidden_root::separation::{self, EntryFinding, EntryKind, Verdict};
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
@@ -51,12 +58,24 @@ pub const REMOVE_AND_MOVE: &str = "Remove the lines only the hidden volume needs
 #[derive(Debug, Clone)]
 pub struct BackendEntriesCheck {
     hidden_volume_root: PathBuf,
+    allow: Allow,
 }
 
 impl BackendEntriesCheck {
     /// A check of the volume mounted at `hidden_volume_root`.
     pub fn new(hidden_volume_root: PathBuf) -> Self {
-        Self { hidden_volume_root }
+        Self {
+            hidden_volume_root,
+            allow: Allow::Nothing,
+        }
+    }
+
+    /// Let be the decoy's own lines for a root that `allow`
+    /// (`--allow-decoy-storage`) accepts on a filesystem the decoy uses.
+    #[must_use]
+    pub fn allowing(mut self, allow: Allow) -> Self {
+        self.allow = allow;
+        self
     }
 }
 
@@ -126,12 +145,17 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
             ));
         }
         let judgement = separation::judge(&collected.scene(&table), hidden);
+        // A root the operator accepted on a filesystem the decoy uses lies on
+        // it, and the decoy's own lines for / and its system folders mount
+        // that filesystem for the decoy: they are what the flag accepted.
+        let accepted = self.allow == Allow::DecoyStorage
+            && matches!(judgement.verdict, Verdict::OnDecoyFilesystem { .. });
+        let (own, entries): (Vec<&EntryFinding>, Vec<&EntryFinding>) = judgement
+            .entries
+            .iter()
+            .partition(|f| accepted && f.system_folder.is_some());
         let of_kind = |kind: EntryKind| -> Vec<&EntryFinding> {
-            judgement
-                .entries
-                .iter()
-                .filter(|f| f.kind == kind)
-                .collect()
+            entries.iter().copied().filter(|f| f.kind == kind).collect()
         };
 
         let blocking = of_kind(EntryKind::Blocking);
@@ -163,11 +187,38 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
                 describe(&outer)
             )));
         }
+        if !own.is_empty() {
+            return Ok(CheckResult::Pass(decoys_own_lines(root, &own)));
+        }
         Ok(CheckResult::Pass(format!(
             "No fstab or crypttab entry opens or mounts the volume at {}",
             root.display()
         )))
     }
+}
+
+/// The pass of a root that `--allow-decoy-storage` accepted on a filesystem
+/// the decoy uses, which only the decoy's own fstab lines in `own` name.
+fn decoys_own_lines(root: &Path, own: &[&EntryFinding]) -> String {
+    let places: Vec<String> = own
+        .iter()
+        .filter_map(|f| f.system_folder.as_deref())
+        .map(|at| at.display().to_string())
+        .collect();
+    let (lines, mount) = if places.len() == 1 {
+        ("line", "mounts")
+    } else {
+        ("lines", "mount")
+    };
+    let places = match places.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => places.join(""),
+    };
+    format!(
+        "No fstab or crypttab entry names the volume at {} other than the decoy's own {lines} \
+         for {places}, which {mount} the filesystem that --allow-decoy-storage accepted it on",
+        root.display()
+    )
 }
 
 #[cfg(test)]

@@ -13,6 +13,8 @@ use std::path::Path;
 
 #[path = "extra_tests.rs"]
 mod extra;
+#[path = "own_lines_tests.rs"]
+mod own_lines;
 #[path = "reach_tests.rs"]
 mod reach;
 

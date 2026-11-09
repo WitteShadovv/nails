@@ -817,12 +817,16 @@ of this changelog for that version becomes the release notes word for word, and
   decoy, so the check now says to put the hidden root on storage of its own instead. Where it also
   flags lines only the hidden volume needs, it still says to remove those, since once the hidden
   root moves they are flagged no more and would stay behind naming it.
-- `backend-entries` no longer says to remove a line of the decoy's fstab that the boot mounts for
-  the filesystem that a root accepted with `--allow-decoy-storage` is a folder or a subvolume of,
-  such as the line for `/` below a bind of a folder of `/`. That line names the root's device, so
-  the check took it for a line that mounts the volume itself, while it mounts the decoy's own
-  filesystem, which removing it would break. It now says it mounts the filesystem the volume is
-  part of and that the decoy's own boot needs it, and to put the hidden root on storage of its own
+- `backend-entries` no longer refuses a root that `--allow-decoy-storage` accepted on a filesystem
+  the decoy uses for the decoy's own fstab lines that the boot mounts at `/` or at a system folder
+  for that filesystem (`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix` and
+  `/opt`, unless the hidden root is that folder or lies above it), such as the line for `/` below a
+  bind of a folder of `/`, or the line for `/home` beside a btrfs subvolume of its filesystem. Such
+  a line names the root's device, so the check took it for a line that mounts the volume itself
+  and said to remove it, while it mounts the decoy's own filesystem, which removing it would break.
+  A line the boot mounts for that filesystem at any other folder, which may name the hidden drive's
+  disk, still fails the check, which now says that it mounts the filesystem the volume is part of
+  and that the decoy's own boot needs it, and to put the hidden root on storage of its own
   instead. A `noauto` line for that filesystem is still one to remove.
 - The attach gate no longer says `per /etc/fstab` of a root whose filesystem is mounted at `/` or at
   one of the system folders it counts as the decoy's (`/srv`, `/home`, `/opt` and the like) when no
@@ -1426,16 +1430,16 @@ of this changelog for that version becomes the release notes word for word, and
   shows, on btrfs the subvolume its `subvol=` or `subvolid=` names as the mount table shows that
   subvolume's path and id, so a `subvolid=` that cannot be read on either side makes none, or a
   bind line from another of the decoy's own mounts of it), and neither does a mount that shows none
-  of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So the
-  `hidden-volume` check passes a bind of a folder of `/` and a subvolume of a
-  filesystem the fstab mounts with the flag's warning, though `backend-entries` still refuses such
-  a root while a line of the fstab names its filesystem's device. A separate drive also mounted at
-  `/srv` is refused, and so is the copy that mount propagation makes of a mount at or below a bind
-  line's source, and a root whose folder a mount that no fstab line makes shows too (a `/home` or
-  `/srv` partition that systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a ZFS dataset that
-  ZFS mounts by its mountpoint property). That refusal first says not to unmount a mount the
-  computer makes by itself, then how to unmount one made by hand. A directory of a disk bound at
-  the root now needs the disk's own mount gone.
+  of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So
+  `check` passes a bind of a folder of `/` and a subvolume beside the fstab's `/home` with the
+  flag's warning, as `backend-entries` lets be the decoy's own fstab lines for `/` and its system
+  folders (see Fixed), while a line for another folder still fails it. A separate drive also
+  mounted at `/srv` by hand is refused, and so is the copy that mount propagation makes of a mount
+  at or below a bind line's source, and a root whose folder a mount that no fstab line makes shows
+  too (a `/home` or `/srv` partition that systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a
+  ZFS dataset that ZFS mounts by its mountpoint property). That refusal first says not to unmount a
+  mount the computer makes by itself, then how to unmount one made by hand. A directory of a disk
+  bound at the root now needs the disk's own mount gone.
   `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the setting, which is
   not verified for every release. A VM test records whether udiskie mounts a drive that cryptsetup
   unlocked, and in it udiskie did.
