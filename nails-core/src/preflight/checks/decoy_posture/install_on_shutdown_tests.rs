@@ -312,12 +312,33 @@ fn every_spelling_apt_reads_as_true_is_refused() {
         "unattended-upgrade::installonshutdown on;\n",
         "Unattended-Upgrade::InstallOnShutdown \"0x1\";\n",
         "Unattended-Upgrade::InstallOnShutdown \"yes\"; // installs at shutdown\n",
+        // A binary number, which apt reads through glibc's strtol() of the
+        // 2023 C standard on all three releases.
+        "Unattended-Upgrade::InstallOnShutdown \"0b1\";\n",
+        "Unattended-Upgrade::InstallOnShutdown \"+0B01\";\n",
     ] {
-        let tmp = stock(UBUNTU_24_04);
-        write(tmp.path(), "etc/apt/apt.conf.d/52local", text.as_bytes());
-        assert!(find(tmp.path()).blocker.is_some(), "{text:?}");
+        for release in [DEBIAN_13, UBUNTU_24_04, UBUNTU_26_04] {
+            let tmp = stock(release);
+            write(tmp.path(), "etc/apt/apt.conf.d/52local", text.as_bytes());
+            let found = find(tmp.path());
+            let refusal = found.blocker.as_ref().expect("a refusal");
+            assert_eq!(refusal.at_the_switch, AtTheSwitch::Installs, "{text:?}");
+            assert!(
+                refusal
+                    .finding
+                    .contains("InstallOnShutdown is on in /etc/apt/apt.conf.d/52local:1"),
+                "{text:?}: {}",
+                refusal.finding
+            );
+            assert_eq!(
+                DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, tmp.path()),
+                Some(crate::preflight::InstallAtShutdown::On),
+                "{text:?}"
+            );
+        }
     }
     for text in [
+        "Unattended-Upgrade::InstallOnShutdown \"0b10\";\n",
         "Unattended-Upgrade::InstallOnShutdown \"2\";\n",
         "Unattended-Upgrade::InstallOnShutdown \"\";\n",
         "// Unattended-Upgrade::InstallOnShutdown \"true\";\n",

@@ -459,6 +459,17 @@ fn booleans_read_as_apt_reads_them() {
         // 4294967297 in octal.
         ("040000000001", true),
         (" 0x1", true),
+        // Binary after `0b`, as glibc 2.38 and newer read it in base 0: what
+        // apt-config and python3-apt's find_b() make of these on Ubuntu
+        // 24.04 (apt 2.8.3, glibc 2.39).
+        ("0b1", true),
+        ("0B1", true),
+        ("+0b1", true),
+        (" 0b01", true),
+        ("0b0", false),
+        ("-0b0", false),
+        // 4294967297 in binary.
+        ("0b100000000000000000000000000000001", true),
         // A word compares up to the first NUL.
         ("true\0x", true),
         ("OFF\0x", false),
@@ -474,6 +485,16 @@ fn booleans_read_as_apt_reads_them() {
         "  ",
         "0x",
         "08",
+        // A binary number but 0 or 1, a `0b` with no binary digit after it,
+        // and one that strtol() does not read whole.
+        "0b10",
+        "-0b1",
+        "0b",
+        "0b2",
+        "0bx",
+        "0b1 ",
+        "0b12",
+        "00b1",
         "ture",
         "99999999999999999999",
         "y",
