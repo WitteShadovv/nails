@@ -1224,7 +1224,13 @@ The `nails` binary lives on the hidden volume, so run `verify` from the hidden
 side. A verify run never claims the system is clean; a run with no findings
 prints "no known artifacts found" plus the list of areas it did not inspect.
 Exit codes: `0` no known artifacts, `10` warnings, `11` critical, `1` the scan
-could not run, `3` the configuration could not be loaded.
+could not run, `3` the configuration could not be loaded. A path verify cannot
+look up for another reason than that it is not there (no permission, an I/O
+error, a loop of links) is never taken for one that is not there: verify says
+it could not tell and names the path, as a finding at the severity of what it
+looks for there, but a warning where that would be critical, or among the
+areas it did not check. So a path it cannot look up gives `10` at most, and
+`11` still means that verify found something critical.
 
 ```bash
 sudo /mnt/data/nails verify            # standard
@@ -1327,9 +1333,10 @@ since a scan of it would find nothing. An empty folder is what a mount point
 looks like when the image is not mounted on it, and the top level of a btrfs
 filesystem holds no `etc` either: the refusal names the subvolumes it finds
 there. Each mount point of the decoy's `/etc/fstab` that is missing or empty
-under `--root`, and each home of a login account of its `/etc/passwd` that is,
-is listed as not checked, in the examiner's view as well, so a scan of the
-system subvolume alone does not read as complete. The line of a mount point
+under `--root`, or that cannot be looked at there, and each home of a login
+account of its `/etc/passwd` that is, is listed as not checked, in the
+examiner's view as well, so a scan of the system subvolume alone does not
+read as complete. The line of a mount point
 says which of the two mounts above it needs, by whether `findmnt` shows its
 device mounted, with the command. A file the decoy mounts, such as a disk
 image in a home, is attached to a loop device first with
