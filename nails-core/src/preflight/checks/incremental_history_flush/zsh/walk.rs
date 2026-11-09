@@ -24,13 +24,14 @@ mod keys;
 mod loops;
 mod names;
 mod options;
+mod path;
 mod sets;
 mod strings;
 mod styles;
 mod unread;
 
 pub(super) use super::builtins::HOOKS;
-pub(super) use event::{Arith, Event, Input};
+pub(super) use event::{Arith, Event, Input, PathChange};
 pub(super) use fpath::PROFILE_DIRS;
 pub(super) use hooks::may_expand;
 pub(super) use strings::{PROMPTS, expands};
@@ -174,6 +175,10 @@ struct Walker<'a> {
     autoloads: usize,
     /// How often it read `fpath` or `FPATH` set ([`backstop::fpath_writes`]).
     fpaths: usize,
+    /// How often it read `path` or `PATH` set, declared or unset, and a
+    /// `hash` or `commands` set or declared
+    /// ([`super::programs::path_writes`], [`super::programs::hash_writes`]).
+    paths: usize,
     /// How many `fc` commands it read that write the history file or whose
     /// words it cannot read.
     fcs: usize,
@@ -702,6 +707,28 @@ impl Walker<'_> {
                 self.fpath_items(&items, append, fpath::Given::Array);
             }
         }
+        // Where zsh looks for the programs it runs by name, wherever the
+        // array puts each element (`path[1,0]=(...)` too), and zsh's table of
+        // the program it runs for each name.
+        match command::assigned(&name) {
+            "path" => {
+                self.paths += 1;
+                self.path_items(&items);
+            }
+            "PATH" => {
+                // A scalar's value as an array: what zsh makes of it the
+                // check cannot follow.
+                self.paths += 1;
+                self.events
+                    .push(Event::Path(PathChange::Unfollowed(format!("{name}=(...)"))));
+            }
+            "commands" => {
+                self.paths += 1;
+                self.events
+                    .push(Event::Path(PathChange::Hashed(format!("{name}=(...)"))));
+            }
+            _ => {}
+        }
         let literal: Option<Vec<String>> = items
             .iter()
             .map(|item| (!item.expands).then(|| item.text.clone()))
@@ -891,6 +918,7 @@ struct Walked {
     zdotdirs: usize,
     autoloads: usize,
     fpaths: usize,
+    paths: usize,
     fcs: usize,
     nix_profiles: usize,
     indirects: usize,
@@ -935,6 +963,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         zdotdirs: 0,
         autoloads: 0,
         fpaths: 0,
+        paths: 0,
         fcs: 0,
         nix_profiles: 0,
         indirects: 0,
@@ -978,6 +1007,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         zdotdirs: walker.zdotdirs,
         autoloads: walker.autoloads,
         fpaths: walker.fpaths,
+        paths: walker.paths,
         fcs: walker.fcs,
         nix_profiles: walker.nix_profiles,
         indirects: walker.indirects,
