@@ -320,9 +320,10 @@ impl Decision {
     /// below the hidden root, mounting the hidden volume where nothing is
     /// mounted below it is the other. An entry of a hidden NixOS
     /// generation's fstab is that generation's configuration's to change,
-    /// which a hidden session entered without the build can, and one of the
-    /// hidden session's own fstab is that fstab's (such an entry is kept off
-    /// rather than refused, see [`decide_hidden_fstab`]).
+    /// which a hidden session entered without the build can. `None` for the
+    /// hidden session's own fstab: an entry of it at or below the hidden root
+    /// is kept off, never refused ([`decide_hidden_fstab`]), and the warning
+    /// says what to do ([`kept_below_warning`]).
     pub fn remedy(&self, whose: Whose) -> Option<String> {
         let Decision::Refuse {
             below: Some(root), ..
@@ -340,10 +341,7 @@ impl Decision {
                 "Remove this mount from the hidden NixOS configuration, or move it out from \
                  below {root} there, in a hidden session entered with `activate --overlay-only`."
             ),
-            Whose::HiddenSession => format!(
-                "Remove this line from /etc/fstab, or move its mount out from below {root}, in \
-                 a hidden session."
-            ),
+            Whose::HiddenSession => return None,
             Whose::HiddenRoot => format!(
                 "Mount the hidden volume where no mount unit mounts anything, or move this mount \
                  out from below {root} or remove its unit, before activating."
