@@ -19,6 +19,10 @@
 # the overlay would load it, and the kernel's modprobe and udevd would then
 # read their settings below /usr/local/lib.
 #
+# At the root of each mount on the way the checks also ask the kernel which
+# filesystem is on top, since autofs marks its points where statx does not
+# look: the kernel names the autofs at each point and mounts none of them.
+#
 # `nails check --json` as root, again with --allow-persistent-decoy, and as
 # carol (SUDO_USER) leaves the mount table outside /run as it found it and
 # the mount units inactive, no automount request reaches systemd or the
@@ -60,6 +64,49 @@ let
   homes = pkgs.writeText "auto.homes" ''
     dave -fstype=bind :/srv/dave
   '';
+
+  # What the kernel says of each place it is given, as NAILS asks it at the
+  # root of a mount: one statx that follows no link and mounts nothing, and
+  # the type of the filesystem on top, from fstatfs of an O_PATH descriptor,
+  # which mounts nothing either.
+  placeProbe = pkgs.writeCBin "place-probe" ''
+    #define _GNU_SOURCE
+    #include <fcntl.h>
+    #include <stdio.h>
+    #include <sys/stat.h>
+    #include <sys/vfs.h>
+    #include <unistd.h>
+
+    #ifndef STATX_ATTR_AUTOMOUNT
+    #define STATX_ATTR_AUTOMOUNT 0x00001000
+    #endif
+    #ifndef STATX_ATTR_MOUNT_ROOT
+    #define STATX_ATTR_MOUNT_ROOT 0x00002000
+    #endif
+
+    int main(int argc, char **argv) {
+      for (int i = 1; i < argc; i++) {
+        struct statx stx;
+        struct statfs on_top;
+        int fd;
+        if (statx(AT_FDCWD, argv[i], AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW, STATX_TYPE, &stx)) {
+          perror(argv[i]);
+          return 1;
+        }
+        fd = open(argv[i], O_PATH | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0 || fstatfs(fd, &on_top)) {
+          perror(argv[i]);
+          return 1;
+        }
+        close(fd);
+        printf("%s mount_root=%d automount=%d f_type=0x%lx\n", argv[i],
+               !!(stx.stx_attributes & STATX_ATTR_MOUNT_ROOT),
+               !!(stx.stx_attributes & STATX_ATTR_AUTOMOUNT),
+               (unsigned long) on_top.f_type);
+      }
+      return 0;
+    }
+  '';
 in
 {
   name = "check-no-automount";
@@ -75,7 +122,10 @@ in
       # No overlay over the store, so nothing loads the overlay module at
       # boot: check's trial overlay would be what loads it.
       virtualisation.writableStore = false;
-      environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
+      environment.systemPackages = [
+        self.packages.${pkgs.stdenv.hostPlatform.system}.nails
+        placeProbe
+      ];
       virtualisation.fileSystems = {
         "/usr/local" = onDemand;
         "/home/carol" = onDemand;
@@ -287,6 +337,23 @@ in
         assert not stack(baseline, DAVE), stack(baseline, DAVE)
         assert not inactive(list(DIRECT)), inactive(list(DIRECT))
         assert not overlay_loaded(), machine.succeed("cat /proc/filesystems")
+
+    with subtest("the kernel names the autofs on top of each point and mounts none"):
+        # statx says each point is the root of a mount, but not that it is
+        # an automount point, which autofs marks where statx does not look:
+        # fstatfs names the autofs there, the directory of the indirect map
+        # too.
+        unmount(list(DIRECT))
+        before, since = table(), cursor()
+        said = machine.succeed(f"place-probe {' '.join(DIRECT)} {MAP}").splitlines()
+        print("\n".join(said))
+        left_nothing("probe", before, since, list(DIRECT))
+        assert len(said) == len(DIRECT) + 1, said
+        for point, line in zip((*DIRECT, MAP), said):
+            place, *rest = line.split()
+            fields = {key: value for key, _, value in (field.partition("=") for field in rest)}
+            assert place == point, (point, line)
+            assert fields == {"mount_root": "1", "automount": "0", "f_type": "0x187"}, line
 
     with subtest("check as root names each automount point and mounts none"):
         rc, rows, data, before, since = check("root", (*READ, ARCHIVE))
