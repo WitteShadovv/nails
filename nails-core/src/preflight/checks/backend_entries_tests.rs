@@ -73,10 +73,26 @@ impl Decoy {
     }
 
     fn mapping(self, name: &str, dev: &str, dm: &str, below: (&str, &str)) -> Self {
+        self.device_mapper(name, dev, dm, &format!("CRYPT-LUKS2-00-{dm}"), below)
+    }
+
+    /// An LVM logical volume `dm` in the volume group on `below`.
+    fn lv(self, name: &str, dev: &str, dm: &str, below: (&str, &str)) -> Self {
+        self.device_mapper(name, dev, dm, &format!("LVM-{dm}"), below)
+    }
+
+    fn device_mapper(
+        self,
+        name: &str,
+        dev: &str,
+        dm: &str,
+        uuid: &str,
+        below: (&str, &str),
+    ) -> Self {
         let dir = format!("/sys/devices/virtual/block/{name}");
         let decoy = self.device(&dir, name, dev, &[below]);
         decoy.attr(&dir, "dm/name", dm);
-        decoy.attr(&dir, "dm/uuid", &format!("CRYPT-LUKS2-00-{dm}"));
+        decoy.attr(&dir, "dm/uuid", uuid);
         decoy.link(&format!("/dev/mapper/{dm}"), &format!("/dev/{name}"));
         decoy
     }
@@ -135,33 +151,37 @@ fn a_crypttab_line_that_opens_the_volume_fails() {
 /// crypttab opens at boot, and the hidden volume on md0p1 of the same array,
 /// with `fstab` the decoy's fstab.
 fn on_the_decoys_array(fstab: &str) -> Decoy {
+    array_decoy("5 1 259:11 / /mnt rw - ext4 /dev/md0p1 rw\n", fstab)
+}
+
+/// The decoy's root on md0p2 of an md mirror of two LUKS volumes its
+/// crypttab opens at boot, with `hidden` the mount line of the root and
+/// `fstab` the decoy's fstab.
+fn array_decoy(hidden: &str, fstab: &str) -> Decoy {
     let md0 = "/sys/devices/virtual/block/md0";
-    Decoy::new(
-        "1 0 259:12 / / rw - ext4 /dev/md0p2 rw\n\
-         5 1 259:11 / /mnt rw - ext4 /dev/md0p1 rw\n",
-    )
-    .device(SDB, "sdb", "8:16", &[])
-    .partition(SDB1, "sdb1", "8:17")
-    .device(SDC, "sdc", "8:32", &[])
-    .partition(SDC1, "sdc1", "8:33")
-    .mapping("dm-20", "254:20", "leg0", ("sdb1", SDB1))
-    .mapping("dm-21", "254:21", "leg1", ("sdc1", SDC1))
-    .device(
-        md0,
-        "md0",
-        "9:0",
-        &[
-            ("dm-20", "/sys/devices/virtual/block/dm-20"),
-            ("dm-21", "/sys/devices/virtual/block/dm-21"),
-        ],
-    )
-    .partition(&format!("{md0}/md0p1"), "md0p1", "259:11")
-    .partition(&format!("{md0}/md0p2"), "md0p2", "259:12")
-    .file("/etc/fstab", fstab)
-    .file(
-        "/etc/crypttab",
-        "leg0 /dev/sdb1 none luks\nleg1 /dev/sdc1 none luks\n",
-    )
+    Decoy::new(&format!("1 0 259:12 / / rw - ext4 /dev/md0p2 rw\n{hidden}"))
+        .device(SDB, "sdb", "8:16", &[])
+        .partition(SDB1, "sdb1", "8:17")
+        .device(SDC, "sdc", "8:32", &[])
+        .partition(SDC1, "sdc1", "8:33")
+        .mapping("dm-20", "254:20", "leg0", ("sdb1", SDB1))
+        .mapping("dm-21", "254:21", "leg1", ("sdc1", SDC1))
+        .device(
+            md0,
+            "md0",
+            "9:0",
+            &[
+                ("dm-20", "/sys/devices/virtual/block/dm-20"),
+                ("dm-21", "/sys/devices/virtual/block/dm-21"),
+            ],
+        )
+        .partition(&format!("{md0}/md0p1"), "md0p1", "259:11")
+        .partition(&format!("{md0}/md0p2"), "md0p2", "259:12")
+        .file("/etc/fstab", fstab)
+        .file(
+            "/etc/crypttab",
+            "leg0 /dev/sdb1 none luks\nleg1 /dev/sdc1 none luks\n",
+        )
 }
 
 /// The finding for the decoy's crypttab line `line` on the array, which its
@@ -506,18 +526,32 @@ fn with_the_flag_a_line_for_that_filesystem_at_any_other_folder_still_fails() {
         result.message()
     );
     assert_eq!(result.remediation(), Some(REMEDIATION));
-    // The flag covers no crypttab line.
-    let fs = rendered(BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n");
-    fs.mock_set_file_content("/etc/crypttab", "vault /dev/vda1 none luks,noauto\n");
-    let result = run_allowing(&fs, Allow::DecoyStorage);
-    assert!(result.is_fail(), "{result:?}");
-    assert!(
-        result
-            .message()
-            .contains("/etc/crypttab: 'vault /dev/vda1'"),
-        "{}",
-        result.message()
-    );
+    // A crypttab line that would open a volume on the device the root is
+    // mounted from makes no device the decoy's filesystem lies on: it still
+    // fails, whether the boot opens it or not, and goes.
+    for options in ["luks,noauto", "luks"] {
+        let fs = rendered(BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n");
+        fs.mock_set_file_content(
+            "/etc/crypttab",
+            &format!("vault /dev/vda1 none {options}\n"),
+        );
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{options}: {result:?}");
+        assert!(
+            result.message().contains(
+                "/etc/crypttab: 'vault /dev/vda1' (it opens the volume at /mnt or a device it is \
+                 stored on)"
+            ),
+            "{options}: {}",
+            result.message()
+        );
+        assert!(
+            !result.message().contains("/etc/fstab"),
+            "{options}: {}",
+            result.message()
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{options}");
+    }
 }
 
 #[test]
@@ -682,61 +716,324 @@ fn with_the_flag_a_line_that_mounts_the_volume_itself_still_fails() {
     }
 }
 
-/// What the mock lists in `/proc/devices` for the encrypted decoy.
+/// What the mock lists in `/proc/devices` for the encrypted decoys.
 const PROC_DEVICES: &str =
     "Character devices:\n  1 mem\n\nBlock devices:\n  8 sd\n259 blkext\n254 device-mapper\n";
 
+/// Where sysfs keeps the LUKS volume the encrypted decoys' storage lies on.
+const DM0: &str = "/sys/devices/virtual/block/dm-0";
+
+impl Decoy {
+    /// The decoy with the hidden root's mount point writable and the
+    /// drivers of its disks listed.
+    fn encrypted(self) -> Self {
+        let decoy = self.file("/proc/devices", PROC_DEVICES);
+        decoy.fs.mock_set_writable("/mnt", true);
+        decoy
+    }
+}
+
 /// Debian's encrypted ext4 root without LVM, whose crypttab opens the LUKS
-/// volume its / lies on, and a bind of a folder of / at the root.
-fn encrypted_decoy() -> Decoy {
-    let decoy = Decoy::new(
+/// volume its / lies on with `options`, and `root`, a folder of / or `/`
+/// itself, mounted at the root.
+fn encrypted_decoy_with(root: &str, options: &str) -> Decoy {
+    Decoy::new(&format!(
         "1 0 254:0 / / rw - ext4 /dev/mapper/cryptroot rw\n\
-         5 1 254:0 /srv/x /mnt rw - ext4 /dev/mapper/cryptroot rw\n",
-    )
+         5 1 254:0 {root} /mnt rw - ext4 /dev/mapper/cryptroot rw\n"
+    ))
     .device(NVME, "nvme0n1", "259:0", &[])
     .partition(P3, "nvme0n1p3", "259:3")
     .mapping("dm-0", "254:0", "cryptroot", ("nvme0n1p3", P3))
     .file("/etc/fstab", "/dev/mapper/cryptroot / ext4 defaults 0 1\n")
     .file(
         "/etc/crypttab",
-        "cryptroot /dev/nvme0n1p3 none luks,discard\n",
+        &format!("cryptroot /dev/nvme0n1p3 none {options}\n"),
     )
-    .file("/proc/devices", PROC_DEVICES);
-    decoy.fs.mock_set_writable("/mnt", true);
-    decoy
+    .encrypted()
 }
 
-#[test]
-fn on_an_encrypted_decoy_the_crypttab_line_for_its_root_is_kept() {
-    // The decoy's boot needs the line that opens the volume its root lies
-    // on: the check never says to remove it. With the flag the line for / is
-    // let be, but the crypttab line still fails the check.
-    let decoy = encrypted_decoy();
-    assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn());
-    let crypttab = "/etc/crypttab: 'cryptroot /dev/nvme0n1p3' (it opens the volume at /mnt or a \
-                    device it is stored on, and the decoy's own boot needs it)";
-    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
-    assert!(result.is_fail(), "{result:?}");
-    assert!(result.message().contains(crypttab), "{}", result.message());
+/// The encrypted decoy, with a bind of a folder of / at the root.
+fn encrypted_decoy() -> Decoy {
+    encrypted_decoy_with("/srv/x", "luks,discard")
+}
+
+/// The finding for the encrypted decoy's crypttab line, which its own boot
+/// needs.
+const CRYPTROOT: &str = "/etc/crypttab: 'cryptroot /dev/nvme0n1p3' (it opens the volume at /mnt \
+                         or a device it is stored on, and the decoy's own boot needs it)";
+
+/// The pass of a root the flag accepted, which only the decoy's own fstab
+/// lines for `places` and its crypttab line `line` name.
+fn only_the_decoys_own_lines(places: &str, line: &str) -> String {
+    format!(
+        "No fstab or crypttab entry names the volume at /mnt other than the decoy's own {places} \
+         and its crypttab line '{line}', which unlock and mount the filesystem that \
+         --allow-decoy-storage accepted it on"
+    )
+}
+
+/// The flag lets the lines in `fs` be, with the hidden-volume check's
+/// warning, and `pass` is the pass of backend-entries; without the flag the
+/// check fails each of `findings` and says to keep them.
+fn passes_with_the_flag_only(fs: &MockFilesystem, pass: &str, findings: &[&str]) {
+    let gate = hidden_volume_with_the_flag(fs);
+    assert!(gate.is_warn(), "{pass}: {gate:?}");
     assert!(
-        !result.message().contains("/etc/fstab"),
-        "{}",
-        result.message()
+        gate.message()
+            .starts_with("--allow-decoy-storage: using /mnt although it is"),
+        "{pass}: {}",
+        gate.message()
     );
-    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
-    // Without the flag both lines are named, and both are kept.
-    let result = run_allowing(&decoy.fs, Allow::Nothing);
+    let result = run_allowing(fs, Allow::DecoyStorage);
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(result.message(), pass);
+    let result = run_allowing(fs, Allow::Nothing);
     assert!(result.is_fail(), "{result:?}");
-    for finding in [
-        crypttab,
-        "/etc/fstab: '/dev/mapper/cryptroot / ext4' (it mounts the filesystem the volume at /mnt \
-         is part of, and the decoy's own boot needs it)",
-    ] {
+    for finding in findings {
         assert!(
             result.message().contains(finding),
             "{finding}: {}",
             result.message()
         );
     }
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{pass}");
+}
+
+#[test]
+fn on_an_encrypted_decoy_the_flag_lets_the_crypttab_line_for_its_root_be() {
+    // A bind of a folder of /: the crypttab line opens the volume the
+    // decoy's root lies on. With the flag it is the decoy's own line, as its
+    // line for / is, and the check passes. Without it both lines are named,
+    // and both are kept: the decoy's boot needs them.
+    passes_with_the_flag_only(
+        &encrypted_decoy().fs,
+        &only_the_decoys_own_lines("line for /", "cryptroot /dev/nvme0n1p3"),
+        &[
+            CRYPTROOT,
+            "/etc/fstab: '/dev/mapper/cryptroot / ext4' (it mounts the filesystem the volume at \
+             /mnt is part of, and the decoy's own boot needs it)",
+        ],
+    );
+    // With no line for / in the fstab, the decoy's mount of that filesystem
+    // at / makes the crypttab line its own all the same.
+    let decoy = encrypted_decoy().file("/etc/fstab", "");
+    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+    assert_eq!(
+        result.message(),
+        "No fstab or crypttab entry names the volume at /mnt other than the decoy's own crypttab \
+         line 'cryptroot /dev/nvme0n1p3', which unlocks the filesystem that \
+         --allow-decoy-storage accepted it on"
+    );
+}
+
+#[test]
+fn with_the_flag_a_noauto_crypttab_line_or_one_for_a_whole_root_still_fails() {
+    // A noauto line, which the boot does not open, and every line for the
+    // decoy's whole / mounted at the root, which name the volume itself:
+    // the check says to keep them, as the decoy's own boot needs them.
+    for (root, options) in [("/srv/x", "luks,noauto"), ("/", "luks,discard")] {
+        let decoy = encrypted_decoy_with(root, options);
+        assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn(), "{root}");
+        let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{root}: {result:?}");
+        assert!(
+            result.message().contains(CRYPTROOT),
+            "{root}: {}",
+            result.message()
+        );
+        assert_eq!(
+            result.message().contains("/etc/fstab"),
+            root == "/",
+            "{root}: {}",
+            result.message()
+        );
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{root}");
+    }
+}
+
+#[test]
+fn on_lvm_on_luks_the_flag_lets_the_crypttab_line_be() {
+    // The decoy's / on the logical volume vg-root in the LUKS volume its
+    // crypttab opens, with the swap on another logical volume or in a file
+    // on /, and a bind of a folder of / at the root.
+    for swap in [
+        "/dev/mapper/vg-swap none swap sw 0 0\n",
+        "/swap.img none swap sw 0 0\n",
+    ] {
+        let decoy = Decoy::new(
+            "1 0 254:1 / / rw - ext4 /dev/mapper/vg-root rw\n\
+             5 1 254:1 /srv/x /mnt rw - ext4 /dev/mapper/vg-root rw\n",
+        )
+        .device(NVME, "nvme0n1", "259:0", &[])
+        .partition(P3, "nvme0n1p3", "259:3")
+        .mapping("dm-0", "254:0", "nvme0n1p3_crypt", ("nvme0n1p3", P3))
+        .lv("dm-1", "254:1", "vg-root", ("dm-0", DM0))
+        .lv("dm-2", "254:2", "vg-swap", ("dm-0", DM0))
+        .file(
+            "/etc/fstab",
+            &format!("/dev/mapper/vg-root / ext4 defaults 0 1\n{swap}"),
+        )
+        .file(
+            "/etc/crypttab",
+            "nvme0n1p3_crypt /dev/nvme0n1p3 none luks,discard\n",
+        )
+        .encrypted();
+        passes_with_the_flag_only(
+            &decoy.fs,
+            &only_the_decoys_own_lines("line for /", "nvme0n1p3_crypt /dev/nvme0n1p3"),
+            &[
+                "/etc/crypttab: 'nvme0n1p3_crypt /dev/nvme0n1p3' (it opens the volume at /mnt or a \
+               device it is stored on, and the decoy's own boot needs it)",
+            ],
+        );
+    }
+}
+
+#[test]
+fn on_fedoras_btrfs_on_luks_the_flag_lets_the_crypttab_line_be() {
+    // btrfs on LUKS with root and home subvolumes, and a subvolume beside
+    // /home or a folder of /home at the root.
+    for (root, options) in [
+        ("/vault", "subvolid=300,subvol=/vault"),
+        ("/home/u/vault", "subvolid=257,subvol=/home"),
+    ] {
+        let decoy = Decoy::new(&format!(
+            "1 0 0:35 /root / rw - btrfs /dev/mapper/luks-f1 rw,subvolid=256,subvol=/root\n\
+             2 1 0:35 /home /home rw - btrfs /dev/mapper/luks-f1 rw,subvolid=257,subvol=/home\n\
+             5 1 0:35 {root} /mnt rw - btrfs /dev/mapper/luks-f1 rw,{options}\n"
+        ))
+        .device(NVME, "nvme0n1", "259:0", &[])
+        .partition(P3, "nvme0n1p3", "259:3")
+        .mapping("dm-0", "254:0", "luks-f1", ("nvme0n1p3", P3))
+        .file(
+            "/etc/fstab",
+            "/dev/mapper/luks-f1 / btrfs subvol=root,compress=zstd:1 0 0\n\
+             /dev/mapper/luks-f1 /home btrfs subvol=home,compress=zstd:1 0 0\n",
+        )
+        .file("/etc/crypttab", "luks-f1 /dev/nvme0n1p3 none discard\n")
+        .encrypted();
+        passes_with_the_flag_only(
+            &decoy.fs,
+            &only_the_decoys_own_lines("lines for / and /home", "luks-f1 /dev/nvme0n1p3"),
+            &[
+                "/etc/crypttab: 'luks-f1 /dev/nvme0n1p3' (it opens the volume at /mnt or a device it \
+               is stored on, and the decoy's own boot needs it)",
+            ],
+        );
+    }
+}
+
+/// A LUKS volume on the external sdb that the decoy's crypttab opens and its
+/// fstab mounts at `place`, with `mounts` the mount lines of it.
+fn luks_drive(place: &str, mounts: &str) -> Decoy {
+    Decoy::new(&format!(
+        "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n{mounts}"
+    ))
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .device(SDB, "sdb", "8:16", &[])
+    .mapping("dm-9", "254:9", "data", ("sdb", SDB))
+    .file(
+        "/etc/fstab",
+        &format!(
+            "/dev/nvme0n1p3 / ext4 defaults 0 1\n/dev/mapper/data {place} ext4 defaults,nofail 0 2\n"
+        ),
+    )
+    .file("/etc/crypttab", "data /dev/sdb none luks,nofail\n")
+    .encrypted()
+}
+
+/// The finding for the crypttab line of the LUKS drive, with `needed` what
+/// the check adds when the decoy's own boot needs it.
+fn luks_drive_line(needed: &str) -> String {
+    format!(
+        "/etc/crypttab: 'data /dev/sdb' (it opens the volume at /mnt or a device it is stored \
+         on{needed})"
+    )
+}
+
+#[test]
+fn the_flag_lets_the_crypttab_line_of_a_drive_the_decoy_mounts_at_srv_be_but_not_at_backup() {
+    let needed = ", and the decoy's own boot needs it";
+    // A folder of the drive bound at the root, while the decoy's line
+    // mounts the drive at /srv: both lines are the decoy's own for /srv.
+    let mounted = |place: &str| {
+        format!(
+            "2 1 254:9 / {place} rw - ext4 /dev/mapper/data rw\n\
+             5 1 254:9 /x /mnt rw - ext4 /dev/mapper/data rw\n"
+        )
+    };
+    passes_with_the_flag_only(
+        &luks_drive("/srv", &mounted("/srv")).fs,
+        &only_the_decoys_own_lines("line for /srv", "data /dev/sdb"),
+        &[luks_drive_line(needed).as_str()],
+    );
+    // At /backup, a folder no system folder is, both still fail with the
+    // flag: the line may name the hidden drive's disk. The decoy's boot needs
+    // both, and the check says to keep them.
+    let decoy = luks_drive("/backup", &mounted("/backup"));
+    assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn());
+    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    for finding in [
+        luks_drive_line(needed),
+        "/etc/fstab: '/dev/mapper/data /backup ext4' (it mounts the filesystem the volume at \
+         /mnt is part of, and the decoy's own boot needs it)"
+            .to_string(),
+    ] {
+        assert!(
+            result.message().contains(&finding),
+            "{finding}: {}",
+            result.message()
+        );
+    }
     assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+    // The whole drive at the root, as one plugged in after the boot is: each
+    // line names the volume itself, so both fail with the flag, at /srv as
+    // lines the decoy's boot needs, and at /backup as ones to remove.
+    for (place, why, remediation) in [
+        ("/srv", needed, STORAGE_OF_ITS_OWN),
+        ("/backup", "", REMEDIATION),
+    ] {
+        let decoy = luks_drive(place, "5 1 254:9 / /mnt rw - ext4 /dev/mapper/data rw\n");
+        assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn(), "{place}");
+        let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{place}: {result:?}");
+        assert!(
+            result.message().contains(&luks_drive_line(why)),
+            "{place}: {}",
+            result.message()
+        );
+        assert_eq!(result.remediation(), Some(remediation), "{place}");
+    }
+}
+
+#[test]
+fn the_flag_lets_the_crypttab_lines_of_the_array_the_decoys_root_is_on_be() {
+    // A bind of a folder of / on md0p2 of the mirror: the boot opens both
+    // legs to assemble the array, and each line is the decoy's own, as the
+    // line for / is. With no line for / in the fstab, the decoy's mount of
+    // that filesystem at / makes them its own all the same.
+    let bind = "5 1 259:12 /srv/x /mnt rw - ext4 /dev/md0p2 rw\n";
+    let legs = "crypttab lines 'leg0 /dev/sdb1' and 'leg1 /dev/sdc1'";
+    for (fstab, own, does) in [
+        (
+            "/dev/md0p2 / ext4 defaults 0 1\n",
+            format!("line for / and its {legs}"),
+            "unlock and mount",
+        ),
+        ("", legs.to_string(), "unlock"),
+    ] {
+        passes_with_the_flag_only(
+            &array_decoy(bind, fstab).encrypted().fs,
+            &format!(
+                "No fstab or crypttab entry names the volume at /mnt other than the decoy's own \
+                 {own}, which {does} the filesystem that --allow-decoy-storage accepted it on"
+            ),
+            &[
+                leg("leg0 /dev/sdb1").as_str(),
+                leg("leg1 /dev/sdc1").as_str(),
+            ],
+        );
+    }
 }

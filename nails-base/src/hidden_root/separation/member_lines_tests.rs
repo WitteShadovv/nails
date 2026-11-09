@@ -142,3 +142,42 @@ fn a_crypttab_line_for_another_device_of_the_roots_btrfs_opens_the_volume() {
         assert_eq!(judgement.verdict, Verdict::Separate, "{crypttab}");
     }
 }
+
+#[test]
+fn the_crypttab_lines_for_each_device_of_the_decoys_btrfs_are_its_own() {
+    // The decoy's / a subvolume of a btrfs of two LUKS volumes, luks-a on
+    // sda2 and luks-b on sdb2, and a subvolume beside it at the root: the
+    // boot opens both to mount /, so each is the decoy's own line for /, as
+    // its line for / is.
+    let judgement = World::new(
+        "1 0 0:40 /@ / rw - btrfs /dev/mapper/luks-a rw,subvol=/@\n\
+         5 1 0:40 /vault /mnt rw - btrfs /dev/mapper/luks-a rw,subvol=/vault\n",
+    )
+    .disk("sda", "8:0")
+    .part("sda2", "8:2", "sda")
+    .disk("sdb", "8:16")
+    .part("sdb2", "8:18", "sdb")
+    .crypt("dm-1", "254:1", "luks-a", &["sda2"])
+    .crypt("dm-2", "254:2", "luks-b", &["sdb2"])
+    .btrfs(&["dm-1", "dm-2"])
+    .spec("UUID=pool", "dm-1")
+    .fstab("UUID=pool / btrfs subvol=@ 0 0\n")
+    .crypttab("luks-a /dev/sda2 none luks\nluks-b /dev/sdb2 none luks\n")
+    .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [
+            (EntryKind::Blocking, "UUID=pool / btrfs", true),
+            (EntryKind::Blocking, "luks-a /dev/sda2", true),
+            (EntryKind::Blocking, "luks-b /dev/sdb2", true),
+        ]
+    );
+    for entry in &judgement.entries {
+        assert_eq!(
+            entry.system_folder.as_deref(),
+            Some(Path::new("/")),
+            "{}",
+            entry.line
+        );
+    }
+}
