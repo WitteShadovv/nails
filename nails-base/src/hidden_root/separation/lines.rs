@@ -6,6 +6,7 @@
 //! filesystem a device line mounts, as its options name it and as the mount
 //! it made shows it, and how a mount shows its filesystem ([`sharing`]).
 
+use super::paths::is_claimed;
 use super::{Scene, Sharing};
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::fstab::FstabEntry;
@@ -43,9 +44,10 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
 ///   to no device here names none, unless `mount` shows no device either, as
 ///   a ZFS dataset does: then the spec is `mount`'s source and the line's
 ///   type its type.
-/// - A bind line's source lies on another mount of that filesystem than
-///   `hidden`, one of the decoy's own itself, and `mount` shows the folder of
-///   it that the source names.
+/// - A bind line's source, as its links lead, lies on another mount of that
+///   filesystem than `hidden`, one of the decoy's own itself, and `mount`
+///   shows the folder of it that the source names. A source whose links
+///   cannot be followed makes none.
 ///
 /// So the fstab makes none of these: a filesystem mounted at a folder that a
 /// line names for another device, in place of that device's mount or over
@@ -87,9 +89,10 @@ fn decoys_own(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry, depth:
         })
 }
 
-/// Whether the bind line `entry` makes `mount`: its source lies on a mount of
-/// the same filesystem, neither `hidden` nor `mount` itself, that is one of
-/// the decoy's own, and `mount` shows the folder of it the source names.
+/// Whether the bind line `entry` makes `mount`: its source, as its links
+/// lead, lies on a mount of the same filesystem, neither `hidden` nor `mount`
+/// itself, that is one of the decoy's own, and `mount` shows the folder of
+/// it the source names.
 fn bind_makes(
     scene: &Scene<'_>,
     entry: &FstabEntry,
@@ -97,7 +100,9 @@ fn bind_makes(
     hidden: &MountEntry,
     depth: usize,
 ) -> bool {
-    let source = Path::new(&entry.spec);
+    let Ok(source) = scene.followed(&entry.spec) else {
+        return false;
+    };
     let Some(holder) = mount_holding(scene.mounts, source) else {
         return false;
     };
@@ -114,11 +119,7 @@ fn bind_makes(
 /// Whether the fstab line `entry` mounts a filesystem the claims count: no
 /// swap, RAM, kernel, host-share, network or overlay line.
 fn mounts_storage(entry: &FstabEntry) -> bool {
-    !(entry.is_swap()
-        || entry.is_virtual()
-        || entry.is_host_share()
-        || entry.is_network()
-        || entry.vfstype == "overlay")
+    !entry.is_swap() && is_claimed(entry)
 }
 
 /// Whether `mount` shows what the device line `entry` mounts: the

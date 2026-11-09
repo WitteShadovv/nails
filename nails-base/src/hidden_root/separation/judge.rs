@@ -4,10 +4,11 @@
 //! The judge: the decoy's claims, then the first verdict that matches.
 
 use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
+use super::paths::{is_claimed, is_file_spec};
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
-    LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Untraced, Verdict,
-    is_system_folder,
+    LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Unfollowed, Untraced,
+    Verdict, is_system_folder,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::fstab::FstabEntry;
@@ -517,11 +518,7 @@ fn claims(
         .collect();
 
     for entry in scene.fstab {
-        if entry.is_virtual()
-            || entry.is_host_share()
-            || entry.is_network()
-            || entry.vfstype == "overlay"
-        {
+        if !is_claimed(entry) {
             continue;
         }
         let node = devices.node_of_spec(&entry.spec);
@@ -538,13 +535,23 @@ fn claims(
             }
         }
         let noauto = entry.is_noauto();
-        let file_spec = entry.spec.starts_with('/') && !entry.spec.starts_with("/dev/");
-        if entry.is_bind() || (node.is_none() && file_spec) {
-            // A bind, or a swap file: the filesystem holding the source. A
-            // bind of the volume or of a folder of it mounts the volume.
-            if let Some(holder) = mount_holding(scene.mounts, Path::new(&entry.spec)) {
-                if entry.is_bind() {
-                    entries.extend(bind_finding(hidden, entry, holder));
+        if entry.is_bind() || (node.is_none() && is_file_spec(&entry.spec)) {
+            // A bind, or a swap or image file: the filesystem holding the
+            // source, as its links lead. A bind of the volume or of a folder
+            // of it mounts the volume. A path that cannot be followed may
+            // lead anywhere, the volume included: a finding, which claims
+            // the filesystem that holds the path as written.
+            let source = match scene.followed(&entry.spec) {
+                Ok(source) => Some(source),
+                Err(why) => {
+                    entries.push(untold_finding(entry, &why));
+                    None
+                }
+            };
+            let path = source.unwrap_or(Path::new(&entry.spec));
+            if let Some(holder) = mount_holding(scene.mounts, path) {
+                if let Some(source) = source.filter(|_| entry.is_bind()) {
+                    entries.extend(bind_finding(hidden, entry, source, holder));
                 }
                 claims.push(mount_claim(scene, holder, noauto));
             }
@@ -726,7 +733,7 @@ fn fstab_finding(
     entry: &FstabEntry,
     own: bool,
 ) -> EntryFinding {
-    let line = format!("{} {} {}", entry.spec, entry.file.display(), entry.vfstype);
+    let line = shown(entry);
     let root = hidden.mount_point.display();
     let elsewhere = !entry.file.starts_with(&hidden.mount_point);
     // What of the root's own filesystem the line mounts: the volume, or
@@ -780,33 +787,62 @@ fn fstab_finding(
     }
 }
 
-/// The finding for the bind line `entry`, whose source lies on the mount
-/// `holder`, when the line mounts the volume of `hidden` (the visible mount
-/// at the hidden root) or a folder of it: its source, as `holder` shows it
-/// now, lies at the volume's folder of that filesystem or inside it. It goes
-/// as any line does that mounts the volume itself, unless the boot mounts it
-/// at `/` or at a system folder, and it is never the decoy's own line.
+/// The finding for the bind line `entry`, whose source leads to `source`
+/// on the mount `holder`, when the line mounts the volume of `hidden` (the
+/// visible mount at the hidden root) or a folder of it: its source, as its
+/// links lead and as `holder` shows it now, lies at the volume's folder of
+/// that filesystem or inside it. It goes as any line does that mounts the
+/// volume itself, unless the boot mounts it at `/` or at a system folder,
+/// and it is never the decoy's own line.
 fn bind_finding(
     hidden: &MountEntry,
     entry: &FstabEntry,
+    source: &Path,
     holder: &MountEntry,
 ) -> Option<EntryFinding> {
-    let below = Path::new(&entry.spec)
-        .strip_prefix(&holder.mount_point)
-        .ok()?;
-    let source = holder.root.join(below);
-    if holder.dev != hidden.dev || !source.starts_with(&hidden.root) {
+    let below = source.strip_prefix(&holder.mount_point).ok()?;
+    let folder = holder.root.join(below);
+    if holder.dev != hidden.dev || !folder.starts_with(&hidden.root) {
         return None;
     }
     let root = hidden.mount_point.display();
-    let why = if source == hidden.root {
+    let mounts = if folder == hidden.root {
         format!("it mounts the volume at {root}")
     } else {
         format!("it mounts a folder of the volume at {root}")
     };
-    let line = format!("{} {} {}", entry.spec, entry.file.display(), entry.vfstype);
+    // A source whose links lead elsewhere than it reads says where.
+    let why = if source == Path::new(&entry.spec) {
+        mounts
+    } else {
+        format!("its source leads to {}, so {mounts}", source.display())
+    };
     let boot_needs = !entry.is_noauto() && is_system_folder(&entry.file, &hidden.mount_point);
-    Some(blocking(FSTAB, line, why, boot_needs))
+    Some(blocking(FSTAB, shown(entry), why, boot_needs))
+}
+
+/// The finding for the fstab line `entry`, a bind line or a swap or image
+/// file line, whose path cannot be followed (`why`): it may lead anywhere,
+/// the volume included, which cannot be told.
+fn untold_finding(entry: &FstabEntry, why: &Unfollowed) -> EntryFinding {
+    let what = if entry.is_bind() {
+        "its source leads"
+    } else {
+        "the file it names lies"
+    };
+    EntryFinding {
+        kind: EntryKind::Untold,
+        file: FSTAB,
+        line: shown(entry),
+        why: format!("where {what} cannot be told: {}", why.reason()),
+        boot_needs: false,
+        system_folder: None,
+    }
+}
+
+/// The fstab line `entry`, as its first fields read.
+fn shown(entry: &FstabEntry) -> String {
+    format!("{} {} {}", entry.spec, entry.file.display(), entry.vfstype)
 }
 
 fn blocking(file: &'static str, line: String, why: String, boot_needs: bool) -> EntryFinding {

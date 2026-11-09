@@ -31,6 +31,13 @@
 //! outer volume of another partition) warns: the decoy is configured to open
 //! storage on that drive.
 //!
+//! A bind line's source and the path of a swap or image file are followed
+//! through their links, as `mount` and `swapon` follow them. A line whose
+//! path cannot be followed (a link on the way that leads to nothing, links
+//! that go round, a place that cannot be looked up, an automount point that
+//! the lookup would mount) fails as well: it may mount the volume, and the
+//! check says why it cannot tell where the line leads.
+//!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
 //! go: the hidden root lies on the decoy's own storage then, and the check says
@@ -59,6 +66,12 @@ pub const STORAGE_OF_ITS_OWN: &str = "Do not remove a line the decoy's own boot 
 pub const REMOVE_AND_MOVE: &str = "Remove the lines only the hidden volume needs long before the \
      next use, and open the volume by hand each time. Do not remove a line the decoy's own boot \
      needs: put the hidden root on storage of its own instead.";
+
+/// What the operator does about an entry whose path cannot be followed: once
+/// it leads to a place that can be looked up, the check tells what it mounts.
+pub const UNFOLLOWED: &str = "Make a line whose path cannot be followed lead to a place that can \
+     be looked up, or remove it, long before the next use. If the command ran without sudo, run \
+     it again with sudo.";
 
 /// Pre-flight check that no decoy fstab or crypttab entry opens or mounts the
 /// hidden volume.
@@ -167,25 +180,9 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
         };
 
         let blocking = of_kind(EntryKind::Blocking);
-        if !blocking.is_empty() {
-            let needed = blocking.iter().filter(|f| f.boot_needs).count();
-            let remediation = if needed == 0 {
-                REMEDIATION
-            } else if needed == blocking.len() {
-                STORAGE_OF_ITS_OWN
-            } else {
-                REMOVE_AND_MOVE
-            };
-            return Ok(CheckResult::fail_with(
-                format!(
-                    "The decoy's configuration names the volume at {}: {}. Such an entry is \
-                     stored on the decoy, where an examination reads it, and can open or mount \
-                     the volume at boot.",
-                    root.display(),
-                    describe(&blocking)
-                ),
-                remediation,
-            ));
+        let untold = of_kind(EntryKind::Untold);
+        if !blocking.is_empty() || !untold.is_empty() {
+            return Ok(entries_failure(root, &blocking, &untold));
         }
         let outer = of_kind(EntryKind::OuterWarning);
         if !outer.is_empty() {
@@ -203,6 +200,49 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
             root.display()
         )))
     }
+}
+
+/// The failure for the entries for the hidden drive: those that open or
+/// mount it, `blocking`, and those whose path cannot be followed, `untold`,
+/// which may (at least one of the two is there). The fix says what to do
+/// about each kind.
+fn entries_failure(
+    root: &Path,
+    blocking: &[&EntryFinding],
+    untold: &[&EntryFinding],
+) -> CheckResult {
+    let root = root.display();
+    let mut message = Vec::new();
+    let mut fix = Vec::new();
+    if !blocking.is_empty() {
+        message.push(format!(
+            "The decoy's configuration names the volume at {root}: {}.",
+            describe(blocking)
+        ));
+        let needed = blocking.iter().filter(|f| f.boot_needs).count();
+        fix.push(if needed == 0 {
+            REMEDIATION
+        } else if needed == blocking.len() {
+            STORAGE_OF_ITS_OWN
+        } else {
+            REMOVE_AND_MOVE
+        });
+    }
+    if !untold.is_empty() {
+        let may = if blocking.is_empty() {
+            format!("The decoy's configuration may name the volume at {root}")
+        } else {
+            "It may name it as well".to_string()
+        };
+        message.push(format!("{may}: {}.", describe(untold)));
+        fix.push(UNFOLLOWED);
+    }
+    message.push(
+        "Such an entry is stored on the decoy, where an examination reads it, and can open or \
+         mount the volume at boot."
+            .to_string(),
+    );
+    CheckResult::fail_with(message.join(" "), fix.join("\n"))
 }
 
 /// The pass of a root that `--allow-decoy-storage` accepted on a filesystem
