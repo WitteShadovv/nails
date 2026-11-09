@@ -164,6 +164,11 @@ fn a_directory_swapped_on_the_way_to_the_apt_config_file_counts_as_a_change() {
     while now() < start {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+    // The kernel stamps a change with its coarse clock, which can lag the
+    // one now() reads by up to a tick: a rename made right after the second
+    // began could still be stamped with the second before. A pause longer
+    // than any tick keeps the swap's change time in the start's second.
+    std::thread::sleep(std::time::Duration::from_millis(50));
     run_helper_since(
         root,
         start - 3600,
