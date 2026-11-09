@@ -796,6 +796,10 @@ fn claims(
         ));
     }
 
+    // Where the decoy mounts another part of the filesystem a folder or a
+    // subvolume root is part of at / or at a system folder, if it does, by
+    // its mount at / or by one of the fstab findings, all entries so far.
+    let own_place = decoys_own_place(scene, hidden, &entries);
     for entry in scene.crypttab {
         let line = format!("{} {}", entry.name, entry.source);
         let source = devices.node_of_spec(&entry.source);
@@ -843,7 +847,16 @@ fn claims(
                 || source.is_some_and(|s| entry_stack.iter().any(|n| n == s) && !own_device(s));
             let boot_needs = (own_needed && makes_own)
                 || boot_needs(devices, &claims, hidden, &own_device, [source, mapping]);
-            entries.push(blocking(CRYPTTAB, line, why, boot_needs));
+            // A line the boot opens that makes a device of that filesystem,
+            // while the decoy mounts another part of it at / or at a system
+            // folder, is the decoy's own line for that place too. Never one
+            // that opens the hidden volume of a container, whatever it names.
+            let own = makes_own && !entry.has_option("noauto") && !entry.is_tcrypt_hidden();
+            let system_folder = own_place.clone().filter(|_| own);
+            entries.push(EntryFinding {
+                system_folder,
+                ..blocking(CRYPTTAB, line, why, boot_needs)
+            });
             // One that opens only another device of the root's btrfs
             // filesystem claims it all the same.
             if opens(stack, &stack_names) {
@@ -901,6 +914,29 @@ fn with_stacks_of(devices: &DeviceMap, stack: &[String], members: &[&String]) ->
         }
     }
     all
+}
+
+/// Where the decoy itself mounts another part of the filesystem of `hidden`
+/// (the visible mount at the hidden root) than the volume, at `/` or at a
+/// system folder: `/` when the decoy's mount there is of that filesystem and
+/// its root lies outside the volume's folder, as the filesystem's top or a
+/// subvolume above or beside the volume's does, else the folder of the first
+/// of the fstab findings `fstab` that is the decoy's own line for one
+/// ([`EntryFinding::system_folder`]). `None` where the decoy mounts no other
+/// part of it so, as for a volume that is the whole filesystem: its folder is
+/// the top, which every mount of the filesystem lies in, and no fstab line
+/// for it is the decoy's own.
+fn decoys_own_place(
+    scene: &Scene<'_>,
+    hidden: &MountEntry,
+    fstab: &[EntryFinding],
+) -> Option<PathBuf> {
+    let at_root = top_mount_at(scene.mounts, Path::new("/"))
+        .is_some_and(|mount| mount.dev == hidden.dev && !mount.root.starts_with(&hidden.root));
+    if at_root {
+        return Some(PathBuf::from("/"));
+    }
+    fstab.iter().find_map(|entry| entry.system_folder.clone())
 }
 
 /// The finding for the fstab line `entry` for the hidden drive, `own` when
