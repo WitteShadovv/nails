@@ -32,7 +32,10 @@
 //! (the decoy's line for `/` below a bind of a folder of `/`), or a crypttab
 //! entry that opens a device below one of them, is marked so: the hidden root
 //! then lies on the decoy's own storage and has to move, since removing the
-//! entry would break the decoy.
+//! entry would break the decoy. An fstab line the boot mounts at `/` or at a
+//! system folder for the root's own filesystem is marked as the decoy's own
+//! line for it ([`EntryFinding::system_folder`]), which `backend-entries` lets
+//! be for a root that `--allow-decoy-storage` accepted on that filesystem.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read, or
 //! what a claimed filesystem keeps data on besides its device cannot be told;
@@ -101,7 +104,7 @@ use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::FstabEntry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// How an encrypted container file on a claimed filesystem is judged: it only
 /// warns, a deliberate default (`severity_with(Severity::Refuse)` is the
@@ -674,6 +677,23 @@ pub struct EntryFinding {
     /// root or another of its filesystems or its swap, or it opens a device
     /// below one of them. The hidden root then lies on the decoy's storage.
     pub boot_needs: bool,
+    /// For an fstab line that the decoy's boot mounts at `/` or at a system
+    /// folder ([`is_system_folder`]) for the filesystem the volume is, or is
+    /// a folder or a subvolume of, one that names the volume's own device,
+    /// that folder. Such a line is the decoy's own, and a root that
+    /// `--allow-decoy-storage` accepted on that filesystem lies there anyway.
+    pub system_folder: Option<PathBuf>,
+}
+
+/// Whether the decoy mounts its own filesystems at `at`, with the hidden root
+/// mounted at `hidden_root`: `/`, or one of the system folders that hold the
+/// decoy's own filesystems wherever they are mounted from ([`SYSTEM_MOUNTS`]),
+/// unless the hidden root is that folder or lies above it, as the judge counts
+/// them.
+pub fn is_system_folder(at: &Path, hidden_root: &Path) -> bool {
+    at == Path::new("/")
+        || (SYSTEM_MOUNTS.iter().any(|point| Path::new(point) == at)
+            && !at.starts_with(hidden_root))
 }
 
 /// The judge's answer: the verdict and the entries for the hidden drive.

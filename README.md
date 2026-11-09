@@ -191,8 +191,11 @@ Also refused by the pre-flight checks:
   of the root's folder are left out (`hidden-volume`, see
   [Attaching the drive](docs/decoy-requirements.md#attaching-the-drive));
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
-  volume, or the filesystem that a root `--allow-decoy-storage` accepted is a
-  folder or a subvolume of, such as the line for `/` (`backend-entries`);
+  volume or, for a root that `--allow-decoy-storage` accepted on a filesystem
+  the decoy uses, that filesystem; the flag lets be only the decoy's own lines
+  that its boot mounts at `/` or at a system folder outside the hidden root
+  (`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`,
+  `/opt`) for that filesystem (`backend-entries`);
 - a hidden volume on a partition of a disk the decoy boots from that has the
   GPT type of a swap partition, or of a `/home`, `/srv`, `/var` or `/var/tmp`
   partition without the no-auto flag, which turns those four into a warning
