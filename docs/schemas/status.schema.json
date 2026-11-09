@@ -103,11 +103,11 @@
         },
         "nextroot_mounted": { "type": "boolean" },
         "decoy_persistent": {
-          "description": "Whether the decoy keeps a persistent log/audit store (a persistent journald journal, or active rsyslog/syslog-ng/auditd), or may keep one where NAILS cannot tell: a configuration it cannot read, or a path it could not look up, or did not look up because the lookup would mount an automount point.",
+          "description": "Whether the decoy keeps a persistent log/audit store (a persistent journald journal, or active rsyslog/syslog-ng/auditd), or may keep one where NAILS cannot tell: a configuration it cannot read, or a path it could not look up, or did not look up because the lookup would mount an automount point, or a mount table it cannot read, so that it looks up nothing.",
           "type": "boolean"
         },
         "decoy_kdump_armed": {
-          "description": "Whether kdump is armed on the decoy (a loaded crash kernel, or an enabled or active kdump-tools.service or kdump.service), or NAILS cannot tell: /sys/kernel/kexec_crash_loaded cannot be read or holds neither 0 nor 1, or a path that would show a kdump unit enabled or running could not be looked up, or was not because the lookup would mount an automount point. Activation refuses it without --allow-persistent-decoy. False in a hidden session.",
+          "description": "Whether kdump is armed on the decoy (a loaded crash kernel, or an enabled or active kdump-tools.service or kdump.service), or NAILS cannot tell: /sys/kernel/kexec_crash_loaded cannot be read or holds neither 0 nor 1, or a path that would show a kdump unit enabled or running could not be looked up, or was not because the lookup would mount an automount point or the mount table cannot be read. Activation refuses it without --allow-persistent-decoy. False in a hidden session.",
           "type": "boolean"
         },
         "decoy_installs_at_shutdown": {

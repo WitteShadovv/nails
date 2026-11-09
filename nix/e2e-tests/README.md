@@ -493,7 +493,7 @@ promise of `check` as a whole:
   one `statx` and `fstatfs` of an `O_PATH` descriptor, finds each point the
   root of a mount with an autofs on top, which `statx` does not call an
   automount point, and mounts none of them.
-  `check --json` as root, with `--allow-persistent-decoy`
+  `check --overlay-only --json` as root, with `--allow-persistent-decoy`
   and as carol (`SUDO_USER`) leaves the mount table outside `/run` as it was
   and the mount units inactive, neither systemd nor the automounter logs a
   request, and the overlay module stays unloaded. decoy-persistence (a

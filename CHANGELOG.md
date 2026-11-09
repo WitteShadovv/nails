@@ -722,29 +722,31 @@ of this changelog for that version becomes the release notes word for word, and
   the kernel which filesystem is on top, so that a point whose mount expired since is not looked up
   either. Where the lookup would mount a point, it is not made: the check says it cannot tell, names
   the path and the automount point, and says to mount the point (for example `ls /usr/local`) and
-  run `check` again. A warn-only check warns, the
-  residue catalog also for a channel it would only note; `decoy-persistence` refuses for the
-  journal, a log daemon or kdump (`--allow-persistent-decoy` lifts it), `fstab-policy` refuses, and
-  so does `hidden-volume` in `check` for a hidden root behind such a point; `memory-wipe` and the
-  Argon2id advice keep their informational pass and, where what they could read leaves the answer
-  open, name the path and the point. Without the mount table these checks look up nothing. Where the
-  hidden root or the state file lies behind such a point, `check` assembles no checks, since each
-  would look the root up, and names the point. On NixOS, `suspicious-nails-reference` refuses where
-  its walk of `/etc/nixos` would pass such a point, and the discovery of the build target fails
-  there, naming it, as it does without the mount table, so that `check` without `--overlay-only`
-  assembles no checks. `upper-fs-capability` makes no trial where loading the overlay module would
-  make the kernel's modprobe or udevd read below such a point. So with an `x-systemd.automount` line
-  for `/usr/local` that nothing has mounted yet, `decoy-persistence` and `fstab-policy` refuse until
-  it is mounted, and so does `upper-fs-capability` where the overlay module is not loaded.
-  `check --json` lists the places the inherited decoy state could not be looked up in as
-  `inherited.not_read`, each with its `path`, `reason` and `automount_point`, the report gives each
-  a `not read:` line, and `inherited-autostart` warns that NAILS cannot tell what else the hidden
-  session would inherit. `status` and the window count a decoy NAILS cannot tell about as one that
-  keeps a record on its disk, and say it may keep one (`decoy_persistent` and `decoy_kdump_armed` in
-  `status --json` are true then too). The VM test `check-no-automount` runs `check` on a NixOS decoy
-  with such points at `/usr/local` and at two homes, without the overlay module loaded and with
-  udevd's queue of events held, and shows that it leaves the mount table outside `/run` as it was
-  and, while `/usr/local` is not mounted, loads no module.
+  run `check` again. A warn-only check warns, the residue catalog also for a channel it would only
+  note; `decoy-persistence` refuses for the journal, a log daemon or kdump
+  (`--allow-persistent-decoy` lifts it), and `fstab-policy` refuses; `memory-wipe` and the Argon2id
+  advice keep their informational pass and, where what they could read leaves the answer open, name
+  the path and the point. Without the mount table these checks look up nothing. Where the hidden
+  root or the state file lies behind such a point, `check` prints the attach gate's refusal of the
+  root and assembles no checks, since each would look the root up: it names the point and exits 1
+  (`check_error`). On NixOS, `suspicious-nails-reference` refuses where its walk of `/etc/nixos`
+  would pass such a point, and the discovery of the build target fails there, naming it, as it does
+  without the mount table, so that `check` without `--overlay-only` assembles no checks.
+  `upper-fs-capability` makes no trial where the overlay module is not loaded and one of the
+  directories the kernel's modprobe and udevd read their settings from lies behind such a point. So
+  with an `x-systemd.automount` line for `/usr/local` that nothing has mounted yet,
+  `decoy-persistence` and `fstab-policy` refuse until it is mounted, and so does
+  `upper-fs-capability` where the overlay module is not loaded. `check --json` lists the places the
+  inherited decoy state could not be looked up in as `inherited.not_read`, each with its `path`,
+  `reason` and `automount_point`, the report gives each a `not read:` line, and
+  `inherited-autostart` warns that NAILS cannot tell what else the hidden session would inherit.
+  `status` and the window count a decoy NAILS cannot tell about as one that keeps a record on its
+  disk, and say it may keep one (`decoy_persistent` and `decoy_kdump_armed` in `status --json` are
+  true then too). The VM test `check-no-automount` runs `check --overlay-only` on a NixOS decoy with
+  such points at `/usr/local` and at two homes, without the overlay module loaded and with udevd's
+  queue of events held, and shows that it leaves the mount table outside `/run` as it was and, while
+  `/usr/local` is not mounted, loads no module, and that the kernel names the autofs at each point
+  without mounting it.
 - The operator is now resolved from `PKEXEC_UID` before `SUDO_UID`. pkexec of polkit 127 and later
   sets both, and `PKEXEC_UID` names the account that asked it.
 - `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an
