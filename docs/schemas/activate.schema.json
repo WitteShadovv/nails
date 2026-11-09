@@ -36,7 +36,7 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "warnings": {
-          "description": "What the operator should know before using the session: a hidden NixOS system built for another kernel, a decoy mount the way back cannot make again, and the advisories activation reads before it asks to log the operator out, such as hidden sessions' package database no longer following the decoy's (the `package-drift` check), each with its fix on a line of its own. Any warning makes the status `entering_with_warnings` and the exit code 9.",
+          "description": "What the operator should know before using the session: a hidden NixOS system built for another kernel, a decoy mount the way back cannot make again, a line of the hidden session's fstab at or below the hidden root that the session keeps off (what to do about it in that session follows on a line of its own), and the advisories activation reads before it asks to log the operator out, such as hidden sessions' package database no longer following the decoy's (the `package-drift` check), each with its fix on a line of its own. Any warning makes the status `entering_with_warnings` and the exit code 9.",
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },

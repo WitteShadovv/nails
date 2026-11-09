@@ -271,6 +271,18 @@ Keep all of it `root`-owned on the hidden volume.
      hidden volume or inside it. Mount the hidden volume where the decoy
      mounts nothing.
 
+   An activation without a build (`--overlay-only`, and on Debian and Ubuntu
+   every activation) applies the same policy to the fstab the hidden session
+   runs with, the hidden `/etc`'s: on NixOS the one the last activation of the
+   hidden system wrote, unless you wrote a file in its place in a session, and
+   elsewhere one you wrote in a hidden session. Each line of it that the
+   decoy's fstab does not hold is decided as above, with one difference: a line
+   at or below the hidden root is kept off with a warning instead of refusing
+   the activation, so the session you enter to remove it still starts. Remove
+   it there: from the hidden NixOS configuration, then rebuild, or from
+   `/etc/fstab` where a session wrote the line there. A hidden fstab that
+   cannot be read refuses the activation.
+
    The decoy's own mount, swap and automount units that a boot target links
    in its `.wants` or `.requires` directory outside the fstab (a NixOS
    `systemd.mounts` unit, the GPT auto-generator's ESP) get the same
@@ -279,7 +291,9 @@ Keep all of it `root`-owned on the hidden volume.
    disk swap when it has one; NAILS does not read zram-generator's
    configuration. A mount unit that only another unit pulls in is not
    decided: the hidden systemd mounts it as the decoy's would, and the session
-   watcher alerts on its read-write mount.
+   watcher alerts on its read-write mount. A mount or automount unit of the
+   hidden system's own that a boot target links at or below the hidden root
+   refuses the activation as well, with a build or without one.
 
    Whatever the fstab says, the hidden session also masks
    `systemd-remount-fs.service` and `systemd-growfs-root.service`, which fail
@@ -471,7 +485,9 @@ nothing reaches the decoy `/nix`.
 Right after the build, activation decides the fstab the hidden toplevel brings
 by the [fstab policy](configuration.md#what-the-session-covers). A line the
 policy refuses, such as one that mounts a disk below the hidden root, refuses
-the entry before anything runs from the build.
+the entry before anything runs from the build. To remove it, enter with
+`--overlay-only`: if the last activation's `/etc/fstab` has the line too, that
+session keeps it off and warns of it.
 
 Before it activates the toplevel, activation **copies the hidden system's
 whole closure onto the hidden volume**: every store path the hidden toplevel
@@ -507,11 +523,13 @@ the decoy's values first, and every way back to the decoy (the return, an
 emergency, an entry rolled back or recovered) writes them back. No bootloader is installed and no system profile changes. The hidden
 toplevel must run on the decoy's kernel: the kernel modules come from
 `/run/booted-system`. `--overlay-only` skips the build and enters with the
-decoy's own system plus the hidden `/etc` and home.
+decoy's own system plus the hidden `/etc` and home, whose fstab activation
+decides as in step 5 above.
 
 **Debian and Ubuntu.** The same root overlay, with no build step: the hidden
 configuration is whatever the upper's `/etc` holds. Change it from inside the
-hidden session like any system configuration.
+hidden session like any system configuration. Activation decides the upper's
+`/etc/fstab` as in step 5 above.
 
 **The way back.** `nails deactivate`, in the hidden session, mounts the decoy
 root at `/run/nextroot` (the same filesystem the overlay reads as its lower, so

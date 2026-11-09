@@ -639,10 +639,11 @@ commands you typed to the decoy disk. (Inside the hidden session, history lands 
 ## Writes that bypass the overlays
 
 The root overlay covers only the root filesystem. The hidden systemd reads the
-decoy's fstab (or the hidden NixOS generation's) and would mount every other
-decoy filesystem **directly and read-write**, and activate decoy swap. Before
-the switch the `fstab-policy` decides each entry, and activation puts the
-decision in place inside the next root:
+decoy's fstab (or the one the hidden `/etc` holds in its place, such as a hidden
+NixOS generation's) and would mount every other decoy filesystem **directly and
+read-write**, and activate decoy swap. Before the switch the `fstab-policy`
+decides each entry, and activation puts the decision in place inside the next
+root:
 
 | Entry | In the hidden session |
 | --- | --- |
@@ -655,7 +656,10 @@ decision in place inside the next root:
 
 So the decoy's fstab must mount nothing at or below the hidden root: mount the
 hidden volume where the decoy mounts nothing (see
-[What the session covers](configuration.md#what-the-session-covers)).
+[What the session covers](configuration.md#what-the-session-covers)). In the
+fstab the hidden `/etc` holds in place of the decoy's, an activation without a
+build keeps such a line off with a warning instead, so the session entered to
+remove it still starts.
 
 A unit kept off is masked in `/run`, or skipped where a boot target requires it
 (an entry without `nofail`): a mask there would leave `local-fs.target`,
@@ -1480,7 +1484,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
 | [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `session-nixos-hidden-system` |
-| [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root, and the mount, swap and automount units its boot targets link outside the fstab: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, keeps swap and unmounted disks off (masked, or skipped where a boot target requires them, so that the target is still reached), refuses the activation for an entry at or below the hidden root, which the hidden systemd would mount over the hidden volume or inside it, decides the units the boot targets link outside the fstab the same way (a zram swap without a backing device stays on), and masks systemd's GPT auto-generator (which would mount partitions the fstab does not list) before the switch. | `soft-reboot-mechanics` |
+| [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root, and the mount, swap and automount units its boot targets link outside the fstab: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, keeps swap and unmounted disks off (masked, or skipped where a boot target requires them, so that the target is still reached), refuses the activation for an entry at or below the hidden root, which the hidden systemd would mount over the hidden volume or inside it (in the fstab the hidden /etc holds in place of the decoy's, an activation without a build keeps such an entry off with a warning instead, so the session entered to remove it starts), decides the units the boot targets link outside the fstab the same way (a zram swap without a backing device stays on), and masks systemd's GPT auto-generator (which would mount partitions the fstab does not list) before the switch. | `soft-reboot-mechanics` |
 | [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) (`session-disk-mounts`) | a USB drive udisks automounts, a decoy partition the policy masked mounted by hand, a Windows partition, a decoy mount unit that only another unit pulls in | all | none: the disk is mounted after activation | none: verify cannot tell what a session wrote to another disk | The session watcher alerts on every read-write disk mount that is not the session's own storage, which it tells by device (and by path below `<root>/root`, where NAILS keeps its layers), so a disk mounted elsewhere below the hidden root alerts too; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | `session-disk-mounts` |
 | [The hidden session's /run carried into the decoy](threat-model.md#residual-channels) (`run-carry-over`) | a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, name-server records, stray files | all | none: the scrub runs as the last step before the switch back | `session-leftovers` | The transition step deletes the runtime journal and logind's session state whole, and whatever else the hidden session added two levels below /run (three below /run/systemd), judged against what the decoy left when it stopped for the entry; it puts the decoy's name-server records below /run/resolvconf back, gives the decoy's utab lines back to the mounts it restores, under their new mount IDs, and never touches sockets or /run/udev. | `session-lifecycle`, `session-emergency`, `session-dns-records` |
 | [An interrupted entry's runtime files in /run](threat-model.md#residual-channels) (`interrupted-entry`) | an activation killed before the soft-reboot leaves /run/nextroot, the session plan and the transition drop-in | all | `session-state` (refuses) | `session-leftovers` | The transition drop-in is installed before the next root is populated, so an unarmed entry is disarmed by any soft-reboot; `nails recover` removes the leftovers. | `session-interrupted-entry` |
