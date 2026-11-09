@@ -1172,8 +1172,10 @@ look up for another reason than that it is not there (no permission, an I/O
 error, a loop of links) is never taken for one that is not there: verify says
 it could not tell and names the path, as a finding at the severity of what it
 looks for there, but a warning where that would be critical, or among the
-areas it did not check. So a path it cannot look up gives `10` at most, and
-`11` still means that verify found something critical.
+areas it did not check. Where it had no permission, as in root's home for a
+run without `sudo`, the finding says to run it again with `sudo`. So a path
+it cannot look up gives `10` at most, and `11` still means that verify found
+something critical.
 
 ```bash
 sudo /mnt/data/nails verify            # standard
