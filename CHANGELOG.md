@@ -1626,8 +1626,8 @@ of this changelog for that version becomes the release notes word for word, and
   still names only that operation, since it may be a way back already under way. A state record that
   cannot be written before the switch stops the way back the same way, with the error
   `invalid_state` where it was `deactivation_failed`.
-- A sleep guard (`sleep_policy.mode` `block` or `teardown`) whose copy of the settings in `/run` is
-  there but cannot be read, or does not parse, fell back to `warn` and exited, so the session ran
+- A sleep guard (`sleep_policy.mode` `block` or `teardown`) whose copy of the settings in `/run`
+  could not be read, did not parse or was missing fell back to `warn` and exited, so the session ran
   without sleep protection. It cannot tell which mode you chose, so it now does what both do: it
   holds `block`'s inhibitors (sleep and idle, and the lid switch where the session's logind would
   sleep on a closed lid), so an ordinary sleep request is refused, and powers the machine off if a

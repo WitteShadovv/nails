@@ -808,10 +808,10 @@ watcher) and holds logind inhibitors for the life of the session:
   covers a closed lid too.
 
 When the guard cannot read its copy of the settings in `/run` (an I/O error,
-or a copy that does not parse), it cannot tell whether you chose `block` or
-`teardown`, so it does what both do: it holds `block`'s inhibitors, and powers
-the machine off if a sleep starts anyway, such as one forced past them with
-`systemctl suspend -i`.
+a copy that does not parse, or one that is missing), it cannot tell whether
+you chose `block` or `teardown`, so it does what both do: it holds `block`'s
+inhibitors, and powers the machine off if a sleep starts anyway, such as one
+forced past them with `systemctl suspend -i`.
 
 The `session-sleep-guard` VM test closes a virtual lid in a hidden session in
 each mode. The inhibitors appear in `systemd-inhibit --list` under neutral,
