@@ -26,6 +26,10 @@
 //! - an entry that a link the hidden session left leads into the hidden
 //!   volume (decided as redirected) is kept off under those same names, never
 //!   left to the bind of the volume;
+//! - an entry of the next root's own fstab (decided as an entry without a
+//!   build decides it) is kept off under those names when its plain absolute
+//!   mount point lies at or below the hidden root, whatever its type and
+//!   options, and decided as the decoy's own line anywhere else;
 //! - the fstab decided twice keeps off what deciding it once does;
 //! - every crypttab device that NAILS resolves is the node
 //!   systemd-cryptsetup-generator opens.
@@ -39,7 +43,8 @@ use nails_base::crypttab::parse_crypttab;
 use nails_fuzz::systemd::{UnitName, fstab_node_to_udev_node, unit_name_from_path};
 use nails_session::session::fstab::{FstabEntry, parse_fstab};
 use nails_session::session::policy::{
-    Decision, Unskippable, decide, decide_all, decide_redirected, runtime_units,
+    Decision, Unskippable, decide, decide_all, decide_hidden_fstab, decide_redirected,
+    runtime_units,
 };
 use nails_teardown::mountinfo::parse_mountinfo;
 use std::path::{Component, Path};
@@ -105,6 +110,17 @@ fuzz_target!(|data: &[u8]| {
                     matches!(redirected, Decision::Mask { .. } | Decision::Skip { .. }),
                     "{entry:?} led into the hidden volume: {redirected:?}"
                 );
+            }
+            let own = decide_hidden_fstab(entry, &mounts, hidden, &present);
+            check(entry, &own, there);
+            if entry.file.starts_with(hidden) && plain_absolute(&entry.file) && !entry.is_swap() {
+                assert!(
+                    matches!(own, Decision::Mask { .. } | Decision::Skip { .. }),
+                    "{entry:?} of the next root's own fstab lies at or below the hidden root: \
+                     {own:?}"
+                );
+            } else {
+                assert_eq!(own, decision, "{entry:?} of the next root's own fstab");
             }
         }
     }
