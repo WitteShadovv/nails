@@ -130,6 +130,12 @@ impl World {
         self
     }
 
+    /// `spec` leads to no device here, as a missing udev link does.
+    fn forget(mut self, spec: &str) -> Self {
+        self.devices.by_spec.remove(spec);
+        self
+    }
+
     fn btrfs(mut self, members: &[&str]) -> Self {
         self.devices
             .btrfs

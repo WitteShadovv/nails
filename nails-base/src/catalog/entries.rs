@@ -299,12 +299,18 @@ pub const CHECK_MOUNTED_TWICE_HIDDEN: Message = Message {
 pub const CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM: Message = Message {
     id: "check.mounted-twice-decoy-filesystem",
     text: "the filesystem of {root}, which --allow-decoy-storage accepted, is also mounted at \
-           {places}, where neither / nor a line of /etc/fstab mounts it",
+           {places}, beside this computer's own mounts of it, the one at / and those a line of \
+           /etc/fstab makes from its own storage",
     note: "Shown instead of check.mounted-twice when the root folder is on a filesystem this \
            computer uses itself (a folder of / bound there, say), which the operator accepted \
            with --allow-decoy-storage. The mounts this computer makes of that filesystem at / \
            and by its fstab do not count, and neither does one that shows none of the root \
-           folder (another btrfs subvolume, say). {root} and {places} are as in \
+           folder (another btrfs subvolume, say). A mount at a folder that a line of the \
+           fstab is for counts when it shows something else of the filesystem than the line \
+           mounts, such as a subvolume mounted there by hand over the one the line names, and \
+           so does a mount that a bind line of the fstab makes from the root's own volume, so \
+           the text names the mounts that are left out rather than say that no line is for \
+           the place. {root} and {places} are as in \
            check.mounted-twice: the root folder as configured, and the other mount points \
            joined by commas and a last \"and\". The fix starts with the two lines of \
            check.mounted-twice-decoy-filesystem-fix, then has those of check.mounted-twice, \

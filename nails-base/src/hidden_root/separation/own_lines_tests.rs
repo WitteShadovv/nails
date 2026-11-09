@@ -172,11 +172,16 @@ fn the_decoys_line_for_slash_or_a_system_folder_is_one_its_boot_needs_for_a_whol
 /// sda2, and the subvolume /vault (id 300) of it at the root, judged with
 /// `lines` in the fstab beside the decoy's lines for / and /home.
 fn beside_home(lines: &str) -> Judgement {
-    World::new(
+    beside_home_with("", lines)
+}
+
+/// [`beside_home`], with the mount lines `mounts` as well.
+fn beside_home_with(mounts: &str, lines: &str) -> Judgement {
+    World::new(&format!(
         "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
          2 1 0:40 /home /home rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n\
-         5 1 0:40 /vault /mnt rw - btrfs /dev/sda2 rw,subvolid=300,subvol=/vault\n",
-    )
+         5 1 0:40 /vault /mnt rw - btrfs /dev/sda2 rw,subvolid=300,subvol=/vault\n{mounts}"
+    ))
     .disk("sda", "8:0")
     .part("sda1", "8:1", "sda")
     .part("sda2", "8:2", "sda")
@@ -222,64 +227,342 @@ fn a_line_that_mounts_the_roots_own_subvolume_is_none_of_the_decoys_own() {
             "{options}"
         );
     }
-    // A line that mounts another part of the filesystem is the decoy's own:
-    // the top, by no option, its path or its id, or the /home subvolume, by
-    // the id the mount table shows for it.
-    for options in [
-        "defaults",
-        "subvol=/",
-        "subvolid=5",
-        "subvolid=0",
-        "subvolid=257",
-        "subvol=home,subvolid=257",
+    // A line that mounts another part of the filesystem is the decoy's own
+    // while its mount is at /srv: the top, by no option, its path or its id,
+    // or the /home subvolume, by the id the mount table shows for it. Before
+    // the line is mounted there, nothing shows that the decoy uses it.
+    let top = "6 1 0:40 / /srv rw - btrfs /dev/sda2 rw,subvolid=5,subvol=/\n";
+    let home = "6 1 0:40 /home /srv rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n";
+    for (options, mount) in [
+        ("defaults", top),
+        ("subvol=/", top),
+        ("subvolid=5", top),
+        ("subvolid=0", top),
+        ("subvolid=257", home),
+        ("subvol=home,subvolid=257", home),
     ] {
-        let judgement = beside_home(&format!("/dev/sda2 /srv btrfs {options} 0 0\n"));
-        let srv = srv_line(&judgement);
-        assert_eq!(
-            srv.why, "it mounts the filesystem the volume at /mnt is part of",
-            "{options}"
-        );
-        assert_eq!(
-            srv.system_folder.as_deref(),
-            Some(Path::new("/srv")),
-            "{options}"
-        );
+        let line = format!("/dev/sda2 /srv btrfs {options} 0 0\n");
+        for (mounts, own) in [(mount, Some(Path::new("/srv"))), ("", None)] {
+            let judgement = beside_home_with(mounts, &line);
+            let srv = srv_line(&judgement);
+            assert_eq!(
+                srv.why, "it mounts the filesystem the volume at /mnt is part of",
+                "{options}"
+            );
+            assert!(srv.boot_needs, "{options}");
+            assert_eq!(srv.system_folder.as_deref(), own, "{options}: {mounts}");
+        }
     }
+    // A noauto line is none of the decoy's own, mounted there by hand too.
+    let judgement = beside_home_with(home, "/dev/sda2 /srv btrfs subvol=/home,noauto 0 0\n");
+    assert_eq!(srv_line(&judgement).system_folder, None);
     // Nor is one whose subvolume cannot be told (fail closed): an id that no
     // mount shows, one that is no plain number, and options that name two
-    // subvolumes.
+    // subvolumes, with the /home subvolume at /srv too. Such a line reads as
+    // one that mounts the filesystem the root is part of, which the check
+    // says to keep.
     for options in [
         "subvolid=301",
         "subvolid=0x12c",
         "subvolid=0300",
         "subvol=/home,subvolid=300",
     ] {
-        let judgement = beside_home(&format!("/dev/sda2 /srv btrfs {options} 0 0\n"));
+        let judgement = beside_home_with(home, &format!("/dev/sda2 /srv btrfs {options} 0 0\n"));
         let srv = srv_line(&judgement);
+        assert_eq!(
+            srv.why, "it mounts the filesystem the volume at /mnt is part of",
+            "{options}"
+        );
         assert!(srv.boot_needs, "{options}");
         assert_eq!(srv.system_folder, None, "{options}");
     }
 }
 
 #[test]
-fn a_line_for_the_subvolume_a_bound_folder_lies_in_is_the_decoys_own() {
-    // A folder of the /home subvolume bound at the root, whose mount shows
-    // that subvolume's id: the line for /home mounts the subvolume the root
-    // is a folder of, by its path or by its id.
-    for options in ["subvol=/home", "subvolid=257"] {
-        let judgement = World::new(
+fn a_line_whose_text_does_not_tell_what_btrfs_mounts_is_none_of_the_decoys_own() {
+    // btrfs takes the last of two subvol= or subvolid=, follows a .. or a
+    // link in the path, and mounts its default subvolume for a line with
+    // neither, so only the mount at /srv shows what the line mounts there:
+    // with the subvolume the text seems to name at /srv, or the root's own
+    // one as btrfs read the line, the line is none of the decoy's own.
+    let home = "6 1 0:40 /home /srv rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n";
+    let vault = "6 1 0:40 /vault /srv rw - btrfs /dev/sda2 rw,subvolid=300,subvol=/vault\n";
+    for (options, mount) in [
+        ("subvol=/home,subvol=/vault", home),
+        ("subvol=/home,subvol=/vault", vault),
+        ("subvolid=257,subvolid=300", home),
+        ("subvol=/home,subvol=/home", home),
+        ("subvol=home/../vault", vault),
+        ("subvol=link", vault),
+        ("defaults", vault),
+    ] {
+        let judgement = beside_home_with(mount, &format!("/dev/sda2 /srv btrfs {options} 0 0\n"));
+        assert_eq!(
+            srv_line(&judgement).system_folder,
+            None,
+            "{options}: {mount}"
+        );
+    }
+    // At another folder such a line reads as one whose subvolume cannot be
+    // told, and the check says to keep it, not to remove it as a line that
+    // mounts the volume.
+    for options in [
+        "subvol=/vault,subvol=/home",
+        "subvolid=300,subvolid=257",
+        "subvol=/vault/../home",
+    ] {
+        let judgement = beside_home(&format!("/dev/sda2 /pool btrfs {options} 0 0\n"));
+        let pool: Vec<&EntryFinding> = judgement
+            .entries
+            .iter()
+            .filter(|entry| entry.line.contains(" /pool "))
+            .collect();
+        assert_eq!(pool.len(), 1, "{:?}", judgement.entries);
+        assert_eq!(
+            pool[0].why, "it mounts the filesystem the volume at /mnt is part of",
+            "{options}"
+        );
+        assert!(pool[0].boot_needs, "{options}");
+    }
+    // A path with an escape, as the fstab writes a space: btrfs mounts the
+    // subvolume "my vault", the root's own, though the line's text is not its
+    // path as the mount table shows it. Mounted at /srv or not, the line is
+    // none of the decoy's own.
+    let escaped = "/my\\040vault /srv rw - btrfs /dev/sda2 rw,subvolid=300,subvol=/my\\040vault";
+    for mounts in [format!("6 1 0:40 {escaped}\n"), String::new()] {
+        let judgement = World::new(&format!(
             "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
              2 1 0:40 /home /home rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n\
-             5 1 0:40 /home/u/vault /mnt rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n",
-        )
+             5 1 0:40 /my\\040vault /mnt rw - btrfs /dev/sda2 \
+             rw,subvolid=300,subvol=/my\\040vault\n{mounts}"
+        ))
         .disk("sda", "8:0")
         .part("sda1", "8:1", "sda")
         .part("sda2", "8:2", "sda")
         .btrfs(&["sda2"])
-        .fstab(&format!(
-            "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home btrfs {options} 0 0\n"
-        ))
+        .fstab(
+            "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home btrfs subvol=/home 0 0\n\
+             /dev/sda2 /srv btrfs subvol=my\\040vault 0 0\n",
+        )
         .judge("/mnt");
+        assert_eq!(srv_line(&judgement).system_folder, None, "{mounts}");
+    }
+    // A line with X-mount.subdir= mounts a folder of what it names, as its
+    // mount shows: a bind of the root's own folder at /srv is no mount of
+    // the decoy's, and neither is the line before it is mounted.
+    for mounts in ["3 1 8:1 /data/x /srv rw - ext4 /dev/sda1 rw\n", ""] {
+        let judgement = plain_decoy(&format!(
+            "{mounts}5 1 8:1 /data/x /mnt rw - ext4 /dev/sda1 rw\n"
+        ))
+        .fstab(
+            "/dev/sda1 / ext4 defaults 0 1\n\
+             /dev/sda1 /srv ext4 X-mount.subdir=data/x,nofail 0 2\n",
+        )
+        .judge("/mnt");
+        assert_eq!(
+            entry_folders(&judgement),
+            [
+                ("/dev/sda1 / ext4", Some(Path::new("/"))),
+                ("/dev/sda1 /srv ext4", None)
+            ],
+            "{mounts}"
+        );
+    }
+}
+
+#[test]
+fn a_line_whose_mount_is_not_there_is_none_of_the_decoys_own() {
+    // A folder of a separate drive bound at the root, while nothing of the
+    // drive is mounted where its line for a system folder would mount it, as
+    // when it was plugged in after the boot: the line mounts the filesystem
+    // the root is part of, and the check says to keep it, but nothing shows
+    // that the decoy uses that filesystem, and the line may be the hidden
+    // drive's own. Once the drive is mounted there, it is the decoy's own.
+    for place in ["/srv", "/opt", "/home"] {
+        let drive = |mounts: &str| {
+            World::new(&format!(
+                "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n{mounts}\
+                 5 1 8:17 /x /mnt rw - ext4 /dev/sdb1 rw\n"
+            ))
+            .disk("sda", "8:0")
+            .part("sda1", "8:1", "sda")
+            .disk("sdb", "8:16")
+            .part("sdb1", "8:17", "sdb")
+            .disk("sdc", "8:32")
+            .part("sdc1", "8:33", "sdc")
+            .fstab(&format!(
+                "/dev/sda1 / ext4 defaults 0 1\n/dev/sdb1 {place} ext4 defaults,nofail 0 2\n"
+            ))
+            .judge("/mnt")
+        };
+        let line = format!("/dev/sdb1 {place} ext4");
+        let alone = drive("");
+        assert_eq!(
+            alone.verdict,
+            Verdict::OnDecoyFilesystem {
+                how: Sharing::Bind,
+                at: PathBuf::from(place),
+                in_fstab: true,
+            },
+            "{place}"
+        );
+        assert_eq!(
+            entry_needs(&alone),
+            [(EntryKind::Blocking, line.as_str(), true)],
+            "{place}"
+        );
+        assert_eq!(
+            alone.entries[0].why,
+            "it mounts the filesystem the volume at /mnt is part of"
+        );
+        assert_eq!(entry_folders(&alone), [(line.as_str(), None)], "{place}");
+        let mounted = drive(&format!("2 1 8:17 / {place} rw - ext4 /dev/sdb1 rw\n"));
+        assert_eq!(
+            entry_folders(&mounted),
+            [(line.as_str(), Some(Path::new(place)))],
+            "{place}"
+        );
+        // Another drive mounted there is no mount of the line.
+        let other = drive(&format!("2 1 8:33 / {place} rw - ext4 /dev/sdc1 rw\n"));
+        assert_eq!(entry_folders(&other), [(line.as_str(), None)], "{place}");
+    }
+    // So does the crypttab line of an encrypted drive whose fstab line is
+    // for /srv: nothing makes it the decoy's own either.
+    let judgement = luks_drive("/srv", "5 1 254:9 /x /mnt rw - ext4 /dev/mapper/data rw\n");
+    assert_eq!(
+        entry_needs(&judgement),
+        [
+            (EntryKind::Blocking, "/dev/mapper/data /srv ext4", true),
+            (EntryKind::Blocking, "data /dev/sdb", true),
+        ]
+    );
+    assert_eq!(
+        entry_folders(&judgement),
+        [
+            ("/dev/mapper/data /srv ext4", None),
+            ("data /dev/sdb", None)
+        ]
+    );
+}
+
+#[test]
+fn a_bind_line_that_mounts_the_volume_or_a_folder_of_it_is_an_entry() {
+    // A bind of a folder of / at the root, which a bind line of the fstab
+    // makes at every boot: the line mounts the volume itself, it is no line
+    // the decoy's boot needs, and the flag never lets it be.
+    let bind = |lines: &str| {
+        plain_decoy("5 1 8:1 /data/x /mnt rw - ext4 /dev/sda1 rw\n")
+            .fstab(&format!("/dev/sda1 / ext4 defaults 0 1\n{lines}"))
+            .judge("/mnt")
+    };
+    let judgement = bind("/data/x /mnt none bind 0 0\n");
+    assert_eq!(
+        entry_needs(&judgement),
+        [
+            (EntryKind::Blocking, "/dev/sda1 / ext4", true),
+            (EntryKind::Blocking, "/data/x /mnt none", false),
+        ]
+    );
+    assert_eq!(judgement.entries[1].why, "it mounts the volume at /mnt");
+    assert_eq!(
+        entry_folders(&judgement),
+        [
+            ("/dev/sda1 / ext4", Some(Path::new("/"))),
+            ("/data/x /mnt none", None)
+        ]
+    );
+    // One for a folder of the volume elsewhere mounts that folder. At a
+    // system folder the boot needs it, unless it is noauto, but it is never
+    // the decoy's own line.
+    for (line, why, needed) in [
+        (
+            "/data/x/sub /srv/sub none bind 0 0",
+            "it mounts a folder of the volume at /mnt",
+            false,
+        ),
+        (
+            "/data/x /srv none rbind 0 0",
+            "it mounts the volume at /mnt",
+            true,
+        ),
+        (
+            "/data/x /srv none bind,noauto 0 0",
+            "it mounts the volume at /mnt",
+            false,
+        ),
+    ] {
+        let judgement = bind(&format!("{line}\n"));
+        let shown: Vec<&str> = line.split_whitespace().take(3).collect();
+        let shown = shown.join(" ");
+        assert_eq!(
+            entry_needs(&judgement)[1..],
+            [(EntryKind::Blocking, shown.as_str(), needed)],
+            "{line}"
+        );
+        assert_eq!(judgement.entries[1].why, why, "{line}");
+        assert_eq!(judgement.entries[1].system_folder, None, "{line}");
+    }
+    // A bind of a folder above the root's or beside it, or of another
+    // filesystem, mounts no part of the volume.
+    for line in [
+        "/data /srv/d none bind 0 0",
+        "/data/y /srv/y none bind 0 0",
+        "/home/u /srv/u none bind 0 0",
+    ] {
+        let judgement = bind(&format!("{line}\n"));
+        assert_eq!(
+            entry_needs(&judgement),
+            [(EntryKind::Blocking, "/dev/sda1 / ext4", true)],
+            "{line}"
+        );
+    }
+    // A volume on a drive of its own, mounted whole at the root: a bind line
+    // whose source lies on it mounts a folder of it (and claims its
+    // filesystem as the decoy's, as every bind line claims the one its
+    // source lies on).
+    let judgement = external_veracrypt()
+        .fstab(
+            "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n\
+             /mnt/sub /srv/sub none bind,nofail 0 0\n",
+        )
+        .judge("/mnt");
+    assert!(
+        matches!(judgement.verdict, Verdict::OnDecoyFilesystem { .. }),
+        "{:?}",
+        judgement.verdict
+    );
+    assert_eq!(
+        entry_needs(&judgement),
+        [(EntryKind::Blocking, "/mnt/sub /srv/sub none", false)]
+    );
+    assert_eq!(
+        judgement.entries[0].why,
+        "it mounts a folder of the volume at /mnt"
+    );
+}
+
+#[test]
+fn a_line_for_the_subvolume_a_bound_folder_lies_in_is_the_decoys_own() {
+    // A folder of the /home subvolume bound at the root, whose mount shows
+    // that subvolume's id: the line for /home mounts the subvolume the root
+    // is a folder of, by its path or by its id, wherever the table lists the
+    // root's mount. The id is that of the mount of the subvolume itself.
+    let home = "2 1 0:40 /home /home rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n";
+    let root = "5 1 0:40 /home/u/vault /mnt rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n";
+    for (options, mounts) in [
+        ("subvol=/home", format!("{home}{root}")),
+        ("subvolid=257", format!("{home}{root}")),
+        ("subvolid=257", format!("{root}{home}")),
+    ] {
+        let judgement = World::new(&format!("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n{mounts}"))
+            .disk("sda", "8:0")
+            .part("sda1", "8:1", "sda")
+            .part("sda2", "8:2", "sda")
+            .btrfs(&["sda2"])
+            .fstab(&format!(
+                "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home btrfs {options} 0 0\n"
+            ))
+            .judge("/mnt");
         assert!(
             matches!(
                 judgement.verdict,
@@ -624,5 +907,75 @@ fn a_line_that_opens_the_hidden_volume_of_a_container_is_never_the_decoys_own() 
     assert_eq!(
         entry_folders(&judgement)[0],
         ("/dev/mapper/cryptroot / ext4", Some(Path::new("/")))
+    );
+}
+
+#[test]
+fn a_subvolume_option_on_a_filesystem_that_is_not_btrfs_tells_nothing() {
+    // ext4 has no subvolumes, so what a line with subvol= mounts of the
+    // root's filesystem cannot be told, though its path is the root's folder:
+    // it reads as a line that mounts the filesystem the root is part of,
+    // which the check says to keep.
+    let judgement = plain_decoy("5 1 8:1 /x /mnt rw - ext4 /dev/sda1 rw\n")
+        .fstab("/dev/sda1 / ext4 defaults 0 1\n/dev/sda1 /backup ext4 subvol=/x 0 2\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [
+            (EntryKind::Blocking, "/dev/sda1 / ext4", true),
+            (EntryKind::Blocking, "/dev/sda1 /backup ext4", true),
+        ]
+    );
+    assert_eq!(
+        judgement.entries[1].why,
+        "it mounts the filesystem the volume at /mnt is part of"
+    );
+}
+
+#[test]
+fn a_crypttab_line_named_as_the_mapping_the_root_lies_on_makes_it() {
+    // Debian's encrypted root, where neither the line's source nor
+    // /dev/mapper/<name> leads to a device here: its name is that of the
+    // mapping the root lies on, so it is the line that opens that mapping,
+    // the decoy's own for its mount at /.
+    let judgement = World::new(
+        "1 0 254:0 / / rw - ext4 /dev/mapper/cryptroot rw\n\
+         5 1 254:0 /srv/x /mnt rw - ext4 /dev/mapper/cryptroot rw\n",
+    )
+    .disk("nvme0n1", "259:0")
+    .part("nvme0n1p3", "259:3", "nvme0n1")
+    .crypt("dm-0", "254:0", "cryptroot", &["nvme0n1p3"])
+    .forget("/dev/mapper/cryptroot")
+    .crypttab("cryptroot UUID=gone none luks\n")
+    .judge("/mnt");
+    assert_eq!(
+        crypttab_lines(&judgement),
+        [("cryptroot UUID=gone", true, Some(Path::new("/")))]
+    );
+}
+
+#[test]
+fn a_line_that_opens_the_hidden_volume_the_decoys_root_lies_in_is_one_its_boot_needs() {
+    // The decoy's own root in the hidden volume of a VeraCrypt container that
+    // its crypttab opens, and a bind of a folder of / at the root: the line
+    // is never the decoy's own, but removing it would take its root from the
+    // decoy, so the check says to keep it.
+    let judgement = debian_luks("/srv/x", CRYPTROOT_LINE, "tcrypt-hidden");
+    assert_eq!(
+        crypttab_lines(&judgement),
+        [("cryptroot UUID=e1", true, None)]
+    );
+    assert_eq!(
+        judgement.entries[1].why,
+        "it opens the hidden volume of a TrueCrypt or VeraCrypt container"
+    );
+    // One for the hidden volume of a container on a drive of its own, which
+    // no filesystem of the decoy's lies on, only the hidden volume needs.
+    let judgement = external_veracrypt()
+        .crypttab("vault /dev/sdb none tcrypt-hidden\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [(EntryKind::Blocking, "vault /dev/sdb", false)]
     );
 }
