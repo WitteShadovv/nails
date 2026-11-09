@@ -56,8 +56,11 @@ enum ProbeError {
 /// # How it probes
 ///
 /// Everything happens inside a throwaway `.probe-<unique>` directory on the
-/// hidden root, removed on every path; nothing outside it, and nothing on the
-/// decoy, is ever touched. The probe sets and removes a `trusted.*` xattr,
+/// hidden root, removed on every path; nothing outside it is written. Where
+/// the kernel's overlay module is not loaded yet, the trial loads it, and the
+/// kernel's modprobe and udevd then read their settings on the decoy: the
+/// check makes no trial where those reads would mount an automount point that
+/// nothing is mounted on yet. The probe sets and removes a `trusted.*` xattr,
 /// confirms `readdir` reports a file type, and trial-mounts a self-contained
 /// overlay (lower/upper/work all inside the scratch dir) that it exercises with
 /// a new file and a whiteout.
@@ -176,6 +179,14 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
             }
         }
 
+        // Trying the overlay loads the kernel's overlay module where it is
+        // not loaded yet, and a load makes the kernel's modprobe read its
+        // settings and udevd read its rules: below /usr/local too, where an
+        // automount point can be. Where that would mount one, no trial.
+        if let Some(untold) = self.trial_would_mount(fs) {
+            return Ok(untold);
+        }
+
         // The probe writes to the real hidden root and mounts an overlay from
         // it, so there is nothing to probe under a test binary. Skip it there,
         // like every other host-touching check, so mock-driven preflight tests
@@ -194,6 +205,43 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
 }
 
 impl UpperFsCapabilityCheck {
+    /// The refusal of a trial that would mount an automount point, `None`
+    /// where it would not.
+    ///
+    /// Trying the overlay ([`overlay_context`]) loads the kernel's overlay
+    /// module where `/proc/filesystems` does not list `overlay`, or cannot be
+    /// read. The kernel then starts modprobe, which reads its settings
+    /// ([`MODULE_LOAD_READS`]), and the module's event makes udevd read its
+    /// rules and link settings: an automounter mounts a point for their
+    /// lookups as for any other. Where the automount guard would not make
+    /// one of those lookups, the check makes no trial and refuses, since it
+    /// cannot tell, naming the path and the point with the line that says
+    /// to mount it.
+    fn trial_would_mount<F: Filesystem>(&self, fs: &F) -> Option<CheckResult> {
+        use crate::filesystem::automount::{Guarded, Lookup, OnSkip, Snapshot, settle};
+        if overlay_registered(fs) {
+            return None;
+        }
+        let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
+        for path in MODULE_LOAD_READS {
+            // A lookup on the way that fails is none modprobe or udevd would
+            // pass either.
+            let _ = guarded.ask(Path::new(path), Lookup::Enters { follow: true });
+        }
+        let skipped = guarded.skipped();
+        if skipped.is_empty() {
+            return None;
+        }
+        let refusal = CheckResult::fail(format!(
+            "NAILS cannot tell whether the hidden root at {} can host an overlayfs upper layer: \
+             the kernel's overlay module is not loaded, and trying the overlay would load it, \
+             which makes the kernel's modprobe and udevd read their settings, where a lookup \
+             would mount an automount point. No trial was made.",
+            self.hidden_volume_root.display()
+        ));
+        Some(settle(refusal, &skipped, OnSkip::Refuse(None)))
+    }
+
     /// The check result for a host probe `outcome`, naming the hidden root's
     /// filesystem from `fs` when a capability is missing. Split from `run`,
     /// whose probe the test runtime skips, so the mapping is tested on its own.
@@ -229,6 +277,40 @@ impl UpperFsCapabilityCheck {
             )),
         }
     }
+}
+
+/// What a load of a kernel module makes other processes read: the
+/// directories of kmod's modprobe, which the kernel starts for the load, and
+/// those of udevd's rules and link settings, which it reads when it handles
+/// the event the module sends. Each as kmod and systemd name them, the split
+/// `/lib` of older distributions too.
+const MODULE_LOAD_READS: &[&str] = &[
+    "/etc/modprobe.d",
+    "/run/modprobe.d",
+    "/usr/local/lib/modprobe.d",
+    "/usr/lib/modprobe.d",
+    "/lib/modprobe.d",
+    "/etc/udev/rules.d",
+    "/run/udev/rules.d",
+    "/usr/local/lib/udev/rules.d",
+    "/usr/lib/udev/rules.d",
+    "/lib/udev/rules.d",
+    "/etc/systemd/network",
+    "/run/systemd/network",
+    "/usr/local/lib/systemd/network",
+    "/usr/lib/systemd/network",
+    "/lib/systemd/network",
+];
+
+/// Whether the kernel lists the overlay filesystem in `/proc/filesystems`,
+/// so trying it loads no module. One that cannot be read tells nothing.
+fn overlay_registered<F: Filesystem>(fs: &F) -> bool {
+    fs.read_file_content(Path::new("/proc/filesystems"))
+        .is_ok_and(|filesystems| {
+            filesystems
+                .lines()
+                .any(|line| line.split_whitespace().last() == Some("overlay"))
+        })
 }
 
 // ============================================================================
