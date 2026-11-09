@@ -1126,7 +1126,12 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   in a sandbox that blocks the call), `upper-fs-capability` fails before it
   writes anything; it never falls back to an ordinary mount. Trying the overlay
   loads the kernel's overlay module if it is not loaded yet, as activation
-  does.
+  does. The kernel then starts modprobe, which reads its settings, and udevd
+  reads its rules as it handles the module's event, both below
+  `/usr/local/lib` too. So where `/proc/filesystems` does not list `overlay`
+  and one of those places lies behind an automount point that nothing is
+  mounted on yet, `upper-fs-capability` makes no trial: it refuses, since it
+  cannot tell, and names the point.
 - **A kernel log line, in two cases.** When the filesystem under the trial
   overlay lacks something overlayfs wants (such as `upper fs does not support
   tmpfile`), overlayfs writes a warning to the kernel log, and journald keeps
@@ -1158,10 +1163,21 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   refuses where it cannot tell about the journal, a log daemon or kdump
   (`--allow-persistent-decoy` lifts that, as it lifts the refusal of what it
   finds), `fstab-policy` refuses, and so does `hidden-volume` for a hidden
-  root behind such a point. `memory-wipe` and `cryptsetup-argon2id`, which
+  root behind such a point. Where the hidden root itself or the state file
+  lies behind such a point, `check` runs no check at all, since each would
+  look the root up: it says that the checks could not be assembled and names
+  the point. A hidden root that is itself a direct automount point is refused
+  as covered once it is mounted, since the automount point stays below the
+  volume. On NixOS the decoy's `/etc/nixos` can link into a home:
+  `suspicious-nails-reference` refuses where its walk of `/etc/nixos` would
+  pass such a point, and where finding the NixOS build target would, which
+  `check` does unless it runs with `--overlay-only`, it runs no check, naming
+  the point. `memory-wipe` and `cryptsetup-argon2id`, which
   only inform, keep their pass, and where what they could read leaves the
   answer open, name the path and the point. Without the mount table these
-  checks look up nothing on the decoy and say so. The table is the one read
+  checks look up nothing on the decoy and say so, and on NixOS, unless it runs
+  with `--overlay-only`, `check` then runs no check, since it cannot find the
+  build target without a lookup. The table is the one read
   when each check starts: an automount that something else mounted before
   and that expires while `check` runs is mounted again by the next lookup
   there, and a name of an indirect map that expires in that time can be
@@ -1169,13 +1185,19 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   with an `x-systemd.automount` line for `/usr/local` that nothing has
   mounted yet, `decoy-persistence` and `fstab-policy` refuse until it is
   mounted, since journald's drop-ins and systemd's units below it may hold
-  what they look for, `sleep-policy` and `locate-database` warn, and
+  what they look for, and so does `upper-fs-capability` where the overlay
+  module is not loaded yet, `sleep-policy` and `locate-database` warn, and
   `locate-database` also names each home that is not mounted yet.
-- **A path that cannot be looked up is not a missing one.** A path a check
-  cannot look up for another reason than that it is not there (no
-  permission, an I/O error, a loop of links) is one it cannot tell about,
-  never a missing one: the check says so, names the path, and warns or
-  refuses as it does for what it finds.
+- **A path that cannot be looked up is not a missing one.** Where a check
+  asks whether something is at a path, or whether it is a directory, a
+  regular file or a link, and the lookup fails for another reason than that
+  nothing is there (no permission, an I/O error, a loop of links), the path
+  is one it cannot tell about, never a missing one: the check says so, names
+  the path, and warns or refuses as it does for what it finds. Some readers
+  still take a place they cannot list, read or follow for an empty one: among
+  them the walk of the decoy's `/etc/nixos` in `suspicious-nails-reference`,
+  the lookups of its units below the decoy root in `soft-reboot-units`, and
+  the readers of the sudoers files and of `/proc/swaps`.
 
 ### Pre-activation checklist
 
