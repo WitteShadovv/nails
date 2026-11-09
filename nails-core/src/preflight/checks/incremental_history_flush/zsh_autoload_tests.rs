@@ -288,3 +288,140 @@ fn a_path_zsh_expands_into_others_is_a_doubt() {
         );
     }
 }
+
+#[test]
+fn a_function_is_autoloaded_by_the_options_zsh_reads_as_it_does() {
+    // zsh 5.9 to 5.9.2 mark `hist_setup` to be autoloaded with each of
+    // these (`whence -w` gives `function`), with the options of either sign
+    // up to the first other word, an `-x` of `functions` or a number of
+    // `typeset` taking the word after it.
+    for marks in [
+        "functions +t -u",
+        "functions +U -u",
+        "functions -x 2 -u",
+        "functions -x2 -u",
+        "functions -ux 3",
+        "functions -u --",
+        "typeset +f -u",
+        "typeset -u +f",
+        "typeset +t -fu",
+        "typeset -p 1 -fu",
+        "typeset -fL 3 -u",
+        "typeset -i 3 -fu",
+        "typeset --fu",
+        "declare +f -U",
+        "declare +g -fu",
+        "readonly -fu",
+        "readonly -fU",
+        "readonly -f -u",
+        "readonly +f -u",
+        "builtin readonly -fu",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("fpath=(~/.zfunc $fpath)\n{marks} hist_setup\n"),
+        );
+        seed(&fs, "/home/alice/.zfunc/hist_setup", SETS);
+        assert_eq!(
+            scan(&fs, UNKNOWN),
+            Scan {
+                writes: vec![Write {
+                    what: "/home/alice/.zfunc/hist_setup names SHARE_HISTORY".to_string(),
+                    entered: true,
+                    option: true,
+                }],
+                ..Scan::default()
+            },
+            "{marks}"
+        );
+    }
+    // These mark none: zsh 5.9 to 5.9.2 refuse them, read the `-u` as a
+    // name, or mark no function.
+    for marks in [
+        "typeset -f",
+        "typeset +u -f",
+        "typeset -f +u",
+        "functions +u",
+        "functions -2 -u",
+        "functions - -u",
+        "typeset -f -- -u",
+        "readonly -u",
+        "export -fu",
+        "integer -fu",
+        "float -fu",
+        "private -fu",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("fpath=(~/.zfunc $fpath)\n{marks} hist_setup\n"),
+        );
+        seed(&fs, "/home/alice/.zfunc/hist_setup", SETS);
+        assert_eq!(scan(&fs, UNKNOWN).writes, [], "{marks}");
+    }
+}
+
+#[test]
+fn options_an_expansion_may_make_of_a_marking_builtin_are_a_doubt() {
+    for (line, word) in [
+        ("functions $o hist_setup", "$o"),
+        ("functions -x 2 $o hist_setup", "$o"),
+        ("typeset -$o hist_setup", "-$o"),
+        ("typeset -f $o hist_setup", "$o"),
+        ("readonly -p $n -fu hist_setup", "$n"),
+        ("declare {-fu,+x} hist_setup", "{-fu,+x}"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("fpath=(~/.zfunc $fpath)\n{line}\n"),
+        );
+        seed(&fs, "/home/alice/.zfunc/hist_setup", SETS);
+        let found = scan(&fs, UNKNOWN);
+        let (command, args) = line.split_once(' ').unwrap();
+        let doubt = format!(
+            "it cannot tell which functions `{command} {args}` in /home/alice/.zshrc marks to be \
+             autoloaded, as zsh may expand `{word}` into its options"
+        );
+        assert!(found.doubts.contains(&doubt), "{line}: {found:?}");
+    }
+}
+
+#[test]
+fn a_function_readonly_or_a_signed_typeset_autoloads_counts_for_the_kept_cuts() {
+    // zsh 5.9.2 runs `t`, which `readonly -fu` marks, with TTY set to a file,
+    // and the hook's line reaches it; and the hook `hk`, which `typeset +f -u`
+    // marks, uses the alias as `fc -l -A`, which writes the history file.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "fpath=(~/zfn $fpath)\nreadonly -fu t\nt\npreexec() { print -r -- \"$1\" >> $TTY }\n",
+    );
+    seed(&fs, "/home/alice/zfn/t", "TTY=~/.zl\n");
+    assert_eq!(
+        scan(&fs, UNKNOWN).doubts,
+        [
+            "it cannot tell where the output that `preexec` in /home/alice/.zshrc redirects to \
+             `$TTY` goes, as /home/alice/zfn/t may set TTY to name the history file"
+        ]
+    );
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "alias h='fc -l'\nfpath=(~/zfn $fpath)\ntypeset +f -u hk\nprecmd_functions+=(hk)\n",
+    );
+    seed(&fs, "/home/alice/zfn/hk", "h -A\n");
+    assert_eq!(
+        scan(&fs, UNKNOWN).doubts,
+        [
+            "it cannot tell what the alias `h=fc -l` in /home/alice/.zshrc runs where it is used, \
+             as zsh hands the fc it stands for the words after it"
+        ]
+    );
+}
