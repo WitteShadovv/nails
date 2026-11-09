@@ -295,22 +295,29 @@ pub const CHECK_MOUNTED_TWICE_HIDDEN: Message = Message {
 /// The failure in place of [`CHECK_MOUNTED_TWICE`] when the root is on a
 /// filesystem the decoy uses, which `--allow-decoy-storage` accepted: the
 /// decoy's own mounts of it at `/` and by its fstab are left out, and so is
-/// a mount that shows none of the root folder, but another one counts.
+/// a mount that shows none of the root folder, but another one counts. It
+/// says only what holds for each mount it names, as there may be no mount
+/// of that filesystem at `/` or by the fstab.
 pub const CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM: Message = Message {
     id: "check.mounted-twice-decoy-filesystem",
     text: "the filesystem of {root}, which --allow-decoy-storage accepted, is also mounted at \
-           {places}, beside this computer's own mounts of it, the one at / and those a line of \
-           /etc/fstab makes from its own storage",
+           {places}, and not by a line of /etc/fstab that mounts it from this computer's own \
+           storage",
     note: "Shown instead of check.mounted-twice when the root folder is on a filesystem this \
            computer uses itself (a folder of / bound there, say), which the operator accepted \
            with --allow-decoy-storage. The mounts this computer makes of that filesystem at / \
            and by its fstab do not count, and neither does one that shows none of the root \
-           folder (another btrfs subvolume, say). A mount at a folder that a line of the \
-           fstab is for counts when it shows something else of the filesystem than the line \
-           mounts, such as a subvolume mounted there by hand over the one the line names, and \
-           so does a mount that a bind line of the fstab makes from the root's own volume, so \
-           the text names the mounts that are left out rather than say that no line is for \
-           the place. {root} and {places} are as in \
+           folder (another btrfs subvolume, say). The text names neither kind, as there may \
+           be none: the filesystem can be a drive of its own that counts as this computer's \
+           because it is also mounted at a system folder such as /srv, by hand. It says what \
+           holds for each mount at {places}: no line of the fstab made it from this \
+           computer's own storage, that is, no line that names the mount's device and mounts \
+           what the mount shows, and no bind line from another of this computer's own mounts \
+           of that filesystem. A mount at a folder that a line of the fstab is for counts \
+           when it shows something else of the filesystem than the line mounts, such as a \
+           subvolume mounted there by hand over the one the line names, and so does a mount \
+           that a bind line of the fstab makes from the root's own volume, so the text speaks \
+           of the mount, not of the place. {root} and {places} are as in \
            check.mounted-twice: the root folder as configured, and the other mount points \
            joined by commas and a last \"and\". The fix starts with the two lines of \
            check.mounted-twice-decoy-filesystem-fix, then has those of check.mounted-twice, \
