@@ -231,8 +231,12 @@ fn a_direct_point_at_the_end_is_skipped_or_answered_from_the_table() {
     assert!(!reaches(&fs.mock_lookups(), "/usr/local"));
 }
 
+/// An automount point the table does not show, as one set up after it was
+/// read, is told by what the kernel says of the place (`mount_root`): its
+/// attribute for a submount of NFS, CIFS, AFS or FUSE, and an autofs on top
+/// for systemd's and the automounters' points.
 #[test]
-fn an_automount_point_the_table_missed_is_told_by_its_statx() {
+fn an_automount_point_the_table_missed_is_told_by_the_kernel() {
     let fs = mock(&[ROOT]);
     fs.mock_set_automount("/media/usb");
     assert_eq!(way(&fs, "/media/usb/photo", ENTERS), "mounts /media/usb");
@@ -241,6 +245,38 @@ fn an_automount_point_the_table_missed_is_told_by_its_statx() {
     assert_eq!(way(&fs, "/media/usb", RESOLVES), "at /media/usb");
     assert_eq!(way(&fs, "/media/usb/photo", RESOLVES), "mounts /media/usb");
     assert_eq!(way(&fs, "/media/other/photo", ENTERS), "clear");
+}
+
+/// A filesystem the table shows on a direct automount point that expired
+/// since the table was read leaves an autofs on top there: the point is
+/// not looked up, as if the table had shown it so. Where the table is
+/// right, the place is looked into.
+#[test]
+fn a_point_whose_mount_expired_after_the_table_was_read_is_not_looked_up() {
+    let fs = mock(&[ROOT, USR_LOCAL, USR_LOCAL_MOUNTED]);
+    assert_eq!(way(&fs, "/usr/local/bin/updatedb", ENTERS), "clear");
+    fs.mock_set_automount("/usr/local");
+    assert_eq!(
+        way(&fs, "/usr/local/bin/updatedb", ENTERS),
+        "mounts /usr/local"
+    );
+    assert_eq!(way(&fs, "/usr/local", RESOLVES), "at /usr/local");
+}
+
+/// The directory of an indirect map the table shows is an autofs on top,
+/// as the kernel says of it, but no point itself: the walk goes into it,
+/// and the name below it is the point.
+#[test]
+fn the_directory_of_an_indirect_map_is_passed_into() {
+    let fs = mock(&[ROOT, NET_MAP]);
+    fs.mock_set_automount("/net");
+    assert_eq!(way(&fs, "/net", ENTERS), "clear");
+    assert_eq!(way(&fs, "/net/srv/export", ENTERS), "mounts /net/srv");
+    // A map the table does not show is no directory it knows: the place is
+    // taken for a point.
+    let fs = mock(&[ROOT]);
+    fs.mock_set_automount("/net");
+    assert_eq!(way(&fs, "/net/srv/export", ENTERS), "mounts /net");
 }
 
 #[test]

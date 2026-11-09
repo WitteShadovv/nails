@@ -22,10 +22,14 @@
 //! check ends: no reader that takes an error for "nothing there" can let a
 //! check pass over a path it did not look up.
 //!
-//! The table is the one read when the check starts. An automount that
-//! expires while the check runs is mounted again by the next lookup there,
-//! and a name of an indirect map that expires so can be mounted by the
-//! guard's own reading of it.
+//! The table is the one read when the check starts. At the root of each
+//! mount on the way the kernel is asked what is on top there
+//! ([`Filesystem::mount_root`]), so a direct or offset automount point the
+//! table missed, one whose mount expired while the check ran or one set up
+//! after the table was read, is not looked up either. A name of an indirect
+//! map that expires so can be mounted by the guard's own reading of it: the
+//! kernel asks the automounter for a name it holds nothing for, even for a
+//! lookup that asks it not to mount.
 
 use crate::error::Skip;
 use crate::filesystem::mountinfo::MountEntry;
@@ -241,12 +245,17 @@ fn is_indirect(mount: &MountEntry) -> bool {
         .any(|option| option == INDIRECT_MAP)
 }
 
+/// Whether `mount` is the directory of an indirect map at `path` itself.
+fn is_map_directory(mount: &MountEntry, path: &Path) -> bool {
+    mount.fstype == AUTOMOUNT_FS && mount.mount_point == path && is_indirect(mount)
+}
+
 /// Whether a lookup that reaches `path` makes `mount`, the mount that holds
 /// it, mount something: when it is an automount, unless it is the directory
 /// of an indirect map at `path` itself, whose names the next step looks up.
 /// An automount whose options say no kind is taken for a direct one.
 fn mounts(mount: &MountEntry, path: &Path) -> bool {
-    mount.fstype == AUTOMOUNT_FS && (mount.mount_point != path || !is_indirect(mount))
+    mount.fstype == AUTOMOUNT_FS && !is_map_directory(mount, path)
 }
 
 /// Whether the lookup of `path` enters its last component whatever it is
@@ -287,12 +296,14 @@ fn into_io(error: NailsError) -> std::io::Error {
 /// is asked of the table before the lookup passes it, so the first that
 /// would mount is the automount point itself: a direct or offset one, or a
 /// name in the directory of an indirect map. A place the table does not
-/// flag is read with [`Filesystem::mount_root`], one `statx` that neither
-/// follows a link nor mounts there, which tells a link and an automount
-/// point the table missed; the last place is read only where the lookup
-/// would read it. A place that is not there ends the walk: the lookup fails
-/// there. More links than the kernel follows in one lookup fail it with
-/// `ELOOP`.
+/// flag is read with [`Filesystem::mount_root`], which neither follows a
+/// link nor mounts there, and tells a link and an automount point the table
+/// missed: the kernel's attribute for one, and at the root of a mount an
+/// autofs on top. An autofs on top of the directory of an indirect map the
+/// table shows is that directory, whose names the next step asks about. The
+/// last place is read only where the lookup would read it. A place that is
+/// not there ends the walk: the lookup fails there. More links than the
+/// kernel follows in one lookup fail it with `ELOOP`.
 pub fn on_the_way<F: Filesystem>(fs: &F, table: &[MountEntry], path: &Path, lookup: Lookup) -> Way {
     let lookup = if enters_its_end(path) {
         Lookup::Enters { follow: true }
@@ -329,8 +340,12 @@ pub fn on_the_way<F: Filesystem>(fs: &F, table: &[MountEntry], path: &Path, look
         };
         let next = at.join(name);
         let last = steps.is_empty();
-        if points.iter().any(|point| next.starts_with(point))
-            && let Some(mount) = mount_holding(table, &next)
+        let holder = if points.iter().any(|point| next.starts_with(point)) {
+            mount_holding(table, &next)
+        } else {
+            None
+        };
+        if let Some(mount) = holder
             && mounts(mount, &next)
         {
             // A direct point at the end of a lookup that only resolves
@@ -348,6 +363,13 @@ pub fn on_the_way<F: Filesystem>(fs: &F, table: &[MountEntry], path: &Path, look
         }
         match fs.mount_root(&next) {
             Ok(MountRoot::Entry(_)) => at = next,
+            // The directory of an indirect map is an autofs on top, as an
+            // automount point is: the names in it are its points.
+            Ok(MountRoot::Automount)
+                if holder.is_some_and(|mount| is_map_directory(mount, &next)) =>
+            {
+                at = next;
+            }
             Ok(MountRoot::Automount) => {
                 return if last && lookup.resolves() {
                     Way::AtPoint(next)
