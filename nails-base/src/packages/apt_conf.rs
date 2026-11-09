@@ -593,8 +593,15 @@ pub fn part_name(name: &[u8]) -> PartName {
 
 /// What C's `strtol(text, &end, 0)` makes of the whole of `text`, on a
 /// 64-bit `long`: `None` unless it reads every byte. It skips white space,
-/// takes a sign, reads hexadecimal after `0x`, octal after `0`, decimal
-/// otherwise, and saturates on overflow.
+/// takes a sign, reads hexadecimal after `0x`, binary after `0b`, octal after
+/// `0`, decimal otherwise, and saturates on overflow.
+///
+/// The `0b` is the 2023 C standard's, which glibc's `strtol()` reads since
+/// 2.38 for a program that asks for it, as g++ does (its `_GNU_SOURCE`):
+/// libapt-pkg imports that `strtol()` (`__isoc23_strtol`) on every release
+/// NAILS supports, Debian 13 and Ubuntu 24.04 and 26.04. A `0b` with no
+/// binary digit after it reads as 0 and stops at the `b`, as a `0x` with no
+/// hex digit after it stops at the `x`: no number, either way.
 fn strtol_whole(text: &[u8]) -> Option<i64> {
     let mut at = 0;
     while at < text.len() && is_space(text[at]) {
@@ -613,6 +620,7 @@ fn strtol_whole(text: &[u8]) -> Option<i64> {
     };
     let (radix, digits_at) = match (text.get(at), text.get(at + 1), text.get(at + 2)) {
         (Some(b'0'), Some(b'x' | b'X'), Some(digit)) if digit.is_ascii_hexdigit() => (16, at + 2),
+        (Some(b'0'), Some(b'b' | b'B'), Some(b'0' | b'1')) => (2, at + 2),
         (Some(b'0'), _, _) => (8, at),
         _ => (10, at),
     };
@@ -636,9 +644,9 @@ fn strtol_whole(text: &[u8]) -> Option<i64> {
 /// The value `value` as apt's `Configuration::FindB()` reads it, `default`
 /// when it says nothing: an empty value, or a word apt does not know.
 ///
-/// apt reads a number first, with `strtol()` into an `int` (so `0x1`, `01`
-/// and `4294967297` read as 1), and takes it when strtol() reads the whole
-/// value and it is 0 or 1. Then it knows `no`, `false`, `without`, `off`,
+/// apt reads a number first, with `strtol()` into an `int` (so `0x1`, `01`,
+/// `0b1` and `4294967297` read as 1), and takes it when strtol() reads the
+/// whole value and it is 0 or 1. Then it knows `no`, `false`, `without`, `off`,
 /// `disable` and `yes`, `true`, `with`, `on`, `enable`, in any ASCII case,
 /// comparing the value up to its first NUL byte (a `%00` in a word puts one
 /// in). strtol() stops at that byte, so a value that holds one is never a
