@@ -205,8 +205,8 @@ owes one.
 - **CI:** the `rust` job installs `nftables`, loads the `dummy` and `nf_tables`
   modules, clears `kernel.apparmor_restrict_unprivileged_userns` on the Ubuntu
   runner and sets `NAILS_REQUIRE_USERNS=1`; the `privileged-mounts` job runs the
-  whiteout test, the kernel-modules test and the upper-filesystem probe test as
-  root.
+  whiteout test, the kernel-modules test, the upper-filesystem probe test and
+  the two loop-device tests, on a tmpfs and on btrfs, as root.
 - **VM:** the suites in `nix/e2e-tests`, as its README describes. When a captured
   format changes, refresh the fixture as the fixture README says.
 
