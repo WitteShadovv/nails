@@ -493,7 +493,10 @@ impl<F: Filesystem> Verifier<F> {
 /// tell whether a session plan is left at ..."). The finding has `severity`,
 /// what a hit would have, but at most a warning: nothing was found, and the
 /// critical status keeps meaning that something was. The error follows the
-/// subject, without its path where the subject names that path already.
+/// subject, without its path where the subject names that path already. A
+/// lookup the system did not permit asks for sudo, as `check` does: verify
+/// needs no root, and without it root's home and other users' files are
+/// closed to it.
 pub(super) fn untold(
     severity: Severity,
     category: &str,
@@ -511,10 +514,17 @@ pub(super) fn untold(
         }
         other => other.to_string(),
     };
-    Finding::new(severity, category, format!("{subject}: {cause}")).with_fix_guidance(format!(
-        "Find out why {} cannot be looked up, then run verify again",
-        looked_up.display()
-    ))
+    let refused = matches!(error, NailsError::PermissionDenied(_))
+        || error.io_kind() == Some(std::io::ErrorKind::PermissionDenied);
+    let guidance = if refused {
+        "Run verify again with sudo".to_string()
+    } else {
+        format!(
+            "Find out why {} cannot be looked up, then run verify again",
+            looked_up.display()
+        )
+    };
+    Finding::new(severity, category, format!("{subject}: {cause}")).with_fix_guidance(guidance)
 }
 
 mod catalog;

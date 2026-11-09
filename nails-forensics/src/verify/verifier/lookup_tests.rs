@@ -31,7 +31,8 @@ fn finding<'a>(findings: &'a [Finding], needle: &str) -> &'a Finding {
 /// A catalog path verify cannot look up was taken for one that holds
 /// nothing. It is a finding that verify could not tell, at the row's
 /// severity: a warning for a row whose hit warns, a note for one whose hit
-/// is only noted.
+/// is only noted. One the system did not let verify look up asks for sudo,
+/// any other says to find out why.
 #[test]
 fn a_catalog_path_verify_cannot_look_up_is_one_it_cannot_tell() {
     let fs = MockFilesystem::new();
@@ -49,7 +50,7 @@ fn a_catalog_path_verify_cannot_look_up_is_one_it_cannot_tell() {
     );
     assert_eq!(
         sudo.fix_guidance.as_deref(),
-        Some("Find out why /var/log/sudo-io cannot be looked up, then run verify again")
+        Some("Run verify again with sudo")
     );
     let chrony = finding(&findings, "[chrony-drift]");
     assert_eq!(chrony.severity, Severity::Info);
@@ -58,6 +59,35 @@ fn a_catalog_path_verify_cannot_look_up_is_one_it_cannot_tell() {
             .message
             .contains("could not tell whether /var/lib/chrony is live"),
         "{chrony:?}"
+    );
+    assert_eq!(
+        chrony.fix_guidance.as_deref(),
+        Some("Find out why /var/lib/chrony cannot be looked up, then run verify again")
+    );
+}
+
+/// The error of a lookup the system refuses, as a `NailsError` of its own
+/// or as an I/O error, asks for sudo; an I/O error of another kind does not.
+#[test]
+fn a_lookup_the_system_refuses_asks_for_sudo() {
+    let at = Path::new("/root/.bash_history");
+    let refused = [
+        crate::NailsError::PermissionDenied(at.display().to_string()),
+        crate::NailsError::io(at, std::io::Error::from(ErrorKind::PermissionDenied)),
+    ];
+    for error in &refused {
+        let finding = super::untold(Severity::Warn, "file", "Could not tell", at, error);
+        assert_eq!(
+            finding.fix_guidance.as_deref(),
+            Some("Run verify again with sudo"),
+            "{error}"
+        );
+    }
+    let failed = crate::NailsError::io(at, std::io::Error::from(ErrorKind::Other));
+    let finding = super::untold(Severity::Warn, "file", "Could not tell", at, &failed);
+    assert_eq!(
+        finding.fix_guidance.as_deref(),
+        Some("Find out why /root/.bash_history cannot be looked up, then run verify again")
     );
 }
 
