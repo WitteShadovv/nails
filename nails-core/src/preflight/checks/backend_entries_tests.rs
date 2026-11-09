@@ -843,6 +843,85 @@ fn a_bind_line_that_mounts_the_volume_fails_with_the_flag_too() {
     assert_eq!(result.remediation(), Some(REMEDIATION));
 }
 
+#[test]
+fn a_bind_line_whose_source_leads_to_the_roots_folder_through_a_link_fails_with_the_flag_too() {
+    // The bind line of the test above, written through a link to the root's
+    // folder: mount follows the link at every boot, so the line binds the
+    // volume at the root as its direct form does. hidden-volume still
+    // passes the root with the flag's warning, and backend-entries fails it,
+    // with the flag too. So does a relative link, and a chain of links.
+    for links in [
+        &[("/srv/link", "/srv/x")][..],
+        &[("/srv/link", "x")][..],
+        &[("/srv/link", "/srv/chain"), ("/srv/chain", "../srv/x")][..],
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            "/dev/vda1 / ext4 defaults 0 1\n/srv/link /mnt none bind 0 0\n",
+        );
+        for (link, target) in links {
+            fs.create_symlink(Path::new(target), Path::new(link))
+                .unwrap();
+        }
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{links:?}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{links:?}: {result:?}");
+        assert!(
+            result.message().contains(
+                "/etc/fstab: '/srv/link /mnt none' (its source leads to /srv/x, so it mounts the \
+                 volume at /mnt)"
+            ),
+            "{links:?}: {}",
+            result.message()
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{links:?}");
+    }
+}
+
+#[test]
+fn a_line_whose_path_cannot_be_followed_fails_and_says_why() {
+    // The bind line's link leads to nothing: where it leads cannot be told,
+    // so the check does not say that it names the volume, only that it may,
+    // and says why. With the flag that is the only line named.
+    let fs = rendered(
+        BIND_OF_ROOT,
+        "/dev/vda1 / ext4 defaults 0 1\n/srv/link /mnt none bind 0 0\n",
+    );
+    fs.create_symlink(Path::new("/srv/nothing"), Path::new("/srv/link"))
+        .unwrap();
+    fs.mock_set_mount_root_error("/srv/nothing", std::io::ErrorKind::NotFound);
+    let untold = "/etc/fstab: '/srv/link /mnt none' (where its source leads cannot be told: the \
+                  link /srv/link leads to nothing)";
+    let stored = "Such an entry is stored on the decoy, where an examination reads it, and can \
+                  open or mount the volume at boot.";
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!("The decoy's configuration may name the volume at /mnt: {untold}. {stored}")
+    );
+    assert_eq!(result.remediation(), Some(UNFOLLOWED));
+    // Without the flag the line for / is named first, which the decoy's own
+    // boot needs, and the fix says what to do about each kind.
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_fail(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.starts_with(
+            "The decoy's configuration names the volume at /mnt: /etc/fstab: '/dev/vda1 / ext4' ("
+        ),
+        "{message}"
+    );
+    assert!(
+        message.ends_with(&format!("). It may name it as well: {untold}. {stored}")),
+        "{message}"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(format!("{STORAGE_OF_ITS_OWN}\n{UNFOLLOWED}").as_str())
+    );
+}
+
 /// What the mock lists in `/proc/devices` for the encrypted decoys.
 const PROC_DEVICES: &str =
     "Character devices:\n  1 mem\n\nBlock devices:\n  8 sd\n259 blkext\n254 device-mapper\n";

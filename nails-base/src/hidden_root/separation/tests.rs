@@ -8,6 +8,7 @@
 use super::*;
 use crate::crypttab::parse_crypttab;
 use crate::filesystem::mountinfo::{parse_mountinfo, top_mount_at};
+use crate::filesystem::{Filesystem, MockFilesystem};
 use crate::fstab::parse_fstab;
 use std::path::Path;
 
@@ -17,10 +18,14 @@ mod extra;
 mod member_lines;
 #[path = "own_lines_tests.rs"]
 mod own_lines;
+#[path = "path_lines_tests.rs"]
+mod path_lines;
 #[path = "reach_tests.rs"]
 mod reach;
 
-/// One scene: the inputs of the judge, built up in the test.
+/// One scene: the inputs of the judge, built up in the test. The paths the
+/// fstab names are followed on `files`, which holds no link unless the test
+/// makes one.
 #[derive(Default)]
 struct World {
     mountinfo: String,
@@ -28,6 +33,7 @@ struct World {
     crypttab: String,
     devices: DeviceMap,
     unreadable: Vec<PathBuf>,
+    files: MockFilesystem,
 }
 
 impl World {
@@ -50,6 +56,21 @@ impl World {
 
     fn unreadable(mut self, path: &str) -> Self {
         self.unreadable.push(PathBuf::from(path));
+        self
+    }
+
+    /// A symbolic link at `link` to `target`, as it is written.
+    fn link(self, link: &str, target: &str) -> Self {
+        self.files
+            .create_symlink(Path::new(target), Path::new(link))
+            .expect("a new link");
+        self
+    }
+
+    /// Nothing is at `path`.
+    fn missing(self, path: &str) -> Self {
+        self.files
+            .mock_set_mount_root_error(path, std::io::ErrorKind::NotFound);
         self
     }
 
@@ -154,6 +175,7 @@ impl World {
         let mounts = parse_mountinfo(&self.mountinfo);
         let fstab = parse_fstab(&self.fstab);
         let crypttab = parse_crypttab(&self.crypttab);
+        let paths = paths::follow_all(&self.files, &mounts, Path::new("/"), &fstab);
         let hidden = top_mount_at(&mounts, Path::new(root)).expect("a mount at the root");
         ask(
             &Scene {
@@ -162,6 +184,7 @@ impl World {
                 crypttab: &crypttab,
                 devices: &self.devices,
                 unreadable: &self.unreadable,
+                paths: &paths,
             },
             hidden,
         )
