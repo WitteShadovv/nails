@@ -82,10 +82,13 @@ pub struct Unheld {
     /// refusal; the way back names the two other ways to end the session
     /// instead.
     pub remedy: String,
-    /// What the hidden session can change itself for the guard to hold, which
-    /// a refused way back names before those two ways: only service
-    /// watchdogs turned off in the session, as nothing reloads PID 1 before
-    /// the way back.
+    /// The one command with which the hidden session makes the guard hold,
+    /// which a refused way back names before those two ways. Only service
+    /// watchdogs turned off in the session have one, which needs no reload
+    /// and lasts, as nothing reloads PID 1 before the way back
+    /// (`systemctl service-watchdogs yes`). The session can also undo what a
+    /// drop-in changed, with the guard written back or a drop-in of its own
+    /// and a reload, but such a refusal names only the two ways.
     pub in_session: Option<String>,
 }
 
@@ -175,7 +178,8 @@ fn sets_in_unit_section(text: &str, key: &str) -> bool {
 }
 
 /// The drop-in of the switch's unit that sets `key` last ([`setter`]), on the
-/// way in, whose fix names it; the way back's refusal names no fix.
+/// way in, whose fix names it. The way back's refusal names no drop-in: its
+/// fix names the other ways to end the session instead ([`way_back_fix`]).
 fn named(host: &(impl GuardHost + ?Sized), direction: Direction, key: &str) -> Option<String> {
     if direction == Direction::Enter {
         setter(host, transition::SWITCH_TIMEOUT_UNIT, key)
@@ -370,8 +374,8 @@ pub fn check_switch_timeout(host: &(impl GuardHost + ?Sized)) -> Result<()> {
 /// stop command ([`stop_guards`]), and a switch that hangs until its job
 /// timeout powers the machine off ([`switch_timeout`]). A PID 1 that cannot
 /// be asked refuses it too. The refusal names the two other ways to end the
-/// session ([`way_back_fix`]), after what the session can change itself for
-/// the guard to hold, where there is such a thing.
+/// session ([`way_back_fix`]), after the one command that makes the guard
+/// hold where the session has one ([`Unheld::in_session`]).
 pub fn check_way_back(host: &(impl GuardHost + ?Sized)) -> Result<()> {
     let asked = |check: &'static str, found: Result<Option<Unheld>>| {
         found.map_err(|error| match error {
@@ -401,11 +405,10 @@ pub fn check_way_back(host: &(impl GuardHost + ?Sized)) -> Result<()> {
     )]))
 }
 
-/// The fix of a refused way back: what the session can change itself for the
-/// guard to hold (`in_session`), where there is such a thing, then the two
-/// other ways to end the session, `deactivate --poweroff`, whose power-off
-/// goes through no soft-reboot, and `emergency`, which does not ask PID 1
-/// about the guards.
+/// The fix of a refused way back: the one command that makes the guard hold
+/// (`in_session`), where the session has one, then the two other ways to end
+/// the session, `deactivate --poweroff`, whose power-off goes through no
+/// soft-reboot, and `emergency`, which does not ask PID 1 about the guards.
 fn way_back_fix(in_session: Option<&str>) -> String {
     use nails_base::next_step::{NextStep, sudo_line};
     let endings = format!(
