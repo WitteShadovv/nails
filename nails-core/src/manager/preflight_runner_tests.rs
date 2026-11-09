@@ -730,6 +730,88 @@ fn every_gate_refusal_fails_the_hidden_volume_check_and_skips_its_dependents() {
     }
 }
 
+/// A hidden root behind an automount point that nothing is mounted on yet
+/// is looked up by no part of the registry: neither the state file nor the
+/// discovery, and no check. Building it fails naming the point, with the
+/// line that says to mount it, and nothing at or below the point is looked
+/// up. So does a state file kept behind such a point. Once the point is
+/// mounted the registry builds.
+#[test]
+fn a_hidden_root_behind_an_automount_point_builds_no_registry() {
+    use crate::filesystem::automount::mount_fix;
+    use std::path::{Path, PathBuf};
+    let root = "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n";
+    let direct = |at: &str| {
+        format!(
+            "{root}30 1 0:50 / {at} rw,relatime - autofs systemd-1 \
+             rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n"
+        )
+    };
+    let build = |manager: &NailsManager<MockFilesystem>| {
+        manager
+            .preflight_registry(&PreflightOptions::default())
+            .map(|registry| registry.names().len())
+    };
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table(&direct("/mnt/hidden"));
+    fs.mock_clear_lookups();
+    let manager = manager_with(fs.clone());
+    let error = build(&manager).expect_err("no registry");
+    assert_eq!(
+        error.to_string(),
+        "NAILS does not look up /mnt/hidden, since the lookup would mount the automount point \
+         /mnt/hidden"
+    );
+    assert_eq!(error.hint(), Some(mount_fix(&[Path::new("/mnt/hidden")])));
+    assert!(
+        fs.mock_lookups()
+            .iter()
+            .all(|path| !path.starts_with("/mnt/hidden")),
+        "{:?}",
+        fs.mock_lookups()
+    );
+
+    fs.mock_set_mount_table(root);
+    assert!(build(&manager).is_ok_and(|checks| checks > 0));
+
+    // Without the mount table the registry builds where no discovery runs,
+    // and its checks say they cannot tell. Finding a NixOS build target
+    // needs the table: without it the discovery fails, naming it.
+    fs.mock_set_mount_table_error("permission denied");
+    let overlay_only = PreflightOptions {
+        overlay_only: true,
+        ..PreflightOptions::default()
+    };
+    assert!(manager.preflight_registry(&overlay_only).is_ok());
+    let error = build(&manager).expect_err("no build target");
+    assert!(
+        error.to_string().starts_with(
+            "NAILS does not look up /mnt/hidden/nixos/flake.nix, since it cannot read the mount \
+             table"
+        ),
+        "{error}"
+    );
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table(&direct("/srv/state"));
+    let state = PathBuf::from("/srv/state/state.json");
+    let manager = NailsManager::new(
+        fs,
+        Config {
+            hidden_volume_root: PathBuf::from("/mnt/hidden"),
+            state_file_path: state.clone(),
+            ..explicit_config()
+        },
+        state,
+    );
+    assert_eq!(
+        build(&manager).expect_err("no registry").to_string(),
+        "NAILS does not look up /srv/state/state.json, since the lookup would mount the \
+         automount point /srv/state"
+    );
+}
+
 #[test]
 fn backend_entries_runs_right_after_the_hidden_volume_check() {
     let manager = manager_with(MockFilesystem::new());
