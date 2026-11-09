@@ -36,6 +36,12 @@ exclude_re = [
     # bit, so `^` in place of either `|` opens with the same flags.
     'nails-core/src/preflight/checks/systemd_conf\.rs:\d+:\d+: replace \| with \^ in read_config_bytes_noatime$',
 
+    # record_lock_holder opens the lock file with
+    # `RDONLY | NOFOLLOW | NONBLOCK | NOCTTY | CLOEXEC`, and `| noatime`
+    # (O_NOATIME, or nothing). RDONLY is 0 and the others share no bit, so
+    # `^` in place of any `|` opens with the same flags.
+    'nails-base/src/filesystem/real/file_ops/record_lock\.rs:\d+:\d+: replace \| with \^ in record_lock_holder$',
+
     # The family bits that Platforms::FHS and Platforms::ALL join are
     # distinct, so `^` in place of a `|` between them makes the same set.
     'nails-forensics/src/residue_catalog/mod\.rs:\d+:\d+: replace \| with \^$',
