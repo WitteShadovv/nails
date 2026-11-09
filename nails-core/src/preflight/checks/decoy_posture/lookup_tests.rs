@@ -221,6 +221,25 @@ fn a_syslog_alias_nails_cannot_look_up_refuses() {
     );
 }
 
+/// Without a daemon found by its own names, an enabled `syslog.service`
+/// counts: one whose invocation marker NAILS cannot look up may run, and
+/// is refused with the override.
+#[test]
+fn a_syslog_service_nails_cannot_tell_runs_refuses() {
+    let fs = decoy("volatile");
+    fs.mock_set_lookup_error(
+        "/run/systemd/units/invocation:syslog.service",
+        ErrorKind::Other,
+    );
+    let result = run(&fs, false);
+    refused_as_untold(
+        &fs,
+        &result,
+        "NAILS cannot tell whether syslog.service runs: NAILS cannot look up \
+         /run/systemd/units/invocation:syslog.service (",
+    );
+}
+
 /// A `syslog.service` link that names no other service, such as a mask in
 /// `/etc/systemd/system`, names no daemon: the next unit directory's link
 /// names it, as before NAILS told a lookup that failed from no link.

@@ -783,3 +783,50 @@ fn a_place_or_an_fstab_the_scan_cannot_look_at_is_listed_as_not_read() {
         result.areas_not_checked
     );
 }
+
+/// What a place the decoy mounts holds is told by what it is: a link holds
+/// something, so the scan read it; a place below a file holds nothing, so
+/// it is listed as missing; and one whose inode cannot be read is one the
+/// scan could not look at, never one that holds nothing.
+#[test]
+fn what_a_mount_point_holds_is_told_by_what_it_is() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
+    fs.mock_set_path_type("/mnt/decoy/etc", PathKind::Dir);
+    fs.mock_add_file("/mnt/decoy/etc/passwd", "root:x:0:0:root:/root:/bin/bash\n");
+    fs.mock_add_file(
+        "/mnt/decoy/etc/fstab",
+        "UUID=1 /srv/a ext4 defaults 0 2\n\
+         UUID=1 /srv/b ext4 defaults 0 2\n\
+         UUID=1 /srv/c ext4 defaults 0 2\n",
+    );
+    fs.create_symlink(Path::new("/srv/elsewhere"), Path::new("/mnt/decoy/srv/a"))
+        .unwrap();
+    fs.mock_set_inode_error(
+        Path::new("/mnt/decoy/srv/b"),
+        std::io::ErrorKind::NotADirectory,
+    );
+    fs.mock_set_inode_error(Path::new("/mnt/decoy/srv/c"), std::io::ErrorKind::Other);
+    let result = Verifier::new(fs)
+        .offline_under("/mnt/decoy".into())
+        .run(false)
+        .unwrap();
+    let listed = unmounted(&result.areas_not_checked);
+    assert_eq!(
+        places(&result.areas_not_checked),
+        ["/srv/b", "/srv/c"],
+        "{listed:#?}"
+    );
+    assert!(
+        listed[0].starts_with(
+            "/srv/b, which the decoy's /etc/fstab mounts (missing or empty under the root."
+        ),
+        "{listed:#?}"
+    );
+    assert_eq!(
+        listed[1],
+        "/srv/c, which the decoy's /etc/fstab mounts (it could not be looked at under the root \
+         (/mnt/decoy/srv/c: other error), so nothing there was read)",
+        "{listed:#?}"
+    );
+}

@@ -1375,3 +1375,64 @@ fn a_ram_filesystem_over_a_disk_unit_s_mount_point_is_put_in_place_not_left_to_t
 
 #[path = "mount_units/pulls_tests.rs"]
 mod pulls_tests;
+
+/// Where the automount guard answers for the path of a unit file, a direct
+/// automount point there is neither a mask nor a link, since it is a
+/// directory, and the unit, which the guard does not let be read there, is
+/// unreadable. A lookup the guard cannot read the way of leaves the alias
+/// undecided and the unit unreadable too.
+#[test]
+fn the_guard_decides_a_unit_path_before_it_is_read() {
+    use crate::filesystem::automount::Lookup;
+    let decoy = Decoy::new();
+    decoy.write(
+        "/etc/systemd/system/srv-data.mount",
+        "[Mount]\nWhat=/dev/vdc1\nWhere=/srv/data\n",
+    );
+    let unit = decoy.at("/etc/systemd/system/srv-data.mount");
+    let not_looked_up = || crate::NailsError::NotLookedUp {
+        path: unit.clone(),
+        reason: crate::error::Skip::Automount {
+            point: unit.clone(),
+        },
+    };
+    let at_point = |path: &Path, lookup: Lookup| -> crate::Result<Option<PathBuf>> {
+        match lookup {
+            _ if path != unit => Ok(None),
+            Lookup::Resolves { .. } => Ok(Some(unit.clone())),
+            Lookup::Enters { .. } => Err(not_looked_up()),
+        }
+    };
+    let dirs = UnitDirs {
+        root: decoy.root.path(),
+        run: decoy.run.path(),
+        guard: Some(Guard(&at_point)),
+    };
+    assert_eq!(dirs.alias_of("srv-data.mount"), Ok(None));
+    assert_eq!(dirs.load("srv-data.mount"), Load::Unreadable);
+
+    let failing = |path: &Path, _: Lookup| -> crate::Result<Option<PathBuf>> {
+        if path == unit {
+            Err(crate::NailsError::io(
+                path,
+                std::io::Error::from_raw_os_error(rustix::io::Errno::LOOP.raw_os_error()),
+            ))
+        } else {
+            Ok(None)
+        }
+    };
+    let dirs = UnitDirs {
+        root: decoy.root.path(),
+        run: decoy.run.path(),
+        guard: Some(Guard(&failing)),
+    };
+    assert_eq!(dirs.alias_of("srv-data.mount"), Err(()));
+    assert_eq!(dirs.load("srv-data.mount"), Load::Unreadable);
+
+    // Without a guard the unit is read as before.
+    assert!(
+        matches!(decoy.dirs().load("srv-data.mount"), Load::Loaded { .. }),
+        "{:?}",
+        decoy.dirs().load("srv-data.mount")
+    );
+}

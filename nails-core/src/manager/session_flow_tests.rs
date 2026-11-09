@@ -611,6 +611,38 @@ fn a_way_back_whose_record_fails_does_not_start() {
     assert!(recorded(&hidden).state.is_active(), "the session goes on");
 }
 
+/// A record that cannot be written for an I/O error, as a full or failing
+/// disk gives one, starts nothing either: an invalid state that names the
+/// error, which the front end answers with the emergency.
+#[test]
+fn a_way_back_whose_record_cannot_be_written_does_not_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    // A directory where the record goes: no file can take its place.
+    let state = hidden.join("state.json");
+    std::fs::remove_file(&state).unwrap();
+    std::fs::create_dir_all(state.join("held")).unwrap();
+    let mut m = manager(&hidden);
+    let target = FakeTarget::default();
+
+    let error = m
+        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, NailsError::InvalidState(why) if why.starts_with(
+            "the way back did not start: the state could not be recorded ("
+        )),
+        "{error}"
+    );
+    assert!(target.started.borrow().is_empty());
+}
+
 #[test]
 fn powering_off_from_the_hidden_root_records_inactive_first() {
     let dir = tempfile::tempdir().unwrap();
