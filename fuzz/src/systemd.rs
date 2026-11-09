@@ -6,7 +6,9 @@
 //! `unit_name_from_path()` (src/basic/unit-name.c), and
 //! `fstab_node_to_udev_node()` with `encode_devnode_name()`
 //! (src/shared/fstab-util.c, src/basic/device-nodes.c), the functions
-//! systemd-fstab-generator and systemd-cryptsetup-generator call.
+//! systemd-fstab-generator and systemd-cryptsetup-generator call. And the
+//! options of an fstab line as `fstab_filter_options()`
+//! (src/shared/fstab-util.c) splits them ([`option_words`]).
 //!
 //! Left out: the generator resolves symlinks in a mount point first, which
 //! needs the filesystem, and a name of 256 bytes or more is shortened with a
@@ -163,4 +165,30 @@ pub fn fstab_node_to_udev_node(spec: &str) -> String {
         }
     }
     spec.to_string()
+}
+
+/// The options of an fstab line, `opts`, in the words `fstab_filter_options()`
+/// tests for a name, as it finds them when it returns no value: split at each
+/// comma that no backslash escapes, a backslash taking the byte after it
+/// along. A word keeps its backslashes.
+pub fn option_words(opts: &[u8]) -> Vec<&[u8]> {
+    let mut words = Vec::new();
+    let (mut word, mut at) = (0, 0);
+    loop {
+        while at < opts.len() && opts[at] != b',' && opts[at] != b'\\' {
+            at += 1;
+        }
+        match opts.get(at) {
+            None => {
+                words.push(&opts[word..]);
+                return words;
+            }
+            Some(b',') => {
+                words.push(&opts[word..at]);
+                at += 1;
+                word = at;
+            }
+            Some(_) => at = (at + 2).min(opts.len()),
+        }
+    }
 }
