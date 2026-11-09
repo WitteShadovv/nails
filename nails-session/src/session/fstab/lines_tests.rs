@@ -80,7 +80,9 @@ fn lines_systemd_reads_as_nails_does_are_entries() {
     let read = entry_lines(&text).unwrap();
     assert_eq!(read.len(), 14);
     assert_eq!(read[12].len(), LONGEST_LINE);
-    // NAILS reads each as the hidden systemd does, one entry a line.
+    // NAILS reads each as glibc does, one entry a line, and as libmount does
+    // where libmount reads it at all: libmount skips the line of two fields
+    // and the one whose pass number runs into a vertical tab.
     let entries: Vec<FstabEntry> = read
         .iter()
         .map(|line| {

@@ -16,10 +16,11 @@
 //!
 //! That parser reads some lines otherwise than systemd's fstab generator
 //! does, as it splits a line at any whitespace and undoes other escapes.
-//! [`entry_lines`] gives the lines systemd reads as entries, or the first it
-//! may read otherwise. An entry without a build reads the next root's own
-//! fstab through it and refuses such a line ([`super::entry`]); the decoy's
-//! fstab and the one a hidden build brings are parsed as they are.
+//! [`entry_lines`] gives the lines glibc reads as entries, which libmount
+//! reads alike or skips, or the first either may read otherwise. An entry
+//! without a build reads the next root's own fstab through it and refuses
+//! such a line ([`super::entry`]); the decoy's fstab and the one a hidden
+//! build brings are parsed as they are.
 
 use std::path::{Path, PathBuf};
 

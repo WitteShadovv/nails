@@ -636,12 +636,12 @@ fn a_hidden_fstab_line_systemd_may_read_otherwise_refuses_the_entry() {
             .entries
             .is_empty()
     );
-    // Lines below the root that NAILS read otherwise than the hidden systemd
-    // does: a no-break space, which NAILS took for a separator and so kept
-    // /mnt/data/a off, a vertical tab before a `#`, which made the line a
-    // comment to NAILS and a tmpfs to systemd, and escapes that systemd up to
-    // 258 leaves as they are, where NAILS undid them and kept another name
-    // off.
+    // Lines below the root that NAILS's fstab parser reads otherwise than the
+    // hidden systemd does: a no-break space, which the parser takes for a
+    // separator, so it would keep /mnt/data/a off, a vertical tab before a
+    // `#`, which makes the line a comment to the parser and a tmpfs to
+    // systemd, and escapes that systemd up to 258 leaves as they are, where
+    // the parser undoes them and would keep another name off.
     for (line, why) in [
         (
             "/dev/vdd1 /mnt/data/a\u{a0}b ext4 defaults,nofail 0 2",
@@ -673,8 +673,11 @@ fn a_hidden_fstab_line_systemd_may_read_otherwise_refuses_the_entry() {
 #[test]
 fn bytes_of_a_hidden_fstab_line_no_field_holds_are_no_text_to_read() {
     // A comment is no line to decide, and what follows the options, which
-    // NAILS does not read, may hold any bytes: the hidden systemd mounts the
-    // line all the same, so it is decided.
+    // NAILS does not read, may hold any bytes: glibc, which the hidden
+    // systemd reads fstab with up to 258, mounts such a line all the same,
+    // so it is decided. libmount, from 259 on, skips the last line, whose
+    // pass number runs into a byte that is no space or tab: deciding a line
+    // systemd skips is the safe side.
     let root = root_with_fstab(
         b"# caf\xe9\n\
           /dev/vde1 /srv/backup ext4 defaults,nofail 0 2 # caf\xe9\n\
