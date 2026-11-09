@@ -13,12 +13,14 @@
 //! ignores these entries (writing to the root stays safe); this check reports
 //! them, from the same judge ([`separation`]), so `check` and activation share
 //! it. `--allow-decoy-storage` covers only the decoy's own lines for a root it
-//! accepted on a filesystem the decoy uses (a bind of a folder of it, a btrfs
-//! subvolume of it, or the filesystem itself): the fstab lines that the
-//! decoy's boot mounts at `/` or at a system folder for that filesystem
-//! ([`separation::is_system_folder`]) are no finding then. A line that mounts
-//! that filesystem at any other folder still is one, since it may name the
-//! hidden drive's disk.
+//! accepted as a part of a filesystem the decoy uses (a bind of a folder of
+//! it, or a btrfs subvolume of it): the fstab lines that the decoy's boot
+//! mounts at `/` or at a system folder ([`separation::is_system_folder`]) for
+//! another part of that filesystem are no finding then
+//! ([`EntryFinding::system_folder`]). A line that mounts that filesystem at
+//! any other folder still is one, since it may name the hidden drive's disk,
+//! and so are a line that mounts the volume itself, as any line does for a
+//! root that is the whole filesystem, and every crypttab line.
 //!
 //! An entry that opens only another volume on the same drive (a VeraCrypt
 //! outer volume of another partition) warns: the decoy is configured to open
