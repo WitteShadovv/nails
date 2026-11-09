@@ -1006,3 +1006,40 @@ fn more_devices_below_a_named_device_than_the_scan_follows_leave_it_unable_to_te
     );
     assert_eq!(sysfs.blind_spot("/dev/dm-0", &encrypted_home()), None);
 }
+
+#[test]
+fn a_file_the_scan_cannot_look_up_leaves_it_unable_to_tell() {
+    // An image file named for the scan, and the file a loop device below the
+    // named device reads, are looked up. One whose lookup fails for another
+    // reason than that nothing is there is no file the scan can place or
+    // trace: it cannot tell whether the device holds the encrypted home's
+    // files, never that it does not.
+    const LOOP2: &str = "/sys/devices/virtual/block/loop2";
+    let sysfs = Sysfs::two_disks();
+    sysfs.loop_device(LOOP2, "loop2", "7:2", "/home/alice/other.img");
+    let fs = &sysfs.0;
+    fs.mock_add_file("/home/alice/other.img", "");
+    let home = encrypted_home();
+    for device in ["/home/alice/other.img", "/dev/loop2"] {
+        assert_eq!(sysfs.blind_spot(device, &home), None, "{device}");
+    }
+
+    fs.mock_set_lookup_error(
+        "/home/alice/other.img",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let image = sysfs
+        .blind_spot("/home/alice/other.img", &home)
+        .unwrap_or_default();
+    assert!(
+        image.contains("cannot tell whether this device holds them")
+            && image.contains("sysfs shows no block device at this path"),
+        "{image}"
+    );
+    let loop_device = sysfs.blind_spot("/dev/loop2", &home).unwrap_or_default();
+    assert!(
+        loop_device.contains("cannot tell whether this device holds them")
+            && loop_device.contains("reads through a loop device a path that leads to no file"),
+        "{loop_device}"
+    );
+}
