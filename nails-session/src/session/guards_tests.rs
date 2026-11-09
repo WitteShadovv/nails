@@ -457,10 +457,12 @@ const WATCHDOGS_BACK_ON: &str = concat!(
 /// The way back asks the hidden session's PID 1 the same: it goes on only
 /// when both guards hold, and its refusal says what a forced way back would
 /// leave and names the two other ways to end the session, never a fix to
-/// activate with. Only service watchdogs turned off are something the
-/// session can change itself, which the fix then names first: nothing
-/// reloads PID 1 before the way back, so `systemctl service-watchdogs yes`
-/// lasts until it goes.
+/// activate with. Where the session turned service watchdogs off, the fix
+/// names first the one command that turns them back on: it needs no reload,
+/// and nothing reloads PID 1 before the way back, so it lasts until then.
+/// The session can also undo what a drop-in changed, with the guard written
+/// back or a drop-in of its own and a reload, but such a fix names only the
+/// two other ways.
 #[test]
 fn the_way_back_is_refused_unless_both_guards_hold() {
     assert!(check_way_back(&Pid1::default()).is_ok());
@@ -533,7 +535,8 @@ fn the_way_back_is_refused_unless_both_guards_hold() {
 }
 
 /// The two other ways to end the session, as the running binary's lines,
-/// after what the session can change itself where there is such a thing.
+/// after the one command that makes the guard hold where the session has
+/// one.
 #[test]
 fn a_refused_way_back_names_the_power_off_and_the_emergency() {
     use nails_base::next_step::{NextStep, sudo_line};
