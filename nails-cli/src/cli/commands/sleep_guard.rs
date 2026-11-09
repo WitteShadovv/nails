@@ -10,11 +10,12 @@
 //! machine off instead: a session kept in RAM behind a lock screen is what the
 //! policy exists to prevent. It is marked `hide = true` so it never
 //! appears in help, and it reads its configuration from the `/run` copy so it
-//! keeps working even after the hidden volume is gone. A copy that is there
-//! but cannot be read leaves the mode untold: the guard then does what both
-//! modes do ([`sleep_guard::run_untold_guard`]).
+//! keeps working even after the hidden volume is gone. A copy that cannot be
+//! read leaves the mode untold, and so does a copy that is not there where
+//! the guard runs from the runtime copy, as the session's unit runs it: the
+//! guard then does what both modes do ([`sleep_guard::run_untold_guard`]).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nails_core::config::{Config, SleepPolicyMode};
 use nails_core::preflight::checks::sleep_policy::effective_logind_sleep;
@@ -28,24 +29,43 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 enum Guarding {
     /// The mode the settings name.
     Mode(SleepPolicyMode),
-    /// The settings copy is there but cannot be read, for this reason: the
-    /// mode the operator chose, `block` or `teardown` (the guard runs for no
-    /// other), cannot be told.
+    /// The settings copy cannot be read, for this reason: the mode the
+    /// operator chose, `block` or `teardown` (the guard runs for no other),
+    /// cannot be told.
     Untold(NailsError),
 }
 
 /// What the guard guards by, from what reading the settings copy in `/run`
-/// gave: the copy's mode, or without a copy the mode of `fallback`, the
-/// configuration file or the defaults; a copy that is there but cannot be
-/// read leaves the mode untold.
+/// gave: the copy's mode. A copy that is there but cannot be read leaves
+/// the mode untold, and so does one that is not there where the guard runs
+/// from the runtime copy (`in_session`): the session's unit runs it from
+/// there, and activation installs that unit only for `block` and
+/// `teardown`. A guard run elsewhere without a copy takes the mode of
+/// `fallback`, the configuration file or the defaults.
 fn guarding(
     copy: nails_core::Result<Option<Config>>,
+    in_session: bool,
     fallback: impl FnOnce() -> Config,
 ) -> Guarding {
     match copy {
         Ok(Some(config)) => Guarding::Mode(config.sleep_policy.mode),
+        Ok(None) if in_session => Guarding::Untold(NailsError::io(
+            runtime_copy::config_copy_path(),
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        )),
         Ok(None) => Guarding::Mode(fallback().sleep_policy.mode),
         Err(e) => Guarding::Untold(e),
+    }
+}
+
+/// Whether the guard runs from the runtime copy, as the session's unit runs
+/// it, by `exe`, the running binary as the kernel names it: a binary in the
+/// runtime directory, or one the kernel cannot name, since the guard then
+/// cannot tell that it runs outside a session.
+fn from_runtime_copy(exe: std::io::Result<PathBuf>) -> bool {
+    match exe {
+        Ok(exe) => exe.parent() == Some(Path::new(runtime_copy::RUNTIME_COPY_DIR)),
+        Err(_) => true,
     }
 }
 
@@ -55,9 +75,9 @@ fn guarding(
 /// inhibitors the configured mode calls for: in `block` mode the lid switch's
 /// too when the session's logind would sleep on a closed lid. In `teardown`
 /// mode the guard runs the bounded emergency teardown and powers the machine
-/// off when the host is about to sleep. When the copy is there but cannot be
-/// read, it holds `block`'s inhibitors, and powers the machine off if a sleep
-/// starts anyway, as `teardown` does.
+/// off when the host is about to sleep. When the copy cannot be read, or is
+/// not there in a session, it holds `block`'s inhibitors, and powers the
+/// machine off if a sleep starts anyway, as `teardown` does.
 ///
 /// Always exits [`ExitStatus::Ok`]: like the backend watcher, this is a
 /// best-effort safety net, so a missing copy or an unreachable bus is a logged
@@ -71,9 +91,11 @@ pub fn execute(
 
     // Prefer the configuration mirrored into the runtime copy; the real config
     // file lives on the hidden volume, which a teardown may be racing against.
-    let guarding = guarding(runtime_copy::read_config_copy(&filesystem), || {
-        super::load_config_or_defaults(config_override).into_config()
-    });
+    let guarding = guarding(
+        runtime_copy::read_config_copy(&filesystem),
+        from_runtime_copy(std::env::current_exe()),
+        || super::load_config_or_defaults(config_override).into_config(),
+    );
     match &guarding {
         Guarding::Mode(mode) if !mode.runs_guard() => {
             tracing::debug!("Sleep policy runs no guard; exiting");
@@ -126,35 +148,30 @@ mod tests {
         config
     }
 
-    /// The copy's mode decides; without a copy the file or the defaults do,
-    /// as before.
+    /// The copy's mode decides, in a session or not; a guard run outside
+    /// one without a copy takes the file's or the defaults', as before.
     #[test]
-    fn the_copy_decides_and_without_one_the_fallback_does() {
+    fn the_copy_decides_and_outside_a_session_the_fallback_does() {
         for mode in [
             SleepPolicyMode::Warn,
             SleepPolicyMode::Block,
             SleepPolicyMode::Teardown,
         ] {
-            let read = guarding(Ok(Some(in_mode(mode))), || {
-                panic!("no fallback when the copy is read")
-            });
-            assert!(matches!(read, Guarding::Mode(m) if m == mode), "{read:?}");
-            let none = guarding(Ok(None), || in_mode(mode));
+            for in_session in [true, false] {
+                let read = guarding(Ok(Some(in_mode(mode))), in_session, || {
+                    panic!("no fallback when the copy is read")
+                });
+                assert!(matches!(read, Guarding::Mode(m) if m == mode), "{read:?}");
+            }
+            let none = guarding(Ok(None), false, || in_mode(mode));
             assert!(matches!(none, Guarding::Mode(m) if m == mode), "{none:?}");
         }
     }
 
-    /// A copy that is there but cannot be read leaves the mode untold, never
-    /// the defaults' warn-only mode, which runs no guard at all.
-    #[test]
-    fn a_copy_that_cannot_be_read_leaves_the_mode_untold() {
-        let error = NailsError::io(
-            runtime_copy::config_copy_path(),
-            std::io::Error::from_raw_os_error(nix::libc::EIO),
-        );
-        let untold = guarding(Err(error), || panic!("not the defaults"));
-        let Guarding::Untold(error) = untold else {
-            panic!("{untold:?}");
+    /// The untold mode's error names the settings copy.
+    fn names_the_copy(guarding: Guarding) {
+        let Guarding::Untold(error) = guarding else {
+            panic!("{guarding:?}");
         };
         assert!(
             error
@@ -162,5 +179,46 @@ mod tests {
                 .contains(&runtime_copy::config_copy_path().display().to_string()),
             "{error}"
         );
+    }
+
+    /// A copy that is there but cannot be read leaves the mode untold, never
+    /// the defaults' warn-only mode, which runs no guard at all.
+    #[test]
+    fn a_copy_that_cannot_be_read_leaves_the_mode_untold() {
+        for in_session in [true, false] {
+            let error = NailsError::io(
+                runtime_copy::config_copy_path(),
+                std::io::Error::from_raw_os_error(nix::libc::EIO),
+            );
+            names_the_copy(guarding(Err(error), in_session, || {
+                panic!("not the defaults")
+            }));
+        }
+    }
+
+    /// The session's unit runs the guard only for `block` and `teardown`, so
+    /// in a session a copy that is not there leaves the mode untold too: the
+    /// configuration beside the runtime copy is never there, and the
+    /// defaults would run no guard.
+    #[test]
+    fn a_copy_that_is_not_there_in_a_session_leaves_the_mode_untold() {
+        names_the_copy(guarding(Ok(None), true, || panic!("not the defaults")));
+    }
+
+    /// The guard runs from the runtime copy where its binary is in the
+    /// runtime directory, also once that file is replaced, and where the
+    /// kernel cannot name its binary; not from anywhere else.
+    #[test]
+    fn the_runtime_copy_is_told_by_the_binarys_directory() {
+        let runtime = Path::new(runtime_copy::RUNTIME_COPY_DIR);
+        assert!(from_runtime_copy(Ok(runtime_copy::binary_copy_path())));
+        assert!(from_runtime_copy(Ok(runtime.join("control (deleted)"))));
+        assert!(from_runtime_copy(Err(std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        ))));
+        assert!(!from_runtime_copy(Ok(PathBuf::from("/mnt/data/nails"))));
+        assert!(!from_runtime_copy(Ok(PathBuf::from(
+            "/run/overlay-runtime-other/control"
+        ))));
     }
 }
