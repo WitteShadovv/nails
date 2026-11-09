@@ -180,27 +180,42 @@ pub(super) fn apt_config_path(value: &[u8]) -> Option<PathBuf> {
 
 /// What of apt's configuration under `root` changed since `started`, when
 /// the decoy's helper read it at its start, as the helper keeps what it read
-/// then: one of the files it reads now (`read`), `/etc/apt` (where the main
-/// file lies) or `/etc/apt/apt.conf.d`, or one of them reached through a
-/// symbolic link, whose change NAILS does not follow. `None` when nothing
-/// did.
+/// then: one of the files it reads now and the links among them that lead to
+/// no file now (`read`), `/etc/apt` (where the main file lies),
+/// `/etc/apt/apt.conf.d`, or the directory that holds the file at
+/// `apt_config` that the helper's `APT_CONFIG` names (relative to `root`),
+/// or one of them reached through a symbolic link, whose change NAILS does
+/// not follow. A directory swapped into place replaces the files below it
+/// without changing their own change times, which is why each directory
+/// that holds one is compared too. `None` when nothing did.
 pub(super) fn changed_since_start<F: Filesystem>(
     fs: &F,
     root: &Path,
     read: &[PathBuf],
+    apt_config: Option<&Path>,
     started: SystemTime,
 ) -> Result<Option<String>, String> {
     let real_root = fs
         .canonicalize(root)
         .map_err(|e| format!("/ cannot be looked up ({e})"))?;
-    let dirs = [root.join(APT), root.join(PARTS)];
+    let mut dirs = vec![root.join(APT), root.join(PARTS)];
+    // The root itself is left out: it cannot be swapped, and a file in it
+    // that is replaced changes its own change time.
+    if let Some(holder) = apt_config
+        .and_then(Path::parent)
+        .filter(|holder| !holder.as_os_str().is_empty())
+    {
+        dirs.push(root.join(holder));
+    }
     for path in dirs.iter().chain(read) {
         let rel = path.strip_prefix(root).unwrap_or(path);
         let shown = format!("/{}", rel.display());
-        let real = fs
-            .canonicalize(path)
-            .map_err(|e| format!("{shown} cannot be looked up ({e})"))?;
-        if real != real_root.join(rel) {
+        let doubt = |e| format!("{shown} cannot be looked up ({e})");
+        // A link that leads to no file now is skipped by apt at the signal,
+        // while what it led to at the start may still count.
+        let linked = fs.is_symlink(path).map_err(doubt)?
+            || fs.canonicalize(path).map_err(doubt)? != real_root.join(rel);
+        if linked {
             return Ok(Some(format!(
                 "{shown} is reached through a symbolic link, so NAILS cannot tell whether what \
                  it leads to changed after the helper started"
