@@ -1610,10 +1610,11 @@ of this changelog for that version becomes the release notes word for word, and
   looks for there but no more than a warning, or among the areas it did not check.
 - `nails deactivate` that cannot take its lock, a hidden root that cannot be looked up among the
   causes, refuses before the switch as before, and now names `emergency`, which ends the session
-  without the lock: it returns to the decoy where it can prepare the return and powers off where
-  it cannot (`next.command` is `emergency` under `--json`). A state record that cannot be written
-  before the switch stops the way back the same way, with the error `invalid_state` where it was
-  `deactivation_failed`.
+  without the lock: it returns to the decoy where it can prepare the return and powers off where it
+  cannot (`next.command` is `emergency` under `--json`). A lock that another `nails` operation holds
+  still names only that operation, since it may be a way back already under way. A state record that
+  cannot be written before the switch stops the way back the same way, with the error
+  `invalid_state` where it was `deactivation_failed`.
 - A sleep guard (`sleep_policy.mode` `block` or `teardown`) whose copy of the settings in `/run` is
   there but cannot be read, or does not parse, fell back to `warn` and exited, so the session ran
   without sleep protection. It cannot tell which mode you chose, so it now does what both do: it
