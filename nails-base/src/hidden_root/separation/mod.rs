@@ -27,11 +27,13 @@
 //! root's folder or inside it as the mount that holds the source shows it,
 //! which mounts the volume or a folder of it. Such an entry is an
 //! enabler stored on the decoy; the attach gate ignores the finding (writing to
-//! the root stays safe) and the `backend-entries` check reports it. It is no
-//! claim, except an fstab entry the boot mounts or swaps on, or one for another
-//! device of the root's btrfs filesystem: that device is the decoy's own
-//! storage too. A finding the decoy's own boot needs, an fstab
-//! entry that mounts another of its filesystems or its swap, or the whole
+//! the root stays safe) and the `backend-entries` check reports it. A finding
+//! is no claim, except an fstab entry the boot mounts or swaps on, one for
+//! another device of the root's btrfs filesystem, which is the decoy's own
+//! storage too, and a line placed by its path: every bind line, a `noauto` one
+//! too, claims the filesystem its source lies on, and every swap or image file
+//! line the one that holds its file. A finding the decoy's own boot needs, an
+//! fstab entry that mounts another of its filesystems or its swap, or the whole
 //! filesystem a root bound from a folder of it or a subvolume of it lies on
 //! (the decoy's line for `/` below a bind of a folder of `/`), or one that
 //! mounts the root's own filesystem at `/` or at a system folder, whatever it
