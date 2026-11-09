@@ -111,7 +111,7 @@
           "type": "boolean"
         },
         "decoy_installs_at_shutdown": {
-          "description": "Whether the decoy's unattended-upgrades installs the pending updates at shutdown, which an activation is to its shutdown helper, so that an activation would run that install on the decoy disk: the helper runs with Unattended-Upgrade::InstallOnShutdown on, or NAILS cannot tell that it does not (an apt configuration it cannot read or follow, one apt refuses, or one that changed since the helper started while no file sets the setting). Activation refuses it without --allow-persistent-decoy; decoy_persistent does not count it. False in a hidden session.",
+          "description": "Whether activation refuses what the decoy's unattended-upgrades would do at its shutdown helper's signal, which an activation sends: the helper runs with Unattended-Upgrade::InstallOnShutdown on, so that an activation would run its install of the pending updates on the decoy disk; apt refuses a file of its configuration, so that the helper installs nothing but writes two ERROR lines, on the decoy disk unless it started with the file already refused; or NAILS cannot tell that it does not install (an apt configuration it cannot read or follow, or one that changed since the helper started while no file sets the setting). Activation refuses each without --allow-persistent-decoy; decoy_persistent does not count it. A status run without root cannot read the running helper's environment, where apt takes APT_CONFIG from, so it cannot tell and reports true where a run as root may report false: run it with sudo. False in a hidden session.",
           "type": "boolean"
         },
         "persona_mode": { "type": "string", "enum": ["shared-home", "fresh-home"] },

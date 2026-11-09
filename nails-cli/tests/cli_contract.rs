@@ -1122,11 +1122,11 @@ fn status_human_default_rendering_snapshot() {
     let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
     // The line of unattended-upgrades' install at shutdown is probed from the
     // live host's apt configuration and its running helper, which an
-    // unprivileged run cannot read: it is left out, as its JSON flag is
-    // redacted.
+    // unprivileged run cannot read: whichever of its lines the host gives is
+    // left out, as its JSON flag is redacted.
     let stdout = stdout
         .lines()
-        .filter(|line| !line.contains("unattended-upgrades installs at shutdown on the decoy"))
+        .filter(|line| !line.contains("unattended-upgrades"))
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!("status_human_default", redact_volume_line(&stdout));

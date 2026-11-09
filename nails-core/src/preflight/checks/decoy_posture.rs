@@ -114,6 +114,26 @@ const DEPENDENCY_DIR_SUFFIXES: &[&str] = &[".wants", ".requires", ".upholds"];
 /// The unit directory whose `/dev/null` link masks a unit above every other.
 const ADMIN_UNIT_DIR: &str = "etc/systemd/system";
 
+/// What an activation would make unattended-upgrades' shutdown helper on
+/// the decoy do, by the cause for which the check refuses it
+/// ([`DecoyPersistenceCheck::decoy_install_at_shutdown`]), as `status` shows
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallAtShutdown {
+    /// `Unattended-Upgrade::InstallOnShutdown` is on: the helper installs
+    /// the pending updates on the decoy disk.
+    On,
+    /// apt refuses a file of its configuration: the helper installs nothing,
+    /// but writes two ERROR lines, on the decoy disk unless it started with
+    /// the file already refused.
+    RefusedFile,
+    /// NAILS cannot tell that the helper does not install.
+    Unknown,
+    /// NAILS cannot tell without root: only root may read the helper's
+    /// environment, where apt takes `APT_CONFIG` from.
+    UnknownWithoutRoot,
+}
+
 /// Pre-flight check that refuses a forensically persistent decoy.
 #[derive(Debug)]
 pub struct DecoyPersistenceCheck {
@@ -211,15 +231,25 @@ impl DecoyPersistenceCheck {
         Self::kdump_finding(fs, Path::new("/")).is_some()
     }
 
-    /// Read-only probe: whether the decoy's unattended-upgrades installs at
-    /// shutdown, so that an activation runs that install on the decoy disk,
-    /// or NAILS cannot tell that it does not (which the pre-flight check
-    /// refuses as if it did). Shared with `status`. Independent of the
-    /// operator override, and performs no writes.
-    pub fn decoy_installs_at_shutdown<F: Filesystem>(fs: &F) -> bool {
-        install_on_shutdown::finding(fs, Path::new("/"), None)
-            .blocker
-            .is_some()
+    /// Read-only probe: what an activation would make the decoy's
+    /// unattended-upgrades do at its shutdown helper's signal, by the cause
+    /// for which the pre-flight check refuses it, or `None` where it does
+    /// not. Shared with `status`. Independent of the operator override, and
+    /// performs no writes.
+    pub fn decoy_install_at_shutdown<F: Filesystem>(fs: &F) -> Option<InstallAtShutdown> {
+        Self::install_at_shutdown_on(fs, Path::new("/"))
+    }
+
+    /// [`Self::decoy_install_at_shutdown`] of the system tree under `root`.
+    fn install_at_shutdown_on<F: Filesystem>(fs: &F, root: &Path) -> Option<InstallAtShutdown> {
+        use install_on_shutdown::AtTheSwitch;
+        let blocker = install_on_shutdown::finding(fs, root, None).blocker?;
+        Some(match blocker.at_the_switch {
+            AtTheSwitch::Installs => InstallAtShutdown::On,
+            AtTheSwitch::ErrorLines => InstallAtShutdown::RefusedFile,
+            AtTheSwitch::Unknown => InstallAtShutdown::Unknown,
+            AtTheSwitch::NeedsRoot => InstallAtShutdown::UnknownWithoutRoot,
+        })
     }
 
     /// The kdump blocker, if kdump is armed or its state cannot be told.

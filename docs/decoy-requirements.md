@@ -829,10 +829,11 @@ environment of the running helper's processes, those its unit's cgroup lists
 and reads the file first as apt does. It cannot tell, and refuses, when that
 environment cannot be read, when the file cannot be read, when the variable
 names a relative path or one with `..`, and when the processes run with
-different values. A `nails check` run without sudo cannot read the
-environment, so it refuses on every decoy whose helper runs and says to run it
-as root: run it with sudo. The hidden session's own copy is read with the same
-file, as the session starts it from the same files of the decoy.
+different values. A `nails check` or `nails status` run without sudo cannot
+read the environment, so check refuses on every decoy whose helper runs and
+says to run it as root, and status says that NAILS cannot tell without root.
+Run them with sudo. The hidden session's own copy is read with the same file,
+as the session starts it from the same files of the decoy.
 
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a line
@@ -894,9 +895,15 @@ with `nails deactivate --poweroff`.
 
 As for kdump, the window's launcher stays usable with the setting on, and
 `nails status` does not call the decoy persistent for it. Like kdump it has a
-line of its own in `nails status` on the decoy, which says that
-unattended-upgrades installs at shutdown or that NAILS cannot tell that it
-does not (`decoy_installs_at_shutdown` in `--json`).
+line of its own in `nails status` on the decoy wherever `decoy-persistence`
+refuses it, which names the cause: that unattended-upgrades installs at
+shutdown, that apt refuses a file of its configuration, so that the helper
+installs nothing but writes its two ERROR lines, or that NAILS cannot tell
+that it does not install (`decoy_installs_at_shutdown` in `--json` is true for
+each). A `nails status` run without sudo cannot read the running helper's
+environment either: its line says that NAILS cannot tell without root, and
+names the command that can, and the `--json` flag is true there even where a
+run as root finds nothing. Run it with sudo.
 
 The distribution test `<image>-apt-shutdown` shows these on Debian 13, Ubuntu
 24.04 and Ubuntu 26.04: on the stock decoy both rows pass, with the setting
