@@ -510,11 +510,13 @@ every entry with its `origin` (`desktop` or `added`) and its `status`
 (`ignored`, `masked` or `review`). Both lists match names only: they make no
 claim about what an entry does or whether a client is signed in.
 
-A place NAILS could not read can hold an inherited entry too, so `nails check`
-lists it instead of leaving it out: one whose lookup failed for another
-reason than that it is not there, and one it did not look up because the
-lookup would mount an automount point that nothing is mounted on yet, such as
-a home that is mounted on first use. Each gets a warning line,
+A place NAILS could not look up can hold an inherited entry too, so
+`nails check` lists it instead of leaving it out: one whose lookup failed for
+another reason than that it is not there, such as a home or a `~/.config` it
+cannot search, and one it did not look up because the lookup would mount an
+automount point that nothing is mounted on yet, such as a home that is
+mounted on first use. A directory it can look up but not list, and a file it
+cannot read, it still leaves out. Each place it lists gets a warning line,
 `not read: <path> (<reason>)`, and one line says to mount the automount
 points they name and run `check` again. While one is listed, `nails check`
 never says that nothing is inherited, and `inherited-autostart` warns that
