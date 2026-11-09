@@ -806,7 +806,11 @@ then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file
 NAILS cannot read, a line NAILS does not read the way apt does (one longer
 than 4000 bytes, or with a NUL byte in it), an `#include`, and a `Dir` or
 `RootDir` setting, which move the files apt reads, leave the setting unknown,
-and `decoy-persistence` refuses that as if it were on. So do
+and `decoy-persistence` refuses that as if it were on. So does an
+`#x-apt-configure-index`: apt loads an index of its options there, which
+NAILS does not read, and stops reading the file with only a warning when it
+cannot load it, so what follows in that file, a line apt would refuse
+included, may never count. So do
 a file name and a value of the setting with a byte beyond ASCII: apt runs in
 the system's locale, which decides whether it takes such a byte for a letter
 of a file name it reads (`é` in ISO-8859-1, but not in a UTF-8 locale) and

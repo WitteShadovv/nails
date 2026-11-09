@@ -83,6 +83,24 @@ pub struct SyntaxError {
     /// Whether apt refuses the file there. Otherwise apt reads the line, but
     /// not in a way NAILS follows (see [`parse`]).
     pub by_apt: bool,
+    /// The line of a `#x-apt-configure-index` before it, the first one, if
+    /// the file has one there: apt loads the index at that point and stops
+    /// reading the file when it cannot, with a warning only, so whether it
+    /// gets to `line` at all depends on the index.
+    pub index_before: Option<usize>,
+}
+
+impl SyntaxError {
+    /// The error on `line`, for `reason`, and whether apt refuses the file
+    /// there; [`parse`] names the `#x-apt-configure-index` before it.
+    fn new(line: usize, reason: &'static str, by_apt: bool) -> Self {
+        Self {
+            line,
+            reason,
+            by_apt,
+            index_before: None,
+        }
+    }
 }
 
 /// A file read whole.
@@ -313,13 +331,7 @@ impl Reader {
 
     /// Read the statements of one line, comments taken out.
     fn read_fragment(&mut self, fragment: &[u8], line: usize) -> Result<(), SyntaxError> {
-        let error = |reason| {
-            Err(SyntaxError {
-                line,
-                reason,
-                by_apt: true,
-            })
-        };
+        let error = |reason| Err(SyntaxError::new(line, reason, true));
         let mut in_quote = false;
         let mut start = 0;
         for (at, &byte) in fragment.iter().enumerate() {
@@ -379,13 +391,7 @@ impl Reader {
 
     /// Apply the pending statement, which `term` (`;`, `{` or `}`) ends.
     fn statement(&mut self, term: u8, line: usize) -> Result<(), SyntaxError> {
-        let error = |reason| {
-            Err(SyntaxError {
-                line,
-                reason,
-                by_apt: true,
-            })
-        };
+        let error = |reason| Err(SyntaxError::new(line, reason, true));
         let pending = std::mem::take(&mut self.pending);
         let text = c_str(&pending);
         let mut pos = 0;
@@ -443,67 +449,75 @@ impl Reader {
 
 /// The statements of the configuration file `text`, as apt reads it, or why
 /// apt refuses it, or the first line NAILS does not read the way apt does: a
-/// line longer than [`MAX_LINE`] bytes, or one with a NUL byte in it.
+/// line longer than [`MAX_LINE`] bytes, or one with a NUL byte in it. An
+/// error names the `#x-apt-configure-index` before it, if there is one
+/// ([`SyntaxError::index_before`]).
 pub fn parse(text: &[u8]) -> Result<Parsed, SyntaxError> {
     let mut reader = Reader::default();
     let mut in_comment = false;
-    let mut line = 0;
-    for raw in text.split(|&byte| byte == b'\n') {
-        line += 1;
-        if raw.len() > MAX_LINE {
-            return Err(SyntaxError {
-                line,
-                reason: "more than 4000 bytes",
-                by_apt: false,
+    if let Err(mut error) = reader.read_lines(text, &mut in_comment) {
+        error.index_before = reader
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                Statement::ConfigureIndex { line } => Some(*line),
+                _ => None,
             });
-        }
-        if raw.contains(&0) {
-            return Err(SyntaxError {
-                line,
-                reason: "a NUL byte",
-                by_apt: false,
-            });
-        }
-        // apt drops the line's end (any \r and \n), counts a tab as eight
-        // spaces, and strips the white space around the line.
-        let end = raw
-            .iter()
-            .rposition(|&byte| byte != b'\r')
-            .map_or(0, |last| last + 1);
-        let mut expanded = Vec::with_capacity(end);
-        for &byte in &raw[..end] {
-            if byte == b'\t' {
-                expanded.extend_from_slice(b"        ");
-            } else {
-                expanded.push(byte);
-            }
-        }
-        let first = expanded
-            .iter()
-            .position(|&byte| !is_space(byte))
-            .unwrap_or(expanded.len());
-        let last = expanded
-            .iter()
-            .rposition(|&byte| !is_space(byte))
-            .map_or(first, |last| last + 1);
-        let fragment = strip_comments(&expanded[first..last], &mut in_comment);
-        if fragment.is_empty() {
-            continue;
-        }
-        reader.read_fragment(&fragment, line)?;
-    }
-    if !reader.pending.is_empty() {
-        return Err(SyntaxError {
-            line,
-            reason: "Extra junk at end of file",
-            by_apt: true,
-        });
+        return Err(error);
     }
     Ok(Parsed {
         statements: reader.statements,
         open_blocks: reader.stack.len(),
         in_comment,
     })
+}
+
+impl Reader {
+    /// Read every line of `text`: `in_comment` says, at the end, whether a
+    /// `/* */` comment is still open.
+    fn read_lines(&mut self, text: &[u8], in_comment: &mut bool) -> Result<(), SyntaxError> {
+        let mut line = 0;
+        for raw in text.split(|&byte| byte == b'\n') {
+            line += 1;
+            if raw.len() > MAX_LINE {
+                return Err(SyntaxError::new(line, "more than 4000 bytes", false));
+            }
+            if raw.contains(&0) {
+                return Err(SyntaxError::new(line, "a NUL byte", false));
+            }
+            // apt drops the line's end (any \r and \n), counts a tab as eight
+            // spaces, and strips the white space around the line.
+            let end = raw
+                .iter()
+                .rposition(|&byte| byte != b'\r')
+                .map_or(0, |last| last + 1);
+            let mut expanded = Vec::with_capacity(end);
+            for &byte in &raw[..end] {
+                if byte == b'\t' {
+                    expanded.extend_from_slice(b"        ");
+                } else {
+                    expanded.push(byte);
+                }
+            }
+            let first = expanded
+                .iter()
+                .position(|&byte| !is_space(byte))
+                .unwrap_or(expanded.len());
+            let last = expanded
+                .iter()
+                .rposition(|&byte| !is_space(byte))
+                .map_or(first, |last| last + 1);
+            let fragment = strip_comments(&expanded[first..last], in_comment);
+            if fragment.is_empty() {
+                continue;
+            }
+            self.read_fragment(&fragment, line)?;
+        }
+        if !self.pending.is_empty() {
+            return Err(SyntaxError::new(line, "Extra junk at end of file", true));
+        }
+        Ok(())
+    }
 }
 
 /// The tags apt looks an item up by: its name split at each `::`, the way
