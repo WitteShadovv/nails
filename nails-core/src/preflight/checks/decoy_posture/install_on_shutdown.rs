@@ -56,16 +56,18 @@
 //! way back through logind (`nails deactivate`) that copy installs the
 //! updates into the session's overlay. That alone only warns: when the
 //! decoy's helper is stopped but the session starts it, and when the
-//! session's overlay turns the setting on. The session sees the decoy's
-//! files with the root overlay's upper on top: a file of the upper replaces
-//! the decoy's, and a whiteout deletes it. A directory the upper holds may be
-//! one a session deleted and made again (an opaque one), below which the
-//! decoy's files no longer show; that mark is not read here, so where the
-//! upper holds `/etc/apt` its files are read both with the decoy's and on
-//! their own, and either way that turns the setting on warns. A link among
-//! apt's files, or on the way to them, resolves in the session through the
-//! overlay, which NAILS does not follow, so it leaves the session's setting
-//! unknown.
+//! session's overlay turns the setting on. Where apt refuses a file the
+//! session reads, the warning says what its copy does: it starts with the
+//! file refused, logs to the session's journal and installs nothing while the
+//! file stays refused. The session sees the decoy's files with the root
+//! overlay's upper on top: a file of the upper replaces the decoy's, and a
+//! whiteout deletes it. A directory the upper holds may be one a session
+//! deleted and made again (an opaque one), below which the decoy's files no
+//! longer show; that mark is not read here, so where the upper holds
+//! `/etc/apt` its files are read both with the decoy's and on their own, and
+//! either way that turns the setting on warns. A link among apt's files, or
+//! on the way to them, resolves in the session through the overlay, which
+//! NAILS does not follow, so it leaves the session's setting unknown.
 //!
 //! Every read is a lookup, a listing or a read of a file; nothing is
 //! written.
@@ -621,20 +623,23 @@ fn session_setting<F: Filesystem>(
             upper: Some(upper),
         });
     }
-    let mut unknown = None;
+    let (mut unknown, mut refused) = (None, None);
     for view in views {
         match sources(fs, view).map(|sources| evaluate(fs, &sources.found)) {
             Ok(Setting::On(at)) => return Setting::On(at),
             Ok(Setting::Unknown(why)) | Err(why) => {
                 unknown.get_or_insert(why);
             }
-            Ok(Setting::Refused { at, reason }) => {
-                unknown.get_or_insert(format!("{at} is refused by apt ({reason})"));
+            Ok(refusal @ Setting::Refused { .. }) => {
+                refused.get_or_insert(refusal);
             }
             Ok(Setting::Off | Setting::Unset) => {}
         }
     }
-    unknown.map_or(Setting::Off, Setting::Unknown)
+    unknown
+        .map(Setting::Unknown)
+        .or(refused)
+        .unwrap_or(Setting::Off)
 }
 
 /// How the hidden session comes to start its own copy of the helper.
@@ -835,10 +840,21 @@ fn session_warning(
             "{how}, and NAILS cannot tell whether {SETTING} is on there, which would make it \
              install the pending updates when the session ends with deactivate: {why}"
         )),
+        // The session's copy starts with the file refused, so it logs to
+        // its standard error, the session's journal, for its whole run, and
+        // at the way back its read fails again, which leaves it no install.
         Setting::Refused { at, reason } => Some(format!(
-            "{how}, and NAILS cannot tell whether {SETTING} is on there, which would make it \
-             install the pending updates when the session ends with deactivate: {at} is refused \
-             by apt ({reason})"
+            "{how}, and apt refuses {at} ({reason}): {copy} installs nothing when the \
+             session ends with deactivate as long as apt refuses that file, and logs apt's \
+             errors to the session's journal, but a session that fixes the file has it read \
+             {SETTING} again then (set it to false, or end the session with `{}`, which sends no \
+             shutdown signal)",
+            sudo_line(NextStep::DeactivatePoweroff),
+            copy = if start.is_ok() {
+                "that copy"
+            } else {
+                "if the session starts it, that copy"
+            },
         )),
         Setting::Off | Setting::Unset => None,
     }

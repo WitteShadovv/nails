@@ -701,6 +701,75 @@ fn a_helper_stopped_but_enabled_only_warns_of_the_way_back() {
 }
 
 #[test]
+fn a_file_apt_refuses_in_the_sessions_view_warns_of_what_its_copy_does() {
+    // The decoy's helper stopped but enabled, and a file apt refuses, the
+    // scenario's under nix/distro-tests: the session's copy starts with the
+    // file refused, so it logs to the session's journal for its whole run,
+    // and at the way back its read fails again, which leaves it no install
+    // (unattended-upgrade-shutdown 2.12 and 2.9.1's try_iter_on_shutdown()).
+    for release in [DEBIAN_13, UBUNTU_24_04, UBUNTU_26_04] {
+        let tmp = stock(release);
+        stop_helper(tmp.path());
+        write(
+            tmp.path(),
+            "etc/apt/apt.conf.d/99local-refused",
+            b"Nails::Fact \"NAILS_FACT_SYNTAX\"\n",
+        );
+        let upper = tempfile::tempdir().unwrap();
+        for found in [find(tmp.path()), find_with_upper(tmp.path(), upper.path())] {
+            assert_eq!(found.blocker, None);
+            let warning = found.warning.expect("a warning");
+            assert!(
+                warning.starts_with(
+                    "unattended-upgrades.service is stopped on the decoy but enabled, so the \
+                     hidden session starts it, and apt refuses \
+                     /etc/apt/apt.conf.d/99local-refused:2 (Extra junk at end of file): \
+                     that copy installs nothing when the session ends with deactivate as long \
+                     as apt refuses that file, and logs apt's errors to the session's journal, \
+                     but a session that fixes the file has it read \
+                     Unattended-Upgrade::InstallOnShutdown again then (set it to false, or end \
+                     the session with `sudo "
+                ),
+                "{warning}"
+            );
+            assert!(!warning.contains("cannot tell"), "{warning}");
+        }
+    }
+    // A file of the session's own overlay, as the session reads it.
+    let tmp = stock(UBUNTU_24_04);
+    let upper = tempfile::tempdir().unwrap();
+    write(
+        upper.path(),
+        "etc/apt/apt.conf.d/99session",
+        b"Foo bar baz;\n",
+    );
+    let warning = find_with_upper(tmp.path(), upper.path())
+        .warning
+        .expect("a warning");
+    assert!(
+        warning.contains(
+            "the hidden session starts its own copy of unattended-upgrades' shutdown helper, and \
+             apt refuses /etc/apt/apt.conf.d/99session:1 in the hidden session's overlay \
+             (Extra junk after value): that copy installs nothing"
+        ),
+        "{warning}"
+    );
+    // Where NAILS cannot tell whether the session starts its copy.
+    let start: Result<SessionStart, String> = Err("a lookup failed".to_string());
+    let refused = Setting::Refused {
+        at: "/etc/apt/apt.conf.d/99local:2".to_string(),
+        reason: "Extra junk at end of file".to_string(),
+    };
+    let warning = session_warning(&start, false, refused).expect("a warning");
+    assert!(
+        warning.contains(
+            "(Extra junk at end of file): if the session starts it, that copy installs nothing"
+        ),
+        "{warning}"
+    );
+}
+
+#[test]
 fn a_session_that_turns_the_setting_on_in_its_overlay_warns() {
     let tmp = stock(DEBIAN_13);
     let upper = tempfile::tempdir().unwrap();

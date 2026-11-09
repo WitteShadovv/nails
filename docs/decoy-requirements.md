@@ -908,8 +908,12 @@ and made again, below which the decoy's files no longer show; NAILS does not
 read that mark, so it reads such a directory both ways and warns if either
 turns the setting on. A link among apt's files, or on the way to them,
 resolves in the session through the overlay, which NAILS does not follow, so
-it warns that it cannot tell. Set the setting to `false`, or end the session
-with `nails deactivate --poweroff`.
+it warns that it cannot tell. Where apt refuses a file the session reads, the
+warning says what the session's copy does: it starts with the file refused, so
+it logs to the session's journal for its whole run, and at the way back it
+installs nothing while apt still refuses the file, but a session that fixes
+the file has it read the setting again then. Set the setting to `false`, or
+end the session with `nails deactivate --poweroff`.
 
 As for kdump, the window's launcher stays usable with the setting on, and
 `nails status` does not call the decoy persistent for it. Like kdump it has a
