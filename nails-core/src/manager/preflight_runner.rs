@@ -38,11 +38,13 @@ pub struct PreflightOptions {
     /// (the `--allow-decoy-storage` flag): the hidden-volume check warns
     /// instead of failing, and for a root that is a folder or a btrfs
     /// subvolume of a filesystem the decoy uses, `backend-entries` lets be
-    /// the decoy's own fstab lines that mount another part of that filesystem
-    /// at `/` or at a system folder, and the crypttab lines that unlock the
-    /// device it lies on while the decoy mounts it so. It never covers a
-    /// folder, a covered root, storage that cannot be judged, or any other
-    /// decoy entry for the volume.
+    /// the decoy's own fstab lines whose mounts at `/` or at a system folder
+    /// show another part of that filesystem, and the crypttab lines that
+    /// unlock the device it lies on while the decoy mounts it so. It never
+    /// covers a folder, a covered root, a root whose files another mount of
+    /// its filesystem reaches too (one that neither `/` nor a line of the
+    /// fstab makes), storage that cannot be judged, or any other decoy entry
+    /// for the volume.
     pub allow_decoy_storage: bool,
     /// Accept discards over the hidden volume for this run (the buried
     /// `--allow-discards` expert flag): the backend-detect check then warns
