@@ -1051,9 +1051,11 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   does. The kernel then starts modprobe, which reads its settings, and udevd
   reads its rules as it handles the module's event, both below
   `/usr/local/lib` too. So where `/proc/filesystems` does not list `overlay`
-  and one of those places lies behind an automount point that nothing is
+  and one of those directories lies behind an automount point that nothing is
   mounted on yet, `upper-fs-capability` makes no trial: it refuses, since it
-  cannot tell, and names the point.
+  cannot tell, and names the point. What is in those directories is not
+  looked at: a settings file there that links behind such a point, or a
+  program a setting runs, can still make the load mount it.
 - **A kernel log line, in two cases.** When the filesystem under the trial
   overlay lacks something overlayfs wants (such as `upper fs does not support
   tmpfile`), overlayfs writes a warning to the kernel log, and journald keeps
@@ -1084,11 +1086,12 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   and run `check` again. A check that only warns warns. `decoy-persistence`
   refuses where it cannot tell about the journal, a log daemon or kdump
   (`--allow-persistent-decoy` lifts that, as it lifts the refusal of what it
-  finds), `fstab-policy` refuses, and so does `hidden-volume` for a hidden
-  root behind such a point. Where the hidden root itself or the state file
-  lies behind such a point, `check` runs no check at all, since each would
-  look the root up: it says that the checks could not be assembled and names
-  the point. A hidden root that is itself a direct automount point is refused
+  finds), and `fstab-policy` refuses. Where the hidden root or the state
+  file lies behind such a point, `check` runs no check at all, since each
+  would look the root up: it prints the attach gate's refusal of the root,
+  says that the checks could not be assembled, names the point and exits
+  with `1` (`check_error` under `--json`, which then carries no refusal and
+  no rows). A hidden root that is itself a direct automount point is refused
   as covered once it is mounted, since the automount point stays below the
   volume. On NixOS the decoy's `/etc/nixos` can link into a home:
   `suspicious-nails-reference` refuses where its walk of `/etc/nixos` would

@@ -155,7 +155,8 @@ cannot be looked up or read, or holds anything but `0` or `1`, NAILS cannot
 tell and refuses as if kdump were armed, and so it does when it cannot tell
 whether one of the units is enabled or active, because a lookup that would
 show it fails or would mount an automount point that nothing is mounted on
-yet. A kernel without that file has no crash kernel support, so nothing can
+yet, or the mount table, which shows where such a point is, cannot be read.
+A kernel without that file has no crash kernel support, so nothing can
 be loaded. `nails status` shows an armed kdump on the decoy, and one NAILS
 cannot tell about with the reason (`decoy_kdump_armed` in `--json` is true
 for both).
