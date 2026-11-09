@@ -27,7 +27,13 @@
 //!    filesystems overlaid (the root of each upper labelled as in step 4), the
 //!    rest masked at entry. This comes before the hidden build, because a
 //!    separate `/nix` (or a VM's store share) must be in place before anything
-//!    reads the next root's store;
+//!    reads the next root's store. An entry without a build then decides the
+//!    next root's own `/etc/fstab` too, which the hidden systemd reads: on
+//!    NixOS the hidden `/etc` of the last activation of a hidden system, on
+//!    another host one a hidden session wrote, each line the decoy's fstab
+//!    does not hold decided by the same policy, but one at or below the
+//!    hidden root kept off with a warning rather than refused
+//!    ([`hidden_fstab`]);
 //! 6. on NixOS with a hidden configuration ([`hidden_build`]): the hidden
 //!    toplevel built into the next root's store, the fstab it brings decided,
 //!    so that a line the policy refuses refuses the entry before anything runs
@@ -635,9 +641,33 @@ fn build(
     );
     let more = decide_elsewhere(&elsewhere, &decoy_mounts, inputs.hidden_root, &present)?;
     decided.add(paths, &layout, &mut plan, elsewhere, more, inputs)?;
+    // Without a build the hidden systemd reads the next root's own fstab, the
+    // hidden /etc's (a build's is decided with the build).
+    let mut warnings = if inputs.builder.is_none() {
+        let hidden = hidden_fstab::decide(
+            &nextroot,
+            &decoy_text,
+            &decided.fstab,
+            &decoy_mounts,
+            hidden_root,
+            &present,
+            inputs.nixos,
+        )?;
+        decided.add(
+            paths,
+            &layout,
+            &mut plan,
+            hidden.entries,
+            hidden.decisions,
+            inputs,
+        )?;
+        hidden.warnings
+    } else {
+        Vec::new()
+    };
     crate::cancel::checkpoint()?;
 
-    let mut warnings = hidden_build::build(
+    warnings.extend(hidden_build::build(
         paths,
         inputs,
         host,
@@ -645,7 +675,7 @@ fn build(
         &mut plan,
         &mut decided,
         &decoy_mounts,
-    )?;
+    )?);
     if inputs.builder.is_none() && !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
@@ -948,7 +978,8 @@ fn resolved_elsewhere(decoy: &[FstabEntry], in_nextroot: Vec<FstabEntry>) -> Vec
 
 /// The fstab decisions the entry made, and every entry the hidden systemd may
 /// read, resolved: the decoy's, those the next root resolves elsewhere, and
-/// those of the hidden generation. The masks are named from these.
+/// those of the next root's own fstab, a hidden generation's or the hidden
+/// session's. The masks are named from these.
 struct Decided {
     decisions: Vec<Decision>,
     fstab: Vec<FstabEntry>,
@@ -1091,6 +1122,7 @@ fn apply_mounts(
 }
 
 mod hidden_build;
+mod hidden_fstab;
 
 #[cfg(test)]
 #[path = "entry_tests.rs"]

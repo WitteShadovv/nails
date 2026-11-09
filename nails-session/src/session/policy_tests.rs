@@ -326,12 +326,225 @@ fn every_entry_at_or_below_the_hidden_root_is_refused() {
     );
     // An odd mount point is refused as before, with no remedy of its own.
     let odd = decide_below("/mnt", "/dev/sdb5 mnt/x ext4 defaults 0 2");
-    for whose in [Whose::Decoy, Whose::HiddenSystem, Whose::HiddenRoot] {
+    for whose in [
+        Whose::Decoy,
+        Whose::HiddenSystem,
+        Whose::HiddenSession,
+        Whose::HiddenRoot,
+    ] {
         assert_eq!(odd.remedy(whose), None);
     }
     assert_eq!(
         odd.fstab_refusal(Whose::Decoy).as_deref(),
         Some("fstab entry mnt/x: the mount point is not a plain absolute path")
+    );
+    // In the hidden session's own fstab too, which says whose it is.
+    assert_eq!(
+        odd.fstab_refusal(Whose::HiddenSession).as_deref(),
+        Some(
+            "the hidden session's fstab entry mnt/x: the mount point is not a plain absolute \
+             path"
+        )
+    );
+}
+
+/// The decision for the first entry of `line` as a line of the next root's
+/// own fstab, with the hidden volume at `/mnt/data`, mounted there, and
+/// every device there or none (`there`).
+fn decide_hidden(line: &str, there: bool) -> Decision {
+    let mounts = parse_mountinfo(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+         2 1 8:3 / /home rw - ext4 /dev/vda3 rw\n\
+         3 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         4 3 8:17 / /mnt/data/backup rw - ext4 /dev/vdb1 rw\n",
+    );
+    let devices = |_: &Path| there;
+    decide_hidden_fstab(&parse_fstab(line)[0], &mounts, Path::new(HIDDEN), &devices)
+}
+
+#[test]
+fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
+    // What decide refuses, a line of the next root's own fstab keeps off:
+    // the hidden volume's own line, a disk mounted there now, a RAM
+    // filesystem, a noauto line, an automount and a nofail line, each under
+    // the names systemd gives its units, never left to the hidden systemd or
+    // put in place.
+    let skip = |units: &[&str], pulled: &[&str], device: Option<&str>| Skip {
+        units: units.iter().map(|unit| unit.to_string()).collect(),
+        pulled: pulled.iter().map(|unit| unit.to_string()).collect(),
+        device: device.map(PathBuf::from),
+    };
+    let mask = |target: &str, units: &[&str]| Decision::Mask {
+        target: target.into(),
+        units: units.iter().map(|unit| unit.to_string()).collect(),
+        reason: KEPT_BELOW,
+        unreached: None,
+    };
+    let cases = [
+        (
+            "/dev/mapper/data /mnt/data ext4 defaults 0 2",
+            Decision::Skip {
+                target: "/mnt/data".into(),
+                skip: skip(
+                    &["mnt-data.mount"],
+                    &["systemd-fsck@dev-mapper-data.service"],
+                    Some("/dev/mapper/data"),
+                ),
+                masked: Vec::new(),
+                reason: KEPT_BELOW,
+            },
+        ),
+        (
+            "/dev/vdb1 /mnt/data/backup ext4 defaults 0 2",
+            Decision::Skip {
+                target: "/mnt/data/backup".into(),
+                skip: skip(
+                    &["mnt-data-backup.mount"],
+                    &["systemd-fsck@dev-vdb1.service"],
+                    Some("/dev/vdb1"),
+                ),
+                masked: Vec::new(),
+                reason: KEPT_BELOW,
+            },
+        ),
+        (
+            "tmpfs /mnt/data/ram tmpfs defaults 0 0",
+            Decision::Skip {
+                target: "/mnt/data/ram".into(),
+                skip: skip(&["mnt-data-ram.mount"], &[], None),
+                masked: Vec::new(),
+                reason: KEPT_BELOW,
+            },
+        ),
+        (
+            "/dev/sdb1 /mnt/data/usb vfat noauto 0 0",
+            mask("/mnt/data/usb", &["mnt-data-usb.mount"]),
+        ),
+        (
+            "/dev/sdb2 /mnt/data/archive ext4 noauto,x-systemd.automount 0 2",
+            Decision::Skip {
+                target: "/mnt/data/archive".into(),
+                skip: skip(&["mnt-data-archive.automount"], &[], None),
+                masked: vec!["mnt-data-archive.mount".into()],
+                reason: KEPT_BELOW,
+            },
+        ),
+        (
+            "/dev/sdb3 /mnt/data/media/disk ext4 defaults,nofail 0 2",
+            mask("/mnt/data/media/disk", &["mnt-data-media-disk.mount"]),
+        ),
+    ];
+    for (line, expected) in cases {
+        assert_eq!(decide_hidden(line, true), expected, "{line}");
+    }
+    // A disk a boot target requires whose device is not there is masked,
+    // and the mask warns that the target is not reached.
+    let absent_disk = decide_hidden("/dev/vdb9 /mnt/data/gone ext4 defaults 0 2", false);
+    assert_eq!(absent_disk.masked_units(), ["mnt-data-gone.mount"]);
+    assert!(absent_disk.warning().is_some(), "{absent_disk:?}");
+}
+
+#[test]
+fn an_entry_of_the_hidden_fstab_elsewhere_is_decided_as_the_decoy_s() {
+    let mounts = parse_mountinfo(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+         2 1 8:3 / /home rw - ext4 /dev/vda3 rw\n\
+         3 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    for line in [
+        "/dev/vda2 / ext4 defaults 0 1",
+        "/dev/vda3 /home ext4 noatime 0 2",
+        "/dev/vdc1 /srv/backup ext4 defaults 0 2",
+        "/dev/vdc2 /srv/media ext4 defaults,nofail 0 2",
+        "/dev/vdc3 /srv/later ext4 noauto 0 0",
+        "tmpfs /tmp tmpfs defaults 0 0",
+        "server:/export /net nfs4 defaults 0 0",
+        "/dev/vda4 none swap sw 0 0",
+        // A swap file on the hidden volume has no mount point there.
+        "/mnt/data/swapfile none swap sw 0 0",
+        // A parent of the hidden root, not mounted now: kept off as the
+        // decoy's line would be, so nothing covers the hidden volume.
+        "/dev/vdc4 /mnt ext4 defaults 0 2",
+        "/dev/vdc5 mnt/relative ext4 defaults 0 2",
+    ] {
+        let entry = &parse_fstab(line)[0];
+        for devices in [present as fn(&Path) -> bool, absent] {
+            assert_eq!(
+                decide_hidden_fstab(entry, &mounts, Path::new(HIDDEN), &devices),
+                decide(entry, &mounts, Path::new(HIDDEN), &devices),
+                "{line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_warning_for_a_line_kept_off_names_it_the_root_and_what_to_do() {
+    let line = "/dev/vdd1 /mnt/data/archive ext4 defaults 0 2";
+    let entry = &parse_fstab(line)[0];
+    let root = Path::new(HIDDEN);
+    let what = "lies at or below /mnt/data, where the hidden volume is mounted: the hidden \
+                session is kept from mounting it there, over the hidden volume or inside it";
+    // The hidden NixOS system's: its configuration has the line.
+    assert_eq!(
+        kept_below_warning(entry, line, root, Whose::HiddenSystem),
+        Some(format!(
+            "the hidden NixOS system's fstab entry /mnt/data/archive (`{line}`) {what}\nIn the \
+             hidden session, remove this mount from the hidden NixOS configuration, or move it \
+             out from below /mnt/data there, and rebuild."
+        ))
+    );
+    // The hidden session's own: its /etc/fstab has the line.
+    let session = kept_below_warning(entry, line, root, Whose::HiddenSession).unwrap();
+    assert_eq!(
+        session,
+        format!(
+            "the hidden session's fstab entry /mnt/data/archive (`{line}`) {what}\nIn the hidden \
+             session, remove this line from /etc/fstab, or move its mount out from below \
+             /mnt/data."
+        )
+    );
+    assert!(!session.contains("decoy"), "{session}");
+    // An entry the policy refuses there has no such remedy.
+    for whose in [Whose::Decoy, Whose::HiddenRoot] {
+        let warning = kept_below_warning(entry, line, root, whose).unwrap();
+        assert!(!warning.contains('\n'), "{warning}");
+    }
+    // No warning for an entry elsewhere, nor for a swap file below the root.
+    for line in [
+        "/dev/vdd1 /mnt/data2 ext4 defaults 0 2",
+        "/dev/vdd1 /srv/archive ext4 defaults 0 2",
+        "/mnt/data/swapfile none swap sw 0 0",
+    ] {
+        let entry = &parse_fstab(line)[0];
+        assert_eq!(
+            kept_below_warning(entry, line, root, Whose::HiddenSession),
+            None,
+            "{line}"
+        );
+    }
+    // Nor below a hidden root of /, which validation refuses anyway.
+    assert_eq!(
+        kept_below_warning(entry, line, Path::new("/"), Whose::HiddenSession),
+        None
+    );
+}
+
+#[test]
+fn a_refusal_of_the_hidden_session_s_fstab_below_the_root_says_to_change_it_there() {
+    let decision = decide_below("/mnt/data", "/dev/sdb1 /mnt/data/usb vfat noauto 0 0");
+    assert_eq!(
+        decision.remedy(Whose::HiddenSession).as_deref(),
+        Some(
+            "Remove this line from /etc/fstab, or move its mount out from below /mnt/data, in a \
+             hidden session."
+        )
+    );
+    assert!(
+        decision
+            .fstab_refusal(Whose::HiddenSession)
+            .unwrap()
+            .starts_with("the hidden session's fstab entry /mnt/data/usb: it lies at or below")
     );
 }
 
