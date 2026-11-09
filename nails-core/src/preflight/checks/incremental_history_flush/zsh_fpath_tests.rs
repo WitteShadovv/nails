@@ -90,8 +90,8 @@ fn an_element_of_fpath_word_splitting_may_change_is_one_the_check_cannot_follow(
 #[test]
 fn a_theme_prompt_runs_from_a_hook_runs_as_a_hook() {
     // zsh 5.9.2 runs the theme each time the hook runs, which appends each
-    // command line to the history file.
-    let theme = "fc -ln -1 >> $f\n";
+    // command line to `~/.zl`, which may be the history file.
+    let theme = "fc -ln -1 >> ~/.zl\n";
     for hook in [
         "precmd() { prompt w }",
         "preexec() { prompt w }",
@@ -133,6 +133,10 @@ fn a_theme_prompt_runs_from_a_hook_runs_as_a_hook() {
     );
     seed(&fs, "/home/alice/zpt/prompt_w_setup", theme);
     assert_eq!(scan_with(&fs, UNKNOWN, &install(&fs, &[])), Scan::default());
+    // One that writes where an expansion makes the path may write the file of
+    // a function zsh loads later, as it runs it.
+    seed(&fs, "/home/alice/zpt/prompt_w_setup", "fc -ln -1 >> $f\n");
+    assert!(warned(&scan_with(&fs, UNKNOWN, &install(&fs, &[]))));
 }
 
 #[test]
