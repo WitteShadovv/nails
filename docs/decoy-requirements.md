@@ -1171,12 +1171,14 @@ flag's warning, while a separate drive also mounted at `/srv` is refused with
 lines that its boot mounts at `/` or at a system folder for such a root's
 filesystem: `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`,
 `/nix` and `/opt`, unless the hidden root is that folder or lies above it. So
-`check` passes a bind of a folder of `/`, or a subvolume beside the fstab's
-`/home`, with the flag's warning. A line that names the device of that
-filesystem for any other folder, such as `/pool`, `/var/log` or
-`/.snapshots`, still fails `backend-entries`, since it may name the hidden
-drive's disk, and the check says to put the hidden root on storage of its own
-instead.
+`backend-entries` passes a bind of a folder of `/`, or a subvolume beside the
+fstab's `/home`, as well. On NixOS, `suspicious-nails-reference` still refuses
+such a root while the decoy's `/etc/nixos` names the device of its filesystem,
+as the `hardware-configuration.nix` of most installs does for every filesystem
+it lists. A line that names the device of that filesystem for any other
+folder, such as `/pool`, `/var/log` or `/.snapshots`, still fails
+`backend-entries`, since it may name the hidden drive's disk, and the check
+says to put the hidden root on storage of its own instead.
 
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that

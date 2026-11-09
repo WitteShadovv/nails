@@ -1435,9 +1435,11 @@ of this changelog for that version becomes the release notes word for word, and
   subvolume's path and id, so a `subvolid=` that cannot be read on either side makes none, or a
   bind line from another of the decoy's own mounts of it), and neither does a mount that shows none
   of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So
-  `check` passes a bind of a folder of `/` and a subvolume beside the fstab's `/home` with the
-  flag's warning, as `backend-entries` lets be the decoy's own fstab lines for `/` and its system
-  folders (see Fixed), while a line for another folder still fails it. A separate drive also
+  `hidden-volume` passes a bind of a folder of `/` and a subvolume beside the fstab's `/home` with
+  the flag's warning, and so does `backend-entries`, which lets be the decoy's own fstab lines for
+  `/` and its system folders (see Fixed), while a line for another folder still fails it. On NixOS
+  `suspicious-nails-reference` still refuses such a root while the decoy's `/etc/nixos` names its
+  filesystem's device, as `hardware-configuration.nix` usually does. A separate drive also
   mounted at `/srv` by hand is refused, and so is the copy that mount propagation makes of a mount
   at or below a bind line's source, and a root whose folder a mount that no fstab line makes shows
   too (a `/home` or `/srv` partition that systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a
