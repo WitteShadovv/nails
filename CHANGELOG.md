@@ -817,8 +817,9 @@ of this changelog for that version becomes the release notes word for word, and
   backslash going on in the next. It still only warns: such a shell has written the decoy commands
   before activation starts, so a refusal would take none of them back, and for a shell that writes a
   line once its command ends, a refused activation would add its own.
-- The `incremental-history-flush` check no longer warns that it cannot tell for what most zsh setups
-  hold, each by a rule for the form it knows. A hook's output to `$TTY`
+- The `incremental-history-flush` check no longer warns that it cannot tell at forms that many zsh
+  setups hold, each by a rule for the form it knows, but for `compinit`, which stays a doubt (see
+  below). A hook's output to `$TTY`
   (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`) goes to the terminal zsh sets it to as it starts,
   while no file it reads names `TTY` otherwise than to read it, in any form zsh reads a name in, no
   arithmetic it reads may set a parameter by a name it cannot read and no file defines a global
@@ -832,7 +833,7 @@ of this changelog for that version becomes the release notes word for word, and
   uses its name, in any form zsh reads it in, which would hand that `fc` the words after it
   (`h -W`). Of the shell the command was typed into, the check now reads from `/proc` the program it
   runs and the variables of its environment that tell where zsh finds the functions it autoloads and
-  the user's startup files (`FPATH`, `_compdir`, `HOME`, `ZDOTDIR`, and the `NIX_PROFILES`, `USER`
+  the user's startup files (`FPATH`, `HOME`, `ZDOTDIR`, and the `NIX_PROFILES`, `USER`
   and `XDG_STATE_HOME` that NixOS's `/etc/zshenv` reads the Nix profiles with), `ARGV0`, `MAILPATH`,
   `NULLCMD`, `READNULLCMD`, whether a variable of the dynamic loader is set, and the prompts zsh
   takes from its environment (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`,
@@ -846,31 +847,31 @@ of this changelog for that version becomes the release notes word for word, and
   holds is none zsh can run, as an element of `fpath` the check cannot follow is a doubt of its own
   (an empty one, which zsh reads as the directory it runs in, one quotes or a scalar join into one,
   as `"$fpath"` and `fpath=($FPATH)` do, and one an expansion gives an array where a file may turn
-  `SH_WORD_SPLIT` or `KSH_ARRAYS` on). zsh's own `compinit` and `promptinit`, and the `compaudit`,
-  `compdump`, `add-zsh-hook` and `add-zle-hook-widget` they run, are known by their bytes as zsh
-  5.9, 5.9.1 and 5.9.2 ship them. `compinit` is read for the dump file it sources in each `ZDOTDIR`
-  the files may set, as data when each of its lines is one `compdump` writes, it holds no control
-  character but tabs and line ends and each key it binds is one zsh's own completion functions bind,
-  for the first lines of the completion functions it marks (an `#autoload` with a word other than
-  `+X`, and a `#compdef` whose first word binds keys, `-k`, `-kn`, `-K` or `-Kn`, other than zsh's
-  own, are doubts), and for the completion functions, which zsh runs as you complete a word (with
-  Tab, `^D` or one of the keys zsh's own completion functions bind) and which the check reads when a
-  file runs one by name, makes one a hook or runs one in a command substitution. `promptinit` is
-  read for the themes it marks, the one `prompt` runs (`prompt suse`) and the `prompt_default_setup`
-  that
-  `prompt restore` runs, as a hook's code where a hook runs `prompt`, and may turn `PROMPT_SUBST`
-  on. On NixOS the `eval` of what coreutils' `dircolors` prints in the generated `/etc/zshrc`, when
-  the store path it names holds coreutils' program and nothing that runs before the line may change
+  `SH_WORD_SPLIT` or `KSH_ARRAYS` on). zsh's own `promptinit`, and the `add-zsh-hook` and
+  `add-zle-hook-widget` it autoloads, are known by their bytes as zsh 5.9, 5.9.1 and 5.9.2 ship
+  them. `promptinit` is read for the themes it marks, the one `prompt` runs (`prompt suse`) and the
+  `prompt_default_setup` that `prompt restore` runs, as a hook's code where a hook runs `prompt`,
+  and may turn `PROMPT_SUBST` on. A `compinit` the files autoload stays a doubt wherever zsh may
+  load one, whatever its bytes: zsh's own completion functions run what programs print as code
+  (`_comp_locale` evaluates what `locale` prints, `_npm` what `npm` prints), run the actions they
+  parse from the help programs print (`_arguments --`, as `_tar` uses it) and run code from the
+  specifications, styles, parameters and files they read, and the programs and settings that may
+  change what those functions run cannot all be listed, tools every system has among them. zsh 5.9,
+  5.9.1 and 5.9.2 wrote the line as Tab completed `tar --zap=` with a `LANGUAGE` that names a
+  message catalog of one's own, and `bash -o zap=` with a `BASH_ENV`. On NixOS the `eval` of what
+  coreutils' `dircolors` prints in the generated `/etc/zshrc`, when the store path it names holds
+  coreutils' program and nothing that runs before the line may change
   what it runs (an alias of any kind, a function named `eval`, `export` or like its program by any
   of a definition's names or one zsh expands into it, a `TRAP...` function, a `trap`, a `disable`,
   an `LD_` variable or `ARGV0` in a file read before it or in a function autoloaded and run before
   it, and `ARGV0` or an `LD_` variable in the shell's environment, which the check must know), and
   the loop in `/etc/zshenv` that puts three directories of each Nix profile in front of `fpath`, are
-  known as NixOS writes them, so with `SHARE_HISTORY` taken out of `programs.zsh.setOptions` a typed
-  zsh passes with the files `programs.zsh` generates by default. On NixOS the check reads the
-  `/etc/zshenv.local` that the zshenv nixpkgs builds into zsh reads, and `/etc/set-environment`
-  where there is no `/etc/zshenv`, and the fix `zsh -f` names it. A zsh from elsewhere, or one the
-  check reads without a typed shell, warns that it cannot tell where `compinit` is, as before.
+  known as NixOS writes them, so with `SHARE_HISTORY` taken out of `programs.zsh.setOptions` and
+  `programs.zsh.enableCompletion` off, which leaves out the `compinit` line, a typed zsh passes with
+  the files `programs.zsh` generates. On NixOS the check reads the `/etc/zshenv.local` that the
+  zshenv nixpkgs builds into zsh reads, and `/etc/set-environment` where there is no `/etc/zshenv`,
+  and the fix `zsh -f` names it. A zsh from elsewhere, or one the check reads without a typed shell,
+  warns that it cannot tell where the functions the files autoload are, as before.
 - The `incremental-history-flush` check no longer passes these zsh setups. With a setup of each of
   these kinds zsh 5.9.2 wrote each command line to the history file or turned one of the three
   options on, and the forms beside them that the same rule takes warn too. It reads a function's
@@ -883,9 +884,8 @@ of this changelog for that version becomes the release notes word for word, and
   `eval` or a `$(...)`, counts as a hook, and so do one copied to a hook's name (`functions -c`),
   one an element, `set -A` or `read -A` of a `*_functions` array names, the function of every widget
   (`zle -N`, `zle -C`, `zle -F`, a `zle -T` transformation's), which a key bound to it may run as a
-  line is typed, a completion function `compdef -k` or `-K` binds to keys, a function named like a
-  builtin, which the hooks of zsh's own `add-zle-hook-widget` run, or like their dispatcher
-  (`azhw:...`), a prompt theme `prompt` runs from a hook, `command_not_found_handler`, and the code
+  line is typed, a function named like a builtin, which the hooks of zsh's own
+  `add-zle-hook-widget` run, or like their dispatcher (`azhw:...`), a prompt theme `prompt` runs from a hook, `command_not_found_handler`, and the code
   `sched`, `zstyle -e` and `bindkey -s` run. An `fc -p`, and a `history` with the flags of an `fc`
   that writes, count as a write, and so do a global alias for the history file
   (`alias -g /dev/tty=~/.zsh_history`) and an element of zsh/mapfile's `mapfile` that names it. A
@@ -904,26 +904,18 @@ of this changelog for that version becomes the release notes word for word, and
   it reads what the shell's code may make the command line (`print -r -- "$1" | tee -a ~/.zlog`,
   `tee -a ~/.zlog <<< "$1"`, `LINE=$1 logger`), at an `exec` that keeps a descriptor open on any
   file but a device, a `sysopen` that opens one to write, a `coproc`, a `zle -A` to a widget named
-  for a hook, a widget that completes a word run as each line is entered or a hook runs
-  (`zle complete-word` or `zle -w complete-word` in a hook, `zle`'s options read as zsh reads them,
-  `add-zle-hook-widget line-finish complete-word`, a `widgets` style, past a first `--` or `-` too,
-  `zle -A complete-word accept-line`) or bound to a key you may press as you type a line, any but
-  Tab, `^D` and the keys zsh's own completion functions bind (`bindkey ' ' complete-word`, an arrow,
-  `bindkey '^[[D' complete-word`, an Alt key, a range of keys with `bindkey -R`, a binding past
-  `-L`, a lone `-` or a keymap glued to `-M`, which zsh binds as it does without them, or in the
-  dump file
-  `bindkey '^m'` or any key zsh's own completion functions do not bind), at such a widget among the
-  words of a `bindkey` past one an expansion makes that zsh drops when it is empty (`${key[x]}`), at
-  a `bindkey` word an expansion may make several words or the options of (`$k`, `"$@"`, `{' ',x}`,
-  `-$o`, a `"$o"` before two more words), and at such an element where a file may turn
-  `SH_WORD_SPLIT` or `KSH_ARRAYS` on, at a `bindkey -s` with such a word (`{q,'...^M'}`), at a
-  `bindkey -s` or `zle -U` that types Tab, `^D` or `^X`, an `fpath` element that an expansion
+  for a hook, a `widgets` style that add-zle-hook-widget's dispatcher reads, past a first `--` or
+  `-` too, at a `bindkey` word an expansion may make several words or the options of (`$k`, `"$@"`,
+  `{' ',x}`, `-$o`, a `"$o"` before two more words), and at an element of a parameter there where
+  a file may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, at a `bindkey -s` with such a word
+  (`{q,'...^M'}`), at a `bindkey -s` or `zle -U` that types Tab, `^D` or `^X`, an `fpath` element
+  that an expansion
   changes (`${(s:/:)fpath}`), an empty one (`fpath+=`, `FPATH=:$FPATH`), one an expansion gives an
   array where a file may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, which split it or keep its first,
-  and `SH_WORD_SPLIT` (`zsh -y`) or `KSH_ARRAYS` on the command line, an alias for `compinit`,
-  `compdef`, `prompt` or `add-zsh-hook`, a `HOME` a file sets, which moves the user's files and
-  compinit's dump file, a `_compdir` in the environment, a `NIX_PROFILES` that holds what zsh splits
-  otherwise (`;`, `&`), and what may change NixOS's dircolors line before it runs. It warns that it
+  and `SH_WORD_SPLIT` (`zsh -y`) or `KSH_ARRAYS` on the command line, an alias for `prompt` or
+  `add-zsh-hook`, a `HOME` a file sets, which moves the user's files, a `NIX_PROFILES` that holds
+  what zsh splits otherwise (`;`, `&`), and what may change NixOS's dircolors line before it runs.
+  It warns that it
   cannot tell, too, at arithmetic that holds an expansion other than a count or a test of a
   parameter, or names a parameter that holds no number, which zsh reads as arithmetic again and
   which may set one by a name the check cannot read (`n='TTY=5'; (( n ))`, `(( ${n}TY = 5 ))`,
@@ -943,7 +935,10 @@ of this changelog for that version becomes the release notes word for word, and
   named like a precommand that is no builtin (`!`, `time`, `nocorrect`, `-`) runs
   where the precommand stands, as a function of its name would, at a `bindkey -s` string with a key
   that edits the line (`^A`, `^H`) and
-  at any such string where a file binds a key a line is typed with or makes a widget, at a write in
+  at any such string where a file binds a key a line is typed with or makes a widget (a range of
+  keys with `bindkey -R` among them, and a binding past `-L`, a lone `-`, a keymap glued to `-M` or
+  a word an expansion makes that zsh drops when it is empty, `${key[x]}`, which zsh binds as it does
+  without them), at a write in
   a hook to a descriptor above 2 (`print -u 7`, `>&7`, `/dev/fd/7`), a `zsystem flock`, a `zsocket`
   or a `ztcp`, at a program a hook runs where a hook sets a parameter to what an expansion makes,
   but of parameters zsh keeps a number in alone (`preexec() { LINE=$1; logger }`), at a `MAILPATH`,
@@ -960,9 +955,9 @@ of this changelog for that version becomes the release notes word for word, and
   another parameter, or a `:` or a `[`, with which zsh applies a modifier or a subscript to the home
   (`source $HOME:a/x`, and so for `$ZDOTDIR` and `$XDG_CONFIG_HOME`), at a file the startup
   code may make or write before zsh reads it (`cp ~/.src ~/.gen; . ~/.gen`, `>> $log`), at an
-  `fpath` element quotes join into one, at one whose name ends in `.zwc` (`fpath=(~/zc.zwc $fpath)`),
-  which zsh reads as the compiled functions it holds, at a dump file with a carriage return or a count that is no
-  number, and at a `#compdef -kn` first line. It reads every name of a function's definition
+  `fpath` element quotes join into one, and at one whose name ends in `.zwc`
+  (`fpath=(~/zc.zwc $fpath)`), which zsh reads as the compiled functions it holds. It reads every
+  name of a function's definition
   (`function a b`, `a b ()`), counts what a `bindkey -s` string types for the names the files use,
   and reads what `print -z` puts in the line as a hook's code, and a redirection with no command
   (`preexec() { >/dev/null }`), or with only words that may all expand to none
@@ -979,7 +974,7 @@ of this changelog for that version becomes the release notes word for word, and
   `}`, and at a function defined as `name ()` where an alias of that name is defined and a file may
   turn `ALIAS_FUNC_DEF` on (`emulate sh` and `emulate ksh` too), whose value zsh then puts in place
   of the name. It warns as well at a word that a `functions`, a `zle`, a `zstyle`, a `trap`, a
-  `sched`, an `eval`, a `compdef`, a `compinit` or a `prompt` takes as a flag, a name or code where
+  `sched`, an `eval` or a `prompt` takes as a flag, a name or code where
   brace expansion or a glob may make other words of it (`functions {-c,f} preexec`,
   `zle {-N,zle-line-finish} w`), at a copy of a function of zsh's own whose work the check reads by
   its name (`functions -c add-zsh-hook azh`), and, on the command line, at an option that changes
@@ -994,73 +989,6 @@ of this changelog for that version becomes the release notes word for word, and
   `nails --help` lists, of `discard` and of their steps, and every option they and `nails` take)
   counts as used, as zsh puts its value in place of that word as the line is entered. zsh 5.9.2
   wrote the line with each.
-  zsh 5.9.2 ran a completion function of the files' own as Tab completed a word, from a directory
-  they put in `fpath` or by a completer, a `compdef`, a widget or a parameter that names it, and so
-  wrote the line with one that appends it. It also ran code of the files' own that zsh's own
-  completion functions run: a function named like a command they run (`_ls` runs `ls --help` for
-  `ls <Tab>`, `_call_program` runs `locale`, so `locale() { ... }` with the `extra-verbose` style ran
-  as `sudo na<Tab>` completed the command), a file named like one of zsh's own functions in a
-  directory of `fpath` the files add (`compinstall` given as a completer, a `compdump` that compinit
-  runs), a backquote in a `file-patterns` value, which `_files` reads with `eval`, a command
-  substitution in a subscript or a parameter's name where menu's `select=N`, `range`,
-  `select-scroll` or `_git`'s `max-verbose` are read as arithmetic (`menu 'select=1+x'`), a
-  `tag-order` label's `%(d.a.b)`, whose test `zformat -f` reads as arithmetic, the cache files that
-  `use-cache` makes them source, the action of `compcontext`, `_sort_tags`, a global alias where
-  `_comp_options` turns `aliases` on, the action of a specification that `_patch`, `_telnet`,
-  `_finger`, `_valgrind` or `_arguments`' cache takes from a parameter the files or the shell's
-  environment set (`_patch_args`, `_args_cache_curl`, `args_<tool>`), a command substitution in
-  `debug_fd`'s subscript, which `_call_program` reads as arithmetic, and a style whose pattern
-  `KSH_GLOB`, `EXTENDED_GLOB` or a `|` make match a completion context (`@(:completion):*`,
-  `x#:completion:*`, `x|:completion:*`). Where the files autoload the stock `compinit`, the
-  completion functions of zsh's own and of the Nix profiles in the store are still read as harmless,
-  and completion code of the files' own is a doubt: a completion function (a file whose name starts
-  with `_`) in another directory of `fpath` (`fpath=(~/zc $fpath)`, a Home Manager plugin's,
-  zsh-completions in a home) and a file there named like one of zsh's own functions, a completer,
-  a completion widget's function or a `compdef`'s that is no function of zsh's own or that a file
-  defines, or autoloads from a file of its own, in place of one
-  (`zstyle ':completion:*' completer _w`, a `cache-policy` or `user-expand` style,
-  `zle -C w complete-word _w`, `compdef _w cmd`, `compdef '...' cmd`), a `zstyle -e` of such a
-  style, and a file that sets `_comps`, `_patcomps`, `_postpatcomps`, `_services`, `_compautos`,
-  `compprefuncs`, `comppostfuncs`, `_comp_setup`, `compcontext`, `_sort_tags` or `_comp_options`
-  (but for `_comp_options+=(globdots)`), `debug_fd` or `MODULEPATH`, or a parameter whose name
-  starts with `_` and, past any more `_`, a lower-case letter or a digit, `cmd_` or `args_`, by
-  which zsh's own completion functions keep their caches and the specifications they hand
-  `_arguments`, set as no function's own, and one of those in the shell's environment (but a
-  `debug_fd` that is a plain number and a `MODULEPATH` without an expansion). Every function of the files' own is a hook there, one they
-  define or autoload from a file of their own, and the code of a `command` style is a hook's, one
-  an expansion makes a doubt. A completion style is read as zsh's own completion functions read
-  it, where its pattern may match a completion context (one with a `|` outside its parentheses and
-  brackets, and one `KSH_GLOB` or `EXTENDED_GLOB` may make match): one they only test for true or read as data
-  passes with any value (`verbose`, `list-colors`, `matcher-list`, `group-name` and 65 more), and a
-  value of `menu`, `range` or `select-scroll` that is no plain number, a
-  `format` or `tag-order` with a `%(` or an expansion (`$'...'`, `"%F{$c}"`), a `file-patterns`
-  value with an expansion, a `use-cache` that
-  may be on, a `cache-path`, `environ`, a value `zstyle -e` makes for any of them, and a style the
-  check has not read are doubts, and so are files in `.zcompcache` in each `ZDOTDIR` the files may
-  set, which they source where `use-cache` is on and as you complete `composer`, `zypper` or
-  `luarocks` whatever it says. A dump file whose completion of a command or a pattern is no completion
-  function's name is read as code, and `compctl` and bash's `complete` are doubts wherever they
-  stand. So a setup with completion functions or a style of its own the check has not read, with
-  `use-cache` on or a `format` an expansion makes, with a parameter of its own whose name starts
-  with `_`, or with a function of its own that writes a file or hands a program a word an
-  expansion makes (`mkcd() { mkdir -p "$1" }`) warns again. zsh 5.9.2 also ran what a program
-  of the operator's own printed as code, as `_comp_locale` evaluates the `LC_CTYPE` line that
-  `locale` prints and `_call_program` runs it for `ls <Tab>` (a `~/bin/locale` that prints
-  `LC_CTYPE=$(...)` wrote the line), and the same with the system's `locale` where an `LD_PRELOAD`
-  of the operator's own made it print one. Where the files autoload `compinit`, a directory of
-  `PATH` that holds a program (any file but a directory) and is neither `/usr/bin`, `/bin`,
-  `/usr/sbin`, `/sbin` or `/run/wrappers/bin` nor one that leads into the Nix store is now a
-  doubt, read from the shell's environment and from every form in which the files put one there
-  (`path=(~/bin $path)`, `export PATH=$HOME/bin:$PATH`, in a function or a hook), and so are one
-  named relative to the directory zsh runs in (an empty element, `.`, a `~` a quote keeps), a
-  change of `PATH` the check cannot follow (`PATH+=x`, `read -A path`, an expansion or a glob in
-  an element), a program that a `hash` or the `commands` parameter names for a command, and a
-  variable of the dynamic loader or `ARGV0` in the shell's environment or set by a file. So the
-  warning comes back for homes with `~/bin`, `~/.local/bin`, `~/.cargo/bin` or `~/go/bin` in
-  `PATH` that hold a program, and for any other such directory there (`/usr/local/bin`,
-  flatpak's `exports/bin`), even behind the system's directories, and for `LD_LIBRARY_PATH` set
-  in the files. A program of the system's or the Nix store's that a setting of its own makes print
-  code of the operator's own (`NODE_OPTIONS` for `npm`) is not read.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

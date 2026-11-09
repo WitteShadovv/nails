@@ -564,10 +564,16 @@ history yourself so an interactive shell has nowhere to write:
   (on NixOS, out of `programs.zsh.setOptions`), or type the decoy commands in a
   zsh started as `zsh -f`, which reads no startup file but `/etc/zshenv` (and on
   NixOS `/etc/zshenv.local`). With NixOS's `programs.zsh`, `SHARE_HISTORY`
-  taken out of `programs.zsh.setOptions`, the zsh you type `nails activate`
-  into passes with the files `programs.zsh` generates by default: the check
-  knows the lines NixOS generates there as they are written, and follows
-  `compinit` and `promptinit` into zsh's own directory and the Nix profiles.
+  taken out of `programs.zsh.setOptions` and `programs.zsh.enableCompletion`
+  turned off, the zsh you type `nails activate` into passes with the files
+  `programs.zsh` generates: the check knows the lines NixOS generates there as
+  they are written, and follows `promptinit` into zsh's own directory and the
+  Nix profiles. It warns wherever your files run `compinit`, as NixOS's
+  `/etc/zshrc` does with `programs.zsh.enableCompletion` on, the default, and
+  nearly every `.zshrc` does: zsh's own completion functions run what programs
+  print as code as you complete a word, and the programs and settings that may
+  change what they print cannot all be listed (`tar` with a `LANGUAGE` that
+  names a message catalog of yours, `bash` with a `BASH_ENV`).
   An option that adds lines to those files (`enableBashCompletion`,
   `autosuggestions`, `syntaxHighlighting`) can make it warn again, and so can
   an alias, a `TRAP...` function, a `trap` or `ARGV0` in your `.zshenv` or in
@@ -578,14 +584,11 @@ history yourself so an interactive shell has nowhere to write:
   holds no number (`(( i++ ))` before `i` is set in it), a global alias your
   files use or one named like an operator (`alias -g '>'=...`), any global alias
   where a hook writes to `$TTY` or a device, an `alias` word an expansion, brace
-  expansion or a glob may make a flag of (`alias $g`, `alias {-g,-g}`), a key
-  bound to completion that you may press as you type a line (any but Tab, `^D`
-  and the keys zsh's own completion functions bind, so an arrow, an Alt key or
-  Shift-Tab bound to `complete-word` or `reverse-menu-complete`), in a range
-  (`bindkey -R`) or past a word an expansion makes, a `bindkey` word with a glob
-  or a brace outside quotes, or an expansion there that may make several words
-  of it (`bindkey ^[[A up-line-or-search` written without quotes, `bindkey $k`),
-  an alias named like a reserved word of the code's structure (`alias do=...`),
+  expansion or a glob may make a flag of (`alias $g`, `alias {-g,-g}`), a
+  `bindkey` word with a glob or a brace outside quotes, or an expansion there
+  that may make several words of it (`bindkey ^[[A up-line-or-search` written
+  without quotes, `bindkey $k`), `compctl` or bash's `complete`, an alias
+  named like a reserved word of the code's structure (`alias do=...`),
   a builtin's word brace expansion or a glob may make a flag or a name of
   (`setopt {-m,...}`, `functions {-c,f} preexec`), a `histchars` your files set,
   `RC_QUOTES`, `IGNORE_BRACES` or `IGNORE_CLOSE_BRACES` where a function's `}`
@@ -603,48 +606,13 @@ history yourself so an interactive shell has nowhere to write:
   its own name through `command`, as `sudo() { command sudo "$@" }`, passes),
   and a global alias named like a word of the NAILS commands you type
   (`activate`, `--yes`).
-  It follows `compinit` for a `.zshrc` that autoloads it too, when that zsh is
-  one from the Nix store, and takes the completion functions of zsh's own and
-  those packages put in the Nix profiles for harmless. Completion code of your
-  own warns there, as zsh runs it as you complete a word: a completion
-  function in another directory of `fpath` (a Home Manager plugin's,
-  zsh-completions in your home) or a file there named like one of zsh's own
-  functions, a completer, completion widget or `compdef` that names a function
-  other than zsh's own, a function of your own that writes a file or hands a
-  program a word an expansion makes (`mkcd() { mkdir -p "$1" }`), as zsh's own
-  completion functions run commands by name (`ls <Tab>` runs a function named
-  `ls`), a completion style whose value they may run as code or arithmetic
-  (`menu 'select=1+x'`, a `%(` in `tag-order`, a `format` an expansion makes,
-  under a pattern `KSH_GLOB` or `EXTENDED_GLOB` may make match too), one the
-  check has not read, `use-cache` on, a `cache-path` or files in
-  `~/.zcompcache`, which they source, a parameter that gives the completion
-  system code (`compcontext`, `_sort_tags`, `_comp_options` but for
-  `_comp_options+=(globdots)`, `debug_fd`, `MODULEPATH`, and any whose name
-  starts with `_` and a lower-case letter, as `_patch_args`, by which they
-  keep the specifications they run code from) in your files or in the
-  environment you start the shell from, and `compctl` or bash's `complete`.
-  As some of them run what a program prints as code (`_comp_locale` evaluates
-  the `LC_CTYPE` line `locale` prints, which `_call_program` runs for
-  `ls <Tab>`), a program of your own that they may run by name warns too: a
-  directory of `PATH`, in the environment you start the shell from or one
-  your files put there in any form, that holds a program and is neither
-  `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` or `/run/wrappers/bin` nor one that
-  leads into the Nix store, one named relative to where zsh runs, a change of
-  `PATH` the check cannot follow, a program a `hash` or `commands` names for a
-  command, and a variable of the dynamic loader (`LD_PRELOAD`), which may
-  make any program print code of yours, or `ARGV0` in that environment or
-  your files. So with `~/bin`, `~/.local/bin`,
-  `~/.cargo/bin` or `~/go/bin` in `PATH` holding a program (or
-  `/usr/local/bin`, or any other such directory there) it warns again. The check does not
-  see a program of the system's or the Nix store's that a setting of its own
-  makes print code of yours (`NODE_OPTIONS` for `npm`). For any
-  other zsh, and when the check finds no shell
-  you typed into, it cannot tell where zsh finds `compinit`, and `zsh -f` is
-  the one that passes. With Home Manager's `programs.zsh`, only `zsh -f`
-  passes the check, as it names the options in `.zshrc` whether it turns them
-  on or off. A history tool that records each command itself, such as atuin,
-  writes as the command runs too. No kill takes back what such a shell has
-  written.
+  For any other zsh than one from the Nix store, and when the check finds no
+  shell you typed into, it cannot tell where zsh finds a function your files
+  autoload (`promptinit` too), a doubt. With Home Manager's `programs.zsh`,
+  only `zsh -f` passes the check, as it names the options in `.zshrc` whether
+  it turns them on or off. A history tool that records each command itself,
+  such as atuin, writes as the command runs too. No kill takes back what such
+  a shell has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation

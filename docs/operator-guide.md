@@ -1341,8 +1341,8 @@ afterwards:
     `read -A` too) makes a hook, where a word zsh expands into others there
     (`add-zsh-hook {preexec,w}`) is a doubt, the function of every widget
     (`zle -N`, `zle -C`, `zle -F`, a `zle -T` transformation's), which a key
-    bound to it may run as a line is typed, a completion function `compdef -k`
-    or `-K` binds to keys, one copied to a hook's name (`functions -c`), a
+    bound to it may run as a line is typed, one copied to a hook's name
+    (`functions -c`), a
     function named like a builtin or like the dispatcher of
     `add-zle-hook-widget` (`azhw:...`), which zsh's own code runs as each line
     is entered (`add-zle-hook-widget`'s hooks run `zstyle` and `zle`), a
@@ -1416,35 +1416,26 @@ afterwards:
     `sysopen` that opens one
     to write, a `zsystem flock`, a `zsocket` or `ztcp` connection, a `coproc`,
     and a `zle -A` that makes a widget named for a hook run another one are
-    doubts. A widget that completes a word, which runs completion functions the
-    check does not read, is a doubt where it runs as each line is entered or a
-    hook runs (`zle complete-word` in a hook, `zle -w complete-word` too, as it
-    reads `zle`'s options as zsh does, a word of them an expansion, brace
-    expansion or a glob may make being a doubt,
-    `add-zle-hook-widget line-finish complete-word`, a `zstyle` of the `widgets`
-    style that dispatcher reads, past a first `--` or `-` too, as the stock
-    `add-zle-hook-widget` writes it, `zle -A complete-word accept-line`) and
-    where a key you may press as you type a line is bound to it
-    (`bindkey ' ' complete-word`: any key but Tab, `^D` and the 15 sequences
-    zsh's own completion functions bind theirs to, as `^Xh`, `^X^R` and `\e/`,
-    so an arrow, Home, Delete, an Alt key and Shift-Tab count, any key of a
-    range bound with `-R`, and a binding past `-L`, a lone `-` or a keymap glued
-    to `-M`, as zsh reads its options). Past a word of a `bindkey` that an
-    expansion makes outside quotes and zsh drops
-    when it is empty (`${key[x]}`), such a widget is a doubt wherever it
-    stands, and so is a word an expansion may make several words or the options
-    of (`$k`, `"$@"`, `${=k}`, `-$o`, a `"$o"` before two more words), a word
-    with a glob or a brace outside quotes, which may make several or none
-    (`{' ',x}`, `^[[A` written without quotes), and such an element where a file
-    may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on. A `bindkey -s` string is read
-    as the keys it types when it holds printable characters and line ends alone;
+    doubts, and so is a `zstyle` of the `widgets` style that dispatcher reads,
+    past a first `--` or `-` too, as the stock `add-zle-hook-widget` writes it,
+    which names the widgets zsh runs as each line is entered. A word of a
+    `bindkey` an expansion may make several words or the options of (`$k`,
+    `"$@"`, `${=k}`, `-$o`, a `"$o"` before two more words) is a doubt, and so
+    is a word with a glob or a brace outside quotes, which may make several or
+    none (`{' ',x}`, `^[[A` written without quotes), and an element of a
+    parameter outside quotes (`${key[x]}`), which zsh drops when it is empty,
+    where a file may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on. A `bindkey -s`
+    string is read as the keys it types when it holds printable characters and
+    line ends alone;
     one with any other key
     (`^A`, `^H`, Tab, an escape), one bound in a keymap where keys are commands
     (`bindkey -a -s`, `-M vicmd`), a `bindkey -s` with a word zsh may drop or
     make several words of (`{q,'...^M'}`), and a `print -z` with an escape
     `print` decodes are doubts, and so is any such string, and a `zle -U`, where
     a file binds a key a line is typed with, unbinds one, makes a widget or
-    changes a keymap, which may change what its keys type. What they type counts
+    changes a keymap, which may change what its keys type (any key of a range
+    bound with `-R` too, and a binding past `-L`, a lone `-`, a keymap glued to
+    `-M` or such a dropped word, as zsh reads them). What they type counts
     for the names the check counts (an `fc` alias, `TTY` and the rest, see
     below). A history tool that keeps its own record elsewhere, such as atuin,
     it does not see as one, though the command its hook runs with the line you
@@ -1483,7 +1474,7 @@ afterwards:
     files put in front of `fpath` holds is a doubt: zsh then finds it in a
     directory it was built with, or in one that an `FPATH` from its environment
     names, which the check does not read. Of that environment it keeps `FPATH`,
-    `NIX_PROFILES`, `USER`, `XDG_STATE_HOME`, `_compdir`, `HOME`, `ZDOTDIR`,
+    `NIX_PROFILES`, `USER`, `XDG_STATE_HOME`, `HOME`, `ZDOTDIR`,
     `ARGV0`, `MAILPATH`, `NULLCMD`, `READNULLCMD`, the prompts zsh takes
     from it (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`,
     `RPS2`, `RPROMPT2`, `PS3`, `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and
@@ -1499,139 +1490,37 @@ afterwards:
     reads as arithmetic that is no number (see below), and a prompt there that
     holds an expansion holds code where `PROMPT_SUBST` may be on, as zsh shows
     it unless a file sets it;
-  - zsh's own `compinit` and `promptinit`, and the `compaudit`, `compdump`,
-    `add-zsh-hook` and `add-zle-hook-widget` they run, it knows by their bytes
-    as zsh 5.9, 5.9.1 and 5.9.2 ship them, and reads for what that code does,
-    and a changed one as code. `compinit` sources the dump file that `compdump`
-    writes (`-d` names it, else `.zcompdump` in `ZDOTDIR`, which the check
-    reads in each directory `ZDOTDIR` may name as the files are read, the home
-    among them; a `HOME` a file sets is a doubt), which the check reads as data
-    when each of its lines is one `compdump` writes, it holds no control
-    character but tabs and line ends (zsh keeps a carriage return in a line, so
-    a backslash before one joins no lines) and each key it binds is bound as
-    zsh's own completion functions bind theirs (one of their 15 sequences after
-    `^X` or an escape, each to its widget: Space, a letter or Enter bound there
-    runs the widget as a line is typed), and as code otherwise. `compinit`
-    reads the second word of its first line as arithmetic, so one that is no
-    number is a doubt. `compinit` also marks the completion functions it finds
-    in `fpath` to be autoloaded, as the first line of each says: an `#autoload`
-    with a word other than `+X` (`-w`, which marks the functions of a compiled
-    file) is a doubt, and so is a `#compdef` whose first word binds keys as
-    compinit reads it (`-k`, `-kn`, `-K`, `-Kn`, and any other that starts so)
-    other than zsh's own in its own function, a first line with a control
-    character but a tab, and a file there that is no regular file or directory.
-    zsh runs those functions as you complete a word, with Tab, `^D` or a key a
-    completion binds, and the check does not read them unless a file it reads
-    runs one by name, makes one a hook (a widget's function, one that
-    `compdef -k` binds) or runs one in a command substitution; a completion
-    that runs as a line is typed or entered is a doubt, as above. It takes the
-    completion functions in zsh's own directory and in a Nix profile's for
-    harmless: the directories NixOS's `/etc/zshenv` puts in `fpath` for each
-    profile `NIX_PROFILES` names (or your files put in `fpath` by the same
-    path), where they lead into the Nix store, so the functions a package puts
-    there are code it does not read. Where your files autoload zsh's own
-    `compinit`, what may make zsh run completion code of your own as you
-    complete a word is a doubt: a completion function, a file whose name starts
-    with `_`, in any other directory of `fpath` (one your files add, as
-    `fpath=(~/zc $fpath)`, a Home Manager plugin's or zsh-completions in your
-    home, or one an `FPATH` in the shell's environment names), and a file there
-    named like one of zsh's own functions (`compinstall`, `compdump`, `zmv`),
-    which zsh may load in place of zsh's own where its own code runs it by
-    name; a completer, a completion widget's function or a `compdef`'s that is
-    no function of zsh's own directory, or that a file defines or autoloads
-    from a file of its own in place of one
-    (`zstyle ':completion:*' completer _w`, a `cache-policy` or `user-expand`
-    style, `zle -C w complete-word _w`, `compdef _w cmd`, and
-    `compdef '...' cmd`, whose code zsh runs), a `zstyle -e` of one of those
-    styles, and a file that sets a parameter zsh's completion system runs code
-    or functions from, or the options it completes with (`_comps`,
-    `_patcomps`, `_postpatcomps`, `_services`, `_compautos`, `compprefuncs`,
-    `comppostfuncs`, `_comp_setup`, `compcontext`, `_sort_tags` and
-    `_comp_options`, but for the line `_comp_options+=(globdots)`), one zsh's
-    own completion functions read as code (`debug_fd`, which `_call_program`
-    reads as arithmetic, and `MODULEPATH`, which `_module` expands once more),
-    or one by whose name they keep their caches and the specifications they
-    hand `_arguments`, whose actions it runs: a name that starts with `_` and,
-    past any more `_`, a lower-case letter or a digit (`_patch_args`,
-    `_args_cache_curl`), `cmd_` or `args_` (`args_<tool>` for
-    `valgrind --tool`), set in any form but as a function's own (`local`, or a
-    `typeset` without `-g` in a function). The shell's environment that holds
-    one of those is a doubt too, but for a `debug_fd` that is a plain number
-    and a `MODULEPATH` without an expansion. Every
-    function of your own is a hook there, one your files define and one they
-    autoload from a file outside zsh's own directory and the Nix profiles', as
-    zsh's own completion functions run commands by name as you complete a
-    word: the one you complete (`_ls` runs `ls --help` for `ls <Tab>`), and
-    others (`_call_program` runs `locale`, so a function named `locale` runs as
-    `sudo na<Tab>` completes a command where the `extra-verbose` style is on).
-    Some of them run what a program prints as code: `_comp_locale` evaluates
-    the `LC_CTYPE` line that `locale` prints, which `_call_program` runs for
-    `ls <Tab>` and many more, and `_npm`, `_rubber`, `_ant` and `_apt` do the
-    like with what `npm`, `rubber`, `ant` and `apt-config` print. So a
-    directory of `PATH` that holds a program (any file but a directory) and is
-    neither a system directory (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`,
-    `/run/wrappers/bin`) nor one that leads into the Nix store is a doubt
-    there, as zsh may find a program of your own in it by such a name, and so
-    is one named relative to the directory zsh runs in (an empty element, `.`,
-    `bin`, a `~` that a quote or a backslash keeps). The check reads `PATH`
-    from the environment you start the shell from and from every directory
-    your files put in it, wherever they do (`path=(~/bin $path)`,
-    `export PATH=$HOME/bin:$PATH`, in a function or a hook too), and a change
-    of `PATH` it cannot follow is a doubt (`PATH+=x`, which joins `x` to the
-    last directory, `read -A path`, a glob or an expansion in an element). So
-    is a program that a `hash` or the `commands` parameter names for a command
-    (`hash locale=~/bin/locale`), which zsh runs by that name wherever it is,
-    a variable of the dynamic loader (`LD_PRELOAD`, `LD_LIBRARY_PATH`) in that
-    environment or set by a file, which may make any program, one of the
-    system's too, print code of your own, and `ARGV0` there, which picks the
-    program a multi-call coreutils runs. So where `~/bin`,
-    `~/.local/bin`, `~/.cargo/bin` or `~/go/bin` is in `PATH` and holds a
-    program, or any other directory there does (`/usr/local/bin`,
-    `/snap/bin`, flatpak's `exports/bin`), the check warns, even where zsh
-    finds the system's program first.
-    The code of a `command` style, which `_call_program` runs, is a hook's
-    wherever it stands, and one an expansion makes is a doubt. A completion
-    style, one whose pattern may match a context of zsh's completion system
-    (`':completion:*'`, `'*'`, one with a `|` outside its parentheses and
-    brackets, which zsh reads as parting alternatives of the whole pattern,
-    and one that `KSH_GLOB` or `EXTENDED_GLOB`, on as `zstyle` runs, may make
-    match, as `@(:completion):*` or `x#:completion:*`), is read as zsh's own
-    completion functions read
-    its value: a style they only test for true or read as data passes with any
-    value (`verbose`, `list-colors`, `matcher-list`, `group-name`,
-    `special-dirs`, `rehash` and the like), a value of `menu`, `range` or
-    `select-scroll`, which they read as arithmetic, that is no plain number is
-    a doubt (`menu 'select=1+x'`, while `select=2` and `select=long` pass),
-    and so are a `%(` or an expansion (`$'...'`, `"%F{$c}"`) in a `format` or
-    a `tag-order` value, as `zformat` reads a `%(`'s test as arithmetic, an
-    expansion in a `file-patterns` value, which `_files`
-    reads with `eval`, a `use-cache` that may be on, with which they source the
-    files of the completion cache, a `cache-path`, which names their directory,
-    `environ`, which `_sudo` sets parameters by,
-    a value `zstyle -e` makes for any of those, and any style the check has not
-    read (`max-verbose`). So are files in the cache's directory,
-    `.zcompcache` in each directory `ZDOTDIR` may name, which they source where
-    `use-cache` is on and as you complete `composer`, `zypper` or `luarocks`
-    whatever it says. In a dump file, a completion of a command or a pattern
-    that is no completion function's name is code, which makes the check read
-    the file as code. `compctl`, whose completion runs without `compinit`, and
-    bash's `complete`, which `bashcompinit` defines, are doubts wherever they
-    stand. So a setup with completion functions of its own, with a style the
-    check has not read, a `format` an expansion makes or `use-cache` on, with
-    a parameter of its own whose name starts with `_`, or with a function of
-    its own that writes a file or hands a program a word an expansion makes
-    (`mkcd() { mkdir -p "$1" }`), warns. `compaudit` may put the directories
-    under one that holds a `Base` directory at the end
-    of `fpath`, which the check reads too (a `_compdir` a file names or the
-    shell's environment holds, which picks that directory, is a doubt).
-    `promptinit` marks the prompt themes in `fpath` the same way, and `prompt`
-    runs the one it names: the check reads that one (`prompt suse` reads
+  - zsh's own `promptinit`, and the `add-zsh-hook` and `add-zle-hook-widget`
+    it autoloads, it knows by their bytes as zsh 5.9, 5.9.1 and 5.9.2 ship
+    them, and reads for what that code does, and a changed one as code.
+    `promptinit` marks the prompt themes in `fpath`, and `prompt` runs the one
+    it names: the check reads that one (`prompt suse` reads
     `prompt_suse_setup`), and `prompt_default_setup`, which the code `prompt`
     keeps to restore the prompt runs (`prompt restore`), and counts
     `PROMPT_SUBST` as possibly on. A theme `prompt` picks itself
     (`prompt random`, `prompt -p`) or whose name an expansion makes, the code
-    `prompt_cleanup` keeps, and an alias for `compinit`, `compdef` or `prompt`,
-    which hands them the words the check reads, are doubts;
+    `prompt_cleanup` keeps, and an alias for `prompt`, which hands it the words
+    the check reads, are doubts;
+  - a function named `compinit` that zsh may load, one your files autoload
+    that a directory of `fpath` holds or one they autoload by its path, is a
+    doubt whatever its bytes, so the check warns wherever your files run
+    `compinit`, as nearly every `.zshrc` does, and NixOS's `/etc/zshrc` does
+    with `programs.zsh.enableCompletion` on, as by default. It starts zsh's
+    completion system, whose own functions run what programs print as code as
+    you complete a word (`_comp_locale` evaluates the `LC_CTYPE` line that
+    `locale` prints, which `_call_program` runs for `ls <Tab>`), run the
+    actions they parse from the help that programs print (`_arguments --`, as
+    `_tar` uses it for `tar --<Tab>`) and run code from the specifications,
+    styles, parameters and files they read. Which programs and settings may
+    change what those functions run cannot all be listed, as tools every
+    system has are among them: zsh 5.9 to 5.9.2 ran code of the operator's
+    own as Tab completed `tar --zap=` with a `LANGUAGE` that names a message
+    catalog of one's own, and `bash -o zap=` with a `BASH_ENV`. `compctl`,
+    whose completion runs without `compinit`, and bash's `complete`, which
+    `bashcompinit` defines, are doubts wherever they stand. Without them, a
+    widget that completes a word runs zsh's builtin completion, which runs no
+    code of your files but the function of a completion widget (`zle -C`),
+    which counts as a hook, as above;
   - the options on the command line of the shell you typed the command into:
     one of the three it turns on (`zsh -o sharehistory`,
     `zsh --share-history`, `zsh -fo share_history`) counts as on, and
@@ -1677,9 +1566,8 @@ afterwards:
     functions, whose values the check reads;
   - a file the check would read that is not there now is a doubt where a file
     it reads, but for the stock functions it knows by their SHA-256, names it
-    beyond the commands that source it, the tests that ask about it and a
-    `compinit -d` that gives it as the dump file, which compinit makes only
-    once it has read it or found none (`cp ~/.src ~/.gen; . ~/.gen`), and so is
+    beyond the commands that source it and the tests that ask about it
+    (`cp ~/.src ~/.gen; . ~/.gen`), and so is
     any file it reads, a function's file among them, where a command that runs
     before zsh reads it, at the top or in a function the top runs, writes to a
     path whose last part is its name or its compiled form's (`.zwc`, which zsh
@@ -1748,8 +1636,7 @@ afterwards:
   it into others (a glob, `{a,b}`), when a function they autoload may be in a
   directory added to `fpath` that does not resolve (as for NixOS's profiles,
   `$p/share/zsh/site-functions`, where it cannot tell the profiles
-  `NIX_PROFILES` names), when the dump file a `compinit -d` names does not
-  resolve, when zsh may run compiled code in place of a file (the `.zwc` that
+  `NIX_PROFILES` names), when zsh may run compiled code in place of a file (the `.zwc` that
   `zcompile` writes beside a file or for an `fpath` directory, and one an
   element of `fpath` names, which zsh reads as the functions it holds), when a
   `source`
@@ -1770,29 +1657,21 @@ afterwards:
   `ALIAS_FUNC_DEF`, which `emulate sh` and `emulate ksh` turn on too, where a
   function is defined as `name ()` and an alias of that name is defined, whose
   value zsh then puts in place of the name), when a word that a `functions`, a
-  `zle`, a `zstyle`, an `fc`, a `trap`, a `sched`, an `eval`, a `compdef`, a
-  `compinit` or a `prompt` takes as a flag, a name or code may be made other
+  `zle`, a `zstyle`, an `fc`, a `trap`, a `sched`, an `eval` or a `prompt`
+  takes as a flag, a name or code may be made other
   words by brace expansion or a glob (`functions {-c,f} preexec`,
   `zle {-N,zle-line-finish} w`), when a file copies a function of zsh's own
   whose work the check reads by its name to another name
   (`functions -c add-zsh-hook azh`), or when the shell is not bash, zsh, fish or
   dash (dash keeps no history file). It does not see a setting made by a plugin
-  manager's function, one you typed into the shell, the completion functions a
-  package puts in a Nix profile, which zsh runs as you complete a word (Tab,
-  `^D` or one of the keys zsh's own completion functions bind), and what those
-  do with the styles your files set, a function or an alias named like another
-  command than those you type a NAILS command with (`mount`, `cryptsetup`),
-  which zsh runs in that command's place where you type it (where your files
-  run zsh's own `compinit`, a function of your own counts as a hook, see
-  above), a global alias
+  manager's function, one you typed into the shell, a function or an alias
+  named like another command than those you type a NAILS command with
+  (`mount`, `cryptsetup`), which zsh runs in that command's place where you
+  type it, a global alias
   named like another word you type (the value you give an option or a
   setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
   program named like the command you type that zsh finds first in `PATH` or
-  that `hash` names (a `sudo` script in `~/bin`), a program of the system's
-  or the Nix store's that zsh's own completion functions run and whose output
-  they run as code where your files run zsh's own `compinit`, made to print
-  code of your own by a setting it reads itself (`NODE_OPTIONS` for `npm`),
-  a file a bash
+  that `hash` names (a `sudo` script in `~/bin`), a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), nor a history tool
@@ -1807,8 +1686,8 @@ afterwards:
   running none of them. Beside reading zsh's files as code, it counts in their
   lines, without reading the code and wherever they stand, the three options,
   `source`, a `.` with a word after it, `eval`, an alias that stands for `.`,
-  `autoload`, the `ZDOTDIR`, `fpath`, `PATH` (`path`) and `NIX_PROFILES`
-  settings, `hash` and `commands`, the arrays of hook functions, the prompts,
+  `autoload`, the `ZDOTDIR`, `fpath` and `NIX_PROFILES` settings, the arrays
+  of hook functions, the prompts,
   and the parameters that hold the aliases and the functions' bodies
   (`aliases`, `galiases`, `saliases`, `functions`), leaving
   out only a line that is a comment, and each in every form zsh may read a word
@@ -1816,13 +1695,12 @@ afterwards:
   backslashes taken off and `$'...'` decoded, and in the words of the code as
   it reads them, in which a line that starts with `#` inside a quote is code.
   The names of `TTY`, of an `fc` alias, of a global alias that is a word and
-  of `_compdir`, `HOME`, `ZSH_VERSION`, `ARGV0`, `MAILPATH`, `NULLCMD` and
+  of `HOME`, `ZSH_VERSION`, `ARGV0`, `MAILPATH`, `NULLCMD` and
   `module_path` it counts the same way. What a line names beyond what it read
   as code it follows makes it fail closed, in case it read the code otherwise
   than zsh does: such an option counts as on, an `fpath` setting adds a
-  directory it cannot follow, a `PATH` setting or a `hash` is a change of
-  where zsh finds programs it cannot follow, a prompt holds code it cannot
-  follow, and the rest
+  directory it cannot follow, a prompt holds code it cannot follow, and the
+  rest
   makes it warn that it cannot tell. So a `source` or `eval` anywhere but in a
   command it follows, in an `echo`, a string, an alias or a here-document, makes
   it warn, and so does an `eval` of what a command prints
@@ -1831,11 +1709,9 @@ afterwards:
   So zsh passes only when no file it reads names the three options and nothing
   is left the check cannot tell: zsh's default, under which a zsh writes its
   history only as it exits, which the kill at activation keeps it from doing.
-  Nearly every `.zshrc` autoloads `compinit`. The check follows it into zsh's
-  own directory when the shell you typed the command into is a zsh from the Nix
-  store; for any other zsh, and for one it reads because it found no shell you
-  typed into, it cannot tell where zsh finds `compinit`, so there a zsh started
-  as `zsh -f` is in practice the one that passes. If you turn the options off
+  Nearly every `.zshrc` autoloads `compinit`, which makes the check warn (see
+  above), so a zsh started as `zsh -f` is in practice the one that passes. If
+  you turn the options off
   in your `.zshrc`, the check still warns, as it cannot see that the turn-off
   holds. The fix it gives is one it can see: type the decoy commands in a zsh
   started as `zsh -f`, which reads no startup file but `/etc/zshenv` (and on
@@ -1843,10 +1719,13 @@ afterwards:
   they name none of the options and hold nothing it cannot follow. When they
   name one, or hold what the check cannot follow, the warning for such a zsh
   tells you to take that out of them and of what they source. On NixOS,
-  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default. Take it out
-  of `programs.zsh.setOptions` and rebuild: then the zsh you type the command
-  into passes with the files `programs.zsh` generates by default, when your own
-  files hold nothing the check warns about. An option that adds lines to them
+  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default, and runs
+  `compinit` there with `programs.zsh.enableCompletion` on, as by default. Take
+  the option out of `programs.zsh.setOptions`, turn
+  `programs.zsh.enableCompletion` off and rebuild: then the zsh you type the
+  command into passes with the files `programs.zsh` generates, when your own
+  files hold nothing the check warns about (no `compinit` among it). An option
+  that adds lines to them
   (`enableBashCompletion`, `autosuggestions`, `syntaxHighlighting`) can make it
   warn again. The check knows the lines NixOS generates there as they are
   written: in `/etc/zshrc` the `eval` of what coreutils' `dircolors` prints,
@@ -1873,8 +1752,8 @@ afterwards:
   spaces part. A loop with anything else in it, a profile written otherwise, a
   `NIX_PROFILES`, `ZSH_VERSION`, `HOME`, `USER` or `XDG_STATE_HOME` a file
   sets, or a shell whose environment it cannot read leaves those directories
-  ones it cannot follow. `compinit` and `promptinit` it then finds in zsh's own
-  directory and in the profiles, and `prompt suse` runs `prompt_suse_setup`.
+  ones it cannot follow. `promptinit` it then finds in zsh's own directory and
+  in the profiles, and `prompt suse` runs `prompt_suse_setup`.
   Home Manager's `programs.zsh` names the options in `.zshrc` whether it turns
   them on or off (`history.share`), so with it `zsh -f` is the fix the check
   can see.
