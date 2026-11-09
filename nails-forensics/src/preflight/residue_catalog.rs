@@ -15,8 +15,15 @@
 //! tell whether the channel is live, also for a row whose hit is only noted.
 //! The check only tests existence and lists directories (without updating
 //! access times); it writes nothing.
+//!
+//! It asks the automount guard before each lookup ([`Guarded`]): a probe
+//! path behind an automount point that nothing is mounted on yet (a `/var`
+//! mounted on demand, or `/.snapshots` as an `x-systemd.automount` mount
+//! point) is not looked up, which would mount it, and warns the same way,
+//! naming the point and how to mount it. Without the mount table it looks up
+//! nothing.
 
-use crate::filesystem::automount::describe;
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle};
 use crate::residue_catalog::{self, Platforms, Probe, ProbeHit, ProbeSeverity};
 use crate::{Filesystem, Result};
 use nails_base::preflight::{CheckResult, PreFlightCheck};
@@ -85,6 +92,25 @@ impl<F: Filesystem> PreFlightCheck<F> for ResidueCatalogCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
+        // Without the table a lookup could mount an automount point, so none
+        // is made.
+        let snapshot = Snapshot::read(fs, &self.root);
+        if let Some(error) = snapshot.unreadable() {
+            return Ok(CheckResult::Warn(format!(
+                "NAILS cannot tell whether a residue channel the catalog probes is live on this \
+                 decoy: NAILS cannot read the mount table ({error}), which shows where a lookup \
+                 would mount an automount point, so it looks up nothing"
+            )));
+        }
+        let guarded = Guarded::new(fs.clone(), &snapshot);
+        let result = self.probe(&guarded);
+        Ok(settle(result, &guarded.skipped(), OnSkip::Warn))
+    }
+}
+
+impl ResidueCatalogCheck {
+    /// The result of the catalog's pre-flight path probes, read through `fs`.
+    fn probe<F: Filesystem>(&self, fs: &F) -> CheckResult {
         let platform = crate::platform::detect(fs)
             .ok()
             .and_then(|profile| Platforms::for_host(&profile));
@@ -120,7 +146,7 @@ impl<F: Filesystem> PreFlightCheck<F> for ResidueCatalogCheck {
                 }
             }
         }
-        Ok(judge(&hits, &untold, probed))
+        judge(&hits, &untold, probed)
     }
 }
 
@@ -361,5 +387,101 @@ mod tests {
             lines[1].starts_with("Noted: timesync-clock ("),
             "{result:?}"
         );
+    }
+
+    /// Give `fs` a mount table of the root and a direct automount point at
+    /// each of `points`, as systemd makes one for `x-systemd.automount`,
+    /// nothing mounted on any.
+    fn with_automounts(fs: &crate::MockFilesystem, points: &[&str]) {
+        let mut table = "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n".to_string();
+        for (id, point) in points.iter().enumerate() {
+            table.push_str(&format!(
+                "{} 1 0:{} / {point} rw,relatime - autofs systemd-1 \
+                 rw,fd={id},pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino={id}\n",
+                30 + id,
+                50 + id
+            ));
+        }
+        fs.mock_set_mount_table(&table);
+    }
+
+    /// Whether `fs` was asked to look up `point` or a path below it.
+    fn reached(fs: &crate::MockFilesystem, point: &str) -> bool {
+        fs.mock_lookups().iter().any(|path| path.starts_with(point))
+    }
+
+    /// A probe path behind an automount point that nothing is mounted on yet,
+    /// a `/var` mounted on demand or `/.snapshots` as an `x-systemd.automount`
+    /// mount point, is not looked up, which would mount it: the check warns
+    /// that it cannot tell, names the point and says once how to mount it.
+    /// So for a path a link on the way leads behind one. Without the mount
+    /// table it looks up nothing.
+    #[test]
+    fn a_probe_path_behind_an_automount_point_warns_without_a_lookup() {
+        use crate::filesystem::automount::mount_fix;
+        let fs = crate::MockFilesystem::new();
+        with_automounts(&fs, &["/var", "/.snapshots"]);
+        let result = ResidueCatalogCheck::new().run(&fs).unwrap();
+        assert!(result.is_warn(), "{result:?}");
+        let message = result.message();
+        for line in [
+            "NAILS cannot tell whether the residue channel udisks2-state is live at \
+             /var/lib/udisks2: NAILS does not look up /var/lib/udisks2, since the lookup would \
+             mount the automount point /var",
+            "NAILS cannot tell whether the residue channel snapper-timeline is live at \
+             /.snapshots: NAILS does not look up /.snapshots, since the lookup would mount the \
+             automount point /.snapshots",
+            "NAILS cannot tell whether the residue channel snapper-timeline is live at \
+             /var/lib/snapper: NAILS does not look up /var/lib/snapper, since the lookup would \
+             mount the automount point /var",
+        ] {
+            assert!(
+                message.lines().any(|seen| seen == line),
+                "{line}: {message}"
+            );
+        }
+        let fix = mount_fix(&[Path::new("/var"), Path::new("/.snapshots")]);
+        assert_eq!(message.matches(fix.as_str()).count(), 1, "{message}");
+        assert!(message.ends_with(&fix), "{message}");
+        for point in ["/var", "/.snapshots"] {
+            assert!(!reached(&fs, point), "{point}: {:?}", fs.mock_lookups());
+        }
+
+        // A link on the way that leads behind one is followed by the guard,
+        // never by a lookup.
+        let fs = crate::MockFilesystem::new();
+        fs.create_symlink(Path::new("/srv/lvm"), Path::new("/etc/lvm"))
+            .unwrap();
+        with_automounts(&fs, &["/srv"]);
+        let result = ResidueCatalogCheck::new().run(&fs).unwrap();
+        assert!(
+            result.message().contains(
+                "NAILS cannot tell whether the residue channel lvm-metadata-archive is live at \
+                 /etc/lvm/archive: NAILS does not look up /etc/lvm/archive, since the lookup \
+                 would mount the automount point /srv"
+            ),
+            "{result:?}"
+        );
+        assert!(!reached(&fs, "/srv"), "{:?}", fs.mock_lookups());
+
+        // Mounted, the same tree is probed as before.
+        fs.mock_set_mount_table("1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n");
+        let result = ResidueCatalogCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{result:?}");
+
+        fs.mock_set_mount_table_error("no mountinfo");
+        fs.mock_clear_lookups();
+        let result = ResidueCatalogCheck::new().run(&fs).unwrap();
+        assert_eq!(
+            result,
+            CheckResult::Warn(
+                "NAILS cannot tell whether a residue channel the catalog probes is live on this \
+                 decoy: NAILS cannot read the mount table (/proc/self/mountinfo: no mountinfo), \
+                 which shows where a lookup would mount an automount point, so it looks up \
+                 nothing"
+                    .to_string()
+            )
+        );
+        assert!(fs.mock_lookups().is_empty(), "{:?}", fs.mock_lookups());
     }
 }
