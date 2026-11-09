@@ -476,23 +476,26 @@ promise of `check` as a whole:
   mounted has `x-systemd.automount` tmpfs at `/usr/local` and at carol's home
   `/home/carol`, an autofs indirect map at `/auto` whose name `dave` is
   dave's home, and an `x-systemd.automount` tmpfs at `/srv/archive` that no
-  check reads, the null control. The decoy's own daemons can mount
+  check reads, the null control. The store is no overlay, so the overlay
+  module is not loaded, and a trial of it would make the kernel's modprobe
+  and udevd read below `/usr/local/lib`. The decoy's own daemons can mount
   `/usr/local` themselves, as systemd-udevd did in one run while `check` ran:
   what they mounted is unmounted before each run, with the journal lines that
   say who asked, and udevd's queue of events is held from the first run on.
   `check --json` as root, with `--allow-persistent-decoy`
   and as carol (`SUDO_USER`) leaves the mount table outside `/run` as it was
-  and the mount units inactive, and neither systemd nor the automounter logs
-  a request. decoy-persistence (a warning with the override) and fstab-policy
-  refuse, sleep-policy and locate-database warn, and as carol
+  and the mount units inactive, neither systemd nor the automounter logs a
+  request, and the overlay module stays unloaded. decoy-persistence (a
+  warning with the override), fstab-policy and upper-fs-capability refuse,
+  sleep-policy and locate-database warn, and as carol
   inherited-autostart and incremental-history-flush warn, each naming the
   automount point and giving the line that says to mount it; locate-database
   names all three points, `inherited.not_read` lists carol's autostart
   directory with its point, and no row names `/srv/archive`. A listing of
   `/auto` mounts nothing. As the positive control, `ls` of each point mounts
   it, and the next check names none of them, reports the updatedb written to
-  `/usr/local/bin` as one a person can start and lists carol's
-  `sync.desktop`.
+  `/usr/local/bin` as one a person can start, lists carol's `sync.desktop`
+  and loads the overlay module with its trial.
 
 ## Session tests (`tests/session/`)
 
