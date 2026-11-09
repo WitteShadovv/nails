@@ -24,16 +24,17 @@
 #      the machine comes back up.
 #   3. Activation refuses where the timeout would do nothing, with a
 #      test-only runtime drop-in that turns the timeout off, and nothing of the
-#      entry is left. A `systemctl service-watchdogs no` on the decoy does not
-#      refuse it: every reload of PID 1, the activation's own included, sets
-#      service watchdogs back to what the kernel command line says, and the
-#      hidden PID 1 then has them on. Only that command line could turn them
-#      off for good, which would take a node of its own.
-#   4. In a session, deactivate refuses while the hidden PID 1 has no
-#      timeout, has lost the drop-in, or has service watchdogs off (nothing
-#      reloads it before the way back), each time before it says that the
-#      session ends, and the session goes on each time. With watchdogs off it
-#      names `systemctl service-watchdogs yes` first, and once that turned
+#      entry is left.
+#   4. A `systemctl service-watchdogs no` on the decoy does not refuse the
+#      next activation: every reload of PID 1, the activation's own included,
+#      sets service watchdogs back to what the kernel command line says, and
+#      the hidden PID 1 then has them on. Only that command line could turn
+#      them off for good, which would take a node of its own. In that session,
+#      deactivate refuses while the hidden PID 1 has no timeout, has lost the
+#      drop-in, or has service watchdogs off (nothing reloads it before the
+#      way back), each time before it says that the session ends, and the
+#      session goes on each time. With watchdogs off it names
+#      `systemctl service-watchdogs yes` first, and once that turned
 #      them back on the way back goes on, as the positive control for the
 #      session's own switch: a test-only unit whose stop removes the drop-in
 #      and reloads PID 1 during the switch, after deactivate checked it, and
