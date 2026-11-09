@@ -368,6 +368,24 @@ fn an_sssd_place_nails_cannot_look_up_warns() {
     assert_eq!(message.matches("/var/lib/sss/mc").count(), 0, "{message}");
 }
 
+/// The socket of the Kerberos ticket cache, whose lookup fails, may be in
+/// place and listen: sssd warns that NAILS cannot tell whether it is in use.
+#[test]
+fn a_kcm_socket_nails_cannot_look_up_warns() {
+    let fs = decoy("volatile");
+    fs.mock_set_lookup_error("/run/.heim_org.h5l.kcm-socket", ErrorKind::Other);
+    let result = run(&fs, false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "NAILS cannot tell whether sssd is in use on the decoy: NAILS cannot tell whether \
+             /run/.heim_org.h5l.kcm-socket is there: NAILS cannot look up \
+             /run/.heim_org.h5l.kcm-socket ("
+        ),
+        "{result:?}"
+    );
+}
+
 /// A unit directory whose lookup fails may hold `sssd-kcm.socket`, so a KCM
 /// socket a root `kcm` serves still counts as sssd's.
 #[test]
