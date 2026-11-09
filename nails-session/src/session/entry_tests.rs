@@ -351,6 +351,293 @@ fn an_entry_a_link_leads_into_the_hidden_volume_is_masked_there() {
     assert_eq!(skipped, ["mnt-data-media.automount"]);
 }
 
+/// What an entry without a build decides of the `/etc/fstab` of the next
+/// root at `root`, on a NixOS host or another (`nixos`), with the hidden
+/// volume at `/mnt/data` and no device there, after the decoy's fstab
+/// `decoy`.
+fn hidden_fstab_of(root: &Path, decoy: &[u8], nixos: bool) -> Result<hidden_fstab::HiddenFstab> {
+    let decided = parse_in_root(decoy, root);
+    hidden_fstab::decide(
+        root,
+        decoy,
+        &decided,
+        &[],
+        Path::new("/mnt/data"),
+        &|_| false,
+        nixos,
+    )
+}
+
+/// A next root whose `/etc/fstab` holds `text`.
+fn root_with_fstab(text: &[u8]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    std::fs::write(root.path().join("etc/fstab"), text).unwrap();
+    root
+}
+
+/// A NixOS next root as the last activation of a hidden system left it:
+/// its `/etc/fstab` leads to `/etc/static/fstab`, and `/etc/static` into the
+/// hidden system's store, by absolute links that lead elsewhere on the
+/// running system. The file in the store holds `text`.
+fn nixos_root_with_fstab(text: &[u8]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    let etc = root.path().join("nix/store/bbbb-etc/etc");
+    std::fs::create_dir_all(&etc).unwrap();
+    std::fs::write(etc.join("fstab"), text).unwrap();
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    std::os::unix::fs::symlink("/nix/store/bbbb-etc/etc", root.path().join("etc/static")).unwrap();
+    std::os::unix::fs::symlink("/etc/static/fstab", root.path().join("etc/fstab")).unwrap();
+    root
+}
+
+/// The message of an entry refused with `result`.
+fn refusal(result: Result<hidden_fstab::HiddenFstab>) -> String {
+    match result {
+        Err(NailsError::InvalidState(message)) => message,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_entry_without_a_build_keeps_off_a_hidden_fstab_line_below_the_root_and_warns() {
+    // The hidden session added two lines to its own copy of the decoy's
+    // fstab, one of them twice: a disk inside the hidden volume, and a decoy
+    // disk elsewhere.
+    let decoy = b"/dev/vda2 / ext4 defaults 0 1\n/dev/vda3 /home ext4 defaults 0 2\n";
+    let added = "/dev/vdd1 /mnt/data/archive ext4 defaults,nofail 0 2";
+    let backup = "/dev/vde1 /srv/backup ext4 defaults,nofail 0 2";
+    let root = root_with_fstab(
+        format!(
+            "{}# added in a hidden session\n\t{added}  \n  {backup}\n{added}\n",
+            String::from_utf8_lossy(decoy)
+        )
+        .as_bytes(),
+    );
+
+    let hidden = hidden_fstab_of(root.path(), decoy, false).unwrap();
+
+    // The decoy's lines were decided with the decoy's fstab: only the
+    // session's own are decided here, each once.
+    let files: Vec<&Path> = hidden.entries.iter().map(|e| e.file.as_path()).collect();
+    assert_eq!(
+        files,
+        [Path::new("/mnt/data/archive"), Path::new("/srv/backup")]
+    );
+    // The line below the root is kept off rather than refused, and the decoy
+    // disk elsewhere gets what the same line of the decoy's would.
+    assert_eq!(
+        policy::masked_units(&hidden.decisions),
+        ["srv-backup.mount", "mnt-data-archive.mount"]
+    );
+    let as_decoy = policy::decide(
+        &parse_fstab(backup)[0],
+        &[],
+        Path::new("/mnt/data"),
+        &|_| false,
+    );
+    assert!(
+        hidden.decisions.contains(&as_decoy),
+        "{:?}",
+        hidden.decisions
+    );
+    // One warning, for the line below the root, naming it as the file has
+    // it, the root and what to do in the session.
+    assert_eq!(
+        hidden.warnings,
+        [format!(
+            "the hidden session's fstab entry /mnt/data/archive (`{added}`) lies at or below \
+             /mnt/data, where the hidden volume is mounted: the hidden session is kept from \
+             mounting it there, over the hidden volume or inside it\nIn the hidden session, \
+             remove this line from /etc/fstab, or move its mount out from below /mnt/data."
+        )]
+    );
+}
+
+#[test]
+fn a_line_the_decoy_s_fstab_holds_too_is_decided_once_as_the_decoy_s() {
+    // The decoy's /data line, which a link of the next root leads into the
+    // hidden volume, was decided with the decoy's fstab: kept off there as a
+    // line a link leads below the root. The hidden session's copy of the
+    // fstab, one line longer, holds it too.
+    let line = "UUID=X /data ext4 defaults,nofail 0 2";
+    let root = root_with_fstab(
+        format!("{line}\n/dev/vde1 /srv/backup ext4 defaults,nofail 0 2\n").as_bytes(),
+    );
+    std::fs::create_dir_all(root.path().join("mnt/data/data")).unwrap();
+    std::os::unix::fs::symlink("/mnt/data/data", root.path().join("data")).unwrap();
+
+    let hidden = hidden_fstab_of(root.path(), format!("{line}\n").as_bytes(), false).unwrap();
+
+    // Not decided again as a line of the session's own below the root.
+    let files: Vec<&Path> = hidden.entries.iter().map(|e| e.file.as_path()).collect();
+    assert_eq!(files, [Path::new("/srv/backup")]);
+    assert!(hidden.warnings.is_empty(), "{:?}", hidden.warnings);
+}
+
+#[test]
+fn the_hidden_nixos_fstab_is_read_through_its_links_inside_the_next_root() {
+    // The hidden volume's own line, as a hardware configuration generated in
+    // a session has it.
+    let line = "/dev/disk/by-uuid/aaaa /mnt/data ext4 defaults,nofail 0 2";
+    let root = nixos_root_with_fstab(format!("{line}\n").as_bytes());
+
+    let hidden = hidden_fstab_of(root.path(), b"", true).unwrap();
+
+    // Kept off, with what to do in the hidden NixOS configuration.
+    assert_eq!(policy::masked_units(&hidden.decisions), ["mnt-data.mount"]);
+    assert_eq!(hidden.warnings.len(), 1, "{:?}", hidden.warnings);
+    let warning = &hidden.warnings[0];
+    assert!(
+        warning.starts_with(&format!(
+            "the hidden NixOS system's fstab entry /mnt/data (`{line}`) lies at or below \
+             /mnt/data"
+        )),
+        "{warning}"
+    );
+    assert!(
+        warning.ends_with(
+            "\nIn the hidden session, remove this mount from the hidden NixOS configuration, \
+             or move it out from below /mnt/data there, and rebuild."
+        ),
+        "{warning}"
+    );
+}
+
+#[test]
+fn a_hidden_nixos_fstab_written_in_a_session_is_the_session_s() {
+    // A file in place of the link into the store: no NixOS configuration
+    // has its lines, so the warning says to remove the line from the file.
+    let root = root_with_fstab(b"/dev/vdd1 /mnt/data/archive ext4 defaults,nofail 0 2\n");
+    let hidden = hidden_fstab_of(root.path(), b"", true).unwrap();
+    assert_eq!(hidden.warnings.len(), 1, "{:?}", hidden.warnings);
+    let warning = &hidden.warnings[0];
+    assert!(
+        warning.starts_with("the hidden session's fstab entry /mnt/data/archive"),
+        "{warning}"
+    );
+    assert!(
+        warning.ends_with("\nIn the hidden session, remove this line from /etc/fstab, or move its mount out from below /mnt/data."),
+        "{warning}"
+    );
+}
+
+#[test]
+fn a_link_that_leads_out_of_the_next_root_is_followed_inside_it() {
+    // A file outside the next root with a line below the hidden root, which
+    // the next root's /etc/fstab links to by an absolute path and by enough
+    // `..` to leave it on the running system.
+    let outside = tempfile::tempdir().unwrap();
+    let file = outside.path().join("fstab");
+    std::fs::write(&file, "/dev/vdd1 /mnt/data/archive ext4 defaults 0 2\n").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    let up = "../".repeat(root.path().components().count() + 1);
+    let relative = format!("{up}{}", file.display().to_string().trim_start_matches('/'));
+    let link = root.path().join("etc/fstab");
+    for target in [file.display().to_string(), relative] {
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        // On the running system the link leads to the file outside.
+        assert!(std::fs::read_to_string(&link).unwrap().contains("archive"));
+
+        let hidden = hidden_fstab_of(root.path(), b"", false).unwrap();
+
+        // Inside the next root it leads to nothing there: no line to decide.
+        assert!(hidden.entries.is_empty(), "{target}: {:?}", hidden.entries);
+        assert!(
+            hidden.warnings.is_empty(),
+            "{target}: {:?}",
+            hidden.warnings
+        );
+    }
+}
+
+#[test]
+fn a_missing_hidden_fstab_holds_no_line() {
+    let root = tempfile::tempdir().unwrap();
+    let hidden = hidden_fstab_of(root.path(), b"", false).unwrap();
+    assert!(hidden.entries.is_empty() && hidden.decisions.is_empty());
+    // Nor does a link that leads to nothing.
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    std::os::unix::fs::symlink("/etc/static/fstab", root.path().join("etc/fstab")).unwrap();
+    let hidden = hidden_fstab_of(root.path(), b"", true).unwrap();
+    assert!(hidden.entries.is_empty() && hidden.warnings.is_empty());
+}
+
+#[test]
+fn a_hidden_fstab_that_cannot_be_read_refuses_the_entry() {
+    // A directory in its place, and a link that leads to itself.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("etc/fstab")).unwrap();
+    let message = refusal(hidden_fstab_of(root.path(), b"", false));
+    assert!(
+        message.starts_with("the hidden /etc/fstab cannot be read ("),
+        "{message}"
+    );
+    assert!(
+        message.ends_with(
+            "): the hidden session would run with it, and NAILS cannot tell what it mounts"
+        ),
+        "{message}"
+    );
+    std::fs::remove_dir(root.path().join("etc/fstab")).unwrap();
+    std::os::unix::fs::symlink("fstab", root.path().join("etc/fstab")).unwrap();
+    let message = refusal(hidden_fstab_of(root.path(), b"", true));
+    assert!(
+        message.starts_with("the hidden /etc/fstab cannot be read ("),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_hidden_fstab_line_that_is_not_text_refuses_the_entry() {
+    // A mount point whose bytes are no UTF-8: read as text, it would be
+    // decided, and masked, under a name the hidden systemd does not give it.
+    let text = b"/dev/vda2 / ext4 defaults 0 1\n/dev/vdd1 /mnt/data/caf\xe9 ext4 defaults 0 2\n";
+    let root = root_with_fstab(text);
+    let message = refusal(hidden_fstab_of(root.path(), b"", false));
+    assert_eq!(
+        message,
+        "line 2 of the hidden /etc/fstab is not UTF-8 text: the hidden session would run with \
+         it, and NAILS cannot tell what it mounts"
+    );
+    // The decoy's own fstab, byte for byte, was decided with the decoy's.
+    assert!(
+        hidden_fstab_of(root.path(), text, false)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    // A comment is no line to decide.
+    let root = root_with_fstab(b"# caf\xe9\n/dev/vde1 /srv/backup ext4 defaults,nofail 0 2\n");
+    let hidden = hidden_fstab_of(root.path(), b"", false).unwrap();
+    assert_eq!(
+        policy::masked_units(&hidden.decisions),
+        ["srv-backup.mount"]
+    );
+}
+
+#[test]
+fn an_odd_mount_point_in_the_hidden_fstab_refuses_the_entry_naming_whose_it_is() {
+    let line = b"/dev/vde1 srv/x ext4 defaults 0 2\n";
+    // A link into the store is the hidden NixOS system's on NixOS only.
+    for (root, nixos, of) in [
+        (root_with_fstab(line), false, "the hidden session's"),
+        (
+            nixos_root_with_fstab(line),
+            true,
+            "the hidden NixOS system's",
+        ),
+        (nixos_root_with_fstab(line), false, "the hidden session's"),
+    ] {
+        assert_eq!(
+            refusal(hidden_fstab_of(root.path(), b"", nixos)),
+            format!("{of} fstab entry srv/x: the mount point is not a plain absolute path")
+        );
+    }
+}
+
 /// Where SELinux runs.
 const REQUIRED: Labels = Labels::Required(crate::session::labels::Reason::SelinuxRunning);
 

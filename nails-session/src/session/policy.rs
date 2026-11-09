@@ -15,7 +15,7 @@
 //! | --- | --- |
 //! | `/` | the root overlay itself |
 //! | swap | kept off: never activated |
-//! | a mount point at or below the hidden root: the hidden volume itself, a disk, a `noauto`, automount or RAM entry | refused: the hidden session could mount it over or inside the hidden volume |
+//! | a mount point at or below the hidden root: the hidden volume itself, a disk, a `noauto`, automount or RAM entry | refused: the hidden session could mount it over or inside the hidden volume (kept off in the next root's own fstab, see below) |
 //! | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 //! | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
 //! | a VM host share not mounted now | left to the hidden systemd |
@@ -82,11 +82,22 @@
 //! or a plain `mount` can pull in, for an automount, for a RAM filesystem,
 //! which would hide what lies below it, and for a line that names the hidden
 //! volume itself. The hidden volume has to be mounted where the decoy mounts
-//! nothing ([`Decision::remedy`]). The same holds for a hidden NixOS
-//! generation's fstab and for the mount and automount units a boot target
-//! links outside the fstab, which are decided as fstab lines
+//! nothing ([`Decision::remedy`]). The same holds for the fstab a hidden NixOS
+//! build brings and for the mount and automount units a boot target links
+//! outside the fstab, which are decided as fstab lines
 //! ([`super::mount_units`]); what the refusal says to do follows whose the
 //! entry or unit is ([`Whose`]).
+//!
+//! An entry without a build (`--overlay-only` on NixOS, and every entry on
+//! another host) decides the next root's own `/etc/fstab` as well, the one the
+//! hidden systemd reads: on NixOS the hidden generation's, which the hidden
+//! `/etc` the last activation of a hidden system wrote leads to, or one a
+//! hidden session wrote over it, and elsewhere one a hidden session wrote over
+//! the decoy's ([`decide_hidden_fstab`]). Its lines get the decisions the
+//! decoy's get, but one at or below the hidden root is kept off rather than
+//! refused, whatever it mounts: the session entered to remove such a line must
+//! still start. The entry warns of each, naming the line, the root and what to
+//! do in that session ([`kept_below_warning`]).
 
 use super::fstab::{
     FstabEntry, automount_unit, checkers, escape_path, mount_unit, required_by, swap_unit,
@@ -193,14 +204,54 @@ pub enum Whose {
     /// The decoy's: its fstab, and the units its boot targets link outside
     /// it, as `check` and activation decide them.
     Decoy,
-    /// The fstab of a hidden NixOS generation, which activation decides after
-    /// the build, before it activates the generation.
+    /// The fstab of a hidden NixOS generation: the one a build brings, which
+    /// activation decides after the build, before it activates the
+    /// generation, and the next root's `/etc/fstab` on NixOS in an entry
+    /// without a build where it leads into the store, to the generation the
+    /// last activation of a hidden system linked ([`decide_hidden_fstab`]).
     HiddenSystem,
+    /// The next root's own `/etc/fstab` in an entry without a build where it
+    /// is no hidden NixOS generation's ([`decide_hidden_fstab`]): one a
+    /// hidden session wrote over the decoy's, on NixOS a file in place of the
+    /// link into the store.
+    HiddenSession,
     /// The units outside the fstab that activation decides in the hidden
     /// root ([`super::mount_units`]): the decoy's, which `check` decided
     /// before, and those a hidden NixOS generation or an earlier hidden
     /// session added.
     HiddenRoot,
+}
+
+impl Whose {
+    /// Whose fstab an entry is of, as a refusal or a warning names it: none
+    /// for the decoy's, whose fstab `check` reads too.
+    pub fn fstab_of(self) -> &'static str {
+        match self {
+            Whose::HiddenSystem => "the hidden NixOS system's ",
+            Whose::HiddenSession => "the hidden session's ",
+            Whose::Decoy | Whose::HiddenRoot => "",
+        }
+    }
+
+    /// What to do in the hidden session about an entry of this fstab at or
+    /// below `root`, which an entry without a build keeps off
+    /// ([`decide_hidden_fstab`]): change the hidden NixOS configuration and
+    /// rebuild, or the hidden session's `/etc/fstab`. `None` for the decoy's
+    /// fstab and the units outside the fstab, whose entries there are refused.
+    fn kept_off_remedy(self, root: &Path) -> Option<String> {
+        let root = root.display();
+        match self {
+            Whose::HiddenSystem => Some(format!(
+                "In the hidden session, remove this mount from the hidden NixOS configuration, \
+                 or move it out from below {root} there, and rebuild."
+            )),
+            Whose::HiddenSession => Some(format!(
+                "In the hidden session, remove this line from /etc/fstab, or move its mount out \
+                 from below {root}."
+            )),
+            Whose::Decoy | Whose::HiddenRoot => None,
+        }
+    }
 }
 
 /// Why a mask keeps a boot target from being reached.
@@ -267,7 +318,9 @@ impl Decision {
     /// below the hidden root, mounting the hidden volume where nothing is
     /// mounted below it is the other. An entry of a hidden NixOS
     /// generation's fstab is that generation's configuration's to change,
-    /// which a hidden session entered without the build can.
+    /// which a hidden session entered without the build can, and one of the
+    /// hidden session's own fstab is that fstab's (such an entry is kept off
+    /// rather than refused, see [`decide_hidden_fstab`]).
     pub fn remedy(&self, whose: Whose) -> Option<String> {
         let Decision::Refuse {
             below: Some(root), ..
@@ -285,6 +338,10 @@ impl Decision {
                 "Remove this mount from the hidden NixOS configuration, or move it out from \
                  below {root} there, in a hidden session entered with `activate --overlay-only`."
             ),
+            Whose::HiddenSession => format!(
+                "Remove this line from /etc/fstab, or move its mount out from below {root}, in \
+                 a hidden session."
+            ),
             Whose::HiddenRoot => format!(
                 "Mount the hidden volume where no mount unit mounts anything, or move this mount \
                  out from below {root} or remove its unit, before activating."
@@ -294,16 +351,16 @@ impl Decision {
 
     /// The refusal of this decision's entry of `whose` fstab, with what to do
     /// about it ([`Decision::remedy`]); `None` for any other decision. One of
-    /// a hidden NixOS generation's says whose fstab it is.
+    /// a hidden fstab says whose it is ([`Whose::fstab_of`]).
     pub fn fstab_refusal(&self, whose: Whose) -> Option<String> {
         let Decision::Refuse { target, reason, .. } = self else {
             return None;
         };
-        let of = match whose {
-            Whose::HiddenSystem => "the hidden NixOS system's ",
-            Whose::Decoy | Whose::HiddenRoot => "",
-        };
-        let refusal = format!("{of}fstab entry {}: {reason}", target.display());
+        let refusal = format!(
+            "{}fstab entry {}: {reason}",
+            whose.fstab_of(),
+            target.display()
+        );
         Some(self.with_remedy(refusal, whose))
     }
 
@@ -449,6 +506,26 @@ impl Units {
     }
 }
 
+/// What an entry whose mount point lies at or below the hidden root gets,
+/// by where the entry comes from (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Below {
+    /// Refused: a line of the decoy's fstab or of the one a hidden build
+    /// brings, or a unit outside the fstab.
+    Refused,
+    /// Kept off, a RAM or kernel filesystem left to the hidden systemd: a
+    /// line of the decoy's that a link of the next root leads there.
+    Redirected,
+    /// Kept off, whatever it mounts: a line of the next root's own fstab in
+    /// an entry without a build.
+    KeptOff,
+}
+
+/// Why a line of the next root's own fstab at or below the hidden root is
+/// kept off ([`decide_hidden_fstab`]).
+const KEPT_BELOW: &str = "it lies at or below the hidden volume's mount point, where the hidden \
+                          session could mount it over the volume or inside it";
+
 /// Decide one entry. `mounts` is the decoy's live mount table, and `present`
 /// tells whether a device is there now ([`device_present`]).
 pub fn decide(
@@ -462,7 +539,7 @@ pub fn decide(
         &Units::of(entry),
         mounts,
         hidden_root,
-        false,
+        Below::Refused,
         present,
     )
 }
@@ -478,7 +555,35 @@ pub fn decide_redirected(
     hidden_root: &Path,
     present: Present<'_>,
 ) -> Decision {
-    decide_entry(entry, &Units::of(entry), mounts, hidden_root, true, present)
+    decide_entry(
+        entry,
+        &Units::of(entry),
+        mounts,
+        hidden_root,
+        Below::Redirected,
+        present,
+    )
+}
+
+/// Decide an entry of the next root's own `/etc/fstab`, which an entry
+/// without a build reads there (see the module docs): as [`decide`], except
+/// that an entry at or below the hidden root is kept off rather than
+/// refused, whatever it mounts, a RAM filesystem and the hidden volume
+/// itself included: masked, or skipped where a boot target requires it.
+pub fn decide_hidden_fstab(
+    entry: &FstabEntry,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    present: Present<'_>,
+) -> Decision {
+    decide_entry(
+        entry,
+        &Units::of(entry),
+        mounts,
+        hidden_root,
+        Below::KeptOff,
+        present,
+    )
 }
 
 /// Decide a mount or swap that `units` start, outside the fstab: `entry`
@@ -491,7 +596,42 @@ pub fn decide_units(
     hidden_root: &Path,
     present: Present<'_>,
 ) -> Decision {
-    decide_entry(entry, units, mounts, hidden_root, false, present)
+    decide_entry(entry, units, mounts, hidden_root, Below::Refused, present)
+}
+
+/// Whether the mount point of `entry` lies at or below `hidden_root`, unless
+/// that root is `/`, where the hidden volume is bound in the next root: the
+/// entries the policy refuses, or keeps off in the next root's own fstab. A
+/// swap line has no mount point.
+pub fn lies_below(entry: &FstabEntry, hidden_root: &Path) -> bool {
+    !entry.is_swap() && hidden_root != Path::new("/") && entry.file.starts_with(hidden_root)
+}
+
+/// The warning for `entry`, the line `line` of `whose` fstab, when an entry
+/// without a build keeps it off at or below `hidden_root` rather than
+/// refusing it ([`decide_hidden_fstab`]): it names the line and the root,
+/// and on a line of its own what to do about it in the hidden session.
+/// `None` for an entry elsewhere.
+pub fn kept_below_warning(
+    entry: &FstabEntry,
+    line: &str,
+    hidden_root: &Path,
+    whose: Whose,
+) -> Option<String> {
+    if !lies_below(entry, hidden_root) {
+        return None;
+    }
+    let warning = format!(
+        "{}fstab entry {} (`{line}`) lies at or below {}, where the hidden volume is mounted: \
+         the hidden session is kept from mounting it there, over the hidden volume or inside it",
+        whose.fstab_of(),
+        entry.file.display(),
+        hidden_root.display()
+    );
+    Some(match whose.kept_off_remedy(hidden_root) {
+        Some(remedy) => format!("{warning}\n{remedy}"),
+        None => warning,
+    })
 }
 
 /// Keep `units` of `entry` from starting: its mount, and its automount when
@@ -582,7 +722,7 @@ fn decide_entry(
     units: &Units,
     mounts: &[MountEntry],
     hidden_root: &Path,
-    redirected: bool,
+    below: Below,
     present: Present<'_>,
 ) -> Decision {
     let target = entry.file.clone();
@@ -609,9 +749,13 @@ fn decide_entry(
             below: None,
         };
     }
-    let below_hidden_root = hidden_root != Path::new("/") && target.starts_with(hidden_root);
-    if below_hidden_root && !redirected {
-        return below_the_hidden_root(target, hidden_root);
+    let below_hidden_root = lies_below(entry, hidden_root);
+    if below_hidden_root {
+        match below {
+            Below::Refused => return below_the_hidden_root(target, hidden_root),
+            Below::KeptOff => return keep_off(entry, units, KEPT_BELOW, present),
+            Below::Redirected => {}
+        }
     }
     if target == Path::new("/") {
         return Decision::Leave {
@@ -725,6 +869,19 @@ pub fn decide_all_redirected(
 ) -> Vec<Decision> {
     by_depth(entries, |entry| {
         decide_redirected(entry, mounts, hidden_root, present)
+    })
+}
+
+/// [`decide_all`] for entries of the next root's own fstab, each decided by
+/// [`decide_hidden_fstab`].
+pub fn decide_all_hidden_fstab(
+    entries: &[FstabEntry],
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    present: Present<'_>,
+) -> Vec<Decision> {
+    by_depth(entries, |entry| {
+        decide_hidden_fstab(entry, mounts, hidden_root, present)
     })
 }
 
