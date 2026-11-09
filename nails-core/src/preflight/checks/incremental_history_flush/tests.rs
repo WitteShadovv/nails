@@ -17,6 +17,7 @@ fn typed(program: &str, argv: &[&str]) -> InspectedShell {
         login: None,
         exe: None,
         environment: None,
+        started: None,
     }
 }
 
@@ -534,6 +535,7 @@ fn a_login_shell_is_named_as_one_and_judged_by_its_program() {
             login: None,
             exe: None,
             environment: None,
+            started: None,
         }
     );
     let fs = MockFilesystem::new();
@@ -605,6 +607,7 @@ fn a_shell_of_another_account_is_read_in_both_homes() {
         login: None,
         exe: None,
         environment: None,
+        started: None,
     };
     assert!(warning(run(&fs, shell)).contains("/home/alice/.bashrc runs `history -a`"));
 }
@@ -624,6 +627,7 @@ fn a_turn_off_in_one_of_two_homes_does_not_hide_an_option() {
         login: None,
         exe: None,
         environment: None,
+        started: None,
     };
     let message = warning(run(&fs, shell.clone()));
     assert!(
@@ -651,6 +655,7 @@ fn a_shell_the_command_was_likely_typed_into_is_read_beside_every_shell() {
         login: Some(login.to_string()),
         exe: None,
         environment: None,
+        started: None,
     };
     let fs = MockFilesystem::new();
     match run(&fs, likely("zsh")) {
@@ -1381,4 +1386,61 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
         environment(b"TOKEN=\xff\0USER=alice\0").map(|env| env.len()),
         Some(1)
     );
+}
+
+#[test]
+fn a_typed_zsh_whose_files_changed_after_it_started_is_told_to_start_again() {
+    use crate::filesystem::PathKind;
+    use std::time::{Duration, UNIX_EPOCH};
+    // zsh 5.9 to 5.9.2 keep SHARE_HISTORY on after it is taken out of
+    // ~/.zshrc while they run.
+    let fs = MockFilesystem::new();
+    for dir in ["/", "/etc", "/home", HOME] {
+        fs.mock_set_path_type(dir, PathKind::Dir);
+    }
+    seed(&fs, "/home/alice/.zshrc", "HISTSIZE=100\n");
+    let started = UNIX_EPOCH + Duration::from_secs(2_000_000_000);
+    fs.mock_set_change_time("/home/alice/.zshrc", started + Duration::from_secs(30));
+    let shell = |started| InspectedShell {
+        started,
+        ..typed("zsh", &["-zsh"])
+    };
+    assert_eq!(
+        warning(run(&fs, shell(Some(Ok(started))))),
+        "The check cannot tell whether zsh, the shell this command was typed into, writes each \
+         command line to its history file as it runs: it cannot tell what the shell read as it \
+         started, as /home/alice/.zshrc changed after it started (a shell started now reads what \
+         is there now). If it does, the commands typed in it are on the decoy disk once it writes \
+         them, and killing the shells at activation cannot take them back. Type the decoy \
+         commands in a zsh you start after the change, the way you started this one: it reads \
+         the startup files as they are then."
+    );
+    // One started later, and a login shell, which may not run yet, pass.
+    let later = started + Duration::from_secs(60);
+    assert!(matches!(
+        run(&fs, shell(Some(Ok(later)))),
+        CheckResult::Pass(_)
+    ));
+    assert!(matches!(run(&fs, shell(None)), CheckResult::Pass(_)));
+    // Beside another doubt, the fix is the one for that.
+    seed(&fs, "/home/alice/.zshrc", "eval \"$x\"\n");
+    let message = warning(run(&fs, shell(Some(Ok(started)))));
+    assert!(message.ends_with(ZSH_FIX), "{message}");
+}
+
+#[test]
+fn a_process_s_start_is_the_boot_time_and_its_clock_ticks() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let stat = "cpu  1 2 3\nbtime 1700000000\nprocesses 5\n";
+    assert_eq!(
+        started_at(stat, 12_345),
+        Some(UNIX_EPOCH + Duration::from_secs(1_700_000_123) + Duration::from_millis(450))
+    );
+    assert_eq!(started_at("cpu  1 2 3\n", 1), None);
+    assert_eq!(started_at("btime x\n", 1), None);
+    // The process running this test started after the boot, and not later
+    // than now.
+    let me = start_time(std::process::id()).unwrap();
+    assert!(me <= std::time::SystemTime::now() + Duration::from_secs(1));
+    assert!(start_time(u32::MAX).is_err());
 }
