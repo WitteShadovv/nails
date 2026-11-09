@@ -582,6 +582,60 @@ fn a_deep_scan_does_not_follow_a_link_out_of_the_image() {
     }
 }
 
+/// A shell history or a desktop recency file that does not resolve inside
+/// the root, as a link that leads back through itself, is not read on the
+/// machine running verify, where it would leave the image, and is listed as
+/// not checked, as such a home is: it is never taken for a file that is not
+/// there.
+#[test]
+fn a_history_or_recency_file_that_does_not_resolve_inside_the_root_is_not_checked() {
+    let tree = beside_a_decoy(&[]);
+    let root = tree.path().join("root");
+    let alice = root.join("home/alice");
+    std::fs::create_dir_all(alice.join(".local/share")).unwrap();
+    std::os::unix::fs::symlink(".bash_history", alice.join(".bash_history")).unwrap();
+    std::os::unix::fs::symlink(
+        "recently-used.xbel",
+        alice.join(".local/share/recently-used.xbel"),
+    )
+    .unwrap();
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/data"),
+        ..crate::config::Config::default()
+    };
+    let result = Verifier::with_config(
+        RealFilesystem,
+        config,
+        None,
+        crate::verify::StateFileStatus::NotChecked,
+    )
+    .offline_under(root)
+    .run(true)
+    .unwrap();
+    for note in [
+        "Shell history not checked (it does not resolve inside the root): \
+         /home/alice/.bash_history",
+        "Desktop recency file not checked (it does not resolve inside the root): \
+         /home/alice/.local/share/recently-used.xbel",
+    ] {
+        assert!(
+            result.findings.iter().any(|finding| finding.message == note
+                && finding.severity == crate::verify::Severity::Info),
+            "{note}: {:?}",
+            result.findings
+        );
+    }
+    // A history that is simply not there is no finding.
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|finding| finding.message.contains(".zsh_history")),
+        "{:?}",
+        result.findings
+    );
+}
+
 #[test]
 fn nothing_is_read_through_a_place_that_does_not_resolve_inside_the_root() {
     // Each link comes back through itself inside the image while it leads
