@@ -579,6 +579,35 @@ every entry with its `origin` (`desktop` or `added`) and its `status`
 (`ignored`, `masked` or `review`). Both lists match names only: they make no
 claim about what an entry does or whether a client is signed in.
 
+A place NAILS could not read can hold an inherited entry too, so `nails check`
+lists it instead of leaving it out: one whose lookup failed for another
+reason than that it is not there, and one it did not look up because the
+lookup would mount an automount point that nothing is mounted on yet, such as
+a home that is mounted on first use. Each gets a warning line,
+`not read: <path> (<reason>)`, and one line says to mount the automount
+points they name and run `check` again. While one is listed, `nails check`
+never says that nothing is inherited, and `inherited-autostart` warns that
+NAILS cannot tell what the hidden session would inherit there.
+`nails check --json` lists them as `inherited.not_read`, each with its `path`,
+the `reason` and the `automount_point` the lookup would have mounted, `null`
+for a lookup that failed:
+
+```json
+"not_read": [
+  {
+    "path": "/home/carol/.config/autostart",
+    "reason": "NAILS does not look up /home/carol/.config/autostart, since the lookup would mount the automount point /home/carol",
+    "automount_point": "/home/carol"
+  }
+]
+```
+
+Where NAILS cannot read the mount table, which shows where a lookup would
+mount an automount point, it looks up nothing, and the one place listed is
+`/proc/self/mountinfo`. At activation, an autostart entry NAILS could not read
+is masked only where `persona.mask_inherited` names it or holds `"*"`, and
+activation warns once, naming what it could not read.
+
 `persona.mask_inherited` lists entries to hide from the hidden session, or the
 single value `"*"` for every maskable entry:
 

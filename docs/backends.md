@@ -463,8 +463,11 @@ path, never by running cryptsetup: running `cryptsetup --version` on the decoy
 reads the binary and can stamp its access time, the trace described under
 [Backend tooling and history](decoy-requirements.md#backend-tooling-and-history).
 A check that is not running as root, or a host whose cryptsetup none of those
-name (Fedora's rpm database among them), skips the note. Tails 7 is based on
-Debian 13 and has its cryptsetup 2.7.5, so a
+name (Fedora's rpm database among them), skips the note. A database or profile
+link behind an automount point that nothing is mounted on yet is not looked up
+([What `check` touches](operator-guide.md#what-check-touches)): where nothing
+else names the version, the skipped note names that path and the point.
+Tails 7 is based on Debian 13 and has its cryptsetup 2.7.5, so a
 [first install from Tails](install-from-tails.md) needs PBKDF2 as well.
 
 Opening such a volume fails without naming the cause:
