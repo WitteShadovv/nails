@@ -214,8 +214,9 @@ fn an_install_at_shutdown_is_shown_on_the_decoy_in_both_forms() {
     let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
     assert_eq!(value["data"]["decoy_installs_at_shutdown"], false);
 
-    // Each cause has its line, and each sets the flag, as activation
-    // refuses each.
+    // Each cause has its line, and each sets the flag: activation refuses
+    // each, but for a doubt only a run without root has, which a run as root
+    // may pass.
     for (install, line) in [
         (
             InstallAtShutdown::On,

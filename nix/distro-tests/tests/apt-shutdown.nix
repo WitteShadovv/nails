@@ -121,6 +121,10 @@ distroVm.buildVmTest {
     # What the helper writes each time it starts without python3-gi, and at
     # the signal while apt refuses a file of its configuration.
     POLLING = "Unable to monitor PrepareForShutdown() signal, polling instead."
+    POLLING_HINT = (
+        "To enable monitoring the PrepareForShutdown() signal instead of polling "
+        + "please install the python3-gi package"
+    )
     APT_ERROR = "Apt returned an error thus shutdown mode is disabled"
     APT_ERROR_MESSAGE = "error message: 'E:Syntax error"
     # What it writes when it starts while apt refuses a file.
@@ -462,7 +466,7 @@ distroVm.buildVmTest {
     vm.wait_for_unit("multi-user.target")
     prepare_boot()
 
-    with subtest("the stock decoy passes both rows"):
+    with subtest("the stock decoy passes both rows, or warns of python3-gi"):
         print(vm.succeed("dpkg-query -W unattended-upgrades apt systemd"))
         vm.succeed("systemctl is-active unattended-upgrades.service")
         print(vm.succeed("ls -la /etc/apt/apt.conf.d"))
@@ -634,7 +638,7 @@ distroVm.buildVmTest {
         ) in refusal["message"], refusal
         mode_before = count(helper_log, SHUTDOWN_MODE)
 
-    with subtest("positive control: the helper installs at the switch with the line deleted"):
+    with subtest("positive control: the helper runs in shutdown mode at the switch with the line deleted"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         follow(
             f"{nails_cmd} activate -y --allow-persistent-decoy > /mnt/data/activate-3.log 2>&1",
@@ -708,13 +712,14 @@ distroVm.buildVmTest {
         journal = f"journalctl -b _SYSTEMD_INVOCATION_ID={invocation} --no-pager -o cat"
         vm.wait_until_succeeds(f"{journal} | grep -q -F {shlex.quote(START_ERROR)}", timeout=60)
         if vm.execute(f"test -e {gi_module}")[0] != 0:
-            vm.wait_until_succeeds(f"{journal} | grep -q -F {shlex.quote(POLLING)}", timeout=60)
+            for line in (POLLING, POLLING_HINT):
+                vm.wait_until_succeeds(f"{journal} | grep -q -F {shlex.quote(line)}", timeout=60)
         print(f"the restarted helper's journal:\n{vm.succeed(journal)}")
         written = vm.succeed(f"cat {helper_log}").splitlines()[lines_before:]
         print("the helper's lines on the decoy disk since the restart:")
         print("\n".join(written))
         assert not any("Apt returned an error" in line for line in written), written
-        assert not any(POLLING in line for line in written), written
+        assert not any(POLLING in line or POLLING_HINT in line for line in written), written
         vm.succeed(f"rm -f {refused_file} {setting_file}")
   '';
 }
