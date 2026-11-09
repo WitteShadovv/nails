@@ -1322,6 +1322,21 @@ afterwards:
     read where it is sourced when its path resolves, so it follows Home
     Manager's `dotDir`, whose `.zshenv` the home's sources and which sets
     `ZDOTDIR`;
+  - for the zsh you typed the command into, or likely typed it into, which
+    runs now, when its process started, as zsh keeps what it read as it
+    started: a file it reads or looks for that changed after that, by its
+    status change time, is a doubt. That counts each link on the way to it (a
+    NixOS rebuild replaces `/etc/zshrc` and `/etc/static`), the file it leads
+    to, and the directory zsh looks in for it and its compiled form, or for one
+    that is not there now the deepest directory on the way that is, which
+    changes as a file in it is made, removed or renamed (`rm ~/.zshrc`, or any
+    program that makes or removes a file in your home), from the second before
+    the shell started on; the Nix store, where nothing changes, is left out.
+    The time is that of the shell's process, which an `exec zsh` keeps, and a
+    step of the system clock forward after it can hide a change made before
+    the step by no more than the step. So after you change your startup files
+    or rebuild, type the decoy commands in a zsh you start then, with `zsh` or
+    in a new terminal;
   - an `fc` that writes the history file (`fc -A`, `fc -W`, `fc -P`, or
     `fc -p`, whose list zsh writes to its file as it pops it, with other flags
     too, as in `fc -AI`, and `history`, which takes the same flags) counts as a
@@ -1352,7 +1367,12 @@ afterwards:
     line (`sudo() { print -r -- "$*" >> ~/.zl }`, `alias sudo='logit; sudo'`),
     however a file defines it (`functions[sudo]=`, `aliases[sudo]=`, an `eval`,
     an autoload, a name in quotes; one whose name holds a backslash or a quote
-    past those zsh takes off is a hook too), the code
+    past those zsh takes off is a hook too), a function or a regular alias
+    named `run-help` or `which-command`, which the widgets of those names run
+    with the line you are typing on the buffer stack, where `read -z` reads it
+    back, as you press Alt-h or Alt-? or a key your files bind to them, or
+    named `run-help-` and a command, which zsh's own `run-help` hands the
+    line's words, the code
     `sched`, `zstyle -e` and `bindkey -s` run and the line `zle -U` and
     `print -z` type, the code of a function's own file and of a file a hook
     sources, a prompt theme that `prompt` runs from a hook, and a function or
@@ -1445,8 +1465,13 @@ afterwards:
     csh's and zsh's hold none of the three), zsh picking the mode by its first
     letter past one `r` (`ksh`, `rksh`, `korn`); an `emulate` whose flags or
     mode an expansion, brace expansion or a glob makes is a doubt;
-  - the file of each function they autoload (`autoload`, `functions -u`,
-    `typeset -fu`), by its path or by its name in each directory they add to
+  - the file of each function they autoload (`autoload`, `functions -u`, and
+    `typeset -fu`, `declare`, `local` and `readonly` with `-f` and `-u` or
+    `-U`, their options read as zsh reads a builtin's, of either sign before or
+    after the others, as in `typeset +f -u` and `readonly -fu`, and past one
+    that takes a number, as in `typeset -p 1 -fu` and `functions -x 2 -u`,
+    where a word an expansion makes is a doubt), by its path or by its name in
+    each directory they add to
     `fpath` and in those zsh's `fpath` starts with, where zsh looks for it as
     it first runs it, and in the directory of a function loaded by its path,
     which zsh puts in front of `fpath` for the functions that one autoloads
@@ -1503,9 +1528,12 @@ afterwards:
     the check reads, are doubts;
   - a function named `compinit` that zsh may load, one your files autoload
     that a directory of `fpath` holds or one they autoload by its path, is a
-    doubt whatever its bytes, so the check warns wherever your files run
-    `compinit`, as nearly every `.zshrc` does, and NixOS's `/etc/zshrc` does
-    with `programs.zsh.enableCompletion` on, as by default. It starts zsh's
+    doubt whatever its bytes, which names the files that autoload it, so the
+    check warns wherever your files autoload `compinit`, as nearly every
+    `.zshrc` does, and NixOS's `/etc/zshrc` does with
+    `programs.zsh.enableCompletion` on, as by default. Its code under another
+    name is read as the code of any function, which the check cannot follow
+    either. It starts zsh's
     completion system, whose own functions run what programs print as code as
     you complete a word (`_comp_locale` evaluates the `LC_CTYPE` line that
     `locale` prints, which `_call_program` runs for `ls <Tab>`), run the
@@ -1516,11 +1544,13 @@ afterwards:
     system has are among them: zsh 5.9 to 5.9.2 ran code of the operator's
     own as Tab completed `tar --zap=` with a `LANGUAGE` that names a message
     catalog of one's own, and `bash -o zap=` with a `BASH_ENV`. `compctl`,
-    whose completion runs without `compinit`, and bash's `complete`, which
-    `bashcompinit` defines, are doubts wherever they stand. Without them, a
-    widget that completes a word runs zsh's builtin completion, which runs no
-    code of your files but the function of a completion widget (`zle -C`),
-    which counts as a hook, as above;
+    whose completion runs without `compinit`, is a doubt wherever it stands.
+    Bash's `complete`, which `bashcompinit` defines, registers what it names
+    through `compdef`, which only `compinit` defines, so without `compinit` it
+    makes zsh run nothing. Without `compinit` and `compctl`, a widget that
+    completes a word runs zsh's builtin completion, which runs no code of your
+    files but the function of a completion widget (`zle -C`), which counts as
+    a hook, as above;
   - the options on the command line of the shell you typed the command into:
     one of the three it turns on (`zsh -o sharehistory`,
     `zsh --share-history`, `zsh -fo share_history`) counts as on, and
@@ -1664,7 +1694,8 @@ afterwards:
   whose work the check reads by its name to another name
   (`functions -c add-zsh-hook azh`), or when the shell is not bash, zsh, fish or
   dash (dash keeps no history file). It does not see a setting made by a plugin
-  manager's function, one you typed into the shell, a function or an alias
+  manager's function, one you typed into the shell, a change of bash's
+  startup files after the bash you typed into started, a function or an alias
   named like another command than those you type a NAILS command with
   (`mount`, `cryptsetup`), which zsh runs in that command's place where you
   type it, a global alias
@@ -1706,9 +1737,11 @@ afterwards:
   it warn, and so does an `eval` of what a command prints
   (`eval "$(tool init zsh)"`).
 
-  So zsh passes only when no file it reads names the three options and nothing
-  is left the check cannot tell: zsh's default, under which a zsh writes its
-  history only as it exits, which the kill at activation keeps it from doing.
+  So zsh passes only when no file it reads names the three options, nothing
+  is left the check cannot tell and, for the zsh you typed the command into,
+  nothing it read changed after it started: zsh's default, under which a zsh
+  writes its history only as it exits, which the kill at activation keeps it
+  from doing.
   Nearly every `.zshrc` autoloads `compinit`, which makes the check warn (see
   above), so a zsh started as `zsh -f` is in practice the one that passes. If
   you turn the options off
@@ -1722,9 +1755,13 @@ afterwards:
   `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default, and runs
   `compinit` there with `programs.zsh.enableCompletion` on, as by default. Take
   the option out of `programs.zsh.setOptions`, turn
-  `programs.zsh.enableCompletion` off and rebuild: then the zsh you type the
-  command into passes with the files `programs.zsh` generates, when your own
-  files hold nothing the check warns about (no `compinit` among it). An option
+  `programs.zsh.enableCompletion` off (or just
+  `programs.zsh.enableGlobalCompInit`, which leaves out the `compinit` line
+  and keeps the completions linked) and rebuild: then a zsh you start after
+  the rebuild passes with the files `programs.zsh` generates, when your own
+  files hold nothing the check warns about (no `compinit` among it). One that
+  ran before the rebuild keeps what it read then, and the check warns for it,
+  as `/etc/zshrc` changed after it started. An option
   that adds lines to them
   (`enableBashCompletion`, `autosuggestions`, `syntaxHighlighting`) can make it
   warn again. The check knows the lines NixOS generates there as they are

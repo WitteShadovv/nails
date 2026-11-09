@@ -852,7 +852,8 @@ of this changelog for that version becomes the release notes word for word, and
   them. `promptinit` is read for the themes it marks, the one `prompt` runs (`prompt suse`) and the
   `prompt_default_setup` that `prompt restore` runs, as a hook's code where a hook runs `prompt`,
   and may turn `PROMPT_SUBST` on. A `compinit` the files autoload stays a doubt wherever zsh may
-  load one, whatever its bytes: zsh's own completion functions run what programs print as code
+  load one, whatever its bytes, and the doubt names the files that autoload it: zsh's own
+  completion functions run what programs print as code
   (`_comp_locale` evaluates what `locale` prints, `_npm` what `npm` prints), run the actions they
   parse from the help programs print (`_arguments --`, as `_tar` uses it) and run code from the
   specifications, styles, parameters and files they read, and the programs and settings that may
@@ -867,8 +868,9 @@ of this changelog for that version becomes the release notes word for word, and
   it, and `ARGV0` or an `LD_` variable in the shell's environment, which the check must know), and
   the loop in `/etc/zshenv` that puts three directories of each Nix profile in front of `fpath`, are
   known as NixOS writes them, so with `SHARE_HISTORY` taken out of `programs.zsh.setOptions` and
-  `programs.zsh.enableCompletion` off, which leaves out the `compinit` line, a typed zsh passes with
-  the files `programs.zsh` generates. On NixOS the check reads the `/etc/zshenv.local` that the
+  `programs.zsh.enableCompletion` off (or `programs.zsh.enableGlobalCompInit` alone), which leaves
+  out the `compinit` line, a zsh started after the rebuild passes with the files `programs.zsh`
+  generates. On NixOS the check reads the `/etc/zshenv.local` that the
   zshenv nixpkgs builds into zsh reads, and `/etc/set-environment` where there is no `/etc/zshenv`,
   and the fix `zsh -f` names it. A zsh from elsewhere, or one the check reads without a typed shell,
   warns that it cannot tell where the functions the files autoload are, as before.
@@ -988,7 +990,25 @@ of this changelog for that version becomes the release notes word for word, and
   (`sudo`, `nails`, `/mnt/data/nails`, `activate`, `verify`, `--yes`: the name of every command
   `nails --help` lists, of `discard` and of their steps, and every option they and `nails` take)
   counts as used, as zsh puts its value in place of that word as the line is entered. zsh 5.9.2
-  wrote the line with each.
+  wrote the line with each. zsh 5.9, 5.9.1 and 5.9.2 wrote the line or kept `SHARE_HISTORY` on
+  with each of these too, and the check now reads them. A function that `readonly -f` marks to be
+  autoloaded, or `typeset`, `declare`, `local` and `functions` with an option of either sign before
+  or after the others or past one that takes a number (`readonly -fu`, `typeset +f -u`,
+  `declare +g -fU`, `functions +t -u`, `typeset -p 1 -fu`, `functions -x 2 -u`), is read as an
+  `autoload`'s, a `compinit` among them, the options read as zsh reads a builtin's, and a word where
+  they may stand that an expansion makes is a doubt. A function or a regular alias named `run-help`
+  or `which-command`, which the widgets of those names run with the line being typed on the buffer
+  stack as Alt-h, Alt-? or a key a file binds to them is pressed, or named `run-help-` and a
+  command, which zsh's own `run-help` hands the line's words, counts as a hook. `compctl`, whose
+  completion runs without `compinit` (a `-K` function that reads the line with `read -l`), is a
+  doubt wherever it stands. For the shell the command was typed into, or likely typed into, the
+  check reads when its process started, and a startup file, a file they source or a function's
+  file it reads or looks for that changed after that, by its status change time, is a doubt: the
+  file, each link on the way to it and the directory zsh looks in for it and its compiled form, or
+  for one that is not there now the deepest directory on the way that is, the Nix store aside. zsh
+  keeps what it read as it started, so a shell started before an edit, a removal or a NixOS
+  rebuild kept `SHARE_HISTORY` on and wrote each line while the check read the files as they are
+  now, and so did startup code that rewrites or removes a file after zsh read it.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
