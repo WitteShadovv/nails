@@ -456,6 +456,38 @@ fn an_fstab_behind_an_automount_point_refuses_with_the_mount_fix() {
     );
 }
 
+/// An fstab whose way the guard cannot read, here through a loop of links,
+/// is not looked up either: it cannot be read, and the check refuses with
+/// that error and the fix for a file root cannot read.
+#[test]
+fn an_fstab_whose_way_cannot_be_read_fails_the_policy_check() {
+    use crate::filesystem::RealFilesystem;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::os::unix::fs::symlink("etc", root.join("etc")).unwrap();
+    let check = FstabPolicyCheck::new(root.clone(), PathBuf::from("/mnt/data"));
+    let result = check.judge(
+        &RealFilesystem,
+        &automounts_below(&root, &[]),
+        &parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n"),
+    );
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().starts_with(&format!(
+            "{root}/etc/fstab cannot be read: {root}/etc/fstab: ",
+            root = root.display()
+        )) && result.message().contains("(os error 40)"),
+        "{result:?}"
+    );
+    assert!(
+        result
+            .remediation()
+            .is_some_and(|fix| fix.contains("make the decoy's fstab readable by root")),
+        "{result:?}"
+    );
+}
+
 /// Without the mount table nothing is looked up, and the check refuses.
 #[test]
 fn without_the_mount_table_the_policy_check_looks_up_nothing() {
