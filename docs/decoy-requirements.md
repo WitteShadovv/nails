@@ -131,12 +131,13 @@ the pending updates on the decoy disk at activation and logs that run there
 (see [Unattended upgrades](#unattended-upgrades)).
 
 The `unattended-upgrade-run` check refuses too, and no flag lifts its refusal:
-while a daily unattended-upgrade run is in progress, or `apt-daily.service`
-runs before its download takes the lock, the switch would make
+while a daily unattended-upgrade run is in progress, the switch would make
 unattended-upgrades' shutdown helper stop it and write
-`Unattended-upgrade in progress during shutdown` to its log on the decoy disk.
-Try again in a few minutes, once the run has ended (see
-[Unattended upgrades](#unattended-upgrades)).
+`Unattended-upgrade in progress during shutdown` to its log on the decoy disk,
+and while `apt-daily.service` runs before its download takes the lock, the
+helper does the same if the download run takes the lock between NAILS's last
+look and the helper's first. Try again in a few minutes, once the run has
+ended (see [Unattended upgrades](#unattended-upgrades)).
 
 The `locate-database` check refuses as well, and no flag lifts its refusal:
 an updatedb that runs now, or that a timer, a path unit, an enabled service or
@@ -758,9 +759,10 @@ comes. At activation two things then reach the decoy disk.
 
 **A daily run in progress.** When the signal comes while a run of
 unattended-upgrade holds its lock, `/run/unattended-upgrades.lock`, the helper
-sends the run SIGTERM and writes `Unattended-upgrade in progress during
-shutdown` to `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log`,
-and the run writes that it stops to `unattended-upgrades.log`, whatever
+sends the run SIGTERM and writes
+`Unattended-upgrade in progress during shutdown` to
+`/var/log/unattended-upgrades/unattended-upgrades-shutdown.log`, and the run
+writes that it stops to `unattended-upgrades.log`, whatever
 `Unattended-Upgrade::InstallOnShutdown` says. A run holds the lock while it
 plans, downloads and between its install steps, but APT blocks shutdown only
 while dpkg runs, so `shutdown-inhibitors` does not see it.
@@ -768,20 +770,21 @@ while dpkg runs, so `shutdown-inhibitors` does not see it.
 in the hour after 6:00, and after a boot that missed it). `apt-daily.service`
 runs `apt-get update` and then, with unattended-upgrades installed,
 `unattended-upgrade --download-only`, which takes the same lock: a switch made
-before that, past NAILS's last look, meets the lock when the helper looks for
-it, at once with python3-gi and up to 3 seconds after the signal without it.
-The `unattended-upgrade-run` check refuses while `apt-daily-upgrade.service`
-or `apt-daily.service` is active or a process holds the lock, and activation
-looks again right before it asks logind for the switch. No flag lifts it: try
-again in a few minutes, once the run has ended
-(`systemctl status apt-daily.service apt-daily-upgrade.service`). It tells
-the lock is held from the kernel's list of file locks, `/proc/locks`, by the
-lock file's device and inode, so the lock file is neither opened nor locked.
-When it cannot read them, it refuses as well, and so it does when the lock
-file is anything but a plain file: the helper opens it without following a
-link, so it cannot open a link, a directory or a socket there and takes that
-for a held lock, and NAILS refuses any other kind of file there too, as one it
-does not judge.
+while it runs meets that lock if the download run takes it between NAILS's
+last look and the helper's first look for it, a moment with python3-gi and up
+to 3 seconds after the signal without it. The `unattended-upgrade-run` check
+refuses while `apt-daily-upgrade.service` or `apt-daily.service` is active or
+a process holds the lock, and activation looks again right before it asks
+logind for the switch. No flag lifts it: try again in a few minutes, once the
+run has ended
+(`systemctl status apt-daily.service apt-daily-upgrade.service`). It tells the
+lock is held from the kernel's list of file locks, `/proc/locks`, by the lock
+file's device and inode, so the lock file is neither opened nor locked. When
+it cannot read them, it refuses as well, and so it does when the lock file is
+anything but a plain file: the helper opens it without following a link, so it
+cannot open a link, a directory or a socket there and takes that for a held
+lock, and NAILS refuses any other kind of file there too, as one it does not
+judge.
 
 **An install at shutdown.** With `Unattended-Upgrade::InstallOnShutdown` on,
 the helper reads apt's configuration again on the signal and runs an install
@@ -832,8 +835,12 @@ names a relative path or one with `..`, and when the processes run with
 different values. A `nails check` or `nails status` run without sudo cannot
 read the environment, so check refuses on every decoy whose helper runs and
 says to run it as root, and status says that NAILS cannot tell without root.
-Run them with sudo. The hidden session's own copy is read with the same file,
-as the session starts it from the same files of the decoy.
+Run them with sudo. Where the decoy's helper runs, the hidden session's own
+copy is read with the same file, as the session starts it from the same files
+of the decoy. With the decoy's helper stopped, no running process shows
+`APT_CONFIG`, so NAILS reads the session's copy without one: a variable that a
+drop-in of the unit or PID 1's environment would give it is not followed
+there.
 
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a line

@@ -17,9 +17,10 @@
 //! by `apt-daily-upgrade.service`, which runs a while before it takes the
 //! lock. `apt-daily.service` runs `apt-get update` first and then, with
 //! unattended-upgrades installed, `unattended-upgrade --download-only`, which
-//! takes the same lock: a switch made before that, past the last look, meets
-//! the lock when the helper looks for it, at once with python3-gi and up to
-//! 3 seconds after the signal without it.
+//! takes the same lock: a switch made while it runs meets that lock if the
+//! download run takes it between the last look and the helper's first look
+//! for it, a moment with python3-gi and up to 3 seconds after the signal
+//! without it.
 //!
 //! So activation is refused while `apt-daily-upgrade.service` or
 //! `apt-daily.service` is active or a process holds the lock, until the run
