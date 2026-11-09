@@ -56,8 +56,11 @@ pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
 /// judges `hidden` in `scene`, by kernel name: every device a claim names,
 /// and every device below it, each with what of the decoy's storage it holds
 /// (the first claim that reaches it). The decoy's entries for the hidden drive
-/// claim nothing here either, except an fstab entry the boot mounts. A RAM
-/// filesystem claims nothing, as the judge follows no device for it.
+/// claim nothing here either, except an fstab entry the boot mounts or swaps
+/// on, one for another device of the root's btrfs filesystem, and a line
+/// placed by its path, which claims the filesystem that holds its source or
+/// file. A RAM filesystem claims nothing, as the judge follows no device for
+/// it.
 pub fn claimed_devices(scene: &Scene<'_>, hidden: &MountEntry) -> BTreeMap<String, Claimed> {
     let mut claimed = BTreeMap::new();
     if is_ram(&hidden.fstype) {
