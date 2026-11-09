@@ -407,3 +407,28 @@ fn an_offline_scan_finds_a_dangling_link_at_a_decoy_path() {
     assert_eq!(finding.severity, Severity::Critical);
     assert_eq!(result.status, VerifyStatus::Critical);
 }
+
+/// A decoy path seen in the session whose copy in the upper cannot be
+/// looked up is taken for the decoy's: it keeps the registry's severity,
+/// and the guidance says verify could not tell which layer holds it.
+#[test]
+fn a_decoy_path_whose_upper_copy_cannot_be_looked_up_is_taken_for_a_decoy_trace() {
+    let fs = session_fs(Some(false));
+    stage_link(&fs, false);
+    let upper = format!("{UPPER}{STAGED_LINK}");
+    fs.mock_set_lookup_error(&upper, std::io::ErrorKind::PermissionDenied);
+    let result = session_verifier(&fs).run(false).unwrap();
+
+    let link = artifact(&result, STAGED_LINK).expect("the link is reported");
+    assert_eq!(link.severity, Severity::Critical);
+    let guidance = link.fix_guidance.as_deref().unwrap();
+    assert!(
+        guidance.starts_with(&format!(
+            "Taken for a trace on the decoy filesystem, seen through the hidden session: verify \
+             could not tell whether the hidden layer holds it, since {upper}: Mock: the lookup \
+             fails here. Deleting it here only hides it in the hidden layer"
+        )),
+        "{guidance}"
+    );
+    assert!(!guidance.contains("rm -rf"), "{guidance}");
+}
