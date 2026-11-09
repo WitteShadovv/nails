@@ -17,35 +17,6 @@ fn special_widget(widget: &Word) -> bool {
     widget.expands || widget.text.contains(['$', '`']) || widget.text.starts_with("zle-")
 }
 
-/// The builtin widgets that complete a word, which the stock `compinit`
-/// makes run the completion functions in `fpath` (`_main_complete`), and
-/// `menu-select` of zsh/complist.
-const COMPLETION_WIDGETS: &[&str] = &[
-    "accept-and-menu-complete",
-    "complete-word",
-    "delete-char-or-list",
-    "expand-or-complete",
-    "expand-or-complete-prefix",
-    "list-choices",
-    "menu-complete",
-    "menu-expand-or-complete",
-    "menu-select",
-    "reverse-menu-complete",
-];
-
-/// Whether `widget`, a widget's name as written, may complete a word, which
-/// runs completion functions the check does not read: one of
-/// [`COMPLETION_WIDGETS`], by its name or its builtin's (`.complete-word`),
-/// one whose name starts with `_`, as `compinit`'s and `compdef`'s do, or
-/// one an expansion names.
-pub(super) fn completes(widget: &Word) -> bool {
-    let name = widget.text.strip_prefix('.').unwrap_or(&widget.text);
-    widget.expands
-        || widget.text.contains(['$', '`'])
-        || name.starts_with('_')
-        || COMPLETION_WIDGETS.contains(&name)
-}
-
 /// Whether `word`, a name of a function, a widget or a hook as written, is
 /// one zsh may expand into another (`$n`, `{preexec,x}`, `preexe[c]`,
 /// `=ls`, `~/x`): it may then name any, a hook among them.
@@ -70,15 +41,10 @@ pub(super) fn hook_array(name: &str) -> bool {
 
 /// The functions of zsh's own whose work the check reads by the name a file
 /// runs them by: the hooks `add-zsh-hook` and `add-zle-hook-widget` make,
-/// the dump file `compinit` sources, what `compdef` binds and autoloads, the
-/// theme `prompt` runs, and what `promptinit` defines.
+/// the theme `prompt` runs, and what `promptinit` defines.
 const STOCK_NAMES: &[&str] = &[
     "add-zsh-hook",
     "add-zle-hook-widget",
-    "compinit",
-    "compdef",
-    "compaudit",
-    "compdump",
     "promptinit",
     "prompt",
     "prompt_cleanup",
@@ -99,11 +65,11 @@ const ZLE_OPERATIONS: &str = "lDANCRMUKIfFT";
 /// that starts with `-` holds options up to the first that does not or that
 /// is a `-` and a digit, `-` and `--` end them and are dropped, and `--N`
 /// reads as `-N`. The operation they
-/// pick ([`ZLE_OPERATIONS`]), if any, their letters and the words past them;
+/// pick ([`ZLE_OPERATIONS`]), if any, and the words past them;
 /// `Ok(None)` when a letter is none zle takes, with which it runs nothing;
 /// `Err` with a word where options may stand that an expansion, brace
 /// expansion or a glob may make other words of, which may be any option.
-type ZleOptions<'a> = (Option<char>, String, &'a [Word]);
+type ZleOptions<'a> = (Option<char>, &'a [Word]);
 fn zle_options(args: &[Word]) -> Result<Option<ZleOptions<'_>>, &Word> {
     let mut letters = String::new();
     let mut at = 0;
@@ -129,7 +95,7 @@ fn zle_options(args: &[Word]) -> Result<Option<ZleOptions<'_>>, &Word> {
         letters.push_str(flags);
     }
     let op = ZLE_OPERATIONS.chars().find(|op| letters.contains(*op));
-    Ok(Some((op, letters, &args[at..])))
+    Ok(Some((op, &args[at..])))
 }
 
 impl Walker<'_> {
@@ -146,7 +112,6 @@ impl Walker<'_> {
         for name in names {
             self.mention(&name.text);
             self.events.push(Event::Define(name.text.clone()));
-            self.events.push(Event::Function(name.text.clone()));
             if paren {
                 self.events.push(Event::NamedBody(name.text.clone()));
             }
@@ -169,10 +134,7 @@ impl Walker<'_> {
     /// The events of an `add-zsh-hook` or an `add-zle-hook-widget`
     /// (`command`) of `args`: the function it makes a hook, which zsh runs as
     /// commands are entered or end, or as each line is entered
-    /// ([`Event::Hook`]), and autoloads; one an expansion names is a doubt,
-    /// and so is a widget that completes a word ([`completes`]) that
-    /// `add-zle-hook-widget` makes run as each line is entered, which runs
-    /// completion functions the check does not read.
+    /// ([`Event::Hook`]), and autoloads; one an expansion names is a doubt.
     pub(super) fn hook(&mut self, command: &str, args: &[Word]) {
         for arg in args {
             self.mention(&arg.text);
@@ -194,17 +156,6 @@ impl Walker<'_> {
         let Some(function) = words.get(1) else {
             return;
         };
-        if command == "add-zle-hook-widget" && completes(function) {
-            // The hook runs the widget as each line is entered.
-            let line: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
-            self.events.push(Event::Doubt(format!(
-                "it cannot tell what the completion functions that `add-zle-hook-widget {}` in \
-                 {} runs as each line is entered write",
-                line.join(" "),
-                self.place
-            )));
-            return;
-        }
         self.events.push(Event::Hook(function.text.clone()));
         // Both autoload the function they add, which zsh then loads from
         // `fpath` unless the files define it; with `-d`, `-D` or `-L` they
@@ -224,11 +175,9 @@ impl Walker<'_> {
     /// `zle -F`'s, which run as zle prints and as a descriptor has input. One
     /// an expansion names is a doubt, and so is a word of its options that
     /// an expansion, brace expansion or a glob may make (`{-N,zle-line-finish}`),
-    /// which may be any. A widget that completes a word ([`completes`]) that
-    /// it runs (`zle complete-word`, `zle -w complete-word`) where a hook
-    /// runs, or makes run as a line is entered (`zle -A complete-word
-    /// accept-line`), runs completion functions the check does not read: a
-    /// doubt. A widget made, copied or deleted may change what typed keys do
+    /// which may be any, and so is a widget it makes run as each line is
+    /// entered with the function of another (`zle -A old zle-line-finish`). A
+    /// widget made, copied or deleted may change what typed keys do
     /// ([`Event::Rebind`]).
     pub(super) fn zle(&mut self, args: &[Word]) {
         for arg in args {
@@ -240,7 +189,7 @@ impl Walker<'_> {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        let (op, letters, words) = match zle_options(args) {
+        let (op, words) = match zle_options(args) {
             Ok(Some(read)) => read,
             // A flag zle does not take: it runs nothing.
             Ok(None) => return,
@@ -282,36 +231,15 @@ impl Walker<'_> {
             Some('C' | 'T' | 'F') => words.last().filter(|_| words.len() > 1),
             _ => None,
         };
-        if op == Some('A')
-            && (words.get(1).is_some_and(|widget| special_widget(widget))
-                || words.first().is_some_and(|widget| completes(widget)))
-            || (op == Some('F') && letters.contains('w') && function.is_some_and(|f| completes(f)))
-        {
+        if op == Some('A') && words.get(1).is_some_and(|widget| special_widget(widget)) {
             // `zle -A old zle-line-finish`: the widget runs as each line is
-            // entered, with the function of another; `zle -A complete-word
-            // accept-line`: a key that enters a line completes a word; `zle
-            // -Fw fd complete-word`: input on a descriptor completes one.
+            // entered, with the function of another.
             self.events.push(Event::Doubt(format!(
                 "it cannot tell which function `zle {}` in {} makes run as each line is entered",
                 line(),
                 self.place
             )));
             return;
-        }
-        if op.is_none()
-            && let Some(widget) = words.first()
-            && completes(widget)
-            && let Some(function) = self.function()
-        {
-            // `zle complete-word`, `zle -w complete-word`, as a hook runs it.
-            self.events.push(Event::HookDoubt {
-                doubt: format!(
-                    "it cannot tell what the completion functions that `zle {}` in `{function}` \
-                     in {} runs write",
-                    widget.text, self.place
-                ),
-                function,
-            });
         }
         if op == Some('U') {
             // `zle -U string`: what the string types runs as the line typed,
@@ -343,17 +271,7 @@ impl Walker<'_> {
                 "it cannot tell which function `zle ... {}` in {} makes a hook",
                 function.text, self.place
             ))),
-            Some(function) => {
-                self.events.push(Event::Hook(function.text.clone()));
-                // A completion widget's function, which zsh runs as a word is
-                // completed with it.
-                if op == Some('C') {
-                    self.events.push(Event::Completes {
-                        function: (*function).clone(),
-                        what: format!("zle {}", line()),
-                    });
-                }
-            }
+            Some(function) => self.events.push(Event::Hook(function.text.clone())),
             None => {}
         }
     }
@@ -394,7 +312,6 @@ impl Walker<'_> {
             }
             [from, to] if !computed_name(from) => {
                 self.events.push(Event::Define(to.text.clone()));
-                self.events.push(Event::Function(to.text.clone()));
                 // A name zsh may expand into another may be a hook's.
                 if computed_name(to) {
                     self.events.push(Event::Hook(to.text.clone()));

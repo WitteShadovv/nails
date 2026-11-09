@@ -9,7 +9,7 @@
 
 use super::super::arith::READ_AS_NUMBER;
 use super::super::backstop::Named;
-use super::{Event, PathChange, Walked};
+use super::{Event, Walked};
 
 /// The events of what `named`, what the lines of the file at `place` name,
 /// holds beyond what the walk read of its code: `read`, the options its
@@ -47,9 +47,6 @@ pub(super) fn beyond(named: &Named, read: &[usize; 3], walked: &Walked, place: &
             first: false,
         });
     }
-    if named.paths > walked.paths {
-        events.push(Event::Path(PathChange::Unread));
-    }
     if named.fcs > walked.fcs {
         events.push(Event::Doubt(format!(
             "it cannot follow an `fc` that a line of {place} may run, which can write the \
@@ -83,12 +80,6 @@ pub(super) fn beyond(named: &Named, read: &[usize; 3], walked: &Walked, place: &
              arithmetic each time it uses it, so that it may run code",
             READ_AS_NUMBER.join(", ")
         )));
-    }
-    if named.code_params > walked.code_params {
-        events.push(Event::CodeParameter {
-            name: String::new(),
-            local: false,
-        });
     }
     if named.alias_params > walked.alias_params {
         events.push(Event::Doubt(format!(

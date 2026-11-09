@@ -42,14 +42,6 @@ pub(super) enum Given {
 /// written (`'$fpath'`). A subscript outside braces (`$fpath[1]`) is an
 /// element only while `KSH_ARRAYS` is off ([`Event::FpathSplits`]).
 fn holds_fpath(word: &Word, given: Given) -> bool {
-    holds_tied(word, given, "fpath", "FPATH")
-}
-
-/// Whether `word`, an element given the array `array` where `given` says,
-/// stands for what `array` or the scalar `scalar` it is tied to holds, or
-/// some of it, each element as it is, as [`holds_fpath`] reads it for
-/// `fpath` and `FPATH` (`$path`, `$PATH` as a part of `PATH`'s value).
-pub(super) fn holds_tied(word: &Word, given: Given, array: &str, scalar: &str) -> bool {
     let Some(rest) = word.text.strip_prefix('$').filter(|_| word.expands) else {
         return false;
     };
@@ -89,13 +81,11 @@ pub(super) fn holds_tied(word: &Word, given: Given, array: &str, scalar: &str) -
             matches!(key, "@" | "*") || (key.split(',').count() == 2 && key.split(',').all(number))
         })
         || (braced && after.starts_with(":#"));
-    match given {
-        Given::Array if name == array && !word.quoted => elements,
-        Given::Array if name == array => {
-            one || (braced && (key == Some("@") || flags.contains('@')))
-        }
-        _ if name == array => one,
-        Given::Parts if name == scalar => after.is_empty(),
+    match (name, given) {
+        ("fpath", Given::Array) if !word.quoted => elements,
+        ("fpath", Given::Array) => one || (braced && (key == Some("@") || flags.contains('@'))),
+        ("fpath", _) => one,
+        ("FPATH", Given::Parts) => after.is_empty(),
         _ => false,
     }
 }

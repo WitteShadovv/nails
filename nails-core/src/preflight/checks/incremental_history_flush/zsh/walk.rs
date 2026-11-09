@@ -24,15 +24,12 @@ mod keys;
 mod loops;
 mod names;
 mod options;
-mod path;
 mod sets;
 mod strings;
-mod styles;
 mod unread;
 
 pub(super) use super::builtins::HOOKS;
-pub(super) use event::{Arith, Event, Input, PathChange};
-pub(super) use fpath::PROFILE_DIRS;
+pub(super) use event::{Arith, Event, Input};
 pub(super) use hooks::may_expand;
 pub(super) use strings::{PROMPTS, expands};
 
@@ -175,10 +172,6 @@ struct Walker<'a> {
     autoloads: usize,
     /// How often it read `fpath` or `FPATH` set ([`backstop::fpath_writes`]).
     fpaths: usize,
-    /// How often it read `path` or `PATH` set, declared or unset, and a
-    /// `hash` or `commands` set or declared
-    /// ([`super::programs::path_writes`], [`super::programs::hash_writes`]).
-    paths: usize,
     /// How many `fc` commands it read that write the history file or whose
     /// words it cannot read.
     fcs: usize,
@@ -196,13 +189,6 @@ struct Walker<'a> {
     /// How often it read a parameter of [`super::arith::READ_AS_NUMBER`] set,
     /// declared or unset ([`backstop::number_writes`]).
     numbers: usize,
-    /// How often it read a parameter whose name zsh's own completion
-    /// functions may make or keep code in assigned with an `=`
-    /// ([`super::completion::code_parameter_writes`]), and whether the words
-    /// being read declare parameters of a function's own (`local`, a
-    /// `typeset` in a function).
-    code_params: usize,
-    declaring_local: bool,
     /// The function the code walked runs in, for code a command of a
     /// function runs from a string (`eval`, a trap's).
     outer: Option<String>,
@@ -447,35 +433,6 @@ impl Walker<'_> {
         Some((name.text.clone(), expands))
     }
 
-    /// Note that the code sets the parameter `name` of
-    /// [`super::completion::by_shape`], which zsh's own completion functions
-    /// may read as code; `local` when it is a function's own.
-    fn code_parameter(&mut self, name: &str, local: bool) {
-        self.events.push(Event::CodeParameter {
-            name: name.to_string(),
-            local,
-        });
-    }
-
-    /// Whether the command being read declares parameters of a function's
-    /// own: in a function, a `local` or `private`, or a `typeset`,
-    /// `declare`, `integer`, `float` or `readonly` without `-g` or `-x`, as
-    /// zsh makes them local there.
-    fn declares_local(&self) -> bool {
-        let Some((command, flags)) = self.pending.words.split_first() else {
-            return false;
-        };
-        self.function().is_some()
-            && match command.text.as_str() {
-                "local" | "private" => true,
-                "typeset" | "declare" | "integer" | "float" | "readonly" => !flags
-                    .iter()
-                    .take_while(|flag| flag.text.starts_with(['-', '+']))
-                    .any(|flag| flag.expands || flag.text.contains(['g', 'x', '$', '`'])),
-                _ => false,
-            }
-    }
-
     /// The name of the function whose body the walk is in, when it is in
     /// one with a name.
     fn function(&self) -> Option<String> {
@@ -660,11 +617,6 @@ impl Walker<'_> {
                 self.hook_value(item);
             }
         }
-        if super::completion::by_shape(&name) {
-            self.code_params += 1;
-            let local = self.declares_local();
-            self.code_parameter(&name, local);
-        }
         let functions = matches!(name.as_str(), "functions" | "dis_functions");
         let aliases = command::ALIAS_PARAMETERS.contains(&name.as_str());
         if functions || aliases {
@@ -706,28 +658,6 @@ impl Walker<'_> {
             if append || !self.profiles_fpath(&items) {
                 self.fpath_items(&items, append, fpath::Given::Array);
             }
-        }
-        // Where zsh looks for the programs it runs by name, wherever the
-        // array puts each element (`path[1,0]=(...)` too), and zsh's table of
-        // the program it runs for each name.
-        match command::assigned(&name) {
-            "path" => {
-                self.paths += 1;
-                self.path_items(&items);
-            }
-            "PATH" => {
-                // A scalar's value as an array: what zsh makes of it the
-                // check cannot follow.
-                self.paths += 1;
-                self.events
-                    .push(Event::Path(PathChange::Unfollowed(format!("{name}=(...)"))));
-            }
-            "commands" => {
-                self.paths += 1;
-                self.events
-                    .push(Event::Path(PathChange::Hashed(format!("{name}=(...)"))));
-            }
-            _ => {}
         }
         let literal: Option<Vec<String>> = items
             .iter()
@@ -918,14 +848,12 @@ struct Walked {
     zdotdirs: usize,
     autoloads: usize,
     fpaths: usize,
-    paths: usize,
     fcs: usize,
     nix_profiles: usize,
     indirects: usize,
     hooks: usize,
     prompts: usize,
     numbers: usize,
-    code_params: usize,
     alias_params: usize,
     function_params: usize,
     may_stop: bool,
@@ -963,15 +891,12 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         zdotdirs: 0,
         autoloads: 0,
         fpaths: 0,
-        paths: 0,
         fcs: 0,
         nix_profiles: 0,
         indirects: 0,
         hooks: 0,
         prompts: 0,
         numbers: 0,
-        code_params: 0,
-        declaring_local: false,
         outer,
         pending: Pending {
             feeders: Some(Vec::new()),
@@ -1007,14 +932,12 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         zdotdirs: walker.zdotdirs,
         autoloads: walker.autoloads,
         fpaths: walker.fpaths,
-        paths: walker.paths,
         fcs: walker.fcs,
         nix_profiles: walker.nix_profiles,
         indirects: walker.indirects,
         hooks: walker.hooks,
         prompts: walker.prompts,
         numbers: walker.numbers,
-        code_params: walker.code_params,
         alias_params: walker.alias_params,
         function_params: walker.function_params,
         may_stop: walker.may_stop,

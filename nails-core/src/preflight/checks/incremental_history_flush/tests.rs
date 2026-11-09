@@ -1239,30 +1239,26 @@ fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
 #[test]
 fn a_typed_zsh_is_read_with_its_program_and_environment() {
     use crate::filesystem::PathKind;
-    // A zsh 5.9.2 from the Nix store, whose own directory holds compinit as
-    // a test takes the stock one, and a .zshrc that runs it.
+    // A zsh 5.9.2 from the Nix store, whose own directory holds promptinit
+    // as a test takes the stock one, and a .zshrc that runs it.
     let zsh = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-zsh-5.9.2";
     let own = format!("{zsh}/share/zsh/5.9.2/functions");
     let fs = MockFilesystem::new();
     seed(&fs, &format!("{zsh}/bin/zsh"), &format!("\0{own}\0"));
     fs.mock_set_path_type(&own, PathKind::Dir);
-    for name in ["compinit", "compaudit", "compdump"] {
-        seed(
-            &fs,
-            &format!("{own}/{name}"),
-            &format!("# The stock {name} of a test.\ntypeset -A _i_test\n"),
-        );
-    }
+    seed(
+        &fs,
+        &format!("{own}/promptinit"),
+        "# The stock promptinit of a test.\ntypeset -A _i_test\n",
+    );
     fs.mock_set_directory_contents(
         std::path::Path::new(&own),
-        ["compinit", "compaudit", "compdump"]
-            .map(|name| PathBuf::from(format!("{own}/{name}")))
-            .to_vec(),
+        vec![PathBuf::from(format!("{own}/promptinit"))],
     );
     seed(
         &fs,
         "/home/alice/.zshrc",
-        "autoload -Uz compinit && compinit\n",
+        "autoload -Uz promptinit && promptinit\n",
     );
     let shell = |environment: Option<Vec<(String, String)>>| InspectedShell {
         exe: Some(PathBuf::from(format!("{zsh}/bin/zsh"))),
@@ -1274,14 +1270,33 @@ fn a_typed_zsh_is_read_with_its_program_and_environment() {
         "{:?}",
         run(&fs, shell(Some(Vec::new())))
     );
-    // Without its environment, where zsh may find compinit is a doubt.
-    assert!(warning(run(&fs, shell(None))).contains("(`compinit`)"));
+    // Without its environment, where zsh may find promptinit is a doubt.
+    assert!(warning(run(&fs, shell(None))).contains("(`promptinit`)"));
     // An FPATH there names where zsh finds it.
     let fpath = vec![("FPATH".to_string(), "/home/alice/.zfunc".to_string())];
-    seed(&fs, "/home/alice/.zfunc/compinit", "setopt share_history\n");
+    seed(
+        &fs,
+        "/home/alice/.zfunc/promptinit",
+        "setopt share_history\n",
+    );
     assert!(
         warning(run(&fs, shell(Some(fpath))))
-            .contains("/home/alice/.zfunc/compinit names SHARE_HISTORY")
+            .contains("/home/alice/.zfunc/promptinit names SHARE_HISTORY")
+    );
+    // A compinit there is a doubt of what zsh runs as you complete a word.
+    seed(
+        &fs,
+        &format!("{own}/compinit"),
+        "# The compinit of a test.\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "autoload -Uz compinit && compinit\n",
+    );
+    assert!(
+        warning(run(&fs, shell(Some(Vec::new()))))
+            .contains("it cannot tell what zsh runs as you complete a word")
     );
 }
 
@@ -1298,7 +1313,6 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
                 ("FPATH", "/a:/b"),
                 ("USER", "alice"),
                 ("NIX_PROFILES", "/p q"),
-                ("_compdir", "/c"),
                 ("ZDOTDIR", "/z"),
             ]
             .map(|(name, value)| (name.to_string(), value.to_string()))
@@ -1328,22 +1342,14 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
         )
     );
     assert_eq!(environment(b"OLD_PATH=/x\0").map(|env| env.len()), Some(0));
-    // PATH is kept as it is, where zsh looks for the programs its own
-    // completion functions run, and one that is no UTF-8 with it replaced,
-    // which names a directory the check takes for one it cannot name.
+    // PATH is none the check keeps, in any form.
     assert_eq!(
         environment(b"PATH=/run/wrappers/bin::bin\0MANPATH=/m\0"),
-        Some(vec![(
-            "PATH".to_string(),
-            "/run/wrappers/bin::bin".to_string()
-        )])
+        Some(Vec::new())
     );
     assert_eq!(
         environment(b"PATH=/home/alice/b\xffn:/usr/bin\0"),
-        Some(vec![(
-            "PATH".to_string(),
-            "/home/alice/b\u{fffd}n:/usr/bin".to_string()
-        )])
+        Some(Vec::new())
     );
     // The prompts zsh takes from its environment are kept, and a prompt's
     // or MAILPATH's value that is no UTF-8 with it replaced, as the check

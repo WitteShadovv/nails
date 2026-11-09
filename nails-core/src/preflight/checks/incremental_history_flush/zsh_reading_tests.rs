@@ -248,22 +248,18 @@ fn a_zstyle_s_definition_past_a_dash_is_read() {
 
 #[test]
 fn zle_s_options_are_read_as_zsh_reads_them() {
-    // zsh 5.9.2 runs complete-word with each of these flags, which pick no
-    // operation of zle, as each line is entered, and makes w the function of
-    // zle-line-finish with `-aN` and `--N`: each writes each command line to
-    // the history file, with a completer that appends $BUFFER to it.
-    for flags in ["-w", "-m", "-a", "-c", "-g", "-r", "-L", "-wL", "--w"] {
-        let rc = format!("f() {{ zle {flags} complete-word }}\nzle -N zle-line-finish f\n");
-        assert!(warns(&rc), "{rc}");
-    }
+    // zsh 5.9.2 makes w the function of zle-line-finish with `-aN` and
+    // `--N`, which writes each command line to the history file.
     for flags in ["-aN", "--N", "-N --", "-wN"] {
         let rc = format!("w() {{ print -r -- $BUFFER >>~/.zl }}\nzle {flags} zle-line-finish w\n");
         assert!(warns(&rc), "{rc}: {:?}", read(&rc));
     }
-    // A widget that does not complete, a flag zle does not take, and one
-    // that makes no widget.
+    // A widget it runs (zsh's builtin completion, without compinit, runs no
+    // code of the files), a flag zle does not take, and one that makes no
+    // widget.
     for rc in [
         "f() { zle -w reset-prompt }\nzle -N zle-line-finish f\n",
+        "f() { zle -w complete-word }\nzle -N zle-line-finish f\n",
         "zle -X complete-word\n",
         "zle -l\nzle -R\n",
     ] {

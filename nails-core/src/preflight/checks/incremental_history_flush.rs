@@ -31,11 +31,10 @@
 //! change. It never reads a history file. Of the shell the command was typed
 //! into it also reads, from `/proc`, the program it runs and the few
 //! variables of its environment that tell where zsh finds the functions it
-//! autoloads, the programs it runs by name (`PATH`) and the user's startup
-//! files, the prompts zsh takes from it and the parameters it reads as
-//! arithmetic each time it uses them (`TMOUT`) ([`zsh::Install`]). What it
-//! cannot
-//! read or follow makes it warn that it cannot tell. Of zsh, any mention of an
+//! autoloads and the user's startup files, the prompts zsh takes from it and
+//! the parameters it reads as arithmetic each time it uses them (`TMOUT`)
+//! ([`zsh::Install`]). What it cannot read or follow makes it warn that it
+//! cannot tell. Of zsh, any mention of an
 //! option counts as on, a turn-off too, as no reading of the files shows that
 //! one holds, so the fix it gives is one it can see: a zsh started as
 //! `zsh -f`, which reads `/etc/zshenv` alone (and `/etc/zshenv.local` on
@@ -242,11 +241,10 @@ impl InspectedShell {
 /// loader is set, kept as [`zsh::LOADER`] without its value. `None` when one
 /// of them holds what is no UTF-8, a path the check cannot name as zsh reads
 /// it; the value of a prompt, `MAILPATH`, `NULLCMD` or `READNULLCMD`, which
-/// the check reads only for an expansion in it or not at all, of a
+/// the check reads only for an expansion in it or not at all, and of a
 /// parameter zsh reads as arithmetic each time it uses it (`TMOUT`), which
-/// it reads only for whether it is a number, and of one zsh's own completion
-/// functions may read as code (`debug_fd`, `_patch_args`), is kept with what
-/// is no UTF-8 replaced ([`zsh::lossy`]).
+/// it reads only for whether it is a number, is kept with what is no UTF-8
+/// replaced ([`zsh::lossy`]).
 fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
     let mut found: Vec<(String, String)> = Vec::new();
     for entry in bytes.split(|byte| *byte == 0) {
@@ -327,8 +325,7 @@ fn kind(program: &str) -> Kind {
 /// nixpkgs `/etc/zshenv.local` too on NixOS. A fix in the startup
 /// files is none it could see on NixOS or with Home Manager, whose generated
 /// files name the options whether they turn them on or off, or hold what the
-/// check cannot follow (an `eval` of `dircolors`'s output, a `compinit` from
-/// directories added to `fpath` it cannot resolve).
+/// check cannot follow (a `compinit`, whose completion code it cannot read).
 const ZSH_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, which reads no \
                        startup file but /etc/zshenv and, on NixOS, /etc/zshenv.local.";
 

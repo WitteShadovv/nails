@@ -27,19 +27,15 @@
 //! front of `fpath` holds, which zsh then finds in a directory it was built
 //! with or one `FPATH` names; an element of `fpath` that is empty, or that
 //! `SH_WORD_SPLIT` or `KSH_ARRAYS` may change, is one the check cannot follow.
-//! A stock function of zsh's own is read for what
-//! its code does ([`stock`]): `compinit` and `promptinit` mark functions that
-//! zsh runs only when they are run by name, as hooks or, for completion
-//! functions, as a word is completed, which the check reads where the files
-//! run them. Those of zsh's own and of the Nix profiles it takes for
-//! harmless, and what may make zsh run completion code of the files' own as
-//! a word is completed is a doubt ([`completion`]), and so is a directory of
-//! `PATH` that holds a program of the operator's own, which zsh's own
-//! completion functions may run by name and whose output some run as code
-//! ([`programs`]). NixOS's dircolors line in
-//! `/etc/zshrc` is left out while nothing
-//! that runs before it may change what it runs ([`shadows`]). zsh runs
-//! compiled code in place of a file, or of a
+//! A stock function of zsh's own is read for what its code does ([`stock`]):
+//! `promptinit` marks the prompt themes, which zsh runs only as `prompt`
+//! runs them, which the check reads where the files run it. A function named
+//! `compinit` that zsh may load is a doubt ([`completion`]): it starts zsh's
+//! completion system, whose own functions run what programs print as code as
+//! you complete a word, and the programs and settings that may change what
+//! they print cannot all be listed. NixOS's dircolors line in `/etc/zshrc` is
+//! left out while nothing that runs before it may change what it runs
+//! ([`shadows`]). zsh runs compiled code in place of a file, or of a
 //! directory's functions, when a `.zwc` is beside it, and the check cannot read
 //! that code, so such a `.zwc` is a doubt, and so is a path zsh expands into
 //! others (a glob, `{a,b}`).
@@ -103,13 +99,11 @@ mod backstop;
 mod builtins;
 mod command_line;
 mod completion;
-mod dump;
 mod functions;
 mod install;
 mod lexer;
 mod made;
 mod paths;
-mod programs;
 mod reading;
 mod runs;
 mod shadows;
@@ -164,11 +158,6 @@ struct Reader<'a, F: Filesystem> {
     /// The directories the user's own startup files may be in; empty once a
     /// file set `ZDOTDIR` to something the check cannot follow.
     zdotdirs: Vec<PathBuf>,
-    /// Every directory `ZDOTDIR` may have named as the files were read, and
-    /// whether it named one the check cannot follow: `compinit` reads its
-    /// dump file in the one in force as it runs.
-    zdotdirs_seen: Vec<PathBuf>,
-    zdotdir_lost: bool,
     /// Whether the shell's environment or a file read may set `ZDOTDIR`,
     /// which zsh expands to nothing while neither does (`$ZDOTDIR/x`).
     zdotdir_set: bool,
@@ -184,24 +173,6 @@ struct Reader<'a, F: Filesystem> {
     fpath: Vec<Result<(PathBuf, bool), String>>,
     /// The functions the files read autoload by name.
     autoloads: Vec<String>,
-    /// The directories the files read put in `PATH`, where zsh looks for the
-    /// programs it runs by name, as written, where, and whether a quote or a
-    /// backslash may keep a `~` that starts one as written; each directory
-    /// they may name, or the doubt that a change of `PATH` the check cannot
-    /// follow is, should they run the stock `compinit` ([`programs`]); the
-    /// elements given `path` that `SH_WORD_SPLIT` may split
-    /// ([`walk::PathChange::Splits`]), as written and where; and, for each
-    /// file being followed beside [`Reader::stack`], whether it holds a
-    /// `\~`, after which a `~` that starts a word may be one zsh keeps as
-    /// written.
-    path_words: Vec<(Word, String, bool)>,
-    /// Where a file read first sets a variable of the dynamic loader
-    /// (`LD_PRELOAD`) or `ARGV0`, which may make any program zsh's own
-    /// completion functions run print other code ([`programs`]).
-    loader_set: Option<String>,
-    path: Vec<Result<PathBuf, String>>,
-    path_splits: Vec<(String, String)>,
-    escaped_tildes: Vec<bool>,
     /// What writes the history file otherwise than the options, as the
     /// warning names it (`/etc/zshrc names \`fc -AI\``).
     fc: Vec<String>,
@@ -232,9 +203,6 @@ struct Reader<'a, F: Filesystem> {
     profile_fpath: Vec<(String, String, bool, String)>,
     /// Where a file read may set `TTY` ([`backstop::names_tty_write`]).
     tty_set: Option<String>,
-    /// Where a file read as code names `_compdir`, which picks the
-    /// directory whose own the stock `compaudit` may put in `fpath`.
-    compdir: Option<String>,
     /// Whether a file read may set `ZSH_VERSION`.
     version_set: bool,
     /// Whether a file read may set `HOME`, `USER` or `XDG_STATE_HOME`,
@@ -252,9 +220,6 @@ struct Reader<'a, F: Filesystem> {
     /// name, the word that defines it and where, whose value runs where a
     /// token of the code is its name.
     global_alias_defs: Vec<(String, String, String)>,
-    /// The forms of the dump files read as data, whose words but the quoted
-    /// ones a global alias may stand for.
-    dump_texts: Vec<Forms>,
     /// The lines keys type as zsh reads them (`bindkey -s`, `zle -U`), and
     /// where, and where a file first binds a key a line is typed with or
     /// changes a keymap, which may make them type others.
@@ -270,11 +235,10 @@ struct Reader<'a, F: Filesystem> {
     unset: Vec<String>,
     /// The files the check would read that are not there now, and the
     /// words the files source and test, the paths of the functions they
-    /// autoload among them, and give compinit after `-d` ([`Reader::made`]).
+    /// autoload among them ([`Reader::made`]).
     missing: Vec<(PathBuf, usize)>,
     read_files: Vec<(PathBuf, usize)>,
     known_files: Vec<String>,
-    compinit_dumps: Vec<String>,
     /// The writes to a path an expansion makes (`cp ~/.src $f`, `> $f`):
     /// its last part, what the warning names, where in the files read it is
     /// and the function it is in; the commands the files run where no
@@ -307,18 +271,8 @@ struct Reader<'a, F: Filesystem> {
     calls: Vec<(String, Vec<Word>, String)>,
     /// Each function the files define and a command it runs by name.
     edges: Vec<(String, String)>,
-    /// The stock functions of zsh's own the files autoload ([`Stock`]):
-    /// `compinit`, `compaudit` and `promptinit`.
-    compinit: bool,
-    compaudit: bool,
+    /// Whether the files autoload the stock `promptinit` ([`stock::Stock`]).
     promptinit: bool,
-    /// The completion functions a dump file marks to be autoloaded.
-    dump_marks: Vec<String>,
-    /// The dump files read, the directories `compaudit` was looked at for,
-    /// and those whose completion functions' first lines were read.
-    dumps: Vec<PathBuf>,
-    audited: Vec<PathBuf>,
-    first_lines_read: Vec<PathBuf>,
     /// What the files read may change what a later command runs with
     /// ([`Changer`]), what of it came before each dircolors line of NixOS's
     /// `/etc/zshrc` taken as known ([`Snapshot`]), and how many were noted
@@ -342,9 +296,6 @@ struct Reader<'a, F: Filesystem> {
     keys_splits: Vec<(String, String, String)>,
     /// What the files read may change of how zsh reads code ([`reading`]).
     reading: reading::Reading,
-    /// What the files hold that zsh's completion system may run
-    /// ([`completion`]).
-    completion: completion::Seen,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -410,21 +361,13 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// Note what the lines of `text`, the file at `place`, may set that the
     /// check reads beside its code, in any form zsh may read their words in
-    /// ([`Forms`]): `TTY`, `ZSH_VERSION`, `HOME`, `_compdir`, the names the
-    /// files use.
+    /// ([`Forms`]): `TTY`, `ZSH_VERSION`, `HOME`, the names the files use.
     fn lines(&mut self, text: &str, place: &str) -> Forms {
         let forms = Forms::of(text);
         if self.tty_set.is_none() && forms.writes("TTY") > 0 {
             self.tty_set = Some(place.to_string());
         }
         self.version_set |= forms.writes("ZSH_VERSION") > 0;
-        // What may make any program print other code: a variable of the
-        // dynamic loader, and the name zsh gives every program it runs.
-        if self.loader_set.is_none()
-            && (forms.most(backstop::loader_writes) > 0 || forms.writes("ARGV0") > 0)
-        {
-            self.loader_set = Some(place.to_string());
-        }
         // What NixOS's set-environment writes NIX_PROFILES with.
         self.profile_vars_set |= ["HOME", "USER", "XDG_STATE_HOME"]
             .iter()
@@ -432,11 +375,8 @@ impl<F: Filesystem> Reader<'_, F> {
         if forms.writes("HOME") > 0 {
             self.doubt(format!(
                 "it cannot follow the HOME that {place} may set, which changes where zsh reads \
-                 the user's startup files and the dump file compinit sources"
+                 the user's startup files"
             ));
-        }
-        if self.compdir.is_none() && forms.uses("_compdir") > 0 {
-            self.compdir = Some(place.to_string());
         }
         // Parameters whose values zsh runs or loads code from: the messages
         // MAILPATH names, which it expands before a prompt, the command it
@@ -517,7 +457,6 @@ impl<F: Filesystem> Reader<'_, F> {
         self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
         let forms = self.lines(text, &place);
-        self.completion.parameters(text, &forms, &place);
         self.reading(text, &forms, &place);
         self.shadows(&forms, &place, outer.as_deref());
         if backstop::names_any(text, &["globsubst"]) {
@@ -531,11 +470,9 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         self.stack.push(path.to_path_buf());
         self.outers.push(outer);
-        self.escaped_tildes.push(text.contains("\\~"));
         for event in read.events {
             self.apply(event, &place, certain && !read.confused);
         }
-        self.escaped_tildes.pop();
         self.outers.pop();
         self.stack.pop();
     }
@@ -622,14 +559,6 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
             }
             Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
-            Event::Completes { function, what } => self.completion.completes(function, what, place),
-            Event::Style(doubt) => self.completion.style(doubt),
-            Event::Function(name) => self.completion.function(name, place),
-            Event::CodeParameter { name, local } => {
-                if !local {
-                    self.completion.code_parameter(name, place);
-                }
-            }
             event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
                 self.reading_event(event, place);
             }
@@ -693,7 +622,6 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
                 self.autoload(function, place);
             }
-            Event::Path(change) => self.path_change(change, place),
             Event::Fc(command) => {
                 let what = format!("{place} names `{command}`");
                 if !self.fc.contains(&what) {
@@ -947,9 +875,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         fs,
         home,
         options: Default::default(),
-        zdotdir_lost: zdotdirs.is_empty(),
         zdotdir_set: env.is_some_and(|env| env.zdotdir.is_some()),
-        zdotdirs_seen: zdotdirs.clone(),
         zdotdirs,
         xdg_config_homes: vec![None],
         stack: Vec::new(),
@@ -960,11 +886,6 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
             .map(|dir| Ok((dir.clone(), false)))
             .collect(),
         autoloads: Vec::new(),
-        path_words: Vec::new(),
-        loader_set: None,
-        path: Vec::new(),
-        path_splits: Vec::new(),
-        escaped_tildes: Vec::new(),
         fc: Vec::new(),
         hooks: Vec::new(),
         in_functions: Vec::new(),
@@ -976,15 +897,11 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         profiles,
         profile_fpath: Vec::new(),
         tty_set: None,
-        compdir: env
-            .and_then(|env| env.compdir.as_ref())
-            .map(|_| "the shell's environment".to_string()),
         version_set: false,
         profile_vars_set: false,
         expanding: Vec::new(),
         devices: Vec::new(),
         global_alias_defs: Vec::new(),
-        dump_texts: Vec::new(),
         typed_keys: Vec::new(),
         rebound: None,
         arith: Vec::new(),
@@ -994,7 +911,6 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         missing: Vec::new(),
         read_files: Vec::new(),
         known_files: Vec::new(),
-        compinit_dumps: Vec::new(),
         writes: Vec::new(),
         top_calls: Vec::new(),
         order: 0,
@@ -1006,13 +922,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         computed_calls: Vec::new(),
         calls: Vec::new(),
         edges: Vec::new(),
-        compinit: false,
-        compaudit: false,
         promptinit: false,
-        dump_marks: Vec::new(),
-        dumps: Vec::new(),
-        audited: Vec::new(),
-        first_lines_read: Vec::new(),
         changers: Vec::new(),
         dircolors: Vec::new(),
         startup_changers: 0,
@@ -1022,7 +932,6 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         fpath_splits: Vec::new(),
         keys_splits: Vec::new(),
         reading: reading::Reading::default(),
-        completion: completion::Seen::default(),
     };
     // The prompts zsh takes from its environment, which it shows as they
     // are unless a file sets them: code where PROMPT_SUBST may be on.

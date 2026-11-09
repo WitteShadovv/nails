@@ -12,7 +12,9 @@ use std::path::PathBuf;
 impl<F: Filesystem> Reader<'_, F> {
     /// Note the function `function` that the file at `place` autoloads: by
     /// name, to be looked for where the files add to `fpath`, or by the path
-    /// of its file, which is read at once.
+    /// of its file, which is read at once, but for one named `compinit`, a
+    /// doubt of what zsh runs as you complete a word wherever it is there
+    /// ([`Reader::completion_system`]).
     pub(super) fn autoload(&mut self, function: Word, place: &str) {
         if function.text.contains('/') {
             match self.resolve(&function) {
@@ -29,9 +31,11 @@ impl<F: Filesystem> Reader<'_, F> {
                         let name = file
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned());
-                        if let Some(name) = &name {
-                            self.completion
-                                .function(name.clone(), &file.to_string_lossy());
+                        if name.as_deref() == Some("compinit") {
+                            if self.text(&file).is_some() {
+                                self.completion_system();
+                            }
+                            continue;
                         }
                         self.file_in(&file, false, name);
                     }
@@ -71,7 +75,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// each directory they add to `fpath`, where zsh looks for them as they
     /// first run, and in those zsh's `fpath` starts with when the check
     /// knows them ([`super::Install::fpath`]), until those files add no more, and
-    /// what the stock functions among them read and mark
+    /// what the stock `promptinit` among them reads and marks
     /// ([`Reader::marked`]). Once a function is autoloaded, a directory the
     /// check cannot follow is a doubt. When the check does not know where
     /// zsh's `fpath` starts, so is a function that no directory zsh looks in
@@ -86,7 +90,6 @@ impl<F: Filesystem> Reader<'_, F> {
             self.split_fpath();
             self.profile_dirs();
             self.marked();
-            self.audit();
             for entry in self.fpath.clone() {
                 let (dir, first) = match entry {
                     Ok(entry) => entry,

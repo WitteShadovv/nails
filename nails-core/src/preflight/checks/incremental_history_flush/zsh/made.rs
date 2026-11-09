@@ -4,10 +4,9 @@
 //! What the startup code may make or change before zsh reads it, or hand to
 //! the programs it runs. A file the check would read that is not there now,
 //! the code may make first (`cp ~/.src ~/.gen; . ~/.gen`), so where a file
-//! read names it beyond the `source` commands, the tests and the
-//! `compinit -d` that name it, that is a doubt, but for the code of a stock
-//! function, which makes none before zsh reads it (compdump writes the dump
-//! file once compinit has read it or found none); and a file the check
+//! read names it beyond the `source` commands and the tests that name it,
+//! that is a doubt, but for the code of a stock function, which makes none
+//! before zsh reads it; and a file the check
 //! reads, there or not, the code may write before zsh reads it, so where a
 //! command that runs before that writes to a path whose last part is its
 //! name, or one an expansion or a brace expansion may make its name
@@ -332,7 +331,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// Note a doubt for each file the check would read that is not there
     /// now, as the code may make it before zsh reads it ([the module](self)):
     /// where a file read, but for a stock function's code, names it beyond
-    /// the `source` commands, the tests and the `compinit -d` that name it
+    /// the `source` commands and the tests that name it
     /// ([`Reader::known_files`]), a function's file only by a path; and for
     /// each file it reads, there or not, where a write to a
     /// path that may be its, or that of the compiled form zsh runs in its
@@ -373,7 +372,7 @@ impl<F: Filesystem> Reader<'_, F> {
             .zip(named(&texts, &bases))
             .collect();
         let mut known: HashMap<&str, usize> = HashMap::new();
-        for file in self.known_files.iter().chain(&self.compinit_dumps) {
+        for file in &self.known_files {
             *known.entry(last_part(file)).or_default() += 1;
         }
         let first_calls = self.first_calls();

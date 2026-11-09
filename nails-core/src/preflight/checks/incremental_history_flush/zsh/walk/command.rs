@@ -14,12 +14,11 @@ use super::super::arith::READ_AS_NUMBER;
 use super::super::backstop::{
     self, FC_WRITES, history_path, is_fc_flag, qualifier_code, reexpands, zdotdir_writes,
 };
-use super::super::completion;
 use super::super::lexer::{Word, is_name};
 use super::hooks::hook_array;
 use super::names::{computed, names_parameter, targets};
 use super::strings::PROMPTS;
-use super::{Event, Frame, Input, PathChange, Walker, mentioned, walk_text_in};
+use super::{Event, Frame, Input, Walker, mentioned, walk_text_in};
 
 /// The parameters that hold the aliases zsh expands, or disabled ones that
 /// `enable -a` makes it expand (zsh/parameter).
@@ -49,8 +48,7 @@ const PRECOMMANDS: &[&str] = &[
 /// is a doubt: one zsh reads as arithmetic each time it uses it (`TMOUT`),
 /// `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`, `fpath` and an array of hook
 /// functions. zsh ties none of its special parameters (`PS1`, `HOME`) to
-/// another; a parameter of zsh's completion system that a tie names counts
-/// as set where `compinit` runs ([`completion::read_as_code`]).
+/// another.
 fn tie_read(name: &str) -> bool {
     READ_AS_NUMBER.contains(&name)
         || matches!(
@@ -300,11 +298,9 @@ impl Walker<'_> {
         self.zdotdirs += nested.zdotdirs;
         self.autoloads += nested.autoloads;
         self.fpaths += nested.fpaths;
-        self.paths += nested.paths;
         self.fcs += nested.fcs;
         self.nix_profiles += nested.nix_profiles;
         self.indirects += nested.indirects;
-        self.code_params += nested.code_params;
         self.alias_params += nested.alias_params;
         self.function_params += nested.function_params;
         self.may_stop |= nested.may_stop;
@@ -612,18 +608,13 @@ impl Walker<'_> {
             }
             "bindkey" => self.bindkey(&args, unconditional),
             "unset" => {
-                // What it takes away holds no code: a prompt, a hook's array,
-                // a directory zsh looks for programs in, a program it names
-                // for a command.
+                // What it takes away holds no code: a prompt, a hook's array.
                 for arg in &args {
                     self.prompts += usize::from(PROMPTS.contains(&arg.text.as_str()));
                     self.hooks += usize::from(hook_array(&arg.text));
-                    self.paths +=
-                        usize::from(matches!(assigned(&arg.text), "path" | "PATH" | "commands"));
                     self.mention(&arg.text);
                 }
             }
-
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
             "add-zsh-hook" | "add-zle-hook-widget" => self.hook(&command.text, &args),
@@ -657,9 +648,6 @@ impl Walker<'_> {
                 self.declare(&command.text, &args, unconditional);
             }
             _ => {
-                if command.text == "hash" {
-                    self.hash(&args);
-                }
                 self.mention(&command.text);
                 for arg in &args {
                     self.mention(&arg.text);
@@ -713,9 +701,6 @@ impl Walker<'_> {
         // a builtin sets by its name, to a value the check cannot read.
         for target in targets(&command.text, args) {
             let name = assigned(&target.text);
-            if completion::by_shape(name) {
-                self.code_parameter(name, false);
-            }
             if ALIAS_PARAMETERS.contains(&name) {
                 self.alias_params += 1;
                 self.events.push(Event::Doubt(format!(
@@ -794,31 +779,9 @@ impl Walker<'_> {
         let ties = flags
             .iter()
             .any(|flag| flag.text.starts_with('-') && (flag.text.contains('T') || computed(flag)));
-        // In a function, `local` and a `typeset` without `-g` or `-x` declare
-        // parameters of its own.
-        let local = self.function().is_some()
-            && match command {
-                "local" | "private" => true,
-                "typeset" | "declare" | "integer" | "float" | "readonly" => !flags
-                    .iter()
-                    .any(|flag| computed(flag) || flag.text.contains(['g', 'x'])),
-                _ => false,
-            };
         if ties {
             for arg in &args[flags.len()..] {
                 let name = assigned(arg.text.split_once('=').map_or(&arg.text, |(name, _)| name));
-                if completion::by_shape(name) {
-                    self.code_parameter(name, false);
-                }
-                if matches!(name, "path" | "PATH") {
-                    // zsh then sets where it looks for programs by the other
-                    // name too.
-                    let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
-                    self.events.push(Event::Path(PathChange::Unfollowed(format!(
-                        "{command} {}",
-                        words.join(" ")
-                    ))));
-                }
                 if computed(arg) || tie_read(name) {
                     self.events.push(Event::Doubt(format!(
                         "it cannot follow the value of `{}`, which `{command} {}` in {} ties to \
@@ -847,9 +810,7 @@ impl Walker<'_> {
             if PROMPTS.contains(&arg.text.as_str()) {
                 self.prompts += 1;
             }
-            self.declaring_local = local;
             self.assignment(arg, unconditional);
-            self.declaring_local = false;
         }
     }
 
@@ -886,17 +847,7 @@ impl Walker<'_> {
         if READ_AS_NUMBER.contains(&assigned(target)) && !target.contains('[') {
             self.numbers += 1;
         }
-        // A parameter zsh's own completion functions may read as code, set to
-        // a value: one of a function's own only where it is declared so.
-        if word.text.contains('=') && completion::by_shape(assigned(target)) {
-            self.code_params += 1;
-            let local = self.declaring_local;
-            self.code_parameter(assigned(target), local);
-        }
-        if self.fpath_assignment(word)
-            || self.path_assignment(word)
-            || self.commands_assignment(word)
-        {
+        if self.fpath_assignment(word) {
             return;
         }
         self.mapfile(&word.text);

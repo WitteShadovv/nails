@@ -17,7 +17,6 @@
 //! of a shell that runs now; of one that may run later it knows neither.
 
 use super::arith::READ_AS_NUMBER;
-use super::completion::read_as_code;
 use super::walk::PROMPTS;
 use super::{Reader, Word};
 use crate::Filesystem;
@@ -26,24 +25,21 @@ use std::path::{Path, PathBuf};
 /// The variables of a shell's environment the check reads: where zsh looks
 /// for the functions it autoloads (`FPATH`), what NixOS's `/etc/zshenv`
 /// reads the Nix profiles from (`NIX_PROFILES`, and the `USER` and
-/// `XDG_STATE_HOME` its `set-environment` writes them with), the directory
-/// whose own the stock `compaudit` puts in `fpath` (`_compdir`), where zsh
+/// `XDG_STATE_HOME` its `set-environment` writes them with), where zsh
 /// reads the user's startup files (`HOME`, `ZDOTDIR`), the name zsh gives
 /// every program it runs (`ARGV0`), the mail messages it expands before a
 /// prompt (`MAILPATH`), the commands it runs for a redirection that has none
 /// (`NULLCMD`, `READNULLCMD`), as `LD_` without a value, whether a variable
-/// of the dynamic loader is set (`LD_PRELOAD`), the prompts zsh takes
+/// of the dynamic loader is set (`LD_PRELOAD`), and the prompts zsh takes
 /// from its environment and expands as it shows them (`PS1`, `RPROMPT`, ...,
-/// [`PROMPTS`]), which run code where `PROMPT_SUBST` is on, and where zsh
-/// looks for the programs it runs by name (`PATH`), whose output zsh's own
-/// completion functions may run as code.
-pub(in super::super) const ENVIRONMENT: [&str; 37] = [
+/// [`PROMPTS`]), which run code where `PROMPT_SUBST` is on. `ARGV0` and the
+/// dynamic loader may make the program of NixOS's dircolors line print
+/// other code ([`super::shadows`]).
+pub(in super::super) const ENVIRONMENT: [&str; 35] = [
     "FPATH",
-    "PATH",
     "NIX_PROFILES",
     "USER",
     "XDG_STATE_HOME",
-    "_compdir",
     "HOME",
     "ZDOTDIR",
     "ARGV0",
@@ -78,26 +74,21 @@ pub(in super::super) const ENVIRONMENT: [&str; 37] = [
 ];
 
 /// Whether the check keeps the variable `name` of a shell's environment:
-/// one of [`ENVIRONMENT`], or one that zsh's own completion functions may
-/// read as code ([`read_as_code`], `_patch_args`, `debug_fd`), which it reads
-/// where the files run the stock `compinit`.
+/// one of [`ENVIRONMENT`].
 pub(in super::super) fn kept(name: &str) -> bool {
-    ENVIRONMENT.contains(&name) || read_as_code(name)
+    ENVIRONMENT.contains(&name)
 }
 
 /// Whether the check reads the value of the variable `name` it keeps
 /// ([`kept`]) only for an expansion in it, for whether it is a number or not
 /// at all, as it does `MAILPATH`'s, `NULLCMD`'s, `READNULLCMD`'s, the
-/// prompts' ([`PROMPTS`]), those zsh reads as arithmetic each time it uses
-/// them ([`READ_AS_NUMBER`]) and those zsh's own completion functions may
-/// read as code, or takes a directory whose name holds what was replaced for
-/// one it cannot name (`PATH`), so that what is no UTF-8 in it may be
+/// prompts' ([`PROMPTS`]) and those zsh reads as arithmetic each time it uses
+/// them ([`READ_AS_NUMBER`]), so that what is no UTF-8 in it may be
 /// replaced.
 pub(in super::super) fn lossy(name: &str) -> bool {
-    matches!(name, "MAILPATH" | "NULLCMD" | "READNULLCMD" | "PATH")
+    matches!(name, "MAILPATH" | "NULLCMD" | "READNULLCMD")
         || PROMPTS.contains(&name)
         || READ_AS_NUMBER.contains(&name)
-        || read_as_code(name)
 }
 
 /// The name the check keeps, without a value, for any variable of the
@@ -122,9 +113,6 @@ pub(in super::super) struct Install {
     /// environment names, else the one its program was built with; `None`
     /// when the check cannot tell.
     pub fpath: Option<Vec<PathBuf>>,
-    /// The directory of zsh's own functions its program was built with, where
-    /// it ships its completion functions, when the check can tell.
-    pub functions: Option<PathBuf>,
     /// The version zsh holds in `ZSH_VERSION`, when the check can tell.
     pub version: Option<String>,
     /// What its environment holds of [`ENVIRONMENT`] but `FPATH`, when the
@@ -138,13 +126,10 @@ pub(in super::super) struct Env {
     pub nix_profiles: Option<String>,
     pub user: Option<String>,
     pub xdg_state_home: Option<String>,
-    pub compdir: Option<String>,
     pub home: Option<String>,
     pub zdotdir: Option<String>,
     pub argv0: Option<String>,
     pub mailpath: Option<String>,
-    /// Where zsh looks for the programs it runs by name, as written.
-    pub path: Option<String>,
     /// Whether a variable of the dynamic loader is set ([`LOADER`]).
     pub loader: bool,
     /// The prompts it holds ([`PROMPTS`]), each one's name and value.
@@ -154,9 +139,6 @@ pub(in super::super) struct Env {
     /// The parameters zsh reads as arithmetic each time it uses them
     /// ([`READ_AS_NUMBER`]) it holds, each one's name and value.
     pub numbers: Vec<(String, String)>,
-    /// The parameters zsh's own completion functions may read as code
-    /// ([`read_as_code`]) it holds, each one's name and value.
-    pub completion: Vec<(String, String)>,
 }
 
 impl Install {
@@ -186,18 +168,15 @@ impl Install {
         });
         Self {
             fpath,
-            functions: own.as_ref().map(|(dir, _)| dir.clone()),
             version: own.map(|(_, version)| version),
             env: environment.map(|_| Env {
                 nix_profiles: get("NIX_PROFILES"),
                 user: get("USER"),
                 xdg_state_home: get("XDG_STATE_HOME"),
-                compdir: get("_compdir"),
                 home: get("HOME"),
                 zdotdir: get("ZDOTDIR"),
                 argv0: get("ARGV0"),
                 mailpath: get("MAILPATH"),
-                path: get("PATH"),
                 loader: get(LOADER).is_some(),
                 prompts: PROMPTS
                     .iter()
@@ -211,12 +190,6 @@ impl Install {
                 numbers: READ_AS_NUMBER
                     .iter()
                     .filter_map(|name| get(name).map(|value| ((*name).to_string(), value)))
-                    .collect(),
-                completion: environment
-                    .into_iter()
-                    .flatten()
-                    .filter(|(name, _)| read_as_code(name))
-                    .cloned()
                     .collect(),
             }),
         }

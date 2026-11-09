@@ -6,7 +6,7 @@
 
 use super::*;
 
-/// The program the dircolors line of [`NIXOS_ZSHRC`] runs.
+/// The program the dircolors line of [`nixos_zshrc`] runs.
 const DIRCOLORS: &str = "/nix/store/2gfxiwls9hbgwdwcy43mprchwsq36mg6-coreutils-9.11/bin/dircolors";
 
 /// What a NixOS host as [`nixos`] sets up finds, with `zshenv` as
@@ -19,8 +19,9 @@ fn nixos_with(zshenv: &str, before: &str, after: &str, extra: &[(&str, &str)]) -
     seed(&fs, "/home/alice/.zshenv", zshenv);
     let colors = "# Extra colors for directory listings.\n";
     let aliases = "# Setup aliases.\n";
-    assert!(NIXOS_ZSHRC.contains(colors) && NIXOS_ZSHRC.contains(aliases));
-    let zshrc = NIXOS_ZSHRC
+    let zshrc = nixos_zshrc();
+    assert!(zshrc.contains(colors) && zshrc.contains(aliases));
+    let zshrc = zshrc
         .replacen(colors, &format!("{before}{colors}"), 1)
         .replacen(aliases, &format!("{aliases}{after}"), 1);
     seed(&fs, "/etc/zshrc", &zshrc);
@@ -35,19 +36,6 @@ fn changed(what: &str) -> String {
     format!(
         "it cannot tell what the `eval` of what dircolors prints in /etc/zshrc runs, as {what} \
          before it, which may change what it runs"
-    )
-}
-
-/// The doubt of zsh's own completion code, which NixOS's `/etc/zshrc` sets
-/// up with `compinit`, where a file at `place` may make any program print
-/// other code (`LD_PRELOAD`, `ARGV0`), wherever it does so.
-fn loaded(place: &str) -> String {
-    format!(
-        "it cannot tell what the programs that zsh's own completion functions run as you \
-         complete a word print, as {place} sets a variable of the dynamic loader (`LD_...`) or \
-         ARGV0, which may make any of them print code of the operator's own, and some of those \
-         functions read what a program prints as code (`_comp_locale` reads what `locale` \
-         prints)"
     )
 }
 
@@ -159,17 +147,15 @@ fn what_comes_after_the_dircolors_line_or_names_none_of_its_words_leaves_it_know
         scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)),
         Scan::default()
     );
-    // A variable of the dynamic loader after it leaves it known too, but
-    // zsh's own completion code, which /etc/zshrc's compinit sets up, may
-    // run what any program it runs prints.
+    // A variable of the dynamic loader after it leaves it known too.
     seed(
         &fs,
         "/home/alice/.zshrc",
         "alias -g G='| grep'\nexport LD_LIBRARY_PATH=~/lib\n",
     );
     assert_eq!(
-        scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)).doubts,
-        [loaded("/home/alice/.zshrc")]
+        scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)),
+        Scan::default()
     );
     // A function named otherwise than its program, as zsh runs it by its
     // name alone.
@@ -194,11 +180,11 @@ fn what_comes_after_the_dircolors_line_or_names_none_of_its_words_leaves_it_know
     nixos(&fs);
     let line =
         "eval \"$(/nix/store/2gfxiwls9hbgwdwcy43mprchwsq36mg6-coreutils-9.11/bin/dircolors -b)\"\n";
-    assert!(NIXOS_ZSHRC.contains(line));
+    assert!(nixos_zshrc().contains(line));
     seed(
         &fs,
         "/etc/zshrc",
-        &NIXOS_ZSHRC.replacen(line, &format!("if true; then\n{line}fi\n"), 1),
+        &nixos_zshrc().replacen(line, &format!("if true; then\n{line}fi\n"), 1),
     );
     assert!(warned(&scan_with(&fs, UNKNOWN, &install(&fs, &SESSION))));
 }
@@ -218,10 +204,9 @@ fn what_the_environment_or_a_file_gives_every_program_may_change_the_dircolors_l
         let found = nixos_with(zshenv, "", "", &[]);
         assert_eq!(
             found.doubts,
-            [
-                loaded("/home/alice/.zshenv"),
-                changed("/home/alice/.zshenv sets ARGV0, the name zsh gives every program it runs")
-            ],
+            [changed(
+                "/home/alice/.zshenv sets ARGV0, the name zsh gives every program it runs"
+            )],
             "{zshenv}"
         );
     }
@@ -265,15 +250,14 @@ fn what_the_environment_or_a_file_gives_every_program_may_change_the_dircolors_l
     );
     assert!(warned(&scan_with(&fs, UNKNOWN, &unknown)));
     // ARGV0 set after the line, as in ~/.zshrc, runs after it, and one read
-    // changes nothing; zsh's own completion code may still run what a
-    // program prints with it.
+    // changes nothing.
     let fs = MockFilesystem::new();
     nixos(&fs);
     seed(&fs, "/home/alice/.zshrc", "export ARGV0=ls\n");
     seed(&fs, "/home/alice/.zshenv", "print -r -- $ARGV0\n");
     assert_eq!(
-        scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)).doubts,
-        [loaded("/home/alice/.zshrc")]
+        scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)),
+        Scan::default()
     );
 }
 
@@ -295,16 +279,17 @@ fn a_function_named_like_the_dircolors_program_in_any_form_zsh_reads_changes_it(
         let found = nixos_with(&format!("{zshenv}\n"), "", "", &[]);
         assert!(warned(&found), "{zshenv}");
     }
-    // Two names that are neither, of a function that writes nothing as a
-    // hook, which it is where compinit runs, as zsh's own completion
-    // functions may run it as they run a command of its name.
-    let found = nixos_with("function x y { print -r -- done }\n", "", "", &[]);
-    assert_eq!(found, Scan::default());
-    let found = nixos_with(&format!("function x y {body}\n"), "", "", &[]);
-    assert_eq!(
-        found.writes.first().map(|write| write.what.as_str()),
-        Some("/home/alice/.zshenv names `history` in `x`")
-    );
+    // Two names that are neither, of a function no hook runs.
+    for zshenv in [
+        "function x y { print -r -- done }\n".to_string(),
+        format!("function x y {body}\n"),
+    ] {
+        assert_eq!(
+            nixos_with(&zshenv, "", "", &[]),
+            Scan::default(),
+            "{zshenv}"
+        );
+    }
 }
 
 #[test]
