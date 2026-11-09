@@ -9,9 +9,11 @@ use crate::filesystem::{DiskUsage, Filesystem, MountRoot, PatternScan};
 use crate::{IoResultExt, NailsError, Result};
 use std::path::{Path, PathBuf};
 
+mod record_lock;
 mod secure_delete;
 mod user_write;
 
+pub(super) use record_lock::record_lock_holder;
 pub(super) use secure_delete::{secure_delete, secure_delete_dir_all};
 pub(super) use user_write::write_user_file;
 

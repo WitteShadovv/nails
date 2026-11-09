@@ -242,6 +242,26 @@ impl MockFilesystem {
             .insert(path.to_path_buf(), Err(kind));
     }
 
+    /// Set who holds a lock on `path` that
+    /// [`Filesystem::record_lock_holder`](crate::Filesystem::record_lock_holder)
+    /// reports: a PID as the kernel gives it, or `None` for no holder.
+    pub fn mock_set_record_lock_holder(&self, path: &Path, holder: Option<i32>) {
+        self.record_locks
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), Ok(holder));
+    }
+
+    /// Make [`Filesystem::record_lock_holder`](crate::Filesystem::record_lock_holder)
+    /// fail for `path` with an error of `kind`, as an open the caller may not
+    /// make does.
+    pub fn mock_set_record_lock_error(&self, path: &Path, kind: std::io::ErrorKind) {
+        self.record_locks
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), Err(kind));
+    }
+
     /// Set the device of the regular file the loop device `node` is bound
     /// to, as [`Filesystem::loop_record`](crate::Filesystem::loop_record)
     /// reports it. Unset, the node cannot be read, as without root.

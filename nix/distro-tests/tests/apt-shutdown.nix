@@ -298,13 +298,19 @@ distroVm.buildVmTest {
 
     def lock_holders():
         # The processes /proc/locks lists as holding a lock on the run's lock
-        # file, found by the file's device and inode, as NAILS finds them.
+        # file, found by the file's device and inode. The kernel prints the
+        # list a page at a time, and a lock released between two pages makes
+        # it skip another, which is why NAILS asks about the file itself
+        # (F_GETLK). A list shorter than a page comes in one read, which
+        # skips none, and the guest's has to be one.
         rc, out = vm.execute(f"stat -L -c '%d %i' {uu_lock}")
         if rc != 0:
             return []
         dev, ino = (int(field) for field in out.split())
+        locks = vm.succeed("cat /proc/locks")
+        assert len(locks.encode()) < 4096, f"/proc/locks holds more than a page:\n{locks}"
         holders: list[int] = []
-        for line in vm.succeed("cat /proc/locks").splitlines():
+        for line in locks.splitlines():
             fields = line.split()
             if len(fields) < 6 or fields[1] not in ("POSIX", "OFDLCK"):
                 continue

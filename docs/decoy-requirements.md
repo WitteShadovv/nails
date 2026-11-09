@@ -777,14 +777,19 @@ refuses while `apt-daily-upgrade.service` or `apt-daily.service` is active or
 a process holds the lock, and activation looks again right before it asks
 logind for the switch. No flag lifts it: try again in a few minutes, once the
 run has ended
-(`systemctl status apt-daily.service apt-daily-upgrade.service`). It tells the
-lock is held from the kernel's list of file locks, `/proc/locks`, by the lock
-file's device and inode, so the lock file is neither opened nor locked. When
-it cannot read them, it refuses as well, and so it does when the lock file is
-anything but a plain file: the helper opens it without following a link, so it
-cannot open a link, a directory or a socket there and takes that for a held
-lock, and NAILS refuses any other kind of file there too, as one it does not
-judge.
+(`systemctl status apt-daily.service apt-daily-upgrade.service`). It asks the
+kernel whether a lock is held on the lock file itself (`fcntl` `F_GETLK`): it
+opens the file read-only, which changes none of its times, takes no lock and
+reads nothing. The kernel's list of all locks, `/proc/locks`, would not do:
+the kernel prints it a page at a time, and a lock released between two pages
+makes it skip another, a held one included. unattended-upgrade makes the lock
+file with mode 0640, so only root can open it: a `nails check` run without
+sudo cannot tell wherever the file exists, which is after any run since the
+boot, and says to run it as root; activation runs as root. When NAILS cannot
+ask, it refuses as well, and so it does when the lock file is anything but a
+plain file: the helper opens it without following a link, so it cannot open a
+link, a directory or a socket there and takes that for a held lock, and NAILS
+refuses any other kind of file there too, as one it does not judge.
 
 **An install at shutdown.** With `Unattended-Upgrade::InstallOnShutdown` on,
 the helper reads apt's configuration again on the signal and runs an install

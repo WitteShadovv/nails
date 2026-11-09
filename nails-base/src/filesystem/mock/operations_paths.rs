@@ -58,6 +58,30 @@ impl MockFilesystem {
         Ok(Some(hasher.finish() | 1))
     }
 
+    pub(super) fn record_lock_holder_impl(&self, path: &Path) -> Result<Option<i32>> {
+        if let Some(answer) = self
+            .record_locks
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .copied()
+        {
+            return answer.map_err(|kind| NailsError::io(path, std::io::Error::from(kind)));
+        }
+        // As the real query: a link is not followed, and only a regular file
+        // is asked about.
+        let kind = if self.is_symlink_impl(path)? {
+            std::io::ErrorKind::InvalidInput
+        } else if self.is_regular_file_impl(path)? {
+            return Ok(None);
+        } else if self.path_exists_impl(path)? {
+            std::io::ErrorKind::InvalidInput
+        } else {
+            std::io::ErrorKind::NotFound
+        };
+        Err(NailsError::io(path, std::io::Error::from(kind)))
+    }
+
     pub(super) fn loop_record_impl(&self, node: &Path) -> Result<crate::filesystem::LoopRecord> {
         self.loop_records
             .lock()

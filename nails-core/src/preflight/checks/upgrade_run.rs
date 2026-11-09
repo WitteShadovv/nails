@@ -28,18 +28,24 @@
 //! again right before it asks logind for the switch ([`upgrade_run`]), as a
 //! run can start while the entry is prepared.
 //!
-//! Whether the lock is held is read from `/proc/locks`, which lists every
-//! lock with the device and inode of its file, against those of the lock
-//! file: the lock file is looked up but neither opened nor locked, and
-//! nothing is written. Where the lock file does not exist, no run took it
-//! since the boot, and `/proc/locks` is not read. The helper opens the lock
-//! file without following a link and takes one it cannot open for a held
-//! lock, as it cannot open a link, a directory or a socket; a lock file that
-//! is anything but a plain file leaves NAILS unable to tell, which refuses as
-//! well.
+//! Whether the lock is held is asked of the kernel about the lock file itself
+//! (`F_GETLK`, [`Filesystem::record_lock_holder`]): the file is opened
+//! read-only, which changes none of its times, and closed again, and it is
+//! neither locked nor read; nothing is written. The kernel's list of locks,
+//! `/proc/locks`, is no snapshot: it prints a page at a time, and a lock that
+//! goes away before another between two pages makes it skip that other one,
+//! a held lock included. unattended-upgrade makes the lock file with mode
+//! 0640, so only root can open it: a check run without root cannot tell
+//! where the file exists, and says to run it as root, while activation runs
+//! as root. Where the lock file does not exist, no run took it since the
+//! boot, and nothing is opened. The helper opens the lock file without
+//! following a link and takes one it cannot open for a held lock, as it
+//! cannot open a link, a directory or a socket; a lock file that is anything
+//! but a plain file leaves NAILS unable to tell, which refuses as well.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::decoy_posture::unit_active;
+use crate::next_step::{NextStep, sudo_line};
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
@@ -56,9 +62,6 @@ const LOCKS: &[&str] = &[
     "var/run/unattended-upgrades.lock",
 ];
 
-/// The kernel's list of file locks, relative to the root.
-const PROC_LOCKS: &str = "proc/locks";
-
 /// Whether a daily unattended-upgrade run is in progress.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpgradeRun {
@@ -68,6 +71,9 @@ pub enum UpgradeRun {
     InProgress(Vec<String>),
     /// NAILS cannot tell, for this reason.
     Unknown(String),
+    /// NAILS cannot tell without root, for this reason: only root can open
+    /// the lock file, which a run as root does.
+    UnknownWithoutRoot(String),
 }
 
 /// What the switch makes of a run: the signs of one need not mean the helper
@@ -90,66 +96,51 @@ impl UpgradeRun {
                 "NAILS cannot tell whether a daily unattended-upgrade run is in progress \
                  ({why}): {AT_THE_SWITCH}"
             )),
+            UpgradeRun::UnknownWithoutRoot(why) => Some(format!(
+                "NAILS cannot tell without root whether a daily unattended-upgrade run is in \
+                 progress ({why}): {AT_THE_SWITCH}"
+            )),
         }
     }
 
-    /// What to do about a refusal: wait for the run to end, or let NAILS
-    /// read what it could not.
-    pub fn fix(&self) -> &'static str {
+    /// What to do about a refusal: wait for the run to end, let NAILS read
+    /// what it could not, or run as root.
+    pub fn fix(&self) -> String {
         match self {
-            UpgradeRun::Unknown(_) => UNREAD,
-            _ => RETRY,
+            UpgradeRun::Unknown(_) => UNREAD.to_string(),
+            UpgradeRun::UnknownWithoutRoot(_) => format!(
+                "Run the check as root (`{}`), which can open the lock file to ask the kernel \
+                 about its locks.",
+                sudo_line(NextStep::Check)
+            ),
+            _ => RETRY.to_string(),
         }
     }
 }
 
-/// glibc's `major()` of a device number as `stat` gives it, the number the
-/// kernel prints in `/proc/locks`.
-fn major(dev: u64) -> u64 {
-    ((dev >> 8) & 0xfff) | ((dev >> 32) & 0xffff_f000)
-}
-
-/// glibc's `minor()` of a device number as `stat` gives it.
-fn minor(dev: u64) -> u64 {
-    (dev & 0xff) | ((dev >> 12) & 0xffff_ff00)
-}
-
-/// The processes that hold a lock on the file with `(major, minor, inode)`,
-/// as `/proc/locks` lists them: `POSIX` and `OFDLCK` entries, the kinds of
-/// lock unattended-upgrade's lock conflicts with, and not a request that
-/// waits (`->`). An open file description lock has no process (`-1`).
-pub fn lock_holders(locks: &str, file: (u64, u64, u64)) -> Vec<i64> {
-    let mut holders = Vec::new();
-    for line in locks.lines() {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if !matches!(fields.get(1), Some(&("POSIX" | "OFDLCK"))) {
-            continue;
-        }
-        // `<pid> <major>:<minor>:<inode>`, the device numbers in hex.
-        let Some(at) = fields.iter().position(|field| {
-            let parts: Vec<&str> = field.split(':').collect();
-            parts.len() == 3
-                && u64::from_str_radix(parts[0], 16).ok() == Some(file.0)
-                && u64::from_str_radix(parts[1], 16).ok() == Some(file.1)
-                && parts[2].parse::<u64>().ok() == Some(file.2)
-        }) else {
-            continue;
-        };
-        if let Some(pid) = at
-            .checked_sub(1)
-            .and_then(|before| fields[before].parse::<i64>().ok())
-        {
-            holders.push(pid);
-        }
+/// What a failed query of the lock file `shown` leaves: a doubt of its own
+/// where the caller is not root and the open was refused, which a run as
+/// root does not have, as only root can open the file.
+fn lock_doubt(shown: &str, e: &crate::NailsError, as_root: bool) -> UpgradeRun {
+    let why = format!("{shown} cannot be asked about its locks: {e}");
+    if !as_root && e.io_kind() == Some(std::io::ErrorKind::PermissionDenied) {
+        UpgradeRun::UnknownWithoutRoot(format!("{why}; only root can open it"))
+    } else {
+        UpgradeRun::Unknown(why)
     }
-    holders
 }
 
 /// Whether a daily unattended-upgrade run is in progress on the system
 /// under `root`: `apt-daily-upgrade.service` or `apt-daily.service` is
-/// active, or a process holds unattended-upgrade's lock. Reads only; nothing
-/// is opened but `/proc/locks`, and only where the lock file exists.
+/// active, or a process holds unattended-upgrade's lock. Reads only; the
+/// lock file is opened, to ask the kernel about its locks, only where it
+/// exists.
 pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
+    upgrade_run_as(fs, root, nix::unistd::geteuid().is_root())
+}
+
+/// [`upgrade_run`], for a caller that is root (`as_root`) or not.
+fn upgrade_run_as<F: Filesystem>(fs: &F, root: &Path, as_root: bool) -> UpgradeRun {
     let mut signs = Vec::new();
     if unit_active(fs, root, DAILY_UPGRADE) {
         signs.push(format!("{DAILY_UPGRADE} is active"));
@@ -160,7 +151,6 @@ pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
         ));
     }
     let mut seen = Vec::new();
-    let mut locks: Option<String> = None;
     for lock in LOCKS {
         let path = root.join(lock);
         let shown = format!("/{lock}");
@@ -168,8 +158,8 @@ pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
         // The helper opens the lock file with O_NOFOLLOW (apt's GetLock())
         // and takes a lock file it cannot open for a held lock
         // (unattended-upgrade-shutdown's iter()): a link, a directory or a
-        // socket makes it write its line at every switch, which /proc/locks
-        // does not show. Any other file that is no plain file is not judged.
+        // socket makes it write its line at every switch, which no lock
+        // shows. Any other file that is no plain file is not judged.
         match fs.is_symlink(&path) {
             Ok(false) => {}
             Ok(true) => {
@@ -193,34 +183,18 @@ pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
             Ok(dev) => dev,
             Err(e) => return doubt(e),
         };
-        let file = (major(dev), minor(dev), inode);
         // The same file under its other name.
-        if seen.contains(&file) {
+        if seen.contains(&(dev, inode)) {
             continue;
         }
-        seen.push(file);
-        if locks.is_none() {
-            match fs.read_file_content(&root.join(PROC_LOCKS)) {
-                Ok(content) => locks = Some(content),
-                Err(e) => {
-                    return UpgradeRun::Unknown(format!("/{PROC_LOCKS} cannot be read: {e}"));
-                }
-            }
-        }
-        let holders = lock_holders(locks.as_deref().unwrap_or_default(), file);
-        if !holders.is_empty() {
-            let who = holders
-                .iter()
-                .map(|pid| {
-                    if *pid > 0 {
-                        format!("PID {pid}")
-                    } else {
-                        "a process".to_string()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" and ");
-            signs.push(format!("{who} holds {shown}"));
+        seen.push((dev, inode));
+        match fs.record_lock_holder(&path) {
+            Ok(None) => {}
+            // A PID in this namespace; an open file description lock has
+            // none (-1), and a holder outside the namespace shows as 0.
+            Ok(Some(pid)) if pid > 0 => signs.push(format!("PID {pid} holds {shown}")),
+            Ok(Some(_)) => signs.push(format!("a process holds {shown}")),
+            Err(e) => return lock_doubt(&shown, &e, as_root),
         }
     }
     if signs.is_empty() {
@@ -236,8 +210,8 @@ pub const RETRY: &str = "Try again in a few minutes, once the run has ended \
                          the daily runs).";
 
 /// What to do when NAILS cannot tell.
-const UNREAD: &str = "Make sure /proc is mounted and /run/unattended-upgrades.lock, where it \
-                      exists, is a plain file that can be looked up, then activate again.";
+const UNREAD: &str = "Make sure /run/unattended-upgrades.lock, where it exists, is a plain file \
+                      that can be looked up and opened, then activate again.";
 
 /// `unattended-upgrade-run`: refuses activation while a daily
 /// unattended-upgrade run is in progress.

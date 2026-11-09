@@ -210,6 +210,23 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// when the two share that namespace.
     fn inode(&self, path: &Path) -> Result<Option<u64>>;
 
+    /// Who holds a record lock (`fcntl(2)`, a POSIX or an open file
+    /// description lock) on the file `path` names that a write lock over the
+    /// whole file would conflict with, as the kernel answers `F_GETLK`:
+    /// `None` when no lock would, else the PID of the holder of one such
+    /// lock in the caller's PID namespace, -1 for an open file description
+    /// lock and 0 for a holder that namespace does not show. The kernel
+    /// answers from its locks at that moment, which the caller's own POSIX
+    /// locks are not among.
+    ///
+    /// The file is opened read-only, without following a link at `path`,
+    /// without blocking and without updating its access time, and closed
+    /// again, which, as closing any descriptor of the file does, releases
+    /// any POSIX lock the caller holds on it: no lock is taken, and nothing
+    /// is read or written. An error when it cannot be opened (a link, a
+    /// missing path, a file the caller may not read) or is no regular file.
+    fn record_lock_holder(&self, path: &Path) -> Result<Option<i32>>;
+
     /// What the loop driver recorded of the file the loop device `node` is
     /// bound to when the file was attached (`LOOP_GET_STATUS64`).
     ///

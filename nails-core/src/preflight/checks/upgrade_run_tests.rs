@@ -4,39 +4,26 @@
 use super::*;
 use crate::RealFilesystem;
 use crate::filesystem::MockFilesystem;
+use crate::test_support::{CHILD_ENV, Outcome, Rerun};
 
 /// The lock file under both of its names.
 const LOCK: &str = "/run/unattended-upgrades.lock";
 const VAR_LOCK: &str = "/var/run/unattended-upgrades.lock";
 
-/// `/run` as a tmpfs gives it: device 0:25 (`00:19` in `/proc/locks`).
+/// `/run` as a tmpfs gives it: device 0:25.
 const RUN_DEV: u64 = 25;
 const LOCK_INODE: u64 = 1234;
 
-/// /proc/locks as the kernel writes it (fs/locks.c, lock_get_status()): a
-/// run's lock on the lock file, among others.
-const HELD: &str = "\
-1: POSIX  ADVISORY  WRITE 812 00:19:1234 0 EOF
-2: FLOCK  ADVISORY  WRITE 691 00:19:977 0 EOF
-3: OFDLCK ADVISORY  READ  -1 00:06:88 0 EOF
-";
-
-/// /proc/locks once the run has ended: other locks only, a flock() of the
-/// lock file's inode on another device among them.
-const FREE: &str = "\
-1: FLOCK  ADVISORY  WRITE 691 00:19:977 0 EOF
-2: POSIX  ADVISORY  WRITE 500 08:01:1234 0 EOF
-";
-
-/// A decoy whose lock file exists, with /proc/locks holding `locks`.
-fn decoy_with_lock(locks: &str) -> MockFilesystem {
+/// A decoy whose lock file exists, under both of its names, with `holder`
+/// holding a lock on it as the kernel's F_GETLK names one: a PID, or none.
+fn decoy_with_lock(holder: Option<i32>) -> MockFilesystem {
     let fs = MockFilesystem::new();
     for path in [LOCK, VAR_LOCK] {
         fs.mock_add_file(path, "");
         fs.mock_set_inode(Path::new(path), LOCK_INODE);
         fs.mock_set_device_id(Path::new(path), RUN_DEV);
+        fs.mock_set_record_lock_holder(Path::new(path), holder);
     }
-    fs.mock_add_file("/proc/locks", locks);
     fs
 }
 
@@ -45,9 +32,10 @@ fn check(fs: &MockFilesystem) -> CheckResult {
 }
 
 #[test]
-fn a_decoy_with_no_run_passes_without_reading_the_lock_list() {
-    // No lock file: no run took the lock since the boot. The mock has no
-    // /proc/locks either, which a pass therefore did not read.
+fn a_decoy_with_no_run_passes_without_asking_about_a_lock() {
+    // No lock file: no run took the lock since the boot, and nothing is
+    // opened. The mock answers a query of a path it lacks with an error,
+    // which a pass therefore did not make.
     let result = check(&MockFilesystem::new());
     assert!(result.is_pass(), "{result:?}");
 }
@@ -117,7 +105,7 @@ fn an_active_daily_download_unit_refuses_before_it_takes_the_lock() {
     );
     assert_eq!(result.remediation(), Some(RETRY));
     // Seen in the cgroup tree too, and with the lock taken both signs show.
-    let fs = decoy_with_lock(HELD);
+    let fs = decoy_with_lock(Some(812));
     fs.mock_add_file(
         "/sys/fs/cgroup/system.slice/apt-daily.service/cgroup.events",
         "populated 1\nfrozen 0\n",
@@ -140,7 +128,7 @@ fn an_active_daily_download_unit_refuses_before_it_takes_the_lock() {
 
 #[test]
 fn a_held_lock_refuses_and_names_its_holder_once() {
-    let fs = decoy_with_lock(HELD);
+    let fs = decoy_with_lock(Some(812));
     let result = check(&fs);
     assert!(result.is_fail(), "{result:?}");
     let message = result.message();
@@ -155,8 +143,31 @@ fn a_held_lock_refuses_and_names_its_holder_once() {
 
 #[test]
 fn a_lock_file_no_process_holds_passes() {
-    let result = check(&decoy_with_lock(FREE));
+    let result = check(&decoy_with_lock(None));
     assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn a_holder_with_no_pid_here_is_a_process() {
+    // An open file description lock has no process (-1), and the kernel
+    // gives 0 for a holder outside the caller's PID namespace.
+    for holder in [-1, 0] {
+        let fs = decoy_with_lock(Some(holder));
+        assert_eq!(
+            upgrade_run(&fs, Path::new("/")),
+            UpgradeRun::InProgress(vec![
+                "a process holds /run/unattended-upgrades.lock".to_string()
+            ]),
+            "{holder}"
+        );
+    }
+    let fs = decoy_with_lock(Some(1));
+    assert_eq!(
+        upgrade_run(&fs, Path::new("/")),
+        UpgradeRun::InProgress(vec![
+            "PID 1 holds /run/unattended-upgrades.lock".to_string()
+        ])
+    );
 }
 
 #[test]
@@ -166,7 +177,7 @@ fn a_lock_held_under_the_var_run_name_alone_refuses() {
     fs.mock_add_file(VAR_LOCK, "");
     fs.mock_set_inode(Path::new(VAR_LOCK), LOCK_INODE);
     fs.mock_set_device_id(Path::new(VAR_LOCK), RUN_DEV);
-    fs.mock_add_file("/proc/locks", HELD);
+    fs.mock_set_record_lock_holder(Path::new(VAR_LOCK), Some(812));
     let result = check(&fs);
     assert!(result.is_fail(), "{result:?}");
     assert!(
@@ -179,12 +190,14 @@ fn a_lock_held_under_the_var_run_name_alone_refuses() {
 
 #[test]
 fn what_cannot_be_read_refuses_as_unknown() {
-    // The lock file is there, the lock list cannot be read.
+    // The lock file is there, and the kernel cannot be asked about it.
     let fs = MockFilesystem::new();
     fs.mock_add_file(LOCK, "");
+    fs.mock_set_record_lock_error(Path::new(LOCK), std::io::ErrorKind::InvalidData);
     let unknown = upgrade_run(&fs, Path::new("/"));
     assert!(
-        matches!(&unknown, UpgradeRun::Unknown(why) if why.contains("/proc/locks")),
+        matches!(&unknown, UpgradeRun::Unknown(why)
+            if why.starts_with(&format!("{LOCK} cannot be asked about its locks: "))),
         "{unknown:?}"
     );
     let result = check(&fs);
@@ -193,6 +206,7 @@ fn what_cannot_be_read_refuses_as_unknown() {
         result.message().starts_with("NAILS cannot tell"),
         "{result:?}"
     );
+    assert_eq!(result.remediation(), Some(UNREAD));
 
     // The lock file cannot be looked up.
     let fs = MockFilesystem::new();
@@ -205,16 +219,53 @@ fn what_cannot_be_read_refuses_as_unknown() {
 }
 
 #[test]
+fn a_lock_file_only_root_can_open_says_to_run_as_root() {
+    // unattended-upgrade makes its lock file with mode 0640: a check run
+    // without root may not open it, and one run as root can.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(LOCK, "");
+    fs.mock_set_record_lock_error(Path::new(LOCK), std::io::ErrorKind::PermissionDenied);
+    let without_root = upgrade_run_as(&fs, Path::new("/"), false);
+    assert!(
+        matches!(&without_root, UpgradeRun::UnknownWithoutRoot(why)
+            if why.ends_with("; only root can open it")),
+        "{without_root:?}"
+    );
+    let refusal = without_root.refusal().expect("a refusal");
+    assert!(
+        refusal.starts_with(
+            "NAILS cannot tell without root whether a daily unattended-upgrade run is in progress \
+             (/run/unattended-upgrades.lock cannot be asked about its locks: "
+        ),
+        "{refusal}"
+    );
+    let fix = without_root.fix();
+    assert!(fix.starts_with("Run the check as root (`sudo "), "{fix}");
+    assert!(fix.contains(" check`)"), "{fix}");
+    // Refused as root, as by a security module, it is no matter of root.
+    let as_root = upgrade_run_as(&fs, Path::new("/"), true);
+    assert!(
+        matches!(&as_root, UpgradeRun::Unknown(why) if !why.contains("only root")),
+        "{as_root:?}"
+    );
+    assert_eq!(as_root.fix(), UNREAD);
+    // Any other error is no matter of root either.
+    fs.mock_set_record_lock_error(Path::new(LOCK), std::io::ErrorKind::NotFound);
+    assert!(matches!(
+        upgrade_run_as(&fs, Path::new("/"), false),
+        UpgradeRun::Unknown(_)
+    ));
+}
+
+#[test]
 fn a_lock_file_that_is_no_plain_file_refuses_as_unknown() {
     // The helper opens the lock file without following a link and takes
-    // one it cannot open for a held lock, which /proc/locks does not show.
+    // one it cannot open for a held lock, which no lock shows.
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("run")).unwrap();
     std::fs::create_dir_all(root.join("srv")).unwrap();
     std::fs::write(root.join("srv/lock"), "").unwrap();
-    std::fs::create_dir_all(root.join("proc")).unwrap();
-    std::fs::write(root.join("proc/locks"), "").unwrap();
     let lock = root.join("run/unattended-upgrades.lock");
     let check = UpgradeRunCheck::with_root(root);
     const LINK: &str = "/run/unattended-upgrades.lock is a symbolic link, not a plain file";
@@ -258,103 +309,76 @@ fn a_lock_file_that_is_no_plain_file_refuses_as_unknown() {
 }
 
 #[test]
-fn the_lock_list_is_read_as_the_kernel_writes_it() {
-    // A waiter, a flock() and a lease on the file are no lock its lock
-    // conflicts with; an open file description lock has no process.
-    let locks = "\
-1: POSIX  ADVISORY  WRITE 812 00:19:1234 0 EOF
-1: -> POSIX  ADVISORY  WRITE 900 00:19:1234 0 EOF
-2: FLOCK  ADVISORY  WRITE 691 00:19:1234 0 EOF
-3: LEASE  ACTIVE    READ  44 00:19:1234 0 EOF
-4: OFDLCK ADVISORY  WRITE -1 00:19:1234 0 EOF
-5: POSIX  ADVISORY  READ  77 103:1a5:1234 0 EOF
-6: POSIX  ADVISORY  WRITE 78 00:19:12345 0 EOF
-";
-    assert_eq!(lock_holders(locks, (0, 25, 1234)), [812, -1]);
-    assert_eq!(lock_holders(locks, (0x103, 0x1a5, 1234)), [77]);
-    assert!(lock_holders(locks, (0, 25, 99)).is_empty());
-    assert!(lock_holders("", (0, 25, 1234)).is_empty());
-}
-
-#[test]
-fn device_numbers_decode_as_glibc_decodes_them() {
-    // 259:5 (an NVMe partition), 8:0x12345 (a minor past 255), 0:25 (tmpfs),
-    // and the most of each that glibc's makedev() keeps, 32 bits.
-    for (major_number, minor_number) in [
-        (259u64, 5u64),
-        (8, 0x12345),
-        (0, 25),
-        (0xfff, 0xfffff),
-        (0x1234_5678, 0x9abc_def0),
-        (0xffff_ffff, 0xffff_ffff),
-    ] {
-        let dev = (minor_number & 0xff)
-            | ((major_number & 0xfff) << 8)
-            | ((minor_number & !0xff) << 12)
-            | ((major_number & !0xfff) << 32);
-        assert_eq!(
-            (major(dev), minor(dev)),
-            (major_number, minor_number),
-            "{dev:#x}"
-        );
+fn a_lock_another_process_holds_on_a_scratch_tree_refuses() {
+    // The lock unattended-upgrade takes (apt's GetLock(): fcntl F_SETLK,
+    // a write lock over the whole file), held by this process on the lock
+    // file of a scratch tree while a child process runs the check on it,
+    // with the kernel's own answers. The parent's pid names the tree.
+    fn root_of(pid: u32) -> PathBuf {
+        std::env::temp_dir().join(format!("nails-upgrade-run-{pid}"))
     }
+    let in_child = std::env::var_os(CHILD_ENV).is_some();
+    let held = (!in_child).then(|| {
+        let root = root_of(std::process::id());
+        std::fs::create_dir_all(root.join("run")).unwrap();
+        let file = std::fs::File::create(root.join("run/unattended-upgrades.lock")).unwrap();
+        rustix::fs::fcntl_lock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .unwrap();
+        (root, file)
+    });
+    let outcome = Rerun::new(crate::test_path!(
+        a_lock_another_process_holds_on_a_scratch_tree_refuses
+    ))
+    .run(|| {
+        let parent = std::os::unix::process::parent_id();
+        let check = UpgradeRunCheck::with_root(&root_of(parent));
+        let result = PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert_eq!(
+            result.message(),
+            format!(
+                "a daily unattended-upgrade run is in progress (PID {parent} holds \
+                 /run/unattended-upgrades.lock): {AT_THE_SWITCH}"
+            )
+        );
+    });
+    if let Some((root, file)) = held {
+        // With the lock released the same tree passes.
+        drop(file);
+        let check = UpgradeRunCheck::with_root(&root);
+        let result = PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(result.is_pass(), "{result:?}");
+    }
+    assert_eq!(outcome, Outcome::Ran);
 }
 
 #[test]
-fn a_real_record_lock_is_found_in_the_kernels_list() {
-    // The kind of lock unattended-upgrade takes (fcntl F_SETLK over the
-    // whole file), held by this process on a scratch file.
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("unattended-upgrades.lock");
-    let file = std::fs::File::create(&path).unwrap();
-    let fs = RealFilesystem;
-    let inode = fs.inode(&path).unwrap().unwrap();
-    let dev = fs.device_id(&path).unwrap();
-    let file_id = (major(dev), minor(dev), inode);
-    let pid = i64::from(std::process::id());
-
-    let before = std::fs::read_to_string("/proc/locks").unwrap();
-    assert!(!lock_holders(&before, file_id).contains(&pid));
-
-    rustix::fs::fcntl_lock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
-    let held = std::fs::read_to_string("/proc/locks").unwrap();
-    assert!(
-        lock_holders(&held, file_id).contains(&pid),
-        "{file_id:?} in\n{held}"
-    );
-    drop(file);
-    let after = std::fs::read_to_string("/proc/locks").unwrap();
-    assert!(!lock_holders(&after, file_id).contains(&pid));
-}
-
-#[test]
-fn a_held_lock_on_a_scratch_tree_refuses() {
-    // The check's own reads, on a real tree: the lock file under the root,
-    // and the kernel's list copied there with the scratch file's lock in it.
+fn an_open_file_description_lock_on_a_scratch_tree_refuses() {
+    // An open file description owns its lock, not the process, so the
+    // check meets it in the process that holds it, with no PID to name.
+    use nix::fcntl::{FcntlArg, fcntl};
+    use nix::libc;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("run")).unwrap();
-    std::fs::create_dir_all(root.join("proc")).unwrap();
-    let lock = root.join("run/unattended-upgrades.lock");
-    let file = std::fs::File::create(&lock).unwrap();
-    rustix::fs::fcntl_lock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
-    std::fs::write(
-        root.join("proc/locks"),
-        std::fs::read_to_string("/proc/locks").unwrap(),
-    )
-    .unwrap();
-
-    let check = UpgradeRunCheck::with_root(root);
-    let result = PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
-    assert!(result.is_fail(), "{result:?}");
-    assert!(
-        result.message().contains(&format!(
-            "PID {} holds /run/unattended-upgrades.lock",
-            std::process::id()
-        )),
-        "{result:?}"
+    let file = std::fs::File::create(root.join("run/unattended-upgrades.lock")).unwrap();
+    let lock = libc::flock {
+        l_type: libc::F_WRLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    fcntl(&file, FcntlArg::F_OFD_SETLK(&lock)).unwrap();
+    assert_eq!(
+        upgrade_run(&RealFilesystem, root),
+        UpgradeRun::InProgress(vec![
+            "a process holds /run/unattended-upgrades.lock".to_string()
+        ])
     );
     drop(file);
+    assert_eq!(upgrade_run(&RealFilesystem, root), UpgradeRun::Idle);
 }
 
 #[test]
@@ -371,7 +395,7 @@ fn the_check_names_itself() {
 
 #[test]
 fn the_probe_writes_nothing() {
-    let fs = decoy_with_lock(HELD);
+    let fs = decoy_with_lock(Some(812));
     let before = fs.mock_ops().len();
     let _ = upgrade_run(&fs, Path::new("/"));
     assert!(fs.mock_written_paths().is_empty());

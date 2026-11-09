@@ -48,6 +48,10 @@ impl Filesystem for MockFilesystem {
         self.inode_impl(path)
     }
 
+    fn record_lock_holder(&self, path: &Path) -> Result<Option<i32>> {
+        self.record_lock_holder_impl(path)
+    }
+
     fn loop_record(&self, node: &Path) -> Result<LoopRecord> {
         self.loop_record_impl(node)
     }

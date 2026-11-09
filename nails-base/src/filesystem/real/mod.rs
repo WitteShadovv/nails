@@ -104,6 +104,10 @@ impl Filesystem for RealFilesystem {
         file_ops::inode(path)
     }
 
+    fn record_lock_holder(&self, path: &Path) -> Result<Option<i32>> {
+        file_ops::record_lock_holder(path)
+    }
+
     fn loop_record(&self, node: &Path) -> Result<LoopRecord> {
         loop_ops::loop_record(node)
     }
