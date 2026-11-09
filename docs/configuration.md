@@ -605,6 +605,17 @@ failure has persisted for `backend_watch.debounce_secs`, so a brief hiccup that
 recovers is reported but never acted on. The automatic emergency returns to the
 decoy like `nails emergency`.
 
+The watcher reads what to watch from the session plan and its settings from
+their copies in `/run`. Where it cannot read the copy of the settings, it takes
+the configuration file it was started with or finds beside its binary, then
+the hidden volume's own `config/nails.toml` at the hidden root the plan names.
+Where it cannot read the plan, it watches the hidden root the settings name,
+though an automatic emergency needs the plan to return to the decoy. Where it
+can read no settings at all, it watches alert-only, whatever
+`backend_watch.auto_emergency` says, and tells you so in one alert; where it
+can read neither the plan nor the settings, one alert says that mounted
+volumes are not watched.
+
 ## Disks mounted during the session
 
 The fstab policy at entry covers the decoy's fstab and the mount units its boot
@@ -698,6 +709,12 @@ watcher) and holds logind inhibitors for the life of the session:
   `InhibitDelayMaxSec` window (default 5s) instead of letting it sleep with the
   session in RAM. logind honours delay inhibitors for every sleep, so this
   covers a closed lid too.
+
+When the guard cannot read its copy of the settings in `/run` (an I/O error,
+or a copy that does not parse), it cannot tell whether you chose `block` or
+`teardown`, so it does what both do: it holds `block`'s inhibitors, and powers
+the machine off if a sleep starts anyway, such as one forced past them with
+`systemctl suspend -i`.
 
 The `session-sleep-guard` VM test closes a virtual lid in a hidden session in
 each mode. The inhibitors appear in `systemd-inhibit --list` under neutral,
