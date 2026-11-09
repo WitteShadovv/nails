@@ -20,7 +20,23 @@ impl<F: Filesystem> Verifier<F> {
                 findings.push(not_resolved("Directory", Path::new(base_path)));
                 continue;
             };
-            if self.filesystem.path_exists(&path_buf)? && self.filesystem.is_directory(&path_buf)? {
+            let directory = self.filesystem.path_exists(&path_buf).and_then(|exists| {
+                if exists {
+                    self.filesystem.is_directory(&path_buf)
+                } else {
+                    Ok(false)
+                }
+            });
+            if let Err(error) = &directory {
+                findings.push(untold(
+                    Severity::Warn,
+                    "file",
+                    &format!("Could not tell whether NAILS-related files are left in {base_path}"),
+                    &path_buf,
+                    error,
+                ));
+            }
+            if matches!(directory, Ok(true)) {
                 let scan = self
                     .filesystem
                     .scan_files_with_pattern(&path_buf, "nails")?;
@@ -49,18 +65,20 @@ impl<F: Filesystem> Verifier<F> {
 
         // 2. Per-home history and desktop recency files.
         for home in self.user_homes() {
-            findings.extend(self.scan_home(&home)?);
+            findings.extend(self.scan_home(&home));
         }
 
         Ok(findings)
     }
 
     /// Scan one user's home for shell history containing nails commands and for
-    /// desktop recency files that name the configured hidden root.
-    fn scan_home(&self, home: &Path) -> Result<Vec<Finding>> {
+    /// desktop recency files that name the configured hidden root. A file
+    /// verify cannot look up is a warning that it cannot tell what the file
+    /// holds ([`untold`]).
+    fn scan_home(&self, home: &Path) -> Vec<Finding> {
         let mut findings = Vec::new();
         if self.place(home).is_none() {
-            return Ok(vec![not_resolved("Home", home)]);
+            return vec![not_resolved("Home", home)];
         }
 
         // A file that does not resolve inside the root, as a link that leads
@@ -70,8 +88,22 @@ impl<F: Filesystem> Verifier<F> {
             let Some(probe) = self.place(&path) else {
                 continue;
             };
-            if !self.filesystem.path_exists(&probe)? {
-                continue;
+            match self.filesystem.path_exists(&probe) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    findings.push(untold(
+                        Severity::Warn,
+                        "file",
+                        &format!(
+                            "Could not tell whether the shell history {} contains nails commands",
+                            path.display()
+                        ),
+                        &probe,
+                        &error,
+                    ));
+                    continue;
+                }
             }
             match self.filesystem.read_file_content(&probe) {
                 Ok(content) if content.to_lowercase().contains("nails") => {
@@ -113,8 +145,23 @@ impl<F: Filesystem> Verifier<F> {
                 let Some(probe) = self.place(&path) else {
                     continue;
                 };
-                if !self.filesystem.path_exists(&probe)? {
-                    continue;
+                match self.filesystem.path_exists(&probe) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        findings.push(untold(
+                            Severity::Warn,
+                            "file",
+                            &format!(
+                                "Could not tell whether the desktop recency file {} references \
+                                 the hidden volume root",
+                                path.display()
+                            ),
+                            &probe,
+                            &error,
+                        ));
+                        continue;
+                    }
                 }
                 if let Ok(content) = self.filesystem.read_file_content(&probe)
                     && content.contains(&needle)
@@ -138,7 +185,7 @@ impl<F: Filesystem> Verifier<F> {
             }
         }
 
-        Ok(findings)
+        findings
     }
 
     /// The home directories to scan: root, every real login account from
