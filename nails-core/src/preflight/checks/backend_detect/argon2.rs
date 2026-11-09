@@ -297,6 +297,16 @@ impl CryptsetupArgon2idCheck {
             privileged: nix::unistd::geteuid().is_root(),
         }
     }
+
+    /// The check of the running system as root, which reads the package
+    /// database (tests of other modules, which run unprivileged).
+    #[cfg(test)]
+    pub(crate) fn as_root() -> Self {
+        Self {
+            root: PathBuf::from("/"),
+            privileged: true,
+        }
+    }
 }
 
 impl Default for CryptsetupArgon2idCheck {
