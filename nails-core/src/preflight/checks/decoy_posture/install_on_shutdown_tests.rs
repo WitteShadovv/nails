@@ -384,15 +384,28 @@ fn the_files_apt_skips_by_name_or_kind_are_skipped() {
         );
         assert_eq!(find(tmp.path()), Finding::default(), "{name:?}");
     }
-    // A directory, and a link that leads nowhere, are no files to apt.
+    // A directory, and a link that leads nowhere, are no files to apt. The
+    // link may have led to one when the running helper started, which
+    // leaves what it holds unknown where no file sets the setting (see
+    // since_start_tests.rs).
     let tmp = stock(DEBIAN_13);
     write(tmp.path(), "etc/apt/apt.conf.d/99dir.conf/x", ON.as_bytes());
+    assert_eq!(find(tmp.path()), Finding::default());
     link(
         tmp.path(),
         "etc/apt/apt.conf.d/99gone",
         "/nonexistent/99gone",
     );
-    assert_eq!(find(tmp.path()), Finding::default());
+    let found = find(tmp.path());
+    let message = blocker(&found);
+    assert!(
+        message.contains(
+            "no file of apt's configuration sets it now, but /etc/apt/apt.conf.d/99gone is \
+             reached through a symbolic link"
+        ),
+        "{message}"
+    );
+    assert!(!message.contains("is on in"), "{message}");
     // A link to a file is read.
     let tmp = stock(DEBIAN_13);
     write(tmp.path(), "srv/on.conf", ON.as_bytes());
@@ -1618,3 +1631,6 @@ fn a_stock_decoy_without_python3_gi_warns_of_the_helpers_lines() {
         "{result:?}"
     );
 }
+
+#[path = "install_on_shutdown/since_start_tests.rs"]
+mod since_start;

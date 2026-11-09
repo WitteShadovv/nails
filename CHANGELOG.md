@@ -1595,10 +1595,12 @@ of this changelog for that version becomes the release notes word for word, and
   ERROR lines at every activation, to its log on the decoy disk, or to the journal if it started
   with the file already refused, and the refusal names the file and line to fix. The helper keeps
   what it read when it started, so a line deleted since stays in effect until it restarts: when no
-  file sets the setting and one of apt's files, `/etc/apt` or `/etc/apt/apt.conf.d` changed after
-  the helper started (by its change time, against the earlier of the unit's invocation marker and
-  its processes' start), NAILS cannot tell and refuses, until the setting is set to `false` or the
-  decoy reboots. When only the hidden session would install (the decoy's helper stopped while the
+  file sets the setting and one of apt's files, `/etc/apt`, `/etc/apt/apt.conf.d` or the directory
+  that holds the file `APT_CONFIG` names changed after the helper started (by its change time,
+  against the earlier of the unit's invocation marker and its processes' start), or one of them is
+  reached through a symbolic link, a link among apt's files that leads to no file now included,
+  NAILS cannot tell and refuses, until the setting is set to `false` or the decoy reboots. When only
+  the hidden session would install (the decoy's helper stopped while the
   decoy or the session's overlay enables it and nothing masks it as the session sees it, or the
   session's overlay turning the setting on), it warns instead, and a link among apt's files, which
   the session resolves through its overlay, makes it warn that it cannot tell. It warns as well

@@ -834,30 +834,37 @@ own copy is read with the same file, as the session starts it from the same
 files of the decoy.
 
 Set it to `false` rather than deleting the line: the helper reads the files
-when it starts and again on the signal, keeping what it read first, so a
-line deleted after it started stays in effect until
-`unattended-upgrades.service` restarts or the machine reboots, while an
-explicit `false`, or a `#clear` of it, wins on the signal. So when no file
-sets the setting and apt's configuration changed after the helper started
-(one of the files apt reads, `/etc/apt`, where `apt.conf` lies, or
-`/etc/apt/apt.conf.d`, where a deleted part shows), `decoy-persistence`
-cannot tell whether the running helper still holds a `true`, and refuses that
-as well, `--allow-persistent-decoy` lifting it like the rest. It compares
-their change time, which neither `touch -d` nor dpkg sets back as they set a
-file's modification time, with the helper's start: the earlier of systemd's
+when it starts and again on the signal, keeping what it read first, so a line
+deleted after it started stays in effect until `unattended-upgrades.service`
+restarts or the machine reboots, while an explicit `false`, or a `#clear` of
+it, wins on the signal. So when no file sets the setting and apt's
+configuration changed after the helper started (one of the files apt reads,
+`/etc/apt`, where `apt.conf` lies, `/etc/apt/apt.conf.d`, where a deleted part
+shows, or the directory that holds the file `APT_CONFIG` names, where one
+swapped into place shows), `decoy-persistence` cannot tell whether the running
+helper still holds a `true`, and refuses that as well,
+`--allow-persistent-decoy` lifting it like the rest. It compares their change
+time, which neither `touch -d` nor dpkg sets back as they set a file's
+modification time, with the helper's start: the earlier of systemd's
 invocation marker of `unattended-upgrades.service` and the start of each of
 its processes, so that a step of the clock either way after the start leaves
-one of them early enough. A change in the second the helper started counts,
-as a filesystem may keep change times to the second. A symbolic link among
-those files or on the way to them, whose target's change NAILS does not
-follow, counts as a change. This also refuses a decoy after an update of a
-package that ships a file of `/etc/apt/apt.conf.d`, until the helper
-restarts: set the setting to `false` once, or reboot. What the helper read
-first also decides which files it reads on the signal: after a `Dir` or
-`RootDir` line that moved them was removed, it still reads the files that
-line named, which NAILS does not read, so where a file NAILS reads sets the
-setting, the one the helper reads need not be the same. Restart the helper or
-reboot after removing such a line.
+one of them early enough. A change in the second the helper started counts, as
+a filesystem may keep change times to the second. A symbolic link among those
+files or on the way to them, whose target's change NAILS does not follow,
+counts as a change, and so does a link among the files of
+`/etc/apt/apt.conf.d` or at `/etc/apt/apt.conf` that leads to no file now: apt
+skips it on the signal, while the helper may still hold what it read through
+it at its start. A directory higher up swapped into place, such as `/etc`, or
+the parent of the directory that holds the file `APT_CONFIG` names, replaces
+the files below it without changing their change times or those of the
+directories NAILS compares, so NAILS does not see it. This also refuses a
+decoy after an update of a package that ships a file of `/etc/apt/apt.conf.d`,
+until the helper restarts: set the setting to `false` once, or reboot. What
+the helper read first also decides which files it reads on the signal: after a
+`Dir` or `RootDir` line that moved them was removed, it still reads the files
+that line named, which NAILS does not read, so where a file NAILS reads sets
+the setting, the one the helper reads need not be the same. Restart the helper
+or reboot after removing such a line.
 
 Without python3-gi, which unattended-upgrades only suggests and Debian 13's
 cloud image does not install, the helper cannot wait for logind's signal: each

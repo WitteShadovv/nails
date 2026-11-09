@@ -38,13 +38,14 @@
 //! read when it started, so a `false` (or a `#clear`) there wins, while a
 //! line only deleted stays in effect until the helper restarts. So when no
 //! file sets the setting, NAILS cannot tell whether the helper still holds a
-//! `true` when one of apt's files, `/etc/apt` or `/etc/apt/apt.conf.d`
-//! changed after the helper started, or one of them is reached through a
-//! symbolic link, and that is refused as well: the fix says to set it to
-//! false. Which files it
-//! reads on the signal is settled by what it read first, so after a `Dir` or
-//! `RootDir` line was removed it reads the files that line named until it
-//! restarts, which NAILS does not see.
+//! `true` when one of apt's files, `/etc/apt`, `/etc/apt/apt.conf.d` or the
+//! directory that holds the file `APT_CONFIG` names changed after the helper
+//! started, or one of them is reached through a symbolic link, a link among
+//! apt's files that leads to no file now included, as apt skips it at the
+//! signal, and that is refused as well: the fix says to set it to false.
+//! Which files it reads on the signal is settled by what it read first, so
+//! after a `Dir` or `RootDir` line was removed it reads the files that line
+//! named until it restarts, which NAILS does not see.
 //!
 //! The hidden session runs its own copy of the helper wherever the unit is
 //! enabled and not masked, on the decoy or in the session's overlay. At the
@@ -374,9 +375,28 @@ fn apt_config_source<F: Filesystem>(fs: &F, view: View<'_>, rel: &Path) -> Resul
     })
 }
 
+/// The files apt reads in a view, in its order, and on the decoy the links
+/// among them that lead to no file now.
+struct Sources {
+    found: Vec<Source>,
+    /// apt skips such a link at the signal, as what is no file, but the
+    /// decoy's helper may have read what it led to when it started, so its
+    /// change is looked for as a file's is ([`helper::changed_since_start`]).
+    /// The session's view refuses every link ([`no_link`]) and has none.
+    unread_links: Vec<PathBuf>,
+}
+
+/// Whether `path`, which leads to no file apt reads, is a link on the decoy
+/// ([`Sources::unread_links`]); an error says NAILS cannot tell.
+fn unread_link<F: Filesystem>(fs: &F, path: &Path, shown: &str) -> Result<bool, String> {
+    fs.is_symlink(path)
+        .map_err(|e| format!("{shown} cannot be looked up ({e})"))
+}
+
 /// The files apt reads in `view`, in its order.
-fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String> {
+fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Sources, String> {
     let mut found = Vec::new();
+    let mut unread_links = Vec::new();
     if let Some(rel) = view.apt_config {
         found.push(apt_config_source(fs, view, rel)?);
     }
@@ -426,6 +446,9 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
             no_link(fs, &read, &format!("{shown}{place}"))?;
         }
         if !regular(fs, &read, &format!("{shown}{place}"))? {
+            if !view.session && unread_link(fs, &read, &shown)? {
+                unread_links.push(read);
+            }
             continue;
         }
         if by_name == PartName::ByLocale {
@@ -463,14 +486,20 @@ fn sources<F: Filesystem>(fs: &F, view: View<'_>) -> Result<Vec<Source>, String>
                 place: place.to_string(),
                 read,
             });
+        } else if !view.session && unread_link(fs, &read, &shown)? {
+            unread_links.push(read);
         }
     }
-    Ok(found)
+    Ok(Sources {
+        found,
+        unread_links,
+    })
 }
 
 /// The setting on the decoy under `root`, read first from the file at
-/// `apt_config` where the helper's `APT_CONFIG` names one, and the files it
-/// is read from.
+/// `apt_config` where the helper's `APT_CONFIG` names one, and what of apt's
+/// files the decoy's helper may have read when it started: the files the
+/// setting is read from, and the links among them that lead to no file now.
 fn decoy_setting<F: Filesystem>(
     fs: &F,
     root: &Path,
@@ -487,9 +516,16 @@ fn decoy_setting<F: Filesystem>(
         upper: None,
     };
     match sources(fs, view) {
-        Ok(found) => (
+        Ok(Sources {
+            found,
+            unread_links,
+        }) => (
             evaluate(fs, &found),
-            found.into_iter().map(|source| source.read).collect(),
+            found
+                .into_iter()
+                .map(|source| source.read)
+                .chain(unread_links)
+                .collect(),
         ),
         Err(why) => (Setting::Unknown(why), Vec::new()),
     }
@@ -531,7 +567,7 @@ fn session_setting<F: Filesystem>(
             upper: Some(upper),
         };
         return match sources(fs, view) {
-            Ok(found) => evaluate(fs, &found),
+            Ok(sources) => evaluate(fs, &sources.found),
             Err(why) => Setting::Unknown(why),
         };
     }
@@ -572,7 +608,7 @@ fn session_setting<F: Filesystem>(
     }
     let mut unknown = None;
     for view in views {
-        match sources(fs, view).map(|found| evaluate(fs, &found)) {
+        match sources(fs, view).map(|sources| evaluate(fs, &sources.found)) {
             Ok(Setting::On(at)) => return Setting::On(at),
             Ok(Setting::Unknown(why)) | Err(why) => {
                 unknown.get_or_insert(why);
@@ -844,8 +880,9 @@ fn decoy_blocker<F: Filesystem>(
         Setting::Unset => {
             // No file sets it now, but the helper keeps what it read when it
             // started.
-            let changed = helper::started(fs, root, pids)
-                .and_then(|started| helper::changed_since_start(fs, root, &read, started));
+            let changed = helper::started(fs, root, pids).and_then(|started| {
+                helper::changed_since_start(fs, root, &read, apt_config, started)
+            });
             match changed {
                 Ok(None) => None,
                 Ok(Some(what)) => Some(Blocker {
