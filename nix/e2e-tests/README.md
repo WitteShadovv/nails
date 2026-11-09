@@ -472,6 +472,33 @@ The spike that proved the whole-root soft-reboot, formerly
 scrub and the decoy journal, then power-cycles through the firmware and scans
 the raw decoy disk.
 
+## Pre-flight tests (`tests/preflight/`)
+
+The `preflight` tag groups the tests of the pre-flight checks that `check` and
+activation run. Each file's header says what it covers; one of them shows a
+promise of `check` as a whole:
+
+- `check-no-automount`: `check` makes no lookup that would mount an automount
+  point that nothing is mounted on yet. A NixOS decoy with the hidden volume
+  mounted has `x-systemd.automount` tmpfs at `/usr/local` and at carol's home
+  `/home/carol`, an autofs indirect map at `/auto` whose name `dave` is
+  dave's home, and an `x-systemd.automount` tmpfs at `/srv/archive` that no
+  check reads, the null control. What the boot or the hidden volume's setup
+  mounted on a point is unmounted first, and the journal lines that say who
+  asked are printed. `check --json` as root, with `--allow-persistent-decoy`
+  and as carol (`SUDO_USER`) leaves the mount table outside `/run` as it was
+  and the mount units inactive, and neither systemd nor the automounter logs
+  a request. decoy-persistence (a warning with the override) and fstab-policy
+  refuse, sleep-policy and locate-database warn, and as carol
+  inherited-autostart and incremental-history-flush warn, each naming the
+  automount point and giving the line that says to mount it; locate-database
+  names all three points, `inherited.not_read` lists carol's autostart
+  directory with its point, and no row names `/srv/archive`. A listing of
+  `/auto` mounts nothing. As the positive control, `ls` of each point mounts
+  it, and the next check names none of them, reports the updatedb written to
+  `/usr/local/bin` as one a person can start and lists carol's
+  `sync.desktop`.
+
 ## Session tests (`tests/session/`)
 
 The `session` tag groups the tests of the whole-root session. Each follows real
