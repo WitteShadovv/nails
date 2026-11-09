@@ -53,11 +53,13 @@ Whatever the backend, the filesystem at the hidden root must:
   system folder (`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`,
   `/boot/efi`, `/nix`, `/opt`, unless the hidden root is that folder or lies
   above it) for another part of that filesystem: its top, or a subvolume above
-  or beside the root's. A line for that filesystem at any other folder, since
-  it may name the hidden drive's disk, a line that mounts the volume itself
-  (the root's own subvolume, or any line for a root that is the whole
-  filesystem) and a crypttab line that opens a device it lies on, as an
-  encrypted decoy's does, still fail `backend-entries` (see
+  or beside the root's. While the decoy mounts another part of it at `/` or
+  by such a line, the check also lets be the crypttab lines its boot opens (no
+  `noauto`) for the device that filesystem lies on, as an encrypted decoy's
+  crypttab does. A line for that filesystem at any other folder, since it may
+  name the hidden drive's disk, a line that mounts the volume itself (the
+  root's own subvolume, or any line for a root that is the whole filesystem),
+  and any other crypttab line still fail `backend-entries` (see
   [Attaching the drive](decoy-requirements.md#attaching-the-drive)). An
   encrypted container
   file on a filesystem the decoy uses is accepted with a warning: that
@@ -369,9 +371,9 @@ Every backend leaves the same traces on the decoy side while you unlock it:
   (`boot.initrd.luks.devices`, `fileSystems`). The `backend-entries`
   pre-flight check refuses activation while a crypttab or fstab line opens or
   mounts the hidden volume, or a device it is stored on, except the decoy's
-  own lines for `/` and its system folders that `--allow-decoy-storage` lets
-  be (see above); a line that opens only another volume on the same drive
-  warns (see
+  own lines for `/` and its system folders, and the crypttab lines for the
+  device they mount, that `--allow-decoy-storage` lets be (see above); a line
+  that opens only another volume on the same drive warns (see
   [crypttab and fstab](decoy-requirements.md#crypttab-and-fstab)).
 
 `nails deactivate` and `nails emergency` close the hidden backend themselves:

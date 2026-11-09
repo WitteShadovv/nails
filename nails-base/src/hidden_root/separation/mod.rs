@@ -43,7 +43,12 @@
 //! above or beside the root's, is marked as the decoy's own line for it
 //! ([`EntryFinding::system_folder`]), which `backend-entries` lets be for a
 //! root that `--allow-decoy-storage` accepted on that filesystem; one that
-//! mounts the volume itself, or whose subvolume cannot be told, never is.
+//! mounts the volume itself, or whose subvolume cannot be told, never is. So
+//! is a crypttab line the boot opens that makes a device that filesystem lies
+//! on, while the decoy mounts another part of it at `/`, by its mount there,
+//! or at a system folder, by such an fstab line; a `noauto` one, one with
+//! `tcrypt-hidden`, one for any other device and every line for a root that
+//! is the whole filesystem never are.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read, or
 //! what a claimed filesystem keeps data on besides its device cannot be told;
@@ -689,11 +694,17 @@ pub struct EntryFinding {
     /// folder ([`is_system_folder`]) for the filesystem the volume is a folder
     /// or a subvolume of, one that names a device of it and mounts another
     /// part of it than the volume (its top, or a subvolume above or beside
-    /// the volume's), that folder. Such a line is the decoy's own, and a root
-    /// that `--allow-decoy-storage` accepted on that filesystem lies there
-    /// anyway. `None` for a line that mounts the volume itself, as any line
-    /// does for a volume that is the whole filesystem, and for one whose
-    /// subvolume cannot be told.
+    /// the volume's), that folder. For a crypttab line the boot opens (no
+    /// `noauto`) that makes a device that filesystem lies on (its mapping is
+    /// one of them, or one's name, or it opens a device below the one the
+    /// filesystem is mounted from) and opens no hidden volume of a container
+    /// (no `tcrypt-hidden`), while the decoy mounts another part of
+    /// the filesystem at `/` (by its mount there) or at a system folder (by
+    /// such an fstab line), the first such folder. Such a line is the
+    /// decoy's own, and a root that `--allow-decoy-storage` accepted on that
+    /// filesystem lies there anyway. `None` for a line that mounts the volume
+    /// itself, for one whose subvolume cannot be told, for every line of a
+    /// volume that is the whole filesystem, and for any other crypttab line.
     pub system_folder: Option<PathBuf>,
 }
 

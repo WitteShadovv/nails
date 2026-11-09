@@ -39,8 +39,10 @@ pub struct PreflightOptions {
     /// instead of failing, and for a root that is a folder or a btrfs
     /// subvolume of a filesystem the decoy uses, `backend-entries` lets be
     /// the decoy's own fstab lines that mount another part of that filesystem
-    /// at `/` or at a system folder. It never covers a folder, a covered root,
-    /// storage that cannot be judged, or any other decoy entry for the volume.
+    /// at `/` or at a system folder, and the crypttab lines that unlock the
+    /// device it lies on while the decoy mounts it so. It never covers a
+    /// folder, a covered root, storage that cannot be judged, or any other
+    /// decoy entry for the volume.
     pub allow_decoy_storage: bool,
     /// Accept discards over the hidden volume for this run (the buried
     /// `--allow-discards` expert flag): the backend-detect check then warns
@@ -179,7 +181,8 @@ pub fn build_registry<F: Filesystem>(
     // No decoy fstab or crypttab entry opens or mounts the hidden volume: such
     // an entry is an enabler stored on the decoy. --allow-decoy-storage covers
     // only the decoy's own lines for / and its system folders that mount
-    // another part of the filesystem a root it accepted is part of.
+    // another part of the filesystem a root it accepted is part of, and the
+    // crypttab lines that unlock that filesystem's device.
     registry.add_check(Box::new(
         BackendEntriesCheck::new(hidden_root.clone()).allowing(allow),
     ));

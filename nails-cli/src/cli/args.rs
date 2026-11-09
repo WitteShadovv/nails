@@ -328,7 +328,8 @@ pub struct ActivateArgs {
     /// (a ZFS volume among it), and a decoy entry that opens the volume (other
     /// than this computer's own fstab lines at / or at a system folder for
     /// another part of the filesystem that a folder or subvolume it accepted
-    /// lies on) are still refused.
+    /// lies on, and the crypttab lines its boot opens for that filesystem's
+    /// device while it mounts the filesystem so) are still refused.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 

@@ -841,8 +841,15 @@ of this changelog for that version becomes the release notes word for word, and
   root's own storage, so the check took it for a line only the hidden volume needs, while the
   decoy's boot needs it to mount that filesystem at `/`, at a system folder or by an fstab line it
   needs. The check now says to keep it and to put the hidden root on storage of its own instead, as
-  it does for the fstab line. `--allow-decoy-storage` lets no crypttab line be, so on an encrypted
-  decoy the check still refuses such a root, with the flag too.
+  it does for the fstab line. With `--allow-decoy-storage` the check lets such a line be for a root
+  that is a folder or a subvolume of that filesystem, as it lets the fstab lines for `/` and the
+  system folders be, when the boot opens it (no `noauto`) and the decoy mounts another part of the
+  filesystem at `/`, by its mount there, or by such an fstab line. So on an encrypted decoy, such
+  as Debian's or Ubuntu's LUKS root, with LVM or without, or Fedora's btrfs on LUKS, a bind of a
+  folder of `/` or a subvolume beside `/home` passes the check with the flag, as on an unencrypted
+  one. A `noauto` crypttab line, one with `tcrypt-hidden`, one for any other device, every line for
+  a root that is the whole filesystem and one for a filesystem the decoy mounts only at another
+  folder still fail it.
 - `backend-entries` now refuses an fstab or crypttab line that names another device of the hidden
   root's btrfs filesystem than the one its mounts show, by its path or by a link such as `UUID=`
   that leads to it, as it refuses one for the device the mounts show: the volume lies on each of its
@@ -1454,10 +1461,10 @@ of this changelog for that version becomes the release notes word for word, and
   of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So
   `hidden-volume` passes a bind of a folder of `/` and a subvolume beside the fstab's `/home` with
   the flag's warning, and so does `backend-entries`, which lets be the decoy's own fstab lines for
-  `/` and its system folders that mount another part of that filesystem (see Fixed), unless the
-  decoy's crypttab opens a device that filesystem lies on, as on an encrypted decoy, while a line
-  for another folder still fails it. On NixOS `suspicious-nails-reference` still refuses such a root
-  while the decoy's `/etc/nixos` names its filesystem's device, as `hardware-configuration.nix`
+  `/` and its system folders that mount another part of that filesystem and the crypttab lines its
+  boot opens for the device that filesystem lies on (see Fixed), on an encrypted decoy too, while a
+  line for another folder still fails it. On NixOS `suspicious-nails-reference` still refuses such a
+  root while the decoy's `/etc/nixos` names its filesystem's device, as `hardware-configuration.nix`
   usually does. A separate drive that a line of the fstab mounts at `/srv` passes `hidden-volume`
   with the flag's warning, and `backend-entries` refuses that line, which mounts the volume itself.
   One also mounted at `/srv` by hand is refused, and so is the copy that mount propagation makes of
