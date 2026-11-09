@@ -826,7 +826,9 @@ of this changelog for that version becomes the release notes word for word, and
   root. Such a line names the root's device, so the check took it for a line that mounts the volume
   itself and said to remove it, while it mounts the decoy's own filesystem, which removing it would
   break. The line's mount has to be there: the mount at its folder is of that filesystem and shows
-  what the line names, as btrfs read the line. A line that mounts the volume itself still fails the
+  what the line names. The check reads what that mount shows, so a mount made there by hand that
+  shows the same counts as the line's own, and it reads a btrfs line with neither `subvol=` nor
+  `subvolid=` as one for the filesystem's top. A line that mounts the volume itself still fails the
   check, with the flag too: one for the root's own subvolume or a subvolume inside it, by `subvol=`
   or by the `subvolid=` the mount table shows for it, and any line for a root that is the whole
   filesystem, such as a separate drive that the fstab mounts at `/srv`. So do a line whose mount is

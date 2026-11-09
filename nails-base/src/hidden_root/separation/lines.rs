@@ -210,9 +210,9 @@ pub(super) fn mounts_the_root(
 /// cannot be told: an id that is no plain number or that no such mount
 /// shows, options that name two subvolumes, a line whose text does not tell
 /// its subvolume ([`named_subvolume`]), or either option on a filesystem that
-/// is not btrfs. Only the mount a line made shows how btrfs read it (a link
-/// in its path, a subvolume set as the default), so the decoy's own line for
-/// a folder is told by that mount as well ([`line_is_mounted`]).
+/// is not btrfs. Only a mount shows how btrfs read a line (a link in its
+/// path, a subvolume set as the default), so the decoy's own line for a
+/// folder is told by the mount at that folder as well ([`line_is_mounted`]).
 fn line_shows(scene: &Scene<'_>, entry: &FstabEntry, hidden: &MountEntry) -> Option<PathBuf> {
     let (path, id) = named_subvolume(entry)?;
     if path.is_none() && id.is_none() {
@@ -286,11 +286,14 @@ pub(super) fn in_fstab(
 }
 
 /// Whether the device line `entry` for the filesystem of `hidden` (the
-/// visible mount at the hidden root) is mounted now: the visible mount at its
-/// folder is of that filesystem and shows what the line mounts
-/// ([`shows_what_it_mounts`]), as btrfs read the line, a link in its path or
-/// a default subvolume included. Not for a drive mounted only at the root, a
-/// line whose automount was never reached, or one unmounted since.
+/// visible mount at the hidden root) is mounted now, as the mount at its
+/// folder shows: the visible mount there is of that filesystem and shows what
+/// the line names ([`shows_what_it_mounts`]), a btrfs line with neither
+/// `subvol=` nor `subvolid=` read as one for the top. So a mount made there
+/// by hand that shows the same counts as the line's own. A line whose mount
+/// shows something else, as for a `subvol=` path through a link, is not
+/// mounted, and neither is a drive mounted only at the root, a line whose
+/// automount was never reached, or one unmounted since.
 pub(super) fn line_is_mounted(scene: &Scene<'_>, entry: &FstabEntry, hidden: &MountEntry) -> bool {
     top_mount_at(scene.mounts, &entry.file)
         .is_some_and(|mount| mount.dev == hidden.dev && shows_what_it_mounts(entry, mount))

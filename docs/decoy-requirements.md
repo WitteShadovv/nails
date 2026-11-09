@@ -1180,44 +1180,47 @@ or lies above it, that name a device of the filesystem and mount its top or,
 on btrfs, a subvolume above or beside the root's, as their `subvol=` names it
 or as the mount table shows the subvolume their `subvolid=` names. The mount
 of such a line has to be there: the mount the mount table shows at its folder
-is of that filesystem and shows what the line names, as btrfs read the line.
-While the decoy mounts another part of that filesystem at `/`, by its mount
-there, or by such a line, the check also lets be the crypttab lines its boot
-opens for the device the filesystem lies on: a line whose mapping the
-filesystem lies on, one named as such a mapping, or one that opens a device
-below the one the filesystem is mounted from, as the line that unlocks an
-encrypted decoy's root does. So `backend-entries` passes a bind of a folder of
-`/`, or a subvolume beside the fstab's `/home`, as well, on an encrypted decoy
-too, such as Debian's or Ubuntu's LUKS root, with LVM or without, or Fedora's
-btrfs on LUKS. A `noauto` crypttab line, which the boot does not open, still
-fails the check, and so do one with `tcrypt-hidden` and one for any other
-device, such as one that would open a volume on the device the filesystem is
-mounted from. On NixOS, `suspicious-nails-reference` still refuses such a root
-while the decoy's `/etc/nixos` names the device of its filesystem, as the
-`hardware-configuration.nix` of most installs does for every filesystem it
-lists.
+is of that filesystem and shows what the line names. NAILS reads what that
+mount shows, so a mount made there by hand that shows the same counts as the
+line's own, and it reads a btrfs line with neither `subvol=` nor `subvolid=`
+as one for the filesystem's top. While the decoy mounts another part of that
+filesystem at `/`, by its mount there, or by such a line, the check also lets
+be the crypttab lines its boot opens for the device the filesystem lies on: a
+line whose mapping the filesystem lies on, one named as such a mapping, or one
+that opens a device below the one the filesystem is mounted from, as the line
+that unlocks an encrypted decoy's root does. So `backend-entries` passes a
+bind of a folder of `/`, or a subvolume beside the fstab's `/home`, as well,
+on an encrypted decoy too, such as Debian's or Ubuntu's LUKS root, with LVM or
+without, or Fedora's btrfs on LUKS. A `noauto` crypttab line, which the boot
+does not open, still fails the check, and so do one with `tcrypt-hidden` and
+one for any other device, such as one that would open a volume on the device
+the filesystem is mounted from. On NixOS, `suspicious-nails-reference` still
+refuses such a root while the decoy's `/etc/nixos` names the device of its
+filesystem, as the `hardware-configuration.nix` of most installs does for
+every filesystem it lists.
 
 Every other line for that filesystem still fails `backend-entries`: a line for
 any other folder, such as `/pool`, `/var/log` or `/.snapshots`, since it may
-name the hidden drive's disk; a line that mounts the volume itself, as any line
-does for a root that is the whole filesystem (the separate drive that the
+name the hidden drive's disk; a line that mounts the volume itself, as any
+line does for a root that is the whole filesystem (the separate drive that the
 fstab mounts at `/srv`, say) and as one for the root's own subvolume or a
 subvolume inside it does; a line whose mount is not there, since nothing then
 shows that the decoy uses that filesystem, such as the line for `/srv` of a
 separate drive that is mounted nowhere but at a folder bound at the root, as
 after it was plugged in, or a line whose automount nothing has reached yet;
 and a btrfs line whose subvolume cannot be told, such as one that gives
-`subvol=` or `subvolid=` twice (btrfs takes the last) or a `subvol=` path
-with `..` in it. A line whose mount shows something else than the line names
-(a `subvol=` that is a link, a btrfs line with neither option while the
-filesystem's default subvolume is not its top) is no line whose mount is
-there. An fstab bind line whose source lies in the volume, at the root's
-folder or inside it as the mount that holds the source shows it, mounts the
-volume as well, and fails too. So does every crypttab line for a root that is
-the whole filesystem, and one for a filesystem that the decoy mounts neither
-at `/` nor at a system folder, such as an encrypted drive whose fstab line is
-for `/backup` or whose line for `/srv` is not mounted. A line that names
-another device of a btrfs filesystem of several devices counts as one for that
+`subvol=` or `subvolid=` twice (btrfs takes the last) or a `subvol=` path with
+`..` in it. A line whose mount shows something else than the line names, such
+as one whose `subvol=` is a link, is no line whose mount is there, and neither
+is a btrfs line with neither option whose mount shows another subvolume than
+the top, as for a filesystem whose default subvolume is not its top. An fstab
+bind line whose source lies in the volume, at the root's folder or inside it
+as the mount that holds the source shows it, mounts the volume as well, and
+fails too. So does every crypttab line for a root that is the whole
+filesystem, and one for a filesystem that the decoy mounts neither at `/` nor
+at a system folder, such as an encrypted drive whose fstab line is for
+`/backup` or whose line for `/srv` is not mounted. A line that names another
+device of a btrfs filesystem of several devices counts as one for that
 filesystem. The check says to keep a line the boot mounts (no `noauto`) for
 `/` or a system folder, which the decoy's own boot needs, a line for another
 folder that mounts the filesystem a folder or subvolume root is part of, and a
