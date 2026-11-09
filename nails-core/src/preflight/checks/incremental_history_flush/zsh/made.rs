@@ -9,7 +9,9 @@
 //! before zsh reads it; and a file the check
 //! reads, there or not, the code may write before zsh reads it, so where a
 //! command that runs before that writes to a path whose last part is its
-//! name, or one an expansion or a brace expansion may make its name
+//! name (for a file a function's code reads, which a hook may read after
+//! every command, any such command, and one whose path an expansion makes at
+//! the top or in a function the top runs), or one an expansion or a brace expansion may make its name
 //! (`>> ~/.zshrc.local`, `>> $log`, `cp ~/.src ${f}en`), that is a doubt
 //! too. A program that writes a file it is not given the name of, the check
 //! does not see. A hook may give the programs it runs the command line in
@@ -316,6 +318,11 @@ fn named(texts: &[&Forms], bases: &[(&str, bool)]) -> Vec<usize> {
     total
 }
 
+/// Where in the files read a file that a function's code reads is read: as
+/// the function runs, which may be after any command the files run, a hook's
+/// included.
+const IN_FUNCTION: usize = usize::MAX;
+
 /// The commands that make or write the files their words name.
 const CREATES: &[&str] = &[
     "cp", "mv", "ln", "install", "tee", "dd", "rsync", "curl", "wget", "tar", "unzip", "zcompile",
@@ -347,7 +354,8 @@ impl<F: Filesystem> Reader<'_, F> {
                     .map(|(path, at)| (path, at, false)),
             )
             .collect();
-        files.sort();
+        // A file read twice counts where zsh reads it last.
+        files.sort_by(|a, b| (&a.0, a.2).cmp(&(&b.0, b.2)).then(b.1.cmp(&a.1)));
         files.dedup_by(|a, b| a.0 == b.0 && a.2 == b.2);
         let autoloads: HashSet<&str> = self.autoloads.iter().map(String::as_str).collect();
         let mut bases: Vec<(&str, bool)> = files
@@ -401,10 +409,22 @@ impl<F: Filesystem> Reader<'_, F> {
                 writes
                     .iter()
                     .find(|(expanded, plain, _, order, function)| {
-                        let before = match function {
-                            None => order < at,
-                            Some(function) => {
-                                first_calls.get(function).is_some_and(|call| call < at)
+                        // What a function's code reads, zsh reads as the
+                        // function runs, which may be after any command the
+                        // files run: a write to a path as written anywhere,
+                        // and one an expansion makes at the top or in a
+                        // function the top runs, counts. One a hook makes is a
+                        // doubt of its own ([`super::runs`]).
+                        let before = if *at == IN_FUNCTION {
+                            *plain
+                                || function
+                                    .is_none_or(|function| first_calls.contains_key(function))
+                        } else {
+                            match function {
+                                None => order < at,
+                                Some(function) => {
+                                    first_calls.get(function).is_some_and(|call| call < at)
+                                }
                             }
                         };
                         before
@@ -460,9 +480,15 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Note that the file at `path`, which the check would read, is not
-    /// there now, or that the check reads it (`there`).
+    /// there now, or that the check reads it (`there`): where it reads it,
+    /// or [`IN_FUNCTION`] for a file a function's code reads.
     pub(super) fn missing(&mut self, path: &Path, there: bool) {
-        let entry = (path.to_path_buf(), self.order);
+        let at = if self.function_code {
+            IN_FUNCTION
+        } else {
+            self.order
+        };
+        let entry = (path.to_path_buf(), at);
         if there {
             self.read_files.push(entry);
         } else {

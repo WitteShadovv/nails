@@ -246,6 +246,8 @@ struct Reader<'a, F: Filesystem> {
     read_files: Vec<(PathBuf, usize)>,
     known_files: Vec<String>,
     looked: Vec<PathBuf>,
+    /// Whether the file being looked up is read as a function's code.
+    function_code: bool,
     /// The writes to a path an expansion makes (`cp ~/.src $f`, `> $f`):
     /// its last part, what the warning names, where in the files read it is
     /// and the function it is in; the commands the files run where no
@@ -428,7 +430,10 @@ impl<F: Filesystem> Reader<'_, F> {
     /// Read the file at `path` that runs as the code of the function `outer`
     /// when in one, and follow what it sets ([`Reader::file`]).
     fn file_in(&mut self, path: &Path, certain: bool, outer: Option<String>) {
-        if let Some(text) = self.text(path) {
+        let was = std::mem::replace(&mut self.function_code, outer.is_some());
+        let text = self.text(path);
+        self.function_code = was;
+        if let Some(text) = text {
             self.code_in(path, &text, certain, outer);
         }
     }
@@ -927,6 +932,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         read_files: Vec::new(),
         known_files: Vec::new(),
         looked: Vec::new(),
+        function_code: false,
         writes: Vec::new(),
         top_calls: Vec::new(),
         order: 0,
