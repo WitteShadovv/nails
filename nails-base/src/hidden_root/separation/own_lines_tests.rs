@@ -101,3 +101,43 @@ fn the_lines_the_boot_mounts_at_slash_and_the_system_folders_are_the_decoys_own(
         .judge("/srv");
     assert_eq!(entry_folders(&at_the_root), [("/dev/sdb1 /srv ext4", None)]);
 }
+
+#[test]
+fn the_decoys_line_for_slash_or_a_system_folder_is_one_its_boot_needs_for_a_whole_filesystem() {
+    // The decoy's / and its /home partition, each mounted whole at the root
+    // as well: the line for / or /home mounts the volume, and the decoy's own
+    // boot needs it, so it is never one to remove.
+    let whole_root = plain_decoy("5 1 8:1 / /mnt rw - ext4 /dev/sda1 rw\n").judge("/mnt");
+    assert_eq!(
+        entry_needs(&whole_root),
+        [(EntryKind::Blocking, "/dev/sda1 / ext4", true)]
+    );
+    assert_eq!(whole_root.entries[0].why, "it mounts the volume at /mnt");
+    assert_eq!(
+        entry_folders(&whole_root),
+        [("/dev/sda1 / ext4", Some(Path::new("/")))]
+    );
+    let whole_home = plain_decoy("5 1 8:2 / /mnt rw - ext4 /dev/sda2 rw\n").judge("/mnt");
+    assert_eq!(
+        entry_needs(&whole_home),
+        [(EntryKind::Blocking, "/dev/sda2 /home ext4", true)]
+    );
+    // A line for it at any other folder may be the hidden drive's own: it is
+    // one the volume alone needs, and goes.
+    let elsewhere = plain_decoy(
+        "5 1 8:17 / /mnt rw - ext4 /dev/sdb1 rw\n\
+         6 1 8:17 / /backup rw - ext4 /dev/sdb1 rw\n",
+    )
+    .disk("sdb", "8:16")
+    .part("sdb1", "8:17", "sdb")
+    .fstab("/dev/sda1 / ext4 defaults 0 1\n/dev/sdb1 /backup ext4 defaults 0 2\n")
+    .judge("/mnt");
+    assert_eq!(
+        entry_needs(&elsewhere),
+        [(EntryKind::Blocking, "/dev/sdb1 /backup ext4", false)]
+    );
+    assert_eq!(
+        entry_folders(&elsewhere),
+        [("/dev/sdb1 /backup ext4", None)]
+    );
+}

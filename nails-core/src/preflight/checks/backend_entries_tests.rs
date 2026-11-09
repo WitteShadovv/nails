@@ -536,3 +536,58 @@ fn with_the_flag_a_root_whose_storage_cannot_be_judged_keeps_every_finding() {
     assert!(result.is_fail(), "{result:?}");
     assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
 }
+
+#[test]
+fn a_root_that_is_the_whole_of_the_decoys_root_or_home_is_never_told_to_remove_its_line() {
+    // The decoy's / on vda1, and its /home partition vda2, each mounted whole
+    // at the root as well.
+    let root = (
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         5 1 8:1 / /mnt rw - ext4 /dev/vda1 rw\n",
+        "/dev/vda1 / ext4 defaults 0 1\n",
+        "/",
+    );
+    let home = (
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         2 1 8:2 / /home rw - ext4 /dev/vda2 rw\n\
+         5 1 8:2 / /mnt rw - ext4 /dev/vda2 rw\n",
+        "/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home ext4 defaults 0 2\n",
+        "/home",
+    );
+    for (table, fstab, place) in [root, home] {
+        let fs = rendered(table, fstab);
+        // The gate refuses it without the flag, and says nothing of
+        // removing the decoy's line for that folder.
+        let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+            .run(&fs)
+            .unwrap();
+        assert!(gate.is_fail(), "{place}: {gate:?}");
+        assert_eq!(
+            gate.message(),
+            format!(
+                "/mnt is not a volume of its own: it is the filesystem this computer mounts at \
+                 {place} per /etc/fstab"
+            )
+        );
+        let hint = gate.remediation().unwrap();
+        assert!(hint.starts_with("Setting up here"), "{place}: {hint}");
+        assert!(!hint.contains("remove its line"), "{place}: {hint}");
+        // With the flag the gate warns, and backend-entries lets the line be.
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{place}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_pass(), "{place}: {result:?}");
+        assert_eq!(result.message(), only_the_decoys_own_line(place));
+        // Run by itself without the flag, backend-entries says to keep the
+        // line, which the decoy's own boot needs.
+        let result = run_allowing(&fs, Allow::Nothing);
+        assert!(result.is_fail(), "{place}: {result:?}");
+        assert!(
+            result
+                .message()
+                .contains("(it mounts the volume at /mnt, and the decoy's own boot needs it)"),
+            "{place}: {}",
+            result.message()
+        );
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{place}");
+    }
+}

@@ -353,11 +353,12 @@ impl Refusal {
                 // A volume prepared elsewhere that the boot mounts through
                 // fstab is the computer's storage too, until its line goes,
                 // and so is one mounted at a system folder by hand, until it
-                // is unmounted there. The line for / and a mount that holds
-                // the root are none to remove.
+                // is unmounted there. The line for / or for a system folder
+                // is the decoy's own, and a mount that holds the root is
+                // none to remove.
                 let root = self.root.display();
                 let mut lines = Vec::new();
-                if *in_fstab && at != Path::new("/") {
+                if *in_fstab && !super::separation::is_system_folder(at, &self.root) {
                     lines.push(format!(
                         "If {root} is the volume you prepared, remove its line from {} long \
                          before the next use, and mount it by hand each time.",

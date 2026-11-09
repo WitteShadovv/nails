@@ -29,13 +29,15 @@
 //! decoy's own storage too. A finding the decoy's own boot needs, an fstab
 //! entry that mounts another of its filesystems or its swap, or the whole
 //! filesystem a root bound from a folder of it or a subvolume of it lies on
-//! (the decoy's line for `/` below a bind of a folder of `/`), or a crypttab
-//! entry that opens a device below one of them, is marked so: the hidden root
-//! then lies on the decoy's own storage and has to move, since removing the
-//! entry would break the decoy. An fstab line the boot mounts at `/` or at a
-//! system folder for the root's own filesystem is marked as the decoy's own
-//! line for it ([`EntryFinding::system_folder`]), which `backend-entries` lets
-//! be for a root that `--allow-decoy-storage` accepted on that filesystem.
+//! (the decoy's line for `/` below a bind of a folder of `/`), or one that
+//! mounts the root's own filesystem at `/` or at a system folder, whatever the
+//! root shows of it, or a crypttab entry that opens a device below one of
+//! them, is marked so: the hidden root then lies on the decoy's own storage
+//! and has to move, since removing the entry would break the decoy. An fstab
+//! line the boot mounts at `/` or at a system folder for the root's own
+//! filesystem is marked as the decoy's own line for it
+//! ([`EntryFinding::system_folder`]), which `backend-entries` lets be for a
+//! root that `--allow-decoy-storage` accepted on that filesystem.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read, or
 //! what a claimed filesystem keeps data on besides its device cannot be told;

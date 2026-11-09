@@ -695,22 +695,22 @@ fn claims(
                     hidden.mount_point.display()
                 )
             };
+            // A line for the root's own filesystem at / or at a system
+            // folder is the decoy's own line for it, whatever the root shows
+            // of that filesystem, the whole of it too.
+            let system =
+                own && !entry.is_swap() && is_system_folder(&entry.file, &hidden.mount_point);
             // A line the boot mounts outside the hidden root, for a device
             // below the volume or for the filesystem the root is part of,
-            // mounts one of the decoy's own filesystems or its swap.
+            // mounts one of the decoy's own filesystems or its swap, and so
+            // does one the boot mounts at / or at a system folder.
             let boot_needs = !entry.is_noauto()
                 && if own {
-                    part_of
+                    part_of || system
                 } else {
                     entry.is_swap() || elsewhere
                 };
-            // One the boot mounts at / or at a system folder for the root's
-            // own filesystem is the decoy's own line for that filesystem.
-            let system_folder = (own
-                && !entry.is_swap()
-                && !entry.is_noauto()
-                && is_system_folder(&entry.file, &hidden.mount_point))
-            .then(|| entry.file.clone());
+            let system_folder = (system && !entry.is_noauto()).then(|| entry.file.clone());
             entries.push(EntryFinding {
                 system_folder,
                 ..blocking(FSTAB, line, why, boot_needs)

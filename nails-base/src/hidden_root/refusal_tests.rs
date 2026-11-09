@@ -557,6 +557,8 @@ fn a_folder_or_a_missing_root_first_asks_to_mount_the_volume() {
 
 #[test]
 fn a_filesystem_the_boot_mounts_first_asks_to_drop_its_fstab_line() {
+    // The root is /srv itself, so the line for /srv is the root's, not
+    // the decoy's own line for a system folder.
     let refusal = Refusal::new(
         RefusalKind::DecoyStorage {
             verdict: Verdict::OnDecoyFilesystem {

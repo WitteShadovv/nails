@@ -1236,8 +1236,7 @@ fn the_line_for_the_filesystem_a_root_is_part_of_is_one_the_decoys_boot_needs() 
         [(EntryKind::Blocking, "/dev/sda2 /home btrfs", true)]
     );
     // One the boot does not mount is no line it needs, and one for the root
-    // itself mounts the volume, as one for a root that shows the whole
-    // filesystem does wherever it mounts it.
+    // itself mounts the volume.
     let noauto = plain_decoy("5 1 8:1 /srv/x /mnt rw - ext4 /dev/sda1 rw\n")
         .fstab("/dev/sda1 /srv ext4 noauto 0 0\n")
         .judge("/mnt");
