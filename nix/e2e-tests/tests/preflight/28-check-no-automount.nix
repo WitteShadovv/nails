@@ -110,6 +110,9 @@ let
 in
 {
   name = "check-no-automount";
+  # It took 18 to 62 s in CI. A hang fails inside the driver well before a CI
+  # shard stops one attempt of a test (750 s), so its log tells where.
+  globalTimeout = 600;
   meta.tags = [
     "preflight"
     "security"
@@ -159,11 +162,17 @@ in
     };
 
   testScript = _: ''
+    import datetime as dt
     import json
     import shlex
 
     from nails_e2e import mounts
 
+    # Each wait and each command has a bound of its own, so a hang fails
+    # with the step it hung in.
+    BOOT = dt.timedelta(minutes=5)
+    SETUP = dt.timedelta(minutes=2)
+    STEP = dt.timedelta(minutes=1)
     CONFIG = "/run/automount-check.toml"
     # The direct automount points systemd makes for the fstab lines, with
     # the units of the mount and of the automount.
@@ -181,7 +190,7 @@ in
 
 
     def table():
-        return machine.succeed("cat /proc/self/mountinfo")
+        return machine.succeed("cat /proc/self/mountinfo", timeout=STEP)
 
 
     def stack(text, point):
@@ -197,7 +206,7 @@ in
 
     def cursor():
         # Where the journal ends now.
-        last = machine.succeed("journalctl -q -n 1 --show-cursor -o cat").strip()
+        last = machine.succeed("journalctl -q -n 1 --show-cursor -o cat", timeout=STEP).strip()
         return last.splitlines()[-1].removeprefix("-- cursor: ")
 
 
@@ -209,7 +218,8 @@ in
         )
         logged = machine.succeed(
             f"journalctl -q --no-pager -o cat --after-cursor={shlex.quote(since)} "
-            + f"{units} -u autofs.service"
+            + f"{units} -u autofs.service",
+            timeout=STEP,
         )
         return [
             line
@@ -224,7 +234,9 @@ in
         states = {}
         for point in points:
             unit = DIRECT[point][0]
-            states[unit] = machine.succeed(f"systemctl show -P ActiveState {unit}").strip()
+            states[unit] = machine.succeed(
+                f"systemctl show -P ActiveState {unit}", timeout=STEP
+            ).strip()
         return {unit: state for unit, state in states.items() if state != "inactive"}
 
 
@@ -234,14 +246,14 @@ in
         for point in points:
             if point in DIRECT and inactive([point]):
                 unit, automount = DIRECT[point]
-                print(machine.succeed(f"journalctl -q -o cat -u {automount}"))
-                machine.succeed(f"systemctl stop {unit}")
+                print(machine.succeed(f"journalctl -q -o cat -u {automount}", timeout=STEP))
+                machine.succeed(f"systemctl stop {unit}", timeout=STEP)
 
 
     def overlay_loaded():
         # Whether the kernel lists the overlay filesystem: once its module
         # is loaded.
-        filesystems = machine.succeed("cat /proc/filesystems").splitlines()
+        filesystems = machine.succeed("cat /proc/filesystems", timeout=STEP).splitlines()
         return any(line.split()[-1:] == ["overlay"] for line in filesystems)
 
 
@@ -267,10 +279,13 @@ in
             + shlex.quote(
                 f"set +e; {env} nails --config {CONFIG} --json check --overlay-only {flags} "
                 + f"> {stem}.out 2> {stem}.err; echo $? > {stem}.rc"
-            )
+            ),
+            timeout=STEP,
         )
-        rc = int(machine.succeed(f"cat {stem}.rc").strip())
-        report = json.loads(machine.succeed(f"cat {stem}.out").strip().splitlines()[-1])
+        rc = int(machine.succeed(f"cat {stem}.rc", timeout=STEP).strip())
+        report = json.loads(
+            machine.succeed(f"cat {stem}.out", timeout=STEP).strip().splitlines()[-1]
+        )
         data = report["data"]
         return rc, {row["name"]: row for row in data["checks"]}, data, before, since
 
@@ -308,23 +323,24 @@ in
 
 
     machine.start()
-    machine.wait_for_unit("multi-user.target")
-    machine.wait_for_unit("autofs.service")
+    machine.wait_for_unit("multi-user.target", timeout=BOOT)
+    machine.wait_for_unit("autofs.service", timeout=SETUP)
     # The automounter sets its map up after its start returns.
-    machine.wait_until_succeeds(f"findmnt -n -t autofs {MAP}")
+    machine.wait_until_succeeds(f"findmnt -n -t autofs {MAP}", timeout=SETUP)
     for _, automount in DIRECT.values():
-        machine.wait_for_unit(automount)
-    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        machine.wait_for_unit(automount, timeout=SETUP)
+    machine.succeed("""${hiddenVolume.setupHiddenVolume}""", timeout=SETUP)
     machine.succeed(
-        "printf 'hidden_volume_root = \"/mnt/data\"\\nminimum_space_mb = 100\\n' > " + CONFIG
+        "printf 'hidden_volume_root = \"/mnt/data\"\\nminimum_space_mb = 100\\n' > " + CONFIG,
+        timeout=STEP,
     )
 
     with subtest("the points are automount points nothing is mounted on"):
         # Once the device events of the boot and of the hidden volume's
         # setup are handled, udevd's queue is held, and what the daemons
         # mounted before is unmounted.
-        machine.succeed("udevadm settle")
-        machine.succeed("udevadm control --stop-exec-queue")
+        machine.succeed("udevadm settle", timeout=SETUP)
+        machine.succeed("udevadm control --stop-exec-queue", timeout=STEP)
         unmount(list(DIRECT))
         baseline = table()
         for point in DIRECT:
@@ -336,7 +352,7 @@ in
         assert "indirect" in found[0].super_options.split(","), found
         assert not stack(baseline, DAVE), stack(baseline, DAVE)
         assert not inactive(list(DIRECT)), inactive(list(DIRECT))
-        assert not overlay_loaded(), machine.succeed("cat /proc/filesystems")
+        assert not overlay_loaded(), machine.succeed("cat /proc/filesystems", timeout=STEP)
 
     with subtest("the kernel names the autofs on top of each point and mounts none"):
         # statx says each point is the root of a mount, but not that it is
@@ -345,7 +361,7 @@ in
         # too.
         unmount(list(DIRECT))
         before, since = table(), cursor()
-        said = machine.succeed(f"place-probe {' '.join(DIRECT)} {MAP}").splitlines()
+        said = machine.succeed(f"place-probe {' '.join(DIRECT)} {MAP}", timeout=STEP).splitlines()
         print("\n".join(said))
         left_nothing("probe", before, since, list(DIRECT))
         assert len(said) == len(DIRECT) + 1, said
@@ -405,11 +421,11 @@ in
     with subtest("a listing of the indirect map's directory mounts nothing"):
         unmount((*READ, ARCHIVE))
         before, since = table(), cursor()
-        print(machine.succeed(f"ls -a {MAP}"))
+        print(machine.succeed(f"ls -a {MAP}", timeout=STEP))
         left_nothing("ls", before, since, (*READ, ARCHIVE))
 
     with subtest("once ls mounts the points, check reads what they hold"):
-        machine.succeed(f"ls {' '.join(READ)}")
+        machine.succeed(f"ls {' '.join(READ)}", timeout=STEP)
         mounted = table()
         for point in ("/usr/local", "/home/carol"):
             found = [mount.fstype for mount in stack(mounted, point)]
@@ -421,7 +437,8 @@ in
             + " && chmod 0755 /usr/local/bin/updatedb"
             + " && printf '[Desktop Entry]\\nType=Application\\nName=Sync\\nExec=true\\n' > "
             + AUTOSTART
-            + "/sync.desktop"
+            + "/sync.desktop",
+            timeout=STEP,
         )
         rc, rows, data, before, since = check("mounted", [ARCHIVE], env="SUDO_USER=carol")
         left_nothing("mounted", before, since, [ARCHIVE])
@@ -438,6 +455,6 @@ in
         sync = [entry["source"] for entry in inherited["entries"] if entry["name"] == "sync"]
         assert sync == ["user-autostart"], inherited
 
-    machine.succeed("udevadm control --start-exec-queue")
+    machine.succeed("udevadm control --start-exec-queue", timeout=STEP)
   '';
 }
