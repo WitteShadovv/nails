@@ -842,7 +842,9 @@ and reads the file first as apt does. It cannot tell, and refuses, when that
 environment cannot be read, when the file cannot be read, when the variable
 names a relative path or one with `..`, and when the processes run with
 different values. A `nails check` or `nails status` run without sudo cannot
-read the environment, so check refuses on every decoy whose helper runs and
+read the environment, which the kernel refuses to all but root, or hides as if
+the process were gone where `/proc` is mounted with `hidepid=invisible` or
+`hidepid=ptraceable`, so check refuses on every decoy whose helper runs and
 says to run it as root, and status says that NAILS cannot tell without root.
 Run them with sudo. Where the decoy's helper runs, the hidden session's own
 copy is read with the same file, as the session starts it from the same files

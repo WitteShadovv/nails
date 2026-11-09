@@ -21,8 +21,11 @@
 //! environment, the unit, or `systemctl set-environment`. Of each process's
 //! environment, `/proc/<pid>/environ`, which only root may read, that one
 //! variable is kept; the rest is dropped as it is read and never shown. A
-//! read the kernel refuses is a doubt of its own ([`Doubt::needs_root`]),
-//! which a run as root does not have.
+//! read that fails without root the way the kernel keeps another user's
+//! process from all but root is a doubt of its own ([`Doubt::needs_root`]),
+//! which a run as root does not have: refused (`EACCES`, or `EPERM` with
+//! `/proc` mounted `hidepid=noaccess`), or hidden as if the process were gone
+//! (`ENOENT`, with `hidepid=invisible` or `ptraceable`).
 //!
 //! Every read is a read of a file or a lookup; nothing is written.
 
@@ -36,8 +39,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub(super) struct Doubt {
     /// The reason, as the texts say it.
     pub(super) why: String,
-    /// The kernel refused to show the helper's environment, as it refuses
-    /// everyone but root: a run as root can tell.
+    /// The kernel refused to show the helper's environment, or hid it, as it
+    /// does to everyone but root: a run as root can tell.
     pub(super) needs_root: bool,
 }
 
@@ -101,32 +104,49 @@ pub(super) fn apt_config_of(environ: &[u8]) -> Option<Vec<u8>> {
         .map(<[u8]>::to_vec)
 }
 
+/// What a caller that is root (`as_root`) or not makes of a read of the
+/// helper's environment that failed with `kind`: the words that say only
+/// root can read it, where only root can. Without root the kernel refuses it
+/// (`EACCES`, or `EPERM` where `/proc` is mounted `hidepid=noaccess`) or
+/// hides the process as if it were gone (`ENOENT`, where `/proc` is mounted
+/// `hidepid=invisible` or `ptraceable`). A process gone since its unit's
+/// cgroup was listed reads as gone as well, which a run as root then tells.
+fn only_root(kind: Option<std::io::ErrorKind>, as_root: bool) -> Option<&'static str> {
+    if as_root {
+        return None;
+    }
+    match kind? {
+        std::io::ErrorKind::PermissionDenied => Some("; only root can read it"),
+        std::io::ErrorKind::NotFound => {
+            Some("; where /proc hides other users' processes, only root can read it")
+        }
+        _ => None,
+    }
+}
+
 /// The `APT_CONFIG` the helper's processes `pids` run with under `root`:
 /// `None` when none sets it. Processes that set it apart leave it unknown,
 /// and so does an environment NAILS cannot read: only root may, so a read
-/// the kernel refuses says so.
+/// without root that the kernel refuses or hides says so.
 pub(super) fn apt_config<F: Filesystem>(
     fs: &F,
     root: &Path,
     pids: &[u32],
 ) -> Result<Option<Vec<u8>>, Doubt> {
+    let as_root = nix::unistd::geteuid().is_root();
     let mut found: Option<Option<Vec<u8>>> = None;
     for pid in pids {
         let environ = fs
             .read_file_bytes(&root.join(format!("proc/{pid}/environ")))
             .map_err(|e| {
-                let needs_root = e.io_kind() == Some(std::io::ErrorKind::PermissionDenied);
-                let only_root = if needs_root {
-                    "; only root can read it"
-                } else {
-                    ""
-                };
+                let root_can = only_root(e.io_kind(), as_root);
                 Doubt {
                     why: format!(
                         "the environment of {UNIT} (PID {pid}), where apt takes APT_CONFIG from, \
-                         cannot be read ({e}){only_root}"
+                         cannot be read ({e}){}",
+                        root_can.unwrap_or_default()
                     ),
-                    needs_root,
+                    needs_root: root_can.is_some(),
                 }
             })?;
         // Only the one variable is kept: the block is dropped here.

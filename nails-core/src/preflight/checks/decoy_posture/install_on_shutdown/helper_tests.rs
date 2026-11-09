@@ -153,8 +153,9 @@ fn an_environment_is_read_for_its_apt_config_alone() {
     );
     assert!(!err.why.contains("kept-out"), "{err:?}");
     assert!(!err.needs_root);
-    // A read that fails but for want of permission: no claim that root can
-    // read it.
+    // A read that finds no environment: a process gone since the cgroup
+    // was listed, or one /proc hides from all but root, which only a run
+    // without root can meet.
     fs.mock_set_path_type("/proc/414/environ", PathKind::File);
     let err = apt_config(&fs, Path::new("/"), &[414]).unwrap_err();
     assert!(
@@ -164,8 +165,41 @@ fn an_environment_is_read_for_its_apt_config_alone() {
         ),
         "{err:?}"
     );
-    assert!(!err.why.contains("only root"), "{err:?}");
-    assert!(!err.needs_root);
+    if nix::unistd::geteuid().is_root() {
+        assert!(!err.why.contains("only root"), "{err:?}");
+        assert!(!err.needs_root);
+    } else {
+        assert!(
+            err.why
+                .ends_with("; where /proc hides other users' processes, only root can read it"),
+            "{err:?}"
+        );
+        assert!(err.needs_root);
+    }
+}
+
+#[test]
+fn only_a_run_without_root_is_told_that_root_can_read_it() {
+    use std::io::ErrorKind;
+    // Refused, as by default and with hidepid=noaccess, or hidden, as with
+    // hidepid=invisible or ptraceable.
+    assert_eq!(
+        only_root(Some(ErrorKind::PermissionDenied), false),
+        Some("; only root can read it")
+    );
+    assert_eq!(
+        only_root(Some(ErrorKind::NotFound), false),
+        Some("; where /proc hides other users' processes, only root can read it")
+    );
+    // Root reads what the kernel keeps from others; what fails it fails
+    // root too, and so does any other error.
+    for kind in [ErrorKind::PermissionDenied, ErrorKind::NotFound] {
+        assert_eq!(only_root(Some(kind), true), None, "{kind:?}");
+    }
+    for kind in [ErrorKind::InvalidData, ErrorKind::Other] {
+        assert_eq!(only_root(Some(kind), false), None, "{kind:?}");
+    }
+    assert_eq!(only_root(None, false), None);
 }
 
 #[test]
@@ -185,4 +219,25 @@ fn an_environment_the_kernel_refuses_needs_root() {
     let err = read.unwrap_err();
     assert!(err.needs_root, "{err:?}");
     assert!(err.why.ends_with("; only root can read it"), "{err:?}");
+}
+
+#[test]
+fn an_environment_proc_hides_needs_root() {
+    // With /proc mounted hidepid=invisible or ptraceable, a process of
+    // another user has no /proc/<pid> for a caller without root, while its
+    // unit's cgroup still lists it.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("proc")).unwrap();
+    let err = apt_config(&crate::RealFilesystem, tmp.path(), &[412]).unwrap_err();
+    if nix::unistd::geteuid().is_root() {
+        assert!(!err.needs_root, "{err:?}");
+        assert!(!err.why.contains("only root"), "{err:?}");
+    } else {
+        assert!(err.needs_root, "{err:?}");
+        assert!(
+            err.why
+                .ends_with("; where /proc hides other users' processes, only root can read it"),
+            "{err:?}"
+        );
+    }
 }
