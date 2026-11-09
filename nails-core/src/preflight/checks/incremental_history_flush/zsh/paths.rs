@@ -142,7 +142,7 @@ impl<F: Filesystem> Reader<'_, F> {
 /// `:` or a `[`, with which zsh applies a modifier (`$HOME:a`, `$HOME:h`) or
 /// a subscript (`$HOME[1,-1]`) to the value: it stays as written, a path the
 /// check cannot know.
-fn replace_parameter(text: &str, pattern: &str, with: &str) -> String {
+pub(super) fn replace_parameter(text: &str, pattern: &str, with: &str) -> String {
     let braced = pattern.ends_with('}');
     let mut out = String::new();
     let mut rest = text;

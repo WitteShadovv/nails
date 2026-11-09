@@ -37,6 +37,32 @@ pub(in super::super) enum Arith {
     Old,
 }
 
+/// What a file does to where zsh finds the programs it runs by name
+/// ([`Event::Path`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in super::super) enum PathChange {
+    /// A directory put in `PATH`, as written: an element given `path`
+    /// (`path=(~/bin $path)`, `path+=~/bin`) or a part of `PATH`'s value
+    /// (`PATH=~/bin:$PATH`).
+    Dir(Word),
+    /// An element given `path` that the walk reads as the directories an
+    /// expansion holds, each as it is (`$path`), as written: one
+    /// `SH_WORD_SPLIT` splits, or `KSH_ARRAYS` cuts to its first, may hold
+    /// others.
+    Splits(String),
+    /// A change of `PATH` the walk read but cannot follow, as written
+    /// (`PATH+=x`, which joins `x` to the last directory, a tie of `path`).
+    Unfollowed(String),
+    /// A program named for a command, which zsh then runs by that name
+    /// wherever it is (`hash locale=~/bin/locale`, `commands[locale]=...`),
+    /// or a change of zsh's table of them the walk cannot follow, as
+    /// written.
+    Hashed(String),
+    /// A change of `PATH` or of that table that a line may make where the
+    /// walk did not read it.
+    Unread,
+}
+
 /// What a file's code does, in order, as [`super::Walker`] finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in super::super) enum Event {
@@ -75,6 +101,10 @@ pub(in super::super) enum Event {
     /// directories `fpath` held, as where it is put in front of them or
     /// replaces them.
     Fpath { dir: Option<Word>, first: bool },
+    /// What changes where zsh looks for the programs it runs by name, zsh's
+    /// own completion functions among them, which may run what such a
+    /// program prints as code ([`PathChange`]).
+    Path(PathChange),
     /// A function is marked to be autoloaded: its name, or the path of its
     /// file.
     Autoload(Word),

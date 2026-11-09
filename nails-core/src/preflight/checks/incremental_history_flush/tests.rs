@@ -1328,6 +1328,23 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
         )
     );
     assert_eq!(environment(b"OLD_PATH=/x\0").map(|env| env.len()), Some(0));
+    // PATH is kept as it is, where zsh looks for the programs its own
+    // completion functions run, and one that is no UTF-8 with it replaced,
+    // which names a directory the check takes for one it cannot name.
+    assert_eq!(
+        environment(b"PATH=/run/wrappers/bin::bin\0MANPATH=/m\0"),
+        Some(vec![(
+            "PATH".to_string(),
+            "/run/wrappers/bin::bin".to_string()
+        )])
+    );
+    assert_eq!(
+        environment(b"PATH=/home/alice/b\xffn:/usr/bin\0"),
+        Some(vec![(
+            "PATH".to_string(),
+            "/home/alice/b\u{fffd}n:/usr/bin".to_string()
+        )])
+    );
     // The prompts zsh takes from its environment are kept, and a prompt's
     // or MAILPATH's value that is no UTF-8 with it replaced, as the check
     // reads it only for an expansion in it.

@@ -22,6 +22,10 @@ mod fpath;
 #[path = "zsh_completion_tests.rs"]
 mod completion;
 
+// Where zsh finds the programs its own completion functions run.
+#[path = "zsh_programs_tests.rs"]
+mod programs;
+
 /// A zsh 5.9.2 from the Nix store.
 const ZSH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-zsh-5.9.2";
 
@@ -52,11 +56,21 @@ fn nix_zsh(fs: &MockFilesystem, named: &[&str], functions: &[&str]) {
     fs.mock_set_directory_contents(Path::new(OWN), entries);
 }
 
-/// The environment of a shell with `vars` in it.
+/// The `PATH` of a NixOS session: its setuid wrappers and the system
+/// profile, the directories of the system's own programs.
+const SYSTEM_PATH: &str = "/run/wrappers/bin:/run/current-system/sw/bin";
+
+/// The environment of a shell with `vars` in it, and [`SYSTEM_PATH`] unless
+/// `vars` names a `PATH`, as a session's environment holds one.
 fn environment(vars: &[(&str, &str)]) -> Vec<(String, String)> {
-    vars.iter()
+    let mut environment: Vec<(String, String)> = vars
+        .iter()
         .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
-        .collect()
+        .collect();
+    if !vars.iter().any(|(name, _)| *name == "PATH") {
+        environment.push(("PATH".to_string(), SYSTEM_PATH.to_string()));
+    }
+    environment
 }
 
 /// What the check knows of the zsh at `ZSH` started with `vars` in its
@@ -86,6 +100,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
             version: Some("5.9.2".to_string()),
             env: Some(super::super::install::Env {
                 user: Some("alice".to_string()),
+                path: Some(SYSTEM_PATH.to_string()),
                 ..Default::default()
             }),
         }
@@ -750,14 +765,19 @@ if test -f /etc/zshenv.local; then
 fi
 ";
 
-/// The lines of NixOS's `set-environment` that name the profiles.
+/// The lines of NixOS's `set-environment` that name the profiles, and that
+/// set `PATH` to each profile's `bin` and put the setuid wrappers in front.
 const NIXOS_SET_ENVIRONMENT: &str = "\
 # DO NOT EDIT -- this file has been generated automatically.
 # Prevent this file from being sourced by child shells.
 export __NIXOS_SET_ENVIRONMENT_DONE=1
 export LANG=\"en_US.UTF-8\"
 export NIX_PROFILES=\"/run/current-system/sw /nix/var/nix/profiles/default /etc/profiles/per-user/$USER $HOME/.local/state/nix/profile ${XDG_STATE_HOME}/nix/profile $HOME/.nix-profile\"
+export PATH=\"$HOME/.nix-profile/bin:${XDG_STATE_HOME}/nix/profile/bin:$HOME/.local/state/nix/profile/bin:/etc/profiles/per-user/$USER/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin\"
 export TERM=$TERM
+
+# Extra initialisation
+export PATH=\"/run/wrappers/bin:$PATH\"
 ";
 
 /// NixOS's generated `/etc/zshrc` with `programs.zsh.setOptions` without
@@ -870,7 +890,7 @@ fn nixos_without_coreutils(fs: &MockFilesystem) {
 
 /// The environment of a shell in a NixOS session: `set-environment` has
 /// run, and named the profiles.
-const SESSION: [(&str, &str); 3] = [
+const SESSION: [(&str, &str); 4] = [
     (
         "NIX_PROFILES",
         "/run/current-system/sw /nix/var/nix/profiles/default /etc/profiles/per-user/alice \
@@ -878,6 +898,12 @@ const SESSION: [(&str, &str); 3] = [
     ),
     ("USER", "alice"),
     ("__NIXOS_SET_ENVIRONMENT_DONE", "1"),
+    (
+        "PATH",
+        "/run/wrappers/bin:/home/alice/.nix-profile/bin:/nix/profile/bin:\
+         /home/alice/.local/state/nix/profile/bin:/etc/profiles/per-user/alice/bin:\
+         /nix/var/nix/profiles/default/bin:/run/current-system/sw/bin",
+    ),
 ];
 
 #[test]

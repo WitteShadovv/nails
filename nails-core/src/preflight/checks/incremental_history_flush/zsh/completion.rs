@@ -22,7 +22,9 @@
 //! directory (`~/.zcompcache`), which they source. Every function of the
 //! files' own counts as a hook there, as zsh's own completion functions run
 //! commands by name as you complete a word, the one you complete among them
-//! (`ls --help` for `ls <Tab>`), and functions whose names start with `_`.
+//! (`ls --help` for `ls <Tab>`), and functions whose names start with `_`; a
+//! program of the operator's own that zsh finds for such a name is a doubt
+//! ([`super::programs`]).
 //! Without `compinit` too, `compctl` and bash's `complete` (`bashcompinit`)
 //! name what zsh runs as you complete a word in words the check does not
 //! read: a doubt.
@@ -280,7 +282,7 @@ fn compdef_function(args: &[Word]) -> Result<Option<&Word>, &Word> {
 
 /// `names`, each in backquotes, the first [`SHOWN`] of them and how many
 /// more.
-fn shown(names: &[String]) -> String {
+pub(super) fn shown(names: &[String]) -> String {
     let listed: Vec<String> = names
         .iter()
         .take(SHOWN)
@@ -309,6 +311,9 @@ impl<F: Filesystem> Reader<'_, F> {
         if !self.compinit {
             return;
         }
+        // The programs they run by name, some of whose output they run as
+        // code ([`super::programs`]).
+        self.own_programs();
         let stock = self.stock_names();
         self.own_completion_dirs(&stock);
         // The functions of the files' own: those they define, and those they

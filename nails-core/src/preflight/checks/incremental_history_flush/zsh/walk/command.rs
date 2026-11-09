@@ -19,7 +19,7 @@ use super::super::lexer::{Word, is_name};
 use super::hooks::hook_array;
 use super::names::{computed, names_parameter, targets};
 use super::strings::PROMPTS;
-use super::{Event, Frame, Input, Walker, mentioned, walk_text_in};
+use super::{Event, Frame, Input, PathChange, Walker, mentioned, walk_text_in};
 
 /// The parameters that hold the aliases zsh expands, or disabled ones that
 /// `enable -a` makes it expand (zsh/parameter).
@@ -300,6 +300,7 @@ impl Walker<'_> {
         self.zdotdirs += nested.zdotdirs;
         self.autoloads += nested.autoloads;
         self.fpaths += nested.fpaths;
+        self.paths += nested.paths;
         self.fcs += nested.fcs;
         self.nix_profiles += nested.nix_profiles;
         self.indirects += nested.indirects;
@@ -611,13 +612,18 @@ impl Walker<'_> {
             }
             "bindkey" => self.bindkey(&args, unconditional),
             "unset" => {
-                // What it takes away holds no code: a prompt, a hook's array.
+                // What it takes away holds no code: a prompt, a hook's array,
+                // a directory zsh looks for programs in, a program it names
+                // for a command.
                 for arg in &args {
                     self.prompts += usize::from(PROMPTS.contains(&arg.text.as_str()));
                     self.hooks += usize::from(hook_array(&arg.text));
+                    self.paths +=
+                        usize::from(matches!(assigned(&arg.text), "path" | "PATH" | "commands"));
                     self.mention(&arg.text);
                 }
             }
+
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
             "add-zsh-hook" | "add-zle-hook-widget" => self.hook(&command.text, &args),
@@ -651,6 +657,9 @@ impl Walker<'_> {
                 self.declare(&command.text, &args, unconditional);
             }
             _ => {
+                if command.text == "hash" {
+                    self.hash(&args);
+                }
                 self.mention(&command.text);
                 for arg in &args {
                     self.mention(&arg.text);
@@ -801,6 +810,15 @@ impl Walker<'_> {
                 if completion::by_shape(name) {
                     self.code_parameter(name, false);
                 }
+                if matches!(name, "path" | "PATH") {
+                    // zsh then sets where it looks for programs by the other
+                    // name too.
+                    let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+                    self.events.push(Event::Path(PathChange::Unfollowed(format!(
+                        "{command} {}",
+                        words.join(" ")
+                    ))));
+                }
                 if computed(arg) || tie_read(name) {
                     self.events.push(Event::Doubt(format!(
                         "it cannot follow the value of `{}`, which `{command} {}` in {} ties to \
@@ -875,7 +893,10 @@ impl Walker<'_> {
             let local = self.declaring_local;
             self.code_parameter(assigned(target), local);
         }
-        if self.fpath_assignment(word) {
+        if self.fpath_assignment(word)
+            || self.path_assignment(word)
+            || self.commands_assignment(word)
+        {
             return;
         }
         self.mapfile(&word.text);
