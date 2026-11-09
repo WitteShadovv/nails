@@ -847,11 +847,14 @@ the process were gone where `/proc` is mounted with `hidepid=invisible` or
 `hidepid=ptraceable`, so check refuses on every decoy whose helper runs and
 says to run it as root, and status says that NAILS cannot tell without root.
 Run them with sudo. Where the decoy's helper runs, the hidden session's own
-copy is read with the same file, as the session starts it from the same files
-of the decoy. With the decoy's helper stopped, no running process shows
-`APT_CONFIG`, so NAILS reads the session's copy without one: a variable that a
-drop-in of the unit or PID 1's environment would give it is not followed
-there.
+copy is read with the same file, the one the running helper's own environment
+names: what the unit's files and PID 1's environment gave that helper when it
+started. A drop-in of the unit, PID 1's environment or `DefaultEnvironment=`
+changed since then can give the session's copy another `APT_CONFIG` or none,
+which NAILS does not follow, as with a stopped helper. With the decoy's
+helper stopped, no running process shows `APT_CONFIG`, so NAILS reads the
+session's copy without one: a variable that a drop-in of the unit or PID 1's
+environment would give it is not followed there.
 
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a line

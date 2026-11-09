@@ -551,8 +551,10 @@ fn decoy_setting<F: Filesystem>(
 /// The setting the session's copy of the helper reads: the decoy's files
 /// under `root` with `upper` on top, each way a directory of the upper may
 /// be read, the file at `apt_config` first where the decoy's helper runs with
-/// an `APT_CONFIG` naming one, as the session's copy is started with the
-/// environment the decoy's files give it.
+/// an `APT_CONFIG` naming one. That is the environment the decoy's files gave
+/// the running helper when it started, which the session's copy gets as well
+/// unless a drop-in of the unit or PID 1's environment changed since, which
+/// is not followed.
 fn session_setting<F: Filesystem>(
     fs: &F,
     root: &Path,
