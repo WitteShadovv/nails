@@ -199,8 +199,10 @@ Also refused by the pre-flight checks:
 
 `nails check` runs every check and prints what activation would do. It leaves
 no file and no mount behind: its probes write only on the hidden volume and
-remove what they write, and the small overlay it tries there is mounted
-detached, so no mount table ever lists it. The operator guide says
+remove what they write, the small overlay it tries there is mounted detached,
+so no mount table ever lists it, and it makes no lookup that would mount an
+automount point that nothing is mounted on yet: it names that path and says to
+mount the point. The operator guide says
 [exactly what `check` touches](docs/operator-guide.md#what-check-touches).
 For the strongest posture, keep state such as `/var` and `/home` on storage that
 is wiped at boot (impermanence-style); the decoy *root* itself must stay on a
