@@ -19,9 +19,11 @@
 //! out: nothing in a store path changes once it is there, and a new one is
 //! reached only through a link that changed.
 //!
-//! A change no more than a second before the shell started counts too, as
-//! the boot time it is read from is cut to the second and a filesystem may
-//! keep change times to the second. A change of the system clock after the
+//! A change up to three seconds before the shell started counts too: the
+//! boot time its start is read from is cut to the second, the times are
+//! compared by the second, and the second before the one it started in
+//! counts, as a filesystem may keep change times to the second or behind the
+//! clock by a tick. A change of the system clock after the
 //! shell started can move the time the shell started is read as, so a step
 //! forward hides a change made before it by no more than the step.
 

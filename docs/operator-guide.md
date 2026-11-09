@@ -1330,8 +1330,9 @@ afterwards:
     to, and the directory zsh looks in for it and its compiled form, or for one
     that is not there now the deepest directory on the way that is, which
     changes as a file in it is made, removed or renamed (`rm ~/.zshrc`, or any
-    program that makes or removes a file in your home), from the second before
-    the shell started on; the Nix store, where nothing changes, is left out.
+    program that makes or removes a file in your home), from up to three
+    seconds before the shell started on, as the times are compared by the
+    second; the Nix store, where nothing changes, is left out.
     The time is that of the shell's process, which an `exec zsh` keeps, and a
     step of the system clock forward after it can hide a change made before
     the step by no more than the step. So after you change your startup files
