@@ -922,15 +922,17 @@ writes the helper's line there; so does `apt-daily.service` held before its
 download takes the lock, where the control is a plain soft-reboot with the
 helper paused (SIGSTOP) until the download run holds the lock, the order of
 the race; with the setting on, as `apt-config` reads it, `check` and
-`activate` refuse and `status` names it, and with `--allow-persistent-decoy`
-the decoy's helper logs its shutdown-mode run at the switch; with the decoy's
-helper stopped but enabled, `check` only warns and the session's copy logs
-its shutdown-mode run into the upper at the way back; with the line deleted
-after the helper started, `apt-config` reads the setting off but `check`
-refuses, and with the override the helper logs its shutdown-mode run all the
-same; and with a file apt refuses, `check` refuses, with the override the
-helper logs its two ERROR lines on the decoy disk and no shutdown-mode run,
-and restarted with the file refused it logs its error to the journal instead.
+`activate` refuse and `status --json` says so, and with
+`--allow-persistent-decoy` the decoy's helper logs its shutdown-mode run at
+the switch; with the decoy's helper stopped but enabled, `check` only warns
+and the session's copy logs its shutdown-mode run into the upper at the way
+back; with the line deleted after the helper started, `apt-config` reads the
+setting off but `check` refuses, and with the override the helper logs its
+shutdown-mode run all the same; and with a file apt refuses while the helper
+holds the setting on, `check` refuses and `status --json` says so, with the
+override the helper logs its two ERROR lines on the decoy disk and no
+shutdown-mode run, and restarted with the file refused it logs to the journal
+of its own invocation instead.
 
 ## Decoys joined to a domain
 

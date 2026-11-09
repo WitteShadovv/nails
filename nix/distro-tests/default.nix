@@ -55,10 +55,11 @@ let
   # (tests/apt-shutdown.nix): check and activate refuse during a held daily
   # unattended-upgrade run and while apt-daily.service runs before its
   # download takes the lock, each with a plain soft-reboot as the control;
-  # they refuse with InstallOnShutdown on, with the line deleted after the
-  # helper read it, and with a file apt refuses, each with an activation
-  # under the override as the control; and they only warn of a helper stopped
-  # but enabled, and of one without python3-gi. The images with
+  # check and activate refuse with InstallOnShutdown on, and check with the
+  # line deleted after the helper read it and with a file apt refuses while
+  # the helper holds the setting on, each with an activation under the
+  # override as the control; and check only warns of a helper stopped but
+  # enabled, and of one without python3-gi. The images with
   # unattended-upgrades run it, beside their smokes, in the same CI matrix.
   aptShutdownDistros = lib.filter (name: enabledImages ? ${name}) [
     "debian-13"
