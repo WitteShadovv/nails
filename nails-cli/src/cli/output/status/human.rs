@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use chrono::{DateTime, TimeZone, Utc};
+use nails_core::next_step::{NextStep, sudo_line};
 use nails_core::output::{Mark, Style};
+use nails_core::preflight::InstallAtShutdown;
 use nails_core::status::{Posture, RequiredUnitView, StatusReport};
 
 use super::{config_file_label, read_recent_logs};
@@ -34,6 +36,33 @@ fn required_unit_line(unit: &RequiredUnitView) -> String {
         _ => "masked, as the fstab lines or unit files for it disagree; where the one the hidden \
               systemd reads has a boot target require it, that target is not reached"
             .to_string(),
+    }
+}
+
+/// What an activation would make the decoy's unattended-upgrades do, by the
+/// cause for which activation refuses it, as the human report says it.
+fn install_at_shutdown_line(install: InstallAtShutdown) -> String {
+    match install {
+        InstallAtShutdown::On => "unattended-upgrades installs at shutdown on the decoy: an \
+                                  activation would run that install on the decoy disk, and \
+                                  activation refuses it"
+            .to_string(),
+        InstallAtShutdown::RefusedFile => {
+            "apt refuses a file of its configuration on the decoy: at an activation \
+             unattended-upgrades' shutdown helper installs nothing but writes two ERROR lines, on \
+             the decoy disk unless it started with the file already refused, and activation \
+             refuses it"
+                .to_string()
+        }
+        InstallAtShutdown::Unknown => "NAILS cannot tell whether unattended-upgrades installs at \
+                                       shutdown on the decoy: an activation could run that \
+                                       install on the decoy disk, and activation refuses it"
+            .to_string(),
+        InstallAtShutdown::UnknownWithoutRoot => format!(
+            "NAILS cannot tell without root whether unattended-upgrades installs at shutdown on \
+             the decoy, as only root can read its shutdown helper's environment: run `{}`",
+            sudo_line(NextStep::Status)
+        ),
     }
 }
 
@@ -179,11 +208,10 @@ where
             "kdump is armed on the decoy: a kernel crash in a hidden session writes its memory to the decoy disk, and activation refuses it",
         ));
     }
-    if report.decoy_installs_at_shutdown && report.posture != Posture::Active {
-        out.push(style.marked(
-            Mark::Warn,
-            "unattended-upgrades installs at shutdown on the decoy, or NAILS cannot tell that it does not: an activation would run that install on the decoy disk, and activation refuses it",
-        ));
+    if let Some(install) = report.decoy_install_at_shutdown
+        && report.posture != Posture::Active
+    {
+        out.push(style.marked(Mark::Warn, install_at_shutdown_line(install)));
     }
     if let Some(last) = &report.last_activation {
         out.push(format!(

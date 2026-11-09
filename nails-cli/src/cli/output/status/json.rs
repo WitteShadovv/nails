@@ -74,8 +74,9 @@ pub struct StatusData<'a> {
     decoy_persistent: bool,
     /// Whether kdump is armed on the decoy, or its state cannot be read.
     decoy_kdump_armed: bool,
-    /// Whether the decoy's unattended-upgrades installs at shutdown, or NAILS
-    /// cannot tell that it does not.
+    /// Whether activation refuses what the decoy's unattended-upgrades would
+    /// do at its shutdown helper's signal: install at shutdown, write the
+    /// ERROR lines of a file apt refuses, or what NAILS cannot tell.
     decoy_installs_at_shutdown: bool,
     /// The persona mode.
     persona_mode: &'static str,
@@ -182,7 +183,7 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         nextroot_mounted: report.nextroot_mounted,
         decoy_persistent: report.decoy_persistent,
         decoy_kdump_armed: report.decoy_kdump_armed,
-        decoy_installs_at_shutdown: report.decoy_installs_at_shutdown,
+        decoy_installs_at_shutdown: report.decoy_install_at_shutdown.is_some(),
         persona_mode: report.persona_mode.as_str(),
         last_activation: report.last_activation.as_ref(),
         switch_refusal: refused.map(|refused| RefusalJson {

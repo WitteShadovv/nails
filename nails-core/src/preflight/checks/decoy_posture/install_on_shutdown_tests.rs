@@ -940,6 +940,13 @@ fn the_window_and_status_do_not_count_it() {
     assert!(DecoyPersistenceCheck::persistence_findings(&fs).is_empty());
     assert!(!DecoyPersistenceCheck::decoy_is_persistent(&fs));
     assert!(!DecoyPersistenceCheck::decoy_kdump_armed(&fs));
+    // Status has a line of its own for it, by its cause.
+    assert_eq!(
+        DecoyPersistenceCheck::decoy_install_at_shutdown(&fs),
+        Some(crate::preflight::InstallAtShutdown::On)
+    );
+    fs.mock_set_file_bytes("/etc/apt/apt.conf.d/99local", OFF.as_bytes());
+    assert_eq!(DecoyPersistenceCheck::decoy_install_at_shutdown(&fs), None);
 }
 
 #[test]
@@ -1483,11 +1490,18 @@ fn an_environment_the_kernel_refuses_is_one_only_root_can_tell() {
     let environ = tmp.path().join(format!("proc/{PID}/environ"));
     std::fs::set_permissions(&environ, std::fs::Permissions::from_mode(0o000)).unwrap();
     let found = find(tmp.path());
+    let for_status = DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, tmp.path());
     if nix::unistd::geteuid().is_root() {
         // Root reads it whatever its mode, as it reads the helper's.
         assert_eq!(found.blocker, None);
+        assert_eq!(for_status, None);
         return;
     }
+    // Status says that a run as root can tell.
+    assert_eq!(
+        for_status,
+        Some(crate::preflight::InstallAtShutdown::UnknownWithoutRoot)
+    );
     let refusal = found.blocker.as_ref().expect("a refusal");
     assert!(
         refusal.finding.starts_with("NAILS cannot tell"),

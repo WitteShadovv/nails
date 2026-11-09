@@ -6,6 +6,7 @@ use super::json::{status_envelope, status_unknown_envelope};
 use nails_core::SystemState;
 use nails_core::config::PersonaMode;
 use nails_core::output::Style;
+use nails_core::preflight::InstallAtShutdown;
 use nails_core::status::{CoverView, PolicyMountView, Posture, RequiredUnitView, StatusReport};
 use std::path::PathBuf;
 
@@ -33,7 +34,7 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         last_activation: None,
         decoy_persistent: false,
         decoy_kdump_armed: false,
-        decoy_installs_at_shutdown: false,
+        decoy_install_at_shutdown: None,
         persona_mode: PersonaMode::SharedHome,
         switch_refusal: None,
         opsec_reminders: Vec::new(),
@@ -213,25 +214,55 @@ fn an_install_at_shutdown_is_shown_on_the_decoy_in_both_forms() {
     let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
     assert_eq!(value["data"]["decoy_installs_at_shutdown"], false);
 
-    decoy.decoy_installs_at_shutdown = true;
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
-    assert!(
-        lines.contains(
-            "unattended-upgrades installs at shutdown on the decoy, or NAILS cannot tell that it \
-             does not: an activation would run that install on the decoy disk, and activation \
-             refuses it"
+    // Each cause has its line, and each sets the flag, as activation
+    // refuses each.
+    for (install, line) in [
+        (
+            InstallAtShutdown::On,
+            "unattended-upgrades installs at shutdown on the decoy: an activation would run that \
+             install on the decoy disk, and activation refuses it",
         ),
-        "{lines}"
-    );
-    let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
-    assert_eq!(value["data"]["decoy_installs_at_shutdown"], true);
-    assert_matches_the_schema(&value);
-    // It does not call the decoy persistent, as for kdump.
-    assert_eq!(value["data"]["decoy_persistent"], false);
+        (
+            InstallAtShutdown::RefusedFile,
+            "apt refuses a file of its configuration on the decoy: at an activation \
+             unattended-upgrades' shutdown helper installs nothing but writes two ERROR lines, on \
+             the decoy disk unless it started with the file already refused, and activation \
+             refuses it",
+        ),
+        (
+            InstallAtShutdown::Unknown,
+            "NAILS cannot tell whether unattended-upgrades installs at shutdown on the decoy: an \
+             activation could run that install on the decoy disk, and activation refuses it",
+        ),
+        (
+            InstallAtShutdown::UnknownWithoutRoot,
+            "NAILS cannot tell without root whether unattended-upgrades installs at shutdown on \
+             the decoy, as only root can read its shutdown helper's environment: run `sudo ",
+        ),
+    ] {
+        decoy.decoy_install_at_shutdown = Some(install);
+        let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+        assert!(lines.contains(line), "{install:?}: {lines}");
+        let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
+        assert_eq!(value["data"]["decoy_installs_at_shutdown"], true);
+        assert_matches_the_schema(&value);
+        // It does not call the decoy persistent, as for kdump.
+        assert_eq!(value["data"]["decoy_persistent"], false);
+    }
+    // Without root it says how to tell, never that activation refuses it:
+    // a run as root may pass.
+    decoy.decoy_install_at_shutdown = Some(InstallAtShutdown::UnknownWithoutRoot);
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(lines.contains(" status`"), "{lines}");
+    assert!(!lines.contains("activation refuses it"), "{lines}");
+    // Only a file apt refuses is said to install nothing.
+    decoy.decoy_install_at_shutdown = Some(InstallAtShutdown::On);
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(!lines.contains("installs nothing"), "{lines}");
 
     // In the session the line is about the decoy, so it is left out.
     let mut active = report(Posture::Active, "hidden");
-    active.decoy_installs_at_shutdown = true;
+    active.decoy_install_at_shutdown = Some(InstallAtShutdown::On);
     let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
     assert!(!lines.contains("unattended-upgrades"), "{lines}");
 }

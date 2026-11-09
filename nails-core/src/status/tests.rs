@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::RealFilesystem;
+use crate::preflight::InstallAtShutdown;
 use nails_teardown::mountinfo::parse_mountinfo;
 use nails_teardown::whole_root::plan::{
     DecoyRoot, PLAN_VERSION, PolicyMount, RequiredMask, RootSide, Skip, Tools,
@@ -420,19 +421,31 @@ fn an_install_at_shutdown_is_reported_on_the_decoy_and_never_in_the_session() {
         command_on(fs, dir.path())
             .report(view, &[], Utc::now())
             .unwrap()
-            .decoy_installs_at_shutdown
+            .decoy_install_at_shutdown
     };
     let on = "Unattended-Upgrade::InstallOnShutdown \"true\";\n";
     let off = "Unattended-Upgrade::InstallOnShutdown \"false\";\n";
-    assert!(installs(on, &SessionView::Decoy), "the setting on");
-    assert!(!installs(off, &SessionView::Decoy), "the setting off");
-    // NAILS cannot tell: a file apt refuses.
-    assert!(
+    assert_eq!(
+        installs(on, &SessionView::Decoy),
+        Some(InstallAtShutdown::On),
+        "the setting on"
+    );
+    assert_eq!(installs(off, &SessionView::Decoy), None, "the setting off");
+    // A file apt refuses: the helper installs nothing, but writes its two
+    // ERROR lines, and activation refuses that.
+    assert_eq!(
         installs("Foo \"x\"\n", &SessionView::Decoy),
+        Some(InstallAtShutdown::RefusedFile),
         "a file apt refuses"
     );
+    // NAILS cannot tell: an #include it does not follow.
+    assert_eq!(
+        installs("#include \"/etc/elsewhere.conf\";\n", &SessionView::Decoy),
+        Some(InstallAtShutdown::Unknown),
+        "an #include"
+    );
     // In the session the field is about a decoy that is not running.
-    assert!(!installs(on, &hidden));
+    assert_eq!(installs(on, &hidden), None);
 }
 
 #[test]
