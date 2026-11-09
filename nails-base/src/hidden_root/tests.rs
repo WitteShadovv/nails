@@ -228,6 +228,26 @@ fn two_filesystems_at_the_root_are_refused_naming_both() {
     );
 }
 
+/// A hidden root that is itself a direct automount point keeps the point
+/// mounted below the volume once the volume is mounted there: two
+/// filesystems at the root, refused as covered.
+#[test]
+fn a_root_that_is_a_direct_automount_point_is_covered_once_mounted() {
+    let fs = fs_with(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         10 1 0:50 / /mnt/data rw,relatime - autofs systemd-1 \
+         rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n\
+         11 10 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n",
+    );
+    assert_eq!(
+        refusal(&fs, "/mnt/data").kind,
+        RefusalKind::Covered {
+            below: "autofs".into(),
+            above: "ext4".into(),
+        }
+    );
+}
+
 #[test]
 fn a_covered_root_names_no_device_of_either_mapping() {
     // The volume and the cover are both mappings whose names say what opened
