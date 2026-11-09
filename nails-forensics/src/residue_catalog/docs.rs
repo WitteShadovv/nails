@@ -111,8 +111,28 @@ fn channel_cell(channel: &Channel) -> String {
     }
 }
 
-/// Markdown for one probe point.
-fn probe_cell(probe: &Probe, blocks: bool) -> String {
+/// How loudly a probe point reports a probe path it cannot look up, for one
+/// whose hit it reports at the given severity.
+type CannotTell = fn(ProbeSeverity) -> ProbeSeverity;
+
+/// The pre-flight check warns about a probe path it cannot look up, also for
+/// a row whose hit it only notes.
+fn preflight_cannot_tell(_: ProbeSeverity) -> ProbeSeverity {
+    ProbeSeverity::Warn
+}
+
+/// Verify reports a probe path it cannot look up at the hit's severity, but
+/// at most as a warning.
+fn verify_cannot_tell(severity: ProbeSeverity) -> ProbeSeverity {
+    match severity {
+        ProbeSeverity::Critical => ProbeSeverity::Warn,
+        other => other,
+    }
+}
+
+/// Markdown for one probe point, which reports a probe path it cannot look
+/// up as `cannot_tell` says.
+fn probe_cell(probe: &Probe, blocks: bool, cannot_tell: CannotTell) -> String {
     match probe {
         Probe::Check(name) if blocks => format!("`{name}` (refuses)"),
         Probe::Check(name) => format!("`{name}`"),
@@ -122,7 +142,16 @@ fn probe_cell(probe: &Probe, blocks: bool) -> String {
                 ProbeSeverity::Warn => "warn",
                 ProbeSeverity::Critical => "critical",
             };
-            format!("path probe ({level})")
+            let untold = cannot_tell(*severity);
+            if untold == *severity {
+                return format!("path probe ({level})");
+            }
+            let reported = match untold {
+                ProbeSeverity::Info => "is noted",
+                ProbeSeverity::Warn => "warns",
+                ProbeSeverity::Critical => "is critical",
+            };
+            format!("path probe ({level}; a path it cannot look up {reported})")
         }
         Probe::None(reason) => format!("none: {reason}"),
     }
@@ -171,8 +200,8 @@ fn catalog_table(doc: &str, kind: ResidueKind) -> String {
             row.id,
             channel_cell(&row.channel),
             row.platforms.label(),
-            probe_cell(&row.preflight, row.preflight_blocks),
-            probe_cell(&row.verify, false),
+            probe_cell(&row.preflight, row.preflight_blocks, preflight_cannot_tell),
+            probe_cell(&row.verify, false, verify_cannot_tell),
             row.mitigation,
             e2e_cell(&row.e2e),
         ));
@@ -191,7 +220,7 @@ fn residual_table(doc: &str) -> String {
             link(row, doc, row.title),
             row.risk,
             row.mitigation,
-            probe_cell(&row.verify, false),
+            probe_cell(&row.verify, false, verify_cannot_tell),
         ));
     }
     out
