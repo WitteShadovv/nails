@@ -822,16 +822,17 @@ then logs there for its whole run. The refusal names the file and the line to
 fix.
 
 The helper's unit sets no `APT_CONFIG`, but PID 1's environment, a drop-in of
-the unit or `systemctl set-environment` can give it one, and apt then reads the
-file it names before every other. NAILS reads that one variable from the
+the unit or `systemctl set-environment` can give it one, and apt then reads
+the file it names before every other. NAILS reads that one variable from the
 environment of the running helper's processes, those its unit's cgroup lists
 (`/proc/<pid>/environ`, which only root can read), keeps nothing else of it,
 and reads the file first as apt does. It cannot tell, and refuses, when that
-environment cannot be read, as by a `nails check` run without sudo, when the
-file cannot be read, when the variable names a relative path or one with
-`..`, and when the processes run with different values. The hidden session's
-own copy is read with the same file, as the session starts it from the same
-files of the decoy.
+environment cannot be read, when the file cannot be read, when the variable
+names a relative path or one with `..`, and when the processes run with
+different values. A `nails check` run without sudo cannot read the
+environment, so it refuses on every decoy whose helper runs and says to run it
+as root: run it with sudo. The hidden session's own copy is read with the same
+file, as the session starts it from the same files of the decoy.
 
 Set it to `false` rather than deleting the line: the helper reads the files
 when it starts and again on the signal, keeping what it read first, so a line

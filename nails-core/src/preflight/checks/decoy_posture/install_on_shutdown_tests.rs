@@ -480,13 +480,18 @@ fn a_file_apt_refuses_is_refused_with_what_the_helper_writes() {
         let found = find(tmp.path());
         let refusal = found.blocker.as_ref().expect("a refusal");
         let message = &refusal.finding;
+        // What happens, not a doubt: the helper installs nothing for
+        // certain.
         assert!(
             message.starts_with(&format!(
-                "apt refuses {at} (Extra junk at end of file), so NAILS cannot tell"
+                "apt refuses {at} (Extra junk at end of file): at activation unattended-upgrades' \
+                 shutdown helper reads apt's configuration again, finds that file refused and \
+                 installs nothing, but writes two ERROR lines"
             )),
             "{message}"
         );
-        assert!(message.contains("installs nothing"), "{message}");
+        assert!(!message.contains("cannot tell"), "{message}");
+        assert!(!message.contains("counts it as on"), "{message}");
         assert!(
             message.contains(
                 "two ERROR lines (`Apt returned an error thus shutdown mode is disabled` and \
@@ -837,17 +842,25 @@ fn the_check_refuses_and_the_override_warns() {
 fn the_override_of_a_setting_nails_cannot_tell_says_no_install_runs_for_certain() {
     // What NAILS does not follow: the warning does not say that the helper
     // installs. A file apt refuses: the helper installs nothing at the
-    // signal, and the warning says what it writes instead.
+    // signal, which the finding says once, and the warning says what it
+    // writes instead.
     for (text, said, sentence) in [
         (
             &b"#include \"/etc/elsewhere.conf\";\n"[..],
-            "/etc/apt/apt.conf.d/99local:1 has apt read another file",
+            "NAILS cannot tell whether unattended-upgrades installs the pending updates at \
+             activation, as its shutdown helper does when Unattended-Upgrade::InstallOnShutdown \
+             is on, so it counts as on: /etc/apt/apt.conf.d/99local:1 has apt read another file",
             None,
         ),
         (
             &b"Nails::Fact \"x\"\n"[..],
-            "apt refuses /etc/apt/apt.conf.d/99local:2",
-            Some(ERROR_LINES),
+            "apt refuses /etc/apt/apt.conf.d/99local:2 (Extra junk at end of file): at \
+             activation unattended-upgrades' shutdown helper reads apt's configuration again, \
+             finds that file refused and installs nothing",
+            Some(
+                "At the switch unattended-upgrades' shutdown helper writes those two ERROR lines \
+                 on the decoy disk, unless it started with the file already refused.",
+            ),
         ),
     ] {
         let tmp = stock(UBUNTU_26_04);
@@ -870,12 +883,19 @@ fn the_override_of_a_setting_nails_cannot_tell_says_no_install_runs_for_certain(
             .unwrap();
         assert!(allowed.is_warn(), "{allowed:?}");
         let message = allowed.message();
-        assert!(message.contains("NAILS cannot tell whether"), "{message}");
         assert!(message.contains(said), "{message}");
         assert!(
             !message.contains("At the switch unattended-upgrades installs"),
             "{message}"
         );
+        assert!(
+            message.matches("installs nothing").count() <= 1,
+            "{message}"
+        );
+        // The words run as one text, with no gap a wrapped literal leaves,
+        // before the host's own warnings.
+        let ours = message.split(" Also: ").next().unwrap_or_default();
+        assert!(!ours.contains("  "), "{message}");
         match sentence {
             Some(sentence) => assert!(message.contains(sentence), "{message}"),
             None => assert!(!message.contains("At the switch"), "{message}"),
@@ -1432,20 +1452,68 @@ fn what_nails_cannot_read_of_the_running_helper_is_refused_as_if_on() {
         "{message}"
     );
 
-    // An environment NAILS cannot read: only root can.
+    // An environment NAILS cannot read, as of a process gone since its
+    // cgroup was listed: no claim that root could.
     let fs = MockFilesystem::new();
     mock_run_helper(&fs, None);
     mock_parts(&fs, "/etc/apt/apt.conf.d", &[("99local", Some(OFF))]);
     let found = finding(&fs, Path::new("/"), None);
-    let message = blocker(&found);
+    let refusal = found.blocker.as_ref().expect("a refusal");
     assert!(
-        message.contains(
+        refusal.finding.contains(
             "the environment of unattended-upgrades.service (PID 412), where apt takes APT_CONFIG \
              from, cannot be read ("
         ),
-        "{message}"
+        "{}",
+        refusal.finding
     );
-    assert!(message.contains("only root can read it"), "{message}");
+    assert!(
+        !refusal.finding.contains("only root can read it"),
+        "{}",
+        refusal.finding
+    );
+    assert_eq!(refusal.at_the_switch, AtTheSwitch::Unknown);
+}
+
+#[test]
+fn an_environment_the_kernel_refuses_is_one_only_root_can_tell() {
+    use std::os::unix::fs::PermissionsExt;
+    // The helper's environment, as /proc shows it to all but root.
+    let tmp = stock(DEBIAN_13);
+    let environ = tmp.path().join(format!("proc/{PID}/environ"));
+    std::fs::set_permissions(&environ, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let found = find(tmp.path());
+    if nix::unistd::geteuid().is_root() {
+        // Root reads it whatever its mode, as it reads the helper's.
+        assert_eq!(found.blocker, None);
+        return;
+    }
+    let refusal = found.blocker.as_ref().expect("a refusal");
+    assert!(
+        refusal.finding.starts_with("NAILS cannot tell"),
+        "{}",
+        refusal.finding
+    );
+    assert!(
+        refusal.finding.contains(
+            "the environment of unattended-upgrades.service (PID 412), where apt takes APT_CONFIG \
+             from, cannot be read ("
+        ),
+        "{}",
+        refusal.finding
+    );
+    assert!(
+        refusal.finding.ends_with("; only root can read it"),
+        "{}",
+        refusal.finding
+    );
+    assert_eq!(refusal.at_the_switch, AtTheSwitch::NeedsRoot);
+    assert!(
+        refusal.fix.starts_with("run the check as root (`sudo "),
+        "{}",
+        refusal.fix
+    );
+    assert!(refusal.fix.contains(" check`)"), "{}", refusal.fix);
 }
 
 /// A stock decoy of `release` whose helper runs with `APT_CONFIG` set to

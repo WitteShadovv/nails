@@ -20,7 +20,9 @@
 //! its configuration, however the variable came to the helper: from PID 1's
 //! environment, the unit, or `systemctl set-environment`. Of each process's
 //! environment, `/proc/<pid>/environ`, which only root may read, that one
-//! variable is kept; the rest is dropped as it is read and never shown.
+//! variable is kept; the rest is dropped as it is read and never shown. A
+//! read the kernel refuses is a doubt of its own ([`Doubt::needs_root`]),
+//! which a run as root does not have.
 //!
 //! Every read is a read of a file or a lookup; nothing is written.
 
@@ -28,6 +30,25 @@ use super::{APT, PARTS, UNIT};
 use crate::Filesystem;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Why NAILS cannot tell what the decoy's running helper reads first.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Doubt {
+    /// The reason, as the texts say it.
+    pub(super) why: String,
+    /// The kernel refused to show the helper's environment, as it refuses
+    /// everyone but root: a run as root can tell.
+    pub(super) needs_root: bool,
+}
+
+impl From<String> for Doubt {
+    fn from(why: String) -> Self {
+        Self {
+            why,
+            needs_root: false,
+        }
+    }
+}
 
 /// The cgroup of the helper's unit, relative to the root.
 const CGROUP: &str = "sys/fs/cgroup/system.slice";
@@ -82,21 +103,31 @@ pub(super) fn apt_config_of(environ: &[u8]) -> Option<Vec<u8>> {
 
 /// The `APT_CONFIG` the helper's processes `pids` run with under `root`:
 /// `None` when none sets it. Processes that set it apart leave it unknown,
-/// and so does an environment NAILS cannot read: only root may.
+/// and so does an environment NAILS cannot read: only root may, so a read
+/// the kernel refuses says so.
 pub(super) fn apt_config<F: Filesystem>(
     fs: &F,
     root: &Path,
     pids: &[u32],
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<Vec<u8>>, Doubt> {
     let mut found: Option<Option<Vec<u8>>> = None;
     for pid in pids {
         let environ = fs
             .read_file_bytes(&root.join(format!("proc/{pid}/environ")))
             .map_err(|e| {
-                format!(
-                    "the environment of {UNIT} (PID {pid}), where apt takes APT_CONFIG from, \
-                     cannot be read ({e}); only root can read it"
-                )
+                let needs_root = e.io_kind() == Some(std::io::ErrorKind::PermissionDenied);
+                let only_root = if needs_root {
+                    "; only root can read it"
+                } else {
+                    ""
+                };
+                Doubt {
+                    why: format!(
+                        "the environment of {UNIT} (PID {pid}), where apt takes APT_CONFIG from, \
+                         cannot be read ({e}){only_root}"
+                    ),
+                    needs_root,
+                }
             })?;
         // Only the one variable is kept: the block is dropped here.
         let value = apt_config_of(&environ);
@@ -105,7 +136,8 @@ pub(super) fn apt_config<F: Filesystem>(
             Some(seen) if *seen != value => {
                 return Err(format!(
                     "the processes of {UNIT} run with different values of APT_CONFIG"
-                ));
+                )
+                .into());
             }
             Some(_) => {}
             None => found = Some(value),
@@ -238,7 +270,7 @@ pub(super) fn changed_since_start<F: Filesystem>(
 pub(super) fn running<F: Filesystem>(
     fs: &F,
     root: &Path,
-) -> Result<(Vec<u32>, Option<PathBuf>), String> {
+) -> Result<(Vec<u32>, Option<PathBuf>), Doubt> {
     let pids = processes(fs, root)?;
     let apt_config = match apt_config(fs, root, &pids)? {
         None => None,

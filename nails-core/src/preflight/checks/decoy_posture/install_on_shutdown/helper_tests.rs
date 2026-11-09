@@ -147,9 +147,42 @@ fn an_environment_is_read_for_its_apt_config_alone() {
     );
     fs.mock_set_file_bytes("/proc/413/environ", b"LANG=C.UTF-8\0");
     let err = apt_config(&fs, Path::new("/"), &[412, 413]).unwrap_err();
-    assert!(err.contains("different values of APT_CONFIG"), "{err}");
-    assert!(!err.contains("kept-out"), "{err}");
+    assert!(
+        err.why.contains("different values of APT_CONFIG"),
+        "{err:?}"
+    );
+    assert!(!err.why.contains("kept-out"), "{err:?}");
+    assert!(!err.needs_root);
+    // A read that fails but for want of permission: no claim that root can
+    // read it.
     fs.mock_set_path_type("/proc/414/environ", PathKind::File);
     let err = apt_config(&fs, Path::new("/"), &[414]).unwrap_err();
-    assert!(err.contains("only root can read it"), "{err}");
+    assert!(
+        err.why.starts_with(
+            "the environment of unattended-upgrades.service (PID 414), where apt takes \
+             APT_CONFIG from, cannot be read ("
+        ),
+        "{err:?}"
+    );
+    assert!(!err.why.contains("only root"), "{err:?}");
+    assert!(!err.needs_root);
+}
+
+#[test]
+fn an_environment_the_kernel_refuses_needs_root() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let environ = tmp.path().join("proc/412/environ");
+    std::fs::create_dir_all(environ.parent().unwrap()).unwrap();
+    std::fs::write(&environ, b"APT_CONFIG=/etc/nails-apt.conf\0").unwrap();
+    std::fs::set_permissions(&environ, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let read = apt_config(&crate::RealFilesystem, tmp.path(), &[412]);
+    if nix::unistd::geteuid().is_root() {
+        // Root reads it whatever its mode.
+        assert_eq!(read, Ok(Some(b"/etc/nails-apt.conf".to_vec())));
+        return;
+    }
+    let err = read.unwrap_err();
+    assert!(err.needs_root, "{err:?}");
+    assert!(err.why.ends_with("; only root can read it"), "{err:?}");
 }
