@@ -4,13 +4,11 @@
 //! What a startup file's lines name, counted without the lexer and
 //! wherever it stands: the options that write each command line to the
 //! history file, `source`, a `.` with a word after it, `eval`, an alias that
-//! stands for `.`, `autoload`, an `fc` that may write the history file, the
-//! `ZDOTDIR`, `fpath` and `PATH` settings, and `hash` and `commands`. The walk
-//! counts the same as it reads them as code it follows, and what the lines
-//! name beyond that is what it did not follow: an option named there counts
-//! as on, an `fpath` setting adds a directory the check cannot follow, a
-//! `PATH` setting or a `hash` is a change of where zsh finds programs that it
-//! cannot follow, and the rest is a doubt.
+//! stands for `.`, `autoload`, an `fc` that may write the history file, and
+//! the `ZDOTDIR` and `fpath` settings. The walk counts the same as it reads
+//! them as code it follows, and what the lines name beyond that is what it
+//! did not follow: an option named there counts as on, an `fpath` setting
+//! adds a directory the check cannot follow, and the rest is a doubt.
 //!
 //! Only a line whose first character that is not a blank is `#` is left out,
 //! so an option a comment at the end of a line names counts as on too, and a
@@ -43,10 +41,6 @@ pub(super) struct Named {
     pub(super) autoloads: usize,
     /// `fpath` and `FPATH` where they are not read ([`fpath_writes`]).
     pub(super) fpaths: usize,
-    /// `path` and `PATH` where they are not read
-    /// ([`super::programs::path_writes`]), and `hash` and `commands`
-    /// ([`super::programs::hash_writes`]).
-    pub(super) paths: usize,
     /// `fc` with a flag that writes the history file, or an expansion
     /// ([`fc_writes`]).
     pub(super) fcs: usize,
@@ -64,10 +58,6 @@ pub(super) struct Named {
     /// A parameter zsh reads as arithmetic each time it uses it (`TMOUT`)
     /// where it is not read ([`number_writes`]).
     pub(super) numbers: usize,
-    /// A parameter whose name zsh's own completion functions may make or
-    /// keep code in, assigned with an `=`
-    /// ([`super::completion::code_parameter_writes`]).
-    pub(super) code_params: usize,
     /// A parameter that holds aliases (`aliases`, `galiases`) where it is
     /// not read ([`alias_writes`]).
     pub(super) alias_params: usize,
@@ -91,14 +81,12 @@ impl Named {
             zdotdirs: self.zdotdirs.max(other.zdotdirs),
             autoloads: self.autoloads.max(other.autoloads),
             fpaths: self.fpaths.max(other.fpaths),
-            paths: self.paths.max(other.paths),
             fcs: self.fcs.max(other.fcs),
             nix_profiles: self.nix_profiles.max(other.nix_profiles),
             indirects: self.indirects.max(other.indirects),
             hooks: self.hooks.max(other.hooks),
             prompts: self.prompts.max(other.prompts),
             numbers: self.numbers.max(other.numbers),
-            code_params: self.code_params.max(other.code_params),
             alias_params: self.alias_params.max(other.alias_params),
             function_params: self.function_params.max(other.function_params),
             arith: self.arith.max(other.arith),
@@ -117,14 +105,12 @@ impl Named {
         self.zdotdirs += zdotdir_writes(piece);
         self.autoloads += whole_words(piece, "autoload");
         self.fpaths += fpath_writes(piece);
-        self.paths += super::programs::path_writes(piece) + super::programs::hash_writes(piece);
         self.fcs += fc_writes(piece);
         self.nix_profiles += nix_profiles_writes(piece);
         self.indirects += indirect_assignments(piece);
         self.hooks += hook_writes(piece);
         self.prompts += prompt_writes(piece);
         self.numbers += number_writes(piece);
-        self.code_params += super::completion::code_parameter_writes(piece);
         self.arith += piece.matches("((").count() + piece.matches("$[").count();
         let alone = matches!(
             piece,
@@ -349,7 +335,7 @@ fn alias_definitions(line: &str) -> usize {
 /// How often `line` sets a variable of the dynamic loader, whose name starts
 /// with `LD_` (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`), otherwise than
 /// to read it ([`is_write`]).
-pub(super) fn loader_writes(line: &str) -> usize {
+fn loader_writes(line: &str) -> usize {
     let part = |c: char| c.is_ascii_alphanumeric() || c == '_';
     line.match_indices("LD_")
         .filter(|&(at, _)| {
@@ -1054,7 +1040,7 @@ pub(super) fn fpath_writes(text: &str) -> usize {
 
 /// How often `text` names the variable `name` otherwise than to read it
 /// ([`is_write`]).
-pub(super) fn writes(text: &str, name: &str) -> usize {
+fn writes(text: &str, name: &str) -> usize {
     text.match_indices(name)
         .filter(|&(at, found)| is_write(text, at, found.len()))
         .count()
@@ -1066,7 +1052,7 @@ pub(super) fn writes(text: &str, name: &str) -> usize {
 /// `${name=...}`, `${name:=...}` or `${name::=...}`, an element's too
 /// (`${name[1]::=...}`); also as the argument of an option, after its letters
 /// (`print -vTTY`).
-pub(super) fn is_write(text: &str, at: usize, len: usize) -> bool {
+fn is_write(text: &str, at: usize, len: usize) -> bool {
     let part = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let modifiers = ['#', '+', '=', '~', '^'];
     let before = &text[..at];

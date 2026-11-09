@@ -316,10 +316,9 @@ fn a_prompt_set_in_any_form_holds_code_where_prompt_subst_may_be_on() {
 
 #[test]
 fn an_alias_for_a_command_whose_words_the_check_reads_is_a_doubt() {
-    // compinit's dump file, prompt's theme and the hooks of add-zsh-hook
-    // are in the words they are given, which an alias hands on.
+    // prompt's theme and the hooks of add-zsh-hook are in the words they are
+    // given, which an alias hands on.
     for (rc, text) in [
-        ("alias ci=compinit\n", "ci=compinit"),
         ("alias p=prompt\n", "p=prompt"),
         ("alias azh=add-zsh-hook\n", "azh=add-zsh-hook"),
         ("alias z=zle\n", "z=zle"),
