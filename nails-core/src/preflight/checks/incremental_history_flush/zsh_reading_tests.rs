@@ -222,16 +222,17 @@ fn a_word_brace_expansion_or_a_glob_may_make_a_flag_or_a_name_of_is_a_doubt() {
 fn a_zstyle_s_definition_past_a_dash_is_read() {
     // zsh 5.9.2 takes a first word `-` or one that starts with `--` for a
     // definition of the style past it, as the stock add-zle-hook-widget
-    // writes its own, and with each runs complete-word as each line is
-    // entered, whose completer then appends the line to the history file.
+    // writes its own, and with each runs the widgets it names as each line
+    // is entered: zsh 5.9 to 5.9.2 wrote the line where it named run-help,
+    // which runs a run-help function of the files' own with the line at hand.
     for flag in ["--", "-", "--x"] {
-        let rc = format!("zstyle {flag} zle-line-finish widgets 0:complete-word 1:d\n");
+        let rc = format!("zstyle {flag} zle-line-finish widgets 0:run-help 1:d\n");
         assert_eq!(
             read(&rc).doubts,
             [format!(
                 "it cannot tell which widgets `zstyle {flag} zle-line-finish widgets \
-                 0:complete-word 1:d` in /home/alice/.zshrc makes add-zle-hook-widget run as \
-                 each line is entered"
+                 0:run-help 1:d` in /home/alice/.zshrc makes add-zle-hook-widget run as each \
+                 line is entered"
             )],
             "{flag}"
         );

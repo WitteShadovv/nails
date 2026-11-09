@@ -280,6 +280,10 @@ struct Reader<'a, F: Filesystem> {
     edges: Vec<(String, String)>,
     /// Whether the files autoload the stock `promptinit` ([`stock::Stock`]).
     promptinit: bool,
+    /// Whether zsh may load a `compinit` the files autoload, and the files
+    /// that autoload one ([`completion`]).
+    compinit: bool,
+    compinit_places: Vec<String>,
     /// What the files read may change what a later command runs with
     /// ([`Changer`]), what of it came before each dircolors line of NixOS's
     /// `/etc/zshrc` taken as known ([`Snapshot`]), and how many were noted
@@ -620,6 +624,9 @@ impl<F: Filesystem> Reader<'_, F> {
                     .unwrap_or_default()
                     .to_string();
                 self.shadow_function(&name, place, "autoloads");
+                if name == "compinit" && !self.compinit_places.iter().any(|known| known == place) {
+                    self.compinit_places.push(place.to_string());
+                }
                 if let Some(Some(outer)) = self.outers.last()
                     && !function.text.contains('/')
                 {
@@ -932,6 +939,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         calls: Vec::new(),
         edges: Vec::new(),
         promptinit: false,
+        compinit: false,
+        compinit_places: Vec::new(),
         changers: Vec::new(),
         dircolors: Vec::new(),
         startup_changers: 0,

@@ -1476,8 +1476,8 @@ fn arithmetic_that_may_set_a_name_the_check_cannot_read_is_a_doubt() {
     // zsh 5.9.2 sets TTY to `5` with each, as it reads `${n}TY` in arithmetic
     // after it expands `${n}`, and the value of a parameter that holds no
     // number as arithmetic too; the hook's output to $TTY then goes to
-    // `./5`, a link to the history file. FPATH, _compdir, ZDOTDIR and HOME
-    // set so make it load a compinit, read startup files elsewhere.
+    // `./5`, a link to the history file. FPATH, ZDOTDIR and HOME set so make
+    // it load a compinit or read startup files elsewhere.
     for set in [
         "n=T\n(( ${n}TY = 5 ))",
         "n=T\nlet ${n}TY=5",
