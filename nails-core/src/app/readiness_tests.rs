@@ -316,6 +316,51 @@ fn decoy_filesystems_make_no_lookup_behind_an_automount_point() {
     assert!(unreadable.mock_lookups().is_empty());
 }
 
+/// An fstab that cannot be read leaves every filesystem it names
+/// undecided, as `fstab-policy` refuses it: the list says so in a line of
+/// its own, whether the guard's lookup or the read in the root fails, and
+/// never shows only the root. A root without an fstab has no entries.
+#[test]
+fn decoy_filesystems_name_an_fstab_that_cannot_be_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    let mounts = nails_teardown::mountinfo::parse_mountinfo(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw
+",
+    );
+    let list = |snapshot: &std::sync::Arc<Snapshot>| {
+        decoy_filesystems(
+            &RealFilesystem,
+            snapshot,
+            &root,
+            &mounts,
+            Path::new("/mnt/data"),
+        )
+    };
+    let elsewhere = Snapshot::read(&RealFilesystem, &root);
+    assert!(list(&elsewhere).is_empty());
+
+    // A link that leads back through itself: the guard's walk of the
+    // running system fails on it, as the read inside the root does.
+    std::os::unix::fs::symlink("fstab", root.join("etc/fstab")).unwrap();
+    let running = Snapshot::from_table(nails_teardown::mountinfo::parse_mountinfo(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw
+",
+    ));
+    for snapshot in [&running, &elsewhere] {
+        let rows = list(snapshot);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(
+            rows[0].starts_with(
+                "NAILS cannot tell how the filesystems in /etc/fstab would be handled: it \
+                 cannot be read ("
+            ) && rows[0].contains(&root.join("etc/fstab").display().to_string()),
+            "{rows:?}"
+        );
+    }
+}
+
 /// `count` tallies exactly the entries whose status matches the one asked
 /// for; the human `check` summary relies on it to report, for instance, how
 /// many inherited components are ignored.

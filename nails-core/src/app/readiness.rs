@@ -486,7 +486,8 @@ fn attach_refusal<F: Filesystem>(
 /// Each lookup is asked of the automount guard by `snapshot` first, as the
 /// `fstab-policy` row asks it: what lies behind an automount point that
 /// nothing is mounted on yet is not looked up, and a line names it; without
-/// the mount table nothing is looked up.
+/// the mount table nothing is looked up. An fstab that cannot be read, as
+/// `fstab-policy` refuses it, gets a line of its own.
 fn decoy_filesystems<F: Filesystem>(
     fs: &F,
     snapshot: &std::sync::Arc<crate::filesystem::automount::Snapshot>,
@@ -507,11 +508,24 @@ fn decoy_filesystems<F: Filesystem>(
     let ask = |path: &Path, lookup: Lookup| guarded.ask(path, lookup);
     let guard = mount_units::Guard(&ask);
     let fstab = Path::new("/etc/fstab");
-    let text = match guard.ask(root, fstab, Lookup::Enters { follow: true }) {
+    let read = match guard.ask(root, fstab, Lookup::Enters { follow: true }) {
         Ok(_) => {
-            nails_teardown::whole_root::nextroot::read_in_root(root, fstab).unwrap_or_default()
+            fstab::read_in_root(root).map_err(|e| crate::NailsError::io(root.join("etc/fstab"), e))
         }
-        Err(_) => Vec::new(),
+        Err(e) => Err(e),
+    };
+    let mut unread = None;
+    let text = match read {
+        Ok(text) => text,
+        // A lookup the guard did not make is named from its ledger below.
+        Err(e) if e.not_looked_up().is_some() => Vec::new(),
+        Err(e) => {
+            unread = Some(format!(
+                "NAILS cannot tell how the filesystems in /etc/fstab would be handled: it \
+                 cannot be read ({e})"
+            ));
+            Vec::new()
+        }
     };
     let entries = fstab::parse_in_root_guarded(&text, root, Some(guard));
     let mut decisions = policy::decide_all(&entries, mounts, hidden_root, &policy::device_present);
@@ -528,6 +542,7 @@ fn decoy_filesystems<F: Filesystem>(
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
         .map(policy::Decision::describe)
         .collect();
+    lines.extend(unread);
     let named = lines.join("\n");
     lines.extend(unnamed(&named, &guarded.skipped()));
     lines
