@@ -1441,10 +1441,12 @@ of this changelog for that version becomes the release notes word for word, and
   it cannot look up as one it could not tell about, never as one that is not there: as a finding at
   the severity of what it looks for there but no more than a warning, or among the areas it did not
   check, and one it had no permission for says to run it again with sudo. Some readers still take a
-  place they cannot list, read or follow for an empty one, among
-  them the walk of the decoy's `/etc/nixos`, the lookups `soft-reboot-units` makes for its units in
-  the decoy's root and activation makes in the operator's home, and the readers of the sudoers files
-  and of `/proc/swaps`.
+  place they cannot list, read or follow for an empty one, among them the walk of the decoy's
+  `/etc/nixos`, the lookups `soft-reboot-units` makes for its units in the decoy's root and
+  activation makes in the operator's home, the readers of the sudoers files and of `/proc/swaps`,
+  and the walks of `verify` through the log directory and the temporary folders. Offline, a shell
+  history or desktop recency file that does not resolve inside the root, as a loop of links, is now
+  listed as not checked, where it was passed over.
 - `nails deactivate` that cannot take its lock, a hidden root that cannot be looked up among the
   causes, refuses before the switch as before, and now names `emergency`, which ends the session
   without the lock: it returns to the decoy where it can prepare the return and powers off where it
