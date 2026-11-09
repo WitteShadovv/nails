@@ -12,6 +12,7 @@ use super::{ConfigLayer, HostTarget, NixOsConfigLayer, Platform, PlatformKind};
 use crate::Result;
 use crate::constants::NIXOS_SYSTEM_PROFILE_BIN;
 use crate::filesystem::Filesystem;
+use crate::filesystem::automount::{Guarded, Snapshot};
 
 /// Legacy NixOS configuration, probed when no flake is found.
 const LEGACY_CONFIG: &str = "/etc/nixos/configuration.nix";
@@ -42,7 +43,9 @@ pub(crate) const NIXOS_COMMAND_DIRS: &[&str] = &[NIXOS_SYSTEM_PROFILE_BIN, "/run
 /// deterministic under test. Callers reach this through
 /// [`Platform::discover_build_target`] (see
 /// [`discover_host_target`](super::discover_host_target)) rather than directly,
-/// so a non-NixOS host never runs it.
+/// so a non-NixOS host never runs it, and every probe is asked of the
+/// automount guard first: one it does not make, behind an automount point
+/// that nothing is mounted on yet, is an error naming the point.
 pub(crate) fn discover_nixos_target<F: Filesystem>(
     fs: &F,
     hidden_volume_root: &Path,
@@ -300,7 +303,14 @@ impl<F: Filesystem> Platform<F> for NixOsPlatform {
     }
 
     fn discover_build_target(&self, fs: &F, hidden_volume_root: &Path) -> Result<HostTarget> {
-        discover_nixos_target(fs, hidden_volume_root)
+        // The cascade looks into the hidden root and into /etc/nixos, and
+        // either can lie behind an automount point: a hidden root nothing is
+        // mounted on yet, an /etc/nixos that links into a home. Each lookup
+        // is asked of the automount guard first, so finding the target
+        // mounts nothing; one the guard does not make fails the discovery,
+        // naming the point.
+        let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
+        discover_nixos_target(&guarded, hidden_volume_root)
     }
 }
 
