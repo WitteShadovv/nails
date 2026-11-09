@@ -954,8 +954,8 @@ fn a_root_on_a_decoy_filesystem_the_operator_accepted_passes_beside_the_decoys_o
 fn on_a_decoy_filesystem_also_at(places: &str) -> String {
     format!(
         "the filesystem of /mnt/data, which --allow-decoy-storage accepted, is also mounted at \
-         {places}, beside this computer's own mounts of it, the one at / and those a line of \
-         /etc/fstab makes from its own storage"
+         {places}, and not by a line of /etc/fstab that mounts it from this computer's own \
+         storage"
     )
 }
 
