@@ -1606,12 +1606,14 @@ of this changelog for that version becomes the release notes word for word, and
   `false` or the decoy reboots. When only the hidden session would install (the decoy's helper
   stopped while the decoy or the session's overlay enables it and nothing masks it as the session
   sees it, or the session's overlay turning the setting on), it warns instead, and a link among
-  apt's files, which the session resolves through its overlay, makes it warn that it cannot tell. It
-  warns as well while the decoy's helper is enabled without python3-gi, Debian 13's cloud image
-  among them: the helper then writes two WARNING lines to its log on the decoy disk each time it
-  starts, so every way back adds a pair (`apt install python3-gi`). `status` shows the refusal in a
-  line of its own on the decoy that names its cause: the install at shutdown, a file apt refuses, or
-  a setting NAILS cannot tell, where a run without root says that it cannot tell without root and
+  apt's files, which the session resolves through its overlay, makes it warn that it cannot tell,
+  while a file apt refuses there warns of what the session's copy then does: it logs to the
+  session's journal and installs nothing at the way back while apt still refuses the file. It warns
+  as well while the decoy's helper is enabled without python3-gi, Debian 13's cloud image among
+  them: the helper then writes two WARNING lines to its log on the decoy disk each time it starts,
+  so every way back adds a pair (`apt install python3-gi`). `status` shows the refusal in a line of
+  its own on the decoy that names its cause: the install at shutdown, a file apt refuses, or a
+  setting NAILS cannot tell, where a run without root says that it cannot tell without root and
   names the command that can. `--json` carries it as `decoy_installs_at_shutdown`. The decoy
   requirements say to set the setting to `false` rather than delete the line, and to restart the
   helper after removing a `Dir` or `RootDir` line. A new fuzz target, `apt_conf`, drives the reader.
