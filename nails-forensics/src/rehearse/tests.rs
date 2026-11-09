@@ -18,7 +18,7 @@ pub(super) fn no_loop(_: &crate::filesystem::MountEntry) -> Option<String> {
     None
 }
 
-fn state(token: &str) -> RehearsalState {
+pub(super) fn state(token: &str) -> RehearsalState {
     RehearsalState {
         schema_version: STATE_SCHEMA_VERSION,
         token: token.to_string(),

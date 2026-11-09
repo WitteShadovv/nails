@@ -214,7 +214,10 @@ pub(super) fn blind_spot<F: Filesystem>(
         return None;
     }
     let named = named_block_device(fs, device);
-    let regular_file = named.is_none() && fs.is_regular_file(device).unwrap_or(false);
+    // Only a path the scan can look up and finds a regular file is one it
+    // can place: one whose lookup fails leaves it unable to tell, never sure
+    // that the path holds nothing.
+    let regular_file = named.is_none() && matches!(fs.is_regular_file(device), Ok(true));
     let mut unsure =
         (!unplaced.is_empty() || (named.is_none() && !regular_file)).then_some(ECRYPTFS_UNPLACED);
     for lower in lowers {
@@ -386,7 +389,9 @@ fn reaches<F: Filesystem>(fs: &F, dir: &Path, holding: &Holding) -> Reach {
                     reach.holds = true;
                     return reach;
                 }
-                if !fs.is_regular_file(file).unwrap_or(false) {
+                // A file the scan cannot look up is one it cannot trace,
+                // as is one that is no regular file.
+                if !matches!(fs.is_regular_file(file), Ok(true)) {
                     reach.gap.get_or_insert(ECRYPTFS_UNTRACED);
                 }
             }
