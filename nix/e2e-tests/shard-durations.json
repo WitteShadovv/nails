@@ -2,7 +2,7 @@
   "activate-dry-run": 18,
   "backend-nfs-unsuitable": 18,
   "bind-mounted-root": 22,
-  "check-no-automount": 90,
+  "check-no-automount": 19,
   "config-inject-hardware-imports": 28,
   "contract-json-schema": 26,
   "decoy-journal-leak": 38,
