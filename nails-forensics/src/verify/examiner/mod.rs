@@ -25,7 +25,7 @@ mod files;
 mod tests;
 
 use crate::Filesystem;
-use crate::residue_catalog::{self, Probe, ResidueKind};
+use crate::residue_catalog::{self, Probe, ProbeHit, ResidueKind};
 use crate::verify::Severity;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -106,7 +106,11 @@ pub fn examine(root: &Path, options: &ExaminerOptions) -> ExaminerReport {
     let mut checks_run = Vec::new();
     let mut not_checked = Vec::new();
 
-    findings.extend(catalog_paths(root, &mut not_checked));
+    findings.extend(catalog_paths(
+        &crate::RealFilesystem,
+        root,
+        &mut not_checked,
+    ));
     checks_run.push("examiner-catalog-paths");
 
     findings.extend(files::config_entries(root, &mut not_checked));
@@ -157,11 +161,15 @@ pub fn examine(root: &Path, options: &ExaminerOptions) -> ExaminerReport {
     }
 }
 
-/// The setup rows' data-driven path probes, read under `root`. A path that
-/// does not resolve inside the root is not probed, and goes to
-/// `not_checked`.
-fn catalog_paths(root: &Path, not_checked: &mut Vec<String>) -> Vec<ExaminerFinding> {
-    let fs = crate::RealFilesystem;
+/// The setup rows' data-driven path probes, read under `root` through `fs`.
+/// A path that does not resolve inside the root is not probed, and goes to
+/// `not_checked`, as does one whose lookup fails for another reason than
+/// that nothing is there, with the error.
+fn catalog_paths<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    not_checked: &mut Vec<String>,
+) -> Vec<ExaminerFinding> {
     let mut out = Vec::new();
     for row in residue_catalog::catalog() {
         if row.kind != ResidueKind::Setup {
@@ -171,12 +179,12 @@ fn catalog_paths(root: &Path, not_checked: &mut Vec<String>) -> Vec<ExaminerFind
             continue;
         };
         for path in paths {
-            let Some(probe) = in_root(root, path) else {
+            let Some(probe) = in_root_of(fs, root, Path::new(path)) else {
                 not_checked.push(format!("{path}, probed for {} ({NOT_RESOLVED})", row.title));
                 continue;
             };
-            if residue_catalog::path_probe_hit(&fs, &probe) {
-                out.push(ExaminerFinding {
+            match residue_catalog::path_probe_hit(fs, &probe) {
+                ProbeHit::Hit => out.push(ExaminerFinding {
                     catalog_id: row.id,
                     severity: match severity {
                         crate::residue_catalog::ProbeSeverity::Info => Severity::Info,
@@ -185,7 +193,12 @@ fn catalog_paths(root: &Path, not_checked: &mut Vec<String>) -> Vec<ExaminerFind
                     },
                     location: (*path).to_string(),
                     evidence: format!("{} is present and not empty", row.title),
-                });
+                }),
+                ProbeHit::NoHit => {}
+                ProbeHit::CannotTell(error) => not_checked.push(format!(
+                    "{path}, probed for {} (it could not be looked up: {error})",
+                    row.title
+                )),
             }
         }
     }
@@ -231,7 +244,12 @@ pub(crate) const NOT_RESOLVED: &str = "it does not resolve inside the root";
 /// refuses the lookup: the root joined with `path` would follow the image's
 /// links out of it on this machine, so nothing is read there.
 pub(crate) fn in_root(root: &Path, path: impl AsRef<Path>) -> Option<PathBuf> {
-    let inside = crate::RealFilesystem.resolve_in_root(root, path.as_ref())?;
+    in_root_of(&crate::RealFilesystem, root, path.as_ref())
+}
+
+/// [`in_root`], resolved through `fs`.
+fn in_root_of<F: Filesystem>(fs: &F, root: &Path, path: &Path) -> Option<PathBuf> {
+    let inside = fs.resolve_in_root(root, path)?;
     Some(root.join(inside.strip_prefix("/").unwrap_or(&inside)))
 }
 

@@ -5,7 +5,7 @@
 //! a run could not cover, derived from the catalog rows instead of a fixed list.
 
 use super::*;
-use crate::residue_catalog::{self, Platforms, Probe, ProbeSeverity, ResidueKind};
+use crate::residue_catalog::{self, Platforms, Probe, ProbeHit, ProbeSeverity, ResidueKind};
 use std::time::SystemTime;
 
 /// Every check id a verify run can execute. Catalog rows name these in
@@ -52,7 +52,8 @@ impl<F: Filesystem> Verifier<F> {
     /// listed path that exists on the inspected root (a directory only when it
     /// has entries), with the row's mitigation and doc section as guidance. A
     /// file's modification time is included, because for the session-time
-    /// classes the time is the evidence.
+    /// classes the time is the evidence. A listed path verify cannot look up
+    /// is reported as one it cannot tell about ([`untold`]).
     pub(super) fn check_catalog_paths(&self, kind: ResidueKind) -> Vec<Finding> {
         let platform = self.catalog_platform();
         let mut findings = Vec::new();
@@ -77,8 +78,22 @@ impl<F: Filesystem> Verifier<F> {
                     ));
                     continue;
                 };
-                if !residue_catalog::path_probe_hit(&self.filesystem, &probe) {
-                    continue;
+                match residue_catalog::path_probe_hit(&self.filesystem, &probe) {
+                    ProbeHit::Hit => {}
+                    ProbeHit::NoHit => continue,
+                    ProbeHit::CannotTell(error) => {
+                        findings.push(untold(
+                            map_probe_severity(severity),
+                            "catalog",
+                            &format!(
+                                "{} not checked: could not tell whether {path} is live [{}]",
+                                row.title, row.id
+                            ),
+                            &probe,
+                            &error,
+                        ));
+                        continue;
+                    }
                 }
                 let when = std::fs::symlink_metadata(&probe)
                     .and_then(|meta| meta.modified())
