@@ -31,6 +31,14 @@
 //!   mount point lies at or below the hidden root, whatever its type and
 //!   options, and decided as the decoy's own line anywhere else;
 //! - the fstab decided twice keeps off what deciding it once does;
+//! - every line that `entry_lines` takes for an entry, as an entry without a
+//!   build reads the next root's own fstab, is read in its device, mount
+//!   point, type and options, these split as systemd splits them, as glibc's
+//!   `getmntent()` reads it for systemd up to 258 and as libmount reads it
+//!   from 259 on, where libmount reads the line at all, and a line it takes
+//!   for none is no mount to either (the models in `nails_fuzz::glibc` and
+//!   `nails_fuzz::libmount`); a file whose first line libmount would take
+//!   for one of another table is refused;
 //! - every crypttab device that NAILS resolves is the node
 //!   systemd-cryptsetup-generator opens.
 //!
@@ -40,13 +48,15 @@
 
 use libfuzzer_sys::fuzz_target;
 use nails_base::crypttab::parse_crypttab;
-use nails_fuzz::systemd::{UnitName, fstab_node_to_udev_node, unit_name_from_path};
-use nails_session::session::fstab::{FstabEntry, parse_fstab};
+use nails_fuzz::systemd::{UnitName, fstab_node_to_udev_node, option_words, unit_name_from_path};
+use nails_fuzz::{glibc, libmount};
+use nails_session::session::fstab::{FstabEntry, entry_lines, parse_fstab};
 use nails_session::session::policy::{
     Decision, Unskippable, decide, decide_all, decide_hidden_fstab, decide_redirected,
     runtime_units,
 };
 use nails_teardown::mountinfo::parse_mountinfo;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 
 const HIDDEN_ROOT: &str = "/mnt/data";
@@ -125,6 +135,14 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
+    let text = parts[0].as_bytes();
+    if libmount::first_fstab_line(text).is_some_and(libmount::other_table) {
+        assert!(entry_lines(text).is_err(), "{:?}", parts[0]);
+    }
+    for line in text.split(|&byte| byte == b'\n') {
+        read_alike(line);
+    }
+
     for entry in parse_crypttab(parts.get(1).map_or("", String::as_str)) {
         assert!(!entry.name.is_empty() && !entry.name.contains(char::is_whitespace));
         if let Some(device) = entry.device()
@@ -139,6 +157,85 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 });
+
+/// The fstab line `line`, if `entry_lines` takes it for an entry, is read in
+/// its device, mount point, type and options as `parse_fstab` reads it, by
+/// glibc, and by libmount where libmount reads it; if it takes it for none,
+/// neither mounts anything from it.
+fn read_alike(line: &[u8]) {
+    let Ok(lines) = entry_lines(line) else {
+        return;
+    };
+    let shown = String::from_utf8_lossy(line);
+    let by_glibc = glibc::getmntent(line);
+    let by_libmount = libmount::parse_fstab_line(line);
+    if lines.is_empty() {
+        // Blank, a comment, or one field: glibc gives that no mount point,
+        // which systemd skips, and libmount does not read it.
+        assert!(
+            by_glibc.as_ref().is_none_or(|e| e.dir.is_empty()),
+            "{shown:?}: {by_glibc:?}"
+        );
+        assert_eq!(by_libmount, None, "{shown:?}");
+        return;
+    }
+    let entries = parse_fstab(&shown);
+    let [entry] = entries.as_slice() else {
+        panic!("{shown:?}: {entries:?}");
+    };
+    // NAILS reads the options as written: undo the escapes both undo there.
+    let options: Vec<Vec<u8>> = entry
+        .options
+        .iter()
+        .map(|option| {
+            let option = option.replace("\\040", " ").replace("\\011", "\t");
+            option.replace("\\012", "\n").into_bytes()
+        })
+        .collect();
+    let nails = (
+        entry.spec.as_bytes(),
+        entry.file.as_os_str().as_bytes(),
+        entry.vfstype.as_bytes(),
+        options,
+    );
+    let words = |opts: &[u8]| -> Vec<Vec<u8>> {
+        option_words(opts).into_iter().map(<[u8]>::to_vec).collect()
+    };
+    let read = by_glibc.unwrap_or_else(|| panic!("{shown:?} is no entry to glibc"));
+    let kind = if read.kind.is_empty() {
+        b"auto".as_slice()
+    } else {
+        read.kind.as_slice()
+    };
+    let opts = if read.opts.is_empty() {
+        b"defaults".as_slice()
+    } else {
+        read.opts.as_slice()
+    };
+    assert_eq!(
+        nails,
+        (
+            read.fsname.as_slice(),
+            read.dir.as_slice(),
+            kind,
+            words(opts)
+        ),
+        "{shown:?} read by glibc"
+    );
+    if let Some(read) = by_libmount {
+        let opts = read.options.as_deref().unwrap_or(b"defaults");
+        assert_eq!(
+            nails,
+            (
+                read.source.as_slice(),
+                read.target.as_slice(),
+                read.fstype.as_slice(),
+                words(opts)
+            ),
+            "{shown:?} read by libmount"
+        );
+    }
+}
 
 /// The decision for `entry`, made with every device there or with none
 /// (`there`), keeps the hidden systemd off the decoy's disks as systemd names

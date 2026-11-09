@@ -4,6 +4,9 @@
 //! How libmount reads one line of `/run/mount/utab`: `mnt_table_parse_next`
 //! and `mnt_parse_utab_line` (libmount/src/tab_parse.c) with `next_s32`,
 //! `next_u64` and `unmangle` (lib/mangle.c), as in util-linux 2.39 to 2.42.
+//! And one of an fstab, as systemd-fstab-generator reads `/etc/fstab` from
+//! systemd 259 on: `mnt_parse_table_line` ([`parse_fstab_line`]), after the
+//! format `guess_table_format` takes the file for ([`other_table`]).
 //!
 //! One deliberate difference, documented by NAILS: an `ID=` beyond `int`
 //! skips the line here, where libmount would cut it short to another number.
@@ -188,4 +191,163 @@ pub fn parse_utab_line(line: &str) -> Option<UtabLine> {
             p += rest.iter().position(|&b| b == b' ').unwrap_or(rest.len());
         }
     }
+}
+
+/// The fields of an fstab line, values decoded; no options for a line
+/// without them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FstabLine {
+    pub source: Vec<u8>,
+    pub target: Vec<u8>,
+    pub fstype: Vec<u8>,
+    pub options: Option<Vec<u8>>,
+}
+
+/// `unmangle()` as a C string: the value from `start` to the next space or
+/// tab, octal escapes decoded, and cut at the first NUL one gives; `None` for
+/// an empty value.
+fn unmangle_c(s: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
+    let len = s[start..]
+        .iter()
+        .position(|&b| b == b' ' || b == b'\t')
+        .unwrap_or(s.len() - start);
+    if len == 0 {
+        return None;
+    }
+    let raw = &s[start..start + len];
+    let mut out = Vec::with_capacity(len);
+    let mut at = 0;
+    while at < raw.len() {
+        let octal = |i: usize| raw.get(i).is_some_and(|b| (b'0'..=b'7').contains(b));
+        if raw[at] == b'\\' && octal(at + 1) && octal(at + 2) && octal(at + 3) {
+            let value = 64 * u32::from(raw[at + 1] & 7)
+                + 8 * u32::from(raw[at + 2] & 7)
+                + u32::from(raw[at + 3] & 7);
+            out.push((value & 0xff) as u8);
+            at += 4;
+        } else {
+            out.push(raw[at]);
+            at += 1;
+        }
+    }
+    if let Some(nul) = out.iter().position(|&b| b == 0) {
+        out.truncate(nul);
+    }
+    Some((out, start + len))
+}
+
+/// `skip_separator()`: past the spaces and tabs at `at`.
+fn skip_separator(s: &[u8], mut at: usize) -> usize {
+    while s.get(at).is_some_and(|&b| b == b' ' || b == b'\t') {
+        at += 1;
+    }
+    at
+}
+
+/// `next_s32()` at `at`, where the line has more: where the number ends, or
+/// `None` where libmount fails on the line, for a value that is no number,
+/// overflows a `long` or is not followed by a space, a tab or the end.
+fn next_s32(s: &[u8], at: usize) -> Option<usize> {
+    match number(s, at) {
+        Number::Read(negative, magnitude, end) => {
+            let limit = if negative {
+                1u128 << 63
+            } else {
+                (1u128 << 63) - 1
+            };
+            (magnitude <= limit).then_some(end)
+        }
+        Number::AtEnd | Number::Bad => None,
+    }
+}
+
+/// The fstab line `line`, without its newline, as libmount reads it for
+/// systemd-fstab-generator (`mnt_table_parse_next`, then
+/// `mnt_parse_table_line`), or `None` for one it skips: a blank line, a
+/// comment, or a line it fails on, one with a NUL among them, before which
+/// `strchr()` finds no newline. One carriage return at the end goes.
+pub fn parse_fstab_line(line: &[u8]) -> Option<FstabLine> {
+    if line.contains(&0) {
+        return None;
+    }
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let first = line.iter().position(|&b| b != b' ' && b != b'\t')?;
+    let s = &line[first..];
+    if s[0] == b'#' {
+        return None;
+    }
+    let (source, p) = unmangle_c(s, 0)?;
+    let p = skip_separator(s, p);
+    let (target, p) = unmangle_c(s, p)?;
+    let p = skip_separator(s, p);
+    let (fstype, p) = unmangle_c(s, p)?;
+    let p = skip_separator(s, p);
+    let mut fields = FstabLine {
+        source,
+        target,
+        fstype,
+        options: None,
+    };
+    let Some((options, p)) = unmangle_c(s, p) else {
+        return Some(fields);
+    };
+    fields.options = Some(options);
+    // The dump and the pass number, each one optional.
+    let mut p = p;
+    for _ in 0..2 {
+        p = skip_separator(s, p);
+        if p >= s.len() {
+            return Some(fields);
+        }
+        p = next_s32(s, p)?;
+    }
+    Some(fields)
+}
+
+/// Whether `guess_table_format()` takes a file whose first line libmount
+/// reads is `line` for another table than an fstab: a mount table, for a
+/// line that `sscanf("%u %u")` reads two numbers from, or `/proc/swaps`, for
+/// one that begins with its header. `line` is past the spaces and tabs it
+/// began with, as `mnt_table_parse_next` passes it.
+pub fn other_table(line: &[u8]) -> bool {
+    if line.starts_with(b"Filename\t") {
+        return true;
+    }
+    let mut at = 0;
+    for _ in 0..2 {
+        // %u: whitespace as isspace() knows it, a sign, digits.
+        while line
+            .get(at)
+            .is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'))
+        {
+            at += 1;
+        }
+        if matches!(line.get(at), Some(b'+' | b'-')) {
+            at += 1;
+        }
+        let digits = line[at.min(line.len())..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        if digits == 0 {
+            return false;
+        }
+        at += digits;
+    }
+    true
+}
+
+/// The first line of the fstab `text` that libmount parses, past its
+/// leading spaces and tabs, with one carriage return at its end gone: the
+/// first that is neither blank nor a comment and has no NUL, which libmount
+/// fails on before it guesses the format.
+pub fn first_fstab_line(text: &[u8]) -> Option<&[u8]> {
+    text.split(|&b| b == b'\n').find_map(|line| {
+        if line.contains(&0) {
+            return None;
+        }
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let first = line.iter().position(|&b| b != b' ' && b != b'\t')?;
+        (line[first] != b'#').then(|| &line[first..])
+    })
 }

@@ -12,6 +12,7 @@ pub mod alpm;
 pub mod display_managers;
 pub mod dpkg;
 pub mod gkeyfile;
+pub mod glibc;
 pub mod image;
 pub mod kconfig;
 pub mod kernel;

@@ -1,0 +1,16 @@
+# A hidden session's own fstab, with lines systemd's two fstab parsers
+# read as NAILS does and lines they may read otherwise.
+/dev/disk/by-label/My\040Data /mnt/My\040Disk ext4 x-systemd.requires-mounts-for=/a\040b,nofail 0 2
+/dev/vdb1	/srv/tab	ext4	x-a=b\011c,noauto	0	2
+/dev/vdb1 /srv/a\134b ext4 defaults 0 2
+/dev/disk/by-label/My\x20Data /srv/raw\b ext4 username=DOM\user,noauto 0 0
+/dev/vdb1 /srv/crlf ext4 noauto 0 0
+/dev/vdb1 /srv/crlf4 ext4 noauto
+
+/dev/vdb1 /mnt/data/a b ext4 defaults,nofail 0 2
+#x /mnt/data/vt tmpfs defaults 0 0
+/dev/vdb1 /mnt/data/caf\303\251 ext4 defaults,nofail 0 2
+/dev/vdb1 /srv/x ext4 noauto,x\054x-systemd.wanted-by=multi-user.target 0 0
+/dev/vdb1 /srv/y ext4 defaults\,noauto 0 0
+/dev/vdb1 /srv/z tmpf\163 defaults 0 0
+/dev/vdb1/mnt/data/one
