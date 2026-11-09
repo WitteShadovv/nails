@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What zsh may run as you complete a word: wherever zsh may load a
-//! `compinit`, a doubt; without one, `compctl` and bash's `complete`, and
-//! the function a completion widget runs, which is a hook.
+//! `compinit`, a doubt; without one, `compctl`, and the function a completion
+//! widget runs, which is a hook.
 
 use super::*;
 
@@ -42,7 +42,7 @@ fn compinit_is_a_doubt_whatever_the_files_hold_beside_it() {
     ] {
         assert_eq!(
             found(&format!("{COMPINIT}{line}\n")).doubts,
-            [COMPINIT_DOUBT],
+            [compinit_doubt("/home/alice/.zshrc")],
             "{line}"
         );
     }
@@ -71,14 +71,11 @@ fn what_only_zsh_s_completion_system_runs_is_none_without_compinit() {
 }
 
 #[test]
-fn compctl_and_complete_are_a_doubt_with_compinit_or_without() {
-    // zsh 5.9.2 runs `w2` as Tab completes a word of `print` with compctl's
-    // completion, which needs no compinit, and `_w` with bashcompinit's.
-    for line in [
-        "compctl -K w2 print",
-        "complete -F _w print",
-        "complete -C logger print",
-    ] {
+fn compctl_is_a_doubt_with_compinit_or_without() {
+    // zsh 5.9 to 5.9.2 run `w2` as Tab completes a word of `print` with
+    // compctl's completion, which needs no compinit, and a `-K` function
+    // that reads the line with `read -l` writes it.
+    for line in ["compctl -K w2 print", "compctl -C -K w2"] {
         assert_eq!(
             found(&format!("{line}\n")).doubts,
             [format!(
@@ -88,6 +85,27 @@ fn compctl_and_complete_are_a_doubt_with_compinit_or_without() {
             "{line}"
         );
         assert!(warned(&found(&format!("{COMPINIT}{line}\n"))), "{line}");
+    }
+    // Bash's complete registers what it names through compdef, which only
+    // compinit defines: zsh 5.9 to 5.9.2 run nothing of it without compinit
+    // (`complete` alone is no command, bashcompinit's fails), and with
+    // compinit, compinit is the doubt.
+    for line in [
+        "complete -F _w print",
+        "autoload -U bashcompinit && bashcompinit\ncomplete -C logger print",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, &format!("{OWN}/bashcompinit"), ":\n");
+        assert_eq!(
+            found_with(&fs, &format!("{line}\n")),
+            Scan::default(),
+            "{line}"
+        );
+        assert_eq!(
+            found_with(&fs, &format!("{COMPINIT}{line}\n")).doubts,
+            [compinit_doubt("/home/alice/.zshrc")],
+            "{line}"
+        );
     }
 }
 

@@ -14,7 +14,7 @@ use crate::filesystem::PathKind;
 mod dircolors;
 
 // The elements of fpath the check cannot follow where it knows where fpath
-// starts, prompt themes and completion functions as hooks.
+// starts, and prompt themes.
 #[path = "zsh_fpath_tests.rs"]
 mod fpath;
 
@@ -218,11 +218,20 @@ fn an_fc_alias_counts_as_used_in_a_stock_function_zsh_expands_aliases_in() {
     }
 }
 
-/// The doubt of a `compinit` that zsh may load.
-const COMPINIT_DOUBT: &str = "it cannot tell what zsh runs as you complete a word, as the files \
-                              autoload compinit, which starts zsh's completion system, whose own \
-                              functions run what programs print as code, and the programs and \
-                              settings that may change what they print cannot all be listed";
+/// The doubt of a `compinit` that zsh may load, which the files at `places`
+/// autoload.
+pub(super) fn compinit_doubt(places: &str) -> String {
+    let verb = if places.contains(" and ") {
+        "autoload"
+    } else {
+        "autoloads"
+    };
+    format!(
+        "it cannot tell what zsh runs as you complete a word, as {places} {verb} compinit, which \
+         starts zsh's completion system, whose own functions run what programs print as code, \
+         and the programs and settings that may change what they print cannot all be listed"
+    )
+}
 
 #[test]
 fn a_compinit_zsh_may_load_is_a_doubt_whatever_its_bytes() {
@@ -245,7 +254,7 @@ fn a_compinit_zsh_may_load_is_a_doubt_whatever_its_bytes() {
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(
             scan_with(&fs, UNKNOWN, &known).doubts,
-            [COMPINIT_DOUBT],
+            [compinit_doubt("/home/alice/.zshrc")],
             "{rc}"
         );
     }
@@ -265,7 +274,7 @@ fn a_compinit_zsh_may_load_is_a_doubt_whatever_its_bytes() {
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(
             scan_with(&fs, UNKNOWN, &known).doubts,
-            [COMPINIT_DOUBT],
+            [compinit_doubt("/home/alice/.zshrc")],
             "{rc}"
         );
     }
@@ -685,7 +694,7 @@ fn a_nixos_zsh_without_the_options_or_completion_passes() {
     seed(&fs, "/home/alice/.zshrc", "");
     assert_eq!(
         scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)).doubts,
-        [COMPINIT_DOUBT]
+        [compinit_doubt("/etc/zshrc")]
     );
     seed(&fs, "/etc/zshrc", &nixos_zshrc());
     seed(
@@ -695,7 +704,7 @@ fn a_nixos_zsh_without_the_options_or_completion_passes() {
     );
     assert_eq!(
         scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)).doubts,
-        [COMPINIT_DOUBT]
+        [compinit_doubt("/home/alice/.zshrc")]
     );
 }
 
