@@ -37,7 +37,9 @@ of this changelog for that version becomes the release notes word for word, and
   configuration (`systemd.mounts`, `systemd.automounts`) that a boot target links at such a path
   refuses that session too, since the last activation wrote it into the hidden `/etc`. Remove such
   a unit from the hidden configuration in a hidden session before you move the new binary into
-  place: an activation that builds the configuration then replaces that `/etc` with one without it.
+  place, and apply that there with `nixos-rebuild test` (see Changing the hidden configuration in
+  docs/operator-guide.md): a later activation that builds the configuration would replace that
+  `/etc` too, but not one that refuses the build for a `fileSystems` entry at such a path.
 - On Debian and Ubuntu every activation, and on NixOS `nails activate --overlay-only`, now decides
   the fstab the hidden session runs with as it decides the decoy's. A line a hidden session added
   to its own `/etc/fstab` gets the decision a line of the decoy's gets, where 0.3.0-rc.3 left it to
