@@ -33,7 +33,18 @@ of this changelog for that version becomes the release notes word for word, and
   entry from the hidden configuration in a session entered with `nails activate --overlay-only`.
   That session runs with the hidden `/etc` of the last activation, whose fstab may still have the
   line: activation keeps the line off there, so the hidden systemd does not mount it, and warns of
-  it, until a build without the entry replaces that `/etc`.
+  it, until a build without the entry replaces that `/etc`. A mount or automount unit of the hidden
+  configuration (`systemd.mounts`, `systemd.automounts`) that a boot target links at such a path
+  refuses that session too, since the last activation wrote it into the hidden `/etc`. Remove such
+  a unit from the hidden configuration in a hidden session before you move the new binary into
+  place: an activation that builds the configuration then replaces that `/etc` with one without it.
+- On Debian and Ubuntu every activation, and on NixOS `nails activate --overlay-only`, now decides
+  the fstab the hidden session runs with as it decides the decoy's. A line a hidden session added
+  to its own `/etc/fstab` gets the decision a line of the decoy's gets, where 0.3.0-rc.3 left it to
+  the hidden systemd: a disk the decoy has not mounted when you activate, or a network filesystem,
+  is kept unmounted in the session, and has to be mounted by hand there. A line for a disk that is
+  not there at activation, such as one the hidden crypttab opens, is masked, and without `nofail`
+  the session then runs without `local-fs.target`, as activation warns: give such a line `nofail`.
 
 ### Added
 
