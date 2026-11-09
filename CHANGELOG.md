@@ -1592,7 +1592,8 @@ of this changelog for that version becomes the release notes word for word, and
   the file when it cannot load the index (a line it would refuse after it included), a file name or
   a value of the setting with a byte beyond ASCII, which apt reads by the system's locale, and an
   `APT_CONFIG` NAILS cannot read or follow leave the setting unknown, which is refused as if it were
-  on; a `check` run without sudo cannot read that environment, so its refusal says to run it as
+  on; a `check` run without sudo cannot read that environment, which the kernel refuses, or hides
+  where `/proc` is mounted `hidepid=invisible` or `ptraceable`, so its refusal says to run it as
   root. A file apt refuses is refused too, and the refusal says what the helper does then: it
   installs nothing, but writes two ERROR lines at every activation, to its log on the decoy disk, or
   to the journal if it started with the file already refused, and the refusal names the file and

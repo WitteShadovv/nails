@@ -1543,8 +1543,9 @@ fn what_nails_cannot_read_of_the_running_helper_is_refused_as_if_on() {
         "{message}"
     );
 
-    // An environment NAILS cannot read, as of a process gone since its
-    // cgroup was listed: no claim that root could.
+    // An environment NAILS cannot find, as of a process gone since its
+    // cgroup was listed: as root no claim that root could; without root it
+    // may be one /proc hides from all but root, which a run as root tells.
     let fs = MockFilesystem::new();
     mock_run_helper(&fs, None);
     mock_parts(&fs, "/etc/apt/apt.conf.d", &[("99local", Some(OFF))]);
@@ -1558,12 +1559,16 @@ fn what_nails_cannot_read_of_the_running_helper_is_refused_as_if_on() {
         "{}",
         refusal.finding
     );
-    assert!(
-        !refusal.finding.contains("only root can read it"),
-        "{}",
-        refusal.finding
-    );
-    assert_eq!(refusal.at_the_switch, AtTheSwitch::Unknown);
+    if nix::unistd::geteuid().is_root() {
+        assert!(
+            !refusal.finding.contains("only root can read it"),
+            "{}",
+            refusal.finding
+        );
+        assert_eq!(refusal.at_the_switch, AtTheSwitch::Unknown);
+    } else {
+        assert_eq!(refusal.at_the_switch, AtTheSwitch::NeedsRoot);
+    }
 }
 
 #[test]
@@ -1612,6 +1617,45 @@ fn an_environment_the_kernel_refuses_is_one_only_root_can_tell() {
         refusal.fix
     );
     assert!(refusal.fix.contains(" check`)"), "{}", refusal.fix);
+}
+
+#[test]
+fn an_environment_proc_hides_is_one_only_root_can_tell() {
+    // /proc mounted hidepid=invisible or ptraceable shows a caller without
+    // root no /proc/<pid> of another user's process, as if it were gone,
+    // while the helper's cgroup still lists it.
+    let tmp = stock(DEBIAN_13);
+    std::fs::remove_file(tmp.path().join(format!("proc/{PID}/environ"))).unwrap();
+    let found = find(tmp.path());
+    let for_status = DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, tmp.path());
+    let refusal = found.blocker.as_ref().expect("a refusal");
+    if nix::unistd::geteuid().is_root() {
+        // Root finds no process there: gone since its cgroup was listed.
+        assert_eq!(refusal.at_the_switch, AtTheSwitch::Unknown);
+        assert!(!refusal.fix.contains("sudo"), "{}", refusal.fix);
+        assert_eq!(
+            for_status,
+            Some(crate::preflight::InstallAtShutdown::Unknown)
+        );
+        return;
+    }
+    assert_eq!(refusal.at_the_switch, AtTheSwitch::NeedsRoot);
+    assert!(
+        refusal
+            .finding
+            .ends_with("; where /proc hides other users' processes, only root can read it"),
+        "{}",
+        refusal.finding
+    );
+    assert!(
+        refusal.fix.starts_with("run the check as root (`sudo "),
+        "{}",
+        refusal.fix
+    );
+    assert_eq!(
+        for_status,
+        Some(crate::preflight::InstallAtShutdown::UnknownWithoutRoot)
+    );
 }
 
 /// A stock decoy of `release` whose helper runs with `APT_CONFIG` set to
