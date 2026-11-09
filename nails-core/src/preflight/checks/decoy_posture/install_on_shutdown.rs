@@ -27,14 +27,16 @@
 //! in apt's order, then `/etc/apt/apt.conf`, the last assignment winning. A
 //! file that cannot be read, a line NAILS does not read the way apt does,
 //! whatever makes apt read other files than these (`#include`, a `Dir` or
-//! `RootDir` setting), and a file name or a value that apt reads by the
-//! system's locale (a byte beyond ASCII) leave the setting unknown, which is
-//! refused as if it were on. A file apt refuses is refused too, for what the
-//! helper then does: it installs nothing, but at the switch it writes two
-//! ERROR lines, to its log on the decoy disk unless it started with the file
-//! already refused, and the refusal says so. An environment of the helper
-//! that only root may read leaves the setting unknown to a run without root,
-//! and the fix says to run the check as root.
+//! `RootDir` setting), an `#x-apt-configure-index`, at which apt stops
+//! reading the file when it cannot load the index (so a line after it that
+//! apt would refuse is left unknown too), and a file name or a value that apt
+//! reads by the system's locale (a byte beyond ASCII) leave the setting
+//! unknown, which is refused as if it were on. A file apt refuses is refused
+//! too, for what the helper then does: it installs nothing, but at the switch
+//! it writes two ERROR lines, to its log on the decoy disk unless it started
+//! with the file already refused, and the refusal says so. An environment of
+//! the helper that only root may read leaves the setting unknown to a run
+//! without root, and the fix says to run the check as root.
 //!
 //! The helper reads the files again on the signal without forgetting what it
 //! read when it started, so a `false` (or a `#clear`) there wins, while a
@@ -151,6 +153,12 @@ fn read_bounded<F: Filesystem>(fs: &F, path: &Path) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("cannot be read ({e})"))
 }
 
+/// What the texts say of a `#x-apt-configure-index`, after its place: apt
+/// loads an index of its options there, which NAILS does not read, and stops
+/// reading the file when it cannot.
+const LOADS_AN_INDEX: &str = " has apt load an index of its options, which NAILS does not follow, \
+                              and apt stops reading the file there when it cannot";
+
 /// The setting after apt reads `sources` in order.
 fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
     let mut value: Option<(Vec<u8>, String)> = None;
@@ -166,6 +174,14 @@ fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
         };
         let parsed = match apt_conf::parse(&bytes) {
             Ok(parsed) => parsed,
+            // apt stops reading the file at the directive when it cannot load
+            // the index, and then never gets to the line it would refuse.
+            Err(apt_conf::SyntaxError {
+                index_before: Some(line),
+                ..
+            }) => {
+                return Setting::Unknown(format!("{}{LOADS_AN_INDEX}", at(line)));
+            }
             Err(e) if e.by_apt => {
                 return Setting::Refused {
                     at: at(e.line),
@@ -225,10 +241,7 @@ fn evaluate<F: Filesystem>(fs: &F, sources: &[Source]) -> Setting {
                     ));
                 }
                 Statement::ConfigureIndex { line } => {
-                    return Setting::Unknown(format!(
-                        "{} has apt load an index of its options, which NAILS does not follow",
-                        at(line)
-                    ));
+                    return Setting::Unknown(format!("{}{LOADS_AN_INDEX}", at(line)));
                 }
             }
         }

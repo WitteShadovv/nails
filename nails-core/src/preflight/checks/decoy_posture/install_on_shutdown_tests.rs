@@ -532,6 +532,69 @@ fn a_file_apt_refuses_is_refused_with_what_the_helper_writes() {
 }
 
 #[test]
+fn an_index_apt_loads_leaves_the_setting_unknown_and_what_follows_it() {
+    // apt loads the index at `#x-apt-configure-index` and stops reading the
+    // file there, with a warning only, when it cannot: on Ubuntu 24.04 (apt
+    // 2.8.3) apt-config and python3-apt read the true of the first line of
+    // the second file and no error with a missing index, and refuse its line
+    // 4 with apt's own index. So what the directive leaves is unknown, a line
+    // apt would refuse after it included, but not one before it.
+    let directive = "#x-apt-configure-index \"/usr/share/doc/apt/examples/configure-index\";\n";
+    for (text, why) in [
+        (directive.to_string(), "/etc/apt/apt.conf.d/99local:1"),
+        (
+            format!("{ON}{directive}Foo \"x\"\n"),
+            "/etc/apt/apt.conf.d/99local:2",
+        ),
+        (
+            format!("{directive}Foo bar baz;\n"),
+            "/etc/apt/apt.conf.d/99local:1",
+        ),
+    ] {
+        for release in [DEBIAN_13, UBUNTU_24_04, UBUNTU_26_04] {
+            let tmp = stock(release);
+            write(tmp.path(), "etc/apt/apt.conf.d/99local", text.as_bytes());
+            let found = find(tmp.path());
+            let refusal = found.blocker.as_ref().expect("a refusal");
+            assert_eq!(refusal.at_the_switch, AtTheSwitch::Unknown, "{text:?}");
+            assert!(
+                refusal.finding.contains(&format!(
+                    "{why} has apt load an index of its options, which NAILS does not follow, \
+                     and apt stops reading the file there when it cannot"
+                )),
+                "{text:?}: {}",
+                refusal.finding
+            );
+            // Nothing says the helper installs nothing.
+            assert!(!refusal.finding.contains("installs nothing"), "{text:?}");
+            assert!(!refusal.finding.contains("apt refuses"), "{text:?}");
+            assert_eq!(
+                DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, tmp.path()),
+                Some(crate::preflight::InstallAtShutdown::Unknown),
+                "{text:?}"
+            );
+        }
+    }
+    // A line apt refuses before the directive: apt never gets to it.
+    let tmp = stock(DEBIAN_13);
+    write(
+        tmp.path(),
+        "etc/apt/apt.conf.d/99local",
+        format!("Foo bar baz;\n{directive}").as_bytes(),
+    );
+    let found = find(tmp.path());
+    let refusal = found.blocker.as_ref().expect("a refusal");
+    assert_eq!(refusal.at_the_switch, AtTheSwitch::ErrorLines);
+    assert!(
+        refusal
+            .finding
+            .starts_with("apt refuses /etc/apt/apt.conf.d/99local:1 (Extra junk after value)"),
+        "{}",
+        refusal.finding
+    );
+}
+
+#[test]
 fn an_unreadable_or_oversized_file_is_refused_as_if_on() {
     let fs = mock_decoy(true, &[("50unattended-upgrades", None)]);
     let found = finding(&fs, Path::new("/"), None);

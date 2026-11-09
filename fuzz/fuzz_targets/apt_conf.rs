@@ -124,14 +124,19 @@ fn strip_lines(mut parsed: Parsed) -> Parsed {
 }
 
 /// The reading of a file with a line put in before `line`, compared as the
-/// reading of the file itself: every line number set to 0, and an error
-/// after the put-in line one line earlier.
+/// reading of the file itself: every line number set to 0, and an error, and
+/// the index directive it names, after the put-in line one line earlier.
 fn unshift(result: Result<Parsed, SyntaxError>, line: usize) -> Result<Parsed, SyntaxError> {
     match result {
         Ok(parsed) => Ok(strip_lines(parsed)),
         Err(mut error) => {
             if error.line > line {
                 error.line -= 1;
+            }
+            if let Some(index) = error.index_before.as_mut()
+                && *index > line
+            {
+                *index -= 1;
             }
             Err(error)
         }

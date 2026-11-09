@@ -264,10 +264,53 @@ fn what_apt_refuses_is_refused_on_its_line() {
             SyntaxError {
                 line,
                 reason,
-                by_apt: true
+                by_apt: true,
+                index_before: None,
             },
             "{text:?}"
         );
+    }
+}
+
+#[test]
+fn an_error_after_an_index_apt_loads_names_the_index() {
+    // apt loads the index at the directive and, when it cannot, warns and
+    // stops reading the file there: apt-config on Ubuntu 24.04 (apt 2.8.3)
+    // reads the true of line 1 and no error with a missing index, and
+    // refuses line 4 with its own configure-index.
+    let text = "Unattended-Upgrade::InstallOnShutdown \"true\";\n\
+                #x-apt-configure-index \"/nonexistent/index\";\n\
+                Foo \"x\"\n";
+    assert_eq!(
+        refused(text),
+        SyntaxError {
+            line: 4,
+            reason: "Extra junk at end of file",
+            by_apt: true,
+            index_before: Some(2),
+        }
+    );
+    // The first one before the error is named, and one on the line of the
+    // error but before the statement apt refuses counts too.
+    let text = "#x-apt-configure-index \"/a\";\n#x-apt-configure-index \"/b\";\nFoo bar baz;";
+    assert_eq!(refused(text).index_before, Some(1));
+    let text = "#x-apt-configure-index \"/a\"; Foo bar baz;";
+    assert_eq!(
+        (refused(text).line, refused(text).index_before),
+        (1, Some(1))
+    );
+    // A line NAILS does not read, after one.
+    let text = "#x-apt-configure-index \"/a\";\nFoo \"x\0\";";
+    let error = refused(text);
+    assert_eq!((error.by_apt, error.index_before), (false, Some(1)));
+    // One after the error, or one that is itself refused, is never loaded:
+    // apt refuses the file before it.
+    for text in [
+        "Foo bar baz;\n#x-apt-configure-index \"/a\";\n",
+        "#x-apt-configure-index \"/a\" junk;\n",
+        "Foo { #x-apt-configure-index \"/a\"; };\n",
+    ] {
+        assert_eq!(refused(text).index_before, None, "{text:?}");
     }
 }
 
@@ -291,7 +334,8 @@ fn a_line_nails_does_not_read_is_refused_but_not_as_apts_refusal() {
         SyntaxError {
             line: 2,
             reason: "a NUL byte",
-            by_apt: false
+            by_apt: false,
+            index_before: None,
         }
     );
 }
