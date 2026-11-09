@@ -466,3 +466,64 @@ fn nixos_s_path_holds_none_of_the_operator_s_own_until_a_directory_of_it_does() 
         "{got:?}"
     );
 }
+
+#[test]
+fn a_variable_of_the_dynamic_loader_or_argv0_is_a_doubt_where_compinit_runs() {
+    // zsh 5.9.2 ran the `LC_CTYPE` line that the system's `locale` printed
+    // with an `LD_PRELOAD` of the operator's own, from `.zshrc` or from the
+    // environment, as Tab completed `ls marker-one `, and so wrote the line.
+    let doubt = |why: &str| {
+        format!(
+            "it cannot tell what the programs that zsh's own completion functions run as you \
+             complete a word print, as {why}, which may make any of them print code of the \
+             operator's own, and some of those functions read what a program prints as code \
+             (`_comp_locale` reads what `locale` prints)"
+        )
+    };
+    for (rc, vars, why) in [
+        (
+            "export LD_PRELOAD=$HOME/evil.so\n",
+            &[][..],
+            "/home/alice/.zshrc sets a variable of the dynamic loader (`LD_...`) or ARGV0",
+        ),
+        (
+            "typeset -x LD_LIBRARY_PATH=~/lib\n",
+            &[][..],
+            "/home/alice/.zshrc sets a variable of the dynamic loader (`LD_...`) or ARGV0",
+        ),
+        (
+            "export ARGV0=ls\n",
+            &[][..],
+            "/home/alice/.zshrc sets a variable of the dynamic loader (`LD_...`) or ARGV0",
+        ),
+        (
+            "",
+            &[("LD_", "")][..],
+            "the shell's environment sets a variable of the dynamic loader (`LD_...`)",
+        ),
+        (
+            "",
+            &[("ARGV0", "ls")][..],
+            "the shell's environment sets ARGV0, the name zsh gives every program it runs",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        assert_eq!(
+            found_with(&fs, &format!("{rc}{COMPINIT}"), vars).doubts,
+            [doubt(why)],
+            "{rc} {vars:?}"
+        );
+        // Without compinit, no completion function of zsh's own runs one.
+        assert_eq!(found_with(&fs, rc, vars), Scan::default(), "{rc} {vars:?}");
+    }
+    // One that only reads them sets neither.
+    let fs = MockFilesystem::new();
+    assert_eq!(
+        found_with(
+            &fs,
+            &format!("print -r -- $LD_LIBRARY_PATH ${{ARGV0:-zsh}}\n{COMPINIT}"),
+            &[]
+        ),
+        Scan::default()
+    );
+}

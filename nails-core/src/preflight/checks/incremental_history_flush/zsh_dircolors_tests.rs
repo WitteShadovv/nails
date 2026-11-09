@@ -38,6 +38,19 @@ fn changed(what: &str) -> String {
     )
 }
 
+/// The doubt of zsh's own completion code, which NixOS's `/etc/zshrc` sets
+/// up with `compinit`, where a file at `place` may make any program print
+/// other code (`LD_PRELOAD`, `ARGV0`), wherever it does so.
+fn loaded(place: &str) -> String {
+    format!(
+        "it cannot tell what the programs that zsh's own completion functions run as you \
+         complete a word print, as {place} sets a variable of the dynamic loader (`LD_...`) or \
+         ARGV0, which may make any of them print code of the operator's own, and some of those \
+         functions read what a program prints as code (`_comp_locale` reads what `locale` \
+         prints)"
+    )
+}
+
 #[test]
 fn what_runs_before_the_dircolors_line_may_change_what_it_runs() {
     // zsh 5.9.2 runs `setopt sharehistory` in the line's `eval` after each
@@ -140,11 +153,23 @@ fn what_comes_after_the_dircolors_line_or_names_none_of_its_words_leaves_it_know
     seed(
         &fs,
         "/home/alice/.zshrc",
-        "alias -g G='| grep'\nTRAPDEBUG() { :; }\nexport LD_LIBRARY_PATH=~/lib\n",
+        "alias -g G='| grep'\nTRAPDEBUG() { :; }\n",
     );
     assert_eq!(
         scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)),
         Scan::default()
+    );
+    // A variable of the dynamic loader after it leaves it known too, but
+    // zsh's own completion code, which /etc/zshrc's compinit sets up, may
+    // run what any program it runs prints.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "alias -g G='| grep'\nexport LD_LIBRARY_PATH=~/lib\n",
+    );
+    assert_eq!(
+        scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)).doubts,
+        [loaded("/home/alice/.zshrc")]
     );
     // A function named otherwise than its program, as zsh runs it by its
     // name alone.
@@ -193,9 +218,10 @@ fn what_the_environment_or_a_file_gives_every_program_may_change_the_dircolors_l
         let found = nixos_with(zshenv, "", "", &[]);
         assert_eq!(
             found.doubts,
-            [changed(
-                "/home/alice/.zshenv sets ARGV0, the name zsh gives every program it runs"
-            )],
+            [
+                loaded("/home/alice/.zshenv"),
+                changed("/home/alice/.zshenv sets ARGV0, the name zsh gives every program it runs")
+            ],
             "{zshenv}"
         );
     }
@@ -239,14 +265,15 @@ fn what_the_environment_or_a_file_gives_every_program_may_change_the_dircolors_l
     );
     assert!(warned(&scan_with(&fs, UNKNOWN, &unknown)));
     // ARGV0 set after the line, as in ~/.zshrc, runs after it, and one read
-    // changes nothing.
+    // changes nothing; zsh's own completion code may still run what a
+    // program prints with it.
     let fs = MockFilesystem::new();
     nixos(&fs);
     seed(&fs, "/home/alice/.zshrc", "export ARGV0=ls\n");
     seed(&fs, "/home/alice/.zshenv", "print -r -- $ARGV0\n");
     assert_eq!(
-        scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)),
-        Scan::default()
+        scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)).doubts,
+        [loaded("/home/alice/.zshrc")]
     );
 }
 

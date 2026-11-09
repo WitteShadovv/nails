@@ -221,6 +221,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// in it.
     pub(super) fn own_programs(&mut self) {
         self.path_dirs();
+        self.loaded_programs();
         let mut dirs: Vec<PathBuf> = Vec::new();
         match self.install.env.as_ref().map(|env| env.path.clone()) {
             None => self.doubt(format!(
@@ -277,6 +278,42 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         for dir in dirs {
             self.programs_in(&dir);
+        }
+    }
+
+    /// Note a doubt where the shell's environment or a file read may make any
+    /// program print other code than its own, a program of the system's
+    /// among them, whose output zsh's own completion functions may run as
+    /// code: by a variable of the dynamic loader, which loads code of the
+    /// operator's own into it (`LD_PRELOAD`), or by `ARGV0`, the name zsh
+    /// gives every program it runs, which picks the program a multi-call
+    /// program runs. zsh 5.9.2 ran the `LC_CTYPE` line that `locale` printed
+    /// with an `LD_PRELOAD` of the operator's own, from `.zshrc` or from the
+    /// environment, as Tab completed `ls marker-one `.
+    fn loaded_programs(&mut self) {
+        let env = self.install.env.as_ref();
+        let why = if env.is_some_and(|env| env.loader) {
+            Some(
+                "the shell's environment sets a variable of the dynamic loader (`LD_...`)"
+                    .to_string(),
+            )
+        } else if env.is_some_and(|env| env.argv0.is_some()) {
+            Some(
+                "the shell's environment sets ARGV0, the name zsh gives every program it runs"
+                    .to_string(),
+            )
+        } else {
+            self.loader_set.as_ref().map(|place| {
+                format!("{place} sets a variable of the dynamic loader (`LD_...`) or ARGV0")
+            })
+        };
+        if let Some(why) = why {
+            self.doubt(format!(
+                "it cannot tell what the programs that zsh's own completion functions run as you \
+                 complete a word print, as {why}, which may make any of them print code of the \
+                 operator's own, and some of those functions read what a program prints as code \
+                 (`_comp_locale` reads what `locale` prints)"
+            ));
         }
     }
 

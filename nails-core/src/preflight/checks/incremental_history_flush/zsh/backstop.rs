@@ -349,7 +349,7 @@ fn alias_definitions(line: &str) -> usize {
 /// How often `line` sets a variable of the dynamic loader, whose name starts
 /// with `LD_` (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`), otherwise than
 /// to read it ([`is_write`]).
-fn loader_writes(line: &str) -> usize {
+pub(super) fn loader_writes(line: &str) -> usize {
     let part = |c: char| c.is_ascii_alphanumeric() || c == '_';
     line.match_indices("LD_")
         .filter(|&(at, _)| {
