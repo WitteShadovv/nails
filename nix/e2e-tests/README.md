@@ -489,6 +489,10 @@ promise of `check` as a whole:
   `/usr/local` themselves, as systemd-udevd did in one run while `check` ran:
   what they mounted is unmounted before each run, with the journal lines that
   say who asked, and udevd's queue of events is held from the first run on.
+  A probe that asks the kernel as the checks do at the root of a mount, with
+  one `statx` and `fstatfs` of an `O_PATH` descriptor, finds each point the
+  root of a mount with an autofs on top, which `statx` does not call an
+  automount point, and mounts none of them.
   `check --json` as root, with `--allow-persistent-decoy`
   and as carol (`SUDO_USER`) leaves the mount table outside `/run` as it was
   and the mount units inactive, neither systemd nor the automounter logs a
