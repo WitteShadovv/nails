@@ -11,6 +11,7 @@
   "emergency-while-inactive": 17,
   "examiner-audit": 42,
   "faults-backend-watch-alert": 66,
+  "faults-backend-watch-planless": 66,
   "faults-emergency-dead-backend-untrusted": 28,
   "faults-full-upper-teardown": 38,
   "faults-hidden-disk-removed": 26,
