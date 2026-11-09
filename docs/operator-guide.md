@@ -1179,10 +1179,12 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   checks look up nothing on the decoy and say so, and on NixOS, unless it runs
   with `--overlay-only`, `check` then runs no check, since it cannot find the
   build target without a lookup. The table is the one read
-  when each check starts: an automount that something else mounted before
-  and that expires while `check` runs is mounted again by the next lookup
-  there, and a name of an indirect map that expires in that time can be
-  mounted again by the check's own reading of the way there. For example,
+  when each check starts, and at the root of each mount on the way a check
+  also asks the kernel which filesystem is on top there, which mounts
+  nothing. So a direct automount point the table does not show, such as one
+  whose mount expires while `check` runs, is not looked up either. A name of
+  an indirect map that expires in that time can be mounted again by the
+  check's own reading of the way there. For example,
   with an `x-systemd.automount` line for `/usr/local` that nothing has
   mounted yet, `decoy-persistence` and `fstab-policy` refuse until it is
   mounted, since journald's drop-ins and systemd's units below it may hold
