@@ -100,7 +100,10 @@ impl LocateDatabaseCheck {
     /// Take `started` as the timer and path units the system manager runs
     /// (tests).
     #[cfg(test)]
-    fn with_started(mut self, started: std::result::Result<BTreeSet<String>, String>) -> Self {
+    pub(crate) fn with_started(
+        mut self,
+        started: std::result::Result<BTreeSet<String>, String>,
+    ) -> Self {
         self.started = Some(started);
         self
     }

@@ -35,6 +35,9 @@ pub mod upper_fs_probe;
 // An unmounted automount point on a mock decoy, for the checks' tests.
 #[cfg(test)]
 pub(crate) mod automount_fixture;
+// No check of the registry looks up a path behind one.
+#[cfg(test)]
+mod automount_registry_tests;
 
 // Re-exports for convenient access
 pub use backend_detect::BackendDetectCheck;
