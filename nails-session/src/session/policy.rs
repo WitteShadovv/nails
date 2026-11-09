@@ -96,7 +96,9 @@
 //! the decoy's ([`decide_hidden_fstab`]). Its lines get the decisions the
 //! decoy's get, but one at or below the hidden root is kept off rather than
 //! refused, whatever it mounts: the session entered to remove such a line must
-//! still start. The entry warns of each, naming the line, the root and what to
+//! still start. Its units are kept off, so the hidden systemd does not mount
+//! it; the line stays in the file, where a plain `mount` in the session still
+//! finds it. The entry warns of each, naming the line, the root and what to
 //! do in that session ([`kept_below_warning`]).
 
 use super::fstab::{
@@ -610,8 +612,9 @@ pub fn lies_below(entry: &FstabEntry, hidden_root: &Path) -> bool {
 /// The warning for `entry`, the line `line` of `whose` fstab, when an entry
 /// without a build keeps it off at or below `hidden_root` rather than
 /// refusing it ([`decide_hidden_fstab`]): it names the line and the root,
-/// and on a line of its own what to do about it in the hidden session.
-/// `None` for an entry elsewhere.
+/// says that only its units are kept off, as the line stays in the file a
+/// plain `mount` reads, and on a line of its own what to do about it in the
+/// hidden session. `None` for an entry elsewhere.
 pub fn kept_below_warning(
     entry: &FstabEntry,
     line: &str,
@@ -623,7 +626,8 @@ pub fn kept_below_warning(
     }
     let warning = format!(
         "{}fstab entry {} (`{line}`) lies at or below {}, where the hidden volume is mounted: \
-         the hidden session is kept from mounting it there, over the hidden volume or inside it",
+         its units are kept off, so the hidden systemd does not mount it over the hidden volume \
+         or inside it, though a plain `mount` in the session still would",
         whose.fstab_of(),
         entry.file.display(),
         hidden_root.display()

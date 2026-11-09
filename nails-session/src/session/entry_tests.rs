@@ -447,9 +447,10 @@ fn an_entry_without_a_build_keeps_off_a_hidden_fstab_line_below_the_root_and_war
         hidden.warnings,
         [format!(
             "the hidden session's fstab entry /mnt/data/archive (`{added}`) lies at or below \
-             /mnt/data, where the hidden volume is mounted: the hidden session is kept from \
-             mounting it there, over the hidden volume or inside it\nIn the hidden session, \
-             remove this line from /etc/fstab, or move its mount out from below /mnt/data."
+             /mnt/data, where the hidden volume is mounted: its units are kept off, so the \
+             hidden systemd does not mount it over the hidden volume or inside it, though a \
+             plain `mount` in the session still would\nIn the hidden session, remove this line \
+             from /etc/fstab, or move its mount out from below /mnt/data."
         )]
     );
 }

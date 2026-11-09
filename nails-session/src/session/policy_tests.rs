@@ -483,8 +483,11 @@ fn the_warning_for_a_line_kept_off_names_it_the_root_and_what_to_do() {
     let line = "/dev/vdd1 /mnt/data/archive ext4 defaults 0 2";
     let entry = &parse_fstab(line)[0];
     let root = Path::new(HIDDEN);
-    let what = "lies at or below /mnt/data, where the hidden volume is mounted: the hidden \
-                session is kept from mounting it there, over the hidden volume or inside it";
+    // Only its units are kept off: the line stays in the file, which a plain
+    // mount reads.
+    let what = "lies at or below /mnt/data, where the hidden volume is mounted: its units are \
+                kept off, so the hidden systemd does not mount it over the hidden volume or \
+                inside it, though a plain `mount` in the session still would";
     // The hidden NixOS system's: its configuration has the line.
     assert_eq!(
         kept_below_warning(entry, line, root, Whose::HiddenSystem),

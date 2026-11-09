@@ -100,10 +100,10 @@ fn an_overlay_only_entry_keeps_a_hidden_fstab_line_below_the_root_off_and_warns(
             warned[0],
             &format!(
                 "the hidden NixOS system's fstab entry {} (`{below}`) lies at or below {}, where \
-                 the hidden volume is mounted: the hidden session is kept from mounting it there, \
-                 over the hidden volume or inside it\nIn the hidden session, remove this mount \
-                 from the hidden NixOS configuration, or move it out from below {} there, and \
-                 rebuild.",
+                 the hidden volume is mounted: its units are kept off, so the hidden systemd does \
+                 not mount it over the hidden volume or inside it, though a plain `mount` in the \
+                 session still would\nIn the hidden session, remove this mount from the hidden \
+                 NixOS configuration, or move it out from below {} there, and rebuild.",
                 archive.display(),
                 hidden.display(),
                 hidden.display()
