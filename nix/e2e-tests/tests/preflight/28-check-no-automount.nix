@@ -27,6 +27,13 @@
 # nothing either. As the positive control, ls mounts each point, and the
 # next check names none of them and reads what they hold: an updatedb in
 # /usr/local/bin and carol's sync.desktop.
+#
+# The decoy's own daemons read their settings below /usr/local/lib, and so
+# can mount /usr/local themselves: systemd-udevd did as it handled device
+# events, in one run while check ran, and the journal named it. What they
+# mounted is unmounted before each run, and udevd's queue of events is held
+# from the first run on, so that only what check and the tools it starts
+# look up can mount a point while it runs.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -162,6 +169,16 @@ in
         return {unit: state for unit, state in states.items() if state != "inactive"}
 
 
+    def unmount(points):
+        # What the decoy's daemons mounted on points is unmounted again, the
+        # automounts kept, with the journal lines that say who asked.
+        for point in points:
+            if point in DIRECT and inactive([point]):
+                unit, automount = DIRECT[point]
+                print(machine.succeed(f"journalctl -q -o cat -u {automount}"))
+                machine.succeed(f"systemctl stop {unit}")
+
+
     def left_nothing(label, before, since, points):
         # Since the table before and the cursor since, the mount table is
         # the same outside /run, the mount units of the points nothing was
@@ -172,10 +189,12 @@ in
         assert not changed and not asked and not active, (label, changed, asked, active)
 
 
-    def check(label, env="", flags=""):
-        # One nails check --json: its exit code, its rows by name and its
-        # data, and the mount table and the journal's cursor from before it.
+    def check(label, unmounted, env="", flags=""):
+        # One nails check --json, with nothing mounted on the points
+        # unmounted: its exit code, its rows by name and its data, and the
+        # mount table and the journal's cursor from before it.
         stem = f"/run/automount-check-{label}"
+        unmount(unmounted)
         before, since = table(), cursor()
         machine.succeed(
             "bash -c "
@@ -235,19 +254,12 @@ in
     )
 
     with subtest("the points are automount points nothing is mounted on"):
-        # The boot and the hidden volume's setup can mount one: systemd's
-        # own tools read their settings below /usr/local/lib. Who asked is
-        # in the journal; what they mounted is unmounted again, the
-        # automounts kept, once the device events of the setup are handled.
-        for _ in range(3):
-            machine.succeed("udevadm settle")
-            mounted = [point for point in DIRECT if inactive([point])]
-            if not mounted:
-                break
-            for point in mounted:
-                unit, automount = DIRECT[point]
-                print(machine.succeed(f"journalctl -q -o cat -u {automount}"))
-                machine.succeed(f"systemctl stop {unit}")
+        # Once the device events of the boot and of the hidden volume's
+        # setup are handled, udevd's queue is held, and what the daemons
+        # mounted before is unmounted.
+        machine.succeed("udevadm settle")
+        machine.succeed("udevadm control --stop-exec-queue")
+        unmount(list(DIRECT))
         baseline = table()
         for point in DIRECT:
             found = stack(baseline, point)
@@ -260,7 +272,7 @@ in
         assert not inactive(list(DIRECT)), inactive(list(DIRECT))
 
     with subtest("check as root names each automount point and mounts none"):
-        rc, rows, data, before, since = check("root")
+        rc, rows, data, before, since = check("root", (*READ, ARCHIVE))
         left_nothing("root", before, since, (*READ, ARCHIVE))
         assert rc == 4, rc
         persistence = names(rows, "decoy-persistence", ["/usr/local"], "fail")
@@ -271,14 +283,16 @@ in
         no_row_names(rows, [ARCHIVE])
 
     with subtest("--allow-persistent-decoy turns the refusal into a warning"):
-        rc, rows, data, before, since = check("allowed", flags="--allow-persistent-decoy")
+        rc, rows, data, before, since = check(
+            "allowed", (*READ, ARCHIVE), flags="--allow-persistent-decoy"
+        )
         left_nothing("allowed", before, since, (*READ, ARCHIVE))
         row = names(rows, "decoy-persistence", ["/usr/local"], "warn")
         assert "allowed via --allow-persistent-decoy" in row["message"], row
         names(rows, "fstab-policy", ["/usr/local"], "fail")
 
     with subtest("check as carol looks up nothing in her home"):
-        rc, rows, data, before, since = check("carol", env="SUDO_USER=carol")
+        rc, rows, data, before, since = check("carol", (*READ, ARCHIVE), env="SUDO_USER=carol")
         left_nothing("carol", before, since, (*READ, ARCHIVE))
         assert rc == 4, rc
         names(rows, "decoy-persistence", ["/usr/local"], "fail")
@@ -301,6 +315,7 @@ in
         assert all(ARCHIVE not in json.dumps(place) for place in inherited["not_read"]), inherited
 
     with subtest("a listing of the indirect map's directory mounts nothing"):
+        unmount((*READ, ARCHIVE))
         before, since = table(), cursor()
         print(machine.succeed(f"ls -a {MAP}"))
         left_nothing("ls", before, since, (*READ, ARCHIVE))
@@ -320,7 +335,7 @@ in
             + AUTOSTART
             + "/sync.desktop"
         )
-        rc, rows, data, before, since = check("mounted", env="SUDO_USER=carol")
+        rc, rows, data, before, since = check("mounted", [ARCHIVE], env="SUDO_USER=carol")
         left_nothing("mounted", before, since, [ARCHIVE])
         print(json.dumps(rows, indent=2))
         no_row_names(rows, [f"automount point {point}" for point in (*READ, ARCHIVE)])
@@ -333,5 +348,7 @@ in
         assert inherited["not_read"] == [], inherited
         sync = [entry["source"] for entry in inherited["entries"] if entry["name"] == "sync"]
         assert sync == ["user-autostart"], inherited
+
+    machine.succeed("udevadm control --start-exec-queue")
   '';
 }

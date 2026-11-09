@@ -483,9 +483,11 @@ promise of `check` as a whole:
   mounted has `x-systemd.automount` tmpfs at `/usr/local` and at carol's home
   `/home/carol`, an autofs indirect map at `/auto` whose name `dave` is
   dave's home, and an `x-systemd.automount` tmpfs at `/srv/archive` that no
-  check reads, the null control. What the boot or the hidden volume's setup
-  mounted on a point is unmounted first, and the journal lines that say who
-  asked are printed. `check --json` as root, with `--allow-persistent-decoy`
+  check reads, the null control. The decoy's own daemons can mount
+  `/usr/local` themselves, as systemd-udevd did in one run while `check` ran:
+  what they mounted is unmounted before each run, with the journal lines that
+  say who asked, and udevd's queue of events is held from the first run on.
+  `check --json` as root, with `--allow-persistent-decoy`
   and as carol (`SUDO_USER`) leaves the mount table outside `/run` as it was
   and the mount units inactive, and neither systemd nor the automounter logs
   a request. decoy-persistence (a warning with the override) and fstab-policy
