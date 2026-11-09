@@ -7,8 +7,9 @@
 //! leads into that system's store by absolute links. The entry decides it as
 //! the decoy's fstab: a line at or below the hidden root is kept off with a
 //! warning rather than refused, a decoy disk line gets what the decoy's own
-//! line would, a line the decoy's fstab holds too is decided once, and one
-//! that cannot be read refuses the entry.
+//! line would, a line the decoy's fstab holds too is decided once, as the
+//! decoy's, even where a link of the hidden root leads it below the root, and
+//! one that cannot be read refuses the entry.
 
 use super::{FakeHost, World};
 use nails_core::NailsError;
@@ -63,9 +64,18 @@ fn an_overlay_only_entry_keeps_a_hidden_fstab_line_below_the_root_off_and_warns(
         world.hidden.mkdir("root/upper/etc");
         let fstab = nixos_with_hidden_etc(&world);
         let hidden = world.hidden_path();
-        // The hidden configuration's: the decoy's root and /home, a disk
-        // inside the hidden volume (a configuration written in a session
-        // while the volume was mounted), and a decoy disk elsewhere.
+        // A link of the hidden root leads the decoy's /srv/data into the
+        // hidden volume: the decoy's line for it is decided there already,
+        // kept off as a decoy disk a link leads below the root.
+        world.hidden.mkdir("root/upper/srv");
+        std::os::unix::fs::symlink(
+            hidden.join("data"),
+            world.hidden.path().join("root/upper/srv/data"),
+        )
+        .unwrap();
+        // The hidden configuration's: the decoy's root, /home and /srv/data,
+        // a disk inside the hidden volume (a configuration written in a
+        // session while the volume was mounted), and a decoy disk elsewhere.
         let below = format!(
             "/dev/vdd1 {}/archive ext4 defaults,nofail 0 2",
             hidden.display()
@@ -74,8 +84,8 @@ fn an_overlay_only_entry_keeps_a_hidden_fstab_line_below_the_root_off_and_warns(
         std::fs::write(
             &fstab,
             format!(
-                "/dev/vda2 / ext4 defaults 0 1\n/dev/vda3 /home ext4 defaults 0 2\n{below}\n\
-                 {backup}\n"
+                "/dev/vda2 / ext4 defaults 0 1\n/dev/vda3 /home ext4 defaults 0 2\n\
+                 /dev/vdc1 /srv/data ext4 defaults,nofail 0 2\n{below}\n{backup}\n"
             ),
         )
         .unwrap();
@@ -86,14 +96,16 @@ fn an_overlay_only_entry_keeps_a_hidden_fstab_line_below_the_root_off_and_warns(
         let entry = entry::prepare(&paths, &inputs, &FakeHost::default()).expect("the entry");
 
         // The line below the root is kept off, so the session meant to remove
-        // it starts, and the warning names it, the root and what to do.
+        // it starts, and the warning names it, the root and what to do. It is
+        // the one warning of a line below the root: the decoy's /srv/data,
+        // which the link leads there, is not decided again as one.
         let archive = hidden.join("archive");
         let masks = &entry.plan.masks;
         assert!(masks.contains(&mount_unit(&archive)), "{masks:?}");
         let warned: Vec<&String> = entry
             .warnings
             .iter()
-            .filter(|warning| warning.contains("archive"))
+            .filter(|warning| warning.contains("lies at or below"))
             .collect();
         assert_eq!(warned.len(), 1, "{:?}", entry.warnings);
         assert_eq!(
@@ -109,12 +121,32 @@ fn an_overlay_only_entry_keeps_a_hidden_fstab_line_below_the_root_off_and_warns(
                 hidden.display()
             )
         );
+        // That line is decided once, kept off as the decoy's line a link
+        // leads below the root, and its unit is masked.
+        let data = hidden.join("data");
+        let for_data: Vec<&Decision> = entry
+            .decisions
+            .iter()
+            .filter(|decision| {
+                decision
+                    .describe()
+                    .starts_with(&format!("{}:", data.display()))
+            })
+            .collect();
+        assert_eq!(for_data.len(), 1, "{:?}", entry.decisions);
+        assert!(
+            for_data[0]
+                .describe()
+                .contains("a link leads it into the hidden volume"),
+            "{for_data:?}"
+        );
+        assert!(masks.contains(&mount_unit(&data)), "{masks:?}");
         // The decoy disk elsewhere gets the decision of the decoy's own line.
         let as_decoy = policy::decide(&parse_fstab(backup)[0], &[], hidden, &|_| false);
         assert!(entry.decisions.contains(&as_decoy), "{:?}", entry.decisions);
         assert!(masks.contains(&"srv-backup.mount".to_string()), "{masks:?}");
-        // The lines the decoy's fstab holds too are decided once, as the
-        // decoy's: /home is overlaid, and nothing else is decided for it.
+        // /home, which the decoy's fstab holds too, is overlaid as the
+        // decoy's, and nothing else is decided for it.
         let home: Vec<&Decision> = entry
             .decisions
             .iter()
