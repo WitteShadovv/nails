@@ -8,10 +8,9 @@
         "status": "warn"
       },
       {
-        "message": "The decoy's configuration names the volume at /mnt/data: /etc/fstab: '/dev/disk/by-uuid/ed286e63-e359-410b-a66f-f67027427e04 / ext4' (it mounts the volume at /mnt/data). Such an entry is stored on the decoy, where an examination reads it, and can open or mount the volume at boot.",
+        "message": "No fstab or crypttab entry names the volume at /mnt/data other than the decoy's own line for /, which mounts the filesystem that --allow-decoy-storage accepted it on",
         "name": "backend-entries",
-        "remediation": "Remove the line long before the next use; open the volume by hand each time.",
-        "status": "fail"
+        "status": "pass"
       },
       {
         "message": "on the plain decoy root",
@@ -185,8 +184,8 @@
     },
     "ready": false,
     "summary": {
-      "failed": 5,
-      "passed": 19,
+      "failed": 4,
+      "passed": 20,
       "skipped": 1,
       "warnings": 6
     }
