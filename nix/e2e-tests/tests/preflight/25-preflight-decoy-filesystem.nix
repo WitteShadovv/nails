@@ -35,8 +35,10 @@
 #      passes it with the warning beside /srv, the fstab's mount of the
 #      filesystem, and lets the decoy's line for /srv be, and hidden-volume
 #      refuses it as mounted a second time once that filesystem is mounted at
-#      another folder too; check with the flag also passes a bind of a folder
-#      of /, beside the decoy's line for /;
+#      another folder too; for a bind of a folder of / the flag lets the
+#      decoy's line for / be as well, while suspicious-nails-reference refuses
+#      that root (exit 4), as the decoy's /etc/nixos names the device it lies
+#      on by its label;
 #  10. a LUKS container file on /srv passes the hidden-volume check with a
 #      warning that names /srv and its copy-on-write snapshots;
 #  11. a LUKS volume on the separate data disk passes the hidden-volume check;
@@ -164,11 +166,10 @@ in
         ), row
 
 
-    def assert_passes_with_the_flag(result, root, what, place):
+    def assert_lets_the_decoys_line_be(report, root, what, place):
         # hidden-volume passes the root with the flag's warning, and
         # backend-entries lets be the decoy's own line for place, / or a
         # system folder, which mounts the filesystem the flag accepted.
-        report = last_json(result)
         row = check_row(report, "hidden-volume")
         assert row["status"] == "warn", row
         assert row["message"].startswith(
@@ -181,8 +182,17 @@ in
             f"line for {place}, which mounts the filesystem that --allow-decoy-storage accepted "
             "it on"
         ), row
-        failed = [check for check in report["data"]["checks"] if check["status"] == "fail"]
-        assert not failed, failed
+
+
+    def failed_rows(report):
+        return [check for check in report["data"]["checks"] if check["status"] == "fail"]
+
+
+    def assert_passes_with_the_flag(result, root, what, place):
+        # The decoy's line for place let be, nothing else refuses the root.
+        report = last_json(result)
+        assert_lets_the_decoys_line_be(report, root, what, place)
+        assert not failed_rows(report), failed_rows(report)
         assert_exit_code(result, 0)
 
 
@@ -561,8 +571,11 @@ in
         assert check_row(last_json(result), "hidden-volume")["status"] == "warn", result
         machine.succeed("umount /mnt/bind && rm -rf /srv/x")
 
-    with subtest("check with --allow-decoy-storage passes a bind of a folder of /"):
-        # The decoy's line for / mounts the filesystem the root is part of.
+    with subtest("--allow-decoy-storage lets the line for / be for a bind of a folder of /"):
+        # The decoy's line for / mounts the filesystem the root is part of,
+        # and backend-entries lets it be. The decoy's /etc/nixos names that
+        # filesystem's device too, by the label nixos, so the NixOS config
+        # check refuses the root for a reason of its own.
         machine.succeed(
             "mkdir -p /var/lib/gate /mnt/rootbind && mount --bind /var/lib/gate /mnt/rootbind"
         )
@@ -571,7 +584,12 @@ in
             f"nails --config {config_for('/mnt/rootbind')} --json check --overlay-only "
             "--allow-decoy-storage",
         )
-        assert_passes_with_the_flag(result, "/mnt/rootbind", "a bind mount of a folder of /", "/")
+        report = last_json(result)
+        assert_lets_the_decoys_line_be(report, "/mnt/rootbind", "a bind mount of a folder of /", "/")
+        failed = failed_rows(report)
+        assert [row["name"] for row in failed] == ["suspicious-nails-reference"], failed
+        assert "'/dev/disk/by-label/nixos'" in failed[0]["message"], failed
+        assert_exit_code(result, 4)
         machine.succeed("umount /mnt/rootbind && rm -rf /var/lib/gate")
 
     with subtest("an encrypted container file on a decoy filesystem only warns"):
