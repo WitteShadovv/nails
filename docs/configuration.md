@@ -684,7 +684,10 @@ their copies in `/run`. Where it cannot read the copy of the settings, it takes
 the configuration file it was started with or finds beside its binary, then
 the hidden volume's own `config/nails.toml` at the hidden root the plan names.
 Where it cannot read the plan, it watches the hidden root the settings name.
-A return to the decoy needs the plan, and without it does nothing at all, so
+The read-only guard of `session_mounts.read_only` needs the plan too, both
+its udev rule and the watcher's sweep, so a disk that appears then stays
+writable, while the disks set read-only before stay so. A return to the
+decoy needs the plan, and without it does nothing at all, so
 there the automatic emergency the settings ask for powers the machine off
 instead, after the same debounce, and one alert tells you so ("Storage monitor
 in power-off mode"). An automatic emergency that finds no plan when it fires
