@@ -10,7 +10,7 @@
 use super::NailsManager;
 use crate::preflight::PreFlightRegistry;
 use crate::{Config, Filesystem, NailsError, Result, StateFile, SystemState};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What the caller asks of a pre-flight run: the choices that shape the
 /// registry, as `nails check` and activation take them from their flags.
@@ -126,12 +126,13 @@ pub struct RegistryInputs {
 /// NixOS-specific guidance.
 ///
 /// This is the one place the activation set of checks is defined. Running the
-/// registry it returns leaves nothing behind: every check only inspects the
-/// system, except four whose probes write on the hidden volume and remove what
-/// they wrote (`hidden-volume`, `symlink-support`, `upper-fs-capability`, whose
-/// trial overlay is mounted detached, outside every mount table, and
-/// `storage-readiness`), so the same registry backs both activation and the
-/// `nails check` command. Staging of the hidden NixOS layout happens in the
+/// registry it returns leaves no file and no mount behind: every check only
+/// inspects the system, except four whose probes write on the hidden volume
+/// and remove what they wrote (`hidden-volume`, `symlink-support`,
+/// `upper-fs-capability`, whose trial overlay is mounted detached, outside
+/// every mount table, and which loads the overlay module where it is not
+/// loaded yet, and `storage-readiness`), so the same registry backs both
+/// activation and the `nails check` command. Staging of the hidden NixOS layout happens in the
 /// activation path (see [`crate::stage_hidden_nixos_config`]) before these
 /// checks run, never inside a check.
 ///
@@ -508,6 +509,13 @@ impl<F: Filesystem> NailsManager<F> {
     /// Routing both through this one function, with the options their flags
     /// give, is what keeps their check lists identical.
     pub fn preflight_registry(&self, options: &PreflightOptions) -> Result<PreFlightRegistry<F>> {
+        // The state file, the discovery and most checks look the hidden root
+        // up. Where that would mount an automount point that nothing is
+        // mounted on yet, none of them runs, so that nothing mounts the
+        // point: the attach gate refuses the root, naming the point, and the
+        // error says to mount it.
+        self.hidden_root_looked_up()?;
+
         // The build-target check only reads the flake layout; nothing validates
         // a flake out of band any more.
         let flake_target_already_validated = false;
@@ -542,6 +550,33 @@ impl<F: Filesystem> NailsManager<F> {
         // historical behaviour.
         let layer = self.config_layer();
         build_registry(&self.filesystem, &self.config, &inputs, layer.as_deref())
+    }
+
+    /// Whether the hidden root and the state file may be looked up, as the
+    /// automount guard tells by the running system's mount table.
+    ///
+    /// # Errors
+    ///
+    /// [`NailsError::NotLookedUp`] where a lookup of either would mount an
+    /// automount point that nothing is mounted on yet. Without the mount
+    /// table the checks run, and those that read through the guard say
+    /// they cannot tell; a lookup on the way that fails is left to the
+    /// readers of the root and the state file, which name it.
+    fn hidden_root_looked_up(&self) -> Result<()> {
+        use crate::error::Skip;
+        use crate::filesystem::automount::{Lookup, Snapshot};
+        let snapshot = Snapshot::read(&self.filesystem, Path::new("/"));
+        for path in [&self.config.hidden_volume_root, &self.state_file_path] {
+            match snapshot.check(&self.filesystem, path, Lookup::Enters { follow: true }) {
+                Err(error)
+                    if matches!(error.not_looked_up(), Some((_, Skip::Automount { .. }))) =>
+                {
+                    return Err(error);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Run every pre-flight check of the registry `options` give, logging each
