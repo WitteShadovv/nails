@@ -1166,19 +1166,40 @@ other is a mount that shows none of the root's folder,
 such as NixOS's read-only bind of `/nix/store` beside a bind of a folder of
 `/`, or another btrfs subvolume. So the `hidden-volume` check passes a bind of
 a folder of `/`, or a subvolume of a filesystem the fstab mounts, with the
-flag's warning, while a separate drive also mounted at `/srv` is refused with
-`sudo umount /srv`. The `backend-entries` check lets be the decoy's own fstab
-lines that its boot mounts at `/` or at a system folder for such a root's
-filesystem: `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`,
-`/nix` and `/opt`, unless the hidden root is that folder or lies above it. So
-`backend-entries` passes a bind of a folder of `/`, or a subvolume beside the
-fstab's `/home`, as well. On NixOS, `suspicious-nails-reference` still refuses
-such a root while the decoy's `/etc/nixos` names the device of its filesystem,
-as the `hardware-configuration.nix` of most installs does for every filesystem
-it lists. A line that names the device of that filesystem for any other
-folder, such as `/pool`, `/var/log` or `/.snapshots`, still fails
-`backend-entries`, since it may name the hidden drive's disk, and the check
-says to put the hidden root on storage of its own instead.
+flag's warning, while a separate drive also mounted at `/srv` by hand, where no
+line of the fstab mounts it, is refused with `sudo umount /srv`. One that a
+line of the fstab mounts at `/srv` passes it with the flag's warning.
+
+For a root that is a folder or a btrfs subvolume of such a filesystem, the
+`backend-entries` check lets be the decoy's own fstab lines that its boot
+mounts at `/` or at a system folder for another part of that filesystem: lines
+for `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix` and
+`/opt`, unless the hidden root is that folder or lies above it, that name a
+device of the filesystem and mount its top or, on btrfs, a subvolume above or
+beside the root's, as their `subvol=` names it or as the mount table shows the
+subvolume their `subvolid=` names. So `backend-entries` passes a bind of a
+folder of `/`, or a subvolume beside the fstab's `/home`, as well, unless the
+decoy's `/etc/crypttab` opens a device that filesystem lies on, as it does on
+an encrypted decoy: the flag lets no crypttab line be, so the check still
+refuses such a root for that line, and says to keep the line, which the
+decoy's own boot needs, and to put the hidden root on storage of its own
+instead. On NixOS, `suspicious-nails-reference` still refuses such a root while
+the decoy's `/etc/nixos` names the device of its filesystem, as the
+`hardware-configuration.nix` of most installs does for every filesystem it
+lists.
+
+Every other line for that filesystem still fails `backend-entries`: a line for
+any other folder, such as `/pool`, `/var/log` or `/.snapshots`, since it may
+name the hidden drive's disk; a line that mounts the volume itself, as any line
+does for a root that is the whole filesystem (the separate drive that the
+fstab mounts at `/srv`, say) and as one for the root's own subvolume or a
+subvolume inside it does; and a btrfs line whose subvolume cannot be told. A
+line that names another device of a btrfs filesystem of several devices counts
+as one for that filesystem. The check says to keep a line for `/` or a system
+folder, which the decoy's own boot needs, and a line for another folder that
+mounts the filesystem a folder or subvolume root is part of, and to put the
+hidden root on storage of its own instead. For a line for another folder that
+mounts the volume itself, it says to remove the line.
 
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that
@@ -1249,7 +1270,9 @@ The `backend-entries` pre-flight check enforces this for the mounted hidden
 volume: `nails check` and activation fail while a crypttab line opens it or a
 device it is stored on, while a crypttab line with `tcrypt-hidden` opens a
 device on the hidden volume's drive or one that cannot be found, or while an
-fstab line mounts it or a device below it, `noauto` lines included. A crypttab
+fstab line mounts it or a device below it, `noauto` lines included. Where the
+hidden volume is a btrfs filesystem of several devices, a line that names any
+of them, or a device below one, counts as such a line. A crypttab
 line that opens only another volume on the same drive (a VeraCrypt outer volume
 on another partition) warns. Remove such a line long before the next use, since
 the decoy's configuration history can keep it. A line the decoy's own boot needs
@@ -1260,8 +1283,9 @@ only the hidden volume needs still go, and where both kinds are flagged the
 check says both. If the check cannot read `/etc/crypttab` (some distributions
 make it readable by root only), it fails and asks you to run the command with
 sudo. `--allow-decoy-storage` covers only the decoy's own fstab lines that its
-boot mounts at `/` or at a system folder for the filesystem it accepted the
-hidden root on (see [Attaching the drive](#attaching-the-drive)).
+boot mounts at `/` or at a system folder for another part of the filesystem
+that a hidden root it accepted is a folder or a subvolume of, and no crypttab
+line (see [Attaching the drive](#attaching-the-drive)).
 
 ### Encryption headers, high-entropy space and containers
 

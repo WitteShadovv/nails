@@ -496,7 +496,7 @@ fn with_the_flag_a_line_for_that_filesystem_at_any_other_folder_still_fails() {
     assert!(
         result
             .message()
-            .contains("/etc/fstab: '/dev/vda2 /srv btrfs' (it mounts the filesystem"),
+            .contains("/etc/fstab: '/dev/vda2 /srv btrfs' (it mounts the volume at /mnt)"),
         "{}",
         result.message()
     );
@@ -572,22 +572,171 @@ fn a_root_that_is_the_whole_of_the_decoys_root_or_home_is_never_told_to_remove_i
         let hint = gate.remediation().unwrap();
         assert!(hint.starts_with("Setting up here"), "{place}: {hint}");
         assert!(!hint.contains("remove its line"), "{place}: {hint}");
-        // With the flag the gate warns, and backend-entries lets the line be.
+        // With the flag the gate warns. The line mounts the volume itself,
+        // no filesystem the root is part of, so backend-entries still fails
+        // it, with the flag or without, and says to keep it, as the decoy's
+        // own boot needs it.
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{place}");
+        for allow in [Allow::DecoyStorage, Allow::Nothing] {
+            let result = run_allowing(&fs, allow);
+            assert!(result.is_fail(), "{place}: {result:?}");
+            assert!(
+                result
+                    .message()
+                    .contains("(it mounts the volume at /mnt, and the decoy's own boot needs it)"),
+                "{place}: {}",
+                result.message()
+            );
+            assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{place}");
+        }
+    }
+}
+
+/// The finding for the line `line` that mounts the volume at the root
+/// itself, which the decoy's own boot needs.
+fn mounts_the_volume(line: &str) -> String {
+    format!(
+        "/etc/fstab: '{line}' (it mounts the volume at /mnt, and the decoy's own boot needs it)"
+    )
+}
+
+#[test]
+fn with_the_flag_a_line_that_mounts_the_volume_itself_still_fails() {
+    // A separate drive with a nofail line at a system folder, mounted at the
+    // root alone, as one plugged in after the boot is: the gate takes it for
+    // the decoy's storage, and with the flag it warns, but the line names the
+    // volume itself. At /srv, /opt and /home it is one the boot needs, never
+    // one to remove; at /backup it serves the volume alone, and goes.
+    for (place, remediation) in [
+        ("/srv", STORAGE_OF_ITS_OWN),
+        ("/opt", STORAGE_OF_ITS_OWN),
+        ("/home", STORAGE_OF_ITS_OWN),
+        ("/backup", REMEDIATION),
+    ] {
+        let fs = rendered(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw
+             5 1 8:17 / /mnt rw - ext4 /dev/sdb1 rw
+",
+            &format!(
+                "/dev/vda1 / ext4 defaults 0 1
+/dev/sdb1 {place} ext4 defaults,nofail 0 2
+"
+            ),
+        );
         assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{place}");
         let result = run_allowing(&fs, Allow::DecoyStorage);
-        assert!(result.is_pass(), "{place}: {result:?}");
-        assert_eq!(result.message(), only_the_decoys_own_line(place));
-        // Run by itself without the flag, backend-entries says to keep the
-        // line, which the decoy's own boot needs.
-        let result = run_allowing(&fs, Allow::Nothing);
         assert!(result.is_fail(), "{place}: {result:?}");
+        assert_eq!(result.remediation(), Some(remediation), "{place}");
+    }
+    // The same drive mounted at /srv by that line as well.
+    let fs = rendered(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw
+         2 1 8:17 / /srv rw - ext4 /dev/sdb1 rw
+         5 1 8:17 / /mnt rw - ext4 /dev/sdb1 rw
+",
+        "/dev/vda1 / ext4 defaults 0 1
+/dev/sdb1 /srv ext4 defaults,nofail 0 2
+",
+    );
+    assert!(hidden_volume_with_the_flag(&fs).is_warn());
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains(&mounts_the_volume("/dev/sdb1 /srv ext4")),
+        "{}",
+        result.message()
+    );
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+
+    // A line that mounts the root's own subvolume at /srv, by its path or
+    // its id, mounted there or not: only the line for /home is the decoy's
+    // own.
+    let at_srv = format!(
+        "{BESIDE_HOME}6 1 0:40 /vault /srv rw - btrfs /dev/vda2 rw,subvolid=300,subvol=/vault
+"
+    );
+    for table in [BESIDE_HOME, at_srv.as_str()] {
+        for options in ["subvol=/vault", "subvolid=300"] {
+            let fs = rendered(
+                table,
+                &format!(
+                    "/dev/vda1 / ext4 defaults 0 1
+/dev/vda2 /home btrfs subvol=/home 0 0
+                     /dev/vda2 /srv btrfs {options} 0 0
+"
+                ),
+            );
+            assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{options}");
+            let result = run_allowing(&fs, Allow::DecoyStorage);
+            assert!(result.is_fail(), "{options}: {result:?}");
+            let message = result.message();
+            assert!(
+                message.contains(&mounts_the_volume("/dev/vda2 /srv btrfs")),
+                "{options}: {message}"
+            );
+            assert!(!message.contains("/home btrfs"), "{options}: {message}");
+            assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{options}");
+        }
+    }
+}
+
+/// What the mock lists in `/proc/devices` for the encrypted decoy.
+const PROC_DEVICES: &str =
+    "Character devices:\n  1 mem\n\nBlock devices:\n  8 sd\n259 blkext\n254 device-mapper\n";
+
+/// Debian's encrypted ext4 root without LVM, whose crypttab opens the LUKS
+/// volume its / lies on, and a bind of a folder of / at the root.
+fn encrypted_decoy() -> Decoy {
+    let decoy = Decoy::new(
+        "1 0 254:0 / / rw - ext4 /dev/mapper/cryptroot rw\n\
+         5 1 254:0 /srv/x /mnt rw - ext4 /dev/mapper/cryptroot rw\n",
+    )
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .mapping("dm-0", "254:0", "cryptroot", ("nvme0n1p3", P3))
+    .file("/etc/fstab", "/dev/mapper/cryptroot / ext4 defaults 0 1\n")
+    .file(
+        "/etc/crypttab",
+        "cryptroot /dev/nvme0n1p3 none luks,discard\n",
+    )
+    .file("/proc/devices", PROC_DEVICES);
+    decoy.fs.mock_set_writable("/mnt", true);
+    decoy
+}
+
+#[test]
+fn on_an_encrypted_decoy_the_crypttab_line_for_its_root_is_kept() {
+    // The decoy's boot needs the line that opens the volume its root lies
+    // on: the check never says to remove it. With the flag the line for / is
+    // let be, but the crypttab line still fails the check.
+    let decoy = encrypted_decoy();
+    assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn());
+    let crypttab = "/etc/crypttab: 'cryptroot /dev/nvme0n1p3' (it opens the volume at /mnt or a \
+                    device it is stored on, and the decoy's own boot needs it)";
+    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(result.message().contains(crypttab), "{}", result.message());
+    assert!(
+        !result.message().contains("/etc/fstab"),
+        "{}",
+        result.message()
+    );
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+    // Without the flag both lines are named, and both are kept.
+    let result = run_allowing(&decoy.fs, Allow::Nothing);
+    assert!(result.is_fail(), "{result:?}");
+    for finding in [
+        crypttab,
+        "/etc/fstab: '/dev/mapper/cryptroot / ext4' (it mounts the filesystem the volume at /mnt \
+         is part of, and the decoy's own boot needs it)",
+    ] {
         assert!(
-            result
-                .message()
-                .contains("(it mounts the volume at /mnt, and the decoy's own boot needs it)"),
-            "{place}: {}",
+            result.message().contains(finding),
+            "{finding}: {}",
             result.message()
         );
-        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{place}");
     }
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
 }

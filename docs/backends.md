@@ -47,13 +47,18 @@ Whatever the backend, the filesystem at the hidden root must:
   mounts, ostree's `/sysroot`, a ZFS dataset that ZFS mounts by its
   mountpoint property), and so does a copy that mount propagation makes at a
   bind line's mount point of a mount at or below its source. A root with no
-  such other mount passes `hidden-volume` with the flag's warning, and
-  `backend-entries` lets be the decoy's own fstab lines that its boot mounts
-  at `/` or at a system folder (`/usr`, `/var`, `/home`, `/srv`, `/boot`,
-  `/efi`, `/boot/efi`, `/nix`, `/opt`, unless the hidden root is that folder
-  or lies above it) for that filesystem. A line that names the device of that
-  filesystem for any other folder still fails `backend-entries`, since it may
-  name the hidden drive's disk. An
+  such other mount passes `hidden-volume` with the flag's warning. For a root
+  that is a folder or a btrfs subvolume of that filesystem, `backend-entries`
+  lets be the decoy's own fstab lines that its boot mounts at `/` or at a
+  system folder (`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`,
+  `/boot/efi`, `/nix`, `/opt`, unless the hidden root is that folder or lies
+  above it) for another part of that filesystem: its top, or a subvolume above
+  or beside the root's. A line for that filesystem at any other folder, since
+  it may name the hidden drive's disk, a line that mounts the volume itself
+  (the root's own subvolume, or any line for a root that is the whole
+  filesystem) and a crypttab line that opens a device it lies on, as an
+  encrypted decoy's does, still fail `backend-entries` (see
+  [Attaching the drive](decoy-requirements.md#attaching-the-drive)). An
   encrypted container
   file on a filesystem the decoy uses is accepted with a warning: that
   filesystem's journal and copy-on-write snapshots (btrfs, snapper) can keep old

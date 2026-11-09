@@ -52,7 +52,10 @@
 #      tcrypt-hidden for it or for a device that cannot be found, fails the
 #      backend-entries check (exit 4), and so does `activate`;
 #      a line for another device passes, tcrypt-hidden or not; a decoy fstab
-#      line for the data disk or its mapping fails it too;
+#      line for the data disk or its mapping fails it too, and so does one
+#      that mounts the volume at /opt with --allow-decoy-storage, which warns
+#      in hidden-volume: the line mounts the volume itself, and the fix keeps
+#      it;
 #  14. the accepted case: a whole session runs on a LUKS container file on
 #      /srv (activate warns, naming /srv and its copy-on-write snapshots), a
 #      hidden write lands in the container, and deactivate returns to a decoy
@@ -751,6 +754,38 @@ in
             row = check_row(last_json(result), "backend-entries")
             assert row["status"] == "fail", row
             assert line.split()[0] + " /mnt/data" in row["message"], row
+        # A line that mounts the volume at a system folder, as one for a drive
+        # the boot mounts there when it is plugged in: the gate takes the
+        # volume for the decoy's storage, which the flag accepts with a
+        # warning, but the line mounts the volume itself, no filesystem the
+        # root is part of, so backend-entries still fails it and says to keep
+        # that line of the decoy's.
+        write_text_file(
+            "/run/fstab.gate", original + "/dev/mapper/data /opt ext4 defaults,nofail 0 2\n"
+        )
+        machine.succeed("rm -f /etc/fstab && cp /run/fstab.gate /etc/fstab")
+        result = run_command_capture(
+            "gate-fstab-system-folder",
+            f"nails --config {data_config} --json check --overlay-only --allow-decoy-storage",
+        )
+        assert_exit_code(result, 4)
+        report = last_json(result)
+        row = check_row(report, "hidden-volume")
+        assert row["status"] == "warn", row
+        assert row["message"].startswith(
+            "--allow-decoy-storage: using /mnt/data although it is the filesystem this computer "
+            "mounts at /opt per /etc/fstab"
+        ), row
+        row = check_row(report, "backend-entries")
+        assert row["status"] == "fail", row
+        assert (
+            "/etc/fstab: '/dev/mapper/data /opt ext4' (it mounts the volume at /mnt/data, and "
+            "the decoy's own boot needs it)"
+        ) in row["message"], row
+        assert row["remediation"] == (
+            "Do not remove a line the decoy's own boot needs: put the hidden root on storage of "
+            "its own instead."
+        ), row
         machine.succeed("rm -f /etc/fstab && mv /run/fstab.orig /etc/fstab")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")

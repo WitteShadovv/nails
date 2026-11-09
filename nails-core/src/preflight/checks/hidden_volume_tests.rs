@@ -1022,9 +1022,10 @@ fn a_separate_drive_also_mounted_at_a_system_folder_is_refused_with_the_flag_too
     assert_eq!(result.allowable(), None);
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 
-    // Mounted at /srv by a line of the fstab, it is the decoy's own mount,
-    // and that line, the decoy's own for a system folder, is what the flag
-    // accepted: backend-entries lets it be too.
+    // Mounted at /srv by a line of the fstab, it is the decoy's own mount.
+    // That line mounts the volume itself, no filesystem the root is part of:
+    // backend-entries still fails it with the flag, and says to keep it, as
+    // the decoy's own boot needs it.
     fs.mock_set_file_content("/etc/fstab", "/dev/sdb1 /srv ext4 defaults 0 2\n");
     let result = run_allowing(&fs, Allow::DecoyStorage);
     assert!(result.is_warn(), "got {result:?}");
@@ -1032,7 +1033,11 @@ fn a_separate_drive_also_mounted_at_a_system_folder_is_refused_with_the_flag_too
         .allowing(Allow::DecoyStorage)
         .run(&fs)
         .unwrap();
-    assert!(entries.is_pass(), "got {entries:?}");
+    assert!(entries.is_fail(), "got {entries:?}");
+    assert_eq!(
+        entries.remediation(),
+        Some(crate::preflight::checks::backend_entries::STORAGE_OF_ITS_OWN)
+    );
 }
 
 #[test]

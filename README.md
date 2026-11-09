@@ -192,10 +192,13 @@ Also refused by the pre-flight checks:
   [Attaching the drive](docs/decoy-requirements.md#attaching-the-drive));
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
   volume or, for a root that `--allow-decoy-storage` accepted on a filesystem
-  the decoy uses, that filesystem; the flag lets be only the decoy's own lines
-  that its boot mounts at `/` or at a system folder outside the hidden root
-  (`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`,
-  `/opt`) for that filesystem (`backend-entries`);
+  the decoy uses, that filesystem; for a root that is a folder or a btrfs
+  subvolume of it, the flag lets be only the decoy's own fstab lines that its
+  boot mounts at `/` or at a system folder outside the hidden root (`/usr`,
+  `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`, `/opt`) for
+  another part of that filesystem, and no crypttab line, so on an encrypted
+  decoy such a root still fails for the line that opens its volume
+  (`backend-entries`);
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
 - running inside a container or another mount namespace than PID 1's

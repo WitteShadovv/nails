@@ -117,14 +117,20 @@ know the decoy does not use (for example a disk its fstab lists but never
 mounts), since everything written there lands on it. It turns the refusal of an
 `nbd` or `ublk` device into a warning too: use it there only when you know the
 program that serves the device keeps the data on storage this computer does not
-use, such as another computer. It never covers a folder, a covered root, storage
-that cannot be judged (a ZFS volume among it, wherever the root's data reaches
-one) or a decoy entry for the volume, other than the decoy's own fstab lines
-that its boot mounts at `/` or at a system folder outside the hidden root
-(`/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`,
-`/opt`) for the filesystem it accepted the root on. A line for that filesystem
-at any other folder still fails `backend-entries`.
-See [the attach gate](threat-model.md#the-attach-gate).
+use, such as another computer. It never covers a folder, a covered root, a root
+whose files another mount of its filesystem reaches too (one that neither `/`
+nor a line of the fstab makes), storage that cannot be judged (a ZFS volume
+among it, wherever the root's data reaches one) or a decoy entry for the
+volume, other than the decoy's own fstab lines that its boot mounts at `/` or
+at a system folder outside the hidden root (`/usr`, `/var`, `/home`, `/srv`,
+`/boot`, `/efi`, `/boot/efi`, `/nix`, `/opt`) for another part of the
+filesystem that a root it accepted is a folder or a subvolume of. A line for
+that filesystem at any other folder, a line that mounts the volume itself (any
+line for a root that is the whole filesystem) and every crypttab line still
+fail `backend-entries`: on an encrypted decoy, whose crypttab opens the volume
+its own root lies on, a root on that volume still fails the check for that
+line. See [the attach gate](threat-model.md#the-attach-gate) and
+[Attaching the drive](decoy-requirements.md#attaching-the-drive).
 
 Read this guide on another device, not on the decoy: opening it there leaves
 viewer traces such as `~/.lesshst`. The guide ships in the release bundle.
