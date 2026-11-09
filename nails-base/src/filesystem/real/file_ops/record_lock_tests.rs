@@ -83,7 +83,23 @@ fn an_open_file_description_lock_has_no_process() {
         fcntl(&file, FcntlArg::F_OFD_SETLK(&whole_file(l_type))).unwrap();
         assert_eq!(record_lock_holder(&path).unwrap(), Some(-1), "{l_type}");
         drop(file);
-        assert_eq!(record_lock_holder(&path).unwrap(), None, "{l_type}");
+        assert_eq!(holder_once_closed(&path), None, "{l_type}");
+    }
+}
+
+/// The holder of `path`'s lock once this process closed its last descriptor
+/// of the file. A child that another test thread forks at that moment holds a
+/// copy of every descriptor until its exec closes it, and an open file
+/// description lock goes only with the last copy, so the query may meet the
+/// lock for a moment after the close. Asks again for a few seconds.
+fn holder_once_closed(path: &Path) -> Option<i32> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let holder = record_lock_holder(path).unwrap();
+        if holder.is_none() || std::time::Instant::now() >= deadline {
+            return holder;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
