@@ -23,19 +23,22 @@
 # filesystem is on top, since autofs marks its points where statx does not
 # look: the kernel names the autofs at each point and mounts none of them.
 #
-# `nails check --json` as root, again with --allow-persistent-decoy, and as
-# carol (SUDO_USER) leaves the mount table outside /run as it found it and
-# the mount units inactive, no automount request reaches systemd or the
-# automounter, and the overlay module stays unloaded. decoy-persistence,
-# fstab-policy and upper-fs-capability refuse (the override turns the first
-# into a warning), sleep-policy and locate-database warn, and as carol
-# inherited-autostart and incremental-history-flush warn, each naming the
-# automount point with the line that says to mount it, and inherited.not_read
-# lists carol's autostart directory; no row names /srv/archive. A listing of
-# /auto, the indirect map's directory, mounts nothing either. As the positive
-# control, ls mounts each point, and the next check names none of them and
-# reads what they hold: an updatedb in /usr/local/bin and carol's
-# sync.desktop, and its trial overlay loads the module.
+# `nails check --overlay-only --json` as root, again with
+# --allow-persistent-decoy, and as carol (SUDO_USER) leaves the mount table
+# outside /run as it found it and the mount units inactive, no automount
+# request reaches systemd or the automounter, and the overlay module stays
+# unloaded. Without --overlay-only, check would also look for the NixOS
+# build target and run the NixOS checks: this test leaves them to the mock
+# tests. decoy-persistence, fstab-policy and upper-fs-capability refuse (the
+# override turns the first into a warning), sleep-policy and locate-database
+# warn, and as carol inherited-autostart and incremental-history-flush warn,
+# each naming the automount point with the line that says to mount it, and
+# inherited.not_read lists carol's autostart directory; no row names
+# /srv/archive. A listing of /auto, the indirect map's directory, mounts
+# nothing either. As the positive control, ls mounts each point, and the
+# next check names none of them and reads what they hold: an updatedb in
+# /usr/local/bin and carol's sync.desktop, and its trial overlay loads the
+# module.
 #
 # The decoy's own daemons read their settings below /usr/local/lib, and so
 # can mount /usr/local themselves: systemd-udevd did as it handled device

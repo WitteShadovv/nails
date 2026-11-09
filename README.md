@@ -203,9 +203,9 @@ remove what they write, the small overlay it tries there is mounted detached,
 so no mount table ever lists it, and where the mount table, as read when each
 check starts, shows that a lookup would mount an automount point that nothing
 is mounted on yet, it makes none: it names the path and the point and says to
-mount the point. Nor does it try the overlay where loading the overlay module
-would make the kernel's modprobe or udevd mount such a point. The operator
-guide says
+mount the point. Nor does it try the overlay where the overlay module is not
+loaded yet and one of the directories the kernel's modprobe and udevd read
+their settings from lies behind such a point. The operator guide says
 [exactly what `check` touches](docs/operator-guide.md#what-check-touches).
 For the strongest posture, keep state such as `/var` and `/home` on storage that
 is wiped at boot (impermanence-style); the decoy *root* itself must stay on a

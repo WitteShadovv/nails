@@ -131,7 +131,9 @@ pub struct RegistryInputs {
 /// and remove what they wrote (`hidden-volume`, `symlink-support`,
 /// `upper-fs-capability`, whose trial overlay is mounted detached, outside
 /// every mount table, and which loads the overlay module where it is not
-/// loaded yet, and `storage-readiness`), so the same registry backs both
+/// loaded yet, unless a directory the load makes modprobe or udevd read lies
+/// behind an automount point nothing is mounted on, where it refuses without
+/// a trial, and `storage-readiness`), so the same registry backs both
 /// activation and the `nails check` command. Staging of the hidden NixOS layout happens in the
 /// activation path (see [`crate::stage_hidden_nixos_config`]) before these
 /// checks run, never inside a check.

@@ -62,6 +62,12 @@ const INDIRECT_MAP: &str = "indirect";
 const MAX_LINKS: usize = 40;
 
 /// The mount table a check judges its lookups by, read once when it starts.
+///
+/// Each check reads its own, and so does each part of the report that reads
+/// the decoy, rather than one table for the whole run of `check`: a lookup
+/// is judged by a table read just before the check that makes it, which
+/// leaves an automount the least time to change under it. Each read is one
+/// read of `/proc/self/mountinfo`.
 #[derive(Debug)]
 pub struct Snapshot {
     table: Table,
