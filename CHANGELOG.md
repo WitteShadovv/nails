@@ -1043,9 +1043,24 @@ of this changelog for that version becomes the release notes word for word, and
   stand. So a setup with completion functions or a style of its own the check has not read, with
   `use-cache` on or a `format` an expansion makes, with a parameter of its own whose name starts
   with `_`, or with a function of its own that writes a file or hands a program a word an
-  expansion makes (`mkcd() { mkdir -p "$1" }`) warns again. A program of the files' own that zsh's
-  own completion functions run and whose output they run as code (a `locale` in a directory of
-  `PATH` before the system's, whose `LC_CTYPE` line `_comp_locale` evaluates) is not read.
+  expansion makes (`mkcd() { mkdir -p "$1" }`) warns again. zsh 5.9.2 also ran what a program
+  of the operator's own printed as code, as `_comp_locale` evaluates the `LC_CTYPE` line that
+  `locale` prints and `_call_program` runs it for `ls <Tab>` (a `~/bin/locale` that prints
+  `LC_CTYPE=$(...)` wrote the line), and the same with the system's `locale` where an `LD_PRELOAD`
+  of the operator's own made it print one. Where the files autoload `compinit`, a directory of
+  `PATH` that holds a program (any file but a directory) and is neither `/usr/bin`, `/bin`,
+  `/usr/sbin`, `/sbin` or `/run/wrappers/bin` nor one that leads into the Nix store is now a
+  doubt, read from the shell's environment and from every form in which the files put one there
+  (`path=(~/bin $path)`, `export PATH=$HOME/bin:$PATH`, in a function or a hook), and so are one
+  named relative to the directory zsh runs in (an empty element, `.`, a `~` a quote keeps), a
+  change of `PATH` the check cannot follow (`PATH+=x`, `read -A path`, an expansion or a glob in
+  an element), a program that a `hash` or the `commands` parameter names for a command, and a
+  variable of the dynamic loader or `ARGV0` in the shell's environment or set by a file. So the
+  warning comes back for homes with `~/bin`, `~/.local/bin`, `~/.cargo/bin` or `~/go/bin` in
+  `PATH` that hold a program, and for any other such directory there (`/usr/local/bin`,
+  flatpak's `exports/bin`), even behind the system's directories, and for `LD_LIBRARY_PATH` set
+  in the files. A program of the system's or the Nix store's that a setting of its own makes print
+  code of the operator's own (`NODE_OPTIONS` for `npm`) is not read.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

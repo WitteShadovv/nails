@@ -623,9 +623,21 @@ history yourself so an interactive shell has nowhere to write:
   starts with `_` and a lower-case letter, as `_patch_args`, by which they
   keep the specifications they run code from) in your files or in the
   environment you start the shell from, and `compctl` or bash's `complete`.
-  The check does not see a program of your own that they run and whose output
-  they run as code (a `locale` in a directory of `PATH` before the system's,
-  which `_comp_locale` runs). For any
+  As some of them run what a program prints as code (`_comp_locale` evaluates
+  the `LC_CTYPE` line `locale` prints, which `_call_program` runs for
+  `ls <Tab>`), a program of your own that they may run by name warns too: a
+  directory of `PATH`, in the environment you start the shell from or one
+  your files put there in any form, that holds a program and is neither
+  `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` or `/run/wrappers/bin` nor one that
+  leads into the Nix store, one named relative to where zsh runs, a change of
+  `PATH` the check cannot follow, a program a `hash` or `commands` names for a
+  command, and a variable of the dynamic loader (`LD_PRELOAD`), which may
+  make any program print code of yours, or `ARGV0` in that environment or
+  your files. So with `~/bin`, `~/.local/bin`,
+  `~/.cargo/bin` or `~/go/bin` in `PATH` holding a program (or
+  `/usr/local/bin`, or any other such directory there) it warns again. The check does not
+  see a program of the system's or the Nix store's that a setting of its own
+  makes print code of yours (`NODE_OPTIONS` for `npm`). For any
   other zsh, and when the check finds no shell
   you typed into, it cannot tell where zsh finds `compinit`, and `zsh -f` is
   the one that passes. With Home Manager's `programs.zsh`, only `zsh -f`

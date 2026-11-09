@@ -1564,6 +1564,31 @@ afterwards:
     word: the one you complete (`_ls` runs `ls --help` for `ls <Tab>`), and
     others (`_call_program` runs `locale`, so a function named `locale` runs as
     `sudo na<Tab>` completes a command where the `extra-verbose` style is on).
+    Some of them run what a program prints as code: `_comp_locale` evaluates
+    the `LC_CTYPE` line that `locale` prints, which `_call_program` runs for
+    `ls <Tab>` and many more, and `_npm`, `_rubber`, `_ant` and `_apt` do the
+    like with what `npm`, `rubber`, `ant` and `apt-config` print. So a
+    directory of `PATH` that holds a program (any file but a directory) and is
+    neither a system directory (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`,
+    `/run/wrappers/bin`) nor one that leads into the Nix store is a doubt
+    there, as zsh may find a program of your own in it by such a name, and so
+    is one named relative to the directory zsh runs in (an empty element, `.`,
+    `bin`, a `~` that a quote or a backslash keeps). The check reads `PATH`
+    from the environment you start the shell from and from every directory
+    your files put in it, wherever they do (`path=(~/bin $path)`,
+    `export PATH=$HOME/bin:$PATH`, in a function or a hook too), and a change
+    of `PATH` it cannot follow is a doubt (`PATH+=x`, which joins `x` to the
+    last directory, `read -A path`, a glob or an expansion in an element). So
+    is a program that a `hash` or the `commands` parameter names for a command
+    (`hash locale=~/bin/locale`), which zsh runs by that name wherever it is,
+    a variable of the dynamic loader (`LD_PRELOAD`, `LD_LIBRARY_PATH`) in that
+    environment or set by a file, which may make any program, one of the
+    system's too, print code of your own, and `ARGV0` there, which picks the
+    program a multi-call coreutils runs. So where `~/bin`,
+    `~/.local/bin`, `~/.cargo/bin` or `~/go/bin` is in `PATH` and holds a
+    program, or any other directory there does (`/usr/local/bin`,
+    `/snap/bin`, flatpak's `exports/bin`), the check warns, even where zsh
+    finds the system's program first.
     The code of a `command` style, which `_call_program` runs, is a hook's
     wherever it stands, and one an expansion makes is a doubt. A completion
     style, one whose pattern may match a context of zsh's completion system
@@ -1763,12 +1788,11 @@ afterwards:
   named like another word you type (the value you give an option or a
   setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
   program named like the command you type that zsh finds first in `PATH` or
-  that `hash` names (a `sudo` script in `~/bin`), a program that zsh's own
-  completion functions run and whose output they run as code where your files
-  run zsh's own `compinit` (a `locale` in a directory of `PATH` before the
-  system's, whose `LC_CTYPE` line `_comp_locale` evaluates as `_call_program`
-  runs a command for `ls <Tab>`, or for `sudo na<Tab>` with the
-  `extra-verbose` style), a file a bash
+  that `hash` names (a `sudo` script in `~/bin`), a program of the system's
+  or the Nix store's that zsh's own completion functions run and whose output
+  they run as code where your files run zsh's own `compinit`, made to print
+  code of your own by a setting it reads itself (`NODE_OPTIONS` for `npm`),
+  a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), nor a history tool
@@ -1783,9 +1807,10 @@ afterwards:
   running none of them. Beside reading zsh's files as code, it counts in their
   lines, without reading the code and wherever they stand, the three options,
   `source`, a `.` with a word after it, `eval`, an alias that stands for `.`,
-  `autoload`, the `ZDOTDIR`, `fpath` and `NIX_PROFILES` settings, the arrays of
-  hook functions, the prompts, and the parameters that hold the aliases and the
-  functions' bodies (`aliases`, `galiases`, `saliases`, `functions`), leaving
+  `autoload`, the `ZDOTDIR`, `fpath`, `PATH` (`path`) and `NIX_PROFILES`
+  settings, `hash` and `commands`, the arrays of hook functions, the prompts,
+  and the parameters that hold the aliases and the functions' bodies
+  (`aliases`, `galiases`, `saliases`, `functions`), leaving
   out only a line that is a comment, and each in every form zsh may read a word
   in: as written, with each backslash-newline joined, with quotes and
   backslashes taken off and `$'...'` decoded, and in the words of the code as
@@ -1795,7 +1820,9 @@ afterwards:
   `module_path` it counts the same way. What a line names beyond what it read
   as code it follows makes it fail closed, in case it read the code otherwise
   than zsh does: such an option counts as on, an `fpath` setting adds a
-  directory it cannot follow, a prompt holds code it cannot follow, and the rest
+  directory it cannot follow, a `PATH` setting or a `hash` is a change of
+  where zsh finds programs it cannot follow, a prompt holds code it cannot
+  follow, and the rest
   makes it warn that it cannot tell. So a `source` or `eval` anywhere but in a
   command it follows, in an `echo`, a string, an alias or a here-document, makes
   it warn, and so does an `eval` of what a command prints
