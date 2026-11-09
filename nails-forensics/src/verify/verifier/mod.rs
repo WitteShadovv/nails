@@ -8,7 +8,7 @@ use crate::artifacts::{self, ArtifactKind, ArtifactScope, ArtifactSeverity};
 use crate::config::Config;
 use crate::filesystem::ProcessMatch;
 use crate::state::StateFile;
-use crate::{Filesystem, Result};
+use crate::{Filesystem, NailsError, Result};
 use nails_base::preflight::SwapSeverity;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -487,6 +487,36 @@ impl<F: Filesystem> Verifier<F> {
     }
 }
 
+/// What verify reports where the lookup of `looked_up` failed with `error`,
+/// for another reason than that nothing is there, so that it cannot tell
+/// what `subject` asks (a sentence without its full stop, such as "Could not
+/// tell whether a session plan is left at ..."). The finding has `severity`,
+/// what a hit would have, but at most a warning: nothing was found, and the
+/// critical status keeps meaning that something was. The error follows the
+/// subject, without its path where the subject names that path already.
+pub(super) fn untold(
+    severity: Severity,
+    category: &str,
+    subject: &str,
+    looked_up: &Path,
+    error: &NailsError,
+) -> Finding {
+    let severity = match severity {
+        Severity::Critical => Severity::Warn,
+        other => other,
+    };
+    let cause = match error {
+        NailsError::IoError { path, source } if subject.contains(&*path.to_string_lossy()) => {
+            source.to_string()
+        }
+        other => other.to_string(),
+    };
+    Finding::new(severity, category, format!("{subject}: {cause}")).with_fix_guidance(format!(
+        "Find out why {} cannot be looked up, then run verify again",
+        looked_up.display()
+    ))
+}
+
 mod catalog;
 pub use catalog::VERIFY_CHECK_IDS;
 mod config_state;
@@ -497,6 +527,8 @@ mod deep_scan;
 mod journal_scan;
 #[cfg(test)]
 mod journal_scan_tests;
+#[cfg(test)]
+mod lookup_tests;
 mod offline_root;
 #[cfg(test)]
 mod offline_root_tests;

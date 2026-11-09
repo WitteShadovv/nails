@@ -244,20 +244,43 @@ pub fn covered_by_verify_check(check: &str) -> impl Iterator<Item = &'static Res
         .filter(move |row| matches!(row.verify, Probe::Check(id) if id == check))
 }
 
-/// Whether a path probe hit should be reported: a regular file or link that
+/// What a path probe found at its path ([`path_probe_hit`]).
+#[derive(Debug)]
+pub enum ProbeHit {
+    /// Something to report is there: a regular file or link that exists, or
+    /// a directory that has at least one entry.
+    Hit,
+    /// Nothing is there, or an empty directory.
+    NoHit,
+    /// The path could not be looked up, for this error, which names the
+    /// path: the probe cannot tell whether anything is there.
+    CannotTell(crate::NailsError),
+}
+
+/// What a path probe finds at `path`: a hit for a regular file or link that
 /// exists, or a directory that has at least one entry.
 ///
 /// Reads with the filesystem abstraction only (existence and a directory
-/// listing), so the probe never opens a decoy file for content.
-pub fn path_probe_hit<F: crate::Filesystem>(fs: &F, path: &std::path::Path) -> bool {
-    if !fs.path_exists(path).unwrap_or(false) {
-        return false;
+/// listing), so the probe never opens a decoy file for content. A lookup of
+/// `path` that fails for another reason than that nothing is there answers
+/// neither way ([`ProbeHit::CannotTell`]). A directory that cannot be listed
+/// counts as one without entries.
+pub fn path_probe_hit<F: crate::Filesystem>(fs: &F, path: &std::path::Path) -> ProbeHit {
+    match fs.path_exists(path) {
+        Ok(true) => {}
+        Ok(false) => return ProbeHit::NoHit,
+        Err(error) => return ProbeHit::CannotTell(error),
     }
-    if fs.is_directory(path).unwrap_or(false) {
-        return fs
-            .list_directory(path)
-            .map(|entries| !entries.is_empty())
-            .unwrap_or(false);
+    match fs.is_directory(path) {
+        Ok(false) => ProbeHit::Hit,
+        Ok(true)
+            if fs
+                .list_directory(path)
+                .is_ok_and(|entries| !entries.is_empty()) =>
+        {
+            ProbeHit::Hit
+        }
+        Ok(true) => ProbeHit::NoHit,
+        Err(error) => ProbeHit::CannotTell(error),
     }
-    true
 }
