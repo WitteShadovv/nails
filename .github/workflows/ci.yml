@@ -385,12 +385,14 @@ jobs:
       - name: Audit the gui/ dependency graph
         run: nix shell --inputs-from . nixpkgs#cargo-vet nixpkgs#just --command just vet gui
 
-  # Real overlayfs as real root in a private mount namespace, for the four
+  # Real mounts as real root in a private mount namespace, for the five
   # #[ignore]'d privileged_mounts tests a user namespace cannot run (directory
   # whiteouts, the opaque directories the kernel-modules check reads and the
   # whole upper-filesystem probe need trusted.* xattrs, and the loop driver's
-  # record needs a loop device bound); the rust job runs the rest rootless. It
-  # is built unprivileged and run as root.
+  # record of the file behind a loop device, on a tmpfs and on btrfs, needs one
+  # bound; the btrfs test runs the runner's mkfs.btrfs, and both loop tests
+  # mount a FUSE filesystem through /dev/fuse); the rust job runs the rest
+  # rootless. It is built unprivileged and run as root.
   privileged-mounts:
     name: privileged-mounts
     needs: changes
