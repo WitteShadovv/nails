@@ -534,21 +534,24 @@ fn the_warning_for_a_line_kept_off_names_it_the_root_and_what_to_do() {
 }
 
 #[test]
-fn a_refusal_of_the_hidden_session_s_fstab_below_the_root_says_to_change_it_there() {
-    let decision = decide_below("/mnt/data", "/dev/sdb1 /mnt/data/usb vfat noauto 0 0");
+fn the_hidden_session_s_fstab_has_no_refusal_below_the_root_to_remedy() {
+    // decide_hidden_fstab keeps such an entry off rather than refusing it,
+    // and its warning says what to do: no remedy speaks of a refusal that
+    // never comes.
+    let line = "/dev/sdb1 /mnt/data/usb vfat noauto 0 0";
+    let decision = decide_below("/mnt/data", line);
+    assert_eq!(decision.remedy(Whose::HiddenSession), None);
     assert_eq!(
-        decision.remedy(Whose::HiddenSession).as_deref(),
+        decision.fstab_refusal(Whose::HiddenSession).as_deref(),
         Some(
-            "Remove this line from /etc/fstab, or move its mount out from below /mnt/data, in a \
-             hidden session."
+            "the hidden session's fstab entry /mnt/data/usb: it lies at or below /mnt/data, \
+             where the hidden volume is mounted: the hidden session could mount it over the \
+             hidden volume or inside it"
         )
     );
-    assert!(
-        decision
-            .fstab_refusal(Whose::HiddenSession)
-            .unwrap()
-            .starts_with("the hidden session's fstab entry /mnt/data/usb: it lies at or below")
-    );
+    let kept = decide_hidden_fstab(&parse_fstab(line)[0], &[], Path::new("/mnt/data"), &present);
+    assert!(matches!(kept, Decision::Mask { .. }), "{kept:?}");
+    assert_eq!(kept.fstab_refusal(Whose::HiddenSession), None);
 }
 
 #[test]
