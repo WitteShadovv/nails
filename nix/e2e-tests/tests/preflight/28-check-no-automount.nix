@@ -15,25 +15,31 @@
 #   - an x-systemd.automount tmpfs at /srv/archive that no check reads, the
 #     null control, whose fstab line fstab-policy resolves without a lookup.
 #
+# The store is no overlay here, so the overlay module is not loaded: trying
+# the overlay would load it, and the kernel's modprobe and udevd would then
+# read their settings below /usr/local/lib.
+#
 # `nails check --json` as root, again with --allow-persistent-decoy, and as
-# carol (SUDO_USER) leaves the mount table as it found it and the mount
-# units inactive, and no automount request reaches systemd or the
-# automounter. decoy-persistence and fstab-policy refuse (the override turns
-# the first into a warning), sleep-policy and locate-database warn, and as
-# carol inherited-autostart and incremental-history-flush warn, each naming
-# the automount point with the line that says to mount it, and
-# inherited.not_read lists carol's autostart directory; no row names
-# /srv/archive. A listing of /auto, the indirect map's directory, mounts
-# nothing either. As the positive control, ls mounts each point, and the
-# next check names none of them and reads what they hold: an updatedb in
-# /usr/local/bin and carol's sync.desktop.
+# carol (SUDO_USER) leaves the mount table outside /run as it found it and
+# the mount units inactive, no automount request reaches systemd or the
+# automounter, and the overlay module stays unloaded. decoy-persistence,
+# fstab-policy and upper-fs-capability refuse (the override turns the first
+# into a warning), sleep-policy and locate-database warn, and as carol
+# inherited-autostart and incremental-history-flush warn, each naming the
+# automount point with the line that says to mount it, and inherited.not_read
+# lists carol's autostart directory; no row names /srv/archive. A listing of
+# /auto, the indirect map's directory, mounts nothing either. As the positive
+# control, ls mounts each point, and the next check names none of them and
+# reads what they hold: an updatedb in /usr/local/bin and carol's
+# sync.desktop, and its trial overlay loads the module.
 #
 # The decoy's own daemons read their settings below /usr/local/lib, and so
 # can mount /usr/local themselves: systemd-udevd did as it handled device
 # events, in one run while check ran, and the journal named it. What they
 # mounted is unmounted before each run, and udevd's queue of events is held
-# from the first run on, so that only what check and the tools it starts
-# look up can mount a point while it runs.
+# from the first run on, so that an event of the setup handled late mounts
+# nothing while check runs. A module check loaded would still be listed in
+# /proc/filesystems.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -66,6 +72,9 @@ in
     { ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
+      # No overlay over the store, so nothing loads the overlay module at
+      # boot: check's trial overlay would be what loads it.
+      virtualisation.writableStore = false;
       environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
       virtualisation.fileSystems = {
         "/usr/local" = onDemand;
@@ -179,6 +188,13 @@ in
                 machine.succeed(f"systemctl stop {unit}")
 
 
+    def overlay_loaded():
+        # Whether the kernel lists the overlay filesystem: once its module
+        # is loaded.
+        filesystems = machine.succeed("cat /proc/filesystems").splitlines()
+        return any(line.split()[-1:] == ["overlay"] for line in filesystems)
+
+
     def left_nothing(label, before, since, points):
         # Since the table before and the cursor since, the mount table is
         # the same outside /run, the mount units of the points nothing was
@@ -270,14 +286,17 @@ in
         assert "indirect" in found[0].super_options.split(","), found
         assert not stack(baseline, DAVE), stack(baseline, DAVE)
         assert not inactive(list(DIRECT)), inactive(list(DIRECT))
+        assert not overlay_loaded(), machine.succeed("cat /proc/filesystems")
 
     with subtest("check as root names each automount point and mounts none"):
         rc, rows, data, before, since = check("root", (*READ, ARCHIVE))
         left_nothing("root", before, since, (*READ, ARCHIVE))
+        assert not overlay_loaded(), "the trial loaded the overlay module"
         assert rc == 4, rc
         persistence = names(rows, "decoy-persistence", ["/usr/local"], "fail")
         assert persistence.get("allowable") == "persistent_decoy", persistence
         names(rows, "fstab-policy", ["/usr/local"], "fail")
+        names(rows, "upper-fs-capability", ["/usr/local"], "fail")
         names(rows, "sleep-policy", ["/usr/local"], "warn")
         names(rows, "locate-database", READ, "warn")
         no_row_names(rows, [ARCHIVE])
@@ -287,6 +306,7 @@ in
             "allowed", (*READ, ARCHIVE), flags="--allow-persistent-decoy"
         )
         left_nothing("allowed", before, since, (*READ, ARCHIVE))
+        assert not overlay_loaded(), "the trial loaded the overlay module"
         row = names(rows, "decoy-persistence", ["/usr/local"], "warn")
         assert "allowed via --allow-persistent-decoy" in row["message"], row
         names(rows, "fstab-policy", ["/usr/local"], "fail")
@@ -294,6 +314,7 @@ in
     with subtest("check as carol looks up nothing in her home"):
         rc, rows, data, before, since = check("carol", (*READ, ARCHIVE), env="SUDO_USER=carol")
         left_nothing("carol", before, since, (*READ, ARCHIVE))
+        assert not overlay_loaded(), "the trial loaded the overlay module"
         assert rc == 4, rc
         names(rows, "decoy-persistence", ["/usr/local"], "fail")
         names(rows, "fstab-policy", ["/usr/local"], "fail")
@@ -339,8 +360,9 @@ in
         left_nothing("mounted", before, since, [ARCHIVE])
         print(json.dumps(rows, indent=2))
         no_row_names(rows, [f"automount point {point}" for point in (*READ, ARCHIVE)])
-        for name in ("decoy-persistence", "fstab-policy"):
+        for name in ("decoy-persistence", "fstab-policy", "upper-fs-capability"):
             assert rows[name]["status"] != "fail", rows[name]
+        assert overlay_loaded(), "the trial did not load the overlay module"
         locate = rows["locate-database"]
         assert "updatedb can be started by hand (/usr/local/bin/updatedb)" in locate["message"], locate
         inherited = data["inherited"]
