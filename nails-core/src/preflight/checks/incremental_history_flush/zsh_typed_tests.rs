@@ -3,8 +3,9 @@
 
 //! What zsh runs with the line the operator types a NAILS command in: a
 //! function or a regular alias named like the command that starts it
-//! (`sudo`, `nails`), read as a hook's code, and a global alias named like a
-//! word of it (`activate`, `--yes`), which counts as used.
+//! (`sudo`, `nails`), or like a command a widget runs with the line at hand
+//! (`run-help`), read as a hook's code, and a global alias named like a word
+//! of it (`activate`, `--yes`), which counts as used.
 
 use super::*;
 use crate::preflight::checks::incremental_history_flush::{TYPED_COMMANDS, TYPED_WORDS};
@@ -147,5 +148,37 @@ fn a_global_alias_named_like_a_word_of_a_nails_command_counts_as_used() {
             Scan::default(),
             "{alias}"
         );
+    }
+}
+
+#[test]
+fn a_function_or_alias_a_widget_runs_with_the_line_at_hand_is_a_hook() {
+    // zsh 5.9 to 5.9.2 run the command `run-help` with the line on the
+    // buffer stack as Alt-h or a key bound to the widget is pressed, and the
+    // command `which-command` as Alt-? is: each of these appends the line to
+    // `~/.zl`, as `read -z` reads it back, or as zsh's own `run-help` hands
+    // a helper of the command's name the line's words.
+    let reads = "local l; read -z l; print -r -- \"$l\" >>~/.zl";
+    for rc in [
+        format!("unalias run-help\nrun-help() {{ {reads} }}\n"),
+        format!("unalias run-help\nrun-help() {{ {reads} }}\nbindkey '^M' run-help\n"),
+        format!("unalias which-command\nwhich-command() {{ {reads} }}\n"),
+        "run-help-sudo() { print -r -- \"sudo $*\" >>~/.zl }\n".to_string(),
+        format!("{LOGIT}alias run-help='logit; man'\n"),
+        format!("{LOGIT}alias which-command='logit; whence'\n"),
+        "autoload ~/zfn/run-help\n".to_string(),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &rc);
+        seed(&fs, "/home/alice/zfn/run-help", &format!("{reads}\n"));
+        assert!(warned(&scan(&fs, UNKNOWN)), "{rc}");
+    }
+    // One that writes nothing, and a function of another name, pass.
+    for rc in [
+        "unalias run-help\nrun-help() { man zshbuiltins }\n",
+        "alias run-help=man\n",
+        "run-help_x() { print -r -- \"$*\" >>~/.zl }\n",
+    ] {
+        assert_eq!(found(rc), Scan::default(), "{rc}");
     }
 }
