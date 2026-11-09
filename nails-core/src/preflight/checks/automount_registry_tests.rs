@@ -207,6 +207,55 @@ fn no_check_looks_up_a_path_behind_an_automount_point() {
     assert!(persistence.is_fail(), "{persistence:?}");
 }
 
+/// On a NixOS decoy whose /etc/nixos links into bob's home, a name of the
+/// indirect map, the checks of the NixOS layer look up nothing behind the
+/// point either: suspicious-nails-reference refuses, naming it.
+#[test]
+fn the_nixos_layer_looks_up_nothing_behind_an_automount_point() {
+    use crate::Filesystem;
+    let fs = decoy();
+    fs.create_symlink(
+        std::path::Path::new("/home/bob/nixos"),
+        std::path::Path::new("/etc/nixos"),
+    )
+    .unwrap();
+    fs.mock_clear_lookups();
+    let inputs = RegistryInputs {
+        options: PreflightOptions::default(),
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
+        operator: Some(bob()),
+        caller_path: None,
+        typed_shell: None,
+        host_profile: None,
+        systemd_version: None,
+    };
+    let registry = build_registry(
+        &fs,
+        &Config::test_default(),
+        &inputs,
+        Some(&crate::platform::NixOsConfigLayer),
+    )
+    .unwrap();
+    let registered = registry.names();
+    assert!(
+        [
+            "suspicious-nails-reference",
+            "nixos-config",
+            "nixos-build-target"
+        ]
+        .iter()
+        .all(|name| registered.contains(name)),
+        "{registered:?}"
+    );
+    let (results, _) = registry.run_all_detailed(&fs);
+    none_reached(&fs, POINTS);
+    let reference = names(&results, "suspicious-nails-reference", &["/home/bob"]);
+    assert!(reference.is_fail(), "{reference:?}");
+}
+
 /// The checks that read the decoy through the automount guard, each built
 /// as the registry builds it for bob.
 fn guarded() -> Vec<(&'static str, Box<dyn PreFlightCheck<MockFilesystem>>)> {
