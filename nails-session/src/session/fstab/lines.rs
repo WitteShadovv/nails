@@ -210,11 +210,11 @@ fn read_otherwise(bytes: &[u8], field: Field) -> Option<Unlike> {
     if let Some(c) = text.chars().find(|c| c.is_whitespace() || *c == '\0') {
         return Some(Unlike::Holds(field, c));
     }
-    let mut at = 0;
-    while let Some(found) = bytes[at..].iter().position(|byte| *byte == b'\\') {
-        let rest = &bytes[at + found..];
+    let mut rest = bytes;
+    while let Some(found) = rest.iter().position(|byte| *byte == b'\\') {
+        rest = &rest[found..];
         if let Some(escape) = field.alike_escapes().iter().find(|e| rest.starts_with(e)) {
-            at += found + escape.len();
+            rest = &rest[escape.len()..];
             continue;
         }
         // Three octal digits make an escape for libmount, which glibc leaves
@@ -234,7 +234,7 @@ fn read_otherwise(bytes: &[u8], field: Field) -> Option<Unlike> {
                 String::from_utf8_lossy(&rest[..shown]).into_owned(),
             ));
         }
-        at += found + 1;
+        rest = &rest[1..];
     }
     None
 }
