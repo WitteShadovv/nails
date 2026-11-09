@@ -36,8 +36,11 @@ pub struct PreflightOptions {
     pub allow_persistent_decoy: bool,
     /// Accept a hidden root on storage the attach gate takes for the decoy's
     /// (the `--allow-decoy-storage` flag): the hidden-volume check warns
-    /// instead of failing. It never covers a folder, a covered root, storage
-    /// that cannot be judged, or `backend-entries`.
+    /// instead of failing, and for a root on a filesystem the decoy uses,
+    /// `backend-entries` lets be the decoy's own fstab lines that mount that
+    /// filesystem at `/` or at a system folder. It never covers a folder, a
+    /// covered root, storage that cannot be judged, or any other decoy entry
+    /// for the volume.
     pub allow_decoy_storage: bool,
     /// Accept discards over the hidden volume for this run (the buried
     /// `--allow-discards` expert flag): the backend-detect check then warns
@@ -56,6 +59,18 @@ impl Default for PreflightOptions {
             allow_persistent_decoy: false,
             allow_decoy_storage: false,
             allow_discards: false,
+        }
+    }
+}
+
+impl PreflightOptions {
+    /// The attach-gate override these options ask for: the refusals
+    /// `--allow-decoy-storage` covers, or none.
+    pub fn allow(&self) -> crate::hidden_root::Allow {
+        if self.allow_decoy_storage {
+            crate::hidden_root::Allow::DecoyStorage
+        } else {
+            crate::hidden_root::Allow::Nothing
         }
     }
 }
@@ -174,20 +189,18 @@ pub fn build_registry<F: Filesystem>(
     let paths = crate::session::Paths::system();
     let layered = config_layer.is_some();
 
+    let allow = inputs.options.allow();
     registry.add_check(Box::new(
-        HiddenVolumeCheck::new(hidden_root.clone()).allowing(
-            if inputs.options.allow_decoy_storage {
-                crate::hidden_root::Allow::DecoyStorage
-            } else {
-                crate::hidden_root::Allow::Nothing
-            },
-        ),
+        HiddenVolumeCheck::new(hidden_root.clone()).allowing(allow),
     ));
 
     // No decoy fstab or crypttab entry opens or mounts the hidden volume: such
-    // an entry is an enabler stored on the decoy. --allow-decoy-storage never
-    // covers it.
-    registry.add_check(Box::new(BackendEntriesCheck::new(hidden_root.clone())));
+    // an entry is an enabler stored on the decoy. --allow-decoy-storage covers
+    // only the decoy's own lines for / and its system folders that mount the
+    // filesystem it accepted the root on.
+    registry.add_check(Box::new(
+        BackendEntriesCheck::new(hidden_root.clone()).allowing(allow),
+    ));
 
     // Neither already in the hidden root nor with the leftovers of an
     // interrupted entry (a populated /run/nextroot must never be entered by a

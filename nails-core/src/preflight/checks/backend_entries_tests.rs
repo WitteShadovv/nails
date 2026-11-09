@@ -368,3 +368,171 @@ fn it_depends_on_the_hidden_volume_and_is_named_backend_entries() {
         <BackendEntriesCheck as PreFlightCheck<MockFilesystem>>::requires_hidden_volume(&check)
     );
 }
+
+// ------------------------------------------------------------------------
+// A root that --allow-decoy-storage accepted on a filesystem the decoy uses
+// ------------------------------------------------------------------------
+
+/// A decoy whose block devices the mock renders from `table`, as each mount's
+/// source and device number, with `fstab` and the root at `/mnt`.
+fn rendered(table: &str, fstab: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt", true);
+    fs.mock_set_writable("/mnt", true);
+    fs.mock_set_mount_table(table);
+    fs.mock_set_file_content("/etc/fstab", fstab);
+    fs
+}
+
+/// The check of the root at `/mnt` on `fs`, with `allow`.
+fn run_allowing(fs: &MockFilesystem, allow: Allow) -> CheckResult {
+    BackendEntriesCheck::new(PathBuf::from("/mnt"))
+        .allowing(allow)
+        .run(fs)
+        .unwrap()
+}
+
+/// The hidden-volume check of the root at `/mnt` on `fs`, with the flag.
+fn hidden_volume_with_the_flag(fs: &MockFilesystem) -> CheckResult {
+    crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+        .allowing(Allow::DecoyStorage)
+        .run(fs)
+        .unwrap()
+}
+
+/// A folder of `/` bound at the root.
+const BIND_OF_ROOT: &str = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                            5 1 8:1 /srv/x /mnt rw - ext4 /dev/vda1 rw\n";
+
+/// A btrfs subvolume beside the `/home` subvolume of the same filesystem.
+const BESIDE_HOME: &str = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                           2 1 0:40 /home /home rw - btrfs /dev/vda2 rw,subvolid=257,subvol=/home\n\
+                           5 1 0:40 /vault /mnt rw - btrfs /dev/vda2 rw,subvolid=300,subvol=/vault\n";
+
+/// The pass of a root the flag accepted, which only the decoy's own line for
+/// `place` names.
+fn only_the_decoys_own_line(place: &str) -> String {
+    format!(
+        "No fstab or crypttab entry names the volume at /mnt other than the decoy's own line for \
+         {place}, which mounts the filesystem that --allow-decoy-storage accepted it on"
+    )
+}
+
+#[test]
+fn with_the_flag_the_decoys_own_lines_for_slash_and_a_system_folder_are_no_finding() {
+    // A bind of a folder of /, and a btrfs subvolume beside the fstab's
+    // /home: the hidden-volume check passes each with the flag's warning,
+    // and the decoy's line for / or /home mounts the filesystem the flag
+    // accepted the root on.
+    let home = "/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home btrfs subvol=/home 0 0\n";
+    for (table, fstab, place) in [
+        (BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n", "/"),
+        (BESIDE_HOME, home, "/home"),
+    ] {
+        let fs = rendered(table, fstab);
+        let gate = hidden_volume_with_the_flag(&fs);
+        assert!(gate.is_warn(), "{place}: {gate:?}");
+        assert!(
+            gate.message()
+                .starts_with("--allow-decoy-storage: using /mnt although it is"),
+            "{place}: {}",
+            gate.message()
+        );
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_pass(), "{place}: {result:?}");
+        assert_eq!(result.message(), only_the_decoys_own_line(place));
+        // Without the flag nothing changes: the line is a finding, one the
+        // decoy's own boot needs.
+        let result = run_allowing(&fs, Allow::Nothing);
+        assert!(result.is_fail(), "{place}: {result:?}");
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{place}");
+    }
+    // Lines for / and /home of that filesystem are named together.
+    let fs = rendered(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         2 1 8:1 /home /home rw - ext4 /dev/vda1 rw\n\
+         5 1 8:1 /srv/x /mnt rw - ext4 /dev/vda1 rw\n",
+        "/dev/vda1 / ext4 defaults 0 1\n/dev/vda1 /home ext4 defaults 0 2\n",
+    );
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert_eq!(
+        result.message(),
+        "No fstab or crypttab entry names the volume at /mnt other than the decoy's own lines \
+         for / and /home, which mount the filesystem that --allow-decoy-storage accepted it on"
+    );
+}
+
+#[test]
+fn with_the_flag_a_line_for_that_filesystem_at_any_other_folder_still_fails() {
+    // The decoy mounts the btrfs top at /pool, a folder no system folder is:
+    // its line may name the hidden drive's disk.
+    let fs = rendered(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         2 1 0:40 / /pool rw - btrfs /dev/vda2 rw,subvolid=5,subvol=/\n\
+         5 1 0:40 /vol /mnt rw - btrfs /dev/vda2 rw,subvolid=256,subvol=/vol\n",
+        "/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /pool btrfs defaults 0 0\n",
+    );
+    assert!(hidden_volume_with_the_flag(&fs).is_warn());
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "/etc/fstab: '/dev/vda2 /pool btrfs' (it mounts the filesystem the volume at /mnt is \
+             part of, and the decoy's own boot needs it)"
+        ),
+        "{}",
+        result.message()
+    );
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+    // Beside a line for /home that the flag lets be, only the other line is
+    // named: a noauto one, which the boot does not mount, is one to remove.
+    let fs = rendered(
+        BESIDE_HOME,
+        "/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home btrfs subvol=/home 0 0\n\
+         /dev/vda2 /srv btrfs subvol=/vault,noauto 0 0\n",
+    );
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("/etc/fstab: '/dev/vda2 /srv btrfs' (it mounts the filesystem"),
+        "{}",
+        result.message()
+    );
+    assert!(
+        !result.message().contains("/home btrfs"),
+        "{}",
+        result.message()
+    );
+    assert_eq!(result.remediation(), Some(REMEDIATION));
+    // The flag covers no crypttab line.
+    let fs = rendered(BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n");
+    fs.mock_set_file_content("/etc/crypttab", "vault /dev/vda1 none luks,noauto\n");
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("/etc/crypttab: 'vault /dev/vda1'"),
+        "{}",
+        result.message()
+    );
+}
+
+#[test]
+fn with_the_flag_a_root_whose_storage_cannot_be_judged_keeps_every_finding() {
+    // The disk's kind cannot be read (no /proc/devices here), so the judge
+    // does not place the root on the decoy's filesystem, and the line for /
+    // stays a finding with the flag too.
+    let decoy = Decoy::new(
+        "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
+         5 1 259:3 /srv/x /mnt rw - ext4 /dev/nvme0n1p3 rw\n",
+    )
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .file("/etc/fstab", "/dev/nvme0n1p3 / ext4 defaults 0 1\n");
+    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+}
