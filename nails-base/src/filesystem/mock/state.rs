@@ -81,6 +81,10 @@ pub enum MockOp {
 type MountRoots =
     HashMap<PathBuf, std::result::Result<crate::filesystem::MountRoot, std::io::ErrorKind>>;
 
+/// What `record_lock_holder` says of each path set: the holder of a
+/// conflicting lock, none, or the kind of the error it gives there.
+type RecordLocks = HashMap<PathBuf, std::result::Result<Option<i32>, std::io::ErrorKind>>;
+
 /// Mock filesystem for testing (no root privileges required)
 ///
 /// Uses in-memory state tracking to simulate filesystem operations.
@@ -153,6 +157,12 @@ pub struct MockFilesystem {
     /// unset path that exists gets a per-path distinct inode (see
     /// [`MockFilesystem::inode_impl`]), and one that does not, none.
     pub(super) inodes: Arc<Mutex<HashMap<PathBuf, std::result::Result<u64, std::io::ErrorKind>>>>,
+    /// Answers of
+    /// [`Filesystem::record_lock_holder`](crate::Filesystem::record_lock_holder)
+    /// a test set, keyed by path: the holder of a conflicting lock, none, or
+    /// the kind of error the query fails with. An unset regular file has no
+    /// holder, and any other unset path cannot be opened.
+    pub(super) record_locks: Arc<Mutex<RecordLocks>>,
     /// The loop driver's records reported by
     /// [`Filesystem::loop_record`](crate::Filesystem::loop_record), keyed by
     /// loop device node. An unset node cannot be read.
@@ -218,6 +228,7 @@ impl MockFilesystem {
             mount_sources: Arc::new(Mutex::new(HashMap::new())),
             device_ids: Arc::new(Mutex::new(HashMap::new())),
             inodes: Arc::new(Mutex::new(HashMap::new())),
+            record_locks: Arc::new(Mutex::new(HashMap::new())),
             loop_records: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
             remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
@@ -291,6 +302,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.inodes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.record_locks
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

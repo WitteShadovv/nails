@@ -416,3 +416,26 @@ fn change_time_is_what_a_test_set_and_the_epoch_otherwise() {
     fs.reset();
     assert_eq!(fs.change_time(apt).unwrap(), UNIX_EPOCH);
 }
+
+#[test]
+fn a_record_lock_holder_is_what_a_test_set_and_none_for_a_plain_file() {
+    use std::io::ErrorKind;
+
+    let fs = MockFilesystem::new();
+    let lock = Path::new("/run/unattended-upgrades.lock");
+    let kind = |path: &Path| fs.record_lock_holder(path).unwrap_err().io_kind();
+    assert_eq!(kind(lock), Some(ErrorKind::NotFound));
+    fs.mock_add_file("/run/unattended-upgrades.lock", "");
+    assert_eq!(fs.record_lock_holder(lock).unwrap(), None);
+    fs.mock_set_record_lock_holder(lock, Some(812));
+    assert_eq!(fs.record_lock_holder(lock).unwrap(), Some(812));
+    fs.mock_set_record_lock_error(lock, ErrorKind::PermissionDenied);
+    assert_eq!(kind(lock), Some(ErrorKind::PermissionDenied));
+    // A directory, and a link, which the query does not follow.
+    fs.mock_set_path_type("/run", PathKind::Dir);
+    assert_eq!(kind(Path::new("/run")), Some(ErrorKind::InvalidInput));
+    fs.create_symlink(lock, Path::new("/run/link")).unwrap();
+    assert_eq!(kind(Path::new("/run/link")), Some(ErrorKind::InvalidInput));
+    fs.reset();
+    assert_eq!(kind(lock), Some(ErrorKind::NotFound));
+}
