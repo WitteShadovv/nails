@@ -956,7 +956,9 @@ of this changelog for that version becomes the release notes word for word, and
   a `$HOME` that a letter, a digit or a `_` follows in a path (`$HOMEBREW_PREFIX/x`), which names
   another parameter, or a `:` or a `[`, with which zsh applies a modifier or a subscript to the home
   (`source $HOME:a/x`, and so for `$ZDOTDIR` and `$XDG_CONFIG_HOME`), at a file the startup
-  code may make or write before zsh reads it (`cp ~/.src ~/.gen; . ~/.gen`, `>> $log`), at an
+  code may make or write before zsh reads it (`cp ~/.src ~/.gen; . ~/.gen`, `>> $log`), or at any
+  point for a file a function's code reads, as zsh may run the function after it
+  (`precmd() { . ~/.x }; cp ~/.y ~/.x`), at an
   `fpath` element quotes join into one, and at one whose name ends in `.zwc`
   (`fpath=(~/zc.zwc $fpath)`), which zsh reads as the compiled functions it holds. It reads every
   name of a function's definition

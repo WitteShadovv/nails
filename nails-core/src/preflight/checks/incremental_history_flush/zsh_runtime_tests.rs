@@ -1632,12 +1632,28 @@ fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
         seed(&fs, "/home/alice/.src", "setopt share_history\n");
         assert!(warns(&fs), "{rc}");
     }
-    // A write after zsh reads it, or to another file, and a `touch`, which
-    // writes nothing in it, are none.
+    // zsh 5.9 to 5.9.2 read a file a function's code sources as the
+    // function runs, a hook's at each prompt, after every command at the top:
+    // with these SHARE_HISTORY is on from the first prompt on.
+    for rc in [
+        "precmd() { . ~/.zshrc.local }\ncp ~/.src ~/.zshrc.local\n",
+        "precmd() { . ~/.zshrc.local }\npreexec() { cp ~/.src ~/.zshrc.local }\n",
+        "fpath=(~/zfn $fpath)\nautoload -Uz hk\nprecmd_functions+=(hk)\ncp ~/.src ~/zfn/hk\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        seed(&fs, "/home/alice/.zshrc.local", ":\n");
+        seed(&fs, "/home/alice/zfn/hk", ":\n");
+        seed(&fs, "/home/alice/.src", "setopt share_history\n");
+        assert!(warns(&fs), "{rc}");
+    }
+    // A write after zsh reads it at the top, or to another file, and a
+    // `touch`, which writes nothing in it, are none.
     for rc in [
         ". ~/.zshrc.local\nprint x >> ~/.zshrc.local\n",
         "print x >> ~/.cache/log\n. ~/.zshrc.local\n",
         "touch $HISTFILE\n. ~/.zshrc.local\n",
+        "precmd() { . ~/.zshrc.local }\nprint x >> ~/.cache/log\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);

@@ -607,7 +607,8 @@ history yourself so an interactive shell has nowhere to write:
   which zsh reads as arithmetic each time it uses it, in your files or in that
   environment, or tied to another name (`typeset -T TMOUT tmout`), a file your
   files source by a path with a modifier on `$HOME` (`source $HOME:a/x`), a
-  file your startup files write before zsh reads it, a function
+  file your startup files write before zsh reads it (at any point, for one a
+  hook or another function reads), a function
   or an alias named `sudo`, `doas`, `run0`, `pkexec`, `su` or `nails` (or the
   path you start `nails` by) that writes a file or hands a program a word an
   expansion makes (`nails() { sudo /mnt/data/nails "$@" }`; one that only runs

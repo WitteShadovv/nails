@@ -86,7 +86,10 @@ impl<F: Filesystem> Reader<'_, F> {
     /// ([`Reader::completion_system`]); for what its code does when it is a
     /// stock function of zsh's own ([`known`]); else as code like any file.
     pub(super) fn function(&mut self, path: &Path, name: &str) {
-        let Some(text) = self.text(path) else {
+        let was = std::mem::replace(&mut self.function_code, true);
+        let text = self.text(path);
+        self.function_code = was;
+        let Some(text) = text else {
             return;
         };
         if name == "compinit" {
