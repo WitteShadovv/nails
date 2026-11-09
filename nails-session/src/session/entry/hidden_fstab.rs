@@ -23,18 +23,18 @@
 //! missing one, or a link that leads to nothing, holds no line. One that is
 //! not a regular file is not read: a FIFO would hold the entry until a writer
 //! came, and a device might never end the read. That one, one that cannot be
-//! read, and an entry line whose device, mount point, type or options are not
-//! UTF-8 text refuse the entry: NAILS could not tell what the hidden systemd
-//! mounts from it. The refusal names where the root upper keeps the hidden
-//! root's own `/etc/fstab` on the hidden volume, as the session cannot be
-//! entered to change it.
+//! read, and one with a line that the hidden systemd may read otherwise than
+//! NAILS ([`fstab::entry_lines`]) refuse the entry: NAILS could not tell what
+//! the hidden systemd mounts from it. The refusal names where the root upper
+//! keeps the hidden root's own `/etc/fstab` on the hidden volume, as the
+//! session cannot be entered to change it.
 
 use super::refuse_undecided;
 use crate::error::{NailsError, Result};
 use crate::session::fstab::{self, FstabEntry};
 use crate::session::layout::Layout;
 use crate::session::policy::{self, Decision, Present, Whose};
-use nails_teardown::mountinfo::{MountEntry, unescape_octal_bytes};
+use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::nextroot::{regular_file_in_root, resolve_in_root};
 use std::path::Path;
 
@@ -73,26 +73,21 @@ pub(super) fn decide(
     if text == decoy_text {
         return Ok(hidden);
     }
+    let raw_lines = fstab::entry_lines(&text).map_err(|(line, why)| {
+        refusal(
+            &format!("line {line} of the hidden /etc/fstab {why}"),
+            hidden_root,
+        )
+    })?;
     let mut lines: Vec<String> = Vec::new();
-    for (index, raw) in text.split(|byte| *byte == b'\n').enumerate() {
-        let Some(entry) = fstab::parse_in_root(raw, nextroot).pop() else {
-            continue;
-        };
-        if !read_as_written(raw) {
-            return Err(refusal(
-                &format!(
-                    "the device, mount point, type or options on line {} of the hidden \
-                     /etc/fstab are not UTF-8 text",
-                    index + 1
-                ),
-                hidden_root,
-            ));
+    for raw in raw_lines {
+        for entry in fstab::parse_in_root(raw, nextroot) {
+            if decided.contains(&entry) || hidden.entries.contains(&entry) {
+                continue;
+            }
+            lines.push(String::from_utf8_lossy(raw).trim().to_string());
+            hidden.entries.push(entry);
         }
-        if decided.contains(&entry) || hidden.entries.contains(&entry) {
-            continue;
-        }
-        lines.push(String::from_utf8_lossy(raw).trim().to_string());
-        hidden.entries.push(entry);
     }
     let whose = whose(nextroot, nixos);
     let decisions = policy::decide_all_hidden_fstab(&hidden.entries, mounts, hidden_root, present);
@@ -125,26 +120,6 @@ fn read(nextroot: &Path, hidden_root: &Path) -> Result<Option<Vec<u8>>> {
     fstab::read_in_root(nextroot)
         .map(Some)
         .map_err(|e| unreadable(&e.to_string()))
-}
-
-/// Whether NAILS reads the fields of the fstab line `raw` that the policy
-/// decides by, its device, mount point, type and options, byte for byte as
-/// the hidden systemd does: each of them is UTF-8 text, the device and the
-/// mount point also once their octal escapes are undone (`\351` alone is
-/// none), so that no byte of them is read as U+FFFD, a name systemd does not
-/// give the mount or its device. They are split as libmount splits them for
-/// systemd, at spaces and tabs. NAILS reads nothing after them, the dump and
-/// pass numbers or a comment, so those may hold any bytes.
-fn read_as_written(raw: &[u8]) -> bool {
-    raw.split(|byte| matches!(byte, b' ' | b'\t'))
-        .filter(|field| !field.is_empty())
-        .take(4)
-        .enumerate()
-        .all(|(index, field)| {
-            std::str::from_utf8(field).is_ok_and(|text| {
-                index > 1 || std::str::from_utf8(&unescape_octal_bytes(text)).is_ok()
-            })
-        })
 }
 
 /// The refusal of the entry for `why`, a fault of the hidden `/etc/fstab`,

@@ -13,9 +13,19 @@
 //! ([`checkers`]), to overlay, bind, skip or mask each entry before the
 //! switch. The parser is [`nails_base::fstab`], re-exported here; the unit
 //! names are the session's own.
+//!
+//! That parser reads some lines otherwise than systemd's fstab generator
+//! does, as it splits a line at any whitespace and undoes other escapes.
+//! [`entry_lines`] gives the lines systemd reads as entries, or the first it
+//! may read otherwise. An entry without a build reads the next root's own
+//! fstab through it and refuses such a line ([`super::entry`]); the decoy's
+//! fstab and the one a hidden build brings are parsed as they are.
 
 use std::path::{Path, PathBuf};
 
+mod lines;
+
+pub use lines::{Field, Unlike, entry_lines};
 pub use nails_base::fstab::{
     FstabEntry, escape_path, is_host_share_type, is_virtual_type, parse_fstab, spec_device,
 };

@@ -32,8 +32,9 @@
 //!    NixOS the hidden `/etc` of the last activation of a hidden system, on
 //!    another host one a hidden session wrote, each line the decoy's fstab
 //!    does not hold decided by the same policy, but one at or below the
-//!    hidden root kept off with a warning rather than refused
-//!    ([`hidden_fstab`]);
+//!    hidden root kept off with a warning rather than refused, and a file
+//!    with a line that the hidden systemd may read otherwise than NAILS
+//!    refused ([`hidden_fstab`]);
 //! 6. on NixOS with a hidden configuration ([`hidden_build`]): the hidden
 //!    toplevel built into the next root's store, the fstab it brings decided,
 //!    so that a line the policy refuses refuses the entry before anything runs

@@ -678,10 +678,15 @@ of this changelog for that version becomes the release notes word for word, and
   and rebuild, and else remove the line from `/etc/fstab`. The file is read as the hidden session
   resolves it, its links followed inside the session's root and never out of it. A missing one
   holds no line. One that is not a regular file, such as a FIFO, which would hold the activation
-  in its read, or that cannot be read, refuses the activation, and so does an entry whose device,
-  mount point, type or options are not UTF-8 text, unless the file is the decoy's own, byte for
-  byte. The refusal names where the hidden root keeps its own `/etc/fstab` on the hidden volume.
-  `check` still reads the decoy's fstab only. A mount or automount unit of the hidden system's own
+  in its read, or that cannot be read, refuses the activation, and so does a line that the hidden
+  systemd may read otherwise than NAILS, with glibc up to systemd 258 or with libmount from 259 on,
+  unless the file is the decoy's own, byte for byte: a field that is not UTF-8 text, or holds a
+  NUL or whitespace other than the spaces and tabs between fields, such as a no-break space, an
+  escape that glibc and libmount undo differently, such as `\303` in a mount point, a backslash
+  before a comma of the options or any in the type, a line longer than 4095 bytes, or one that
+  begins as a line of a mount table or of `/proc/swaps` does. The refusal names the line, why, and where the hidden root
+  keeps its own `/etc/fstab` on the hidden volume. See docs/configuration.md. `check` still reads
+  the decoy's fstab only. A mount or automount unit of the hidden system's own
   that a boot target links at or below the hidden root is still refused, in an activation without
   a build too.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
