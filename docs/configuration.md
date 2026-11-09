@@ -232,12 +232,15 @@ rebuild, and else remove the line from `/etc/fstab`. A line the decoy's fstab
 holds too is decided once, as the decoy's. NAILS reads the file as the hidden
 session will, following its links inside the session's root and never out of it.
 A missing file holds no line, and one that is the decoy's own, byte for byte,
-nothing new. One that cannot be read refuses the activation, and so does an
-entry of it that is not UTF-8 text. `nails check` reads the decoy's fstab only.
-The hidden system's own mount and automount units are not lines of the fstab:
-one that a boot target links at or below `hidden_volume_root` (a NixOS
-`systemd.mounts` unit) is refused as the decoy's are, in an activation without a
-build too.
+nothing new. One that is not a regular file (a FIFO would hold the activation
+in its read) or cannot be read refuses the activation, and so does an entry
+whose device, mount point, type or options are not UTF-8 text; the refusal
+names where the hidden root keeps its own `/etc/fstab`,
+`<hidden_volume_root>/root/upper/etc/fstab`. `nails check` reads the decoy's
+fstab only. The hidden system's own mount and automount units are not lines of
+the fstab: one that a boot target links at or below `hidden_volume_root` (a
+NixOS `systemd.mounts` unit) is refused as the decoy's are, in an activation
+without a build too.
 
 A unit kept off is masked in `/run`, or skipped where a boot target requires it:
 `local-fs.target` requires the mount of an entry without `nofail` (or its

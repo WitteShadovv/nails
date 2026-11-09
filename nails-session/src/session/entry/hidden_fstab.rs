@@ -20,16 +20,22 @@
 //! The file is read as the next root resolves it, its links followed inside
 //! the next root and never out of it ([`fstab::read_in_root`]), after the
 //! decoy's filesystems are in place there, a separate `/nix` among them. A
-//! missing one, or a link that leads to nothing, holds no line. One that
-//! cannot be read, or an entry of it that is not UTF-8 text, refuses the
-//! entry: NAILS could not tell what the hidden systemd mounts from it.
+//! missing one, or a link that leads to nothing, holds no line. One that is
+//! not a regular file is not read: a FIFO would hold the entry until a writer
+//! came, and a device might never end the read. That one, one that cannot be
+//! read, and an entry line whose device, mount point, type or options are not
+//! UTF-8 text refuse the entry: NAILS could not tell what the hidden systemd
+//! mounts from it. The refusal names where the root upper keeps the hidden
+//! root's own `/etc/fstab` on the hidden volume, as the session cannot be
+//! entered to change it.
 
 use super::refuse_undecided;
 use crate::error::{NailsError, Result};
 use crate::session::fstab::{self, FstabEntry};
+use crate::session::layout::Layout;
 use crate::session::policy::{self, Decision, Present, Whose};
-use nails_teardown::mountinfo::MountEntry;
-use nails_teardown::whole_root::nextroot::resolve_in_root;
+use nails_teardown::mountinfo::{MountEntry, unescape_octal_bytes};
+use nails_teardown::whole_root::nextroot::{regular_file_in_root, resolve_in_root};
 use std::path::Path;
 
 /// What an entry without a build decides of the next root's own fstab.
@@ -60,13 +66,10 @@ pub(super) fn decide(
     present: Present<'_>,
     nixos: bool,
 ) -> Result<HiddenFstab> {
-    let text = fstab::read_in_root(nextroot).map_err(|e| {
-        NailsError::InvalidState(format!(
-            "the hidden /etc/fstab cannot be read ({e}): the hidden session would run with it, \
-             and NAILS cannot tell what it mounts"
-        ))
-    })?;
     let mut hidden = HiddenFstab::default();
+    let Some(text) = read(nextroot, hidden_root)? else {
+        return Ok(hidden);
+    };
     if text == decoy_text {
         return Ok(hidden);
     }
@@ -75,17 +78,20 @@ pub(super) fn decide(
         let Some(entry) = fstab::parse_in_root(raw, nextroot).pop() else {
             continue;
         };
-        let Ok(line) = std::str::from_utf8(raw) else {
-            return Err(NailsError::InvalidState(format!(
-                "line {} of the hidden /etc/fstab is not UTF-8 text: the hidden session would \
-                 run with it, and NAILS cannot tell what it mounts",
-                index + 1
-            )));
-        };
+        if !read_as_written(raw) {
+            return Err(refusal(
+                &format!(
+                    "the device, mount point, type or options on line {} of the hidden \
+                     /etc/fstab are not UTF-8 text",
+                    index + 1
+                ),
+                hidden_root,
+            ));
+        }
         if decided.contains(&entry) || hidden.entries.contains(&entry) {
             continue;
         }
-        lines.push(line.trim().to_string());
+        lines.push(String::from_utf8_lossy(raw).trim().to_string());
         hidden.entries.push(entry);
     }
     let whose = whose(nextroot, nixos);
@@ -98,6 +104,58 @@ pub(super) fn decide(
         .filter_map(|(entry, line)| policy::kept_below_warning(entry, line, hidden_root, whose))
         .collect();
     Ok(hidden)
+}
+
+/// The `/etc/fstab` of `nextroot`, `None` where there is none: nothing is
+/// there, or a link that leads to nothing. One that is not a regular file is
+/// refused unread (see the module docs), as is one that cannot be read.
+fn read(nextroot: &Path, hidden_root: &Path) -> Result<Option<Vec<u8>>> {
+    let unreadable = |why: &str| {
+        refusal(
+            &format!("the hidden /etc/fstab cannot be read ({why})"),
+            hidden_root,
+        )
+    };
+    match regular_file_in_root(nextroot, Path::new("/etc/fstab")) {
+        Ok(true) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Ok(false) => return Err(unreadable("it is not a regular file")),
+        Err(e) => return Err(unreadable(&e.to_string())),
+    }
+    fstab::read_in_root(nextroot)
+        .map(Some)
+        .map_err(|e| unreadable(&e.to_string()))
+}
+
+/// Whether NAILS reads the fields of the fstab line `raw` that the policy
+/// decides by, its device, mount point, type and options, byte for byte as
+/// the hidden systemd does: each of them is UTF-8 text, the device and the
+/// mount point also once their octal escapes are undone (`\351` alone is
+/// none), so that no byte of them is read as U+FFFD, a name systemd does not
+/// give the mount or its device. They are split as libmount splits them for
+/// systemd, at spaces and tabs. NAILS reads nothing after them, the dump and
+/// pass numbers or a comment, so those may hold any bytes.
+fn read_as_written(raw: &[u8]) -> bool {
+    raw.split(|byte| matches!(byte, b' ' | b'\t'))
+        .filter(|field| !field.is_empty())
+        .take(4)
+        .enumerate()
+        .all(|(index, field)| {
+            std::str::from_utf8(field).is_ok_and(|text| {
+                index > 1 || std::str::from_utf8(&unescape_octal_bytes(text)).is_ok()
+            })
+        })
+}
+
+/// The refusal of the entry for `why`, a fault of the hidden `/etc/fstab`,
+/// with where the root upper on the hidden volume keeps the hidden root's own
+/// `/etc/fstab`, if it has one.
+fn refusal(why: &str, hidden_root: &Path) -> NailsError {
+    NailsError::InvalidState(format!(
+        "{why}: the hidden session would run with it, and NAILS cannot tell what it mounts. \
+         The hidden root's own /etc/fstab, if it has one, is {} on the hidden volume.",
+        Layout::new(hidden_root).upper().join("etc/fstab").display()
+    ))
 }
 
 /// Whose the `/etc/fstab` of `nextroot` is: on NixOS (`nixos`) the hidden

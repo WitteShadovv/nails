@@ -227,6 +227,12 @@ pub fn parse_overlay_opts(super_opts: &str) -> OverlayOpts {
 /// keeping pairs intact only matters for an option string that was never
 /// through the kernel, such as the one nails builds for `mount(2)`.
 pub fn unescape_octal(s: &str) -> String {
+    String::from_utf8_lossy(&unescape_octal_bytes(s)).into_owned()
+}
+
+/// [`unescape_octal`], as the bytes the escapes give before they are read as
+/// text: `\351` alone is no UTF-8, which [`unescape_octal`] reads as U+FFFD.
+pub fn unescape_octal_bytes(s: &str) -> Vec<u8> {
     let b = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -252,7 +258,7 @@ pub fn unescape_octal(s: &str) -> String {
         out.push(b[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 /// Undo the overlay option syntax's escapes: a backslash takes the next
@@ -439,6 +445,20 @@ mod tests {
         assert_eq!(unescape("a\\011b"), "a\tb");
         assert_eq!(unescape("a\\012b"), "a\nb");
         assert_eq!(unescape("a\\134b"), "a\\b");
+    }
+
+    #[test]
+    fn the_bytes_of_an_octal_escape_come_before_they_are_read_as_text() {
+        // An escape for a byte that is no UTF-8 on its own, which the text
+        // reads as U+FFFD.
+        assert_eq!(unescape_octal_bytes("caf\\351"), b"caf\xe9");
+        assert_eq!(unescape_octal("caf\\351"), "caf\u{fffd}");
+        // Two that are UTF-8 together.
+        assert_eq!(unescape_octal_bytes("caf\\303\\251"), "café".as_bytes());
+        assert_eq!(unescape_octal("caf\\303\\251"), "café");
+        // A value past a byte stays as it is written, and so does any other
+        // escape.
+        assert_eq!(unescape_octal_bytes("a\\400\\,b"), b"a\\400\\,b");
     }
 
     #[test]

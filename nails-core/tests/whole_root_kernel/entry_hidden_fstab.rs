@@ -158,7 +158,17 @@ fn an_overlay_only_entry_whose_hidden_fstab_cannot_be_read_is_refused() {
             panic!("{error:?}");
         };
         assert!(
-            message.starts_with("the hidden /etc/fstab cannot be read ("),
+            message.starts_with("the hidden /etc/fstab cannot be read (it is not a regular file)"),
+            "{message}"
+        );
+        // It says where the hidden root keeps its own on the hidden volume,
+        // where it can be changed while the session cannot be entered.
+        let kept = Layout::new(world.hidden_path()).upper().join("etc/fstab");
+        assert!(
+            message.ends_with(&format!(
+                "The hidden root's own /etc/fstab, if it has one, is {} on the hidden volume.",
+                kept.display()
+            )),
             "{message}"
         );
         assert!(

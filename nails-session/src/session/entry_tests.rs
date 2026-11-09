@@ -565,21 +565,21 @@ fn a_missing_hidden_fstab_holds_no_line() {
     assert!(hidden.entries.is_empty() && hidden.warnings.is_empty());
 }
 
+/// The end of a refusal for the hidden `/etc/fstab`: why it refuses, and where
+/// the hidden root's own lies on the hidden volume at `/mnt/data`, the only
+/// place it can be changed while the session cannot be entered.
+const UNREADABLE_END: &str = ": the hidden session would run with it, and NAILS cannot tell \
+                              what it mounts. The hidden root's own /etc/fstab, if it has one, \
+                              is /mnt/data/root/upper/etc/fstab on the hidden volume.";
+
 #[test]
 fn a_hidden_fstab_that_cannot_be_read_refuses_the_entry() {
     // A directory in its place, and a link that leads to itself.
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("etc/fstab")).unwrap();
-    let message = refusal(hidden_fstab_of(root.path(), b"", false));
-    assert!(
-        message.starts_with("the hidden /etc/fstab cannot be read ("),
-        "{message}"
-    );
-    assert!(
-        message.ends_with(
-            "): the hidden session would run with it, and NAILS cannot tell what it mounts"
-        ),
-        "{message}"
+    assert_eq!(
+        refusal(hidden_fstab_of(root.path(), b"", false)),
+        format!("the hidden /etc/fstab cannot be read (it is not a regular file){UNREADABLE_END}")
     );
     std::fs::remove_dir(root.path().join("etc/fstab")).unwrap();
     std::os::unix::fs::symlink("fstab", root.path().join("etc/fstab")).unwrap();
@@ -587,6 +587,31 @@ fn a_hidden_fstab_that_cannot_be_read_refuses_the_entry() {
     assert!(
         message.starts_with("the hidden /etc/fstab cannot be read ("),
         "{message}"
+    );
+    assert!(message.ends_with(UNREADABLE_END), "{message}");
+}
+
+#[test]
+fn a_fifo_in_place_of_the_hidden_fstab_refuses_the_entry_unread() {
+    // A read would wait in its open for a writer, past Ctrl+C. Code that
+    // opens it anyway reads nothing here, instead of waiting, and so decides
+    // no line rather than refusing.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    let fifo = root.path().join("etc/fstab");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o644),
+        0,
+    )
+    .unwrap();
+    let result =
+        crate::test_fifo::releasing_readers(&fifo, || hidden_fstab_of(root.path(), b"", false));
+    assert_eq!(
+        refusal(result),
+        format!("the hidden /etc/fstab cannot be read (it is not a regular file){UNREADABLE_END}")
     );
 }
 
@@ -599,8 +624,10 @@ fn a_hidden_fstab_line_that_is_not_text_refuses_the_entry() {
     let message = refusal(hidden_fstab_of(root.path(), b"", false));
     assert_eq!(
         message,
-        "line 2 of the hidden /etc/fstab is not UTF-8 text: the hidden session would run with \
-         it, and NAILS cannot tell what it mounts"
+        format!(
+            "the device, mount point, type or options on line 2 of the hidden /etc/fstab are \
+             not UTF-8 text{UNREADABLE_END}"
+        )
     );
     // The decoy's own fstab, byte for byte, was decided with the decoy's.
     assert!(
@@ -609,8 +636,56 @@ fn a_hidden_fstab_line_that_is_not_text_refuses_the_entry() {
             .entries
             .is_empty()
     );
-    // A comment is no line to decide.
-    let root = root_with_fstab(b"# caf\xe9\n/dev/vde1 /srv/backup ext4 defaults,nofail 0 2\n");
+    // So does such a device, an octal escape for such a byte in a device or
+    // a mount point, which NAILS undoes as libmount does for systemd, and
+    // such options.
+    for line in [
+        b"/dev/vdd\xe9 /srv/backup ext4 defaults 0 2\n".as_slice(),
+        b"/dev/disk/by-label/caf\\351 /srv/backup ext4 defaults 0 2\n",
+        b"/dev/vdd1 /mnt/data/caf\\351 ext4 defaults 0 2\n",
+        b"/dev/vdd1 /srv/backup ext4 defaults,caf\xe9 0 2\n",
+    ] {
+        let root = root_with_fstab(line);
+        let message = refusal(hidden_fstab_of(root.path(), b"", false));
+        assert!(
+            message.starts_with("the device, mount point, type or options on line 1 of"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn bytes_of_a_hidden_fstab_line_no_field_holds_are_no_text_to_read() {
+    // A comment is no line to decide, and what follows the options, which
+    // NAILS does not read, may hold any bytes: the hidden systemd mounts the
+    // line all the same, so it is decided.
+    let root = root_with_fstab(
+        b"# caf\xe9\n\
+          /dev/vde1 /srv/backup ext4 defaults,nofail 0 2 # caf\xe9\n\
+          /dev/vdd1 /mnt/data/archive\text4\tdefaults,nofail\t0\t2\xe9\n",
+    );
+    let hidden = hidden_fstab_of(root.path(), b"", false).unwrap();
+    assert_eq!(
+        policy::masked_units(&hidden.decisions),
+        ["srv-backup.mount", "mnt-data-archive.mount"]
+    );
+    assert_eq!(hidden.warnings.len(), 1, "{:?}", hidden.warnings);
+    assert!(
+        hidden.warnings[0]
+            .contains("(`/dev/vdd1 /mnt/data/archive\text4\tdefaults,nofail\t0\t2\u{fffd}`)"),
+        "{}",
+        hidden.warnings[0]
+    );
+    // Escapes that are UTF-8 together name the mount as systemd does.
+    let root = root_with_fstab(b"/dev/vdd1 /mnt/data/caf\\303\\251 ext4 defaults,nofail 0 2\n");
+    let hidden = hidden_fstab_of(root.path(), b"", false).unwrap();
+    assert_eq!(
+        policy::masked_units(&hidden.decisions),
+        ["mnt-data-caf\\xc3\\xa9.mount"]
+    );
+    // NAILS reads the type and the options as they are written, an octal
+    // escape in them too, so they need only be UTF-8 text as written.
+    let root = root_with_fstab(b"/dev/vde1 /srv/backup ext4 defaults,nofail,x-caf\\351 0 2\n");
     let hidden = hidden_fstab_of(root.path(), b"", false).unwrap();
     assert_eq!(
         policy::masked_units(&hidden.decisions),
