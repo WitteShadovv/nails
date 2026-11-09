@@ -907,7 +907,7 @@ fn a_hook_s_write_to_a_file_that_may_be_the_history_file_is_a_doubt() {
 }
 
 #[test]
-fn a_widget_s_function_and_completion_a_hook_runs_are_read_as_a_hook_s() {
+fn a_widget_s_function_is_read_as_a_hook_s() {
     // zsh 5.9.2 writes each command line to HISTFILE with each.
     let body = "f=$HISTFILE\nw() { print -r -- \"$BUFFER\" >> $f }\n";
     for made in [
@@ -921,36 +921,31 @@ fn a_widget_s_function_and_completion_a_hook_runs_are_read_as_a_hook_s() {
         seed(&fs, "/home/alice/.zshrc", &format!("{body}{made}\n"));
         assert!(warns(&fs), "{made}");
     }
-    // A hook that completes a word runs completion functions the check does
-    // not read, and so does a key typed in a line bound to completion.
+    // Keys that type Tab, which completes a word, and the widgets
+    // add-zle-hook-widget's style names, run what the check does not read.
     for rc in [
-        "lf() { zle complete-word }\nzle -N zle-line-finish lf\n",
-        "lf() { zle -- complete-word }\nzle -N zle-line-finish lf\n",
-        "autoload -Uz add-zle-hook-widget\nadd-zle-hook-widget line-finish complete-word\n",
-        "zle -A complete-word accept-line\n",
-        "bindkey ' ' complete-word\n",
-        "bindkey '^m' expand-or-complete\n",
-        "bindkey -M main a _x\n",
         "bindkey -s '^M' '^I^J'\n",
         "bindkey -s ' ' ' \\t'\n",
         "zstyle -e zle-line-init widgets 'reply=(1:x)'\n",
-        // An arrow, an Alt key that moves by a word and any other key after
-        // `^X` or an escape but those zsh's own completion functions bind:
-        // zsh 5.9.2 writes the line as the Left arrow is pressed with the
-        // first and a completer that appends $BUFFER to HISTFILE.
-        "bindkey '^[[D' complete-word\n",
-        "bindkey '^[f' expand-or-complete\n",
-        "bindkey '^X^Z' _my-widget\n",
-        "bindkey '^[x' menu-complete\n",
-        "bindkey '^[[Z' reverse-menu-complete\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
         assert!(warns(&fs), "{rc}");
     }
-    // Tab, `^D`, the keys zsh's own completion functions bind, and a widget
-    // that does not complete, are none.
+    // Without compinit, a widget that completes a word runs zsh's builtin
+    // completion, which runs no code of the files, as a hook runs it or as
+    // any key bound to it is pressed; Tab, `^D` and a widget that does not
+    // complete are none either.
     for rc in [
+        "lf() { zle complete-word }\nzle -N zle-line-finish lf\n",
+        "lf() { zle -- complete-word }\nzle -N zle-line-finish lf\n",
+        "zle -A complete-word accept-line\n",
+        "bindkey ' ' complete-word\n",
+        "bindkey '^m' expand-or-complete\n",
+        "bindkey -M main a _x\n",
+        "bindkey '^[[D' complete-word\n",
+        "bindkey '^[f' expand-or-complete\n",
+        "bindkey '^[[Z' reverse-menu-complete\n",
         "bindkey '^I' complete-word\n",
         "bindkey '^D' delete-char-or-list\n",
         "bindkey '^Xh' _complete_help\n",
@@ -966,64 +961,36 @@ fn a_widget_s_function_and_completion_a_hook_runs_are_read_as_a_hook_s() {
 }
 
 #[test]
-fn completion_bound_to_a_range_of_keys_or_past_a_word_zsh_may_drop_is_a_doubt() {
+fn a_key_bound_in_a_range_past_options_or_past_a_word_zsh_may_drop_is_read() {
     // zsh 5.9.2 binds every key of a range with `-R`, binds past `-L`, an
     // `-M` glued to its keymap, `--` and `-` as it does without them, and
-    // drops `${k[1]}` and `$e` when they are empty: with compinit's
-    // completer a function that appends $BUFFER to HISTFILE, it runs it as
-    // the keys of a typed line are pressed with each, and writes each part
-    // of the line as a space is typed with all but the ranges of letters and
-    // of all keys, whose keys complete in place of typing.
-    let doubt = |shown: &str| {
-        format!(
-            "it cannot tell what the completion functions that `{shown}` in \
-             /home/alice/.zshrc runs as a line is typed write"
-        )
-    };
-    for (rc, shown) in [
-        (
-            "bindkey -R ' - ' complete-word",
-            "bindkey -R  -  complete-word",
-        ),
-        (
-            "bindkey -M main -R ' - ' complete-word",
-            "bindkey -R  -  complete-word",
-        ),
-        (
-            "bindkey -RM main ' !' complete-word",
-            "bindkey -R  ! complete-word",
-        ),
-        (
-            "bindkey -R 'a-z' complete-word",
-            "bindkey -R a-z complete-word",
-        ),
-        (
-            "bindkey -R '^@-~' expand-or-complete",
-            "bindkey -R ^@-~ expand-or-complete",
-        ),
-        ("bindkey -L ' ' complete-word", "bindkey   complete-word"),
-        (
-            "bindkey -Mmain ' ' complete-word",
-            "bindkey   complete-word",
-        ),
-        ("bindkey -- ' ' complete-word", "bindkey   complete-word"),
-        ("bindkey - ' ' complete-word", "bindkey   complete-word"),
+    // drops `${k[1]}` when it is empty: with each, Space or a letter, keys a
+    // line is typed with, run another widget than the one that types them,
+    // which changes what the keys a `bindkey -s` string types run.
+    let typed = "bindkey -s '^o' 'lfcd^M'\n";
+    let doubt = "it cannot tell what the keys that type `lfcd` in /home/alice/.zshrc run, as \
+                 /home/alice/.zshrc binds a key a line is typed with or changes a widget or a \
+                 keymap";
+    for rc in [
+        "bindkey -R ' - ' complete-word",
+        "bindkey -M main -R ' - ' complete-word",
+        "bindkey -RM main ' !' complete-word",
+        "bindkey -R 'a-z' complete-word",
+        "bindkey -R '^@-~' expand-or-complete",
+        "bindkey -L ' ' complete-word",
+        "bindkey -Mmain ' ' complete-word",
+        "bindkey -- ' ' complete-word",
+        "bindkey - ' ' complete-word",
+        "bindkey -- ${k[1]} ' ' complete-word",
     ] {
         let fs = MockFilesystem::new();
-        seed(&fs, "/home/alice/.zshrc", &format!("{rc}\n"));
-        assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt(shown)], "{rc}");
+        seed(&fs, "/home/alice/.zshrc", &format!("{typed}{rc}\n"));
+        assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt], "{rc}");
     }
-    // Past an element outside quotes, which zsh drops when it is empty, the
-    // check cannot tell keys from widgets; an expansion it may make several
-    // words of, or options of, may hold any, and zsh 5.9.2 binds Space with
-    // the brace expansion and the range `"$o"` makes.
+    // An expansion it may make several words of, or options of, may hold
+    // any, and zsh 5.9.2 binds Space with the brace expansion and the range
+    // `"$o"` makes.
     for (rc, doubt) in [
-        (
-            "bindkey -- ${k[1]} ' ' complete-word",
-            "it cannot tell which keys `bindkey ${k[1]}   complete-word` in /home/alice/.zshrc \
-             binds `complete-word`, which completes a word, to, as `${k[1]}` before it may \
-             expand to no word",
-        ),
         (
             "bindkey ${k[1]} ' ' complete-word",
             "it cannot tell what `bindkey ${k[1]}   complete-word` in /home/alice/.zshrc binds, \
@@ -1032,26 +999,22 @@ fn completion_bound_to_a_range_of_keys_or_past_a_word_zsh_may_drop_is_a_doubt() 
         (
             "bindkey -- $e ' ' complete-word",
             "it cannot tell which keys `bindkey $e   complete-word` in /home/alice/.zshrc binds \
-             to which widgets, as `$e` may expand to no word or to several, a widget that \
-             completes a word among them",
+             to what, as `$e` may expand to no word or to several",
         ),
         (
             "bindkey $k\"\" x",
-            "it cannot tell which keys `bindkey $k x` in /home/alice/.zshrc binds to which \
-             widgets, as `$k` may expand to no word or to several, a widget that completes a \
-             word among them",
+            "it cannot tell which keys `bindkey $k x` in /home/alice/.zshrc binds to what, as \
+             `$k` may expand to no word or to several",
         ),
         (
             "bindkey \"$@\"",
-            "it cannot tell which keys `bindkey $@` in /home/alice/.zshrc binds to which \
-             widgets, as `$@` may expand to no word or to several, a widget that completes a \
-             word among them",
+            "it cannot tell which keys `bindkey $@` in /home/alice/.zshrc binds to what, as `$@` \
+             may expand to no word or to several",
         ),
         (
             "bindkey ${=k}",
-            "it cannot tell which keys `bindkey ${=k}` in /home/alice/.zshrc binds to which \
-             widgets, as `${=k}` may expand to no word or to several, a widget that completes \
-             a word among them",
+            "it cannot tell which keys `bindkey ${=k}` in /home/alice/.zshrc binds to what, as \
+             `${=k}` may expand to no word or to several",
         ),
         (
             "bindkey -$o ' ' complete-word",
@@ -1061,8 +1024,7 @@ fn completion_bound_to_a_range_of_keys_or_past_a_word_zsh_may_drop_is_a_doubt() 
         (
             "bindkey {' ',complete-word}",
             "it cannot tell which keys `bindkey { ,complete-word}` in /home/alice/.zshrc binds \
-             to which widgets, as `{ ,complete-word}` may expand to no word or to several, a \
-             widget that completes a word among them",
+             to what, as `{ ,complete-word}` may expand to no word or to several",
         ),
         (
             "o=-R\nbindkey \"$o\" ' - ' complete-word",
@@ -1090,9 +1052,8 @@ fn completion_bound_to_a_range_of_keys_or_past_a_word_zsh_may_drop_is_a_doubt() 
         scan(&fs, UNKNOWN).doubts,
         [
             "it cannot tell which keys `bindkey $k[1] up-line-or-search` in /home/alice/.zshrc \
-             binds to which widgets, as /home/alice/.zshrc may turn SH_WORD_SPLIT or KSH_ARRAYS \
-             on, with which `$k[1]` may expand to several words, a widget that completes a word \
-             among them"
+             binds to what, as /home/alice/.zshrc may turn SH_WORD_SPLIT or KSH_ARRAYS on, with \
+             which `$k[1]` may expand to several words"
         ]
     );
     // A terminal's keys, quoted or an element outside quotes, a widget that

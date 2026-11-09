@@ -12,7 +12,6 @@
 
 use super::super::backstop::{FC_WRITES, KEPT, braces, history_path, is_fc_flag};
 use super::super::lexer::{Token, Word, lex};
-use super::styles::{completion_context, style_doubt};
 use super::{Event, Walker, walk_text_in};
 
 /// The commands that take the words after them as options, code, names or
@@ -43,7 +42,6 @@ const OPEN: &[&str] = &[
     "print",
     "printf",
     "read",
-    "hash",
     "alias",
     "zmodload",
     "builtin",
@@ -53,8 +51,6 @@ const OPEN: &[&str] = &[
     "nocorrect",
     "-",
     "time",
-    "compinit",
-    "compdef",
     "prompt",
     "add-zsh-hook",
     "add-zle-hook-widget",
@@ -81,12 +77,6 @@ const OPEN: &[&str] = &[
     "private",
     "coproc",
 ];
-
-/// The styles of zsh's completion system whose values name the functions
-/// it runs as you complete a word: the completers `_main_complete` runs, the
-/// function `_cache_invalid` asks whether a cache is out of date, and the
-/// expansions `_user_expand` runs.
-const FUNCTION_STYLES: [&str; 3] = ["completer", "cache-policy", "user-expand"];
 
 /// zsh's reserved words that the walk reads as the structure of the code:
 /// zsh expands an alias of such a name before it reads the word as one,
@@ -466,9 +456,6 @@ impl Walker<'_> {
             _ => Some(1),
         };
         let style = at.and_then(|at| args.get(at));
-        if let Some(at) = at.filter(|&at| at > 0 && at < args.len()) {
-            self.completion_style(args, at, unconditional);
-        }
         if style.is_some_and(|style| style.text == "widgets" || computed(style) || style.bare) {
             let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
             self.events.push(Event::Doubt(format!(
@@ -495,65 +482,6 @@ impl Walker<'_> {
             } else {
                 let hook = format!("zstyle -e {}", arg.text);
                 self.hooked(&arg.text, unconditional, hook);
-            }
-        }
-    }
-
-    /// The events of the values past the style at `at` that a `zstyle` of
-    /// `args` gives, where the style is one of zsh's completion system that
-    /// names functions it runs as you complete a word ([`FUNCTION_STYLES`]):
-    /// each one's function, its part before a `:` (`_complete:foo`), or with
-    /// `-e` the code that makes them, which may name any
-    /// ([`Event::Completes`]). The code a `command` style gives, which
-    /// `_call_program` runs past a `-` it starts with, is read as a hook's,
-    /// and one with an expansion is a doubt. Where the pattern may match a
-    /// context of zsh's completion system ([`completion_context`]), a value
-    /// that may make zsh's own completion functions run code, and any style
-    /// whose uses the check has not read, is a doubt where the files run the
-    /// stock `compinit` ([`style_doubt`], [`Event::Style`]).
-    fn completion_style(&mut self, args: &[Word], at: usize, unconditional: bool) {
-        let eval = args.first().is_some_and(|flag| flag.text == "-e");
-        let style = args[at].text.as_str();
-        let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
-        let what = format!("zstyle {}", words.join(" "));
-        if completion_context(&args[at - 1])
-            && let Some(how) = style_doubt(style, &args[at + 1..], eval)
-        {
-            self.events.push(Event::Style(format!(
-                "it cannot tell what code zsh's own completion functions run as you complete a \
-                 word with `{what}` in {}, as {how}",
-                self.place
-            )));
-        }
-        for value in &args[at + 1..] {
-            if FUNCTION_STYLES.contains(&style) || (eval && style == "command") {
-                let function = if eval {
-                    Word {
-                        expands: true,
-                        ..value.clone()
-                    }
-                } else {
-                    Word {
-                        text: value.text.split(':').next().unwrap_or_default().to_string(),
-                        ..value.clone()
-                    }
-                };
-                self.events.push(Event::Completes {
-                    function,
-                    what: what.clone(),
-                });
-            } else if style == "command" && (computed(value) || value.bare) {
-                self.events.push(Event::Doubt(format!(
-                    "it cannot tell what code `{what}` in {} runs as you complete a word",
-                    self.place
-                )));
-            } else if style == "command" {
-                let code = value.text.strip_prefix('-').unwrap_or(&value.text);
-                self.hooked(
-                    code,
-                    unconditional,
-                    format!("zstyle command {}", value.text),
-                );
             }
         }
     }

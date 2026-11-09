@@ -83,15 +83,6 @@ impl<F: Filesystem> Reader<'_, F> {
         (plain && path.is_absolute()).then_some(path)
     }
 
-    /// Note `dirs` among the directories `ZDOTDIR` may have named.
-    pub(super) fn seen(&mut self, dirs: &[PathBuf]) {
-        for dir in dirs {
-            if !self.zdotdirs_seen.contains(dir) {
-                self.zdotdirs_seen.push(dir.clone());
-            }
-        }
-    }
-
     /// Note the value `value` a file at `place` gives `ZDOTDIR` or
     /// `XDG_CONFIG_HOME` (`name`); `certain` when the assignment certainly
     /// runs.
@@ -108,12 +99,10 @@ impl<F: Filesystem> Reader<'_, F> {
         match self.resolve(&value) {
             Some(dirs) if certain => {
                 self.zdotdir_set = true;
-                self.seen(&dirs);
                 self.zdotdirs = dirs;
             }
             Some(dirs) => {
                 self.zdotdir_set = true;
-                self.seen(&dirs);
                 for dir in dirs {
                     if !self.zdotdirs.contains(&dir) {
                         self.zdotdirs.push(dir);
@@ -122,7 +111,6 @@ impl<F: Filesystem> Reader<'_, F> {
             }
             None => {
                 self.zdotdir_set = true;
-                self.zdotdir_lost = true;
                 if certain {
                     // zsh reads the user's files somewhere else now.
                     self.zdotdirs.clear();
@@ -142,7 +130,7 @@ impl<F: Filesystem> Reader<'_, F> {
 /// `:` or a `[`, with which zsh applies a modifier (`$HOME:a`, `$HOME:h`) or
 /// a subscript (`$HOME[1,-1]`) to the value: it stays as written, a path the
 /// check cannot know.
-pub(super) fn replace_parameter(text: &str, pattern: &str, with: &str) -> String {
+fn replace_parameter(text: &str, pattern: &str, with: &str) -> String {
     let braced = pattern.ends_with('}');
     let mut out = String::new();
     let mut rest = text;

@@ -205,9 +205,9 @@ impl<F: Filesystem> Reader<'_, F> {
         if let Some(split) = self.word_split.clone() {
             for (bindkey, word, place) in std::mem::take(&mut self.keys_splits) {
                 self.doubt(format!(
-                    "it cannot tell which keys `{bindkey}` in {place} binds to which widgets, as \
-                     {split} may turn SH_WORD_SPLIT or KSH_ARRAYS on, with which `{word}` may \
-                     expand to several words, a widget that completes a word among them"
+                    "it cannot tell which keys `{bindkey}` in {place} binds to what, as {split} \
+                     may turn SH_WORD_SPLIT or KSH_ARRAYS on, with which `{word}` may expand to \
+                     several words"
                 ));
             }
         }
@@ -303,12 +303,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 .filter(|(other, ..)| other == name)
                 .map(|(_, text, _)| Forms::of(text).uses(name))
                 .sum();
-            let named: usize = self
-                .texts
-                .iter()
-                .chain(&self.dump_texts)
-                .map(|forms| forms.uses(name))
-                .sum();
+            let named: usize = self.texts.iter().map(|forms| forms.uses(name)).sum();
             if named > defined {
                 self.doubt(format!(
                     "it cannot tell what the code that uses the global alias `{text}` in {place} \

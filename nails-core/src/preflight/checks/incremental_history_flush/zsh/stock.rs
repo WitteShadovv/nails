@@ -2,29 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The functions of zsh's own that the check knows by their code: the
-//! stock `compinit` and `promptinit` and the ones they run, as zsh 5.9, 5.9.1
-//! and 5.9.2 ship them. A file whose bytes are one of those is read for what
-//! that code does ([`Stock`]); any other, a changed one too, is read as code
-//! like any function the files autoload.
+//! stock `promptinit` and the ones it autoloads, as zsh 5.9, 5.9.1 and 5.9.2
+//! ship them. A file whose bytes are one of those is read for what that code
+//! does ([`Stock`]); any other, a changed one too, is read as code like any
+//! function the files autoload. A function named `compinit` is none of them:
+//! wherever zsh may load one, the check doubts what zsh runs as you complete
+//! a word ([`super::completion`]).
 //!
 //! What each does, as its code shows, is what the check counts for it:
 //!
-//! - `compinit` runs with `emulate -L zsh`, sources the dump file `compdump`
-//!   writes (`-d` names it, else `${ZDOTDIR:-$HOME}/.zcompdump`), runs
-//!   `compaudit` and `compdump`, autoloads `compinstall` without running it,
-//!   and marks the completion functions it finds in `fpath`, the files whose
-//!   names start with `_`, to be autoloaded, as the first line of each says
-//!   (`#compdef`, `#autoload` and their words), when it finds no dump file it
-//!   can use. zsh runs those only as completion runs, when a key bound to a
-//!   completion widget is pressed (Tab), or when code runs them by name; the
-//!   check reads one as a hook where a key typed in a line may run it
-//!   (`compdef -k`, a widget's function), and doubts a key binding of a first
-//!   line other than zsh's own ([`KEY_LINES`]) and completion code that is
-//!   none of zsh's own ([`super::completion`]). It names none of the three
-//!   options and holds no `fc` that writes the history file.
-//! - `compaudit` checks the owners and modes of the `fpath` directories and
-//!   may put the directories under one that holds a `Base` directory at the
-//!   end of `fpath`; `compdump` writes the dump file.
 //! - `promptinit` autoloads `add-zsh-hook` and `add-zle-hook-widget`, and
 //!   marks the prompt themes it finds in `fpath`, the `prompt_*_setup` files,
 //!   to be autoloaded. It defines `prompt`, which runs the theme it names
@@ -37,17 +23,14 @@
 //!   given a hook, which the walk reads where they are run
 //!   ([`super::walk::Event::Hook`]), or take one away.
 
-use super::{Forms, Reader, Word, backstop, dump};
+use super::{Reader, Word};
 use crate::Filesystem;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// A function of zsh's own whose stock code the check knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Stock {
-    Compinit,
-    Compaudit,
-    Compdump,
     Promptinit,
     AddZshHook,
     AddZleHookWidget,
@@ -55,37 +38,7 @@ pub(super) enum Stock {
 
 /// The stock functions: the name zsh autoloads each by, what it is, and the
 /// SHA-256 of its file as a release ships it.
-const STOCK: [(&str, Stock, &str); 8] = [
-    // zsh 5.9.
-    (
-        "compinit",
-        Stock::Compinit,
-        "d1627311aec3129f3a35e2775fc93f1f0d7fb176fafaed2bb532a987f899a7f2", // pragma: allowlist secret
-    ),
-    // zsh 5.9.1 and 5.9.2.
-    (
-        "compinit",
-        Stock::Compinit,
-        "e784ec2f3089d12dbeb61b4f058df00d4cffbaab04b77ea342fbfeb1d1834501", // pragma: allowlist secret
-    ),
-    // zsh 5.9 to 5.9.2.
-    (
-        "compaudit",
-        Stock::Compaudit,
-        "d41820035eaa692eea358900f6d9f0882055191a15d1cffae654c0ac1e9b4d24", // pragma: allowlist secret
-    ),
-    // zsh 5.9 and 5.9.1.
-    (
-        "compdump",
-        Stock::Compdump,
-        "8678f63b995b86a0060b2a3ba7d8f868d09d47c86b410884960902af27eadbd2", // pragma: allowlist secret
-    ),
-    // zsh 5.9.2.
-    (
-        "compdump",
-        Stock::Compdump,
-        "474a41680c54eb1d75ed24259a9c2fdd9fcee972b2662451041ccab3dacbb40f", // pragma: allowlist secret
-    ),
+const STOCK: [(&str, Stock, &str); 3] = [
     // zsh 5.9 to 5.9.2.
     (
         "promptinit",
@@ -129,12 +82,17 @@ pub(super) fn known(name: &str, bytes: &[u8]) -> Option<Stock> {
 
 impl<F: Filesystem> Reader<'_, F> {
     /// Read the file at `path` of the function `name` the files autoload:
-    /// for what its code does when it is a stock function of zsh's own
-    /// ([`stock::known`]), else as code like any file.
+    /// for `compinit`, a doubt of what zsh runs as you complete a word
+    /// ([`Reader::completion_system`]); for what its code does when it is a
+    /// stock function of zsh's own ([`known`]); else as code like any file.
     pub(super) fn function(&mut self, path: &Path, name: &str) {
         let Some(text) = self.text(path) else {
             return;
         };
+        if name == "compinit" {
+            self.completion_system();
+            return;
+        }
         match known(name, text.as_bytes()) {
             Some(stock) => {
                 // zsh expands the aliases the files define in its code as it
@@ -143,31 +101,19 @@ impl<F: Filesystem> Reader<'_, F> {
                 if self.expanding.iter().any(|expanding| expanding == name) {
                     self.lines(&text, &path.to_string_lossy());
                     // It makes no file the check would read before zsh
-                    // reads it: compdump writes the dump file only once
-                    // compinit has read it or found none.
+                    // reads it.
                     self.stock_texts.push(self.texts.len() - 1);
                 }
                 self.stock(stock);
             }
             // The file is the function's code.
-            None => {
-                self.completion
-                    .function(name.to_string(), &path.to_string_lossy());
-                self.code_in(path, &text, false, Some(name.to_string()));
-            }
+            None => self.code_in(path, &text, false, Some(name.to_string())),
         }
     }
 
     /// Note what the stock function `stock` does ([`stock`]).
     fn stock(&mut self, stock: Stock) {
         match stock {
-            Stock::Compinit => {
-                self.compinit = true;
-                for name in ["compaudit", "compdump"] {
-                    self.autoload_name(name, Some("compinit"));
-                }
-            }
-            Stock::Compaudit => self.compaudit = true,
             Stock::Promptinit => {
                 self.promptinit = true;
                 // A theme may ask for it.
@@ -176,80 +122,21 @@ impl<F: Filesystem> Reader<'_, F> {
                     self.autoload_name(name, Some("promptinit"));
                 }
             }
-            Stock::Compdump | Stock::AddZshHook | Stock::AddZleHookWidget => {}
+            Stock::AddZshHook | Stock::AddZleHookWidget => {}
         }
     }
 
-    /// Read the dump file at `path` that the stock `compinit` sources: for
-    /// the completion functions it marks, when its lines are those `compdump`
-    /// writes ([`dump::marks`]), else as code like any file.
-    fn dump(&mut self, path: &Path) {
-        if self.dumps.iter().any(|read| read == path) {
-            return;
-        }
-        self.dumps.push(path.to_path_buf());
-        let Some(text) = self.text(path) else {
-            return;
-        };
-        // compinit reads the second word of its first line as arithmetic
-        // (`$_i_line[2] -eq $#_i_files`), which may set a parameter whose name
-        // the check cannot read, unless it is a number.
-        let first = text.split('\n').next().unwrap_or_default();
-        if first
-            .split([' ', '\t'])
-            .filter(|word| !word.is_empty())
-            .nth(1)
-            .is_some_and(|count| !count.chars().all(|c| c.is_ascii_digit()))
-        {
-            self.doubt(format!(
-                "it cannot tell which parameters the first line of {} sets, as compinit reads its \
-                 second word as arithmetic",
-                path.display()
-            ));
-        }
-        match dump::marks(&text) {
-            Some(marks) => {
-                let place = path.to_string_lossy().into_owned();
-                // Its quoted words are data; an alias zsh may expand is one
-                // named like a command of its lines (`zle`, `autoload`), and
-                // a global alias like any word.
-                self.texts.push(Forms::of(&dump::commands(&text)));
-                self.dump_texts.push(Forms::of(&text));
-                for (at, &count) in backstop::named(&text).options.iter().enumerate() {
-                    if count > 0 {
-                        self.options[at] = Some(format!("{place} names"));
-                    }
-                }
-                for mark in marks {
-                    if !self.dump_marks.contains(&mark) {
-                        self.dump_marks.push(mark);
-                    }
-                }
-            }
-            // compinit sources it in its own code.
-            None => self.code_in(path, &text, false, Some("compinit".to_string())),
-        }
-    }
-
-    /// Whether the function `name` is one a stock function the files
-    /// autoload marks to be autoloaded, which zsh runs only when it is run by
-    /// name or as a hook: a completion function `compinit` or its dump file
-    /// marks, `compinstall`, or a prompt theme `promptinit` marks
-    /// (`prompt_suse_setup`).
+    /// Whether the function `name` is a prompt theme the stock `promptinit`
+    /// the files autoload marks to be autoloaded (`prompt_suse_setup`), which
+    /// zsh runs only when it is run by name or as a hook.
     fn marks(&self, name: &str) -> bool {
-        (self.compinit && (name.starts_with('_') || name == "compinstall"))
-            || self.dump_marks.iter().any(|mark| mark == name)
-            || (self.promptinit && name.starts_with("prompt_") && name.ends_with("_setup"))
+        self.promptinit && name.starts_with("prompt_") && name.ends_with("_setup")
     }
 
-    /// Follow what the stock functions the files autoload read and run: the
-    /// dump files `compinit` sources, the functions they mark that the files
-    /// run by name or make hooks, and the prompt themes `prompt` runs.
+    /// Follow what the stock `promptinit` the files autoload reads and runs:
+    /// the prompt themes `prompt` runs, and the themes it marks that the files
+    /// run by name or make hooks.
     pub(super) fn marked(&mut self) {
-        if self.compinit {
-            self.dumps_of_compinit();
-            self.first_lines();
-        }
         for (name, args, place) in self.calls.clone() {
             if self.promptinit && name == "prompt" {
                 // The code `prompt` keeps to restore the prompt, which a
@@ -282,8 +169,6 @@ impl<F: Filesystem> Reader<'_, F> {
                     "it cannot follow the code that `{name}` in {place} runs, which promptinit \
                      defines"
                 ));
-            } else if self.compinit && name == "compdef" {
-                self.compdef(&args, &place);
             } else if self.marks(&name) {
                 self.autoload_name(&name, None);
             }
@@ -292,113 +177,6 @@ impl<F: Filesystem> Reader<'_, F> {
             if self.marks(&hook) {
                 self.autoload_name(&hook, None);
             }
-        }
-    }
-
-    /// Note the function a call of `compdef`, which the stock `compinit`
-    /// defines, with `args` in the file at `place` autoloads or binds to
-    /// keys: with `-a`, `-k` or `-K` among its flags, the first word past
-    /// them, which zsh then loads from `fpath` where the files or a key runs
-    /// it; one an expansion names is a doubt. One bound to keys (`-k`, `-K`)
-    /// is a hook, as a key typed in a line (Space) may be among them.
-    fn compdef(&mut self, args: &[Word], place: &str) {
-        let flags: Vec<&Word> = args
-            .iter()
-            .take_while(|arg| arg.text.starts_with('-') && arg.text != "--")
-            .collect();
-        // A word brace expansion or a glob may make flags of (`{-k,f}`).
-        let braced = args.iter().take(flags.len() + 1).any(|arg| arg.bare);
-        if !braced
-            && !flags
-                .iter()
-                .any(|flag| flag.expands || flag.text.contains(['a', 'k', 'K']))
-        {
-            return;
-        }
-        match args.get(flags.len()) {
-            Some(function)
-                if !braced && !function.expands && flags.iter().all(|flag| !flag.expands) =>
-            {
-                self.autoload_name(&function.text, Some("compdef"));
-                if flags.iter().any(|flag| flag.text.contains(['k', 'K']))
-                    && !self.hooks.contains(&function.text)
-                {
-                    self.hooks.push(function.text.clone());
-                }
-            }
-            _ => {
-                let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
-                self.doubt(format!(
-                    "it cannot tell which function `compdef {}` in {place} autoloads",
-                    words.join(" ")
-                ));
-            }
-        }
-    }
-
-    /// Read the dump files the stock `compinit` sources: the one each call
-    /// of it names with `-d`, and `.zcompdump` in each directory `ZDOTDIR`
-    /// may have named as the files were read, the home among them, which it
-    /// sources without one.
-    fn dumps_of_compinit(&mut self) {
-        let mut paths: Vec<PathBuf> = self
-            .zdotdirs_seen
-            .iter()
-            .map(|dir| dir.join(".zcompdump"))
-            .collect();
-        if self.zdotdir_lost {
-            self.doubt(
-                "it cannot tell where the dump file that compinit sources is, as it cannot \
-                 follow ZDOTDIR"
-                    .to_string(),
-            );
-        }
-        self.compinit_dumps.clear();
-        for (name, args, place) in self.calls.clone() {
-            if name != "compinit" {
-                continue;
-            }
-            // compinit reads its flags as long as they are -d, -D, -i, -u,
-            // -C or -w; the word after a -d, unless it is another flag, names
-            // the dump file.
-            let mut args = args.iter().peekable();
-            while let Some(arg) = args.next_if(|arg| {
-                arg.expands
-                    || arg.bare
-                    || matches!(arg.text.as_str(), "-d" | "-D" | "-i" | "-u" | "-C" | "-w")
-            }) {
-                if arg.expands || arg.bare {
-                    self.doubt(format!(
-                        "it cannot tell which dump file `compinit {}` in {place} sources",
-                        arg.text
-                    ));
-                    break;
-                }
-                if arg.text != "-d" {
-                    continue;
-                }
-                let Some(file) =
-                    args.next_if(|file| !matches!(file.text.as_str(), "-d" | "-f" | "-Q" | "-C"))
-                else {
-                    continue;
-                };
-                match self.resolve(file) {
-                    Some(files) => {
-                        // compinit makes it only once it has read it or
-                        // found none.
-                        self.compinit_dumps.push(file.text.clone());
-                        paths.extend(files);
-                    }
-                    None => self.doubt(format!(
-                        "it cannot follow the dump file that `compinit -d {}` in {place} \
-                         sources",
-                        file.text
-                    )),
-                }
-            }
-        }
-        for path in paths {
-            self.dump(&path);
         }
     }
 
@@ -456,204 +234,6 @@ impl<F: Filesystem> Reader<'_, F> {
             }
         }
     }
-
-    /// Read the first line of each completion function in the `fpath`
-    /// directories, which the stock `compinit` reads to mark them when it
-    /// finds no dump file it can use: an `#autoload` with a word but `+X`
-    /// (`-w`, which marks the functions of a compiled file, or the name of
-    /// another function) marks what the check cannot follow, a doubt.
-    fn first_lines(&mut self) {
-        let dirs: Vec<PathBuf> = self
-            .fpath
-            .iter()
-            .filter_map(|entry| entry.as_ref().ok().map(|(dir, _)| dir.clone()))
-            .filter(|dir| !self.first_lines_read.contains(dir))
-            .collect();
-        for dir in dirs {
-            self.first_lines_read.push(dir.clone());
-            let Ok(entries) = self.fs.list_directory(&dir) else {
-                continue;
-            };
-            for entry in entries {
-                let Some(name) = entry.file_name().and_then(|name| name.to_str()) else {
-                    // A name that is no UTF-8, which compinit reads all the
-                    // same when it starts with `_`.
-                    if entry
-                        .file_name()
-                        .is_some_and(|name| name.as_encoded_bytes().starts_with(b"_"))
-                    {
-                        self.doubt(format!(
-                            "it cannot tell what the first line of {} makes compinit mark",
-                            entry.display()
-                        ));
-                    }
-                    continue;
-                };
-                if !name.starts_with('_') || name.ends_with('~') || name.ends_with(".zwc") {
-                    continue;
-                }
-                let line = match first_line(self.fs, &entry) {
-                    Ok(Some(line)) => line,
-                    Ok(None) => continue,
-                    Err(why) => {
-                        self.doubt(format!("it could not read {} ({why})", entry.display()));
-                        continue;
-                    }
-                };
-                if !known_first_line(name, &line) {
-                    self.doubt(format!(
-                        "it cannot tell what the first line of {} makes compinit mark (`{line}`)",
-                        entry.display()
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Add to `fpath` what the stock `compaudit`, which `compinit` runs, may
-    /// put at its end: the directories under each directory of it that holds
-    /// a `Base` directory (two deep with `Base/Core`), as zsh's own completion
-    /// functions are laid out when its build parts them. A `_compdir` named in
-    /// a file read, which picks that directory, is a doubt.
-    pub(super) fn audit(&mut self) {
-        if !self.compaudit {
-            return;
-        }
-        if let Some(place) = self.compdir.clone() {
-            self.doubt(format!(
-                "it cannot tell which directories compaudit, which compinit runs, puts in fpath, \
-                 as {place} names _compdir"
-            ));
-            return;
-        }
-        let dirs: Vec<PathBuf> = self
-            .fpath
-            .iter()
-            .filter_map(|entry| entry.as_ref().ok().map(|(dir, _)| dir.clone()))
-            .filter(|dir| !self.audited.contains(dir))
-            .collect();
-        for dir in dirs {
-            self.audited.push(dir.clone());
-            let depth = if matches!(self.fs.is_directory(&dir.join("Base/Core")), Ok(true)) {
-                2
-            } else if matches!(self.fs.is_directory(&dir.join("Base")), Ok(true)) {
-                1
-            } else {
-                continue;
-            };
-            let mut level = vec![dir.clone()];
-            for _ in 0..depth {
-                let mut next = Vec::new();
-                for parent in level {
-                    match self.fs.list_directory(&parent) {
-                        Ok(entries) => next.extend(
-                            entries
-                                .into_iter()
-                                .filter(|entry| matches!(self.fs.is_directory(entry), Ok(true))),
-                        ),
-                        Err(error) => self.doubt(format!(
-                            "it could not read the directory {} that compaudit may put in fpath \
-                             ({error})",
-                            parent.display()
-                        )),
-                    }
-                }
-                level = next;
-            }
-            for sub in level {
-                let entry = Ok((sub, false));
-                if !self.fpath.contains(&entry) {
-                    self.fpath.push(entry);
-                }
-            }
-        }
-    }
-}
-
-/// The first line of the file at `path`, as `read -r` reads it, when it is
-/// a regular file; `None` for a directory, which compinit cannot read a line
-/// of; `Err` for anything else (a named pipe, a device), whose line the check
-/// cannot know, when the check cannot read it or the line runs past the
-/// bytes it reads.
-fn first_line<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>, String> {
-    const LINE_LIMIT: usize = 4096;
-    let path = fs.canonicalize(path).map_err(|error| error.to_string())?;
-    if matches!(fs.is_directory(&path), Ok(true)) {
-        return Ok(None);
-    }
-    if !matches!(fs.is_regular_file(&path), Ok(true)) {
-        return Err("it is no regular file".to_string());
-    }
-    let bytes = fs
-        .read_file_range(&path, 0, LINE_LIMIT)
-        .map_err(|error| error.to_string())?;
-    match bytes.iter().position(|byte| *byte == b'\n') {
-        Some(end) => Ok(Some(String::from_utf8_lossy(&bytes[..end]).into_owned())),
-        None if bytes.len() < LINE_LIMIT => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
-        None => Err(format!("its first line is longer than {LINE_LIMIT} bytes")),
-    }
-}
-
-/// The completion functions of zsh 5.9 to 5.9.2 whose first line binds keys
-/// to them, and that line, which binds keys a line is not typed with.
-const KEY_LINES: [(&str, &str); 12] = [
-    ("_read_comp", "#compdef -k complete-word \\C-x\\C-r"),
-    ("_next_tags", "#compdef -k list-choices \\C-xn"),
-    ("_most_recent_file", "#compdef -k complete-word \\C-xm"),
-    (
-        "_history_complete_word",
-        "#compdef -K _history-complete-older complete-word \\e/ _history-complete-newer \
-         complete-word \\e,",
-    ),
-    (
-        "_expand_word",
-        "#compdef -K _expand_word complete-word \\C-xe _list_expansions list-choices \\C-xd",
-    ),
-    (
-        "_expand_alias",
-        "#compdef -K _expand_alias complete-word \\C-xa",
-    ),
-    ("_correct_word", "#compdef -k complete-word \\C-xc"),
-    ("_correct_filename", "#compdef -k complete-word \\C-xC"),
-    ("_complete_tag", "#compdef -k complete-word \\C-xt"),
-    ("_complete_help", "#compdef -k complete-word \\C-xh"),
-    ("_complete_debug", "#compdef -k complete-word \\C-x?"),
-    (
-        "_bash_completions",
-        "#compdef -K _bash_complete-word complete-word \\e~ _bash_list-choices list-choices ^X~",
-    ),
-];
-
-/// Whether `line`, the first line of the completion function `name`, is
-/// one whose marks the check knows, as the stock `compinit` reads it (its
-/// words split at blanks): any but an `#autoload` with a word other than
-/// `+X`, which loads the function at once without running it, a `#compdef`
-/// whose first word may bind keys, one of `-k`, `-kn`, `-K` and `-Kn` as
-/// compinit takes them (`-[kK](n|)`, and any other that starts so), that is
-/// not one of zsh's own ([`KEY_LINES`]), which may bind a key a line is
-/// typed with, and a line with a control character but a tab, which the
-/// check may not split as zsh does. compinit runs `autoload -rUz` with the
-/// words of an `#autoload` line and the function's name; a `#compdef` line
-/// names the commands and keys whose completion runs the function, and only
-/// its first word can make it bind keys (its others go to `compdef -na`).
-fn known_first_line(name: &str, line: &str) -> bool {
-    if line.chars().any(|c| c.is_control() && c != '\t') {
-        return false;
-    }
-    let mut words = line.split([' ', '\t']).filter(|word| !word.is_empty());
-    match words.next() {
-        Some("#autoload") => words.all(|word| word == "+X"),
-        Some("#compdef")
-            if words
-                .next()
-                .is_some_and(|word| word.starts_with("-k") || word.starts_with("-K")) =>
-        {
-            KEY_LINES
-                .iter()
-                .any(|(stock, known)| *stock == name && *known == line)
-        }
-        _ => true,
-    }
 }
 
 #[cfg(test)]
@@ -661,24 +241,15 @@ pub(super) mod tests {
     use super::{Stock, digest};
 
     /// The text a test gives a stock function's file, which the check takes
-    /// for the stock code of `name` in a test, as no test carries zsh's own;
-    /// compinit's names the dump file, as zsh's own does.
+    /// for the stock code of `name` in a test, as no test carries zsh's own.
     pub(in super::super) fn text(name: &str) -> String {
-        let dump = if name == "compinit" {
-            ": ${_comp_dumpfile:=${ZDOTDIR:-$HOME}/.zcompdump}\n"
-        } else {
-            ""
-        };
-        format!("# The stock {name} of a test.\ntypeset -A _i_test\n{dump}")
+        format!("# The stock {name} of a test.\ntypeset -A _i_test\n")
     }
 
     /// The stock function `name` is in a test when `digest` is that of its
     /// [`text`].
     pub(super) fn known(name: &str, digest: &str) -> Option<Stock> {
         let stock = match name {
-            "compinit" => Stock::Compinit,
-            "compaudit" => Stock::Compaudit,
-            "compdump" => Stock::Compdump,
             "promptinit" => Stock::Promptinit,
             "add-zsh-hook" => Stock::AddZshHook,
             "add-zle-hook-widget" => Stock::AddZleHookWidget,
@@ -690,16 +261,20 @@ pub(super) mod tests {
     #[test]
     fn a_stock_function_is_known_by_its_name_and_its_bytes_alone() {
         assert_eq!(
-            super::known("compinit", text("compinit").as_bytes()),
-            Some(Stock::Compinit)
+            super::known("promptinit", text("promptinit").as_bytes()),
+            Some(Stock::Promptinit)
         );
         // The same bytes under another name, or other bytes, are no stock
-        // function.
-        assert_eq!(super::known("compaudit", text("compinit").as_bytes()), None);
+        // function, and compinit is none whatever its bytes.
         assert_eq!(
-            super::known("compinit", b"# The stock compinit of a test.\n"),
+            super::known("add-zsh-hook", text("promptinit").as_bytes()),
             None
         );
+        assert_eq!(
+            super::known("promptinit", b"# The stock promptinit of a test.\n"),
+            None
+        );
+        assert_eq!(super::known("compinit", text("compinit").as_bytes()), None);
         assert_eq!(
             digest(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" // pragma: allowlist secret
@@ -733,14 +308,7 @@ pub(super) mod tests {
             .join("share/zsh")
             .join(&version)
             .join("functions");
-        for name in [
-            "compinit",
-            "compaudit",
-            "compdump",
-            "promptinit",
-            "add-zsh-hook",
-            "add-zle-hook-widget",
-        ] {
+        for name in ["promptinit", "add-zsh-hook", "add-zle-hook-widget"] {
             let bytes = std::fs::read(functions.join(name)).expect("zsh's own function");
             assert!(
                 super::STOCK

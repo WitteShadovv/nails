@@ -8,22 +8,19 @@
 use super::*;
 
 /// What a typed Nix zsh whose `fpath` the check knows finds with `rc` as
-/// `.zshrc`, and the stock `compinit` and `promptinit` in its own directory.
+/// `.zshrc`, and the stock `promptinit` in its own directory.
 fn known_with(rc: &str) -> Scan {
     let fs = MockFilesystem::new();
-    nix_zsh(
-        &fs,
-        &[OWN],
-        &["compinit", "compaudit", "compdump", "promptinit"],
-    );
+    nix_zsh(&fs, &[OWN], &["promptinit"]);
     seed(&fs, "/home/alice/.zshrc", rc);
     scan_with(&fs, UNKNOWN, &install(&fs, &[]))
 }
 
 #[test]
 fn an_empty_element_of_fpath_is_the_directory_zsh_runs_in() {
-    // zsh 5.9.2 loads ./compinit with each, in the home a terminal starts it
-    // in, in place of its own.
+    // zsh 5.9.2 loads a function the files autoload from the directory it
+    // runs in with each (./compinit, as it was seen), in the home a terminal
+    // starts it in, in place of its own.
     for setter in [
         "FPATH+=:",
         "fpath[1,0]=",
@@ -35,12 +32,14 @@ fn an_empty_element_of_fpath_is_the_directory_zsh_runs_in() {
         "fpath+=('')",
         "fpath[2,1]=",
     ] {
-        let found = known_with(&format!("{setter}\nautoload -Uz compinit && compinit\n"));
+        let found = known_with(&format!(
+            "{setter}\nautoload -Uz promptinit && promptinit\n"
+        ));
         assert!(warned(&found), "{setter}");
     }
     // An element that names a directory is followed.
     assert_eq!(
-        known_with("fpath=(~/zfn $fpath)\nautoload -Uz compinit && compinit\n"),
+        known_with("fpath=(~/zfn $fpath)\nautoload -Uz promptinit && promptinit\n"),
         Scan::default()
     );
 }
@@ -49,15 +48,16 @@ fn an_empty_element_of_fpath_is_the_directory_zsh_runs_in() {
 fn an_element_of_fpath_word_splitting_may_change_is_one_the_check_cannot_follow() {
     // zsh 5.9.2 splits `$fpath` at the `/` of IFS with SH_WORD_SPLIT on, into
     // directories that it looks in from where it runs, and makes `$fpath[1]`
-    // the first element and `[1]` with KSH_ARRAYS on: it loads a compinit the
-    // check does not read with each.
+    // the first element and `[1]` with KSH_ARRAYS on: it loads a function the
+    // files autoload (compinit, as it was seen) that the check does not read
+    // with each.
     for setup in [
         "setopt sh_word_split\nIFS=/\nfpath=($fpath)\n",
         "emulate sh -c 'IFS=/; fpath=($fpath)'\n",
         "set -y\nIFS=/\nfpath=(${fpath})\n",
         "fpath=(~/zfn $fpath)\nsetopt ksh_arrays\nfpath=($fpath[1] $fpath)\n",
     ] {
-        let found = known_with(&format!("{setup}autoload -Uz compinit && compinit\n"));
+        let found = known_with(&format!("{setup}autoload -Uz promptinit && promptinit\n"));
         assert!(warned(&found), "{setup}");
     }
     // The check reads an element that an expansion gives as one it cannot
@@ -68,7 +68,7 @@ fn an_element_of_fpath_word_splitting_may_change_is_one_the_check_cannot_follow(
         "fpath=($fpath)\nemulate ksh\n",
         "options[shwordsplit]=on\nfpath=($fpath)\n",
     ] {
-        let found = known_with(&format!("{setup}autoload -Uz compinit && compinit\n"));
+        let found = known_with(&format!("{setup}autoload -Uz promptinit && promptinit\n"));
         assert!(warned(&found), "{setup}");
     }
     // IFS alone splits nothing, and zsh's own mode turns neither on.
@@ -77,7 +77,7 @@ fn an_element_of_fpath_word_splitting_may_change_is_one_the_check_cannot_follow(
         "emulate -L zsh\nfpath=($fpath)\n",
         "fpath=(~/zfn $fpath)\nfpath=($fpath[1] $fpath)\n",
     ] {
-        let found = known_with(&format!("{setup}autoload -Uz compinit && compinit\n"));
+        let found = known_with(&format!("{setup}autoload -Uz promptinit && promptinit\n"));
         assert_eq!(found, Scan::default(), "{setup}");
     }
     // NixOS's loop over the profiles, `$p` among its elements.
@@ -136,39 +136,10 @@ fn a_theme_prompt_runs_from_a_hook_runs_as_a_hook() {
 }
 
 #[test]
-fn a_completion_function_bound_to_keys_is_a_hook() {
-    // zsh 5.9.2 runs `_foo` at each Space typed with each, which appends what
-    // is typed to the history file.
-    for bind in [
-        "compdef -k _foo complete-word ' '",
-        "compdef -K _foo sp complete-word ' '",
-    ] {
-        let fs = MockFilesystem::new();
-        nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
-        seed(
-            &fs,
-            "/home/alice/.zshrc",
-            &format!(
-                "f=$HISTFILE\nfpath=(~/zfn $fpath)\nautoload -Uz compinit && compinit\n{bind}\n"
-            ),
-        );
-        seed(
-            &fs,
-            "/home/alice/zfn/_foo",
-            "#autoload\nprint -r -- \"$BUFFER\" >> $f\n",
-        );
-        assert!(
-            warned(&scan_with(&fs, UNKNOWN, &install(&fs, &[]))),
-            "{bind}"
-        );
-    }
-}
-
-#[test]
 fn an_expansion_of_fpath_that_joins_its_elements_is_one_the_check_cannot_follow() {
     // zsh 5.9.2 joins fpath into one element with each, a directory whose
-    // name holds a blank or a `:` that it loads compinit from in place of its
-    // own, or a function the files autoload.
+    // name holds a blank or a `:` that it loads a function the files
+    // autoload from (compinit, as it was seen) in place of its own.
     for setup in [
         "fpath=(~/a $fpath)\nfpath=(\"$fpath\")\n",
         "fpath=(~/a $fpath)\nfpath=(\"${fpath}\")\n",
@@ -186,7 +157,7 @@ fn an_expansion_of_fpath_that_joins_its_elements_is_one_the_check_cannot_follow(
         "fpath=(\\$fpath $fpath)\n",
         "fpath=(~/a:b $fpath)\n",
     ] {
-        let found = known_with(&format!("{setup}autoload -Uz compinit && compinit -D\n"));
+        let found = known_with(&format!("{setup}autoload -Uz promptinit && promptinit\n"));
         assert!(warned(&found), "{setup}");
     }
     // Its elements as they are, in quotes too where `@` keeps them apart, and
@@ -200,26 +171,26 @@ fn an_expansion_of_fpath_that_joins_its_elements_is_one_the_check_cannot_follow(
         "FPATH=~/zfn:$FPATH\n",
         "FPATH=\"$HOME/zfn:$FPATH\"\n",
     ] {
-        let found = known_with(&format!("{setup}autoload -Uz compinit && compinit -D\n"));
+        let found = known_with(&format!("{setup}autoload -Uz promptinit && promptinit\n"));
         assert_eq!(found, Scan::default(), "{setup}");
     }
 }
 
 #[test]
 fn a_function_s_file_the_code_may_make_before_zsh_loads_it_is_a_doubt() {
-    // zsh 5.9.2 loads the compinit the code copies into the directory in
-    // front of fpath first, by a path an expansion makes, in place of its
-    // own.
+    // zsh 5.9.2 loads the function the code copies into the directory in
+    // front of fpath first (compinit, as it was seen), by a path an
+    // expansion makes, in place of its own.
     for setup in [
-        "d=~/zfn\nn=compinit\ncp ~/.src $d/$n\n",
-        "cp ~/.src ~/zfn/comp${x:-init}\n",
-        "cp ~/.src ~/zfn/compinit\n",
+        "d=~/zfn\nn=promptinit\ncp ~/.src $d/$n\n",
+        "cp ~/.src ~/zfn/prompt${x:-init}\n",
+        "cp ~/.src ~/zfn/promptinit\n",
     ] {
-        let rc = format!("{setup}fpath=(~/zfn $fpath)\nautoload -Uz compinit && compinit\n");
+        let rc = format!("{setup}fpath=(~/zfn $fpath)\nautoload -Uz promptinit && promptinit\n");
         assert!(warned(&known_with(&rc)), "{setup}");
     }
     // A write to another name is none.
-    let rc = "cp ~/.src ~/zfn/other\nfpath=(~/zfn $fpath)\nautoload -Uz compinit && compinit\n";
+    let rc = "cp ~/.src ~/zfn/other\nfpath=(~/zfn $fpath)\nautoload -Uz promptinit && promptinit\n";
     assert_eq!(known_with(rc), Scan::default());
 }
 

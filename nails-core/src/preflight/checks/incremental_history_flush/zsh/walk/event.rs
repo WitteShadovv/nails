@@ -37,32 +37,6 @@ pub(in super::super) enum Arith {
     Old,
 }
 
-/// What a file does to where zsh finds the programs it runs by name
-/// ([`Event::Path`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in super::super) enum PathChange {
-    /// A directory put in `PATH`, as written: an element given `path`
-    /// (`path=(~/bin $path)`, `path+=~/bin`) or a part of `PATH`'s value
-    /// (`PATH=~/bin:$PATH`).
-    Dir(Word),
-    /// An element given `path` that the walk reads as the directories an
-    /// expansion holds, each as it is (`$path`), as written: one
-    /// `SH_WORD_SPLIT` splits, or `KSH_ARRAYS` cuts to its first, may hold
-    /// others.
-    Splits(String),
-    /// A change of `PATH` the walk read but cannot follow, as written
-    /// (`PATH+=x`, which joins `x` to the last directory, a tie of `path`).
-    Unfollowed(String),
-    /// A program named for a command, which zsh then runs by that name
-    /// wherever it is (`hash locale=~/bin/locale`, `commands[locale]=...`),
-    /// or a change of zsh's table of them the walk cannot follow, as
-    /// written.
-    Hashed(String),
-    /// A change of `PATH` or of that table that a line may make where the
-    /// walk did not read it.
-    Unread,
-}
-
 /// What a file's code does, in order, as [`super::Walker`] finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in super::super) enum Event {
@@ -101,10 +75,6 @@ pub(in super::super) enum Event {
     /// directories `fpath` held, as where it is put in front of them or
     /// replaces them.
     Fpath { dir: Option<Word>, first: bool },
-    /// What changes where zsh looks for the programs it runs by name, zsh's
-    /// own completion functions among them, which may run what such a
-    /// program prints as code ([`PathChange`]).
-    Path(PathChange),
     /// A function is marked to be autoloaded: its name, or the path of its
     /// file.
     Autoload(Word),
@@ -158,29 +128,9 @@ pub(in super::super) enum Event {
         input: Input,
     },
     /// What the function `function` holds may write the history file should
-    /// it be a hook, as `doubt` says (`zle complete-word`, which runs the
-    /// completion functions the check does not read).
+    /// it be a hook, as `doubt` says (a write to a descriptor above 2, which
+    /// may be any file the shell has open).
     HookDoubt { function: String, doubt: String },
-    /// zsh's completion system runs `function`, by its name, as you complete
-    /// a word, where `what`, as written, gives it (`zstyle ':completion:*'
-    /// completer _w`, `zle -C w complete-word _w`); one an expansion makes,
-    /// or code that makes it, may be any.
-    Completes { function: Word, what: String },
-    /// A style of zsh's completion system is set where its value may make
-    /// zsh's own completion functions run code as you complete a word, as
-    /// the doubt says, which counts where the files run the stock `compinit`
-    /// (`zstyle ':completion:*' menu 'select=1+x'`).
-    Style(String),
-    /// A function is defined by the name given, which zsh's own completion
-    /// functions may run as they run a command of that name as you complete
-    /// a word (`ls --help` for `ls <Tab>`).
-    Function(String),
-    /// A parameter whose name zsh's own completion functions may make or
-    /// keep code in is set, by the name given (`_patch_args=(...)`), or by
-    /// one a line may set that the walk did not read where it is empty
-    /// (`: ${_x::=...}`); `local` when it is a function's own
-    /// ([`super::super::completion::by_shape`]).
-    CodeParameter { name: String, local: bool },
     /// A global alias is defined, named `name` as written, by the word
     /// `text` (`G=| grep`). zsh puts its value in place of any token of code
     /// that is its name, a redirection's target (`/dev/tty`) or an operator
@@ -194,7 +144,7 @@ pub(in super::super) enum Event {
     /// A `bindkey` as written (`bindkey $terminfo[kcuu1] w`) whose word
     /// `word`, an element of a parameter outside quotes, the walk reads as
     /// one word or none: one `SH_WORD_SPLIT` or `KSH_ARRAYS` may make several
-    /// words of, a key and a widget that completes a word among them.
+    /// words of, which may bind other keys.
     KeysSplit { bindkey: String, word: String },
     /// A directory is added to `fpath` under each Nix profile that
     /// `NIX_PROFILES` names, as NixOS's `/etc/zshenv` adds them: written as
