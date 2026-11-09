@@ -33,7 +33,10 @@
 //! functions, as a word is completed, which the check reads where the files
 //! run them. Those of zsh's own and of the Nix profiles it takes for
 //! harmless, and what may make zsh run completion code of the files' own as
-//! a word is completed is a doubt ([`completion`]). NixOS's dircolors line in
+//! a word is completed is a doubt ([`completion`]), and so is a directory of
+//! `PATH` that holds a program of the operator's own, which zsh's own
+//! completion functions may run by name and whose output some run as code
+//! ([`programs`]). NixOS's dircolors line in
 //! `/etc/zshrc` is left out while nothing
 //! that runs before it may change what it runs ([`shadows`]). zsh runs
 //! compiled code in place of a file, or of a
@@ -106,6 +109,7 @@ mod install;
 mod lexer;
 mod made;
 mod paths;
+mod programs;
 mod reading;
 mod runs;
 mod shadows;
@@ -180,6 +184,20 @@ struct Reader<'a, F: Filesystem> {
     fpath: Vec<Result<(PathBuf, bool), String>>,
     /// The functions the files read autoload by name.
     autoloads: Vec<String>,
+    /// The directories the files read put in `PATH`, where zsh looks for the
+    /// programs it runs by name, as written, where, and whether a quote or a
+    /// backslash may keep a `~` that starts one as written; each directory
+    /// they may name, or the doubt that a change of `PATH` the check cannot
+    /// follow is, should they run the stock `compinit` ([`programs`]); the
+    /// elements given `path` that `SH_WORD_SPLIT` may split
+    /// ([`walk::PathChange::Splits`]), as written and where; and, for each
+    /// file being followed beside [`Reader::stack`], whether it holds a
+    /// `\~`, after which a `~` that starts a word may be one zsh keeps as
+    /// written.
+    path_words: Vec<(Word, String, bool)>,
+    path: Vec<Result<PathBuf, String>>,
+    path_splits: Vec<(String, String)>,
+    escaped_tildes: Vec<bool>,
     /// What writes the history file otherwise than the options, as the
     /// warning names it (`/etc/zshrc names \`fc -AI\``).
     fc: Vec<String>,
@@ -502,9 +520,11 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         self.stack.push(path.to_path_buf());
         self.outers.push(outer);
+        self.escaped_tildes.push(text.contains("\\~"));
         for event in read.events {
             self.apply(event, &place, certain && !read.confused);
         }
+        self.escaped_tildes.pop();
         self.outers.pop();
         self.stack.pop();
     }
@@ -662,6 +682,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
                 self.autoload(function, place);
             }
+            Event::Path(change) => self.path_change(change, place),
             Event::Fc(command) => {
                 let what = format!("{place} names `{command}`");
                 if !self.fc.contains(&what) {
@@ -928,6 +949,10 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
             .map(|dir| Ok((dir.clone(), false)))
             .collect(),
         autoloads: Vec::new(),
+        path_words: Vec::new(),
+        path: Vec::new(),
+        path_splits: Vec::new(),
+        escaped_tildes: Vec::new(),
         fc: Vec::new(),
         hooks: Vec::new(),
         in_functions: Vec::new(),

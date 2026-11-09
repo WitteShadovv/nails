@@ -32,11 +32,14 @@ use std::path::{Path, PathBuf};
 /// every program it runs (`ARGV0`), the mail messages it expands before a
 /// prompt (`MAILPATH`), the commands it runs for a redirection that has none
 /// (`NULLCMD`, `READNULLCMD`), as `LD_` without a value, whether a variable
-/// of the dynamic loader is set (`LD_PRELOAD`), and the prompts zsh takes
+/// of the dynamic loader is set (`LD_PRELOAD`), the prompts zsh takes
 /// from its environment and expands as it shows them (`PS1`, `RPROMPT`, ...,
-/// [`PROMPTS`]), which run code where `PROMPT_SUBST` is on.
-pub(in super::super) const ENVIRONMENT: [&str; 36] = [
+/// [`PROMPTS`]), which run code where `PROMPT_SUBST` is on, and where zsh
+/// looks for the programs it runs by name (`PATH`), whose output zsh's own
+/// completion functions may run as code.
+pub(in super::super) const ENVIRONMENT: [&str; 37] = [
     "FPATH",
+    "PATH",
     "NIX_PROFILES",
     "USER",
     "XDG_STATE_HOME",
@@ -87,9 +90,11 @@ pub(in super::super) fn kept(name: &str) -> bool {
 /// at all, as it does `MAILPATH`'s, `NULLCMD`'s, `READNULLCMD`'s, the
 /// prompts' ([`PROMPTS`]), those zsh reads as arithmetic each time it uses
 /// them ([`READ_AS_NUMBER`]) and those zsh's own completion functions may
-/// read as code, so that what is no UTF-8 in it may be replaced.
+/// read as code, or takes a directory whose name holds what was replaced for
+/// one it cannot name (`PATH`), so that what is no UTF-8 in it may be
+/// replaced.
 pub(in super::super) fn lossy(name: &str) -> bool {
-    matches!(name, "MAILPATH" | "NULLCMD" | "READNULLCMD")
+    matches!(name, "MAILPATH" | "NULLCMD" | "READNULLCMD" | "PATH")
         || PROMPTS.contains(&name)
         || READ_AS_NUMBER.contains(&name)
         || read_as_code(name)
@@ -138,6 +143,8 @@ pub(in super::super) struct Env {
     pub zdotdir: Option<String>,
     pub argv0: Option<String>,
     pub mailpath: Option<String>,
+    /// Where zsh looks for the programs it runs by name, as written.
+    pub path: Option<String>,
     /// Whether a variable of the dynamic loader is set ([`LOADER`]).
     pub loader: bool,
     /// The prompts it holds ([`PROMPTS`]), each one's name and value.
@@ -190,6 +197,7 @@ impl Install {
                 zdotdir: get("ZDOTDIR"),
                 argv0: get("ARGV0"),
                 mailpath: get("MAILPATH"),
+                path: get("PATH"),
                 loader: get(LOADER).is_some(),
                 prompts: PROMPTS
                     .iter()

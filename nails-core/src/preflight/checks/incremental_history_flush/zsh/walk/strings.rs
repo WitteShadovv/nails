@@ -43,6 +43,7 @@ const OPEN: &[&str] = &[
     "print",
     "printf",
     "read",
+    "hash",
     "alias",
     "zmodload",
     "builtin",

@@ -9,7 +9,7 @@
 
 use super::super::arith::READ_AS_NUMBER;
 use super::super::backstop::Named;
-use super::{Event, Walked};
+use super::{Event, PathChange, Walked};
 
 /// The events of what `named`, what the lines of the file at `place` name,
 /// holds beyond what the walk read of its code: `read`, the options its
@@ -46,6 +46,9 @@ pub(super) fn beyond(named: &Named, read: &[usize; 3], walked: &Walked, place: &
             dir: None,
             first: false,
         });
+    }
+    if named.paths > walked.paths {
+        events.push(Event::Path(PathChange::Unread));
     }
     if named.fcs > walked.fcs {
         events.push(Event::Doubt(format!(
