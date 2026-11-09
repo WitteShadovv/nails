@@ -713,29 +713,28 @@ of this changelog for that version becomes the release notes word for word, and
   which names the label of exactly that device, and only without a record from
   `/dev/disk/by-label`, which links one of several filesystems with the same label. A new fuzz
   target, `udev_label`, checks that a label written as udev writes it reads back unchanged.
-- Every check of `nails check` and activation that looks where a filesystem can be mounted on
-  demand (`/usr/local`, `/var`, `/boot`, `/.snapshots`, the homes), not only `decoy-nix-trace`,
-  makes no lookup that would mount an automount point that nothing is mounted on yet: systemd's
-  for an `x-systemd.automount` line, or a name in the directory of an automounter's indirect map,
-  such as a home mounted on first use. Before each lookup it reads the links on the way without
-  following them and asks the mount table, as read when the check starts. Where the lookup would
-  mount a point, it is not made: the check says it cannot tell, names the path and the automount
-  point, and says to mount the point (for example `ls /usr/local`) and run `check` again. A
-  warn-only check warns, the residue catalog also for a channel it would only note;
-  `decoy-persistence` refuses for the journal, a log daemon or kdump (`--allow-persistent-decoy`
-  lifts it), `fstab-policy` refuses, and so does the attach gate for a hidden root behind such a
-  point; `memory-wipe` and the Argon2id advice keep their informational pass and, where what they
-  could read leaves the answer open, name the path and the point. Without the mount table these
-  checks look up nothing. So with an
-  `x-systemd.automount` line for `/usr/local` that nothing has mounted yet, `decoy-persistence`
-  and `fstab-policy` refuse until it is mounted. `check --json` lists the places the inherited
-  decoy state could not be read from as `inherited.not_read`, each with its `path`, `reason` and
-  `automount_point`, the report gives each a `not read:` line, and `inherited-autostart` warns
-  that NAILS cannot tell what else the hidden session would inherit. `status` and the window
-  count a decoy NAILS cannot tell about as one that keeps a record on its disk, and say it may
-  keep one (`decoy_persistent` and `decoy_kdump_armed` in `status --json` are true then too). The
-  VM test `check-no-automount` runs `check` on a NixOS decoy with such points at `/usr/local` and
-  at two homes, and shows that it leaves the mount table as it was.
+- Every check of `nails check` and activation that looks where a filesystem can be mounted on demand
+  (`/usr/local`, `/var`, `/boot`, `/.snapshots`, the homes), not only `decoy-nix-trace`, makes no
+  lookup that would mount an automount point that nothing is mounted on yet: systemd's for an
+  `x-systemd.automount` line, or a name in the directory of an automounter's indirect map, such as a
+  home mounted on first use. Before each lookup it reads the links on the way without following them
+  and asks the mount table, as read when the check starts. Where the lookup would mount a point, it
+  is not made: the check says it cannot tell, names the path and the automount point, and says to
+  mount the point (for example `ls /usr/local`) and run `check` again. A warn-only check warns, the
+  residue catalog also for a channel it would only note; `decoy-persistence` refuses for the
+  journal, a log daemon or kdump (`--allow-persistent-decoy` lifts it), `fstab-policy` refuses, and
+  so does the attach gate for a hidden root behind such a point; `memory-wipe` and the Argon2id
+  advice keep their informational pass and, where what they could read leaves the answer open, name
+  the path and the point. Without the mount table these checks look up nothing. So with an
+  `x-systemd.automount` line for `/usr/local` that nothing has mounted yet, `decoy-persistence` and
+  `fstab-policy` refuse until it is mounted. `check --json` lists the places the inherited decoy
+  state could not be looked up in as `inherited.not_read`, each with its `path`, `reason` and
+  `automount_point`, the report gives each a `not read:` line, and `inherited-autostart` warns that
+  NAILS cannot tell what else the hidden session would inherit. `status` and the window count a
+  decoy NAILS cannot tell about as one that keeps a record on its disk, and say it may keep one
+  (`decoy_persistent` and `decoy_kdump_armed` in `status --json` are true then too). The VM test
+  `check-no-automount` runs `check` on a NixOS decoy with such points at `/usr/local` and at two
+  homes, and shows that it leaves the mount table as it was.
 - The operator is now resolved from `PKEXEC_UID` before `SUDO_UID`. pkexec of polkit 127 and later
   sets both, and `PKEXEC_UID` names the account that asked it.
 - `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an

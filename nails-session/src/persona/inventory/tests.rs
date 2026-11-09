@@ -699,6 +699,114 @@ fn a_fifo_is_no_place_not_read() {
     );
 }
 
+/// A home whose `~/.config` NAILS cannot search, as root on a root-squashed
+/// NFS home or a FUSE home mounted without `allow_other`: the autostart
+/// entries and user units below it are not read, so each directory is
+/// listed as not read with the error, and nothing is taken for missing.
+#[test]
+fn a_directory_that_cannot_be_looked_up_is_not_read() {
+    let fs = MockFilesystem::new();
+    seed_entry(&fs, "/home/alice/.config/autostart", "sync.desktop");
+    seed_entry(&fs, "/etc/xdg/autostart", "syncthing.desktop");
+    assert_eq!(
+        names_for(&collect(&fs, false), InheritedSource::UserAutostart),
+        vec!["sync".to_string()]
+    );
+    fs.mock_set_lookup_error("/home/alice/.config", std::io::ErrorKind::PermissionDenied);
+
+    let inventory = collect(&fs, false);
+    assert!(names_for(&inventory, InheritedSource::UserAutostart).is_empty());
+    assert_eq!(
+        names_for(&inventory, InheritedSource::GlobalAutostart),
+        vec!["syncthing".to_string()]
+    );
+    let autostart = not_read_at(&inventory, "/home/alice/.config/autostart").expect("not read");
+    assert_eq!(
+        autostart.reason,
+        "NAILS cannot look up /home/alice/.config/autostart; run the command again with sudo"
+    );
+    assert_eq!(autostart.automount_point, None);
+    assert_eq!(autostart.entry, None);
+    assert!(not_read_at(&inventory, "/home/alice/.config/systemd/user").is_some());
+
+    // A listing that fails for another reason names its error.
+    let fs = MockFilesystem::new();
+    fs.mock_set_lookup_error("/etc/systemd/user", std::io::ErrorKind::Other);
+    let units = not_read_at(&collect(&fs, false), "/etc/systemd/user")
+        .expect("not read")
+        .clone();
+    assert!(
+        units
+            .reason
+            .starts_with("NAILS cannot look up /etc/systemd/user ("),
+        "{units:?}"
+    );
+}
+
+/// Only a directory that is not there, or one below a file, is nothing.
+#[test]
+fn a_directory_that_is_not_there_is_nothing() {
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::NotADirectory,
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error("/home/alice/.config", kind);
+        let inventory = collect(&fs, false);
+        assert!(inventory.is_empty(), "{kind:?}");
+        assert!(
+            inventory.not_read.is_empty(),
+            "{kind:?}: {:?}",
+            inventory.not_read
+        );
+    }
+}
+
+/// A file that is read but holds no text is read as an empty one, as
+/// before: it is no place that could not be looked up.
+#[test]
+fn a_file_that_holds_no_text_is_no_place_not_read() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/etc/gdm3/custom.conf", crate::filesystem::PathKind::File);
+    fs.mock_set_file_bytes("/etc/gdm3/custom.conf", b"\xff\xfe");
+    let inventory = collect(&fs, false);
+    assert!(inventory.is_empty());
+    assert!(inventory.not_read.is_empty(), "{:?}", inventory.not_read);
+}
+
+/// A source read on its own, outside an inventory, keeps no note: the
+/// inventory that reads it next starts with none.
+#[test]
+fn a_source_outside_an_inventory_keeps_no_note() {
+    let fs = MockFilesystem::new();
+    let path = Path::new("/etc/xdg/autostart");
+    fs.note(NotRead::of(
+        path,
+        &NailsError::io(path, std::io::Error::from(std::io::ErrorKind::Other)),
+    ));
+    assert!(collect(&fs, false).not_read.is_empty());
+}
+
+/// A place noted twice is listed once, where it was first noted: the note
+/// that names an undecided autostart entry wins, whichever came first, so
+/// the entry stays undecided.
+#[test]
+fn a_place_noted_twice_is_listed_once_with_its_entry() {
+    let fs = MockFilesystem::new();
+    let path = Path::new("/home/alice/.config/autostart/sync.desktop");
+    let error = NailsError::io(path, std::io::Error::from(std::io::ErrorKind::Other));
+    let plain = || NotRead::of(path, &error);
+    let entry = || plain().of_entry("sync", InheritedSource::UserAutostart);
+    let other = || NotRead::of(Path::new("/etc/xdg/autostart"), &error);
+    for notes in [[plain(), entry(), other()], [entry(), plain(), other()]] {
+        let noting = Noting::new(&fs);
+        for note in notes {
+            noting.note(note);
+        }
+        assert_eq!(noting.into_not_read(), [entry(), other()]);
+    }
+}
+
 /// An entry file `name` in the autostart directory `dir`.
 fn seed_entry(fs: &MockFilesystem, dir: &str, name: &str) {
     let path = PathBuf::from(dir).join(name);

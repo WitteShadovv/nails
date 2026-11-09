@@ -19,8 +19,9 @@
 //! inherited entries. It never writes and never fails: a missing source
 //! contributes nothing, and a place it cannot look up, or that the automount
 //! guard does not look up, is listed as not read ([`NotRead`]) while the rest
-//! is read on. A directory that cannot be listed and a file that cannot be
-//! read for another reason still contribute nothing.
+//! is read on: a directory is looked up before it is listed. A directory that
+//! is there but cannot be listed, and a file that cannot be read for another
+//! reason, still contribute nothing.
 //!
 //! # Scope and honesty
 //!
@@ -47,8 +48,9 @@ use crate::{Filesystem, NailsError};
 /// [`Err`]: never taken for one that is not there. A directory that cannot be
 /// listed and a file that cannot be read for another reason stay empty.
 pub trait PersonaSource {
-    /// The entries of `dir`, as paths below it; empty when it cannot be
-    /// listed, `Err` when the guard does not look it up.
+    /// The entries of `dir`, as paths below it; empty when it is not there,
+    /// or is there and cannot be listed; `Err` when it cannot be looked up,
+    /// or the guard does not look it up.
     fn entries(&self, dir: &Path) -> Result<Vec<PathBuf>, NotRead>;
     /// The text of the file at `path`, `None` when it cannot be read, `Err`
     /// when the guard does not look it up.
@@ -67,6 +69,12 @@ pub trait PersonaSource {
 
 impl<F: Filesystem> PersonaSource for F {
     fn entries(&self, dir: &Path) -> Result<Vec<PathBuf>, NotRead> {
+        // A lookup of the directory that fails, a home or a `~/.config` NAILS
+        // cannot search among them, leaves what it holds not read; looked up,
+        // a directory that cannot be listed stays empty, as before.
+        if let Err(e) = self.path_exists(dir) {
+            return Err(NotRead::of(dir, &e));
+        }
         match self.list_directory(dir) {
             Ok(entries) => Ok(entries),
             Err(e) if e.not_looked_up().is_some() => Err(NotRead::of(dir, &e)),
@@ -465,7 +473,7 @@ fn collect_autologin<F: PersonaSource>(fs: &F, user: &str, entries: &mut Vec<Per
 }
 
 /// List a directory: one that is missing or cannot be listed is empty, and
-/// one the source does not look up is noted as not read.
+/// one the source cannot look up, or does not, is noted as not read.
 pub(super) fn list_dir<F: PersonaSource>(fs: &F, dir: &Path) -> Vec<PathBuf> {
     fs.entries(dir).unwrap_or_else(|not_read| {
         fs.note(not_read);
