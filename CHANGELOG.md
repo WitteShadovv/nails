@@ -31,8 +31,9 @@ of this changelog for that version becomes the release notes word for word, and
   which 0.3.0-rc.3 entered too: a hardware configuration generated in a session while the volume was
   mounted has such an entry. Activation now refuses that build before it activates it. Remove the
   entry from the hidden configuration in a session entered with `nails activate --overlay-only`.
-  That session runs with the hidden `/etc` of the last activation and does not decide its fstab, so
-  what that fstab mounts there is mounted as before, until a build without the entry replaces it.
+  That session runs with the hidden `/etc` of the last activation, whose fstab may still have the
+  line: activation keeps the line off there, so the hidden systemd does not mount it, and warns of
+  it, until a build without the entry replaces that `/etc`.
 
 ### Added
 
@@ -639,15 +640,35 @@ of this changelog for that version becomes the release notes word for word, and
   is bound at its own path in the hidden session: a decoy disk read-write among the hidden files, at
   boot or, for a `noauto` line, once a unit or a plain `mount` pulls it in. The refusal covers an
   automount, a tmpfs and a line for the hidden volume itself as well, in the decoy's fstab and in a
-  hidden NixOS generation's, which activation decides right after the build, before it keeps the
+  hidden NixOS build's, which activation decides right after the build, before it keeps the
   build's closure or activates it, and a mount or automount unit that a boot target links outside
   the fstab. In the decoy's fstab, `backend-entries` refused a line that mounts the hidden volume
   itself already. It names the root and what to do: for the decoy's fstab, mount the hidden volume
-  where it mounts nothing, or move that line; for a hidden NixOS generation's, change the hidden
-  configuration in a session entered with `nails activate --overlay-only`. A mount unit that only
+  where it mounts nothing, or move that line; for a hidden NixOS build's, change the hidden
+  configuration in a session entered with `nails activate --overlay-only`, which keeps such a line
+  of the hidden `/etc/fstab` off and warns of it (see below). A mount unit that only
   another unit pulls in is still not decided, and the session watcher alerts on a disk it mounts
   read-write. A line that a link in the hidden root leads below the root is still kept unmounted
   rather than refused, and a RAM or kernel filesystem there is still left to the hidden systemd.
+- An activation without a build, which `activate --overlay-only` always is and every activation on a
+  host other than NixOS, now decides the fstab the hidden session runs with as well: on NixOS that
+  of the hidden `/etc` the last activation of a hidden system wrote, whose `/etc/fstab` leads into
+  that system's store unless a hidden session wrote a file in its place, and on another host one a
+  hidden session wrote over the decoy's. It decided only the decoy's own, so the hidden systemd
+  mounted read-write what the hidden fstab added: a decoy disk, or one at or below the hidden root,
+  such as a line a hidden hardware configuration generated in a session has for a disk that was
+  mounted there. Each line the decoy's fstab does not hold now gets the decision the decoy's lines
+  get, but one at or below the hidden root, whatever it mounts, is kept off (masked, or skipped
+  where a boot target requires it) rather than refused, so the session entered to remove it still
+  starts. Activation warns of each such line, in its output and in `warnings` under `--json`, with
+  the line, the hidden root and what to do in that session: where the file leads into the hidden
+  NixOS system's store, remove the mount from the hidden NixOS configuration and rebuild, and else
+  remove the line from `/etc/fstab`. The file is read as the hidden session resolves it, its links
+  followed inside the session's root and never out of it. A missing one holds no line. One that
+  cannot be read refuses the activation, and so does an entry of it that is not UTF-8 text, unless
+  the file is the decoy's own, byte for byte. `check` still reads the decoy's fstab only. A mount or
+  automount unit of the hidden system's own that a boot target links at or below the hidden root is
+  still refused, in an activation without a build too.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an

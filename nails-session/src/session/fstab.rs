@@ -3,15 +3,16 @@
 
 //! `/etc/fstab` as the hidden systemd will read it, and systemd's unit names.
 //!
-//! The hidden root runs the decoy's own fstab (or, on NixOS, the hidden
-//! toplevel's). `systemd-fstab-generator` turns every entry into a `.mount` or
-//! `.swap` unit, so the session policy ([`super::policy`]) needs the same view
-//! of it, plus the unit names it would generate, what requires each unit at
-//! boot ([`required_by`]), the device it waits for ([`waits_for`]) and the
-//! units it pulls in that act on that device ([`checkers`]), to overlay,
-//! bind, skip or mask each entry before the switch. The parser is
-//! [`nails_base::fstab`], re-exported here; the unit names are the session's
-//! own.
+//! The hidden root runs the fstab of its own `/etc`: the decoy's, one a hidden
+//! session wrote over it, or on NixOS the hidden toplevel's, which a build
+//! brings or the last activation linked. `systemd-fstab-generator` turns
+//! every entry into a `.mount` or `.swap` unit, so the session policy
+//! ([`super::policy`]) needs the same view of it, plus the unit names it would
+//! generate, what requires each unit at boot ([`required_by`]), the device it
+//! waits for ([`waits_for`]) and the units it pulls in that act on that device
+//! ([`checkers`]), to overlay, bind, skip or mask each entry before the
+//! switch. The parser is [`nails_base::fstab`], re-exported here; the unit
+//! names are the session's own.
 
 use std::path::{Path, PathBuf};
 

@@ -203,16 +203,41 @@ read-write among the hidden files. A `noauto` line is no exception, as any unit
 that pulls it in, or a plain `mount` of its mount point, mounts it; nor is a
 tmpfs, which would hide what lies below it. `nails check` fails `fstab-policy`
 for such an entry of the decoy's fstab, and activation refuses it there and in
-the fstab of a hidden NixOS generation. A mount or automount unit that a boot
+the fstab a hidden NixOS build brings. A mount or automount unit that a boot
 target links outside the fstab (see below) at such a path is refused the same
 way. Mount the hidden volume where the decoy mounts nothing, or move that mount
 out from below it. With `hidden_volume_root = "/mnt"`, a decoy whose fstab
 mounts a disk at `/mnt/backup` is refused. Activation decides the fstab of a
-hidden NixOS generation right after the build, before it keeps the build's
-closure or activates it, so a build refused for it never writes its `/etc` into
-the hidden root's upper, which a session entered without a build runs with. For
+hidden NixOS build right after the build, before it keeps the build's closure
+or activates it, so a build refused for it never writes its `/etc` into the
+hidden root's upper, which a session entered without a build runs with. For
 an entry of that fstab, the refusal says to change the hidden configuration, in
 a session entered with `nails activate --overlay-only`.
+
+An activation without a build, which `--overlay-only` always is and every
+activation on a host other than NixOS, also decides the fstab the hidden session
+runs with: on NixOS that of the hidden `/etc` the last activation of a hidden
+system wrote into the upper, whose `/etc/fstab` leads into that system's store
+unless a hidden session wrote a file in its place, and elsewhere one a hidden
+session wrote there over the decoy's. Each of its lines that the decoy's fstab
+does not hold gets the decision in the table above, with one difference: a line
+at or below `hidden_volume_root`, whatever it mounts, the hidden volume's own
+line included, is kept off (masked, or skipped where a boot target requires it),
+so the hidden systemd does not mount it, and the activation goes on: the session
+entered to remove such a line still starts. `nails activate` warns of each such
+line, in its output and in `warnings` under `--json`, with the line, the root
+and what to do in that session: where the file leads into the hidden NixOS
+system's store, remove the mount from the hidden NixOS configuration and
+rebuild, and else remove the line from `/etc/fstab`. A line the decoy's fstab
+holds too is decided once, as the decoy's. NAILS reads the file as the hidden
+session will, following its links inside the session's root and never out of it.
+A missing file holds no line, and one that is the decoy's own, byte for byte,
+nothing new. One that cannot be read refuses the activation, and so does an
+entry of it that is not UTF-8 text. `nails check` reads the decoy's fstab only.
+The hidden system's own mount and automount units are not lines of the fstab:
+one that a boot target links at or below `hidden_volume_root` (a NixOS
+`systemd.mounts` unit) is refused as the decoy's are, in an activation without a
+build too.
 
 A unit kept off is masked in `/run`, or skipped where a boot target requires it:
 `local-fs.target` requires the mount of an entry without `nofail` (or its
@@ -599,8 +624,9 @@ decoy like `nails emergency`.
 
 ## Disks mounted during the session
 
-The fstab policy at entry covers the decoy's fstab and the mount units its boot
-targets link (see [What the session covers](#what-the-session-covers)). A disk
+The fstab policy at entry covers the decoy's fstab, the fstab the hidden
+session runs with and the mount units the boot targets link (see
+[What the session covers](#what-the-session-covers)). A disk
 the hidden session mounts itself is not covered: a USB drive udisks
 automounts, a decoy partition the policy masked and you mount by hand, a
 Windows partition, a mount unit of the decoy's that only another unit pulls
