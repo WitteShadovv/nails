@@ -1590,7 +1590,8 @@ of this changelog for that version becomes the release notes word for word, and
   a line NAILS does not read the way apt does (longer than 4000 bytes, or with a NUL byte), an
   `#include`, a `Dir` or `RootDir` setting, a file name or a value of the setting with a byte
   beyond ASCII, which apt reads by the system's locale, and an `APT_CONFIG` NAILS cannot read or
-  follow leave the setting unknown, which is refused as if it were on. A file apt refuses is
+  follow leave the setting unknown, which is refused as if it were on; a `check` run without sudo
+  cannot read that environment, so its refusal says to run it as root. A file apt refuses is
   refused too, and the refusal says what the helper does then: it installs nothing, but writes two
   ERROR lines at every activation, to its log on the decoy disk, or to the journal if it started
   with the file already refused, and the refusal names the file and line to fix. The helper keeps

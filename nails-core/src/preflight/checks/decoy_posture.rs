@@ -33,10 +33,12 @@
 //!   `Unattended-Upgrade::InstallOnShutdown` on: a switch through logind is a
 //!   shutdown to it, so at activation it installs the pending updates on the
 //!   decoy disk and logs that run there. An apt configuration NAILS cannot
-//!   read or does not follow, one apt refuses, and one that changed since the
-//!   helper started while no file sets the setting, as the helper keeps what
-//!   it read then, leave the setting unknown, which is refused as if it were
-//!   on (see [`install_on_shutdown`]).
+//!   read or does not follow, and one that changed since the helper started
+//!   while no file sets the setting, as the helper keeps what it read then,
+//!   leave the setting unknown, which is refused as if it were on. A file apt
+//!   refuses is refused too: the helper then installs nothing, but writes two
+//!   ERROR lines at the switch, which the refusal says (see
+//!   [`install_on_shutdown`]).
 //!
 //! Warn (surface the hazard, never block):
 //! - an atime policy that records read access on the decoy (`strictatime` /
@@ -488,7 +490,11 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
                         msg.push(' ');
                         msg.push_str(install_on_shutdown::ERROR_LINES);
                     }
-                    Some(install_on_shutdown::AtTheSwitch::Unknown) | None => {}
+                    Some(
+                        install_on_shutdown::AtTheSwitch::Unknown
+                        | install_on_shutdown::AtTheSwitch::NeedsRoot,
+                    )
+                    | None => {}
                 }
                 if !warnings.is_empty() {
                     msg.push_str(&format!(" Also: {}.", warnings.join("; ")));

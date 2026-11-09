@@ -29,10 +29,12 @@
 //! whatever makes apt read other files than these (`#include`, a `Dir` or
 //! `RootDir` setting), and a file name or a value that apt reads by the
 //! system's locale (a byte beyond ASCII) leave the setting unknown, which is
-//! refused as if it were on. So does a file apt refuses: the helper then
-//! installs nothing, but at the switch it writes two ERROR lines, to its log
-//! on the decoy disk unless it started with the file already refused, and
-//! the refusal says so.
+//! refused as if it were on. A file apt refuses is refused too, for what the
+//! helper then does: it installs nothing, but at the switch it writes two
+//! ERROR lines, to its log on the decoy disk unless it started with the file
+//! already refused, and the refusal says so. An environment of the helper
+//! that only root may read leaves the setting unknown to a run without root,
+//! and the fix says to run the check as root.
 //!
 //! The helper reads the files again on the signal without forgetting what it
 //! read when it started, so a `false` (or a `#clear`) there wins, while a
@@ -686,11 +688,17 @@ pub(super) enum AtTheSwitch {
     ErrorLines,
     /// NAILS cannot tell.
     Unknown,
+    /// NAILS cannot tell without root: only root may read the helper's
+    /// environment, which a run as root reads.
+    NeedsRoot,
 }
 
 /// What the warning under `--allow-persistent-decoy` adds for the ERROR
-/// lines of a file apt refuses.
-pub(super) const ERROR_LINES: &str = "At the switch unattended-upgrades' shutdown helper                                       installs nothing, as apt refuses a file of its                                       configuration, but writes two ERROR lines to its log on                                       the decoy disk, or to the journal if it started with the                                       file already refused.";
+/// lines of a file apt refuses, whose finding says that the helper installs
+/// nothing.
+pub(super) const ERROR_LINES: &str = "At the switch unattended-upgrades' shutdown helper writes \
+                                      those two ERROR lines on the decoy disk, unless it started \
+                                      with the file already refused.";
 
 /// A refusal of the check's.
 #[derive(Debug, PartialEq, Eq)]
@@ -839,6 +847,20 @@ fn cannot_tell(why: &str) -> Blocker {
     }
 }
 
+/// The refusal of a running helper whose environment NAILS may not read
+/// without root, for this reason: a run as root can tell.
+fn cannot_tell_without_root(why: &str) -> Blocker {
+    Blocker {
+        fix: format!(
+            "run the check as root (`{}`), which can read the environment of unattended-upgrades' \
+             shutdown helper",
+            sudo_line(NextStep::Check)
+        ),
+        at_the_switch: AtTheSwitch::NeedsRoot,
+        ..cannot_tell(why)
+    }
+}
+
 /// The refusal of the decoy under `root` whose helper runs, its processes
 /// `pids` reading first the file at `apt_config`, `None` when there is none:
 /// `start` says how a session's own copy of the helper starts, for what the
@@ -865,13 +887,12 @@ fn decoy_blocker<F: Filesystem>(
         }),
         Setting::Refused { at, reason } => Some(Blocker {
             finding: format!(
-                "apt refuses {at} ({reason}), so NAILS cannot tell whether unattended-upgrades \
-                 installs the pending updates at activation, as its shutdown helper does when \
-                 {SETTING} is on, and counts it as on: at activation the helper reads apt's \
-                 configuration again, installs nothing as apt refuses that file, and writes two \
-                 ERROR lines (`Apt returned an error thus shutdown mode is disabled` and apt's \
-                 message) to /var/log/unattended-upgrades/unattended-upgrades-shutdown.log on the \
-                 decoy disk, or to the journal if it started with the file already refused"
+                "apt refuses {at} ({reason}): at activation unattended-upgrades' shutdown helper \
+                 reads apt's configuration again, finds that file refused and installs nothing, \
+                 but writes two ERROR lines (`Apt returned an error thus shutdown mode is \
+                 disabled` and apt's message) to \
+                 /var/log/unattended-upgrades/unattended-upgrades-shutdown.log on the decoy disk, \
+                 or to the journal if it started with the file already refused"
             ),
             fix: format!("fix what apt refuses at {at} ({reason}), or remove that file"),
             at_the_switch: AtTheSwitch::ErrorLines,
@@ -928,7 +949,8 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
     let mut apt_config = None;
     if running {
         let blocker = match helper::running(fs, root) {
-            Err(why) => Some(cannot_tell(&why)),
+            Err(doubt) if doubt.needs_root => Some(cannot_tell_without_root(&doubt.why)),
+            Err(doubt) => Some(cannot_tell(&doubt.why)),
             Ok((pids, read_first)) => {
                 apt_config = read_first;
                 decoy_blocker(fs, root, &pids, apt_config.as_deref(), start.as_ref())
