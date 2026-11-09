@@ -852,8 +852,9 @@ of this changelog for that version becomes the release notes word for word, and
   line whose source leads to the root's folder through a link is refused as well, and a swap file
   whose path leads through a link onto a filesystem claims that filesystem. A line whose path
   cannot be followed (a link that leads to nothing, links that go round, a place that cannot be
-  looked up, an automount point that nothing is mounted on yet, which the lookup would mount) fails
-  `backend-entries` as one that may mount the volume, and the check says why.
+  looked up, an automount point that nothing is mounted on yet, which the lookup would mount, or a
+  path that is not absolute) fails `backend-entries` as one that may mount the volume, and the
+  check says why.
 - `backend-entries` no longer says to remove the decoy's crypttab line for the volume that one of
   its own filesystems lies on when the hidden root is on that filesystem too: a bind of a folder of
   `/` on an encrypted decoy, say, or a subvolume of its encrypted btrfs. Such a line opens the hidden

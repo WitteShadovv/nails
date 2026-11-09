@@ -35,8 +35,9 @@
 //! through their links, as `mount` and `swapon` follow them. A line whose
 //! path cannot be followed (a link on the way that leads to nothing, links
 //! that go round, a place that cannot be looked up, an automount point that
-//! the lookup would mount) fails as well: it may mount the volume, and the
-//! check says why it cannot tell where the line leads.
+//! the lookup would mount, a path that is not absolute) fails as well: it may
+//! mount the volume, and the check says why it cannot tell where the line
+//! leads.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot

@@ -1232,16 +1232,16 @@ for an fstab line for another folder that mounts the volume itself, it says to
 remove the line.
 
 NAILS reads a bind line's source, and the path of a swap or image file,
-through its links, one place at a time, as `mount` and `swapon` follow them:
-a source that leads to the root's folder through a link lies in the volume,
-and a swap file whose path leads through a link onto a filesystem claims that
+through its links, one place at a time, as `mount` and `swapon` follow them: a
+source that leads to the root's folder through a link lies in the volume, and
+a swap file whose path leads through a link onto a filesystem claims that
 filesystem as the decoy's storage. A line whose path cannot be followed fails
 `backend-entries`, with the flag or without it, as one that may mount the
 volume: a link on the way that leads to nothing, links that go round, a place
-on the way that cannot be looked up, and an automount point that nothing is
+on the way that cannot be looked up, an automount point that nothing is
 mounted on yet, which the lookup would mount and which NAILS does not look
-past. Reading a link can change its access time, as the decoy's own boot does
-when it follows the link.
+past, and a path that is not absolute. Reading a link can change its access
+time, as the decoy's own boot does when it follows the link.
 
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that
