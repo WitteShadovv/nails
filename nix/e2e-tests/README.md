@@ -594,10 +594,12 @@ soft-reboots with `py/nails_e2e/session.py`:
   them;
 - `session-disk-mounts`: a second disk mounted read-write in the hidden session
   raising the watcher's alert, and a third mounted below the hidden root
-  raising it too, `deactivate` freeing the first while busy and unmounting
-  both before the way back, as its log on the hidden volume records, and with
-  `[session_mounts] read_only` the disk read-only from the hidden boot on, a
-  disk hot-plugged during the session made read-only by the udev rule alone,
+  raising it too, `deactivate` freeing the first while busy and unmounting both
+  before the way back, as its log on the hidden volume records, a line for the
+  third disk below the hidden root that the session wrote into its own
+  `/etc/fstab` kept off with a warning by the next `--overlay-only` entry, and
+  with `[session_mounts] read_only` the disk read-only from the hidden boot on,
+  a disk hot-plugged during the session made read-only by the udev rule alone,
   every write failing, the third disk, mounted read-only below the hidden root
   and set writable by hand, swept read-only again, and every disk writable
   again after the way back, the second unchanged;

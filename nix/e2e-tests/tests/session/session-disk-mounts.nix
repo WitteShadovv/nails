@@ -16,8 +16,14 @@
 #      the hidden volume shows that it unmounted both disks before the way
 #      back, and neither the hidden volume nor a filesystem the session
 #      carries. Nothing holds either disk afterwards, and the decoy mounts
-#      them read-write as usual.
-#   2. With `[session_mounts] read_only = true`: the disk is read-only at the
+#      them read-write as usual. The session also puts a line for the third
+#      disk at /mnt/data/inner into its own /etc/fstab, a file in place of
+#      NixOS's link into the store.
+#   2. The next `--overlay-only` entry decides that fstab: the line below the
+#      hidden root is kept off, not refused, and activation warns of it with
+#      the line and what to do. The hidden systemd leaves the disk unmounted,
+#      and the session restores the link, as the warning says.
+#   3. With `[session_mounts] read_only = true`: the disk is read-only at the
 #      block layer from the hidden boot on, a disk hot-plugged during the
 #      session is made read-only by the udev rule alone (the watcher, the
 #      fallback, is stopped first), a mount comes up read-only and every write
@@ -66,6 +72,7 @@ in
 
   testScript = _: ''
     import json
+    import shlex
 
     from nails_e2e import desktop
 
@@ -77,6 +84,9 @@ in
     INNER = "/dev/disk/by-id/virtio-inner"
     # Below the hidden root, on a disk of its own.
     BELOW = "/mnt/data/inner"
+    # The line the session adds to its own fstab for that disk, and its unit.
+    INNER_LINE = f"{INNER} {BELOW} ext4 defaults,nofail 0 2"
+    INNER_UNIT = "mnt-data-inner.mount"
     LOGS = "/mnt/data/logs/*.log"
     HOTPLUG = "/dev/disk/by-id/virtio-hotplug"
     WATCH_UNIT = "overlay-runtime-monitor.service"
@@ -169,6 +179,12 @@ in
         assert "nails" not in (calls[0]["summary"] + calls[0]["body"]).lower(), calls
         machine.succeed(f"echo session-1 > {BELOW}/hidden-1 && sync")
 
+    with subtest("the session adds a line below the hidden root to its own fstab"):
+        machine.succeed(
+            'cp --remove-destination "$(readlink -f /etc/fstab)" /etc/fstab '
+            f"&& echo {shlex.quote(INNER_LINE)} >> /etc/fstab"
+        )
+
     with subtest("the way back leaves the busy disk free for the decoy"):
         canonical_deactivate(CONFIG, "deactivate-1")
         machine.fail(f"findmnt -S \"$(readlink -f {EXTRA})\"")
@@ -195,6 +211,7 @@ in
         write_config(True)
         canonical_activate(CONFIG, "--overlay-only", "activate-2")
         machine.wait_for_unit(WATCH_UNIT)
+
         machine.succeed(f"test -s {RULE}")
         machine.wait_until_succeeds(f"test \"$(blockdev --getro {EXTRA})\" = 1", timeout=30)
         machine.succeed(f"test -s {RECORD}")
@@ -202,6 +219,21 @@ in
         for device in (root_device, "/dev/disk/by-id/virtio-data", "/dev/mapper/data"):
             assert not is_read_only(device), f"{device} must stay writable"
         machine.succeed("touch /mnt/data/probe-2 && rm /mnt/data/probe-2")
+
+    with subtest("the entry keeps the session's line below the hidden root off and warns"):
+        printed = machine.succeed("cat /mnt/data/activate-2.log")
+        assert (
+            f"the hidden session's fstab entry {BELOW} (`{INNER_LINE}`) lies at or below "
+            "/mnt/data, where the hidden volume is mounted"
+        ) in printed, printed
+        assert (
+            "remove this line from /etc/fstab, or move its mount out from below /mnt/data"
+        ) in printed, printed
+        load_state = machine.succeed(f"systemctl show -p LoadState --value {INNER_UNIT}").strip()
+        assert load_state == "masked", load_state
+        machine.fail(f"findmnt {BELOW}")
+        # What the warning says to do: here, NixOS's link again.
+        machine.succeed("ln -sfn /etc/static/fstab /etc/fstab")
 
     with subtest("a mount comes up read-only and every write fails"):
         out = machine.succeed(f"mkdir -p /mnt/extra && mount {EXTRA} /mnt/extra 2>&1")
