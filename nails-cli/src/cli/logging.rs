@@ -65,16 +65,16 @@ pub fn init_subscriber(
         .init();
 }
 
-/// Print a notice about logging setup itself, before the subscriber exists.
-///
-/// Warnings are dropped under `--quiet`; errors are always shown, where
-/// stderr still takes them.
 /// Whether the host `detected` admits a log file on the hidden volume: one
 /// NAILS runs on. A detection that failed cannot tell, so it admits none.
 fn admits_file_logging(detected: nails_core::Result<nails_core::platform::HostProfile>) -> bool {
     detected.is_ok_and(|profile| profile.require_supported().is_ok())
 }
 
+/// Print a notice about logging setup itself, before the subscriber exists.
+///
+/// Warnings are dropped under `--quiet`; errors are always shown, where
+/// stderr still takes them.
 fn emit_logging_init_message(settings: &OutputSettings, is_error: bool, message: &str) {
     if let Some(line) = logging_init_line(settings, is_error, message) {
         crate::cli::output::eprintln_tolerating_broken_pipe(&line);
