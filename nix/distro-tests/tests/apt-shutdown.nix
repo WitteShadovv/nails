@@ -52,13 +52,16 @@
 #     setting and apt.conf.d changed after the helper started. With
 #     `--allow-persistent-decoy` the decoy's helper logs its shutdown-mode run
 #     at the switch all the same, the positive control;
-#   - writes a file apt refuses: `check` refuses, names the file and its line
-#     and says that the helper installs nothing but writes two ERROR lines.
-#     With `--allow-persistent-decoy` the decoy's helper, started before the
-#     file was written, logs those two lines on the decoy disk at the switch
-#     and no shutdown-mode run, the positive control. Restarted with the file
-#     refused, the helper logs its error to the journal and its file on the
-#     decoy disk gains no such line.
+#   - turns the setting on again and restarts the decoy's helper, which then
+#     holds it on, and writes a file apt refuses: `check` refuses, names the
+#     file and its line and says that the helper installs nothing but writes
+#     two ERROR lines, and `status` reports it. With `--allow-persistent-decoy`
+#     the decoy's helper, started before the file was written, logs those two
+#     lines on the decoy disk at the switch and no shutdown-mode run although
+#     the setting is on, the positive control. Restarted with the file
+#     refused, the helper logs its start error, and without python3-gi its two
+#     polling lines, to the journal of its own invocation, and its file on the
+#     decoy disk gains none of them.
 {
   self,
   pkgs,
@@ -421,6 +424,20 @@ distroVm.buildVmTest {
         vm.succeed(f"systemd-run --unit=uu-race --collect sh -c {shlex.quote(race)}")
 
 
+    def restart_helper():
+        # The helper reads apt's configuration and sets up its log when it
+        # starts, and takes its delay lock from logind right after: once the
+        # restarted process holds it, it has read the files as they are.
+        vm.succeed("systemctl restart unattended-upgrades.service")
+        pid = vm.succeed("systemctl show -P MainPID unattended-upgrades.service").strip()
+        assert pid not in ("", "0"), f"unattended-upgrades.service has no main process: {pid!r}"
+        vm.wait_until_succeeds(
+            "systemd-inhibit --list --no-pager --no-legend "
+            + f"| grep -F 'Unattended Upgrades Shutdown' | grep -qw {pid}",
+            timeout=60,
+        )
+
+
     def end_daily_download():
         # The run ended with the old userspace: wait for its unit, take the
         # drop-in away and close the mapping a switch can leave open, so a
@@ -630,6 +647,14 @@ distroVm.buildVmTest {
             "if ! mountpoint -q /mnt/data && [ -e /dev/mapper/data ]; then cryptsetup close data; fi"
         )
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        # The setting on again, read by a helper started afresh: but for the
+        # file below, it would run its install at the switch.
+        vm.succeed(f"printf %s {shlex.quote(setting_on)} > {setting_file}")
+        restart_helper()
+        assert apt_reads_setting(), "apt reads the setting off"
+        on = row("decoy-persistence")
+        assert on["status"] == "fail", on
+        assert f"is on in {setting_file}:1" in on["message"], on
         vm.succeed(f"printf %s {shlex.quote(refused_text)} > {refused_file}")
         refusal = row("decoy-persistence")
         assert refusal["status"] == "fail", refusal
@@ -637,14 +662,17 @@ distroVm.buildVmTest {
             f"apt refuses {refused_file}:2 (Extra junk at end of file)" in refusal["message"]
         ), refusal
         assert "installs nothing" in refusal["message"], refusal
+        assert "cannot tell" not in refusal["message"], refusal
         assert f"what apt refuses at {refused_file}:2" in refusal["remediation"], refusal
+        assert status_flag(), "status does not report the file apt refuses"
         errors_before = count(helper_log, APT_ERROR)
         messages_before = count(helper_log, APT_ERROR_MESSAGE)
         mode_before = count(helper_log, SHUTDOWN_MODE)
 
     with subtest("positive control: with the override the helper writes two ERROR lines and installs nothing"):
         # The helper started before the file was written, so it logs to its
-        # file on the decoy disk.
+        # file on the decoy disk, and it holds the setting on: only the file
+        # apt refuses keeps it from its install.
         follow(
             f"{nails_cmd} activate -y --allow-persistent-decoy > /mnt/data/activate-4.log 2>&1",
             "activate-4",
@@ -661,19 +689,26 @@ distroVm.buildVmTest {
         # The helper started again at the way back with the file refused: it
         # logs to its standard error, which systemd gives the journal, for
         # its whole run, its ERROR lines at a switch among them. A restart
-        # shows it: the helper's start error is in the journal, and its file
-        # on the decoy disk gains no such line.
+        # shows it, in the journal of the restarted helper's own invocation,
+        # not of the one the way back started: its start error, and without
+        # python3-gi the two polling lines it logs after it, are there, and
+        # its file on the decoy disk gains none of them.
         lines_before = len(vm.succeed(f"cat {helper_log}").splitlines())
         vm.succeed("systemctl restart unattended-upgrades.service")
-        vm.wait_until_succeeds(
-            "journalctl -b -u unattended-upgrades.service --no-pager -o cat "
-            + f"| grep -q -F {shlex.quote(START_ERROR)}",
-            timeout=60,
-        )
+        invocation = vm.succeed(
+            "systemctl show -P InvocationID unattended-upgrades.service"
+        ).strip()
+        assert invocation, "unattended-upgrades.service has no invocation"
+        journal = f"journalctl -b _SYSTEMD_INVOCATION_ID={invocation} --no-pager -o cat"
+        vm.wait_until_succeeds(f"{journal} | grep -q -F {shlex.quote(START_ERROR)}", timeout=60)
+        if vm.execute(f"test -e {gi_module}")[0] != 0:
+            vm.wait_until_succeeds(f"{journal} | grep -q -F {shlex.quote(POLLING)}", timeout=60)
+        print(f"the restarted helper's journal:\n{vm.succeed(journal)}")
         written = vm.succeed(f"cat {helper_log}").splitlines()[lines_before:]
         print("the helper's lines on the decoy disk since the restart:")
         print("\n".join(written))
         assert not any("Apt returned an error" in line for line in written), written
-        vm.succeed(f"rm -f {refused_file}")
+        assert not any(POLLING in line for line in written), written
+        vm.succeed(f"rm -f {refused_file} {setting_file}")
   '';
 }
