@@ -525,8 +525,9 @@ session can undo: `deactivate` asks it about those two before it prepares
 anything, as activation asks the decoy's (no stop command for that unit, and
 a timeout that powers the machine off, with service watchdogs on and a
 timeout set). Neither asks about the other runtime guards, those of NixOS's
-static addresses and of the D-Bus units. The refusal comes before the lines
-that say the session ends, and names `deactivate --poweroff` and
+static addresses and of the D-Bus units. This refusal comes before the lines
+that say the session ends, exits with status 4 (the error `not_ready`), as
+activation does over the same guards, and names `deactivate --poweroff` and
 `emergency`, neither of which asks. Where the session turned service
 watchdogs off, it names `sudo systemctl service-watchdogs yes` first: that
 turns them back on until PID 1 next reloads, and without them a power-off

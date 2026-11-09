@@ -1554,10 +1554,11 @@ of this changelog for that version becomes the release notes word for word, and
   stop guard of `blk-availability.service` holds as activation checks it, since the hidden
   system's own configuration or a change in the session can undo a guard. Neither asks about the
   runtime guards of NixOS's static addresses and the D-Bus units. `deactivate` refuses unless both
-  hold, before the lines that say the session ends, and names `deactivate --poweroff` and
-  `emergency`, neither of which asks; where the session turned service watchdogs off it names
-  `systemctl service-watchdogs yes` first, as without them a power-off that hangs is not ended at
-  its job timeout either. `verify` reports the drop-in if it is left on the decoy. The NixOS
+  hold, with exit 4 as activation does and before the lines that say the session ends, and
+  names `deactivate --poweroff` and `emergency`, neither of which asks; where the session turned
+  service watchdogs off it names `systemctl service-watchdogs yes` first, as without them a
+  power-off that hangs is not ended at its job timeout either. `verify` reports the drop-in if it
+  is left on the decoy. The NixOS
   module text for `soft-reboot.target` that `nails check` prints stays as it is: a drop-in under
   `/run` overrides the unit file wherever that lies. A plain `emergency` in the hidden session
   returns through the same switch, so the drop-in covers it too, and `deactivate --poweroff` and

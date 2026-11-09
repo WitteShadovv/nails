@@ -200,6 +200,17 @@ fn subprocess_deactivate_entrypoint() {
         "human-enqueued" => (ascii, LeaveTo::Decoy, Ok(LeaveReport::default())),
         "human-refused" => (ascii, LeaveTo::Decoy, Err(refused())),
         "human-left-open" => (ascii, LeaveTo::Decoy, Ok(left_open())),
+        // The way back's own ask of the guards refuses.
+        "json-unguarded-late" => (
+            json(),
+            LeaveTo::Decoy,
+            unguarded_check(&(), LeaveTo::Decoy).map(|()| LeaveReport::default()),
+        ),
+        "human-unguarded-late" => (
+            ascii,
+            LeaveTo::Decoy,
+            unguarded_check(&(), LeaveTo::Decoy).map(|()| LeaveReport::default()),
+        ),
         other => panic!("unknown deactivate subprocess case: {other}"),
     };
     // The warning given before the question rides along in the envelope.
@@ -618,10 +629,11 @@ fn a_blocked_way_back_is_refused_before_its_banner() {
 }
 
 /// A return whose guards do not hold in the hidden session's PID 1 is refused
-/// before anything is printed, as a blocked one is: a person reads why, what
-/// the session can change itself, and the two other ways to end the session,
-/// and under `--json` it is the one envelope, with the power-off as the next
-/// step.
+/// before anything is printed, as a blocked one is: a person reads why (here
+/// service watchdogs turned off), the command that turns them back on, and
+/// the two other ways to end the session, and under `--json` it is the one
+/// envelope, with the power-off as the next step. Unlike a blocked one it
+/// exits 4, as activation's refusal of the same check does.
 #[test]
 fn an_unguarded_way_back_is_refused_before_its_banner() {
     use nails_core::next_step::{NextStep, sudo_line};
@@ -646,7 +658,7 @@ fn an_unguarded_way_back_is_refused_before_its_banner() {
             sudo_line(NextStep::Emergency)
         )
     );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
 
     let output = run_subprocess("json-unguarded");
     let lines = stdout_lines(&output);
@@ -658,7 +670,52 @@ fn an_unguarded_way_back_is_refused_before_its_banner() {
         value["error"]["next"]["command"], "deactivate --poweroff",
         "{value}"
     );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+}
+
+/// The way back asks the guards again itself before it prepares anything: a
+/// refusal there exits 4 as well, after the lines a person reads, where a
+/// way back that fails partway exits 1.
+#[test]
+fn a_refusal_of_the_way_back_itself_exits_as_a_refusal() {
+    let output = run_subprocess("json-unguarded-late");
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the stand-in's line, one envelope: {output:?}"
+    );
+    let value = envelope("deactivate", &lines[1]);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "not_ready", "{value}");
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+
+    let output = run_subprocess("human-unguarded-late");
+    assert_eq!(stdout_lines(&output), RETURN_LINES, "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("error: the way back is refused: PID 1 has service watchdogs"),
+        "{stderr}"
+    );
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+}
+
+/// Only the refusal of the guards a return needs exits 4: a program that
+/// blocks shutdown, and every way back that fails, exit 1.
+#[test]
+fn only_a_refusal_of_the_guards_exits_as_a_refusal() {
+    let unguarded = unguarded_check(&(), LeaveTo::Decoy).unwrap_err();
+    assert_eq!(
+        super::way_back_error_status(&unguarded),
+        ExitStatus::PreflightRefused
+    );
+    for error in [blocked_check(&(), LeaveTo::Decoy).unwrap_err(), refused()] {
+        assert_eq!(
+            super::way_back_error_status(&error),
+            ExitStatus::Failed,
+            "{error}"
+        );
+    }
 }
 
 /// The handle's check is asked about the ending the operator chose: in the
