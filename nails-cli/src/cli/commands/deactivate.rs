@@ -43,7 +43,12 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 ///   whose session plan cannot be read, before it asks anything
 /// - [`ExitStatus::Cancelled`] when the operator declines at the prompt or
 ///   presses Ctrl+C there
-/// - [`ExitStatus::Failed`] when the way back fails
+/// - [`ExitStatus::PreflightRefused`] when the hidden session's PID 1 does not
+///   hold the guards a return needs, or cannot be asked, before anything is
+///   prepared (the error `not_ready`), as activation exits when the decoy's
+///   does not
+/// - [`ExitStatus::Failed`] when a program blocks shutdown, or logind does not
+///   answer whether one does, and when the way back fails
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
@@ -232,7 +237,7 @@ fn leave_and_report<L>(
         return report_error(
             json,
             "deactivate",
-            ExitStatus::Failed,
+            way_back_error_status(&e),
             deactivate_error_body(&e),
         );
     }
@@ -278,9 +283,22 @@ fn leave_and_report<L>(
         Err(e) => report_error(
             json,
             "deactivate",
-            ExitStatus::Failed,
+            way_back_error_status(&e),
             deactivate_error_body(&e),
         ),
+    }
+}
+
+/// The status a way back that did not start exits with. The refusal of the
+/// guards a return needs comes before anything is prepared (`leave` asks
+/// again before it prepares anything) and exits as activation's refusal of
+/// the same check does, so a caller can tell it from a way back that failed
+/// partway without parsing text. Anything else exits as a failure, a program
+/// that blocks shutdown among them.
+fn way_back_error_status(error: &NailsError) -> ExitStatus {
+    match error {
+        NailsError::PreFlightCheckFailed(_) => ExitStatus::PreflightRefused,
+        _ => ExitStatus::Failed,
     }
 }
 

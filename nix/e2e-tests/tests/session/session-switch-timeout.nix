@@ -30,10 +30,10 @@
 #      sets service watchdogs back to what the kernel command line says, and
 #      the hidden PID 1 then has them on. Only that command line could turn
 #      them off for good, which would take a node of its own. In that session,
-#      deactivate refuses while the hidden PID 1 has no timeout, has lost the
-#      drop-in, or has service watchdogs off (nothing reloads it before the
-#      way back), each time before it says that the session ends, and the
-#      session goes on each time. With watchdogs off it names
+#      deactivate refuses with exit 4 while the hidden PID 1 has no timeout,
+#      has lost the drop-in, or has service watchdogs off (nothing reloads it
+#      before the way back), each time before it says that the session ends,
+#      and the session goes on each time. With watchdogs off it names
 #      `systemctl service-watchdogs yes` first, and once that turned
 #      them back on the way back goes on, as the positive control for the
 #      session's own switch: a test-only unit whose stop removes the drop-in
@@ -293,7 +293,7 @@ in
         without_timeout()
         assert_refused(
             DEACTIVATE,
-            1,
+            4,
             "JobTimeoutUSec=infinity",
             ENDINGS,
             absent=(ENDING, WATCHDOGS_BACK_ON),
@@ -305,7 +305,7 @@ in
         assert unit("JobTimeoutAction") == "soft-reboot-force", unit("JobTimeoutAction")
         assert_refused(
             DEACTIVATE,
-            1,
+            4,
             "JobTimeoutAction=soft-reboot-force",
             "the decoy would start with the hidden session's files in /run",
             ENDINGS,
@@ -320,7 +320,7 @@ in
         machine.succeed("systemctl service-watchdogs no")
         assert_refused(
             DEACTIVATE,
-            1,
+            4,
             "ServiceWatchdogs=no",
             f"{WATCHDOGS_BACK_ON} and deactivate again, or end the session with `sudo ",
             ENDINGS,
@@ -426,7 +426,7 @@ in
         canonical_activate(CONFIG, "--overlay-only", "activate-poweroff")
         assert_guard("the session that powers off")
         machine.succeed("systemctl service-watchdogs no")
-        assert_refused(DEACTIVATE, 1, "ServiceWatchdogs=no", absent=(ENDING,))
+        assert_refused(DEACTIVATE, 4, "ServiceWatchdogs=no", absent=(ENDING,))
         assert_session_goes_on("before the power-off")
         since = len(machine.full_console_log)
         session.follow_power_off(
