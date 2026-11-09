@@ -152,6 +152,30 @@ fn a_link_on_the_way_that_changed_after_the_shell_started_is_a_doubt() {
 }
 
 #[test]
+fn a_nixos_switch_after_the_shell_started_is_a_doubt_whatever_etc_is_made_of() {
+    // A NixOS switch replaces /run/current-system, also where /etc is a mount
+    // of an image whose files keep the change times they had.
+    let fs = MockFilesystem::new();
+    dirs(&fs);
+    seed(&fs, "/etc/NIXOS", "");
+    seed(&fs, "/etc/zshrc", "true\n");
+    fs.create_symlink(
+        Path::new("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-nixos-system"), // pragma: allowlist secret
+        Path::new("/run/current-system"),
+    )
+    .unwrap();
+    fs.mock_set_change_time("/run/current-system", at(STARTED - 60));
+    assert_eq!(started(&fs), Scan::default());
+    fs.mock_set_change_time("/run/current-system", at(STARTED + 60));
+    assert_eq!(started(&fs).doubts, [changed("/run/current-system")]);
+    // Elsewhere it is no link the check looks at.
+    let fs = MockFilesystem::new();
+    dirs(&fs);
+    fs.mock_set_change_time("/run/current-system", at(STARTED + 60));
+    assert_eq!(started(&fs), Scan::default());
+}
+
+#[test]
 fn a_start_the_check_cannot_read_or_a_link_it_cannot_follow_is_a_doubt() {
     let fs = MockFilesystem::new();
     dirs(&fs);

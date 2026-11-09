@@ -1007,7 +1007,8 @@ of this changelog for that version becomes the release notes word for word, and
   check reads when its process started, and a startup file, a file they source or a function's
   file it reads or looks for that changed after that, by its status change time, is a doubt: the
   file, each link on the way to it and the directory zsh looks in for it and its compiled form, or
-  for one that is not there now the deepest directory on the way that is, the Nix store aside. zsh
+  for one that is not there now the deepest directory on the way that is, the Nix store aside, and
+  on NixOS `/run/current-system`, which each switch replaces. zsh
   keeps what it read as it started, so a shell started before an edit, a removal or a NixOS
   rebuild kept `SHARE_HISTORY` on and wrote each line while the check read the files as they are
   now, and so did startup code that rewrites or removes a file after zsh read it.

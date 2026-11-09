@@ -1326,7 +1326,9 @@ afterwards:
     runs now, when its process started, as zsh keeps what it read as it
     started: a file it reads or looks for that changed after that, by its
     status change time, is a doubt. That counts each link on the way to it (a
-    NixOS rebuild replaces `/etc/zshrc` and `/etc/static`), the file it leads
+    NixOS rebuild replaces `/etc/zshrc` and `/etc/static`, and on NixOS
+    `/run/current-system`, which each switch replaces, counts too, whatever
+    `/etc` is made of), the file it leads
     to, and the directory zsh looks in for it and its compiled form, or for one
     that is not there now the deepest directory on the way that is, which
     changes as a file in it is made, removed or renamed (`rm ~/.zshrc`, or any
