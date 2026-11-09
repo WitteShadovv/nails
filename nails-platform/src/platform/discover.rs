@@ -231,6 +231,67 @@ mod tests {
         );
     }
 
+    /// The cascade asks the automount guard before each lookup too: an
+    /// /etc/nixos that links into a home behind an automount point that
+    /// nothing is mounted on yet, and a hidden root behind one, are not
+    /// looked up. The discovery fails naming the point, nothing at or below
+    /// it is looked up, and once something is mounted there the cascade
+    /// answers.
+    #[test]
+    fn the_cascade_looks_up_nothing_behind_an_automount_point() {
+        use crate::filesystem::PathKind;
+        let root = "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n";
+        let direct = |at: &str| {
+            format!(
+                "{root}30 1 0:50 / {at} rw,relatime - autofs systemd-1 \
+                 rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n"
+            )
+        };
+        let fs = MockFilesystem::new();
+        fs.create_symlink(Path::new("/home/alice/nixos"), Path::new("/etc/nixos"))
+            .unwrap();
+        fs.mock_set_path_type("/home/alice/nixos/flake.nix", PathKind::File);
+        fs.mock_set_mount_table(&direct("/home/alice"));
+        fs.mock_clear_lookups();
+        let discover =
+            || discover_with_platform(&NixOsPlatform, &fs, Path::new(HIDDEN_ROOT), None, false);
+        let error = discover().expect_err("the guard does not look it up");
+        assert_eq!(
+            error.to_string(),
+            "NAILS does not look up /etc/nixos/flake.nix, since the lookup would mount the \
+             automount point /home/alice"
+        );
+        assert!(
+            fs.mock_lookups()
+                .iter()
+                .all(|path| !path.starts_with("/home/alice")),
+            "{:?}",
+            fs.mock_lookups()
+        );
+        fs.mock_set_mount_table(root);
+        assert!(discover().is_ok(), "{:?}", discover());
+
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type("/mnt/hidden/nixos/flake.nix", PathKind::File);
+        fs.mock_set_mount_table(&direct(HIDDEN_ROOT));
+        fs.mock_clear_lookups();
+        let error =
+            discover_with_platform(&NixOsPlatform, &fs, Path::new(HIDDEN_ROOT), None, false)
+                .expect_err("the guard does not look it up");
+        assert_eq!(
+            error.to_string(),
+            "NAILS does not look up /mnt/hidden/nixos/flake.nix, since the lookup would mount the \
+             automount point /mnt/hidden"
+        );
+        assert!(
+            fs.mock_lookups()
+                .iter()
+                .all(|path| !path.starts_with(HIDDEN_ROOT)),
+            "{:?}",
+            fs.mock_lookups()
+        );
+    }
+
     /// A host without a config layer auto-discovers nothing, even when NixOS
     /// files happen to be present (Nix installed on Debian, a stray
     /// `/etc/nixos`). An explicit flake reference is still reported as given, so
