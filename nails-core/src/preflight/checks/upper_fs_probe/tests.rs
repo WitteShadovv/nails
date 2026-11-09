@@ -65,6 +65,96 @@ fn runs_hermetically_under_test_runtime() {
     assert!(result.message().contains("skipped"));
 }
 
+/// An attached hidden root, as [`runs_hermetically_under_test_runtime`]
+/// presents it, on a decoy with an automount point at /usr/local that
+/// nothing is mounted on yet.
+fn attached_beside_an_unmounted_usr_local() -> MockFilesystem {
+    let root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mounted(&root, true);
+    fs.mock_set_device_id(std::path::Path::new("/"), 1);
+    fs.mock_set_device_id(&root, 42);
+    let point = std::path::Path::new("/usr/local");
+    fs.mock_set_mounted(point, true);
+    fs.mock_set_filesystem_type(point, "autofs");
+    fs
+}
+
+/// Where the overlay module is not loaded, a trial would load it, and the
+/// kernel's modprobe and udevd would read their settings below an automount
+/// point that nothing is mounted on yet, which mounts it: no trial is made,
+/// and the check refuses, naming the point with the line that says to mount
+/// it. Nothing below the point is looked up.
+#[test]
+fn no_trial_loads_the_overlay_module_where_its_settings_would_mount_a_point() {
+    let fs = attached_beside_an_unmounted_usr_local();
+    fs.mock_add_file("/proc/filesystems", "nodev\tsysfs\n\text4\n");
+    fs.mock_clear_lookups();
+    let check = UpperFsCapabilityCheck::default();
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().starts_with(&format!(
+            "NAILS cannot tell whether the hidden root at {DEFAULT_HIDDEN_VOLUME_ROOT} can host an \
+             overlayfs upper layer: the kernel's overlay module is not loaded"
+        )),
+        "{result:?}"
+    );
+    assert!(
+        result.message().contains(
+            "NAILS does not look up /usr/local/lib/modprobe.d, since the lookup would mount the \
+             automount point /usr/local"
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(
+            crate::filesystem::automount::mount_fix(&[std::path::Path::new("/usr/local")]).as_str()
+        )
+    );
+    assert!(
+        fs.mock_lookups()
+            .iter()
+            .all(|path| !path.starts_with("/usr/local")),
+        "{:?}",
+        fs.mock_lookups()
+    );
+
+    // /proc/filesystems that cannot be read tells nothing: the same.
+    let fs = attached_beside_an_unmounted_usr_local();
+    assert!(check.run(&fs).unwrap().is_fail());
+}
+
+/// Where the overlay module is loaded, a trial loads nothing; where its
+/// settings lie behind no automount point, a load mounts nothing. Either
+/// way the check goes on to the probe, which the test runtime skips.
+#[test]
+fn a_trial_that_mounts_nothing_is_made() {
+    let fs = attached_beside_an_unmounted_usr_local();
+    fs.mock_add_file("/proc/filesystems", "nodev\tsysfs\nnodev\toverlay\n");
+    let check = UpperFsCapabilityCheck::default();
+    let result = check.run(&fs).unwrap();
+    assert!(
+        result.is_pass() && result.message().contains("skipped"),
+        "{result:?}"
+    );
+
+    let root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mounted(&root, true);
+    fs.mock_set_device_id(std::path::Path::new("/"), 1);
+    fs.mock_set_device_id(&root, 42);
+    fs.mock_add_file("/proc/filesystems", "nodev\tsysfs\n");
+    let result = check.run(&fs).unwrap();
+    assert!(
+        result.is_pass() && result.message().contains("skipped"),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn skips_without_writing_when_hidden_root_is_not_attached() {
     // A hidden root that exists but is no mount point is an unmounted mount
