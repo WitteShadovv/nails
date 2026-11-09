@@ -361,6 +361,43 @@ fn decoy_filesystems_name_an_fstab_that_cannot_be_read() {
     }
 }
 
+/// An fstab behind an automount point that nothing is mounted on yet is not
+/// looked up: one line names the point, as for any lookup the guard does
+/// not make, and none says that the fstab cannot be read.
+#[test]
+fn decoy_filesystems_name_an_fstab_behind_an_automount_point_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(root.join("etc/fstab"), "/dev/vda2 / ext4 defaults 0 1\n").unwrap();
+    let etc = root.join("etc");
+    let table = nails_teardown::mountinfo::parse_mountinfo(&format!(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+         40 1 0:40 / {} rw,relatime - autofs systemd-1 rw,fd=40,pgrp=1,timeout=0,minproto=5,\
+         maxproto=5,direct,pipe_ino=40\n",
+        etc.display()
+    ));
+    let mounts = nails_teardown::mountinfo::parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    let rows = decoy_filesystems(
+        &RealFilesystem,
+        &Snapshot::from_table(table),
+        &root,
+        &mounts,
+        Path::new("/mnt/data"),
+    );
+    // A unit directory below the point gets a line of its own, which names
+    // the point: the fstab's lookup, behind the same point, adds none.
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(
+        rows[0].contains(&format!("the automount point {}", etc.display())),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| !row.contains("cannot be read")),
+        "{rows:?}"
+    );
+}
+
 /// `count` tallies exactly the entries whose status matches the one asked
 /// for; the human `check` summary relies on it to report, for instance, how
 /// many inherited components are ignored.
