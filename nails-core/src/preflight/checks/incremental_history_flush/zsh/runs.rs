@@ -117,12 +117,15 @@ impl<F: Filesystem> Reader<'_, F> {
     /// `add-zle-hook-widget` runs as each line is entered (`azhw:...`), as
     /// the files make it one or a hook runs it (`hooked`), as it is named
     /// like a builtin, which zsh's own code runs as each line is entered
-    /// (`zstyle`, `zle`), or like the command a NAILS command is typed with
-    /// (`sudo`, `nails`), which runs with that line ([`builtins::typed`]).
+    /// (`zstyle`, `zle`), like the command a NAILS command is typed with
+    /// (`sudo`, `nails`), which runs with that line ([`builtins::typed`]), or
+    /// like a command a widget runs with the line at hand (`run-help`,
+    /// [`builtins::line_command`]).
     pub(super) fn is_hook(function: &str, hooked: &[String]) -> bool {
         walk::HOOKS.contains(&function)
             || builtins::builtin(function)
             || builtins::typed(function)
+            || builtins::line_command(function)
             || function.starts_with("TRAP")
             || function.starts_with("azhw:")
             || hooked.iter().any(|hook| hook == function)

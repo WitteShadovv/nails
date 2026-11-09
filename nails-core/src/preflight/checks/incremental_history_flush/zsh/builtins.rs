@@ -4,7 +4,7 @@
 //! The functions zsh runs by their name as hooks, and its builtins: which
 //! ones run a function the files define as a hook, and which write no file
 //! their words name; and the names zsh runs code by as the operator types a
-//! NAILS command.
+//! NAILS command or a line is at hand.
 
 use super::super::{TYPED_COMMANDS, TYPED_WORDS};
 
@@ -67,6 +67,17 @@ pub(super) fn builtin(name: &str) -> bool {
 /// (`sudo() { ... }`, `alias sudo='logit; sudo'`), so it counts as a hook.
 pub(super) fn typed(name: &str) -> bool {
     TYPED_COMMANDS.contains(&name) || name.ends_with("/nails")
+}
+
+/// Whether zsh runs a function or a regular alias named `name` with the
+/// line being typed at hand: `run-help` and `which-command`, which the
+/// widgets of those names run as a command, with the line's first word as
+/// their argument and the whole line on the buffer stack (`read -z` reads it
+/// back), and which zsh 5.9 to 5.9.2 bind to Alt-h, Alt-H and Alt-? in its
+/// emacs keymap; and a `run-help-...` helper, which zsh's own `run-help` runs
+/// with the line's words.
+pub(super) fn line_command(name: &str) -> bool {
+    matches!(name, "run-help" | "which-command") || name.starts_with("run-help-")
 }
 
 /// Whether a global alias named `name` runs as the operator enters a NAILS
