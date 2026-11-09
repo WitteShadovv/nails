@@ -711,3 +711,75 @@ fn looking_for_the_unmounted_places_moves_no_access_time() {
     let after: Vec<_> = read.iter().map(|path| atime(path)).collect();
     assert_eq!(after, before, "an access time moved: {read:?}");
 }
+
+/// What an offline scan cannot look at, for another reason than that
+/// nothing is there, was left out: an fstab it could neither read nor look
+/// at, and a mount point or a home it could not look at, which the scan
+/// took for scanned. Each is listed as not read, with the error.
+#[test]
+fn a_place_or_an_fstab_the_scan_cannot_look_at_is_listed_as_not_read() {
+    // A decoy at /mnt/decoy whose /home and bob's home cannot be looked at.
+    let decoy = || {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
+        fs.mock_set_path_type("/mnt/decoy/etc", PathKind::Dir);
+        fs.mock_add_file("/mnt/decoy/etc/passwd", PASSWD);
+        fs.mock_set_lookup_error("/mnt/decoy/home", std::io::ErrorKind::PermissionDenied);
+        fs.mock_set_lookup_error("/mnt/decoy/srv/bob", std::io::ErrorKind::Other);
+        fs
+    };
+    let fs = decoy();
+    fs.mock_set_lookup_error("/mnt/decoy/etc/fstab", std::io::ErrorKind::PermissionDenied);
+    let result = Verifier::new(fs)
+        .offline_under("/mnt/decoy".into())
+        .run(false)
+        .unwrap();
+    let unseen = |place: &str| {
+        format!(
+            "it could not be looked at under the root (/mnt/decoy{place}: Mock: the lookup fails \
+             here), so nothing there was read"
+        )
+    };
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [
+            "/etc/fstab, the decoy's table of what it mounts (it could not be looked at \
+             (/mnt/decoy/etc/fstab: Mock: the lookup fails here): what it mounts is not known)"
+                .to_string(),
+            format!(
+                "/home/alice, the home of alice in the decoy's /etc/passwd ({})",
+                unseen("/home/alice")
+            ),
+            format!(
+                "/srv/bob, the home of bob in the decoy's /etc/passwd ({})",
+                unseen("/srv/bob")
+            ),
+        ],
+        "{:#?}",
+        result.areas_not_checked
+    );
+
+    // A mount point of a readable fstab that cannot be looked at covers
+    // what lies below it, as a missing one does.
+    let fs = decoy();
+    fs.mock_add_file("/mnt/decoy/etc/fstab", "UUID=1 /home ext4 defaults 0 2\n");
+    let result = Verifier::new(fs)
+        .offline_under("/mnt/decoy".into())
+        .run(false)
+        .unwrap();
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [
+            format!(
+                "/home, which the decoy's /etc/fstab mounts ({})",
+                unseen("/home")
+            ),
+            format!(
+                "/srv/bob, the home of bob in the decoy's /etc/passwd ({})",
+                unseen("/srv/bob")
+            ),
+        ],
+        "{:#?}",
+        result.areas_not_checked
+    );
+}

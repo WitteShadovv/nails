@@ -25,6 +25,19 @@ const CRYPTTAB_FILE: &str = "/etc/crypttab";
 /// nothing is looked up through it on the machine running verify.
 const NOT_RESOLVED: &str = "it does not resolve inside the root, so nothing there was read";
 
+/// What a place of the decoy, resolved under the root, holds for the scan.
+#[derive(Debug)]
+enum Holds {
+    /// Something the scan read: an entry, a folder with entries, or a link,
+    /// which is not followed.
+    Something,
+    /// Nothing: it is missing, or an empty folder.
+    Nothing,
+    /// It could not be looked at, for this error, which names it: the scan
+    /// cannot tell what it holds, so it read nothing there.
+    Unseen(NailsError),
+}
+
 /// How the device an fstab entry names is mounted on the machine that runs
 /// verify, by the superblock its mounts share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +69,8 @@ impl<F: Filesystem> Verifier<F> {
     /// image's store, and each place is resolved inside the root
     /// ([`Self::place`]), so no link leads out of the image. A place is then
     /// looked at with `lstat` and `stat` and listed with `O_NOATIME`, and one
-    /// that cannot be looked at is left out.
+    /// that cannot be looked at is listed too, with why: the scan read
+    /// nothing there. So is the fstab where it cannot be looked at.
     pub(super) fn unmounted_areas(&self) -> Vec<String> {
         let mut areas = Vec::new();
         let table = self.filesystem.mount_table().unwrap_or_default();
@@ -94,11 +108,14 @@ impl<F: Filesystem> Verifier<F> {
             }
             let why = match self.place(&entry.file) {
                 None => NOT_RESOLVED.to_string(),
-                Some(place) if self.holds_nothing(&place) => format!(
-                    "missing or empty under the root. {}",
-                    self.how_to_mount(&entry, &place, &table)
-                ),
-                Some(_) => continue,
+                Some(place) => match self.holds(&place) {
+                    Holds::Nothing => format!(
+                        "missing or empty under the root. {}",
+                        self.how_to_mount(&entry, &place, &table)
+                    ),
+                    Holds::Unseen(error) => unseen(&error),
+                    Holds::Something => continue,
+                },
             };
             areas.push(format!(
                 "{}, which the decoy's /etc/fstab mounts ({why})",
@@ -111,12 +128,14 @@ impl<F: Filesystem> Verifier<F> {
                 continue;
             }
             let why = match self.place(&home) {
-                None => NOT_RESOLVED,
-                Some(place) if self.holds_nothing(&place) => {
-                    "missing or empty under the root: mount what holds it there without writing \
-                     to it before the scan"
-                }
-                Some(_) => continue,
+                None => NOT_RESOLVED.to_string(),
+                Some(place) => match self.holds(&place) {
+                    Holds::Nothing => "missing or empty under the root: mount what holds it there \
+                                       without writing to it before the scan"
+                        .to_string(),
+                    Holds::Unseen(error) => unseen(&error),
+                    Holds::Something => continue,
+                },
             };
             areas.push(format!(
                 "{}, the home of {user} in the decoy's /etc/passwd ({why})",
@@ -147,17 +166,22 @@ impl<F: Filesystem> Verifier<F> {
     }
 
     /// Why the decoy's file `path` could not be read, when it is there under
-    /// the root: a link says where it leads inside the root. `None` when
-    /// nothing is there, or for a link to `/dev/null`, which holds nothing by
-    /// design.
+    /// the root, or may be: a link says where it leads inside the root, and
+    /// a lookup that fails for another reason than that nothing is there
+    /// names its error. `None` when nothing is there, or for a link to
+    /// `/dev/null`, which holds nothing by design.
     fn why_unread(&self, path: &Path) -> Option<String> {
         let entry = self.rebase(path);
-        let link = matches!(self.filesystem.is_symlink(&entry), Ok(true));
-        if !link && !matches!(self.filesystem.path_exists(&entry), Ok(true)) {
-            return None;
-        }
+        let link = match self.filesystem.is_symlink(&entry) {
+            Ok(link) => link,
+            Err(error) => return Some(unlooked(&error)),
+        };
         if !link {
-            return Some("it could not be read".to_string());
+            return match self.filesystem.path_exists(&entry) {
+                Ok(true) => Some("it could not be read".to_string()),
+                Ok(false) => None,
+                Err(error) => Some(unlooked(&error)),
+            };
         }
         let inside = match &self.context {
             VerifyContext::Offline { root } => self.filesystem.resolve_in_root(root, path),
@@ -173,23 +197,37 @@ impl<F: Filesystem> Verifier<F> {
         }
     }
 
-    /// Whether `place`, a decoy path resolved under the root, is missing or
-    /// an empty folder. A link (one whose target could not be resolved, say)
-    /// is not followed, and answers no.
-    fn holds_nothing(&self, place: &Path) -> bool {
-        if !matches!(self.filesystem.is_symlink(place), Ok(false)) {
-            return false;
+    /// What `place`, a decoy path resolved under the root, holds: nothing
+    /// when it is missing or an empty folder. A link (one whose target could
+    /// not be resolved, say) is not followed, and holds something. A place
+    /// that cannot be looked at, for another reason than that nothing is
+    /// there, is unseen; one that cannot be listed counts as one with
+    /// entries.
+    fn holds(&self, place: &Path) -> Holds {
+        match self.filesystem.is_symlink(place) {
+            Ok(false) => {}
+            Ok(true) => return Holds::Something,
+            Err(error) => return Holds::Unseen(error),
         }
         match self.filesystem.inode(place) {
-            Ok(None) => true,
-            Ok(Some(_)) => {
-                matches!(self.filesystem.is_directory(place), Ok(true))
-                    && self
+            Ok(None) => Holds::Nothing,
+            // A file on the way: nothing can be at the place.
+            Err(error) if error.io_kind() == Some(std::io::ErrorKind::NotADirectory) => {
+                Holds::Nothing
+            }
+            Err(error) => Holds::Unseen(error),
+            Ok(Some(_)) => match self.filesystem.is_directory(place) {
+                Ok(true)
+                    if self
                         .filesystem
                         .list_directory(place)
-                        .is_ok_and(|entries| entries.is_empty())
-            }
-            Err(_) => false,
+                        .is_ok_and(|entries| entries.is_empty()) =>
+                {
+                    Holds::Nothing
+                }
+                Ok(_) => Holds::Something,
+                Err(error) => Holds::Unseen(error),
+            },
         }
     }
 
@@ -362,6 +400,18 @@ impl<F: Filesystem> Verifier<F> {
             Some(_) => Mounted::ReadWrite,
         }
     }
+}
+
+/// Why a decoy file that could not be read is listed, where a lookup of it
+/// failed with `error` for another reason than that nothing is there.
+fn unlooked(error: &NailsError) -> String {
+    format!("it could not be looked at ({error})")
+}
+
+/// Why a place of the decoy is listed, where a lookup of it under the root
+/// failed with `error` for another reason than that nothing is there.
+fn unseen(error: &NailsError) -> String {
+    format!("it could not be looked at under the root ({error}), so nothing there was read")
 }
 
 /// Whether `entry` mounts a file of the image, which mount(8) attaches to a
