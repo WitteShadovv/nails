@@ -713,6 +713,29 @@ of this changelog for that version becomes the release notes word for word, and
   which names the label of exactly that device, and only without a record from
   `/dev/disk/by-label`, which links one of several filesystems with the same label. A new fuzz
   target, `udev_label`, checks that a label written as udev writes it reads back unchanged.
+- Every check of `nails check` and activation that looks where a filesystem can be mounted on
+  demand (`/usr/local`, `/var`, `/boot`, `/.snapshots`, the homes), not only `decoy-nix-trace`,
+  makes no lookup that would mount an automount point that nothing is mounted on yet: systemd's
+  for an `x-systemd.automount` line, or a name in the directory of an automounter's indirect map,
+  such as a home mounted on first use. Before each lookup it reads the links on the way without
+  following them and asks the mount table, as read when the check starts. Where the lookup would
+  mount a point, it is not made: the check says it cannot tell, names the path and the automount
+  point, and says to mount the point (for example `ls /usr/local`) and run `check` again. A
+  warn-only check warns, the residue catalog also for a channel it would only note;
+  `decoy-persistence` refuses for the journal, a log daemon or kdump (`--allow-persistent-decoy`
+  lifts it), `fstab-policy` refuses, and so does the attach gate for a hidden root behind such a
+  point; `memory-wipe` and the Argon2id advice keep their informational pass and, where what they
+  could read leaves the answer open, name the path and the point. Without the mount table these
+  checks look up nothing. So with an
+  `x-systemd.automount` line for `/usr/local` that nothing has mounted yet, `decoy-persistence`
+  and `fstab-policy` refuse until it is mounted. `check --json` lists the places the inherited
+  decoy state could not be read from as `inherited.not_read`, each with its `path`, `reason` and
+  `automount_point`, the report gives each a `not read:` line, and `inherited-autostart` warns
+  that NAILS cannot tell what else the hidden session would inherit. `status` and the window
+  count a decoy NAILS cannot tell about as one that keeps a record on its disk, and say it may
+  keep one (`decoy_persistent` and `decoy_kdump_armed` in `status --json` are true then too). The
+  VM test `check-no-automount` runs `check` on a NixOS decoy with such points at `/usr/local` and
+  at two homes, and shows that it leaves the mount table as it was.
 - The operator is now resolved from `PKEXEC_UID` before `SUDO_UID`. pkexec of polkit 127 and later
   sets both, and `PKEXEC_UID` names the account that asked it.
 - `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an
@@ -1567,6 +1590,45 @@ of this changelog for that version becomes the release notes word for word, and
 - At the question of `activate`, `deactivate` and `discard`, the end of the input (Ctrl+D) cancels
   as a "no" does, and its notice now starts on a line of its own. It began on the question's row,
   as the terminal echoes no newline for Ctrl+D.
+- `nails check` and activation no longer take a path they cannot look up for one that is not
+  there. A lookup that failed for any reason (no permission, an I/O error, a loop of links, an
+  automount whose mount failed) read as a missing path, so a check could pass on a path it never
+  saw: an unreadable `/var/log/journal` let `Storage=auto` count as volatile, an updatedb in
+  `/usr/local/bin` or a fish configuration could go unseen, and the attach gate called such a
+  hidden root missing. Now only a path that does not exist, or one below a file, is missing, and
+  any other failure makes the check say it cannot tell and name the path: a warn-only check
+  warns, `decoy-persistence` refuses for the journal, a log daemon or kdump
+  (`--allow-persistent-decoy` lifts it), and the attach gate refuses the root with the error
+  (`not_separate_volume`, exit 4). `init` and the staging of the hidden NixOS configuration write
+  nothing over a file whose lookup failed, `config set` and `config unset` refuse a volume where
+  they find no file of NAILS and cannot look one up, `discard` stops at a path it cannot look up,
+  the platform check refuses a host where a lookup it decides by fails (`/run/ostree-booted`,
+  `/run/composefs`, the links of the `/usr` merge, and `/run/current-system` where os-release does
+  not say NixOS), a log directory that cannot be looked up turns file logging off with a line that
+  says so, and `verify` reports a path it cannot look up as one
+  it could not tell about, never as one that is not there: as a finding at the severity of what it
+  looks for there but no more than a warning, or among the areas it did not check.
+- `nails deactivate` that cannot take its lock, a hidden root that cannot be looked up among the
+  causes, refuses before the switch as before, and now names `emergency`, which ends the session
+  without the lock: it returns to the decoy where it can prepare the return and powers off where
+  it cannot (`next.command` is `emergency` under `--json`). A state record that cannot be written
+  before the switch stops the way back the same way, with the error `invalid_state` where it was
+  `deactivation_failed`.
+- A sleep guard (`sleep_policy.mode` `block` or `teardown`) whose copy of the settings in `/run` is
+  there but cannot be read, or does not parse, fell back to `warn` and exited, so the session ran
+  without sleep protection. It cannot tell which mode you chose, so it now does what both do: it
+  holds `block`'s inhibitors (sleep and idle, and the lid switch where the session's logind would
+  sleep on a closed lid), so an ordinary sleep request is refused, and powers the machine off if a
+  sleep starts anyway, as `teardown` does, such as one forced past the inhibitors with
+  `systemctl suspend -i`.
+- The session watcher that could not read its copy of the settings in `/run` took the defaults,
+  which never run the automatic emergency, and one that could not read the session plan exited,
+  with no alert. It now takes another copy: for the settings, the configuration file it was
+  started with or finds beside its binary, then the hidden volume's own `config/nails.toml` at the
+  hidden root the plan names; for the plan, the hidden root the settings name, though an automatic
+  emergency still needs the plan to return to the decoy. Where it can read no settings, it watches
+  alert-only, never tears the session down, and says so in one alert; where it can read neither,
+  one alert says that mounted volumes are not watched.
 
 ### Security
 
