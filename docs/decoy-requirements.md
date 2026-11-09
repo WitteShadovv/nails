@@ -151,10 +151,14 @@ files the session used, and the session's kernel log to `/var/crash` on the
 decoy disk. Ubuntu arms kdump-tools by default from 24.10, so 26.04 among them.
 Disarm it on the decoy with `sudo systemctl disable --now kdump-tools`
 (Fedora: `sudo systemctl disable --now kdump`). When `kexec_crash_loaded`
-exists but cannot be read, or holds anything but `0` or `1`, NAILS cannot tell
-and refuses as if kdump were armed. A kernel without that file has no crash
-kernel support, so nothing can be loaded. `nails status` shows an armed kdump
-on the decoy (`decoy_kdump_armed` in `--json`).
+cannot be looked up or read, or holds anything but `0` or `1`, NAILS cannot
+tell and refuses as if kdump were armed, and so it does when it cannot tell
+whether one of the units is enabled or active, because a lookup that would
+show it fails or would mount an automount point that nothing is mounted on
+yet. A kernel without that file has no crash kernel support, so nothing can
+be loaded. `nails status` shows an armed kdump on the decoy, and one NAILS
+cannot tell about with the reason (`decoy_kdump_armed` in `--json` is true
+for both).
 
 NAILS reads journald's `Storage=` the way journald does. The main
 `journald.conf` and every `journald.conf.d/*.conf` drop-in come first. From
@@ -172,15 +176,20 @@ which adds a newline. Failing both, the built-in default applies: `auto` below
 systemd 259, which persists when `/var/log/journal` exists on disk, and from
 259 `persistent`, or the default the distribution's own
 `/usr/lib/systemd/journald.conf` documents. A systemd whose version cannot be
-read counts as persistent.
+read counts as persistent. Where `auto` decides and NAILS cannot look up
+`/var/log/journal` for another reason than that it is not there (no
+permission, an I/O error, an automount point on the way that nothing is
+mounted on yet), the journal counts as persistent too.
 
 Keep every main file and drop-in a regular file. systemd lists a drop-in by
 its name alone, so a directory or a link to `/dev/null` with a drop-in's name
 shadows the drop-in of that name below it, and the systemd releases do not read
 such an entry alike: from systemd 260 a directory or a device there leaves the
 whole configuration unread, the main file included. NAILS counts such a
-configuration, and one with a file it cannot read, as persistent whatever
-release runs, and names the entry: journald reads these files when it starts,
+configuration, one with a file it cannot read or look up, and one with a
+drop-in directory it may not list or that lies behind an automount point that
+nothing is mounted on yet, as persistent whatever release runs, and names the
+entry: journald reads these files when it starts,
 and an update can bring 260 before it next does, at the latest when the decoy
 starts again after the way back. To mask a vendor
 drop-in, put an empty file of its name in `/etc/systemd/journald.conf.d/`. The
@@ -220,16 +229,23 @@ volatile can count as persistent. Run them with sudo.
   (`log_input`, `log_output`, the `log_stdin`/`log_ttyout`/... flags, or the
   `LOG_INPUT:`/`LOG_OUTPUT:` command tags, stored under `iolog_dir`) records
   whole terminal sessions, keystrokes and output included. Both write to the
-  decoy disk, outside the journal.
+  decoy disk, outside the journal. A sudoers file behind an automount point
+  that nothing is mounted on yet is not read, and the check names the point.
 - **sssd** — sssd in use on the decoy: one of its units or daemons running,
   its Kerberos ticket cache listening on its socket, or one of nine state
-  files it writes under `/var/lib/sss`. NAILS is not tested on a decoy joined
+  files it writes under `/var/lib/sss`. Where NAILS cannot look up a place
+  that would show it, it warns that it cannot tell whether sssd is in use,
+  and names the place. NAILS is not tested on a decoy joined
   to a domain, whose domain controller records the hidden session's logins;
   see [Decoys joined to a domain](#decoys-joined-to-a-domain).
 
 The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
-stamps described below. It warns or notes them and never blocks.
+stamps described below. It warns or notes them and never blocks. A probe path
+it cannot look up for another reason than that it is not there, one behind an
+automount point that nothing is mounted on yet among them, is one it cannot
+tell about: it warns for it, also where it would only note what it finds
+there.
 
 The `decoy-nix-trace` check warns when a decoy that is not NixOS holds what a
 Nix install leaves behind, and never blocks either (see
@@ -1045,13 +1061,12 @@ The check writes nothing and mounts nothing. It opens each file it reads with
 `O_NOATIME`, so run as root it changes none of their access times (an
 unprivileged `nails check` cannot ask for that, and the links a lookup follows
 still get theirs), and it reads no file that a link leads onto the hidden
-volume. Before each lookup it reads the links on the way one by one, without
-following them, and asks the mount table whether the lookup would pass an
-automount point that nothing is mounted on yet, which the lookup would mount.
-Where it would, the check does not make that lookup: the warning names the
-path, or the home, and the automount point instead, and once something is
-mounted there, the check looks it up. Where it cannot read the mount table, it
-looks up nothing and says so.
+volume. As the other checks that look into the homes and `/usr/local` do, it
+makes no lookup that would mount an automount point that nothing is mounted on
+yet ([What `check` touches](operator-guide.md#what-check-touches)): the
+warning names the path, or the home, and the automount point instead, and
+once something is mounted there, the check looks it up. Where it cannot read
+the mount table, it looks up nothing and says so.
 
 When it warns, use the decoy's Nix only for what the decoy itself needs, and
 install the hidden session's software inside a hidden session. If the decoy

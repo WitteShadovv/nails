@@ -1063,11 +1063,40 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   runs some of the decoy's own tools to ask what they report, such as
   `systemctl` for the systemd version. On a decoy root mounted without
   `noatime`, a read or a program start can update an access time.
-  `decoy-nix-trace` looks into every home `/etc/passwd` names, but it makes
-  no lookup that the mount table shows would pass an automount point nothing
-  is mounted on yet, which the lookup would mount, whether a link on the way
-  leads there or not: it names that path or home instead
-  ([Nix on the decoy](decoy-requirements.md#nix-on-the-decoy)).
+- **No lookup that would mount an automount point.** A lookup that passes an
+  automount point that nothing is mounted on yet mounts it: a direct or
+  offset one, such as the one systemd makes for an `x-systemd.automount` line
+  in the fstab, or a name in the directory of an indirect map, such as a home
+  an automounter mounts on first use. So the checks that look into places
+  where such a point can be, such as `/usr/local`, `/var`, `/boot`,
+  `/.snapshots` and the homes, read the links on the way one by one, without
+  following them, before each lookup, and ask the mount table, as they read
+  it when the check starts, whether the lookup would pass such a point,
+  whether a link on the way leads there or not. Where it would, the check
+  makes no lookup and says it cannot tell: it names the path and the
+  automount point, and says to mount the point (for example with `ls` on it)
+  and run `check` again. A check that only warns warns. `decoy-persistence`
+  refuses where it cannot tell about the journal, a log daemon or kdump
+  (`--allow-persistent-decoy` lifts that, as it lifts the refusal of what it
+  finds), `fstab-policy` refuses, and so does `hidden-volume` for a hidden
+  root behind such a point. `memory-wipe` and `cryptsetup-argon2id`, which
+  only inform, keep their pass, and where what they could read leaves the
+  answer open, name the path and the point. Without the mount table these
+  checks look up nothing on the decoy and say so. The table is the one read
+  when each check starts: an automount that something else mounted before
+  and that expires while `check` runs is mounted again by the next lookup
+  there, and a name of an indirect map that expires in that time can be
+  mounted again by the check's own reading of the way there. For example,
+  with an `x-systemd.automount` line for `/usr/local` that nothing has
+  mounted yet, `decoy-persistence` and `fstab-policy` refuse until it is
+  mounted, since journald's drop-ins and systemd's units below it may hold
+  what they look for, `sleep-policy` and `locate-database` warn, and
+  `locate-database` also names each home that is not mounted yet.
+- **A path that cannot be looked up is not a missing one.** A path a check
+  cannot look up for another reason than that it is not there (no
+  permission, an I/O error, a loop of links) is one it cannot tell about,
+  never a missing one: the check says so, names the path, and warns or
+  refuses as it does for what it finds.
 
 ### Pre-activation checklist
 
@@ -2279,6 +2308,10 @@ power-off, followed by a few minutes without power, lets the contents decay:
   (`CONFIG_INIT_ON_FREE_DEFAULT_ON`, from the running kernel's own
   `/proc/config.gz` or the copy in `/boot` or `/usr/lib/modules`), and warns
   when the decoy kernel does not zero freed memory, `page_poison=1` included.
+  A copy behind an automount point that nothing is mounted on yet, such as a
+  `/boot` that systemd mounts on first use, is not looked up: where nothing
+  else it reads tells, its pass says it cannot tell and names that path and
+  the point.
 - There is no complete software defense against a memory dump of a running
   system; the protection is preventing access while it runs.
 
