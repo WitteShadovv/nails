@@ -20,9 +20,9 @@
 //! every mount then counts as the session's own storage, as no device tells
 //! it apart. Where neither can be read it never tears the session down
 //! unasked: it watches alert-only, or not at all, and tells the operator so
-//! once. Without the plan it runs no automatic emergency either, since the
-//! emergency needs the plan to return to the decoy, and says so once where
-//! one was asked for.
+//! once. Without the plan a return to the decoy does nothing, so the
+//! automatic emergency the settings ask for powers the machine off instead
+//! ([`auto_emergency`]), and the watcher says so once.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -34,6 +34,7 @@ use nails_core::runtime_copy::RuntimeManifest;
 use nails_core::{RealFilesystem, runtime_copy, watcher};
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::disk_guard;
+use nails_teardown::whole_root::emergency::{Finish, HotReport};
 use nails_teardown::whole_root::plan::Plan;
 
 use crate::cli::output::{ExitStatus, OutputSettings};
@@ -44,14 +45,16 @@ enum Start {
     /// There is no session plan: no session to watch.
     Nothing,
     /// Watch `manifest`'s hidden root by `config`, with the session `plan`
-    /// where it could be read. `notice`, when the settings could not be read
-    /// anywhere, or the plan could not be read where they ask for an
-    /// automatic emergency, is the alert to deliver once: `config` is then
-    /// alert-only.
+    /// where it could be read, and with an automatic emergency, where
+    /// `config` asks for one, that ends in `finish`. `notice` is the alert to
+    /// deliver once: where the settings could not be read anywhere (`config`
+    /// is then alert-only), or where the plan could not be read and the
+    /// settings ask for an automatic emergency, which then powers off.
     Watch {
         manifest: RuntimeManifest,
         plan: Option<Box<Plan>>,
         config: Box<Config>,
+        finish: Finish,
         notice: Option<Notification>,
     },
     /// Nothing tells what to watch: deliver `notice` once, then exit.
@@ -67,8 +70,8 @@ enum Start {
 /// `on_volume` reads. The hidden root is the plan's, else the settings'.
 /// Where no settings can be read, the watcher watches alert-only and says so
 /// once: it never runs the emergency itself then. Where the plan cannot be
-/// read it watches alert-only too, since an automatic emergency without the
-/// plan cannot return to the decoy and so would do nothing, and says so once
+/// read, a return to the decoy would do nothing at all, so the automatic
+/// emergency powers the machine off instead, and the watcher says so once
 /// where the settings ask for one. Where neither the plan nor the settings
 /// can be read, it says the session runs without it. A plan that is not there
 /// is no session.
@@ -112,11 +115,17 @@ fn start(
             manifest,
             plan: plan.map(Box::new),
             config: Box::new(config),
+            finish: Finish::Return,
             notice: None,
         },
-        (None, Some(mut config)) => {
-            let notice = config.backend_watch.auto_emergency.then(planless_notice);
-            config.backend_watch.auto_emergency = false;
+        (None, Some(config)) => {
+            let watch = &config.backend_watch;
+            let powers_off = watch.enabled && watch.auto_emergency;
+            if powers_off {
+                tracing::warn!(
+                    "Without the session plan the automatic emergency cannot return; it powers off"
+                );
+            }
             Start::Watch {
                 manifest: RuntimeManifest {
                     hidden_root: config.hidden_volume_root.clone(),
@@ -125,15 +134,20 @@ fn start(
                 },
                 plan: None,
                 config: Box::new(config),
-                notice,
+                finish: Finish::Poweroff,
+                notice: powers_off.then(power_off_notice),
             }
         }
-        (Some(manifest), None) => Start::Watch {
-            manifest,
-            plan: plan.map(Box::new),
-            config: Box::new(alert_only()),
-            notice: Some(alert_only_notice()),
-        },
+        (Some(manifest), None) => {
+            tracing::warn!("No copy of the settings can be read; watching alert-only");
+            Start::Watch {
+                manifest,
+                plan: plan.map(Box::new),
+                config: Box::new(alert_only()),
+                finish: Finish::Return,
+                notice: Some(alert_only_notice()),
+            }
+        }
         (None, None) => Start::Without(unwatched_notice()),
     }
 }
@@ -246,10 +260,17 @@ pub fn execute(
         Config::load,
     );
     let interval = nails_core::config::BackendWatchConfig::default().poll_interval();
-    let Some((manifest, plan, config, notice)) = watching(started, |notice| {
+    let Some(Watching {
+        manifest,
+        plan,
+        config,
+        finish,
+        notice,
+    }) = watching(started, |notice| {
         let env = env.clone();
         deliver_until_delivered(&notice, interval, move |alert| send_immediate(alert, &env));
-    }) else {
+    })
+    else {
         return ExitStatus::Ok;
     };
 
@@ -286,7 +307,6 @@ pub fn execute(
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
     let alert_env = env.clone();
-    let emergency_env = env.clone();
     watcher::run_loop(
         &watch_config,
         // A probe of a covered hidden root writes nothing and is no failure of
@@ -299,20 +319,7 @@ pub fn execute(
         },
         || {
             tracing::warn!("Backend failure outlasted the debounce; running the emergency");
-            let report = super::emergency::run_hot_path_with(
-                nails_teardown::whole_root::emergency::Finish::Return,
-            );
-            // Without the session plan a return does nothing at all: the
-            // watcher goes on alerting, and says it took no action.
-            let acted = !report.found_nothing();
-            if !acted {
-                tracing::warn!("The emergency found no session plan to act on; watching on");
-                let env = emergency_env.clone();
-                send_all_in_background(vec![(planless_notice(), "no-action")], move |alert| {
-                    send_immediate(alert, &env)
-                });
-            }
-            acted
+            auto_emergency(finish, super::emergency::run_hot_path_with)
         },
         || {
             if let Some(notice) = &notice {
@@ -354,16 +361,45 @@ fn storage_plan(mut plan: Plan, hidden_root: &Path) -> Plan {
     plan
 }
 
-/// What the watcher watches with ([`watching`]): the manifest, the session
-/// plan where it could be read, the settings, and the alert to deliver once
-/// while it watches.
-type Watched = (RuntimeManifest, Option<Box<Plan>>, Config, Option<Once>);
+/// Run the automatic emergency through `run`, the hot path, to `finish`: a
+/// return to the decoy where the watcher read the session plan, else a
+/// power-off ([`start`]). A return that finds no plan when it fires does
+/// nothing at all, so the watcher then powers off the same way, as the sleep
+/// guard does without a plan. Says whether the emergency acted, which ends
+/// the watch loop: where not even a power-off could be asked for, the
+/// watcher watches on.
+fn auto_emergency(finish: Finish, mut run: impl FnMut(Finish) -> HotReport) -> bool {
+    let mut report = run(finish);
+    if finish == Finish::Return && report.found_nothing() {
+        tracing::warn!("The emergency found no session plan to return with; powering off instead");
+        report = run(Finish::Poweroff);
+    }
+    let acted = !report.found_nothing() || report.dispatched.is_some() || report.kernel_power_off;
+    tracing::warn!(
+        acted,
+        "The automatic emergency ended; the watcher watches on where it did not act"
+    );
+    acted
+}
+
+/// What the watcher watches with ([`watching`]).
+#[derive(Debug)]
+struct Watching {
+    manifest: RuntimeManifest,
+    /// The session plan, where it could be read.
+    plan: Option<Box<Plan>>,
+    config: Config,
+    /// How its automatic emergency ends ([`auto_emergency`]).
+    finish: Finish,
+    /// The alert to deliver once while it watches.
+    notice: Option<Once>,
+}
 
 /// What the watcher watches with, from what it `started` with: `None` where
 /// there is nothing to watch, once `deliver_once` has delivered the alert of a
-/// watcher that cannot run; else the plan, the settings and the alert to
-/// deliver once while it watches.
-fn watching(started: Start, deliver_once: impl FnOnce(Once)) -> Option<Watched> {
+/// watcher that cannot run; else the plan, the settings, how the automatic
+/// emergency ends and the alert to deliver once while it watches.
+fn watching(started: Start, deliver_once: impl FnOnce(Once)) -> Option<Watching> {
     match started {
         Start::Nothing => {
             tracing::debug!("No runtime manifest present; nothing to watch");
@@ -378,15 +414,15 @@ fn watching(started: Start, deliver_once: impl FnOnce(Once)) -> Option<Watched> 
             manifest,
             plan,
             config,
+            finish,
             notice,
-        } => {
-            if notice.is_some() {
-                tracing::warn!(
-                    "Watching alert-only: the settings or the session plan cannot be read"
-                );
-            }
-            Some((manifest, plan, *config, notice.map(Once::new)))
-        }
+        } => Some(Watching {
+            manifest,
+            plan,
+            config: *config,
+            finish,
+            notice: notice.map(Once::new),
+        }),
     }
 }
 
@@ -509,14 +545,14 @@ fn alert_only_notice() -> Notification {
     }
 }
 
-/// The neutral desktop alert of a watcher whose automatic emergency cannot
-/// act, since it could not read the session plan the emergency needs to
-/// return: it still warns, but takes no action on its own.
-fn planless_notice() -> Notification {
+/// The neutral desktop alert of a watcher that could not read the session
+/// plan a return needs, where the settings ask for the automatic emergency:
+/// a failure that outlasts the debounce powers the machine off.
+fn power_off_notice() -> Notification {
     Notification {
-        title: "Storage monitor in alert-only mode".to_string(),
-        body: "The storage monitor could not read what it needs to take action. It still warns \
-               you when a mounted volume stops responding, but takes no action on its own."
+        title: "Storage monitor in power-off mode".to_string(),
+        body: "The storage monitor could not read everything it needs. If a mounted volume \
+               stops responding and does not recover, it turns the computer off."
             .to_string(),
         urgency: "critical".to_string(),
         icon: Some("drive-harddisk".to_string()),

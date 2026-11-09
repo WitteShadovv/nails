@@ -1635,14 +1635,15 @@ of this changelog for that version becomes the release notes word for word, and
   `systemctl suspend -i`.
 - The session watcher that could not read its copy of the settings in `/run` took the defaults,
   which never run the automatic emergency, and one that could not read the session plan exited,
-  with no alert. It now takes another copy: for the settings, the configuration file it was
-  started with or finds beside its binary, then the hidden volume's own `config/nails.toml` at the
-  hidden root the plan names; for the plan, the hidden root the settings name. An automatic
-  emergency needs the plan to return to the decoy, so without it the watcher watches alert-only,
-  and says so in one alert where `backend_watch.auto_emergency` is on; one that finds no plan
-  when it fires leaves the watcher watching, with an alert that it took no action. Where it can
-  read no settings, it watches alert-only, never tears the session down, and says so in one
-  alert; where it can read neither, one alert says that mounted volumes are not watched.
+  with no alert. An automatic emergency that found no plan when it fired did nothing, and the
+  watcher stopped. The watcher now takes another copy: for the settings, the configuration file
+  it was started with or finds beside its binary, then the hidden volume's own `config/nails.toml`
+  at the hidden root the plan names; for the plan, the hidden root the settings name. A return to
+  the decoy needs the plan, so without it the automatic emergency (`backend_watch.auto_emergency`)
+  powers the machine off instead, and one alert says so; one that finds no plan when it fires
+  powers off the same way. Where the watcher can read no settings, it watches alert-only, never
+  tears the session down, and says so in one alert; where it can read neither, one alert says
+  that mounted volumes are not watched.
 
 ### Security
 
