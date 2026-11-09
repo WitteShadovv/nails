@@ -21,6 +21,7 @@ use super::walk::PROMPTS;
 use super::{Reader, Word};
 use crate::Filesystem;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// The variables of a shell's environment the check reads: where zsh looks
 /// for the functions it autoloads (`FPATH`), what NixOS's `/etc/zshenv`
@@ -118,6 +119,11 @@ pub(in super::super) struct Install {
     /// What its environment holds of [`ENVIRONMENT`] but `FPATH`, when the
     /// check can tell.
     pub env: Option<Env>,
+    /// When the shell's process started, for one that runs now, or why the
+    /// check cannot tell ([`super::super::InspectedShell::started`]): a file
+    /// it reads that changed since may have held other code then
+    /// ([`super::since`]).
+    pub started: Option<Result<SystemTime, String>>,
 }
 
 /// What a shell's environment holds of [`ENVIRONMENT`] but `FPATH`.
@@ -192,6 +198,7 @@ impl Install {
                     .filter_map(|name| get(name).map(|value| ((*name).to_string(), value)))
                     .collect(),
             }),
+            started: None,
         }
     }
 }

@@ -33,8 +33,10 @@
 //! variables of its environment that tell where zsh finds the functions it
 //! autoloads and the user's startup files, the prompts zsh takes from it and
 //! the parameters it reads as arithmetic each time it uses them (`TMOUT`)
-//! ([`zsh::Install`]). What it cannot read or follow makes it warn that it
-//! cannot tell. Of zsh, any mention of an
+//! ([`zsh::Install`]), and when its process started: zsh keeps what it read
+//! as it started, so a file of zsh's it reads or looks for that changed
+//! after that is a doubt. What it cannot read or follow makes it warn that
+//! it cannot tell. Of zsh, any mention of an
 //! option counts as on, a turn-off too, as no reading of the files shows that
 //! one holds, so the fix it gives is one it can see: a zsh started as
 //! `zsh -f`, which reads `/etc/zshenv` alone (and `/etc/zshenv.local` on
@@ -43,7 +45,8 @@
 //! file; of any other shell it warns that it cannot tell. It reads the
 //! options a zsh's command line turns on too. It does not see a setting typed
 //! into the shell, one a plugin manager's function makes, one an `eval` in
-//! bash's files makes (zsh's it reads, or warns of), or one in the files of a
+//! bash's files makes (zsh's it reads, or warns of), a change of bash's files
+//! after the bash it reads started (zsh's it warns of), or one in the files of a
 //! shell started with others (`--rcfile`, or a `ZDOTDIR` from the environment
 //! of a shell that does not run yet), nor a prompt the environment of such a
 //! shell may hold.
@@ -52,6 +55,7 @@ mod startup;
 mod zsh;
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result, TargetUser};
@@ -171,6 +175,10 @@ pub struct InspectedShell {
     /// ([`zsh::kept`]) that it holds, as `/proc/<pid>/environ` gives them;
     /// `None` for a login shell, or when it cannot be read.
     pub environment: Option<Vec<(String, String)>>,
+    /// When its process started ([`start_time`]), before it read any startup
+    /// file; `None` for a login shell, which may not run now, and an error
+    /// that says why when the check cannot read it.
+    pub started: Option<std::result::Result<SystemTime, String>>,
 }
 
 impl InspectedShell {
@@ -184,6 +192,7 @@ impl InspectedShell {
             login: None,
             exe: None,
             environment: None,
+            started: None,
         }
     }
 
@@ -231,8 +240,42 @@ impl InspectedShell {
                 .map(|operator| file_name(&operator.shell)),
             exe,
             environment,
+            started: Some(start_time(pid)),
         })
     }
+}
+
+/// The clock ticks a second in which `/proc/<pid>/stat` gives a process's
+/// start (`USER_HZ`, what `sysconf(_SC_CLK_TCK)` returns): 100 on every
+/// architecture NAILS builds for.
+const TICKS_PER_SECOND: u64 = 100;
+
+/// When the process `pid` started, in the clock the change times of files
+/// are written in: the boot time `/proc/stat` gives, in whole seconds, and
+/// the clock ticks since the boot that `/proc/<pid>/stat` gives
+/// ([`started_at`]). A process keeps the time it started across an `exec`.
+fn start_time(pid: u32) -> std::result::Result<SystemTime, String> {
+    let stat = std::fs::read_to_string("/proc/stat")
+        .map_err(|error| format!("/proc/stat cannot be read ({})", error.kind()))?;
+    let ticks = nails_teardown::proc::stat(pid)
+        .ok_or_else(|| format!("/proc/{pid}/stat cannot be read"))?
+        .start_time;
+    started_at(&stat, ticks).ok_or_else(|| "/proc/stat gives no boot time".to_string())
+}
+
+/// When a process started `ticks` clock ticks after the boot whose time
+/// `stat`, the text of `/proc/stat`, gives (`btime`): no later than it did,
+/// as that time is cut to the whole second.
+fn started_at(stat: &str, ticks: u64) -> Option<SystemTime> {
+    let boot: u64 = stat
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    let since_boot = Duration::from_secs(ticks / TICKS_PER_SECOND)
+        + Duration::from_millis(ticks % TICKS_PER_SECOND * (1000 / TICKS_PER_SECOND));
+    Some(UNIX_EPOCH + Duration::from_secs(boot) + since_boot)
 }
 
 /// The variables the check keeps ([`zsh::kept`]) that `bytes`, a process's
@@ -342,6 +385,12 @@ const REOPENED_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshen
                                 RCS or GLOBAL_RCS, it may read the other startup files too: \
                                 take that out of them.";
 
+/// The fix for a zsh that may have read other startup files as it started
+/// than those there now, and that the check finds nothing else in.
+const RESTART_ZSH_FIX: &str = "Type the decoy commands in a zsh you start after the change, \
+                               the way you started this one: it reads the startup files as they \
+                               are then.";
+
 /// The fix for a zsh whose command line turns an option on, or makes it
 /// read other startup files.
 const COMMAND_LINE_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, with \
@@ -383,10 +432,11 @@ struct Judged<'a> {
     argv: &'a [String],
     zsh: zsh::Start,
     part: &'a str,
-    /// The file its process runs and the variables of its environment the
-    /// check reads, when it runs now.
+    /// The file its process runs, the variables of its environment the
+    /// check reads and when it started, when it runs now.
     exe: Option<&'a Path>,
     environment: Option<&'a [(String, String)]>,
+    started: Option<&'a std::result::Result<SystemTime, String>>,
 }
 
 /// The result for one shell, whose startup files `fs` holds.
@@ -395,7 +445,8 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
     let part = shell.part;
     match kind(program) {
         Kind::Zsh => {
-            let install = zsh::Install::of(fs, shell.exe, shell.environment);
+            let mut install = zsh::Install::of(fs, shell.exe, shell.environment);
+            install.started = shell.started.cloned();
             let mut scan = zsh::zsh(fs, shell.homes, shell.zsh, &install);
             let line = zsh::CommandLine::of(shell.argv);
             let writes = line.writes();
@@ -414,7 +465,20 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
                 let prompts = std::mem::take(&mut scan.prompts);
                 scan.doubts.extend(prompts);
             }
-            judge_zsh(&scan, program, part, fix)
+            // A zsh whose only doubt is what changed after it started reads
+            // its files as they are now once started again.
+            let stale = scan.writes.is_empty()
+                && !scan.doubts.is_empty()
+                && scan
+                    .doubts
+                    .iter()
+                    .all(|doubt| doubt.starts_with(zsh::STALE));
+            judge_zsh(
+                &scan,
+                program,
+                part,
+                if stale { RESTART_ZSH_FIX } else { fix },
+            )
         }
         Kind::Bash => judge_bash(&startup::bash(fs, shell.homes), program, part),
         Kind::Fish if nails_teardown::shells::fish_is_private(shell.argv) => CheckResult::Pass(
@@ -524,6 +588,7 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                 part: "the shell this command was typed into",
                 exe: shell.exe.as_deref(),
                 environment: shell.environment.as_deref(),
+                started: shell.started.as_ref(),
             },
         ),
         ShellOrigin::Likely => {
@@ -533,6 +598,7 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                 argv: &shell.argv,
                 exe: shell.exe.as_deref(),
                 environment: shell.environment.as_deref(),
+                started: shell.started.as_ref(),
                 ..unsure(
                     &shell.program,
                     &shell.homes,
@@ -585,6 +651,7 @@ fn unsure<'a>(program: &'a str, homes: &'a [PathBuf], part: &'a str) -> Judged<'
         part,
         exe: None,
         environment: None,
+        started: None,
     }
 }
 

@@ -38,7 +38,10 @@
 //! ([`shadows`]). zsh runs compiled code in place of a file, or of a
 //! directory's functions, when a `.zwc` is beside it, and the check cannot read
 //! that code, so such a `.zwc` is a doubt, and so is a path zsh expands into
-//! others (a glob, `{a,b}`).
+//! others (a glob, `{a,b}`). zsh runs with what it read as it started: for a
+//! zsh that runs now, a path the check reads or looks for that changed after
+//! the shell started, a link on the way to it or the directory it is in, is
+//! a doubt ([`since`]).
 //!
 //! An option counts as on wherever a file zsh reads names it, outside a line
 //! that is a comment, in either form: a `setopt` or an `unsetopt`, an array, a
@@ -107,6 +110,7 @@ mod paths;
 mod reading;
 mod runs;
 mod shadows;
+mod since;
 mod stock;
 mod walk;
 
@@ -124,6 +128,7 @@ use lexer::Word;
 #[cfg(test)]
 use lexer::{End, Token, tokens};
 use shadows::{Changer, Snapshot};
+pub(super) use since::STALE;
 use std::path::{Path, PathBuf};
 use walk::{Event, Input, Read, events};
 
@@ -235,10 +240,12 @@ struct Reader<'a, F: Filesystem> {
     unset: Vec<String>,
     /// The files the check would read that are not there now, and the
     /// words the files source and test, the paths of the functions they
-    /// autoload among them ([`Reader::made`]).
+    /// autoload among them ([`Reader::made`]); and the compiled forms it
+    /// looks for ([`Reader::since_start`]).
     missing: Vec<(PathBuf, usize)>,
     read_files: Vec<(PathBuf, usize)>,
     known_files: Vec<String>,
+    looked: Vec<PathBuf>,
     /// The writes to a path an expansion makes (`cp ~/.src $f`, `> $f`):
     /// its last part, what the warning names, where in the files read it is
     /// and the function it is in; the commands the files run where no
@@ -311,6 +318,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// newer or the file is missing, and an `fpath` directory's when it holds
     /// the function.
     fn compiled(&mut self, path: &Path) {
+        self.looked.push(path.to_path_buf());
         match self.fs.inode(path) {
             Ok(None) => {}
             Ok(Some(_)) => self.doubt(format!(
@@ -911,6 +919,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         missing: Vec::new(),
         read_files: Vec::new(),
         known_files: Vec::new(),
+        looked: Vec::new(),
         writes: Vec::new(),
         top_calls: Vec::new(),
         order: 0,
@@ -992,6 +1001,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
     reader.runs();
     reader.reading_doubts();
     reader.arithmetic();
+    reader.since_start();
     reader.made();
     // A prompt's code runs only when PROMPT_SUBST is on; whether a command
     // line turns it on, the check reads beside the files.

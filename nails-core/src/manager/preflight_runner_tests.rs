@@ -1141,6 +1141,7 @@ fn the_history_check_reads_the_typed_shell_before_the_login_shell() {
         login: None,
         exe: None,
         environment: None,
+        started: None,
     };
 
     let typed = history_row(operator(), Some(fish));

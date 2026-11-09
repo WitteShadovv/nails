@@ -36,6 +36,10 @@ mod reading;
 #[path = "zsh_typed_tests.rs"]
 mod typed;
 
+// What of the files a zsh that runs now read changed after it started.
+#[path = "zsh_since_tests.rs"]
+mod since;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
