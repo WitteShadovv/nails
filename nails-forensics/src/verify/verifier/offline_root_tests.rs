@@ -202,6 +202,22 @@ fn a_root_that_cannot_be_looked_up_or_listed_fails_closed() {
     }
 }
 
+#[test]
+fn a_root_whose_etc_cannot_be_looked_up_fails_closed() {
+    // An etc folder whose lookup fails was taken for a missing one, and the
+    // root refused as one that holds none: the scan does not run, and the
+    // error names the folder it could not look up, not the root.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/mnt/image", PathKind::Dir);
+    fs.mock_set_lookup_error("/mnt/image/etc", std::io::ErrorKind::PermissionDenied);
+    let error = Verifier::new(fs)
+        .offline_under("/mnt/image".into())
+        .run(false)
+        .unwrap_err();
+    assert!(matches!(error, NailsError::IoError { .. }), "{error:?}");
+    assert!(error.to_string().starts_with("/mnt/image/etc: "), "{error}");
+}
+
 /// The access time of `path`, to the nanosecond.
 fn atime(path: &Path) -> (i64, i64) {
     let meta = std::fs::metadata(path).unwrap();
