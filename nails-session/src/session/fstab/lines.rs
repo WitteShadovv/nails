@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The lines of an fstab that systemd's fstab generator reads as entries,
+//! The lines of an fstab that systemd's fstab generator may read as entries,
 //! and those it may read otherwise than [`parse_fstab`](super::parse_fstab).
 //!
 //! The generator reads `/etc/fstab` with glibc's `getmntent()` up to systemd
@@ -130,13 +130,13 @@ impl std::fmt::Display for Unlike {
 /// short.
 const LONGEST_LINE: usize = 4095;
 
-/// The lines of the fstab `text` that systemd's fstab generator reads as
-/// entries, each as the file has it, without its newline, for
-/// [`parse_in_root`](super::parse_in_root): neither a blank line, a comment
-/// nor a line of one field is, which glibc gives no mount point and libmount
-/// does not read. Or the first line, counted from 1, that the generator may
-/// read otherwise than [`parse_fstab`](super::parse_fstab) does (see the
-/// module docs), and why.
+/// The lines of the fstab `text` that glibc's `getmntent()` reads as entries,
+/// and libmount alike where it reads them at all, each as the file has it,
+/// without its newline, for [`parse_in_root`](super::parse_in_root): neither
+/// a blank line, a comment nor a line of one field is one, which glibc gives
+/// no mount point and libmount does not read. Or the first line, counted from
+/// 1, that systemd's fstab generator may read otherwise than
+/// [`parse_fstab`](super::parse_fstab) does (see the module docs), and why.
 pub fn entry_lines(text: &[u8]) -> Result<Vec<&[u8]>, (usize, Unlike)> {
     let mut lines = Vec::new();
     for (index, line) in text.split(|byte| *byte == b'\n').enumerate() {
