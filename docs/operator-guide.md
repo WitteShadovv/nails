@@ -281,7 +281,10 @@ Keep all of it `root`-owned on the hidden volume.
    the activation, so the session you enter to remove it still starts. Remove
    it there: from the hidden NixOS configuration, then rebuild, or from
    `/etc/fstab` where a session wrote the line there. A hidden fstab that
-   cannot be read refuses the activation.
+   cannot be read refuses the activation, and so does one with a line that
+   the hidden systemd may read otherwise than NAILS, such as one with a
+   no-break space in its mount point
+   (see [configuration.md](configuration.md#what-the-session-covers)).
 
    The decoy's own mount, swap and automount units that a boot target links
    in its `.wants` or `.requires` directory outside the fstab (a NixOS

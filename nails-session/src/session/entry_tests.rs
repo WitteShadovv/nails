@@ -617,17 +617,16 @@ fn a_fifo_in_place_of_the_hidden_fstab_refuses_the_entry_unread() {
 }
 
 #[test]
-fn a_hidden_fstab_line_that_is_not_text_refuses_the_entry() {
+fn a_hidden_fstab_line_systemd_may_read_otherwise_refuses_the_entry() {
     // A mount point whose bytes are no UTF-8: read as text, it would be
     // decided, and masked, under a name the hidden systemd does not give it.
     let text = b"/dev/vda2 / ext4 defaults 0 1\n/dev/vdd1 /mnt/data/caf\xe9 ext4 defaults 0 2\n";
     let root = root_with_fstab(text);
-    let message = refusal(hidden_fstab_of(root.path(), b"", false));
     assert_eq!(
-        message,
+        refusal(hidden_fstab_of(root.path(), b"", false)),
         format!(
-            "the device, mount point, type or options on line 2 of the hidden /etc/fstab are \
-             not UTF-8 text{UNREADABLE_END}"
+            "line 2 of the hidden /etc/fstab has a mount point that is not UTF-8 text\
+             {UNREADABLE_END}"
         )
     );
     // The decoy's own fstab, byte for byte, was decided with the decoy's.
@@ -637,20 +636,36 @@ fn a_hidden_fstab_line_that_is_not_text_refuses_the_entry() {
             .entries
             .is_empty()
     );
-    // So does such a device, an octal escape for such a byte in a device or
-    // a mount point, which NAILS undoes as libmount does for systemd, and
-    // such options.
-    for line in [
-        b"/dev/vdd\xe9 /srv/backup ext4 defaults 0 2\n".as_slice(),
-        b"/dev/disk/by-label/caf\\351 /srv/backup ext4 defaults 0 2\n",
-        b"/dev/vdd1 /mnt/data/caf\\351 ext4 defaults 0 2\n",
-        b"/dev/vdd1 /srv/backup ext4 defaults,caf\xe9 0 2\n",
+    // Lines below the root that NAILS read otherwise than the hidden systemd
+    // does: a no-break space, which NAILS took for a separator and so kept
+    // /mnt/data/a off, a vertical tab before a `#`, which made the line a
+    // comment to NAILS and a tmpfs to systemd, and escapes that systemd up to
+    // 258 leaves as they are, where NAILS undid them and kept another name
+    // off.
+    for (line, why) in [
+        (
+            "/dev/vdd1 /mnt/data/a\u{a0}b ext4 defaults,nofail 0 2",
+            "has U+00A0 in its mount point, which NAILS takes for a separator and systemd \
+             does not",
+        ),
+        (
+            "\x0b#x /mnt/data/vt tmpfs defaults 0 0",
+            "has U+000B in its device, which NAILS takes for a separator and systemd does not",
+        ),
+        (
+            "/dev/vdd1 /mnt/data/caf\\303\\251 ext4 defaults,nofail 0 2",
+            "has `\\303` in its mount point, which systemd may read otherwise than NAILS",
+        ),
+        (
+            "/dev/vdz8 /mnt/dat\\141/x ext4 defaults 0 2",
+            "has `\\141` in its mount point, which systemd may read otherwise than NAILS",
+        ),
     ] {
-        let root = root_with_fstab(line);
-        let message = refusal(hidden_fstab_of(root.path(), b"", false));
-        assert!(
-            message.starts_with("the device, mount point, type or options on line 1 of"),
-            "{message}"
+        let root = root_with_fstab(format!("{line}\n").as_bytes());
+        assert_eq!(
+            refusal(hidden_fstab_of(root.path(), b"", false)),
+            format!("line 1 of the hidden /etc/fstab {why}{UNREADABLE_END}"),
+            "{line}"
         );
     }
 }
@@ -677,20 +692,13 @@ fn bytes_of_a_hidden_fstab_line_no_field_holds_are_no_text_to_read() {
         "{}",
         hidden.warnings[0]
     );
-    // Escapes that are UTF-8 together name the mount as systemd does.
-    let root = root_with_fstab(b"/dev/vdd1 /mnt/data/caf\\303\\251 ext4 defaults,nofail 0 2\n");
+    // A space as NixOS escapes it, which glibc and libmount undo as NAILS
+    // does: the line is kept off under the name systemd gives its mount.
+    let root = root_with_fstab(b"/dev/vdd1 /mnt/data/My\\040Disk ext4 defaults,nofail 0 2\n");
     let hidden = hidden_fstab_of(root.path(), b"", false).unwrap();
     assert_eq!(
         policy::masked_units(&hidden.decisions),
-        ["mnt-data-caf\\xc3\\xa9.mount"]
-    );
-    // NAILS reads the type and the options as they are written, an octal
-    // escape in them too, so they need only be UTF-8 text as written.
-    let root = root_with_fstab(b"/dev/vde1 /srv/backup ext4 defaults,nofail,x-caf\\351 0 2\n");
-    let hidden = hidden_fstab_of(root.path(), b"", false).unwrap();
-    assert_eq!(
-        policy::masked_units(&hidden.decisions),
-        ["srv-backup.mount"]
+        ["mnt-data-My\\x20Disk.mount"]
     );
 }
 
