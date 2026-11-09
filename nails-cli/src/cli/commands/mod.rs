@@ -140,8 +140,11 @@ pub(crate) fn report_lock_error(
 /// ([`report_lock_error`] reports them; the window's helper answers with them).
 ///
 /// A `deactivate` that takes no lock has not started the way back, and the
-/// session goes on: its body names the emergency, which needs no lock, as
-/// the next step, so no failure there strands the session.
+/// session goes on: where the gate refused the root or no lock can be taken
+/// there, its body names the emergency, which needs no lock, as the next
+/// step, so no failure there strands the session. A lock another operation
+/// holds names no emergency: that operation may be a way back already under
+/// way, which an emergency would race.
 pub(crate) fn lock_error_body(
     error: nails_core::app::lock::LockError,
     command: &'static str,
@@ -170,6 +173,10 @@ pub(crate) fn lock_error_body(
                 )),
             )
         }
+        LockError::Unavailable(error @ nails_core::NailsError::OperationInProgress { .. }) => (
+            ExitStatus::Failed,
+            ErrorBody::new("state_locked", error.to_string()),
+        ),
         LockError::Unavailable(error) => (
             ExitStatus::Failed,
             way_back(ErrorBody::new("state_locked", error.to_string())),
@@ -230,9 +237,11 @@ mod tests {
         );
     }
 
-    /// A deactivation that takes no lock started no way back: it names the
-    /// emergency, which needs no lock, as the next step. The other commands
-    /// do not.
+    /// A deactivation that takes no lock started no way back: where the gate
+    /// refused the root, or no lock can be taken there, it names the
+    /// emergency, which needs no lock, as the next step. A lock another
+    /// operation holds names none, since that may be a way back already
+    /// under way. The other commands never name it.
     #[test]
     fn a_deactivation_without_its_lock_names_the_emergency() {
         use super::lock_error_body;
@@ -250,6 +259,13 @@ mod tests {
             )))
         };
         let held = || LockError::Unavailable(NailsError::OperationInProgress { pid: 42 });
+        // No lock file can be made on a volume mounted read-only.
+        let read_only = || {
+            LockError::Unavailable(NailsError::io(
+                "/mnt/data/.lock",
+                std::io::Error::from_raw_os_error(nix::libc::EROFS),
+            ))
+        };
         let emergency = format!(
             "`{}` ends the session without the lock: it returns to the decoy where it can \
              prepare the return and powers off where it cannot",
@@ -261,7 +277,7 @@ mod tests {
                 ExitStatus::PreflightRefused,
                 "not_separate_volume",
             ),
-            (held(), ExitStatus::Failed, "state_locked"),
+            (read_only(), ExitStatus::Failed, "state_locked"),
         ] {
             let (exit, body) = lock_error_body(error, "deactivate");
             assert_eq!((exit, body.code), (status, code));
@@ -276,8 +292,15 @@ mod tests {
                 Some("emergency")
             );
         }
+        let (exit, body) = lock_error_body(held(), "deactivate");
+        assert_eq!((exit, body.code), (ExitStatus::Failed, "state_locked"));
+        assert_eq!(
+            body.message,
+            NailsError::OperationInProgress { pid: 42 }.to_string()
+        );
+        assert!(body.next.is_none(), "{body:?}");
         for command in ["discard", "activate"] {
-            for error in [refused(), held()] {
+            for error in [refused(), held(), read_only()] {
                 let (_, body) = lock_error_body(error, command);
                 assert!(!body.message.contains("emergency"), "{command}");
                 assert!(body.next.is_none(), "{command}");
