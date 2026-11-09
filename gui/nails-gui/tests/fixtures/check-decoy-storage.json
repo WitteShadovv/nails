@@ -10,7 +10,7 @@
         "status": "fail"
       },
       {
-        "message": "requires mounted hidden volume",
+        "message": "requires the hidden-volume check to pass",
         "name": "backend-entries",
         "status": "skipped"
       },
@@ -66,12 +66,12 @@
         "status": "pass"
       },
       {
-        "message": "requires mounted hidden volume",
+        "message": "requires the hidden-volume check to pass",
         "name": "symlink-support",
         "status": "skipped"
       },
       {
-        "message": "requires mounted hidden volume",
+        "message": "requires the hidden-volume check to pass",
         "name": "upper-fs-capability",
         "status": "skipped"
       },
@@ -86,7 +86,7 @@
         "status": "pass"
       },
       {
-        "message": "requires mounted hidden volume",
+        "message": "requires the hidden-volume check to pass",
         "name": "storage-readiness",
         "status": "skipped"
       },
@@ -123,12 +123,12 @@
         "status": "pass"
       },
       {
-        "message": "requires mounted hidden volume",
+        "message": "requires the hidden-volume check to pass",
         "name": "kernel-modules",
         "status": "skipped"
       },
       {
-        "message": "requires mounted hidden volume",
+        "message": "requires the hidden-volume check to pass",
         "name": "package-drift",
         "status": "skipped"
       },
@@ -138,7 +138,7 @@
         "status": "pass"
       },
       {
-        "message": "requires mounted hidden volume",
+        "message": "requires the hidden-volume check to pass",
         "name": "space",
         "status": "skipped"
       },
