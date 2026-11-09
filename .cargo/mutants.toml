@@ -62,6 +62,10 @@ exclude_re = [
     # it and finds the way clear either way.
     'nails-base/src/filesystem/automount/mod\.rs:\d+:\d+: replace > with >= in enters_its_end$',
 
+    # on_top opens the place with `PATH | NOFOLLOW | CLOEXEC`, three distinct
+    # bits, so `^` in place of either `|` passes the same flags.
+    'nails-base/src/filesystem/real/file_ops/mod\.rs:\d+:\d+: replace \| with \^ in on_top$',
+
     # --- Near-equivalent ---
 
     # on_the_way reads a link with read_link right after mount_root said the

@@ -72,9 +72,9 @@ const AUTOFS_SUPER_MAGIC: i128 = 0x0187;
 /// `statx` tells the automount points of NFS, CIFS, AFS and FUSE submounts
 /// (`STATX_ATTR_AUTOMOUNT`). autofs, which systemd's automount units and the
 /// automounters use, marks its points where `statx` does not look, so at
-/// the root of a mount the filesystem there is asked too ([`autofs_on_top`]):
-/// an autofs is an automount point nothing is mounted on yet, or the
-/// directory of an indirect map.
+/// the root of a mount the filesystem on top is asked too ([`on_top`]): an
+/// autofs is an automount point nothing is mounted on yet, or the directory
+/// of an indirect map.
 pub(super) fn mount_root(path: &Path) -> Result<MountRoot> {
     use rustix::fs::{AtFlags, CWD, FileType, StatxAttributes, StatxFlags, statx};
 
@@ -90,27 +90,45 @@ pub(super) fn mount_root(path: &Path) -> Result<MountRoot> {
                     .contains(attribute)
                     .then(|| stat.stx_attributes.contains(attribute))
             };
-            if FileType::from_raw_mode(u32::from(stat.stx_mode)) == FileType::Symlink {
-                Ok(MountRoot::Link)
-            } else if says(StatxAttributes::AUTOMOUNT) == Some(true) {
-                Ok(MountRoot::Automount)
-            } else {
-                match says(StatxAttributes::MOUNT_ROOT) {
-                    Some(true) if autofs_on_top(path)? => Ok(MountRoot::Automount),
-                    root => Ok(MountRoot::Entry(root)),
-                }
-            }
+            place(
+                FileType::from_raw_mode(u32::from(stat.stx_mode)) == FileType::Symlink,
+                says(StatxAttributes::AUTOMOUNT),
+                says(StatxAttributes::MOUNT_ROOT),
+                || on_top(path),
+            )
         }
         Err(rustix::io::Errno::NOSYS) => mount_root_without_statx(path),
         Err(e) => Err(NailsError::io(path, std::io::Error::from(e))),
     }
 }
 
-/// Whether the filesystem on top at `path`, the root of a mount, is an
-/// autofs, as `fstatfs` of an `O_PATH` descriptor says: opened so, without
-/// `O_DIRECTORY`, it neither follows a link there nor triggers an automount
-/// there, while `statfs` of the path would mount the point.
-fn autofs_on_top(path: &Path) -> Result<bool> {
+/// What a place is, from what one `statx` said of it: whether it is a
+/// `link`, and its `automount` and `mount_root` attributes, `None` where the
+/// kernel does not report one. Only at the root of a mount is `on_top` asked
+/// for the type of the filesystem on top there (an `f_type` of `statfs(2)`).
+pub(super) fn place(
+    link: bool,
+    automount: Option<bool>,
+    mount_root: Option<bool>,
+    on_top: impl FnOnce() -> Result<i128>,
+) -> Result<MountRoot> {
+    if link {
+        Ok(MountRoot::Link)
+    } else if automount == Some(true) {
+        Ok(MountRoot::Automount)
+    } else {
+        match mount_root {
+            Some(true) if on_top()? == AUTOFS_SUPER_MAGIC => Ok(MountRoot::Automount),
+            root => Ok(MountRoot::Entry(root)),
+        }
+    }
+}
+
+/// The type of the filesystem on top at `path` (an `f_type` of
+/// `statfs(2)`), as `fstatfs` of an `O_PATH` descriptor says: opened so,
+/// without `O_DIRECTORY`, it neither follows a link there nor triggers an
+/// automount there, while `statfs` of the path would mount the point.
+pub(super) fn on_top(path: &Path) -> Result<i128> {
     use rustix::fs::{CWD, Mode, OFlags, fstatfs, openat};
 
     let at = |e: rustix::io::Errno| NailsError::io(path, std::io::Error::from(e));
@@ -121,13 +139,7 @@ fn autofs_on_top(path: &Path) -> Result<bool> {
         Mode::empty(),
     )
     .map_err(at)?;
-    let stat = fstatfs(&fd).map_err(at)?;
-    Ok(is_autofs(i128::from(stat.f_type)))
-}
-
-/// Whether `f_type`, of a `statfs(2)`, names an autofs.
-fn is_autofs(f_type: i128) -> bool {
-    f_type == AUTOFS_SUPER_MAGIC
+    Ok(i128::from(fstatfs(&fd).map_err(at)?.f_type))
 }
 
 /// What `path` itself is where the kernel has no `statx`, as one `fstatat`
