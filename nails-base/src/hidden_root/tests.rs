@@ -901,6 +901,80 @@ fn on_a_decoy_filesystem_a_folder_bound_by_hand_where_a_line_mounts_that_filesys
 }
 
 #[test]
+fn on_a_decoy_filesystem_a_line_that_names_a_subvolume_by_its_id_makes_only_that_subvolume() {
+    // The decoy's fstab mounts its /home subvolume, id 257, by subvolid=
+    // alone, and the root is a subvolume nested in it: the mount table shows
+    // each subvolume's id in its options.
+    let nested = |home: &str| {
+        format!(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             2 1 0:40 /home /home rw - btrfs /dev/vda2 rw,{home}\n\
+             30 1 0:40 /home/u/vault /mnt/data rw - btrfs /dev/vda2 \
+             rw,subvolid=300,subvol=/home/u/vault\n"
+        )
+    };
+    let shown = "subvolid=257,subvol=/home";
+    let line = |options: &str| format!("/dev/vda2 /home btrfs {options} 0 0\n");
+    for options in ["subvolid=257", "subvol=/home,subvolid=257"] {
+        let fs = decoy_fs(&nested(shown), &line(options));
+        assert!(elsewhere_on_the_decoy(&fs).is_empty(), "{options}");
+    }
+    // Another id, one btrfs might read in another way or that is no number,
+    // and a line whose two names do not both name that subvolume make no
+    // mount of the decoy's.
+    for options in [
+        "subvolid=258",
+        "subvolid=0257",
+        "subvolid=0x101",
+        "subvolid=home",
+        "subvolid=",
+        "subvol=/home,subvolid=258",
+        "subvol=/srv,subvolid=257",
+    ] {
+        let fs = decoy_fs(&nested(shown), &line(options));
+        assert_eq!(
+            elsewhere_on_the_decoy(&fs),
+            vec![PathBuf::from("/home")],
+            "{options}"
+        );
+    }
+    // Neither does the line when the mount table shows no id for the mount.
+    let fs = decoy_fs(&nested("subvol=/home"), &line("subvolid=257"));
+    assert_eq!(elsewhere_on_the_decoy(&fs), vec![PathBuf::from("/home")]);
+    // A folder of subvolume 257 bound by hand over /home shows its id too,
+    // but no subvolume: the line does not make that mount.
+    let bound = format!(
+        "{}40 2 0:40 /home/u /home rw - btrfs /dev/vda2 rw,{shown}\n",
+        nested(shown)
+    );
+    assert_eq!(
+        elsewhere_on_the_decoy(&decoy_fs(&bound, &line("subvolid=257"))),
+        vec![PathBuf::from("/home")]
+    );
+    // The root's own subvolume, id 300, mounted by hand over the decoy's
+    // /home: the line mounts subvolume 257, not this one.
+    let over = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                2 1 0:40 /home /home rw - btrfs /dev/vda2 rw,subvolid=257,subvol=/home\n\
+                30 1 0:40 /vault /mnt/data rw - btrfs /dev/vda2 rw,subvolid=300,subvol=/vault\n\
+                40 2 0:40 /vault /home rw - btrfs /dev/vda2 rw,subvolid=300,subvol=/vault\n";
+    assert_eq!(
+        elsewhere_on_the_decoy(&decoy_fs(over, &line("subvolid=257"))),
+        vec![PathBuf::from("/home")]
+    );
+    // The top of the filesystem has id 5, which subvolid=0 names as well.
+    let top = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+               2 1 0:40 / /mnt/pool rw - btrfs /dev/vda2 rw,subvolid=5,subvol=/\n\
+               30 1 0:40 /vault /mnt/data rw - btrfs /dev/vda2 rw,subvolid=300,subvol=/vault\n";
+    for id in ["5", "0"] {
+        let fstab = format!("/dev/vda2 /mnt/pool btrfs subvolid={id} 0 0\n");
+        assert!(
+            elsewhere_on_the_decoy(&decoy_fs(top, &fstab)).is_empty(),
+            "{id}"
+        );
+    }
+}
+
+#[test]
 fn on_a_decoy_filesystem_a_zfs_dataset_is_named_by_its_source() {
     // NixOS mounts a dataset with a legacy mount point by an fstab line that
     // names it: no device shows for either.

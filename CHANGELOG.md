@@ -1423,9 +1423,11 @@ of this changelog for that version becomes the release notes word for word, and
   itself passes. For a root on a filesystem the decoy uses that `--allow-decoy-storage` accepted,
   the decoy's own mounts of that filesystem do not count, the one at `/` and those a line of
   `/etc/fstab` makes (a line that names the mount's device, or the ZFS dataset, and mounts what it
-  shows, or a bind line from another of the decoy's own mounts of it), and neither does a mount
-  that shows none of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs
-  subvolume). So the `hidden-volume` check passes a bind of a folder of `/` and a subvolume of a
+  shows, on btrfs the subvolume its `subvol=` or `subvolid=` names as the mount table shows that
+  subvolume's path and id, so a `subvolid=` that cannot be read on either side makes none, or a
+  bind line from another of the decoy's own mounts of it), and neither does a mount that shows none
+  of the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So the
+  `hidden-volume` check passes a bind of a folder of `/` and a subvolume of a
   filesystem the fstab mounts with the flag's warning, though `backend-entries` still refuses such
   a root while a line of the fstab names its filesystem's device. A separate drive also mounted at
   `/srv` is refused, and so is the copy that mount propagation makes of a mount at or below a bind

@@ -1155,10 +1155,14 @@ A hidden root on a filesystem the decoy uses, accepted with
 One is the decoy's own mounts of that filesystem: the one at `/`, and one that
 a line of `/etc/fstab` makes. That is a line for that mount point that names
 the mount's device (for a ZFS dataset, the dataset) and mounts what the mount
-shows: the filesystem's top, or the btrfs subvolume its `subvol=` names, but
-never a folder bound there by hand. Or it is a bind line whose source lies on
-another of the decoy's own mounts of that filesystem, and the mount shows that
-source's folder. The other is a mount that shows none of the root's folder,
+shows: the filesystem's top, or the btrfs subvolume its `subvol=` or
+`subvolid=` names (with both, the one both name), as the mount table shows
+that subvolume's path and id, but never a folder bound there by hand. Or it is
+a bind line whose source lies on another of the decoy's own mounts of that
+filesystem, and the mount shows that source's folder. A line whose
+`subvolid=` is no number makes no mount of the decoy's, and neither does a
+line with `subvolid=` for a mount whose id the mount table does not show. The
+other is a mount that shows none of the root's folder,
 such as NixOS's read-only bind of `/nix/store` beside a bind of a folder of
 `/`, or another btrfs subvolume. So the `hidden-volume` check passes a bind of
 a folder of `/`, or a subvolume of a filesystem the fstab mounts, with the
