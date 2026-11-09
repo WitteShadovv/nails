@@ -35,47 +35,10 @@ impl<F: Filesystem> Verifier<F> {
         let suppress_hidden_volume = host_context_inactive || self.scope_to_decoy || in_session;
 
         // 2. Check hidden volume path for accessibility.
-        //
-        // Only a *genuine* hidden-volume location is an exposure. A genuine
-        // location is one of:
-        //   * an **explicitly configured** root (from a config file or a CLI
-        //     override) — something the operator pointed NAILS at; or
-        //   * a root that is a **genuinely attached** hidden volume: mounted on
-        //     its own device and carrying a NAILS marker (`state.json` or
-        //     `config/nails.toml`), the attach gate the rest of NAILS already
-        //     uses for write safety.
-        //
-        // When NAILS runs with no config (and no `--hidden-volume-root`), the
-        // root *defaults* to the binary's own install directory
-        // (`derive_hidden_volume_root`). For a read-only nix-store install that is
-        // a store path like `/nix/store/…-nails-…/bin`, which exists and — with a
-        // dedicated store image — even sits on its own device, yet is the
-        // program's install location, not a mounted hidden volume. Flagging it
-        // reported the install dir as an accessible hidden volume, a false
-        // positive that made a clean post-deactivation `verify --deep` exit
-        // non-zero. The marker requirement is what separates that read-only store
-        // dir (no marker) from a real hidden volume the binary lives on (which
-        // carries a marker), so a defaulted root is reported only when it is a
-        // genuinely attached, marked volume.
         let hidden_vol = &config.hidden_volume_root;
         paths_checked += 1;
-        let is_binary_default = *hidden_vol == crate::config::derive_hidden_volume_root();
-        let attached_marked_volume =
-            crate::hidden_root::HiddenRoot::verify_attached(&self.filesystem, hidden_vol, true)?
-                .is_attached();
-        let is_genuine_hidden_location = !is_binary_default || attached_marked_volume;
-        if !suppress_hidden_volume
-            && is_genuine_hidden_location
-            && self.filesystem.path_exists(hidden_vol)?
-        {
-            findings.push(
-                Finding::new(
-                    Severity::Warn,
-                    "config",
-                    format!("Hidden volume path is accessible: {}", hidden_vol.display()),
-                )
-                .with_fix_guidance("Ensure hidden volume is unmounted when not in use"),
-            );
+        if !suppress_hidden_volume {
+            findings.extend(self.hidden_volume_exposure(hidden_vol));
         }
 
         // 3. Check log directory for remaining logs.
@@ -92,10 +55,30 @@ impl<F: Filesystem> Verifier<F> {
         paths_checked += 1;
         let log_is_on_hidden_volume =
             !hidden_vol.as_os_str().is_empty() && log_path.starts_with(hidden_vol);
-        if !log_is_on_hidden_volume
-            && self.filesystem.path_exists(log_path)?
-            && self.filesystem.is_directory(log_path)?
-        {
+        let log_dir = if log_is_on_hidden_volume {
+            Ok(false)
+        } else {
+            self.filesystem.path_exists(log_path).and_then(|exists| {
+                if exists {
+                    self.filesystem.is_directory(log_path)
+                } else {
+                    Ok(false)
+                }
+            })
+        };
+        if let Err(error) = &log_dir {
+            findings.push(untold(
+                Severity::Warn,
+                "config",
+                &format!(
+                    "Could not tell whether log files are left in the configured log directory {}",
+                    log_path.display()
+                ),
+                log_path,
+                error,
+            ));
+        }
+        if matches!(log_dir, Ok(true)) {
             let log_files = self.filesystem.find_files_with_pattern(log_path, "nails")?;
             for log_file in log_files {
                 findings.push(
@@ -115,8 +98,13 @@ impl<F: Filesystem> Verifier<F> {
         // 4. Check state file location
         let state_path = &config.state_file_path;
         paths_checked += 1;
-        if !suppress_hidden_volume && self.filesystem.path_exists(state_path)? {
-            findings.push(
+        let state_file = if suppress_hidden_volume {
+            Ok(false)
+        } else {
+            self.filesystem.path_exists(state_path)
+        };
+        match state_file {
+            Ok(true) => findings.push(
                 Finding::new(
                     Severity::Warn,
                     "config",
@@ -126,7 +114,18 @@ impl<F: Filesystem> Verifier<F> {
                     ),
                 )
                 .with_fix_guidance("State file should only exist on hidden volume when active"),
-            );
+            ),
+            Ok(false) => {}
+            Err(error) => findings.push(untold(
+                Severity::Warn,
+                "config",
+                &format!(
+                    "Could not tell whether a state file exists at the configured path {}",
+                    state_path.display()
+                ),
+                state_path,
+                &error,
+            )),
         }
 
         if self.scope_to_decoy {
@@ -146,6 +145,96 @@ impl<F: Filesystem> Verifier<F> {
         }
 
         Ok((findings, paths_checked))
+    }
+
+    /// The finding for the hidden volume path `root`, when a genuine
+    /// hidden-volume location is accessible there.
+    ///
+    /// Only a *genuine* hidden-volume location is an exposure. A genuine
+    /// location is one of:
+    ///   * an **explicitly configured** root (from a config file or a CLI
+    ///     override) — something the operator pointed NAILS at; or
+    ///   * a root that is a **genuinely attached** hidden volume: mounted on
+    ///     its own device and carrying a NAILS marker (`state.json` or
+    ///     `config/nails.toml`), the attach gate the rest of NAILS already
+    ///     uses for write safety.
+    ///
+    /// When NAILS runs with no config (and no `--hidden-volume-root`), the
+    /// root *defaults* to the binary's own install directory
+    /// (`derive_hidden_volume_root`). For a read-only nix-store install that
+    /// is a store path like `/nix/store/…-nails-…/bin`, which exists and —
+    /// with a dedicated store image — even sits on its own device, yet is the
+    /// program's install location, not a mounted hidden volume. Flagging it
+    /// reported the install dir as an accessible hidden volume, a false
+    /// positive that made a clean post-deactivation `verify --deep` exit
+    /// non-zero. The marker requirement is what separates that read-only
+    /// store dir (no marker) from a real hidden volume the binary lives on
+    /// (which carries a marker), so a defaulted root is reported only when it
+    /// is a genuinely attached, marked volume.
+    ///
+    /// A defaulted root the gate cannot tell about counts as genuine, with
+    /// why in the finding, and a root that cannot be looked up is one verify
+    /// cannot tell is accessible ([`untold`]).
+    fn hidden_volume_exposure(&self, root: &Path) -> Option<Finding> {
+        let genuine = if *root == crate::config::derive_hidden_volume_root() {
+            self.attached_and_marked(root)
+        } else {
+            Ok(true)
+        };
+        if genuine == Ok(false) {
+            return None;
+        }
+        match self.filesystem.path_exists(root) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(error) => {
+                return Some(untold(
+                    Severity::Warn,
+                    "config",
+                    &format!(
+                        "Could not tell whether the hidden volume path {} is accessible",
+                        root.display()
+                    ),
+                    root,
+                    &error,
+                ));
+            }
+        }
+        let message = match genuine {
+            Ok(_) => format!("Hidden volume path is accessible: {}", root.display()),
+            Err(reason) => format!(
+                "Hidden volume path is accessible: {}, and verify could not tell whether it is a \
+                 mounted hidden volume or only the folder the program runs from: {reason}",
+                root.display()
+            ),
+        };
+        Some(
+            Finding::new(Severity::Warn, "config", message)
+                .with_fix_guidance("Ensure hidden volume is unmounted when not in use"),
+        )
+    }
+
+    /// Whether `root` is a hidden volume the attach gate takes for attached,
+    /// and that carries a NAILS marker, as
+    /// [`HiddenRoot::verify_attached`](crate::hidden_root::HiddenRoot::verify_attached)
+    /// decides. `Err` with the reason where the gate cannot tell: the root,
+    /// the mount table or what tells where the root lives cannot be read, or
+    /// neither marker can be looked up.
+    fn attached_and_marked(&self, root: &Path) -> std::result::Result<bool, String> {
+        use crate::hidden_root::{Assessment, HiddenRoot, RefusalKind};
+        match HiddenRoot::assess(&self.filesystem, root) {
+            Err(error) => Err(error.to_string()),
+            Ok(Assessment::Refused(refusal)) => match refusal.kind {
+                RefusalKind::LookupFailed { .. }
+                | RefusalKind::NotLookedUp { .. }
+                | RefusalKind::MountTableUnreadable { .. }
+                | RefusalKind::StorageUnjudged { .. } => Err(refusal.reason),
+                _ => Ok(false),
+            },
+            Ok(Assessment::Attached | Assessment::Warned(_)) => {
+                HiddenRoot::has_marker(&self.filesystem, root).map_err(|error| error.to_string())
+            }
+        }
     }
 
     /// Check state file for indicators of incomplete deactivation

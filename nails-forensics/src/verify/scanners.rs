@@ -13,6 +13,7 @@
 //! that the expected `/var/lib/nixos` drift is deliberately not treated as a
 //! leak. Every scanner is read-only — it opens files, it never writes one.
 
+use super::verifier::untold;
 use super::{Finding, Severity};
 use crate::Result;
 use crate::filesystem::Filesystem;
@@ -105,17 +106,41 @@ impl<F: Filesystem> ArtifactScanner<F> for DebianPackageDriftScanner {
         for (live_path, baseline_name, label) in DEBIAN_PACKAGE_DBS {
             let live = rebase(Path::new(live_path));
             // Only compare databases that exist on the host; a host without apt
-            // logs is not a Debian host and has nothing to drift.
-            if !fs.path_exists(&live)? {
-                continue;
+            // logs is not a Debian host and has nothing to drift. One that
+            // cannot be looked up may have drifted.
+            match fs.path_exists(&live) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    scan.findings.push(untold(
+                        Severity::Warn,
+                        "package-drift",
+                        &format!(
+                            "Could not tell whether {label} changed since activation ({live_path})"
+                        ),
+                        &live,
+                        &error,
+                    ));
+                    continue;
+                }
             }
             let baseline = baseline_dir.join(baseline_name);
-            if !fs.path_exists(&baseline)? {
-                scan.not_checked.push(format!(
-                    "apt/dpkg drift for {live_path} (no activation baseline at {})",
-                    baseline.display()
-                ));
-                continue;
+            match fs.path_exists(&baseline) {
+                Ok(true) => {}
+                Ok(false) => {
+                    scan.not_checked.push(format!(
+                        "apt/dpkg drift for {live_path} (no activation baseline at {})",
+                        baseline.display()
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    scan.not_checked.push(format!(
+                        "apt/dpkg drift for {live_path} (its activation baseline could not be \
+                         looked up: {error})"
+                    ));
+                    continue;
+                }
             }
 
             // Reads only: compare the live database with the stored baseline.
@@ -259,6 +284,54 @@ mod tests {
                 .any(|note| note.contains("baseline")),
             "{:?}",
             scan
+        );
+    }
+
+    /// A database or a baseline that cannot be looked up was taken for a
+    /// missing one: a database the host has no copy of, or no baseline to
+    /// compare it with. A database is now a warning that verify cannot tell
+    /// whether it drifted, a baseline a line among what was not checked
+    /// with the error, and the scan goes on with the next database.
+    #[test]
+    fn debian_scanner_names_what_it_cannot_look_up_and_goes_on() {
+        let fs = MockFilesystem::new();
+        let hidden = Path::new("/mnt/hidden");
+        let baseline = hidden.join(PACKAGE_BASELINE_DIR);
+        fs.mock_set_lookup_error("/var/lib/dpkg/status", std::io::ErrorKind::PermissionDenied);
+        fs.mock_set_path_exists("/var/log/apt/history.log", true);
+        fs.mock_set_lookup_error(
+            baseline.join("apt-history.log").to_str().unwrap(),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        fs.mock_add_file("/var/log/dpkg.log", "install nmap\n");
+        fs.mock_add_file(baseline.join("dpkg.log").to_str().unwrap(), "");
+
+        let scan = DebianPackageDriftScanner
+            .scan(&fs, &identity, Some(hidden))
+            .unwrap();
+
+        assert_eq!(scan.findings.len(), 2, "{scan:?}");
+        assert_eq!(scan.findings[0].severity, Severity::Warn);
+        assert_eq!(scan.findings[0].category, "package-drift");
+        assert_eq!(
+            scan.findings[0].message,
+            "Could not tell whether the dpkg installed-package database changed since activation \
+             (/var/lib/dpkg/status): Mock: the lookup fails here"
+        );
+        // The next databases are still compared.
+        assert!(
+            scan.findings[1]
+                .message
+                .contains("/var/log/dpkg.log differs"),
+            "{scan:?}"
+        );
+        assert_eq!(
+            scan.not_checked,
+            vec![format!(
+                "apt/dpkg drift for /var/log/apt/history.log (its activation baseline could not \
+                 be looked up: {}: Mock: the lookup fails here)",
+                baseline.join("apt-history.log").display()
+            )]
         );
     }
 

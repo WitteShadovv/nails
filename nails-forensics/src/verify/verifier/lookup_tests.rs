@@ -8,11 +8,12 @@
 
 use super::Verifier;
 use crate::MockFilesystem;
+use crate::config::Config;
 use crate::filesystem::PathKind;
 use crate::residue_catalog::ResidueKind;
-use crate::verify::{Finding, Severity, VerifyStatus};
+use crate::verify::{Finding, Severity, StateFileStatus, VerifyStatus};
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The error text the mock gives a lookup it fails.
 const MOCK: &str = "Mock: the lookup fails here";
@@ -173,4 +174,145 @@ fn an_artifact_path_verify_cannot_look_up_is_one_it_cannot_tell() {
         pivot.message,
         format!("Could not tell whether an artifact file is at /mnt/nails-pivot: {MOCK}")
     );
+}
+
+/// A verifier over `fs` with `config` and no state file.
+fn configured(fs: &MockFilesystem, config: Config) -> Verifier<MockFilesystem> {
+    Verifier::with_config(fs.clone(), config, None, StateFileStatus::NotChecked)
+}
+
+/// The configured paths verify cannot look up: the hidden volume path, the
+/// log directory off the volume and the state file were taken for missing.
+/// Each is a warning that verify could not tell.
+#[test]
+fn configured_paths_verify_cannot_look_up_warn() {
+    let fs = MockFilesystem::new();
+    for path in ["/mnt/test-hidden", "/var/log/nails-test", "/srv/state.json"] {
+        fs.mock_set_lookup_error(path, ErrorKind::PermissionDenied);
+    }
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/test-hidden"),
+        log_path: PathBuf::from("/var/log/nails-test"),
+        state_file_path: PathBuf::from("/srv/state.json"),
+        ..Config::default()
+    };
+    let (findings, checked) = configured(&fs, config.clone())
+        .check_config_paths(&config, false)
+        .unwrap();
+    assert_eq!(checked, 3);
+    for message in [
+        format!(
+            "Could not tell whether the hidden volume path /mnt/test-hidden is accessible: {MOCK}"
+        ),
+        format!(
+            "Could not tell whether log files are left in the configured log directory \
+             /var/log/nails-test: {MOCK}"
+        ),
+        format!(
+            "Could not tell whether a state file exists at the configured path \
+             /srv/state.json: {MOCK}"
+        ),
+    ] {
+        let found = finding(&findings, &message);
+        assert_eq!(found.message, message);
+        assert_eq!(found.severity, Severity::Warn);
+        assert_eq!(found.category, "config");
+    }
+}
+
+/// The hidden root defaults to the binary's folder, which counts only when
+/// the attach gate takes it for a mounted, marked volume. Where the gate
+/// cannot tell (no marker can be looked up, or no mount table read), the
+/// root counts as genuine: the exposure is still reported, saying what
+/// verify could not tell, where before the scan stopped with the error or
+/// reported nothing.
+#[test]
+fn a_defaulted_root_the_gate_cannot_tell_about_still_reports_its_exposure() {
+    let root = crate::config::derive_hidden_volume_root();
+    let config = || Config {
+        hidden_volume_root: root.clone(),
+        ..Config::default()
+    };
+    // Mounted on its own device, with markers that cannot be looked up.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mounted(&root, true);
+    fs.mock_set_device_id(Path::new("/"), 1);
+    fs.mock_set_device_id(&root, 42);
+    for marker in ["state.json", "config"] {
+        fs.mock_set_lookup_error(
+            root.join(marker).to_str().unwrap(),
+            ErrorKind::PermissionDenied,
+        );
+    }
+    let result = configured(&fs, config()).run(false).unwrap();
+    let exposure = finding(&result.findings, "Hidden volume path is accessible");
+    assert_eq!(exposure.severity, Severity::Warn);
+    assert!(
+        exposure.message.starts_with(&format!(
+            "Hidden volume path is accessible: {}, and verify could not tell whether it is a \
+             mounted hidden volume or only the folder the program runs from: ",
+            root.display()
+        )) && exposure.message.contains("state.json"),
+        "{exposure:?}"
+    );
+    assert_eq!(result.status, VerifyStatus::Warning);
+
+    // No mount table: the gate cannot tell either.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mount_table_error("no mountinfo");
+    let result = configured(&fs, config()).run(false).unwrap();
+    let exposure = finding(&result.findings, "Hidden volume path is accessible");
+    assert!(
+        exposure.message.contains("the mount table cannot be read"),
+        "{exposure:?}"
+    );
+
+    // A root that cannot be looked up is one verify cannot tell is
+    // accessible.
+    let fs = MockFilesystem::new();
+    fs.mock_set_lookup_error(root.to_str().unwrap(), ErrorKind::PermissionDenied);
+    let result = configured(&fs, config()).run(false).unwrap();
+    let message = format!(
+        "Could not tell whether the hidden volume path {} is accessible: {MOCK}",
+        root.display()
+    );
+    assert_eq!(finding(&result.findings, &message).severity, Severity::Warn);
+}
+
+/// What the deep scan cannot look up: a temporary or log directory, a shell
+/// history and a desktop recency file were skipped as missing. Each is a
+/// warning that verify could not tell what it holds.
+#[test]
+fn deep_scan_paths_verify_cannot_look_up_warn() {
+    let fs = MockFilesystem::new();
+    for path in [
+        "/var/tmp",
+        "/root/.bash_history",
+        "/root/.local/share/recently-used.xbel",
+    ] {
+        fs.mock_set_lookup_error(path, ErrorKind::PermissionDenied);
+    }
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/hidden"),
+        ..Config::default()
+    };
+    let findings = configured(&fs, config).deep_scan().unwrap();
+    for message in [
+        format!("Could not tell whether NAILS-related files are left in /var/tmp: {MOCK}"),
+        format!(
+            "Could not tell whether the shell history /root/.bash_history contains nails \
+             commands: {MOCK}"
+        ),
+        format!(
+            "Could not tell whether the desktop recency file \
+             /root/.local/share/recently-used.xbel references the hidden volume root: {MOCK}"
+        ),
+    ] {
+        let found = finding(&findings, &message);
+        assert_eq!(found.message, message);
+        assert_eq!(found.severity, Severity::Warn);
+        assert_eq!(found.category, "file");
+    }
 }
