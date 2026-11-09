@@ -207,9 +207,10 @@ Keep all of it `root`-owned on the hidden volume.
    update, is in the middle of something the switch would cut short; a logind
    that does not answer whether one does fails it too, unless PID 1 says
    logind does not run), `unattended-upgrade-run` (no daily unattended-upgrade
-   run is in progress, nor `apt-daily.service`, whose download takes the same
-   lock, which the switch would make unattended-upgrades' shutdown helper stop
-   and log on the decoy disk; try again in a few minutes, see
+   run is in progress, which the switch would make unattended-upgrades'
+   shutdown helper stop and log on the decoy disk, nor `apt-daily.service`,
+   whose download run can take the same lock as the switch begins; try again
+   in a few minutes, see
    [the decoy requirements](decoy-requirements.md#unattended-upgrades)),
    `fstab-policy`,
    `kernel-modules` (no hidden session deleted or replaced the running
