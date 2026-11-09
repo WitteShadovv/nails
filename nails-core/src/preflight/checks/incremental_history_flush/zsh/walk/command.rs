@@ -6,8 +6,8 @@
 //! `set -o` turns on or off ([`super::options`]), the files a `source` or `.`
 //! reads, what an `eval` of words the walk can read runs, the
 //! `ZDOTDIR` and `XDG_CONFIG_HOME` an assignment sets, the directories one
-//! adds to `fpath`, the functions an `autoload` marks, and the options any
-//! other word names.
+//! adds to `fpath`, the functions an `autoload` or the like marks
+//! ([`super::autoload`]), and the options any other word names.
 
 use super::super::OH_MY_ZSH;
 use super::super::arith::READ_AS_NUMBER;
@@ -149,22 +149,6 @@ fn substitutions(text: &str) -> Vec<String> {
     found
 }
 
-/// Whether `args`, the words after `functions`, `typeset` or the like
-/// (`command`), mark the functions they name to be autoloaded: `functions`
-/// with `-u` or `-U`, `typeset` with `-f` and one of those.
-fn marks_autoload(command: &str, args: &[Word]) -> bool {
-    let flags: String = args
-        .iter()
-        .take_while(|arg| arg.text.starts_with('-') && arg.text != "--")
-        .map(|arg| arg.text.as_str())
-        .collect();
-    let autoload = flags.contains(['u', 'U']);
-    match command {
-        "functions" => autoload,
-        _ => autoload && flags.contains('f'),
-    }
-}
-
 impl Walker<'_> {
     /// The items of the innermost loop over `var`, when the check can list
     /// them.
@@ -212,71 +196,6 @@ impl Walker<'_> {
             .and_then(|text| text.strip_suffix('}'))
             .unwrap_or(text);
         is_name(name).then_some(name)
-    }
-
-    /// The events of an `autoload`, or of the like (`command`), of `args`:
-    /// each function it marks, by name or by the path of its file. Which
-    /// functions it marks is a doubt with `-m` (patterns), `-w` (compiled
-    /// files), or `-X` without a name (the function it runs in).
-    pub(super) fn autoload(&mut self, command: &str, args: &[Word]) {
-        let mut flags = String::new();
-        let mut names = Vec::new();
-        let mut options = true;
-        for arg in args {
-            self.mention(&arg.text);
-            if options && !arg.expands && arg.text.len() > 1 && arg.text.starts_with(['-', '+']) {
-                if arg.text == "--" {
-                    options = false;
-                } else {
-                    flags.push_str(&arg.text);
-                }
-                continue;
-            }
-            options = false;
-            names.push(arg.clone());
-        }
-        if flags.contains(['m', 'w']) || (names.is_empty() && flags.contains('X')) {
-            let words: Vec<&str> = std::iter::once(command)
-                .chain(args.iter().map(|arg| arg.text.as_str()))
-                .collect();
-            self.events.push(Event::Doubt(format!(
-                "it cannot tell which functions `{}` in {} loads",
-                words.join(" "),
-                self.place
-            )));
-            return;
-        }
-        // With `-d`, zsh looks for a function it cannot find at the path
-        // given in fpath, by its name.
-        if flags.contains('d') {
-            let bases: Vec<Word> = names
-                .iter()
-                .filter_map(|name| {
-                    let (_, base) = name.text.rsplit_once('/')?;
-                    Some(Word {
-                        text: base.to_string(),
-                        expands: name.expands,
-                        quoted: false,
-                        bare: name.bare,
-                    })
-                })
-                .collect();
-            names.extend(bases);
-        }
-        // Without `-U` zsh expands aliases in the function's code as it
-        // loads it.
-        let unaliased = args
-            .iter()
-            .any(|arg| !arg.expands && arg.text.starts_with('-') && arg.text.contains('U'));
-        if !unaliased {
-            self.events.extend(
-                names
-                    .iter()
-                    .filter(|name| !name.expands)
-                    .map(|name| Event::Expanding(name.text.clone())),
-            );
-        }
-        self.events.extend(names.into_iter().map(Event::Autoload));
     }
 
     /// The events of zsh code `text` that a command of the file runs, read as
@@ -637,11 +556,11 @@ impl Walker<'_> {
                 self.autoloads += 1;
                 self.autoload(&command.text, &args);
             }
-            "functions" | "typeset" | "declare" | "local"
-                if marks_autoload(&command.text, &args) =>
-            {
-                self.autoload(&command.text, &args);
-            }
+            // `functions -u`, `typeset -fu` and the like mark functions to be
+            // autoloaded ([`super::autoload`]); the others declare parameters
+            // or print functions.
+            "functions" | "typeset" | "declare" | "local" | "readonly"
+                if self.marked(&command.text, &args) => {}
             "export" | "typeset" | "declare" | "local" | "readonly" | "integer" | "float"
             | "private" => {
                 self.declared(&command.text, &args);
