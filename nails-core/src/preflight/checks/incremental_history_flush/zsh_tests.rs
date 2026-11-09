@@ -14,8 +14,8 @@ mod autoload;
 #[path = "zsh_runtime_tests.rs"]
 mod runtime;
 
-// Where a zsh's fpath starts, the stock compinit and promptinit, and
-// NixOS's generated files.
+// Where a zsh's fpath starts, the stock promptinit, a compinit zsh may load,
+// and NixOS's generated files.
 #[path = "zsh_install_tests.rs"]
 mod installed;
 
