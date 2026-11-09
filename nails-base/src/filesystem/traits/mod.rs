@@ -14,7 +14,9 @@ pub enum MountRoot {
     /// A symbolic link.
     Link,
     /// An automount point nothing is mounted on yet: looking at anything
-    /// below it mounts it.
+    /// below it mounts it. The root of an autofs, which systemd's automount
+    /// units and the automounters mount, is one, or the directory of an
+    /// indirect map, whose names are its points.
     Automount,
     /// Anything else: the root of a mount or not, or `None` where the kernel
     /// does not say (before Linux 5.8).
@@ -242,12 +244,16 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// symbolic link there nor triggers an automount: a link, an automount
     /// point nothing is mounted on yet, or anything else, with whether it is
     /// the root of a mount (`STATX_ATTR_MOUNT_ROOT`, Linux 5.8; a bind mount
-    /// counts, as it does in the mount table). An error when the path cannot
-    /// be looked up, one that does not exist among them. Looking it up changes
-    /// no access time of the path itself, but a link on the way to it is
-    /// followed, and its access time changes, and an automount point on the
-    /// way is mounted: a caller that must do neither looks at each directory
-    /// on the way first.
+    /// counts, as it does in the mount table). `statx` tells the automount
+    /// points of NFS, CIFS, AFS and FUSE submounts; autofs marks its own
+    /// where `statx` does not look, so at the root of a mount the filesystem
+    /// on top is asked as well, in a way that triggers no automount either,
+    /// and an autofs there is an automount point. An error when the path
+    /// cannot be looked up, one that does not exist among them. Looking it
+    /// up changes no access time of the path itself, but a link on the way
+    /// to it is followed, and its access time changes, and an automount
+    /// point on the way is mounted: a caller that must do neither looks at
+    /// each directory on the way first.
     fn mount_root(&self, path: &Path) -> Result<MountRoot>;
 
     /// Whether `path` itself is a symbolic link, as `lstat(2)` sees it: a link

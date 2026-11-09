@@ -577,9 +577,11 @@ of this changelog for that version becomes the release notes word for word, and
   lookup that would mount an automount point that nothing is mounted on yet: systemd's for an
   `x-systemd.automount` line, or a name in the directory of an automounter's indirect map, such as a
   home mounted on first use. Before each lookup it reads the links on the way without following them
-  and asks the mount table, as read when the check starts. Where the lookup would mount a point, it
-  is not made: the check says it cannot tell, names the path and the automount point, and says to
-  mount the point (for example `ls /usr/local`) and run `check` again. A warn-only check warns, the
+  and asks the mount table, as read when the check starts, and at the root of each mount on the way
+  the kernel which filesystem is on top, so that a point whose mount expired since is not looked up
+  either. Where the lookup would mount a point, it is not made: the check says it cannot tell, names
+  the path and the automount point, and says to mount the point (for example `ls /usr/local`) and
+  run `check` again. A warn-only check warns, the
   residue catalog also for a channel it would only note; `decoy-persistence` refuses for the
   journal, a log daemon or kdump (`--allow-persistent-decoy` lifts it), `fstab-policy` refuses, and
   so does `hidden-volume` in `check` for a hidden root behind such a point; `memory-wipe` and the
