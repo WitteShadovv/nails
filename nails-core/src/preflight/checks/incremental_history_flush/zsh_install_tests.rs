@@ -88,6 +88,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
                 user: Some("alice".to_string()),
                 ..Default::default()
             }),
+            started: None,
         }
     );
     // An FPATH in its environment replaces it, as zsh 5.9.2 takes it.
@@ -107,6 +108,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
             fpath: None,
             version: Some("5.9.2".to_string()),
             env: None,
+            started: None,
         }
     );
 }
