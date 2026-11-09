@@ -1789,10 +1789,11 @@ fn drift_scanners_that_do_not_run_are_named_as_not_checked() {
     );
 }
 
-/// A drift scanner that fails is named as not checked with its error, never
-/// dropped.
+/// A package database the drift scanner cannot look up made the scanner
+/// fail, and its whole scan was dropped. It is a warning that verify cannot
+/// tell whether the database drifted, never dropped, and the run warns.
 #[test]
-fn a_drift_scanner_that_fails_is_named_as_not_checked() {
+fn a_drift_database_verify_cannot_look_up_is_a_warning() {
     let fs = debian_host();
     fs.mock_set_lookup_error("/var/lib/dpkg/status", std::io::ErrorKind::PermissionDenied);
     let config = crate::config::Config {
@@ -1802,10 +1803,24 @@ fn a_drift_scanner_that_fails_is_named_as_not_checked() {
     let result = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked)
         .run(false)
         .unwrap();
+    let drift: Vec<&Finding> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "package-drift")
+        .collect();
+    assert_eq!(drift.len(), 1, "{:#?}", result.findings);
+    assert_eq!(drift[0].severity, Severity::Warn);
+    assert_eq!(
+        drift[0].message,
+        "Could not tell whether the dpkg installed-package database changed since activation \
+         (/var/lib/dpkg/status): Mock: the lookup fails here"
+    );
+    assert_eq!(result.status, VerifyStatus::Warning);
     assert!(
-        result.areas_not_checked.iter().any(|area| area
-            == "platform drift scanners (failed: /var/lib/dpkg/status: Mock: the lookup fails \
-                here)"),
+        !result
+            .areas_not_checked
+            .iter()
+            .any(|area| area.starts_with("platform drift scanners")),
         "{:?}",
         result.areas_not_checked
     );
