@@ -35,7 +35,10 @@
 #      passes it with the warning beside /srv, the fstab's mount of the
 #      filesystem, and lets the decoy's line for /srv be, and hidden-volume
 #      refuses it as mounted a second time once that filesystem is mounted at
-#      another folder too; for a bind of a folder of / the flag lets the
+#      another folder too; with /srv unmounted, backend-entries refuses the
+#      line for /srv, whose mount is not there, and the fix keeps it, and a
+#      bind line of the fstab for the root's folder fails it as well, the fix
+#      removing it; for a bind of a folder of / the flag lets the
 #      decoy's line for / be as well, while suspicious-nails-reference refuses
 #      that root (exit 4), as the decoy's /etc/nixos names the device it lies
 #      on by its label;
@@ -577,6 +580,36 @@ in
         machine.succeed("umount /mnt/again")
         result = run_command_capture("gate-allow-check-gone", bind_check)
         assert check_row(last_json(result), "hidden-volume")["status"] == "warn", result
+        # With /srv unmounted, nothing shows that the decoy uses that
+        # filesystem: its line for /srv fails backend-entries, and the fix
+        # keeps it.
+        machine.succeed("umount /srv")
+        result = run_command_capture("gate-allow-check-unmounted", bind_check)
+        report = last_json(result)
+        assert check_row(report, "hidden-volume")["status"] == "warn", report
+        assert_decoys_own_line(report, "/mnt/bind")
+        assert_exit_code(result, 4)
+        machine.succeed("mount /srv && mountpoint -q /srv")
+        # A bind line of the decoy's fstab for the root's folder mounts the
+        # volume at every boot: it fails backend-entries with the flag too,
+        # and the fix removes it.
+        machine.succeed("cp -P /etc/fstab /run/fstab.orig")
+        write_text_file(
+            "/run/fstab.gate",
+            machine.succeed("cat /etc/fstab") + "/srv/x /mnt/bind none bind 0 0\n",
+        )
+        machine.succeed("rm -f /etc/fstab && cp /run/fstab.gate /etc/fstab")
+        result = run_command_capture("gate-allow-check-bind-line", bind_check)
+        row = check_row(last_json(result), "backend-entries")
+        assert row["status"] == "fail", row
+        assert (
+            "/etc/fstab: '/srv/x /mnt/bind none' (it mounts the volume at /mnt/bind)"
+        ) in row["message"], row
+        assert row["remediation"] == (
+            "Remove the line long before the next use; open the volume by hand each time."
+        ), row
+        assert_exit_code(result, 4)
+        machine.succeed("rm -f /etc/fstab && mv /run/fstab.orig /etc/fstab")
         machine.succeed("umount /mnt/bind && rm -rf /srv/x")
 
     with subtest("--allow-decoy-storage lets the line for / be for a bind of a folder of /"):
