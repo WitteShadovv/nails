@@ -55,7 +55,11 @@
 #      line for the data disk or its mapping fails it too, and so does one
 #      that mounts the volume at /opt with --allow-decoy-storage, which warns
 #      in hidden-volume: the line mounts the volume itself, and the fix keeps
-#      it;
+#      it; with the data disk as an encrypted drive of the decoy's own, which
+#      its crypttab opens and its fstab mounts at /opt, check with
+#      --allow-decoy-storage passes a bind of a folder of it with the flag's
+#      warning and lets both lines be, while with the fstab line at /backup
+#      both still fail backend-entries and the fix keeps them;
 #  14. the accepted case: a whole session runs on a LUKS container file on
 #      /srv (activate warns, naming /srv and its copy-on-write snapshots), a
 #      hidden write lands in the container, and deactivate returns to a decoy
@@ -787,6 +791,72 @@ in
             "its own instead."
         ), row
         machine.succeed("rm -f /etc/fstab && mv /run/fstab.orig /etc/fstab")
+
+    with subtest("--allow-decoy-storage lets be the crypttab line of a drive the decoy mounts"):
+        # The data disk as an encrypted drive of the decoy's own: its crypttab
+        # opens the disk and its fstab mounts the volume, and the root is a
+        # bind of a folder of it. At /opt, a system folder, the flag lets both
+        # lines be. At /backup both still fail backend-entries, since such a
+        # line may name the hidden drive's disk, and the fix keeps them, as
+        # the decoy's own boot needs them.
+        machine.succeed("cp -P /etc/fstab /run/fstab.orig")
+        original = machine.succeed("cat /etc/fstab")
+        write_text_file("/etc/crypttab", "data /dev/disk/by-id/virtio-data none luks,nofail\n")
+        crypttab_finding = (
+            "/etc/crypttab: 'data /dev/disk/by-id/virtio-data' (it opens the volume at "
+            "/mnt/drive or a device it is stored on, and the decoy's own boot needs it)"
+        )
+        machine.succeed("umount /mnt/data && mkdir -p /mnt/drive")
+        drive_check = (
+            f"nails --config {config_for('/mnt/drive')} --json check --overlay-only "
+            "--allow-decoy-storage"
+        )
+        for place in ["/opt", "/backup"]:
+            write_text_file(
+                "/run/fstab.gate", original + f"/dev/mapper/data {place} ext4 defaults,nofail 0 2\n"
+            )
+            machine.succeed(
+                f"rm -f /etc/fstab && cp /run/fstab.gate /etc/fstab && mkdir -p {place} && "
+                f"mount /dev/mapper/data {place} && mkdir -p {place}/x && "
+                f"mount --bind {place}/x /mnt/drive"
+            )
+            result = run_command_capture("gate-crypttab-" + place.strip("/"), drive_check)
+            report = last_json(result)
+            row = check_row(report, "hidden-volume")
+            assert row["status"] == "warn", row
+            assert row["message"].startswith(
+                f"--allow-decoy-storage: using /mnt/drive although it is a bind mount of a "
+                f"folder of {place}"
+            ), row
+            row = check_row(report, "backend-entries")
+            if place == "/opt":
+                assert row["status"] == "pass", row
+                assert row["message"] == (
+                    "No fstab or crypttab entry names the volume at /mnt/drive other than the "
+                    "decoy's own line for /opt and its crypttab line "
+                    "'data /dev/disk/by-id/virtio-data', which unlock and mount the filesystem "
+                    "that --allow-decoy-storage accepted it on"
+                ), row
+                assert not failed_rows(report), failed_rows(report)
+                assert_exit_code(result, 0)
+            else:
+                assert row["status"] == "fail", row
+                for finding in [
+                    crypttab_finding,
+                    "/etc/fstab: '/dev/mapper/data /backup ext4' (it mounts the filesystem the "
+                    "volume at /mnt/drive is part of, and the decoy's own boot needs it)",
+                ]:
+                    assert finding in row["message"], (finding, row)
+                assert row["remediation"] == (
+                    "Do not remove a line the decoy's own boot needs: put the hidden root on "
+                    "storage of its own instead."
+                ), row
+                assert_exit_code(result, 4)
+            machine.succeed(f"umount /mnt/drive && rm -rf {place}/x && umount {place}")
+        machine.succeed(
+            "rm -f /etc/crypttab /etc/fstab && mv /run/fstab.orig /etc/fstab && rmdir /backup && "
+            "mount /dev/mapper/data /mnt/data"
+        )
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 
