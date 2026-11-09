@@ -265,6 +265,16 @@ impl MockFilesystem {
         Ok(std::time::SystemTime::now())
     }
 
+    pub(super) fn change_time_impl(&self, path: &Path) -> Result<std::time::SystemTime> {
+        Ok(self
+            .change_times
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .copied()
+            .unwrap_or(std::time::UNIX_EPOCH))
+    }
+
     pub(super) fn copy_tree_impl(&self, src: &Path, dst: &Path) -> Result<()> {
         self.op_log
             .lock()

@@ -224,6 +224,12 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
+    /// What the symbolic link `path` names, as `readlink(2)` reads it: the
+    /// link is not followed, so nothing it leads to is looked up. As in any
+    /// lookup, a link on the way to it is followed. An error when `path` is
+    /// no link or cannot be looked up.
+    fn read_link(&self, path: &Path) -> Result<PathBuf>;
+
     /// Whether `path` itself (never a symlink's target) is an overlayfs
     /// whiteout: a character device with device number 0:0, which an overlay's
     /// upper holds where the merged view deleted a file of a lower layer. A path
@@ -464,6 +470,15 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
 
     /// Get the modification time of a file.
     fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime>;
+
+    /// The status change time (`st_ctime`) of `path` itself, as `lstat(2)`
+    /// reads it: when its inode last changed, by a write, a rename, a link
+    /// made or removed, or a change of its owner or mode. A link at `path` is
+    /// not followed; a link on the way to it is. Unlike the modification
+    /// time, which `touch -d` sets and dpkg sets to a file's time in its
+    /// package, nothing but a change of the system clock sets it back. An
+    /// error when `path` cannot be looked up, a missing one included.
+    fn change_time(&self, path: &Path) -> Result<std::time::SystemTime>;
 
     // ------------------------------------------------------------------------
     // Copy Operations

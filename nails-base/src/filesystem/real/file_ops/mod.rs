@@ -80,6 +80,25 @@ pub(super) fn is_symlink(path: &Path) -> Result<bool> {
     Ok(path.is_symlink())
 }
 
+pub(super) fn change_time(path: &Path) -> Result<std::time::SystemTime> {
+    use std::os::unix::fs::MetadataExt;
+    use std::time::{Duration, UNIX_EPOCH};
+    let meta = std::fs::symlink_metadata(path).at_path(path)?;
+    // `st_ctim`: whole seconds from the epoch, which may be before it, and
+    // the nanoseconds past them.
+    let nanos = Duration::from_nanos(u64::try_from(meta.ctime_nsec()).unwrap_or(0));
+    let seconds = Duration::from_secs(meta.ctime().unsigned_abs());
+    Ok(if meta.ctime() < 0 {
+        UNIX_EPOCH - seconds + nanos
+    } else {
+        UNIX_EPOCH + seconds + nanos
+    })
+}
+
+pub(super) fn read_link(path: &Path) -> Result<PathBuf> {
+    std::fs::read_link(path).at_path(path)
+}
+
 pub(super) fn is_overlay_whiteout(path: &Path) -> Result<bool> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     Ok(std::fs::symlink_metadata(path)

@@ -541,6 +541,16 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned");
         times.insert(path.to_path_buf(), modified_time);
     }
+
+    /// Set the status change time
+    /// [`Filesystem::change_time`](crate::Filesystem::change_time) reports
+    /// for `path`.
+    pub fn mock_set_change_time(&self, path: &str, changed: std::time::SystemTime) {
+        self.change_times
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(PathBuf::from(path), changed);
+    }
 }
 
 #[cfg(test)]

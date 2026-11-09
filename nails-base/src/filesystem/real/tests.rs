@@ -451,6 +451,46 @@ fn test_real_modified_time_returns_timestamp_for_existing_file() {
     assert!(modified <= std::time::SystemTime::now());
 }
 
+#[test]
+fn change_time_is_when_the_path_itself_last_changed() {
+    use std::os::unix::fs::MetadataExt;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("file");
+    fs::write(&file, "data").unwrap();
+    let link = temp_dir.path().join("link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    let ctime = |path: &Path| {
+        let meta = fs::symlink_metadata(path).unwrap();
+        UNIX_EPOCH
+            + Duration::new(
+                u64::try_from(meta.ctime()).unwrap(),
+                u32::try_from(meta.ctime_nsec()).unwrap(),
+            )
+    };
+    assert_eq!(fs.change_time(&file).unwrap(), ctime(&file));
+    // A link's own change, not its target's; a dangling one has one too.
+    assert_eq!(fs.change_time(&link).unwrap(), ctime(&link));
+    let dangling = temp_dir.path().join("dangling");
+    std::os::unix::fs::symlink("nowhere", &dangling).unwrap();
+    assert_eq!(fs.change_time(&dangling).unwrap(), ctime(&dangling));
+    assert!(fs.change_time(&temp_dir.path().join("missing")).is_err());
+
+    // A modification time set back, as `touch -d` and dpkg set it, leaves
+    // the change time where the kernel put it.
+    let past = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(past)
+        .unwrap();
+    assert_eq!(fs.modified_time(&file).unwrap(), past);
+    assert!(fs.change_time(&file).unwrap() > past);
+}
+
 // ========================================================================
 // Tests for parse_submount_sources (extracted pure function)
 // ========================================================================
@@ -1119,6 +1159,34 @@ fn the_kernel_says_a_plain_directory_is_no_mount_point() {
         MountRoot::Entry(Some(true) | None)
     ));
     assert!(real.mount_root(&dir.path().join("missing")).is_err());
+}
+
+#[test]
+fn read_link_gives_the_target_without_following_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("home");
+    // A target that does not exist reads as well: nothing is looked up.
+    std::os::unix::fs::symlink("../net/missing/bob", &link).unwrap();
+    assert_eq!(
+        RealFilesystem.read_link(&link).unwrap(),
+        Path::new("../net/missing/bob")
+    );
+    let file = dir.path().join("file");
+    fs::write(&file, "text").unwrap();
+    let error = RealFilesystem.read_link(&file).unwrap_err();
+    assert_eq!(
+        error.io_kind(),
+        Some(std::io::ErrorKind::InvalidInput),
+        "{error}"
+    );
+    let error = RealFilesystem
+        .read_link(&dir.path().join("missing"))
+        .unwrap_err();
+    assert_eq!(
+        error.io_kind(),
+        Some(std::io::ErrorKind::NotFound),
+        "{error}"
+    );
 }
 
 #[test]

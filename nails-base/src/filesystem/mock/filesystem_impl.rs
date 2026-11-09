@@ -56,6 +56,10 @@ impl Filesystem for MockFilesystem {
         self.is_symlink_impl(path)
     }
 
+    fn read_link(&self, path: &Path) -> Result<PathBuf> {
+        self.read_link_impl(path)
+    }
+
     fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
         self.is_overlay_whiteout_impl(path)
     }
@@ -191,6 +195,10 @@ impl Filesystem for MockFilesystem {
 
     fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime> {
         self.modified_time_impl(path)
+    }
+
+    fn change_time(&self, path: &Path) -> Result<std::time::SystemTime> {
+        self.change_time_impl(path)
     }
 
     fn copy_file(&self, src: &Path, dst: &Path) -> Result<()> {
