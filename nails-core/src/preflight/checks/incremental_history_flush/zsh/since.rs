@@ -17,7 +17,11 @@
 //! directory on the way that is there, whose entries change as a file in it
 //! is made, removed or renamed. The Nix store and what is below it are left
 //! out: nothing in a store path changes once it is there, and a new one is
-//! reached only through a link that changed.
+//! reached only through a link that changed. On NixOS the link to the
+//! system it runs (`/run/current-system`), which each switch replaces,
+//! counts too, so a switch shows whatever `/etc` is made of: links into the
+//! store, or a mount of an image whose files may keep the image's change
+//! times.
 //!
 //! A change up to three seconds before the shell started counts too: the
 //! boot time its start is read from is cut to the second, the times are
@@ -42,6 +46,11 @@ const STORE: &str = "/nix/store";
 
 /// How many of the paths that changed a doubt names.
 const NAMED: usize = 3;
+
+/// What NixOS marks itself with, and the link to the system it runs, which
+/// each switch replaces.
+const NIXOS: &str = "/etc/NIXOS";
+const SYSTEM: &str = "/run/current-system";
 
 /// How each doubt of what changed after the shell started starts.
 pub(in super::super) const STALE: &str = "it cannot tell what the shell read as it started";
@@ -85,6 +94,22 @@ impl<F: Filesystem> Reader<'_, F> {
         let mut compared: HashSet<PathBuf> = HashSet::new();
         let mut changed: Vec<String> = Vec::new();
         let mut doubts = Vec::new();
+        // On NixOS each switch replaces the link to the system it starts,
+        // whatever /etc is made of (links into the store, or a mount of an
+        // image whose files may keep the image's change times).
+        if !matches!(self.fs.inode(Path::new(NIXOS)), Ok(None)) {
+            compared.insert(PathBuf::from(SYSTEM));
+            match self.fs.change_time(Path::new(SYSTEM)) {
+                Ok(time) if changed_since(time, started) => changed.push(SYSTEM.to_string()),
+                Ok(_) => {}
+                Err(error) => doubts.push(format!(
+                    "{STALE}, as when {SYSTEM} changed cannot be read ({})",
+                    error
+                        .io_kind()
+                        .map_or_else(|| error.to_string(), |kind| kind.to_string())
+                )),
+            }
+        }
         for path in paths {
             let counted = match self.counted(&path) {
                 Ok(counted) => counted,
