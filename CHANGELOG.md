@@ -1643,7 +1643,8 @@ of this changelog for that version becomes the release notes word for word, and
   powers the machine off instead, and one alert says so; one that finds no plan when it fires
   powers off the same way. Where the watcher can read no settings, it watches alert-only, never
   tears the session down, and says so in one alert; where it can read neither, one alert says
-  that mounted volumes are not watched.
+  that mounted volumes are not watched. The VM test `faults-backend-watch-planless` pulls the disk
+  from a hidden session whose plan cannot be read, and checks the one alert and the power-off.
 
 ### Security
 
