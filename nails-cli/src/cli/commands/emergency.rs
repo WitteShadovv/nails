@@ -87,15 +87,17 @@ pub fn execute(
     app::exit_status(&report)
 }
 
-/// Run the hot path in-process (the backend watcher, the sleep guard) and log
-/// its report.
-pub(crate) fn run_hot_path_with(finish: Finish) {
+/// Run the hot path in-process (the backend watcher, the sleep guard), log
+/// its report and hand it back: without a session plan it found nothing to
+/// act on ([`HotReport::found_nothing`]), and a return then does nothing.
+pub(crate) fn run_hot_path_with(finish: Finish) -> HotReport {
     let plan = nails_teardown::whole_root::plan::Plan::load(
         &nails_teardown::whole_root::plan::default_plan_path(),
     )
     .ok();
     let report = emergency::run(plan, &emergency::Host::system(), finish);
     log_report(&report);
+    report
 }
 
 /// Log the outcome and the phase timings (to the hidden-volume log while it is

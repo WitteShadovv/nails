@@ -20,7 +20,9 @@
 //! every mount then counts as the session's own storage, as no device tells
 //! it apart. Where neither can be read it never tears the session down
 //! unasked: it watches alert-only, or not at all, and tells the operator so
-//! once.
+//! once. Without the plan it runs no automatic emergency either, since the
+//! emergency needs the plan to return to the decoy, and says so once where
+//! one was asked for.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -43,7 +45,9 @@ enum Start {
     Nothing,
     /// Watch `manifest`'s hidden root by `config`, with the session `plan`
     /// where it could be read. `notice`, when the settings could not be read
-    /// anywhere, is the alert to deliver once: `config` is then alert-only.
+    /// anywhere, or the plan could not be read where they ask for an
+    /// automatic emergency, is the alert to deliver once: `config` is then
+    /// alert-only.
     Watch {
         manifest: RuntimeManifest,
         plan: Option<Box<Plan>>,
@@ -62,9 +66,12 @@ enum Start {
 /// the hidden volume's own configuration at the root the plan names, which
 /// `on_volume` reads. The hidden root is the plan's, else the settings'.
 /// Where no settings can be read, the watcher watches alert-only and says so
-/// once: it never runs the emergency itself then. Where neither the plan nor
-/// the settings can be read, it says the session runs without it. A plan that
-/// is not there is no session.
+/// once: it never runs the emergency itself then. Where the plan cannot be
+/// read it watches alert-only too, since an automatic emergency without the
+/// plan cannot return to the decoy and so would do nothing, and says so once
+/// where the settings ask for one. Where neither the plan nor the settings
+/// can be read, it says the session runs without it. A plan that is not there
+/// is no session.
 fn start(
     plan: nails_core::Result<Option<Plan>>,
     copy: nails_core::Result<Option<Config>>,
@@ -107,16 +114,20 @@ fn start(
             config: Box::new(config),
             notice: None,
         },
-        (None, Some(config)) => Start::Watch {
-            manifest: RuntimeManifest {
-                hidden_root: config.hidden_volume_root.clone(),
-                hidden_dev: None,
-                overlay_targets: Vec::new(),
-            },
-            plan: None,
-            config: Box::new(config),
-            notice: None,
-        },
+        (None, Some(mut config)) => {
+            let notice = config.backend_watch.auto_emergency.then(planless_notice);
+            config.backend_watch.auto_emergency = false;
+            Start::Watch {
+                manifest: RuntimeManifest {
+                    hidden_root: config.hidden_volume_root.clone(),
+                    hidden_dev: None,
+                    overlay_targets: Vec::new(),
+                },
+                plan: None,
+                config: Box::new(config),
+                notice,
+            }
+        }
         (Some(manifest), None) => Start::Watch {
             manifest,
             plan: plan.map(Box::new),
@@ -228,31 +239,19 @@ pub fn execute(
 
     // Prefer the configuration mirrored into the runtime copy, since the real
     // config file lives on the hidden volume that may already be failing.
-    let (manifest, plan, config, notice) = match start(
+    let started = start(
         runtime_copy::read_plan(&filesystem),
         runtime_copy::read_config_copy(&filesystem),
         || found_file(config_override),
         Config::load,
-    ) {
-        Start::Nothing => {
-            tracing::debug!("No runtime manifest present; nothing to watch");
-            return ExitStatus::Ok;
-        }
-        Start::Without(alert) => {
-            tracing::warn!("Neither the session plan nor the settings can be read; not watching");
-            deliver_then_exit(&Once::new(alert), env);
-            return ExitStatus::Ok;
-        }
-        Start::Watch {
-            manifest,
-            plan,
-            config,
-            notice,
-        } => (manifest, plan, *config, notice.map(Once::new)),
+    );
+    let interval = nails_core::config::BackendWatchConfig::default().poll_interval();
+    let Some((manifest, plan, config, notice)) = watching(started, |notice| {
+        let env = env.clone();
+        deliver_until_delivered(&notice, interval, move |alert| send_immediate(alert, &env));
+    }) else {
+        return ExitStatus::Ok;
     };
-    if notice.is_some() {
-        tracing::warn!("Watching alert-only: the settings cannot be read");
-    }
 
     let watch_config = config.backend_watch.clone();
     let mounts_config = config.session_mounts.clone();
@@ -287,6 +286,7 @@ pub fn execute(
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
     let alert_env = env.clone();
+    let emergency_env = env.clone();
     watcher::run_loop(
         &watch_config,
         // A probe of a covered hidden root writes nothing and is no failure of
@@ -299,9 +299,20 @@ pub fn execute(
         },
         || {
             tracing::warn!("Backend failure outlasted the debounce; running the emergency");
-            super::emergency::run_hot_path_with(
+            let report = super::emergency::run_hot_path_with(
                 nails_teardown::whole_root::emergency::Finish::Return,
             );
+            // Without the session plan a return does nothing at all: the
+            // watcher goes on alerting, and says it took no action.
+            let acted = !report.found_nothing();
+            if !acted {
+                tracing::warn!("The emergency found no session plan to act on; watching on");
+                let env = emergency_env.clone();
+                send_all_in_background(vec![(planless_notice(), "no-action")], move |alert| {
+                    send_immediate(alert, &env)
+                });
+            }
+            acted
         },
         || {
             if let Some(notice) = &notice {
@@ -343,13 +354,50 @@ fn storage_plan(mut plan: Plan, hidden_root: &Path) -> Plan {
     plan
 }
 
-/// Try to deliver `notice` at each round of the default poll interval until
-/// one delivery succeeds, then return.
-fn deliver_then_exit(notice: &Once, env: &nails_core::RuntimeEnv) {
-    let interval = nails_core::config::BackendWatchConfig::default().poll_interval();
+/// What the watcher watches with ([`watching`]): the manifest, the session
+/// plan where it could be read, the settings, and the alert to deliver once
+/// while it watches.
+type Watched = (RuntimeManifest, Option<Box<Plan>>, Config, Option<Once>);
+
+/// What the watcher watches with, from what it `started` with: `None` where
+/// there is nothing to watch, once `deliver_once` has delivered the alert of a
+/// watcher that cannot run; else the plan, the settings and the alert to
+/// deliver once while it watches.
+fn watching(started: Start, deliver_once: impl FnOnce(Once)) -> Option<Watched> {
+    match started {
+        Start::Nothing => {
+            tracing::debug!("No runtime manifest present; nothing to watch");
+            None
+        }
+        Start::Without(alert) => {
+            tracing::warn!("Neither the session plan nor the settings can be read; not watching");
+            deliver_once(Once::new(alert));
+            None
+        }
+        Start::Watch {
+            manifest,
+            plan,
+            config,
+            notice,
+        } => {
+            if notice.is_some() {
+                tracing::warn!(
+                    "Watching alert-only: the settings or the session plan cannot be read"
+                );
+            }
+            Some((manifest, plan, *config, notice.map(Once::new)))
+        }
+    }
+}
+
+/// Try to deliver `notice` through `send` every `interval` until one
+/// delivery succeeds, then return.
+fn deliver_until_delivered<S>(notice: &Once, interval: std::time::Duration, send: S)
+where
+    S: Fn(&Notification) -> nails_core::Result<()> + Clone + Send + 'static,
+{
     while !notice.delivered() {
-        let env = env.clone();
-        notice.try_deliver(move |alert| send_immediate(alert, &env));
+        notice.try_deliver(send.clone());
         std::thread::sleep(interval);
     }
 }
@@ -454,6 +502,21 @@ fn alert_only_notice() -> Notification {
         title: "Storage monitor in alert-only mode".to_string(),
         body: "The storage monitor could not read its settings. It still warns you when a \
                mounted volume stops responding, but takes no action on its own."
+            .to_string(),
+        urgency: "critical".to_string(),
+        icon: Some("drive-harddisk".to_string()),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+/// The neutral desktop alert of a watcher whose automatic emergency cannot
+/// act, since it could not read the session plan the emergency needs to
+/// return: it still warns, but takes no action on its own.
+fn planless_notice() -> Notification {
+    Notification {
+        title: "Storage monitor in alert-only mode".to_string(),
+        body: "The storage monitor could not read what it needs to take action. It still warns \
+               you when a mounted volume stops responding, but takes no action on its own."
             .to_string(),
         urgency: "critical".to_string(),
         icon: Some("drive-harddisk".to_string()),
@@ -655,6 +718,14 @@ mod tests {
         assert_neutral(&alert);
     }
 
+    fn manifest(root: &str) -> RuntimeManifest {
+        RuntimeManifest {
+            hidden_root: PathBuf::from(root),
+            hidden_dev: Some("253:0".to_string()),
+            overlay_targets: Vec::new(),
+        }
+    }
+
     fn settings(root: &str, auto_emergency: bool) -> Config {
         let mut config = Config::test_default();
         config.hidden_volume_root = PathBuf::from(root);
@@ -766,8 +837,10 @@ mod tests {
     }
 
     /// A session plan that cannot be read gives way to the hidden root the
-    /// settings name; with neither, the watcher says the session runs
-    /// without it, and reads no volume.
+    /// settings name, watched alert-only: an automatic emergency without the
+    /// plan cannot return, so none is armed, and where the settings ask for
+    /// one an alert says so once. With neither, the watcher says the session
+    /// runs without it, and reads no volume.
     #[test]
     fn an_unreadable_plan_gives_way_to_the_settings_hidden_root() {
         let started = start(
@@ -779,8 +852,8 @@ mod tests {
         let Start::Watch {
             manifest,
             plan,
+            config,
             notice,
-            ..
         } = started
         else {
             panic!("{started:?}");
@@ -788,6 +861,28 @@ mod tests {
         assert_eq!(manifest.hidden_root, Path::new("/mnt/vault"));
         assert_eq!(manifest.hidden_dev, None);
         assert!(plan.is_none());
+        assert!(config.backend_watch.enabled && config.session_mounts.alert);
+        assert!(!config.backend_watch.auto_emergency);
+        assert!(!ever_tears_down(&config));
+        let notice = notice.expect("an alert");
+        assert_eq!(notice.title, "Storage monitor in alert-only mode");
+        assert_eq!(
+            notice.body,
+            "The storage monitor could not read what it needs to take action. It still warns \
+             you when a mounted volume stops responding, but takes no action on its own."
+        );
+        assert_neutral(&notice);
+
+        // Settings that ask for no automatic emergency lose nothing: no alert.
+        let started = start(
+            Err(unreadable("/run/overlay-runtime/plan.json")),
+            Ok(Some(settings("/mnt/vault", false))),
+            || None,
+            |_| panic!("the copy names the root"),
+        );
+        let Start::Watch { notice, .. } = started else {
+            panic!("{started:?}");
+        };
         assert!(notice.is_none());
 
         let started = start(
@@ -833,6 +928,70 @@ mod tests {
         }
         assert!(once.delivered());
         once.try_deliver(|_| panic!("delivered once already"));
+        assert_eq!(tries.load(Ordering::SeqCst), 3);
+    }
+
+    /// A watcher that cannot run delivers its one alert, then watches
+    /// nothing; one that watches alert-only keeps its alert for the rounds.
+    #[test]
+    fn a_watcher_that_cannot_watch_delivers_its_alert_and_stops() {
+        let mut delivered = None;
+        let watched = watching(Start::Without(unwatched_notice()), |notice| {
+            delivered = Some(notice.alert.title.clone());
+        });
+        assert!(watched.is_none());
+        assert_eq!(delivered.as_deref(), Some("Storage monitor not running"));
+
+        assert!(watching(Start::Nothing, |_| panic!("no alert")).is_none());
+
+        let watched = watching(
+            Start::Watch {
+                manifest: manifest("/mnt/data"),
+                plan: Some(Box::new(plan())),
+                config: Box::new(alert_only()),
+                notice: Some(alert_only_notice()),
+            },
+            |_| panic!("delivered while it watches"),
+        );
+        let (manifest, plan, config, notice) = watched.expect("it watches");
+        assert_eq!(manifest.hidden_root, Path::new("/mnt/data"));
+        assert!(plan.is_some());
+        assert!(!config.backend_watch.auto_emergency);
+        assert_eq!(
+            notice.map(|notice| notice.alert.title).as_deref(),
+            Some("Storage monitor in alert-only mode")
+        );
+    }
+
+    /// A configuration file is taken only where one was found: here the one
+    /// `--config` names. One that cannot be read gives none.
+    #[test]
+    fn only_a_configuration_file_that_was_found_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("nails.toml");
+        std::fs::write(&file, "hidden_volume_root = \"/mnt/vault\"\n").unwrap();
+        let found = found_file(Some(&file)).expect("the file it names");
+        assert_eq!(found.hidden_volume_root, Path::new("/mnt/vault"));
+        assert!(found_file(Some(&dir.path().join("missing.toml"))).is_none());
+    }
+
+    /// The alert of a watcher that cannot run is tried until one delivery
+    /// succeeds, and then no more.
+    #[test]
+    fn the_alert_of_a_watcher_that_cannot_run_is_tried_until_delivered() {
+        let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&tries);
+        let notice = Once::new(unwatched_notice());
+        deliver_until_delivered(&notice, std::time::Duration::from_millis(1), move |_| {
+            if counted.fetch_add(1, Ordering::SeqCst) < 2 {
+                Err(nails_core::NailsError::InvalidState(
+                    "no desktop yet".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(notice.delivered());
         assert_eq!(tries.load(Ordering::SeqCst), 3);
     }
 
