@@ -562,3 +562,45 @@ fn covered_by_verify_check_yields_the_rows_of_that_check() {
     assert_eq!(ids, expected);
     assert_eq!(covered_by_verify_check("no-such-check").count(), 0);
 }
+
+/// A path probe tells what is there, nothing, and a path it cannot look up:
+/// a lookup that fails for another reason than that nothing is there was
+/// taken for no hit, so a probe could report nothing about a path it never
+/// saw. A directory it cannot list still counts as one without entries.
+#[test]
+fn a_path_probe_tells_a_path_it_cannot_look_up_from_one_that_holds_nothing() {
+    use crate::MockFilesystem;
+    use crate::filesystem::PathKind;
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/probe/file", "x");
+    fs.mock_set_path_type("/probe/empty", PathKind::Dir);
+    fs.mock_set_path_type("/probe/full", PathKind::Dir);
+    fs.mock_set_directory_contents(
+        Path::new("/probe/full"),
+        vec![PathBuf::from("/probe/full/a")],
+    );
+    fs.mock_set_path_type("/probe/unlistable", PathKind::Dir);
+    fs.mock_set_unreadable_dir("/probe/unlistable");
+    fs.mock_set_lookup_error("/probe/denied", std::io::ErrorKind::PermissionDenied);
+
+    let probe = |path: &str| path_probe_hit(&fs, Path::new(path));
+    for path in ["/probe/file", "/probe/full"] {
+        assert!(matches!(probe(path), ProbeHit::Hit), "{path}");
+    }
+    for path in ["/probe/missing", "/probe/empty", "/probe/unlistable"] {
+        assert!(matches!(probe(path), ProbeHit::NoHit), "{path}");
+    }
+    for path in ["/probe/denied", "/probe/denied/below"] {
+        match probe(path) {
+            ProbeHit::CannotTell(error) => {
+                assert_eq!(
+                    error.io_kind(),
+                    Some(std::io::ErrorKind::PermissionDenied),
+                    "{path}"
+                );
+                assert!(error.to_string().starts_with(path), "{error}");
+            }
+            other => panic!("{path}: {other:?}"),
+        }
+    }
+}

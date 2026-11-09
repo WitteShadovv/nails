@@ -614,3 +614,27 @@ fn a_live_scan_ignores_the_examiner_option() {
         .unwrap();
     assert!(result.examiner.is_none());
 }
+
+/// A setup row's probe path whose lookup fails for another reason than that
+/// nothing is there was taken for one that holds nothing, so the audit read
+/// as clean there. It is listed as not checked, with the error, and gives no
+/// trace.
+#[test]
+fn a_probe_path_that_cannot_be_looked_up_is_not_checked() {
+    let fs = crate::MockFilesystem::new();
+    fs.mock_set_lookup_error(
+        "/image/var/lib/udisks2",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let mut not_checked = Vec::new();
+    let findings = catalog_paths(&fs, Path::new("/image"), &mut not_checked);
+    assert!(findings.is_empty(), "{findings:?}");
+    assert_eq!(
+        not_checked,
+        vec![
+            "/var/lib/udisks2, probed for udisks2 state (it could not be looked up: \
+             /image/var/lib/udisks2: Mock: the lookup fails here)"
+                .to_string()
+        ]
+    );
+}
