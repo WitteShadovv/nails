@@ -74,18 +74,19 @@ impl<F: Filesystem> Verifier<F> {
     /// Scan one user's home for shell history containing nails commands and for
     /// desktop recency files that name the configured hidden root. A file
     /// verify cannot look up is a warning that it cannot tell what the file
-    /// holds ([`untold`]).
+    /// holds ([`untold`]), and one that does not resolve inside the root of an
+    /// offline scan, as a link that leads back through itself, is listed as
+    /// not checked, as such a home is.
     fn scan_home(&self, home: &Path) -> Vec<Finding> {
         let mut findings = Vec::new();
         if self.place(home).is_none() {
             return vec![not_resolved("Home", home)];
         }
 
-        // A file that does not resolve inside the root, as a link that leads
-        // back through itself, holds nothing that can be read.
         for history in HISTORY_FILES {
             let path = home.join(history);
             let Some(probe) = self.place(&path) else {
+                findings.push(not_resolved("Shell history", &path));
                 continue;
             };
             match self.filesystem.path_exists(&probe) {
@@ -143,6 +144,7 @@ impl<F: Filesystem> Verifier<F> {
             for recent in DESKTOP_RECENT_FILES {
                 let path = home.join(recent);
                 let Some(probe) = self.place(&path) else {
+                    findings.push(not_resolved("Desktop recency file", &path));
                     continue;
                 };
                 match self.filesystem.path_exists(&probe) {

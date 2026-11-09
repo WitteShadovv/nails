@@ -1257,7 +1257,10 @@ looks for there, but a warning where that would be critical, or among the
 areas it did not check. Where it had no permission, as in root's home for a
 run without `sudo`, the finding says to run it again with `sudo`. So a path
 it cannot look up gives `10` at most, and `11` still means that verify found
-something critical.
+something critical. Two walks still leave out an entry they cannot look up:
+the one through the configured log directory, and the one through the
+temporary folders of `--deep`, which lists a folder it cannot open as not
+checked.
 
 ```bash
 sudo /mnt/data/nails verify            # standard
