@@ -4,10 +4,18 @@
 //! Unit tests for the session watcher's start, alerts and rounds.
 
 use super::*;
+use nails_teardown::whole_root::emergency::{self, Side};
 use std::path::PathBuf;
 
 /// Words that would tell a bystander reading the screen what this is.
-const REVEALING: &[&str] = &["hidden", "nails", "decoy", "session", "overlay"];
+const REVEALING: &[&str] = &[
+    "hidden",
+    "nails",
+    "decoy",
+    "session",
+    "overlay",
+    "emergency",
+];
 
 fn assert_neutral(alert: &Notification) {
     let text = format!("{} {}", alert.title, alert.body).to_lowercase();
@@ -169,6 +177,7 @@ fn the_copies_in_run_decide_and_no_other_is_read() {
     let Start::Watch {
         manifest,
         config,
+        finish,
         notice,
     } = started
     else {
@@ -176,6 +185,7 @@ fn the_copies_in_run_decide_and_no_other_is_read() {
     };
     assert_eq!(manifest.hidden_root, Path::new("/mnt/data"));
     assert!(config.backend_watch.auto_emergency);
+    assert_eq!(finish, Finish::Return);
     assert!(notice.is_none());
     assert!(matches!(
         start(Ok(None), Ok(None), || None, |_| panic!("no session")),
@@ -202,10 +212,17 @@ fn an_unreadable_settings_copy_gives_way_to_the_hidden_volumes_own() {
         asked.as_deref(),
         Some(Path::new("/mnt/data/config/nails.toml"))
     );
-    let Start::Watch { config, notice, .. } = started else {
+    let Start::Watch {
+        config,
+        finish,
+        notice,
+        ..
+    } = started
+    else {
         panic!("{started:?}");
     };
     assert!(config.backend_watch.auto_emergency);
+    assert_eq!(finish, Finish::Return);
     assert!(notice.is_none());
     assert!(ever_tears_down(&config));
 }
@@ -228,6 +245,7 @@ fn without_any_settings_it_watches_alert_only_and_says_so() {
             manifest,
             config,
             notice,
+            ..
         } = started
         else {
             panic!("{started:?}");
@@ -243,10 +261,10 @@ fn without_any_settings_it_watches_alert_only_and_says_so() {
 }
 
 /// A session plan that cannot be read gives way to the hidden root the
-/// settings name, watched alert-only: an automatic emergency without the
-/// plan cannot return, so none is armed, and where the settings ask for
-/// one an alert says so once. With neither, the watcher says the session
-/// runs without it, and reads no volume.
+/// settings name. A return without the plan would do nothing, so the
+/// automatic emergency the settings ask for powers off instead, and one
+/// neutral alert says so. With neither, the watcher says the session runs
+/// without it, and reads no volume.
 #[test]
 fn an_unreadable_plan_gives_way_to_the_settings_hidden_root() {
     let started = start(
@@ -258,6 +276,7 @@ fn an_unreadable_plan_gives_way_to_the_settings_hidden_root() {
     let Start::Watch {
         manifest,
         config,
+        finish,
         notice,
     } = started
     else {
@@ -266,28 +285,37 @@ fn an_unreadable_plan_gives_way_to_the_settings_hidden_root() {
     assert_eq!(manifest.hidden_root, Path::new("/mnt/vault"));
     assert_eq!(manifest.hidden_dev, None);
     assert!(config.backend_watch.enabled && config.session_mounts.alert);
-    assert!(!config.backend_watch.auto_emergency);
-    assert!(!ever_tears_down(&config));
+    assert!(config.backend_watch.auto_emergency);
+    assert!(ever_tears_down(&config));
+    assert_eq!(finish, Finish::Poweroff);
     let notice = notice.expect("an alert");
-    assert_eq!(notice.title, "Storage monitor in alert-only mode");
+    assert_eq!(notice.title, "Storage monitor in power-off mode");
     assert_eq!(
         notice.body,
-        "The storage monitor could not read what it needs to take action. It still warns \
-         you when a mounted volume stops responding, but takes no action on its own."
+        "The storage monitor could not read everything it needs. If a mounted volume stops \
+         responding and does not recover, it turns the computer off."
     );
+    assert_eq!(notice.urgency, "critical");
     assert_neutral(&notice);
 
-    // Settings that ask for no automatic emergency lose nothing: no alert.
-    let started = start(
-        Err(unreadable("/run/overlay-runtime/plan.json")),
-        Ok(Some(settings("/mnt/vault", false))),
-        || None,
-        |_| panic!("the copy names the root"),
-    );
-    let Start::Watch { notice, .. } = started else {
-        panic!("{started:?}");
-    };
-    assert!(notice.is_none());
+    // Settings that ask for no automatic emergency lose nothing: no alert,
+    // and nothing is torn down. Without the backend watch no emergency
+    // fires either, so there is no power-off to tell of.
+    for (enabled, auto_emergency) in [(true, false), (false, true)] {
+        let mut config = settings("/mnt/vault", auto_emergency);
+        config.backend_watch.enabled = enabled;
+        let started = start(
+            Err(unreadable("/run/overlay-runtime/plan.json")),
+            Ok(Some(config)),
+            || None,
+            |_| panic!("the copy names the root"),
+        );
+        let Start::Watch { config, notice, .. } = started else {
+            panic!("{started:?}");
+        };
+        assert!(notice.is_none(), "{enabled} {auto_emergency}");
+        assert_eq!(config.backend_watch.auto_emergency, auto_emergency);
+    }
 
     let started = start(
         Err(unreadable("/run/overlay-runtime/plan.json")),
@@ -300,6 +328,93 @@ fn an_unreadable_plan_gives_way_to_the_settings_hidden_root() {
     };
     assert_eq!(notice.title, "Storage monitor not running");
     assert_neutral(&notice);
+}
+
+/// A hot-path report as the real hot path gives it on a host where it does
+/// nothing (`act` off), for `finish` without a session plan: a return finds
+/// nothing, a power action is dispatched. Nothing is enqueued or killed.
+fn simulated(finish: Finish) -> HotReport {
+    let dir = tempfile::tempdir().unwrap();
+    let host = emergency::Host {
+        run: dir.path().join("run"),
+        nextroot: dir.path().join("run/nextroot"),
+        runtime_dir: dir.path().join("run/overlay-runtime"),
+        cgroup_root: dir.path().join("cgroup"),
+        protected_pids: Vec::new(),
+        act: false,
+    };
+    emergency::run(None, &host, finish)
+}
+
+/// The finishes `auto_emergency` asks the hot path for, and whether it
+/// acted, where `answer` stands in for the hot path: no test reaches a real
+/// one.
+fn asked(finish: Finish, answer: impl Fn(Finish) -> HotReport) -> (Vec<Finish>, bool) {
+    let mut asked = Vec::new();
+    let acted = auto_emergency(finish, |finish| {
+        asked.push(finish);
+        answer(finish)
+    });
+    (asked, acted)
+}
+
+/// With the plan the automatic emergency returns to the decoy. A return
+/// that finds no plan when it fires does nothing, so the watcher powers off
+/// instead; without the plan it powers off at once. Each ends the loop.
+#[test]
+fn the_automatic_emergency_returns_with_the_plan_and_powers_off_without_it() {
+    let in_session = |finish| {
+        let mut report = simulated(finish);
+        report.side = Side::Hidden;
+        report.dispatched = Some(finish);
+        report
+    };
+    assert_eq!(
+        asked(Finish::Return, in_session),
+        (vec![Finish::Return], true)
+    );
+
+    let no_plan = simulated(Finish::Return);
+    assert!(no_plan.found_nothing() && no_plan.dispatched.is_none());
+    let powered_off = simulated(Finish::Poweroff);
+    assert_eq!(powered_off.dispatched, Some(Finish::Poweroff));
+    assert_eq!(
+        asked(Finish::Return, simulated),
+        (vec![Finish::Return, Finish::Poweroff], true)
+    );
+    assert_eq!(
+        asked(Finish::Poweroff, simulated),
+        (vec![Finish::Poweroff], true)
+    );
+}
+
+/// Where not even a power-off could be asked for, the watcher watches on.
+/// A power-off the kernel was asked for directly counts as one.
+#[test]
+fn a_power_off_nothing_could_ask_for_leaves_the_watcher_watching() {
+    let refused = |finish| {
+        let mut report = simulated(finish);
+        report.dispatched = None;
+        report
+    };
+    assert_eq!(
+        asked(Finish::Return, refused),
+        (vec![Finish::Return, Finish::Poweroff], false)
+    );
+    assert_eq!(
+        asked(Finish::Poweroff, refused),
+        (vec![Finish::Poweroff], false)
+    );
+
+    let by_the_kernel = |finish| {
+        let mut report = refused(finish);
+        report.kernel_power_off = finish == Finish::Poweroff;
+        report
+    };
+    assert_eq!(
+        asked(Finish::Return, by_the_kernel),
+        (vec![Finish::Return, Finish::Poweroff], true)
+    );
 }
 
 /// The one alert is tried at each round until a delivery succeeds, and
@@ -352,13 +467,20 @@ fn a_watcher_that_cannot_watch_delivers_its_alert_and_stops() {
         Start::Watch {
             manifest: manifest("/mnt/data"),
             config: Box::new(alert_only()),
+            finish: Finish::Return,
             notice: Some(alert_only_notice()),
         },
         |_| panic!("delivered while it watches"),
     );
-    let (manifest, config, notice) = watched.expect("it watches");
+    let Watching {
+        manifest,
+        config,
+        finish,
+        notice,
+    } = watched.expect("it watches");
     assert_eq!(manifest.hidden_root, Path::new("/mnt/data"));
     assert!(!config.backend_watch.auto_emergency);
+    assert_eq!(finish, Finish::Return);
     assert_eq!(
         notice.map(|notice| notice.alert.title).as_deref(),
         Some("Storage monitor in alert-only mode")

@@ -291,9 +291,9 @@ pub fn in_background(send: impl FnOnce() + Send + 'static) {
 /// daemon that never answers delays no probe and no emergency. `tick` runs at
 /// the start of every round, before the sleep (the mount watch and the
 /// read-only sweep). `emergency` says whether it acted: the loop returns once
-/// an automatic emergency has, and goes on watching after one that found
-/// nothing to act on. With alert-only configuration it runs until the process
-/// is stopped (deactivation and emergency stop the transient unit).
+/// an automatic emergency has, and goes on watching after one that could not
+/// act. With alert-only configuration it runs until the process is stopped
+/// (deactivation and emergency stop the transient unit).
 pub fn run_loop<P, A, E, T>(
     config: &BackendWatchConfig,
     mut probe: P,

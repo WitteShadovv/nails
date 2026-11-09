@@ -153,7 +153,7 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `nixos_flake` | string (flake reference) | unset | Flake of the hidden NixOS system, for example `/mnt/data/nixos#my-host`; it is built into the hidden root's store before the soft-reboot. Unset, activation takes the first of: a flake in `<hidden_volume_root>/nixos`, built for this machine's hostname; the decoy's own flake in `/etc/nixos`, which it refuses, because a hidden system built from the decoy's files would lack the hidden module and the hidden hardware configuration; the legacy hidden configuration, the decoy's `/etc/nixos/configuration.nix` with the hidden hardware configuration in the upper, which imports the hidden module `<hidden_volume_root>/config/nixos/configuration.nix`. A flake includes the hidden module only if it imports it. Write and lock a hidden flake inside a hidden session, never on the decoy, and keep it self-contained: one that imports `/etc/nixos/configuration.nix` reads the decoy's files and its hardware configuration, swap included (see the [operator guide](operator-guide.md#how-it-works)). `nails check` names the choice under "NixOS profile". `activate --nixos-flake` overrides it. Naming the decoy's own flake or a directory below it here or with `--nixos-flake` (`/etc/nixos#host`, `path:/etc/nixos`, `git+file:///etc/nixos`, `git+file:///etc/nixos/.git`, `hg+file:///etc/nixos`, `path:/etc?dir=nixos`, the percent-encoded `path:/etc/%6Eixos`, a link to it or a bind mount of it) is refused the same way, and so is `<hidden_volume_root>/nixos` when it is the decoy's flake or a directory below it through a link or a bind mount. Besides a local path or URL, only a plain remote reference (`github:owner/repo`, `git+https://example.org/repo`) passes: a local URL with an authority (`git+file://../../etc/nixos`) and any other reference Nix may read as a path relative to the working directory (`a_b:x`), and a registry alias (`flake:nixos-config`, or a name alone), are refused too, whatever they name. Each reading counts as written, links and `..` resolved by the kernel (`/var/run/../etc/nixos`), and with `..` applied by the text. A git directory of its own that holds the decoy's flake (`git+file:///var/lib/cfg.git`) and `git+ssh://localhost/etc/nixos` are not recognised. |
 | `persona.mask_inherited` | list of entry names, or `["*"]` | `[]` | Inherited decoy autostart entries and user units to hide from the hidden session. Each value is a name as `nails check` lists it: the `.desktop` stem for an autostart entry, or the full unit name for a user unit. `["*"]` names every maskable inherited entry. A name `nails check` does not list is masked too, as a user unit when it ends in a unit suffix and as an autostart entry otherwise; a value with a `/` is refused. Lingering and autologin are reported but not masked. See [Inherited decoy state](#inherited-decoy-state). |
 | `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` starts it from the decoy home (the root overlay's lower), so the decoy's accounts, keys and app profiles are live. `fresh-home` gives the operator an empty home, created in the upper at the first entry. See [Persona modes](#persona-modes). |
-| `backend_watch.auto_emergency` | boolean | `false` | Opt into an automatic emergency when the hidden backend fails. When `false` (the default) the watcher is alert-only, so a transient I/O stall can never end the session; when `true`, the emergency runs on its own, returning to the decoy, only after the failure outlasts `backend_watch.debounce_secs`. See [Backend watcher](#backend-watcher). |
+| `backend_watch.auto_emergency` | boolean | `false` | Opt into an automatic emergency when the hidden backend fails. When `false` (the default) the watcher is alert-only, so a transient I/O stall can never end the session; when `true`, the emergency runs on its own, returning to the decoy (or powering off where the watcher cannot read the session plan), only after the failure outlasts `backend_watch.debounce_secs`. See [Backend watcher](#backend-watcher). |
 | `backend_watch.debounce_secs` | integer (seconds) | `15` | How long a failure must persist before an opted-in automatic emergency fires. Ignored unless `backend_watch.auto_emergency` is `true`. |
 | `backend_watch.enabled` | boolean | `true` | Run the backend watcher as a runtime unit of the hidden session. The watcher polls the hidden backend and alerts you when it fails. With `false` and `session_mounts.alert` and `session_mounts.read_only` both `false`, no watcher runs. See [Backend watcher](#backend-watcher). |
 | `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
@@ -614,16 +614,15 @@ The watcher reads what to watch from the session plan and its settings from
 their copies in `/run`. Where it cannot read the copy of the settings, it takes
 the configuration file it was started with or finds beside its binary, then
 the hidden volume's own `config/nails.toml` at the hidden root the plan names.
-Where it cannot read the plan, it watches the hidden root the settings name,
-alert-only: an automatic emergency needs the plan to return to the decoy, and
-without it would do nothing, so the watcher runs none and, where
-`backend_watch.auto_emergency` is on, tells you so in one alert. An automatic
-emergency that finds no plan when it fires does nothing either: the watcher
-then goes on watching and alerts that it took no action. Where it can read no
-settings at all, it watches alert-only, whatever `backend_watch.auto_emergency`
-says, and tells you so in one alert; where it can read neither the plan nor
-the settings, one alert says that mounted volumes are not watched, and it
-watches nothing.
+Where it cannot read the plan, it watches the hidden root the settings name.
+A return to the decoy needs the plan, and without it does nothing at all, so
+there the automatic emergency the settings ask for powers the machine off
+instead, after the same debounce, and one alert tells you so ("Storage monitor
+in power-off mode"). An automatic emergency that finds no plan when it fires
+powers off the same way. Where it can read no settings at all, it watches
+alert-only, whatever `backend_watch.auto_emergency` says, and tells you so in
+one alert; where it can read neither the plan nor the settings, one alert says
+that mounted volumes are not watched, and it watches nothing.
 
 ## Disks mounted during the session
 

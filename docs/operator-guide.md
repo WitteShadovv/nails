@@ -847,8 +847,9 @@ autologin, like a restart of the desktop.
 
 The backend watcher (`[backend_watch]`) and the sleep guard (`[sleep_policy]`)
 run as runtime units of the hidden session from the RAM copy. The watcher's
-opt-in automatic emergency returns to the decoy the same way; the sleep guard's
-`teardown` mode powers off before the machine sleeps.
+opt-in automatic emergency returns to the decoy the same way, and powers off
+where the watcher cannot read the session plan; the sleep guard's `teardown`
+mode powers off before the machine sleeps.
 
 The window's Emergency control runs the same emergency through the window's
 helper, with no question at that moment, so how it ends is chosen in advance
