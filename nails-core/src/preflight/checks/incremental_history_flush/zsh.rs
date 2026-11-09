@@ -195,6 +195,10 @@ struct Reader<'a, F: Filesystem> {
     /// `\~`, after which a `~` that starts a word may be one zsh keeps as
     /// written.
     path_words: Vec<(Word, String, bool)>,
+    /// Where a file read first sets a variable of the dynamic loader
+    /// (`LD_PRELOAD`) or `ARGV0`, which may make any program zsh's own
+    /// completion functions run print other code ([`programs`]).
+    loader_set: Option<String>,
     path: Vec<Result<PathBuf, String>>,
     path_splits: Vec<(String, String)>,
     escaped_tildes: Vec<bool>,
@@ -414,6 +418,13 @@ impl<F: Filesystem> Reader<'_, F> {
             self.tty_set = Some(place.to_string());
         }
         self.version_set |= forms.writes("ZSH_VERSION") > 0;
+        // What may make any program print other code: a variable of the
+        // dynamic loader, and the name zsh gives every program it runs.
+        if self.loader_set.is_none()
+            && (forms.most(backstop::loader_writes) > 0 || forms.writes("ARGV0") > 0)
+        {
+            self.loader_set = Some(place.to_string());
+        }
         // What NixOS's set-environment writes NIX_PROFILES with.
         self.profile_vars_set |= ["HOME", "USER", "XDG_STATE_HOME"]
             .iter()
@@ -950,6 +961,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
             .collect(),
         autoloads: Vec::new(),
         path_words: Vec::new(),
+        loader_set: None,
         path: Vec::new(),
         path_splits: Vec::new(),
         escaped_tildes: Vec::new(),
