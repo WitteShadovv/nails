@@ -316,3 +316,29 @@ fn deep_scan_paths_verify_cannot_look_up_warn() {
         assert_eq!(found.category, "file");
     }
 }
+
+/// The residue report goes on a hidden root the attach gate takes for
+/// attached; on one whose lookup fails it is refused and nothing is
+/// written.
+#[test]
+fn no_residue_report_is_written_on_a_root_that_cannot_be_looked_up() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_lookup_error("/mnt/hidden", ErrorKind::PermissionDenied);
+    let result = crate::verify::VerifyResult::secure(crate::verify::ScanDepth::Standard);
+    let error = crate::verify::write_activation_residue_report(
+        &fs,
+        Path::new("/mnt/hidden"),
+        &result,
+        "2026-11-09T10:00:00Z",
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "refusing to write the residue report: nothing shows that /mnt/hidden is a volume \
+             of its own: it cannot be looked up"
+        ),
+        "{error}"
+    );
+    assert!(fs.mock_written_paths().is_empty());
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+}

@@ -13,7 +13,7 @@ use std::io::{Seek, SeekFrom, Write};
 
 pub(super) const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"; // pragma: allowlist secret
 
-fn state(token: &str) -> RehearsalState {
+pub(super) fn state(token: &str) -> RehearsalState {
     RehearsalState {
         schema_version: STATE_SCHEMA_VERSION,
         token: token.to_string(),
