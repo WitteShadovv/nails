@@ -660,17 +660,19 @@ of this changelog for that version becomes the release notes word for word, and
   mounted there. Each line the decoy's fstab does not hold now gets the decision the decoy's lines
   get, but one at or below the hidden root, whatever it mounts, is kept off (masked, or skipped
   where a boot target requires it) rather than refused, so the session entered to remove it still
-  starts. Activation warns of each such line, in its output and in `warnings` under `--json`, with
-  the line, the hidden root and what to do in that session: where the file leads into the hidden
-  NixOS system's store, remove the mount from the hidden NixOS configuration and rebuild, and else
-  remove the line from `/etc/fstab`. The file is read as the hidden session resolves it, its links
-  followed inside the session's root and never out of it. A missing one holds no line. One that is
-  not a regular file, such as a FIFO, which would hold the activation in its read, or that cannot
-  be read, refuses the activation, and so does an entry whose device, mount point, type or options
-  are not UTF-8 text, unless the file is the decoy's own, byte for byte. The refusal names where
-  the hidden root keeps its own `/etc/fstab` on the hidden volume. `check` still reads the decoy's
-  fstab only. A mount or automount unit of the hidden system's own that a boot target links at or
-  below the hidden root is still refused, in an activation without a build too.
+  starts. Only its units are kept off: the line stays in the file, and a plain `mount` in the
+  session still mounts it. Activation warns of each such line, in its output and in `warnings`
+  under `--json`, with the line, the hidden root and what to do in that session: where the file
+  leads into the hidden NixOS system's store, remove the mount from the hidden NixOS configuration
+  and rebuild, and else remove the line from `/etc/fstab`. The file is read as the hidden session
+  resolves it, its links followed inside the session's root and never out of it. A missing one
+  holds no line. One that is not a regular file, such as a FIFO, which would hold the activation
+  in its read, or that cannot be read, refuses the activation, and so does an entry whose device,
+  mount point, type or options are not UTF-8 text, unless the file is the decoy's own, byte for
+  byte. The refusal names where the hidden root keeps its own `/etc/fstab` on the hidden volume.
+  `check` still reads the decoy's fstab only. A mount or automount unit of the hidden system's own
+  that a boot target links at or below the hidden root is still refused, in an activation without
+  a build too.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an
