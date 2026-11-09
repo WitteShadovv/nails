@@ -461,12 +461,7 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
     if root == "/" {
         return Sharing::Filesystem;
     }
-    let subvol = mount
-        .super_opts
-        .split(',')
-        .chain(mount.mount_opts.split(','))
-        .find_map(|opt| opt.strip_prefix("subvol="));
-    if mount.fstype == "btrfs" && subvol == Some(root.as_ref()) {
+    if mount.fstype == "btrfs" && mount_option(mount, "subvol") == Some(root.as_ref()) {
         Sharing::Subvolume
     } else {
         Sharing::Bind
@@ -480,9 +475,11 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
 /// host-share, network or overlay line), and `mount` shows what it mounts:
 ///
 /// - A device line names the device `mount` is on, or another device of its
-///   btrfs filesystem, and `mount` shows the filesystem's top, the subvolume
-///   its `subvol=` names, or with `subvolid=` alone a subvolume: never a
-///   folder bound there. A spec that leads to no device here names none,
+///   btrfs filesystem, and `mount` shows what the line mounts: the
+///   filesystem's top for a line with neither `subvol=` nor `subvolid=`, and
+///   otherwise the btrfs subvolume that each of these names, the id as the
+///   mount table shows it. Never a folder bound there, and no subvolume whose
+///   id cannot be read. A spec that leads to no device here names none,
 ///   unless `mount` shows no device either, as a ZFS dataset does: then the
 ///   spec is `mount`'s source and the line's type its type.
 /// - A bind line's source lies on another mount of that filesystem than
@@ -563,18 +560,47 @@ fn mounts_storage(entry: &FstabEntry) -> bool {
         || entry.vfstype == "overlay")
 }
 
-/// Whether `mount` shows what the device line `entry` mounts: on btrfs the
-/// subvolume its `subvol=` names, or with `subvolid=` alone a subvolume, and
-/// otherwise the filesystem's top. A folder bound there is none of these.
+/// Whether `mount` shows what the device line `entry` mounts: the
+/// filesystem's top for a line with neither `subvol=` nor `subvolid=`, and
+/// otherwise the btrfs subvolume that each of these it gives names. A folder
+/// bound there is none of these, and neither is a subvolume whose id cannot
+/// be read from the line or from the mount table, which shows it in the
+/// mount's options.
 fn shows_what_it_mounts(entry: &FstabEntry, mount: &MountEntry) -> bool {
-    if let Some(subvolume) = entry.option_value("subvol") {
-        return mount.fstype == "btrfs"
-            && mount.root == Path::new("/").join(subvolume.trim_start_matches('/'));
+    let path = entry.option_value("subvol");
+    let id = entry.option_value("subvolid");
+    if path.is_none() && id.is_none() {
+        return mount.root == Path::new("/");
     }
-    if entry.option_value("subvolid").is_some() {
-        return sharing(mount) != Sharing::Bind;
-    }
-    mount.root == Path::new("/")
+    mount.fstype == "btrfs"
+        && sharing(mount) != Sharing::Bind
+        && path.is_none_or(|path| mount.root == Path::new("/").join(path.trim_start_matches('/')))
+        && id.is_none_or(|id| {
+            matches!(
+                (subvolume_id(id), mount_option(mount, "subvolid").and_then(subvolume_id)),
+                (Some(named), Some(shown)) if named == shown
+            )
+        })
+}
+
+/// The subvolume a `subvolid=` option names, as btrfs reads it: `0` names
+/// the top, whose id is 5. None for anything but a plain decimal number,
+/// which btrfs could read in another way (a leading `0` as octal, say).
+fn subvolume_id(value: &str) -> Option<u64> {
+    let plain =
+        value.bytes().all(|b| b.is_ascii_digit()) && (value == "0" || !value.starts_with('0'));
+    let id: u64 = value.parse().ok().filter(|_| plain)?;
+    Some(if id == 0 { 5 } else { id })
+}
+
+/// The value of the option `key=` of `mount`, from its filesystem's options
+/// or its own.
+fn mount_option<'a>(mount: &'a MountEntry, key: &str) -> Option<&'a str> {
+    mount
+        .super_opts
+        .split(',')
+        .chain(mount.mount_opts.split(','))
+        .find_map(|opt| opt.strip_prefix(key)?.strip_prefix('='))
 }
 
 /// Whether a line of the decoy's fstab mounts the filesystem of `hidden`,
