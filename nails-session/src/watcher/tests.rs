@@ -566,8 +566,8 @@ fn an_alert_that_never_returns_delays_no_emergency() {
     );
 }
 
-/// An automatic emergency that found nothing to act on leaves the loop
-/// watching: the next failure, after a recovery, alerts and fires again.
+/// An automatic emergency that could not act leaves the loop watching: the
+/// next failure, after a recovery, alerts and fires again.
 #[test]
 fn run_loop_watches_on_after_an_emergency_that_did_not_act() {
     let config = BackendWatchConfig {
@@ -576,7 +576,7 @@ fn run_loop_watches_on_after_an_emergency_that_did_not_act() {
         poll_interval_secs: 0,
         enabled: true,
     };
-    // Fail, fire (nothing to act on), recover, fail, fire (acts).
+    // Fail, fire (does not act), recover, fail, fire (acts).
     let mut probes = vec![false, false, true, false, false].into_iter();
     let (alert, alerts) = std::sync::mpsc::channel();
     let alert = std::sync::Mutex::new(alert);
