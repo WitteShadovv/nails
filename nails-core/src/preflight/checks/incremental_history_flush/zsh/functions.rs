@@ -14,7 +14,10 @@ impl<F: Filesystem> Reader<'_, F> {
     /// name, to be looked for where the files add to `fpath`, or by the path
     /// of its file, which is read at once, but for one named `compinit`, a
     /// doubt of what zsh runs as you complete a word wherever it is there
-    /// ([`Reader::completion_system`]).
+    /// ([`Reader::completion_system`]). zsh runs the function from the
+    /// compiled code of its file's directory in place of its file, as it does
+    /// for an `fpath` directory: a `.zwc` beside that directory, or the
+    /// directory itself where its name ends in `.zwc`.
     pub(super) fn autoload(&mut self, function: Word, place: &str) {
         if function.text.contains('/') {
             match self.resolve(&function) {
@@ -27,6 +30,10 @@ impl<F: Filesystem> Reader<'_, F> {
                             if !self.fpath.contains(&entry) {
                                 self.fpath.push(entry);
                             }
+                            if dir.as_os_str().as_encoded_bytes().ends_with(b".zwc") {
+                                self.compiled(dir);
+                            }
+                            self.compiled(&zwc(dir));
                         }
                         let name = file
                             .file_name()

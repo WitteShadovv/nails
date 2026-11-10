@@ -298,6 +298,34 @@ fn compiled_code_zsh_may_run_in_place_of_a_file_is_a_doubt() {
         }
         assert_eq!(scan(&fs, UNKNOWN).doubts, expected, "{compiled}");
     }
+    // zsh 5.9 to 5.9.2 run a function autoloaded by its path from the
+    // digest of its file's directory when that is newer than the file, here
+    // the stock compinit as `ci`, or code that turns the option on, while
+    // the file holds `:`; and from a directory whose name ends in `.zwc`.
+    for (rc, compiled) in [
+        ("autoload -Uz ~/zfn/so && so\n", "/home/alice/zfn.zwc"),
+        ("autoload +X -Uz ~/zfn/so\n", "/home/alice/zfn.zwc"),
+        (
+            "autoload -Uz ~/zfn/logit\nprecmd_functions+=(logit)\n",
+            "/home/alice/zfn.zwc",
+        ),
+        ("autoload -Uz ~/zfn/ci && ci -D\n", "/home/alice/zfn.zwc"),
+        ("autoload -Uz ~/zc.zwc/so && so\n", "/home/alice/zc.zwc"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        for name in ["so", "logit", "ci"] {
+            seed(&fs, &format!("/home/alice/zfn/{name}"), ":\n");
+        }
+        seed(&fs, compiled, "");
+        let found = scan(&fs, UNKNOWN);
+        assert!(
+            found.doubts.contains(&format!(
+                "it cannot read the compiled code in {compiled} that zsh may run"
+            )),
+            "{rc}: {found:?}"
+        );
+    }
 }
 
 #[test]
