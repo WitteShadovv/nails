@@ -436,6 +436,33 @@ fn a_timer_nails_cannot_tell_runs_may_start_its_service() {
     );
 }
 
+/// A locate service that only a person starts, whose invocation marker
+/// cannot be looked up, may run now: the warning says so, naming why NAILS
+/// cannot tell.
+#[test]
+fn a_service_nails_cannot_tell_runs_is_one_a_person_may_have_started() {
+    let decoy = Decoy::new();
+    decoy.file("/etc/updatedb.conf", DEBIAN).file(
+        "/usr/lib/systemd/system/plocate-updatedb.service",
+        DEBIAN_SERVICE,
+    );
+    decoy.fs.mock_set_lookup_error(
+        "/run/systemd/units/invocation:plocate-updatedb.service",
+        std::io::ErrorKind::Other,
+    );
+    let result = decoy.check(false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        message(&result).contains(
+            "updatedb can be started by hand (systemctl start plocate-updatedb.service, and \
+             NAILS cannot tell whether it runs now: NAILS cannot tell whether \
+             plocate-updatedb.service runs: NAILS cannot look up \
+             /run/systemd/units/invocation:plocate-updatedb.service ("
+        ),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn a_masked_timer_does_not_cover_a_run_in_progress() {
     let by_unit = debian(DEBIAN);
