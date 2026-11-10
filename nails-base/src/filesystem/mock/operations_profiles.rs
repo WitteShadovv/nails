@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::super::{PatternScan, ProcessMatch};
+use super::state::MockLookup;
 use super::{MockFilesystem, MockOp};
 use crate::target_user::TargetUser;
 use crate::{NailsError, Result};
@@ -38,7 +39,10 @@ impl MockFilesystem {
     }
 
     pub(super) fn read_file_bytes_impl(&self, path: &Path) -> Result<Vec<u8>> {
-        if let Some(error) = self.lookup_error(path) {
+        if let Some(error) = self
+            .failure_only(path, MockLookup::Read)
+            .or_else(|| self.lookup_error(path))
+        {
             return Err(error);
         }
         let bytes = self
@@ -54,7 +58,10 @@ impl MockFilesystem {
     }
 
     pub(super) fn read_file_content_impl(&self, path: &Path) -> Result<String> {
-        if let Some(error) = self.lookup_error(path) {
+        if let Some(error) = self
+            .failure_only(path, MockLookup::Read)
+            .or_else(|| self.lookup_error(path))
+        {
             return Err(error);
         }
         if self

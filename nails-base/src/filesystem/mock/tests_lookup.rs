@@ -199,6 +199,68 @@ fn reset_clears_the_lookup_errors() {
     assert!(!fs.path_exists(Path::new("/srv/data/file")).unwrap());
 }
 
+/// A lookup made to fail alone fails as it was told, an I/O error naming the
+/// path or a lookup the guard did not make, while the other lookups of the
+/// path and a path below it answer as set; reset clears it.
+#[test]
+fn a_lookup_made_to_fail_alone_leaves_the_others_of_its_path_as_they_are() {
+    use super::{MockFailure, MockLookup};
+    let fs = MockFilesystem::new();
+    let file = Path::new("/srv/data");
+    fs.mock_add_file("/srv/data", "x");
+    fs.mock_fail_only(
+        file,
+        MockLookup::Read,
+        MockFailure::Io(ErrorKind::PermissionDenied),
+    );
+    assert!(fs.is_regular_file(file).unwrap());
+    assert!(fs.path_exists(file).unwrap());
+    assert_eq!(
+        failure(fs.read_file_content(file)),
+        (file.to_path_buf(), ErrorKind::PermissionDenied)
+    );
+    assert_eq!(
+        failure(fs.read_file_bytes(file)),
+        (file.to_path_buf(), ErrorKind::PermissionDenied)
+    );
+    for lookup in [
+        MockLookup::PathExists,
+        MockLookup::IsDirectory,
+        MockLookup::Canonicalize,
+    ] {
+        fs.mock_fail_only(file, lookup, MockFailure::Io(ErrorKind::Other));
+    }
+    assert_eq!(
+        failure(fs.path_exists(file)),
+        (file.to_path_buf(), ErrorKind::Other)
+    );
+    assert_eq!(
+        failure(fs.is_directory(file)),
+        (file.to_path_buf(), ErrorKind::Other)
+    );
+    assert_eq!(
+        failure(fs.canonicalize(file)),
+        (file.to_path_buf(), ErrorKind::Other)
+    );
+    assert!(fs.is_regular_file(file).unwrap());
+    assert!(!fs.path_exists(Path::new("/srv/data/below")).unwrap());
+
+    let point = PathBuf::from("/srv");
+    fs.mock_fail_only(
+        file,
+        MockLookup::Read,
+        MockFailure::NotLookedUp(point.clone()),
+    );
+    let error = fs.read_file_content(file).unwrap_err();
+    assert_eq!(
+        error.not_looked_up(),
+        Some((file, &crate::error::Skip::Automount { point }))
+    );
+    fs.reset();
+    fs.mock_add_file("/srv/data", "x");
+    assert_eq!(fs.read_file_content(file).unwrap(), "x");
+}
+
 /// An entry is there when the path itself is something, a link to nothing
 /// included, and a link counts without its target being looked up.
 #[test]

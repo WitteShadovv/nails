@@ -47,7 +47,7 @@ pub mod udev;
 
 // Re-exports
 #[cfg(any(test, feature = "test-support"))]
-pub use mock::{MockFilesystem, MockOp, PathKind};
+pub use mock::{MockFailure, MockFilesystem, MockLookup, MockOp, PathKind};
 pub use mountinfo::{
     MountEntry, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
     read_mountinfo,
