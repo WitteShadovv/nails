@@ -19,22 +19,22 @@
 //! Where such a path lies cannot be told ([`UntoldPath`]) when a part of it
 //! is a symbolic link, which the boot's `mount` or `swapon` would follow,
 //! when it is not absolute, when it is a device node, which they would use
-//! as the device it is, when it crosses the folder of an fstab line that the
-//! boot mounts while that line's mount is not there now
-//! ([`unmounted_boot_folders`](super::lines::unmounted_boot_folders)), so
-//! what lies there at boot cannot be read now, when a part of it cannot be
-//! looked up, and when the lookup would mount an automount point.
+//! as the device it is, when it crosses the folder of an fstab line, a
+//! `noauto` one too, while that line's mount is not there now
+//! ([`unmounted_folders`](super::lines::unmounted_folders)), so what lies
+//! there when systemd mounts it cannot be read now, when a part of it cannot
+//! be looked up, and when the lookup would mount an automount point.
 
 #[cfg(test)]
 #[path = "paths_tests.rs"]
 mod tests;
 
 use super::DeviceMap;
-use super::lines::unmounted_boot_folders;
+use super::lines::unmounted_folders;
 use crate::Filesystem;
 use crate::filesystem::MountRoot;
 use crate::filesystem::mountinfo::MountEntry;
-use crate::fstab::FstabEntry;
+use crate::fstab::{FstabEntry, is_network_type};
 use crate::hidden_root::mount_holding;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -53,8 +53,9 @@ pub enum UntoldPath {
     Relative,
     /// The path is a device node.
     Device(PathBuf),
-    /// The path crosses this folder, which a line of the fstab mounts at
-    /// boot while that mount is not there now.
+    /// The path crosses this folder, which a line of the fstab mounts, at
+    /// boot or once a mount below it needs it, while that mount is not there
+    /// now.
     Unmounted(PathBuf),
     /// The lookup would mount this automount point, which nothing is
     /// mounted on yet.
@@ -76,7 +77,7 @@ impl UntoldPath {
             UntoldPath::Relative => "it is no absolute path".to_string(),
             UntoldPath::Device(node) => format!("{} is a device node", node.display()),
             UntoldPath::Unmounted(folder) => format!(
-                "a line of /etc/fstab mounts {} at boot, and that mount is not there now",
+                "a line of /etc/fstab mounts {}, and that mount is not there now",
                 folder.display()
             ),
             UntoldPath::Automount(point) => format!(
@@ -91,14 +92,17 @@ impl UntoldPath {
     }
 }
 
-/// Whether the claims count the fstab line `entry`: no RAM, kernel,
-/// host-share, network or overlay filesystem, which keeps nothing on the
-/// decoy's disks.
+/// Whether the claims count the fstab line `entry`, one whose first field can
+/// name local storage: every bind line, whatever its type, and every other
+/// line but one of a RAM, kernel, host-share, network or overlay filesystem,
+/// which keeps nothing on the decoy's disks. `_netdev` lets no line go: it
+/// only has systemd mount the line after the network.
 pub(super) fn is_claimed(entry: &FstabEntry) -> bool {
-    !(entry.is_virtual()
-        || entry.is_host_share()
-        || entry.is_network()
-        || entry.vfstype == "overlay")
+    entry.is_bind()
+        || !(entry.is_virtual()
+            || entry.is_host_share()
+            || is_network_type(&entry.vfstype)
+            || entry.vfstype == "overlay")
 }
 
 /// Filesystem types that `mount` reads from a block device, or through a
@@ -172,8 +176,8 @@ pub(super) fn as_written(path: &Path) -> Option<PathBuf> {
 }
 
 /// The paths the lines of `fstab` name ([`names_a_path`]), each read with
-/// [`read`] below `root`, the folders the boot mounts that are not mounted
-/// now told by `mounts` and `devices` ([`unmounted_boot_folders`]).
+/// [`read`] below `root`, the folders of its lines that are not mounted now
+/// told by `mounts` and `devices` ([`unmounted_folders`]).
 pub(super) fn read_all<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
@@ -181,7 +185,7 @@ pub(super) fn read_all<F: Filesystem>(
     fstab: &[FstabEntry],
     devices: &DeviceMap,
 ) -> NamedPaths {
-    let unmounted = unmounted_boot_folders(mounts, fstab, devices);
+    let unmounted = unmounted_folders(mounts, fstab, devices);
     let mut paths = NamedPaths::new();
     for entry in fstab.iter().filter(|entry| names_a_path(entry)) {
         paths
@@ -208,9 +212,9 @@ fn would_mount(mounts: &[MountEntry], path: &Path) -> bool {
 /// `path`, an absolute path of the system whose root is the folder `root`
 /// (`/` for the running decoy), as it reads (see the module docs), with no
 /// `.` or `..` in it, or why where it lies cannot be told. `mounts` is the
-/// mount table of the running system, and `unmounted` holds the folders,
-/// as the fstab writes them, that the boot mounts while their mount is not
-/// there now.
+/// mount table of the running system, and `unmounted` holds the folders of
+/// the fstab's lines, as they read with no `.` or `..` in them, whose mount
+/// is not there now.
 pub(super) fn read<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],

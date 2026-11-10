@@ -537,10 +537,11 @@ fn claims(
         let noauto = entry.is_noauto();
         if entry.is_bind() || (node.is_none() && names_a_file(entry)) {
             // A bind, or a swap or image file: the filesystem holding the
-            // source, read as written, with no link followed. A bind of the
-            // volume or of a folder of it mounts the volume. A path whose
-            // place cannot be told may lead anywhere, the volume included: a
-            // finding, which claims the filesystem its text places it on.
+            // source or the file, read as written, with no link followed. A
+            // bind of the volume or of a folder of it mounts the volume, and
+            // a file in the volume lies on it. A path whose place cannot be
+            // told may lead anywhere, the volume included: a finding, which
+            // claims the filesystem its text places it on.
             let source = match scene.named_path(&entry.spec) {
                 Ok(source) => Some(source),
                 Err(why) => {
@@ -550,8 +551,8 @@ fn claims(
             };
             let path = source.unwrap_or(Path::new(&entry.spec));
             if let Some(holder) = mount_holding(scene.mounts, path) {
-                if let Some(source) = source.filter(|_| entry.is_bind()) {
-                    entries.extend(bind_finding(hidden, entry, source, holder));
+                if let Some(source) = source {
+                    entries.extend(in_volume_finding(hidden, entry, source, holder));
                 }
                 claims.push(mount_claim(scene, holder, noauto));
             }
@@ -787,26 +788,30 @@ fn fstab_finding(
     }
 }
 
-/// The finding for the bind line `entry`, whose source reads as `source` on
-/// the mount `holder`, when the line mounts the volume of `hidden` (the
-/// visible mount at the hidden root) or a folder of it: its source, as
-/// `holder` shows it now, lies at the volume's folder of that filesystem or
-/// inside it. It goes as any line does that mounts the volume itself, unless
-/// the boot mounts it at `/` or at a system folder, and it is never the
-/// decoy's own line.
-fn bind_finding(
+/// The finding for the fstab line `entry`, a bind line or a swap or image
+/// file line, whose path reads as `path` on the mount `holder`, when that
+/// path lies in the volume of `hidden` (the visible mount at the hidden
+/// root): at the volume's folder of that filesystem or inside it, as `holder`
+/// shows it now. A bind line then mounts the volume or a folder of it, and a
+/// swap or image line names a file in the volume, which the boot swaps on or
+/// mounts. It goes as any line does that names the volume itself, unless the
+/// boot mounts it at `/` or at a system folder, and it is never the decoy's
+/// own line.
+fn in_volume_finding(
     hidden: &MountEntry,
     entry: &FstabEntry,
-    source: &Path,
+    path: &Path,
     holder: &MountEntry,
 ) -> Option<EntryFinding> {
-    let below = source.strip_prefix(&holder.mount_point).ok()?;
+    let below = path.strip_prefix(&holder.mount_point).ok()?;
     let folder = holder.root.join(below);
     if holder.dev != hidden.dev || !folder.starts_with(&hidden.root) {
         return None;
     }
     let root = hidden.mount_point.display();
-    let why = if folder == hidden.root {
+    let why = if !entry.is_bind() {
+        format!("the file it names lies in the volume at {root}")
+    } else if folder == hidden.root {
         format!("it mounts the volume at {root}")
     } else {
         format!("it mounts a folder of the volume at {root}")
