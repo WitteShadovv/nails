@@ -611,6 +611,103 @@ fn every_call_that_reads_or_writes_a_path_is_guarded_as_one_that_enters_it() {
     }
 }
 
+/// The calls that read what is at their path and read a link there itself:
+/// they never follow it.
+const READ_THE_LINK: [&str; 3] = ["is_symlink", "entry_exists", "is_overlay_whiteout"];
+
+/// A mock with a direct automount point at `/usr/local` that nothing is
+/// mounted on, a link `/opt/l` to a path below it and a link `/opt/m` to the
+/// point itself.
+fn links_to_usr_local() -> MockFilesystem {
+    let fs = mock(&[ROOT, USR_LOCAL]);
+    link(&fs, "/opt/l", "/usr/local/x");
+    link(&fs, "/opt/m", "/usr/local");
+    fs
+}
+
+/// A call that follows a link at the end of its path asks about where the
+/// link leads, so it is not made where that is behind an automount point.
+/// One that reads the link itself is made. Neither looks anything up behind
+/// the point.
+#[test]
+fn every_call_that_follows_a_link_at_the_end_is_not_made_where_it_leads_behind_a_point() {
+    for (name, call) in entering_calls() {
+        let fs = links_to_usr_local();
+        let view = guarded(&fs);
+        for (n, path) in ["/opt/l", "/opt/m"].into_iter().enumerate() {
+            let result = call(&view, Path::new(path));
+            if READ_THE_LINK.contains(&name) {
+                assert!(
+                    !matches!(&result, Err(error) if error.not_looked_up().is_some()),
+                    "{name} {path}: {result:?}"
+                );
+                assert!(view.skipped().is_empty(), "{name} {path}");
+            } else {
+                assert!(skipped_at_usr_local(&result), "{name} {path}: {result:?}");
+                assert_eq!(view.skipped().len(), n + 1, "{name} {path}");
+            }
+        }
+        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
+        assert!(fs.mock_written_paths().is_empty(), "{name}");
+    }
+}
+
+/// A call that resolves a link at the end of its path follows it where it
+/// follows one, as `realpath` does: below a point it is not made, at a
+/// direct point it is answered with the point. `read_link` and `mount_root`
+/// read the link itself and are made. Nothing is looked up behind the point.
+#[test]
+fn every_call_that_resolves_a_link_at_the_end_follows_it_only_where_it_follows_one() {
+    for (name, call) in resolving_calls() {
+        let fs = links_to_usr_local();
+        let view = guarded(&fs);
+        let below = call(&view, Path::new("/opt/l"));
+        let at = call(&view, Path::new("/opt/m"));
+        match name {
+            "read_link" | "mount_root" => {
+                assert!(below.is_ok() && at.is_ok(), "{name}: {below:?} {at:?}");
+                assert!(view.skipped().is_empty(), "{name}");
+            }
+            _ => {
+                if name == "resolve_in_root" {
+                    // It answers none, and the ledger keeps why.
+                    assert!(below.is_err(), "{name}: {below:?}");
+                } else {
+                    assert!(skipped_at_usr_local(&below), "{name}: {below:?}");
+                }
+                assert!(at.is_ok(), "{name}: {at:?}");
+                assert_eq!(
+                    view.skipped(),
+                    [Skipped {
+                        path: PathBuf::from("/opt/l"),
+                        reason: Skip::Automount {
+                            point: PathBuf::from("/usr/local")
+                        }
+                    }],
+                    "{name}"
+                );
+            }
+        }
+        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
+    }
+    let fs = links_to_usr_local();
+    let view = guarded(&fs);
+    let point = PathBuf::from("/usr/local");
+    assert_eq!(view.canonicalize(Path::new("/opt/m")).unwrap(), point);
+    assert_eq!(
+        view.resolve_in_root(Path::new("/"), Path::new("/opt/m")),
+        Some(point)
+    );
+    assert_eq!(
+        view.read_link(Path::new("/opt/l")).unwrap(),
+        Path::new("/usr/local/x")
+    );
+    assert_eq!(
+        view.mount_root(Path::new("/opt/m")).unwrap(),
+        MountRoot::Link
+    );
+}
+
 #[test]
 fn a_call_that_reads_a_path_reaches_the_filesystem_once_it_is_asked() {
     let fs = mock(&[ROOT, USR_LOCAL]);
@@ -677,6 +774,17 @@ fn a_mount_query_is_made_unless_resolving_its_path_would_mount() {
         let result = call(&view, Path::new("/usr/local/bin"));
         assert!(skipped_at_usr_local(&result), "{name}: {result:?}");
         assert_eq!(view.skipped().len(), 1, "{name}");
+    }
+    // A link at the end is resolved as the query resolves it: where it
+    // leads behind a point the query is not made, at a direct point it is.
+    for (name, call) in querying_calls() {
+        let fs = links_to_usr_local();
+        let view = guarded(&fs);
+        let result = call(&view, Path::new("/opt/l"));
+        assert!(skipped_at_usr_local(&result), "{name}: {result:?}");
+        assert!(call(&view, Path::new("/opt/m")).is_ok(), "{name}");
+        assert_eq!(view.skipped().len(), 1, "{name}");
+        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
     }
     let fs = mock(&[ROOT, USR_LOCAL]);
     let view = guarded(&fs);
