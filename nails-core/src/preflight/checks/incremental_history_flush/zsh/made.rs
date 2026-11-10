@@ -17,7 +17,9 @@
 //! makes it (`sponge ~/.x`, `patch ~/.x ~/.p`), but one that writes nothing
 //! in the files it names ([`may_write`]: `cat`, `touch`, a builtin such as
 //! `print`), a function the files define or autoload, whose code the check
-//! reads, and a stock one whose work it reads by its name. For a file a
+//! reads, and a stock one whose work it reads by its name; a path given in
+//! an option's word counts as given ([`given`]: `sort -o/home/alice/.x`,
+//! `--output=~/.x`, `curl -o.x`). For a file a
 //! function's code reads, which a hook may read after every command, any such
 //! write counts, and one whose path an expansion makes at the top or in a
 //! function the top runs. A program that writes a file it is not given the
@@ -212,6 +214,28 @@ fn names_among<'a>(text: &str, bases: impl Iterator<Item = (usize, &'a str)>) ->
         })
         .map(|(at, _)| at)
         .collect()
+}
+
+/// The paths the word `word` of a command may give it: the word, whose last
+/// part ([`last_part`]) names the file where an option's word gives a path
+/// with a `/` or after an `=` (`-o/home/alice/.x`, `--output=.x`), and for a
+/// word of options with neither, each rest of it past one of its letters,
+/// which an option may take as its argument (`-o.x` and `-so.x` give `.x`).
+pub(super) fn given(word: &str) -> Vec<&str> {
+    let mut found = vec![word];
+    if let Some(letters) = word.strip_prefix('-')
+        && !letters.starts_with('-')
+        && !word.contains(['/', '='])
+    {
+        found.extend(
+            letters
+                .char_indices()
+                .filter(|(_, letter)| letter.is_ascii_alphanumeric())
+                .map(|(at, letter)| &letters[at + letter.len_utf8()..])
+                .filter(|rest| !rest.is_empty()),
+        );
+    }
+    found
 }
 
 /// The last part of the path `text` names: past its last `/`, or its last
@@ -582,7 +606,19 @@ impl<F: Filesystem> Reader<'_, F> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Forms, may_name, named, names_among, names_file, names_of};
+    use super::{Forms, given, may_name, named, names_among, names_file, names_of};
+
+    #[test]
+    fn an_option_s_word_gives_a_path_by_its_last_part_or_past_a_letter() {
+        assert_eq!(given("-o/home/alice/.x"), ["-o/home/alice/.x"]);
+        assert_eq!(given("--output=.x"), ["--output=.x"]);
+        assert_eq!(given("-o.x"), ["-o.x", ".x"]);
+        assert_eq!(given("-mo.x"), ["-mo.x", "o.x", ".x"]);
+        assert_eq!(given("-rf"), ["-rf", "f"]);
+        assert_eq!(given("-o"), ["-o"]);
+        assert_eq!(given("--long"), ["--long"]);
+        assert_eq!(given("~/.x"), ["~/.x"]);
+    }
 
     #[test]
     fn a_word_names_a_file_by_its_last_part_or_braces_that_make_it() {

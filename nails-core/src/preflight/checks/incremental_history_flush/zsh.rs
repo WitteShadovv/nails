@@ -704,10 +704,13 @@ impl<F: Filesystem> Reader<'_, F> {
                 && !self.autoloads.contains(&name)
                 && !walk::STOCK_NAMES.contains(&name.as_str()))
         {
-            for arg in args.iter().filter(|arg| !arg.text.starts_with('-')) {
-                if creates || !made::computed(&arg.text) {
-                    let what = format!("`{name}` in {place} names `{}`", arg.text);
-                    self.makes(&arg.text, what, function.clone());
+            // A path an option's word gives counts too (`-o/x/.y`, `-o.y`).
+            for arg in &args {
+                for path in made::given(&arg.text) {
+                    if creates || !made::computed(path) {
+                        let what = format!("`{name}` in {place} names `{}`", arg.text);
+                        self.makes(path, what, function.clone());
+                    }
                 }
             }
         }
