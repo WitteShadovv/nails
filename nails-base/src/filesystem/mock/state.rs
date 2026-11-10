@@ -152,8 +152,9 @@ pub struct MockFilesystem {
     /// kind.
     pub(super) lookup_errors: Arc<Mutex<HashMap<PathBuf, std::io::ErrorKind>>>,
     /// Every path a read looked up, in order
-    /// ([`mock_lookups`](Self::mock_lookups)).
-    pub(super) lookups: Arc<Mutex<Vec<PathBuf>>>,
+    /// ([`mock_lookups`](Self::mock_lookups)), each with whether the read
+    /// follows a link at its end ([`mock_reached`](Self::mock_reached)).
+    pub(super) lookups: Arc<Mutex<Vec<(PathBuf, bool)>>>,
     /// Lookups that fail alone, set with
     /// [`mock_fail_only`](Self::mock_fail_only), each by its path and kind.
     pub(super) failures_only: Arc<Mutex<HashMap<(PathBuf, MockLookup), MockFailure>>>,
