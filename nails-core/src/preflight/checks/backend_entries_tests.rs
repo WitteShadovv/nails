@@ -843,66 +843,88 @@ fn a_bind_line_that_mounts_the_volume_fails_with_the_flag_too() {
     assert_eq!(result.remediation(), Some(REMEDIATION));
 }
 
+/// What the check says after a line whose path cannot be told: it may name
+/// the volume, and is stored on the decoy.
+const STORED: &str = "Such an entry is stored on the decoy, where an examination reads it, and \
+                      can open or mount the volume at boot.";
+
+/// The finding for the line that reads `shown`, whose source or file
+/// (`what`) lies where `why` says it cannot be told.
+fn untold(shown: &str, what: &str, why: &str) -> String {
+    format!("/etc/fstab: '{shown}' (where {what} lies cannot be told: {why})")
+}
+
+/// That the check of `fs` fails with `allow` naming only `finding`, a line
+/// whose path cannot be told, and says to write it with its real path.
+fn fails_as_untold(fs: &MockFilesystem, allow: Allow, finding: &str) {
+    let result = run_allowing(fs, allow);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!("The decoy's configuration may name the volume at /mnt: {finding}. {STORED}")
+    );
+    assert_eq!(result.remediation(), Some(UNTOLD));
+}
+
 #[test]
-fn a_bind_line_whose_source_leads_to_the_roots_folder_through_a_link_fails_with_the_flag_too() {
+fn a_bind_line_whose_source_holds_a_link_fails_with_the_flag_too() {
     // The bind line of the test above, written through a link to the root's
-    // folder: mount follows the link at every boot, so the line binds the
-    // volume at the root as its direct form does. hidden-volume still
-    // passes the root with the flag's warning, and backend-entries fails it,
-    // with the flag too. So does a relative link, and a chain of links.
-    for links in [
-        &[("/srv/link", "/srv/x")][..],
-        &[("/srv/link", "x")][..],
-        &[("/srv/link", "/srv/chain"), ("/srv/chain", "../srv/x")][..],
+    // folder: the boot's mount follows the link, so the line binds the volume
+    // at the root as its direct form does. NAILS follows no link: it fails
+    // the line, with the flag too, names the link and says to write the line
+    // with its real path. So does it for a relative link, a chain of links,
+    // a link in a parent folder and a link to nothing, wherever they lead.
+    // hidden-volume passes the root with the flag's warning, as for the
+    // direct form.
+    for (links, source, link) in [
+        (&[("/srv/link", "/srv/x")][..], "/srv/link", "/srv/link"),
+        (&[("/srv/link", "x")][..], "/srv/link", "/srv/link"),
+        (
+            &[("/srv/link", "/srv/chain"), ("/srv/chain", "../srv/x")][..],
+            "/srv/link",
+            "/srv/link",
+        ),
+        (&[("/data", "/srv")][..], "/data/x", "/data"),
+        (
+            &[("/srv/link", "/srv/nothing")][..],
+            "/srv/link",
+            "/srv/link",
+        ),
     ] {
         let fs = rendered(
             BIND_OF_ROOT,
-            "/dev/vda1 / ext4 defaults 0 1\n/srv/link /mnt none bind 0 0\n",
+            &format!("/dev/vda1 / ext4 defaults 0 1\n{source} /mnt none bind 0 0\n"),
         );
         for (link, target) in links {
             fs.create_symlink(Path::new(target), Path::new(link))
                 .unwrap();
         }
+        fs.mock_set_mount_root_error("/srv/nothing", std::io::ErrorKind::NotFound);
         assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{links:?}");
-        let result = run_allowing(&fs, Allow::DecoyStorage);
-        assert!(result.is_fail(), "{links:?}: {result:?}");
-        assert!(
-            result.message().contains(
-                "/etc/fstab: '/srv/link /mnt none' (its source leads to /srv/x, so it mounts the \
-                 volume at /mnt)"
-            ),
-            "{links:?}: {}",
-            result.message()
+        let why = format!("{link} is a symbolic link, which NAILS does not follow");
+        fails_as_untold(
+            &fs,
+            Allow::DecoyStorage,
+            &untold(&format!("{source} /mnt none"), "its source", &why),
         );
-        assert_eq!(result.remediation(), Some(REMEDIATION), "{links:?}");
     }
 }
 
 #[test]
-fn a_line_whose_path_cannot_be_followed_fails_and_says_why() {
-    // The bind line's link leads to nothing: where it leads cannot be told,
-    // so the check does not say that it names the volume, only that it may,
-    // and says why. With the flag that is the only line named.
+fn a_line_whose_path_cannot_be_told_fails_without_the_flag_and_says_why() {
+    // Without the flag the line for / is named first, which the decoy's own
+    // boot needs, and the fix says what to do about each kind.
     let fs = rendered(
         BIND_OF_ROOT,
         "/dev/vda1 / ext4 defaults 0 1\n/srv/link /mnt none bind 0 0\n",
     );
-    fs.create_symlink(Path::new("/srv/nothing"), Path::new("/srv/link"))
+    fs.create_symlink(Path::new("/srv/x"), Path::new("/srv/link"))
         .unwrap();
-    fs.mock_set_mount_root_error("/srv/nothing", std::io::ErrorKind::NotFound);
-    let untold = "/etc/fstab: '/srv/link /mnt none' (where its source leads cannot be told: the \
-                  link /srv/link leads to nothing)";
-    let stored = "Such an entry is stored on the decoy, where an examination reads it, and can \
-                  open or mount the volume at boot.";
-    let result = run_allowing(&fs, Allow::DecoyStorage);
-    assert!(result.is_fail(), "{result:?}");
-    assert_eq!(
-        result.message(),
-        format!("The decoy's configuration may name the volume at /mnt: {untold}. {stored}")
+    let finding = untold(
+        "/srv/link /mnt none",
+        "its source",
+        "/srv/link is a symbolic link, which NAILS does not follow",
     );
-    assert_eq!(result.remediation(), Some(UNFOLLOWED));
-    // Without the flag the line for / is named first, which the decoy's own
-    // boot needs, and the fix says what to do about each kind.
     let result = run_allowing(&fs, Allow::Nothing);
     assert!(result.is_fail(), "{result:?}");
     let message = result.message();
@@ -913,13 +935,165 @@ fn a_line_whose_path_cannot_be_followed_fails_and_says_why() {
         "{message}"
     );
     assert!(
-        message.ends_with(&format!("). It may name it as well: {untold}. {stored}")),
+        message.ends_with(&format!("). It may name it as well: {finding}. {STORED}")),
         "{message}"
     );
     assert_eq!(
         result.remediation(),
-        Some(format!("{STORAGE_OF_ITS_OWN}\n{UNFOLLOWED}").as_str())
+        Some(format!("{STORAGE_OF_ITS_OWN}\n{UNTOLD}").as_str())
     );
+}
+
+#[test]
+fn a_swap_or_image_line_through_a_link_to_the_volumes_device_fails() {
+    // The hidden volume is the mapping `data` (dm-9) on the whole of sdb,
+    // at /mnt. A line that names its device mounts it, or swaps on it, at
+    // boot, and fails. One whose path is a link to that device does the
+    // same at boot, through the link, and fails as well, with no flag, as a
+    // line whose path cannot be told.
+    for line in [
+        "/dev/mapper/data /media/x ext4 defaults,nofail 0 2",
+        "/dev/mapper/data none swap sw 0 0",
+    ] {
+        let result = decoy()
+            .file(
+                "/etc/fstab",
+                &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}\n"),
+            )
+            .run();
+        assert!(result.is_fail(), "{line}: {result:?}");
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{line}");
+    }
+    for (link, target, line, shown) in [
+        (
+            "/hidden.link",
+            "/dev/mapper/data",
+            "/hidden.link /media/x ext4 defaults,nofail 0 2",
+            "/hidden.link /media/x ext4",
+        ),
+        (
+            "/swap.link",
+            "/dev/mapper/data",
+            "/swap.link none swap sw 0 0",
+            "/swap.link none swap",
+        ),
+        (
+            "/swap.link",
+            "/dev/sdb",
+            "/swap.link none swap sw 0 0",
+            "/swap.link none swap",
+        ),
+    ] {
+        let decoy = decoy().file(
+            "/etc/fstab",
+            &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}\n"),
+        );
+        decoy.link(link, target);
+        let why = format!("{link} is a symbolic link, which NAILS does not follow");
+        fails_as_untold(
+            &decoy.fs,
+            Allow::Nothing,
+            &untold(shown, "the file it names", &why),
+        );
+    }
+}
+
+#[test]
+fn a_swap_or_image_line_whose_path_is_a_device_node_fails() {
+    // A device node outside /dev: swapon and mount use the device it is.
+    for (line, shown) in [
+        ("/srv/node none swap sw 0 0", "/srv/node none swap"),
+        (
+            "/srv/node /media/x ext4 defaults,nofail 0 2",
+            "/srv/node /media/x ext4",
+        ),
+    ] {
+        let decoy = decoy().file(
+            "/etc/fstab",
+            &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}\n"),
+        );
+        decoy.fs.mock_set_device_node("/srv/node");
+        fails_as_untold(
+            &decoy.fs,
+            Allow::Nothing,
+            &untold(shown, "the file it names", "/srv/node is a device node"),
+        );
+    }
+}
+
+#[test]
+fn a_swap_or_image_line_whose_path_is_not_absolute_fails_with_the_flag_too() {
+    // swapon and mount look up such a path from the folder they run in.
+    for (line, shown) in [
+        ("swapfile none swap sw 0 0", "swapfile none swap"),
+        (
+            "srv/img.raw /mnt/img ext4 loop 0 0",
+            "srv/img.raw /mnt/img ext4",
+        ),
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
+        );
+        fails_as_untold(
+            &fs,
+            Allow::DecoyStorage,
+            &untold(shown, "the file it names", "it is no absolute path"),
+        );
+        let result = run_allowing(&fs, Allow::Nothing);
+        assert!(result.is_fail(), "{line}: {result:?}");
+        assert!(
+            result.message().contains(&format!(
+                "It may name it as well: {}",
+                untold(shown, "the file it names", "it is no absolute path")
+            )),
+            "{line}: {}",
+            result.message()
+        );
+    }
+}
+
+#[test]
+fn a_bind_line_below_a_folder_the_boot_mounts_but_is_not_mounted_fails_with_the_flag_too() {
+    // The fstab mounts vdc1 at /backup at boot, but it is not mounted now:
+    // what /backup/link is at boot, a link to /srv/x say, cannot be read.
+    let fstab = "/dev/vda1 / ext4 defaults 0 1\n/dev/vdc1 /backup ext4 defaults,nofail 0 2\n\
+                 /backup/link /mnt none bind 0 0\n";
+    let fs = rendered(BIND_OF_ROOT, fstab);
+    fs.mock_set_mount_root_error("/backup/link", std::io::ErrorKind::NotFound);
+    let finding = untold(
+        "/backup/link /mnt none",
+        "its source",
+        "a line of /etc/fstab mounts /backup at boot, and that mount is not there now",
+    );
+    assert!(hidden_volume_with_the_flag(&fs).is_warn());
+    fails_as_untold(&fs, Allow::DecoyStorage, &finding);
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(
+        result
+            .message()
+            .contains(&format!("It may name it as well: {finding}")),
+        "{}",
+        result.message()
+    );
+    // Once vdc1 is mounted at /backup, the place is read there: a link is
+    // one, and a folder there is judged as it reads.
+    let mounted = format!("{BIND_OF_ROOT}7 1 8:33 / /backup rw - ext4 /dev/vdc1 rw\n");
+    let fs = rendered(&mounted, fstab);
+    fs.create_symlink(Path::new("/srv/x"), Path::new("/backup/link"))
+        .unwrap();
+    fails_as_untold(
+        &fs,
+        Allow::DecoyStorage,
+        &untold(
+            "/backup/link /mnt none",
+            "its source",
+            "/backup/link is a symbolic link, which NAILS does not follow",
+        ),
+    );
+    let result = run_allowing(&rendered(&mounted, fstab), Allow::DecoyStorage);
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(result.message(), only_the_decoys_own_line("/"));
 }
 
 /// What the mock lists in `/proc/devices` for the encrypted decoys.

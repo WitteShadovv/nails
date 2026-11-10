@@ -4,10 +4,10 @@
 //! The judge: the decoy's claims, then the first verdict that matches.
 
 use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
-use super::paths::{is_claimed, is_file_spec};
+use super::paths::{is_claimed, names_a_file};
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
-    LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Unfollowed, Untraced,
+    LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, UntoldPath, Untraced,
     Verdict, is_system_folder,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
@@ -535,13 +535,13 @@ fn claims(
             }
         }
         let noauto = entry.is_noauto();
-        if entry.is_bind() || (node.is_none() && is_file_spec(&entry.spec)) {
+        if entry.is_bind() || (node.is_none() && names_a_file(entry)) {
             // A bind, or a swap or image file: the filesystem holding the
-            // source, as its links lead. A bind of the volume or of a folder
-            // of it mounts the volume. A path that cannot be followed may
-            // lead anywhere, the volume included: a finding, which claims
-            // the filesystem that holds the path as written.
-            let source = match scene.followed(&entry.spec) {
+            // source, read as written, with no link followed. A bind of the
+            // volume or of a folder of it mounts the volume. A path whose
+            // place cannot be told may lead anywhere, the volume included: a
+            // finding, which claims the filesystem its text places it on.
+            let source = match scene.named_path(&entry.spec) {
                 Ok(source) => Some(source),
                 Err(why) => {
                     entries.push(untold_finding(entry, &why));
@@ -787,13 +787,13 @@ fn fstab_finding(
     }
 }
 
-/// The finding for the bind line `entry`, whose source leads to `source`
-/// on the mount `holder`, when the line mounts the volume of `hidden` (the
-/// visible mount at the hidden root) or a folder of it: its source, as its
-/// links lead and as `holder` shows it now, lies at the volume's folder of
-/// that filesystem or inside it. It goes as any line does that mounts the
-/// volume itself, unless the boot mounts it at `/` or at a system folder,
-/// and it is never the decoy's own line.
+/// The finding for the bind line `entry`, whose source reads as `source` on
+/// the mount `holder`, when the line mounts the volume of `hidden` (the
+/// visible mount at the hidden root) or a folder of it: its source, as
+/// `holder` shows it now, lies at the volume's folder of that filesystem or
+/// inside it. It goes as any line does that mounts the volume itself, unless
+/// the boot mounts it at `/` or at a system folder, and it is never the
+/// decoy's own line.
 fn bind_finding(
     hidden: &MountEntry,
     entry: &FstabEntry,
@@ -806,27 +806,21 @@ fn bind_finding(
         return None;
     }
     let root = hidden.mount_point.display();
-    let mounts = if folder == hidden.root {
+    let why = if folder == hidden.root {
         format!("it mounts the volume at {root}")
     } else {
         format!("it mounts a folder of the volume at {root}")
-    };
-    // A source whose links lead elsewhere than it reads says where.
-    let why = if source == Path::new(&entry.spec) {
-        mounts
-    } else {
-        format!("its source leads to {}, so {mounts}", source.display())
     };
     let boot_needs = !entry.is_noauto() && is_system_folder(&entry.file, &hidden.mount_point);
     Some(blocking(FSTAB, shown(entry), why, boot_needs))
 }
 
 /// The finding for the fstab line `entry`, a bind line or a swap or image
-/// file line, whose path cannot be followed (`why`): it may lead anywhere,
-/// the volume included, which cannot be told.
-fn untold_finding(entry: &FstabEntry, why: &Unfollowed) -> EntryFinding {
+/// file line, whose path cannot be told (`why`): it may lead anywhere, the
+/// volume included, which cannot be told.
+fn untold_finding(entry: &FstabEntry, why: &UntoldPath) -> EntryFinding {
     let what = if entry.is_bind() {
-        "its source leads"
+        "its source lies"
     } else {
         "the file it names lies"
     };
