@@ -60,9 +60,13 @@
 //! loaded later or an error that stops the file before the line, and no reading
 //! of the files shows that it holds. A `setopt` with an expansion the check
 //! cannot list, an option whose name an expansion makes (`options[$o]=on`,
-//! `emulate -o $o`, `read -A options`, a `typeset` of a parameter whose name
-//! does, or of the parameters a pattern matches, `typeset -m`), a glob
-//! qualifier that runs code (`*(e:...:)`, `*(+func)`), an
+//! `emulate -o $o`, `read -A options`), a builtin that sets or takes away a
+//! parameter where an expansion, brace expansion or a glob may make its
+//! options or the name (`private -$o`, `print ${f}DIR`,
+//! `typeset {ZDOT,}DIR=...`), or that sets the parameters a pattern matches
+//! (`typeset -m`, an `unset -m` that may match one the check reads), an
+//! attribute given a parameter whose value the check follows (`typeset -l
+//! ZDOTDIR`), a glob qualifier that runs code (`*(e:...:)`, `*(+func)`), an
 //! expansion that reads a parameter's value again (`${(e)x}`, `${~x}`,
 //! `GLOB_SUBST`), code in a string zsh runs that an expansion makes (an alias's
 //! value, a trap's, a `sched`'s, a `zstyle -e`'s, a prompt's where

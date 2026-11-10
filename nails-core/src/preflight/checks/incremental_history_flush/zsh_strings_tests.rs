@@ -261,7 +261,7 @@ fn what_expands_a_parameter_s_value_again_is_a_doubt() {
     // Flags that do not expand the value again are no doubt, nor is one `%`,
     // which expands only a prompt's escapes.
     assert_eq!(
-        read("print ${(j:,:)x} ${(@)x} ${=x} ${(s: :)x} ${(%):-%~}\n"),
+        read("print -r -- ${(j:,:)x} ${(@)x} ${=x} ${(s: :)x} ${(%):-%~}\n"),
         Scan::default()
     );
 }

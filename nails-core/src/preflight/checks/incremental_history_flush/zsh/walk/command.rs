@@ -17,7 +17,7 @@ use super::super::backstop::{
 use super::super::builtins::fc_letters;
 use super::super::lexer::{Word, is_name};
 use super::hooks::hook_array;
-use super::names::{computed, names_parameter, targets};
+use super::names::{names_parameter, targets};
 use super::strings::PROMPTS;
 use super::{Event, Frame, Input, Walker, mentioned, walk_text_in};
 
@@ -43,21 +43,6 @@ const PRECOMMANDS: &[&str] = &[
     "time",
     "!",
 ];
-
-/// Whether the check reads the value of the parameter `name` where the files
-/// set it, so that a tie (`typeset -T`) by which zsh sets it by another name
-/// is a doubt: one zsh reads as arithmetic each time it uses it (`TMOUT`),
-/// `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`, `fpath` and an array of hook
-/// functions. zsh ties none of its special parameters (`PS1`, `HOME`) to
-/// another.
-fn tie_read(name: &str) -> bool {
-    READ_AS_NUMBER.contains(&name)
-        || matches!(
-            name,
-            "ZDOTDIR" | "XDG_CONFIG_HOME" | "NIX_PROFILES" | "fpath" | "FPATH"
-        )
-        || hook_array(name)
-}
 
 /// Whether `text` assigns a variable (`name=...`, `name+=...`,
 /// `name[key]=...`), not a word with an `=` in it (`${=c}`, `$=c`).
@@ -87,17 +72,6 @@ fn computed_options(text: &str) -> bool {
         let key = key.split(']').next().unwrap_or(key);
         !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') && key.contains(['$', '`'])
     })
-}
-
-/// Whether `text`, a word after `typeset` or the like, `print -v`, `printf -v`
-/// or `read`, names the parameter it sets by an expansion (`"$name=on"`,
-/// `${prefix}x`), which may be one of the `options` parameter.
-fn computed_target(text: &str) -> bool {
-    !text.starts_with(['-', '+'])
-        && text
-            .split_once('=')
-            .map_or(text, |(target, _)| target)
-            .contains(['$', '`'])
 }
 
 /// The code of each command substitution in `text` as written, a word of
@@ -528,14 +502,7 @@ impl Walker<'_> {
                 self.copy_function(&args);
             }
             "bindkey" => self.bindkey(&args, unconditional),
-            "unset" => {
-                // What it takes away holds no code: a prompt, a hook's array.
-                for arg in &args {
-                    self.prompts += usize::from(PROMPTS.contains(&arg.text.as_str()));
-                    self.hooks += usize::from(hook_array(&arg.text));
-                    self.mention(&arg.text);
-                }
-            }
+            "unset" => self.unset(&args),
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
             "add-zsh-hook" | "add-zle-hook-widget" => self.hook(&command.text, &args),
@@ -682,72 +649,6 @@ impl Walker<'_> {
         }
         for arg in args {
             self.mention(&arg.text);
-        }
-    }
-
-    /// The events of a `typeset` or the like (`command`) of `args`: a
-    /// parameter whose name an expansion makes is a doubt, and so is a tie
-    /// (`typeset -T TMOUT tmout`) of one whose value the check reads
-    /// ([`tie_read`]), as zsh then sets it by the other name too
-    /// (`tmout=(...)`), and so is the `-m` of `typeset`, `declare` and
-    /// `private`, with which zsh reads each word as a pattern and sets or
-    /// changes every parameter it matches (`typeset -m 'HOM?=/x'`, `typeset
-    /// -u -m 'T?Y'`), one the check reads by its name among them; each other
-    /// word is an assignment or a declaration.
-    fn declare(&mut self, command: &str, args: &[Word], unconditional: bool) {
-        // zsh takes the options from the words up to the first that starts
-        // with neither `-` nor `+`, or a `--`.
-        let flags: Vec<&Word> = args
-            .iter()
-            .take_while(|arg| arg.text.starts_with(['-', '+']) && arg.text != "--")
-            .collect();
-        // `local`, `readonly`, `export`, `integer` and `float` take no `-m`.
-        if matches!(command, "typeset" | "declare" | "private")
-            && flags.iter().any(|flag| flag.text[1..].contains('m'))
-        {
-            let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
-            self.events.push(Event::Doubt(format!(
-                "it cannot tell which parameters `{command} {}` in {} sets, as with -m zsh sets \
-                 each one a pattern of it matches",
-                words.join(" "),
-                self.place
-            )));
-        }
-        let ties = flags
-            .iter()
-            .any(|flag| flag.text.starts_with('-') && (flag.text.contains('T') || computed(flag)));
-        if ties {
-            for arg in &args[flags.len()..] {
-                let name = assigned(arg.text.split_once('=').map_or(&arg.text, |(name, _)| name));
-                if computed(arg) || tie_read(name) {
-                    self.events.push(Event::Doubt(format!(
-                        "it cannot follow the value of `{}`, which `{command} {}` in {} ties to \
-                         another name, by which zsh sets it too",
-                        arg.text,
-                        args.iter()
-                            .map(|arg| arg.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                        self.place
-                    )));
-                }
-            }
-        }
-        for arg in args {
-            if computed_target(&arg.text) {
-                self.events.push(Event::Doubt(format!(
-                    "it cannot tell which parameter `{command} {}` in {} sets",
-                    arg.text, self.place
-                )));
-            }
-            // A hook's array or a prompt declared as it is.
-            if hook_array(&arg.text) {
-                self.hooks += 1;
-            }
-            if PROMPTS.contains(&arg.text.as_str()) {
-                self.prompts += 1;
-            }
-            self.assignment(arg, unconditional);
         }
     }
 

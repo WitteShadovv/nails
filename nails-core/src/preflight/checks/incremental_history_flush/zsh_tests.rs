@@ -40,6 +40,11 @@ mod typed;
 #[path = "zsh_since_tests.rs"]
 mod since;
 
+// What the builtins that set or take away a parameter do, as zsh reads
+// their words.
+#[path = "zsh_parameters_tests.rs"]
+mod parameters;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
@@ -799,7 +804,7 @@ fn what_zsh_reads_as_code_after_a_glob_flag_an_arithmetic_quote_or_a_pid_is_read
             &[],
         ),
         (
-            "print -l (#i)*.zsh(N) >/dev/null; source ~/.zsh/history.zsh\n",
+            "print -l -- (#i)*.zsh(N) >/dev/null; source ~/.zsh/history.zsh\n",
             &[],
         ),
         ("[[ a == (#b)(*) ]]; source ~/.zsh/history.zsh\n", &[]),
