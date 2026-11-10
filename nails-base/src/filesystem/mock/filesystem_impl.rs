@@ -88,6 +88,11 @@ impl Filesystem for MockFilesystem {
         self.is_overlay_whiteout_impl(path)
     }
 
+    fn is_device_node(&self, path: &Path) -> Result<bool> {
+        self.looked_at_itself(path);
+        self.is_device_node_impl(path)
+    }
+
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         self.looked_at(path);
         self.canonicalize_impl(path)
