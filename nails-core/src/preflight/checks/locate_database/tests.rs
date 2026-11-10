@@ -391,6 +391,42 @@ fn a_masked_timer_leaves_a_run_by_hand_and_warns() {
     assert!(!message.contains("systemctl mask"), "{message}");
 }
 
+/// A timer whose invocation marker cannot be looked up may run now: its
+/// service is one a person, or that timer, may start, which warns, naming
+/// why NAILS cannot tell.
+#[test]
+fn a_timer_nails_cannot_tell_runs_may_start_its_service() {
+    let decoy = Decoy::new();
+    decoy
+        .file("/etc/updatedb.conf", DEBIAN)
+        .file(
+            "/usr/lib/systemd/system/plocate-updatedb.service",
+            DEBIAN_SERVICE,
+        )
+        .file("/usr/lib/systemd/system/plocate-updatedb.timer", TIMER);
+    let result = decoy.check(false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        message(&result)
+            .contains("updatedb can be started by hand (systemctl start plocate-updatedb.service)"),
+        "{result:?}"
+    );
+    decoy.fs.mock_set_lookup_error(
+        "/run/systemd/units/invocation:plocate-updatedb.timer",
+        std::io::ErrorKind::Other,
+    );
+    let result = decoy.check(false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        message(&result).contains(
+            "updatedb can be started by hand (systemctl start plocate-updatedb.timer, and NAILS \
+             cannot tell whether it runs now: NAILS cannot tell whether plocate-updatedb.timer \
+             runs: NAILS cannot look up /run/systemd/units/invocation:plocate-updatedb.timer ("
+        ),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn a_masked_timer_does_not_cover_a_run_in_progress() {
     let by_unit = debian(DEBIAN);

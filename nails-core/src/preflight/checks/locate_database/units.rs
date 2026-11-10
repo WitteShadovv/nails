@@ -622,7 +622,7 @@ pub fn units<F: Filesystem>(
     files: &DecoyFiles<'_, F>,
     started: &Result<BTreeSet<String>, String>,
 ) -> Units {
-    use super::super::decoy_posture::unit_active;
+    use super::super::decoy_posture::{Activity, unit_active};
     let root = files.root().to_path_buf();
     let mut found = Units::default();
     for manager in managers(files, &mut found.runs) {
@@ -635,7 +635,16 @@ pub fn units<F: Filesystem>(
             );
             index_dir(fs, files, dir, flags, &mut index, &mut found.runs);
         }
-        let active = |unit: &str| system && unit_active(fs, &root, unit);
+        // Only the system manager's units are looked up; a unit whose marker
+        // NAILS cannot look up may run.
+        let activity = |unit: &str| {
+            if system {
+                unit_active(fs, &root, unit)
+            } else {
+                Activity::Inactive
+            }
+        };
+        let active = |unit: &str| activity(unit) == Activity::Active;
         let listed = started.as_ref().ok().filter(|_| system);
         // A trigger runs when the system manager runs it now, and when it is
         // enabled unless it is masked. A transient one runs until it stops,
@@ -672,6 +681,8 @@ pub fn units<F: Filesystem>(
                 }
             } else if let Some(why) = unknown_state {
                 Runs::Maybe(why.clone())
+            } else if let Activity::Untold(why) = activity(unit) {
+                Runs::Maybe(why)
             } else {
                 continue;
             };
@@ -699,7 +710,8 @@ pub fn units<F: Filesystem>(
                 .flatten();
             let trigger = triggered.get(service);
             let enabled = index.enabled.contains(service);
-            let start = if active(service) {
+            let state = activity(service);
+            let start = if state == Activity::Active {
                 Start::Now(format!("{service} is active"))
             } else if let Some(trigger) = trigger {
                 Start::Timer(manager.label(trigger))
@@ -708,6 +720,10 @@ pub fn units<F: Filesystem>(
             } else if let Some((trigger, why)) = maybe.get(service) {
                 Start::ByHand(format!(
                     "systemctl start {trigger}, and NAILS cannot tell whether it runs now: {why}"
+                ))
+            } else if let Activity::Untold(why) = state {
+                Start::ByHand(format!(
+                    "systemctl start {service}, and NAILS cannot tell whether it runs now: {why}"
                 ))
             } else if known.is_some() {
                 Start::ByHand(format!("systemctl start {service}"))

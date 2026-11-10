@@ -188,6 +188,19 @@ impl Unread {
         }
     }
 
+    /// `path`, a path that is no configuration file, whose lookup failed with
+    /// `error` for another reason than that nothing is there: one NAILS may
+    /// not make is one it cannot read, one the automount guard did not make
+    /// is one it did not look up, and any other, a loop of links among them,
+    /// is named by its error.
+    pub fn lookup(path: &Path, error: &NailsError) -> Self {
+        let cause = match cause_of(error) {
+            UnreadCause::NotRegular => UnreadCause::LookupFailed(io_text(error)),
+            cause => cause,
+        };
+        Self::new(path, cause)
+    }
+
     /// The description and, when there is one, the advice, as one clause:
     /// `<description>; <advice>`.
     pub fn with_advice(&self) -> String {
@@ -246,8 +259,16 @@ fn cause_of(error: &NailsError) -> UnreadCause {
         NailsError::IoError { source, .. } if source.raw_os_error() == Some(nix::libc::ELOOP) => {
             UnreadCause::NotRegular
         }
-        NailsError::IoError { source, .. } => UnreadCause::LookupFailed(source.to_string()),
-        other => UnreadCause::LookupFailed(other.to_string()),
+        _ => UnreadCause::LookupFailed(io_text(error)),
+    }
+}
+
+/// The text of `error` without its path, which the description names beside
+/// it: the I/O error's own, or the whole error's.
+fn io_text(error: &NailsError) -> String {
+    match error {
+        NailsError::IoError { source, .. } => source.to_string(),
+        other => other.to_string(),
     }
 }
 

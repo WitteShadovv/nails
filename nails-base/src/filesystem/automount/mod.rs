@@ -483,28 +483,19 @@ pub fn settle(result: CheckResult, skipped: &[Skipped], on_skip: OnSkip) -> Chec
         return result;
     }
     let message = result.message();
-    // Each automount point once, by the first path it kept the check from
-    // looking up, and the mount table once; with whether the result names
-    // it already.
-    let mut points: Vec<&Path> = Vec::new();
-    let mut reasons: Vec<(String, bool)> = Vec::new();
-    let mut table = false;
-    for skip in skipped {
-        let named = match &skip.reason {
-            Skip::Automount { point } if points.contains(&point.as_path()) => continue,
-            Skip::Automount { point } => {
-                points.push(point);
-                names_point(message, point)
-            }
-            Skip::NoMountTable { .. } if table => continue,
-            Skip::NoMountTable { .. } => {
-                table = true;
-                message.contains("cannot read the mount table")
-            }
-        };
-        reasons.push((skip.reason.sentence(&skip.path), named));
-    }
-    let fix = (!points.is_empty()).then(|| mount_fix(&points));
+    let (points, reasons) = ledger(message, skipped);
+    // The fix once: a point whose fix the result gives already, as a check
+    // that words a lookup it did not make itself gives it, is left out.
+    let given = |point: &&Path| {
+        let fix = mount_fix(&[*point]);
+        message.contains(&fix) || result.remediation().is_some_and(|text| text.contains(&fix))
+    };
+    let unfixed: Vec<&Path> = points
+        .iter()
+        .copied()
+        .filter(|point| !given(point))
+        .collect();
+    let fix = (!unfixed.is_empty()).then(|| mount_fix(&unfixed));
     let unnamed: Vec<&str> = reasons
         .iter()
         .filter(|(_, named)| !named)
@@ -560,6 +551,46 @@ pub fn settle(result: CheckResult, skipped: &[Skipped], on_skip: OnSkip) -> Chec
         }
         skipped @ CheckResult::Skipped(_) => skipped,
     }
+}
+
+/// The lookups of `skipped`, as the result whose message is `message`
+/// accounts for them: each automount point once, by the first path it kept
+/// the check from looking up, and the mount table once, each reason with
+/// whether `message` names it already; and the automount points.
+fn ledger<'a>(message: &str, skipped: &'a [Skipped]) -> (Vec<&'a Path>, Vec<(String, bool)>) {
+    let mut points: Vec<&Path> = Vec::new();
+    let mut reasons: Vec<(String, bool)> = Vec::new();
+    let mut table = false;
+    for skip in skipped {
+        let named = match &skip.reason {
+            Skip::Automount { point } if points.contains(&point.as_path()) => continue,
+            Skip::Automount { point } => {
+                points.push(point);
+                names_point(message, point)
+            }
+            Skip::NoMountTable { .. } if table => continue,
+            Skip::NoMountTable { .. } => {
+                table = true;
+                message.contains("cannot read the mount table")
+            }
+        };
+        reasons.push((skip.reason.sentence(&skip.path), named));
+    }
+    (points, reasons)
+}
+
+/// The reasons of the lookups `skipped` that `text` does not name yet, as
+/// [`settle`] adds them to a result: each automount point once, by the
+/// first path it kept the check from looking up, and the mount table once.
+/// For a probe that tells what it found rather than a check's result, whose
+/// caller counts each as a place it cannot tell about.
+pub fn unnamed(text: &str, skipped: &[Skipped]) -> Vec<String> {
+    ledger(text, skipped)
+        .1
+        .into_iter()
+        .filter(|(_, named)| !named)
+        .map(|(reason, _)| reason)
+        .collect()
 }
 
 /// The sentence that says the check cannot tell, for `reasons`.
