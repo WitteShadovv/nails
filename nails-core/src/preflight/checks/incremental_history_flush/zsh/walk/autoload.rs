@@ -2,19 +2,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The functions a command marks to be autoloaded, as the walk reads it:
-//! `autoload`, and `functions`, `typeset`, `declare`, `local` and `readonly`
-//! with the options that mark a function so, read as zsh reads a builtin's
-//! options (Src/builtin.c). `export`, `integer`, `float` and `private` take
+//! `autoload`, and `functions`, `typeset`, `declare` and `readonly` with the
+//! options that mark a function so, read as zsh reads a builtin's options
+//! (Src/builtin.c). `local`, `export`, `integer`, `float` and `private` take
 //! no `-f`: zsh 5.9 to 5.9.2 refuse it.
 
 use super::super::lexer::Word;
 use super::command::is_assignment;
 use super::{Event, Walker};
 
-/// The letters of the options of `typeset`, `declare`, `local` and
-/// `readonly` that take a number, in the rest of their word or as the word
-/// after it (`typeset -L 3`).
+/// The letters of the options of `typeset` and `declare` that take a number,
+/// in the rest of their word or as the word after it (`typeset -L 3`), and of
+/// `readonly`, whose `p` takes none.
 const NUMBERED: &str = "EFLRZip";
+const READONLY_NUMBERED: &str = "EFLRZi";
 
 /// What the words after `functions`, or a builtin of the `typeset` family,
 /// mark to be autoloaded.
@@ -32,18 +33,27 @@ pub(super) enum Marks<'a> {
 }
 
 /// What `args`, the words after `command` (`functions`, `typeset`,
-/// `declare`, `local` or `readonly`), mark to be autoloaded, read as zsh
-/// reads a builtin's options: each word that starts with `-` or `+` holds
-/// options up to the first word that does not, an assignment among them, or
-/// that is a sign and a digit (`-2`, a name); `-`, `+` and `--` end them and
-/// are dropped, and `--fu` reads as `-fu`. An option that takes an argument takes the rest of its
-/// word, or the word after it: `functions -x` any word, and the
-/// [`NUMBERED`] ones of the others a number. A function is autoloaded where
-/// a word that starts with `-` holds `u` or `U`, for `functions` alone, and
-/// for the others with an `f` in a word of either sign (`typeset -fu`,
-/// `readonly +f -u`, `declare +g -fU`).
+/// `declare` or `readonly`), mark to be autoloaded, read as zsh reads a
+/// builtin's options: each word that starts with `-` or `+` holds options up
+/// to the first word that does not, an assignment among them, or that is a
+/// sign and a digit (`-2`, a name); `-`, `+` and `--` end them and are
+/// dropped, and `--fu` reads as `-fu`. An option that takes an argument
+/// takes the rest of its word, or the word after it, and zsh reads no more
+/// letters of its word then: `functions -x` any word, which an expansion may
+/// make several of, and with none after it zsh runs nothing; a
+/// [`NUMBERED`] one of the others a number, the word after it only where
+/// that starts with a digit (`typeset -fLt 3 -u` drops the `t`). A function
+/// is autoloaded where a word that starts with `-` holds `u` or `U`, for
+/// `functions` alone, and for the others with an `f` in a word of either
+/// sign (`typeset -fu`, `readonly +f -u`, `declare +g -fU`).
 pub(super) fn marks<'a>(command: &str, args: &'a [Word]) -> Marks<'a> {
     let functions = command == "functions";
+    let numbered = if command == "readonly" {
+        READONLY_NUMBERED
+    } else {
+        NUMBERED
+    };
+    let digit = |text: &str| text.starts_with(|c: char| c.is_ascii_digit());
     // The letters of the options, but a `U` that a `+` turns off, whether
     // a word that starts with `-` holds `u` or `U`, and whether any holds
     // an `f`.
@@ -51,7 +61,7 @@ pub(super) fn marks<'a>(command: &str, args: &'a [Word]) -> Marks<'a> {
     let mut undefined = false;
     let mut f = false;
     let mut at = 0;
-    while let Some(word) = args.get(at) {
+    'words: while let Some(word) = args.get(at) {
         // An assignment to a name as written (`LINE=$1`) is no option, and
         // ends them.
         if is_assignment(&word.text) {
@@ -63,7 +73,7 @@ pub(super) fn marks<'a>(command: &str, args: &'a [Word]) -> Marks<'a> {
         let Some(rest) = word.text.strip_prefix(['-', '+']) else {
             break;
         };
-        if rest.starts_with(|c: char| c.is_ascii_digit()) {
+        if digit(rest) {
             break;
         }
         at += 1;
@@ -81,20 +91,25 @@ pub(super) fn marks<'a>(command: &str, args: &'a [Word]) -> Marks<'a> {
             let tail = &letters[index + letter.len_utf8()..];
             if functions && letter == 'x' {
                 // Its argument: the rest of the word, or the word after it.
-                at += usize::from(tail.is_empty());
-                break;
-            }
-            if !functions && NUMBERED.contains(letter) {
-                if tail.starts_with(|c: char| c.is_ascii_digit()) {
-                    break;
+                if tail.is_empty() {
+                    match args.get(at) {
+                        None => return Marks::None,
+                        Some(next) if next.expands || next.bare => return Marks::Doubt(next),
+                        Some(_) => at += 1,
+                    }
                 }
-                let number = args.get(at).is_some_and(|next| {
-                    !next.expands
-                        && !next.bare
-                        && next.text.starts_with(|c: char| c.is_ascii_digit())
-                });
-                if tail.is_empty() && number {
+                continue 'words;
+            }
+            if !functions && numbered.contains(letter) {
+                if digit(tail) {
+                    continue 'words;
+                }
+                if args
+                    .get(at)
+                    .is_some_and(|next| !next.expands && !next.bare && digit(&next.text))
+                {
                     at += 1;
+                    continue 'words;
                 }
             }
         }
@@ -138,17 +153,20 @@ impl Walker<'_> {
 
     /// The events of an `autoload`, or of the like (`command`), of `args`:
     /// each function it marks, by name or by the path of its file
-    /// ([`Walker::load`]).
+    /// ([`Walker::load`]). One with `-X` loads the function whose code runs
+    /// it, from the directory its word names or from `fpath`: a doubt.
     pub(super) fn autoload(&mut self, command: &str, args: &[Word]) {
         let mut flags = String::new();
         let mut names = Vec::new();
         let mut options = true;
+        let mut caller = false;
         for arg in args {
             if options && !arg.expands && arg.text.len() > 1 && arg.text.starts_with(['-', '+']) {
                 self.mention(&arg.text);
                 if arg.text == "--" {
                     options = false;
                 } else if arg.text.starts_with('-') {
+                    caller |= arg.text.contains('X');
                     flags.push_str(&arg.text);
                 } else {
                     // A flag turned off is none zsh acts on.
@@ -159,19 +177,32 @@ impl Walker<'_> {
             options = false;
             names.push(arg.clone());
         }
+        if caller {
+            for name in &names {
+                self.mention(&name.text);
+            }
+            let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which function `{command} {}` in {} loads, as -X loads the one \
+                 whose code runs it, from the directory a word after it names or from fpath",
+                words.join(" "),
+                self.place
+            )));
+            return;
+        }
         self.load(command, args, &flags, names);
     }
 
     /// The events of the functions `names` that `command` of `args`, with the
     /// letters `flags` among its options, marks to be autoloaded, by name or
     /// by the path of its file. Which functions it marks is a doubt with `-m`
-    /// (patterns, which may name any function defined so far), `-w`
-    /// (compiled files), or `-X` without a name (the function it runs in).
+    /// (patterns, which may name any function defined so far) or `-w`
+    /// (compiled files).
     fn load(&mut self, command: &str, args: &[Word], flags: &str, mut names: Vec<Word>) {
         for name in &names {
             self.mention(&name.text);
         }
-        if flags.contains(['m', 'w']) || (names.is_empty() && flags.contains('X')) {
+        if flags.contains(['m', 'w']) {
             let words: Vec<&str> = std::iter::once(command)
                 .chain(args.iter().map(|arg| arg.text.as_str()))
                 .collect();
