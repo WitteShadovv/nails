@@ -210,8 +210,6 @@ struct Reader<'a, F: Filesystem> {
     /// ([`Event::ProfileFpath`]): as written, past the profile, whether in
     /// front, and where.
     profile_fpath: Vec<(String, String, bool, String)>,
-    /// Where a file read may set `TTY` ([`backstop::names_tty_write`]).
-    tty_set: Option<String>,
     /// Whether a file read may set `ZSH_VERSION`.
     version_set: bool,
     /// Whether a file read may set `HOME`, `USER` or `XDG_STATE_HOME`,
@@ -220,10 +218,10 @@ struct Reader<'a, F: Filesystem> {
     /// The functions the files autoload without `-U`
     /// ([`Event::Expanding`]).
     expanding: Vec<String>,
-    /// The redirections to a device or the terminal (`/dev/tty`, `$TTY`):
-    /// the function they are in, or none for an `exec` that keeps one open,
-    /// the target as written, and where. Each writes no file while no file
-    /// defines a global alias, and, to `$TTY`, while no file sets `TTY`.
+    /// The redirections to a device (`/dev/tty`, `/dev/null`): the function
+    /// they are in, or none for an `exec` that keeps one open, the target as
+    /// written, and where. Each writes no file while no file defines a global
+    /// alias.
     devices: Vec<(Option<String>, String, String)>,
     /// The definitions of the global aliases the files define: each one's
     /// name, the word that defines it and where, whose value runs where a
@@ -379,12 +377,9 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// Note what the lines of `text`, the file at `place`, may set that the
     /// check reads beside its code, in any form zsh may read their words in
-    /// ([`Forms`]): `TTY`, `ZSH_VERSION`, `HOME`, the names the files use.
+    /// ([`Forms`]): `ZSH_VERSION`, `HOME`, the names the files use.
     fn lines(&mut self, text: &str, place: &str) -> Forms {
         let forms = Forms::of(text);
-        if self.tty_set.is_none() && forms.writes("TTY") > 0 {
-            self.tty_set = Some(place.to_string());
-        }
         self.version_set |= forms.writes("ZSH_VERSION") > 0;
         // What NixOS's set-environment writes NIX_PROFILES with.
         self.profile_vars_set |= ["HOME", "USER", "XDG_STATE_HOME"]
@@ -933,7 +928,6 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         install,
         profiles,
         profile_fpath: Vec::new(),
-        tty_set: None,
         version_set: false,
         profile_vars_set: false,
         expanding: Vec::new(),

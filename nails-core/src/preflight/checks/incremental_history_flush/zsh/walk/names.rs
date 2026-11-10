@@ -4,7 +4,7 @@
 //! The parameters a builtin sets by a name among its words, as zsh reads
 //! its options: `print -v`'s, `read`'s, `zstyle -s`'s, `strftime -s`'s and
 //! the like. An option that takes an argument takes the rest of its word,
-//! or the word after it (`print -vTTY`, `print -rv TTY`, `strftime -sTTY`).
+//! or the word after it (`print -vPS1`, `print -rv PS1`, `strftime -sPS1`).
 
 use super::super::lexer::Word;
 

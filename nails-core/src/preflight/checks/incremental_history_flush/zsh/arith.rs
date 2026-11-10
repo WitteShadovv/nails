@@ -7,7 +7,7 @@
 //! ([`super::walk`] finds them), and it reads an expansion there as
 //! arithmetic again, and the value of each parameter it names too, so an
 //! assignment in what either gives sets a parameter whose name no file
-//! writes (`n='TTY=5'; (( n ))`). An expression the check takes as setting
+//! writes (`n='HOME=5'; (( n ))`). An expression the check takes as setting
 //! nothing it cannot read holds numbers, operators, the names of the
 //! parameters zsh keeps a number in ([`NUMERIC`]), a count or a test of a
 //! parameter (`$#x`, `${+x}`), and subscripts of arrays whose keys are

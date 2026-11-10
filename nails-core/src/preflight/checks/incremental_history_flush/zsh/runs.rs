@@ -24,15 +24,17 @@ pub(super) enum Fed {
 }
 
 /// Whether `target`, a redirection's target as written, is a device that
-/// is no file: the terminal (`/dev/tty`, `$TTY`), nothing (`/dev/null`), or
-/// standard input, output or error (`/dev/stderr`, `/dev/fd/2`).
+/// is no file: the terminal (`/dev/tty`), nothing (`/dev/null`), or standard
+/// input, output or error (`/dev/stderr`, `/dev/fd/2`). `$TTY` is none: zsh
+/// expands it to what the parameter holds, which the files may change by
+/// ways the check cannot all read (a pattern, a name an expansion makes).
 fn device(target: &str) -> bool {
     // Standard input, output and error: a descriptor above 2 may be any file
     // the shell has open (`zsystem flock`, `exec 3>>file`).
     let descriptor = |rest: Option<&str>| rest.is_some_and(|rest| matches!(rest, "0" | "1" | "2"));
     matches!(
         target,
-        "/dev/null" | "/dev/tty" | "/dev/stdout" | "/dev/stderr" | "/dev/stdin" | "$TTY" | "${TTY}"
+        "/dev/null" | "/dev/tty" | "/dev/stdout" | "/dev/stderr" | "/dev/stdin"
     ) || descriptor(target.strip_prefix("/dev/fd/"))
         || descriptor(target.strip_prefix("/proc/self/fd/"))
 }
@@ -43,8 +45,8 @@ fn device(target: &str) -> bool {
 /// word at an operator (`<`, `>`, `|`, `&`, `;`, `(`, `)`), at the `{` that
 /// starts a command and at the `}` that ends a word, with no blank beside it,
 /// so a name that holds one of them, or a blank, may stand where no word is
-/// (`print -r -- $1>$TTY` uses an alias named `>`). An empty name is one the
-/// check could not read.
+/// (`print -r -- $1>/dev/tty` uses an alias named `>`). An empty name is one
+/// the check could not read.
 fn uncountable(name: &str) -> bool {
     name.is_empty()
         || name.contains(['<', '>', '|', '&', ';', '(', ')', '{', '}'])
@@ -55,12 +57,11 @@ impl<F: Filesystem> Reader<'_, F> {
     /// Note a redirection to `target`, as written, in the function `function`
     /// when in one, by the file at `place`: one to the history file by its
     /// name writes it; one to a device writes no file while no file defines
-    /// a global alias, nor `$TTY` while no file sets `TTY` either
-    /// ([`Reader::devices`]). One whose target an expansion makes
-    /// (`computed`), or that is any other file, which may be the history file
-    /// (one `HISTFILE` names, a link to it), is a doubt where an `exec` keeps
-    /// it open (`kept`), as a hook may write to the descriptor, and where a
-    /// hook makes it.
+    /// a global alias ([`Reader::devices`]). One whose target an expansion
+    /// makes (`computed`), `$TTY` among them, or that is any other file,
+    /// which may be the history file (one `HISTFILE` names, a link to it), is
+    /// a doubt where an `exec` keeps it open (`kept`), as a hook may write to
+    /// the descriptor, and where a hook makes it.
     pub(super) fn redirect(
         &mut self,
         target: &str,
@@ -80,8 +81,7 @@ impl<F: Filesystem> Reader<'_, F> {
             }
             return;
         }
-        let terminal = matches!(target, "$TTY" | "${TTY}");
-        if device(target) && !(kept && terminal) {
+        if device(target) {
             if kept || function.is_some() {
                 self.devices.push((
                     function.filter(|_| !kept),
@@ -132,28 +132,24 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Note what runs as zsh runs: a redirection to a device where a file
-    /// defines a global alias, or to `$TTY` where a file may set `TTY`; an
-    /// alias for an `fc` that writes nothing where a file uses it; keys that
-    /// may type others or that `SH_WORD_SPLIT` may bind otherwise; what the
-    /// functions zsh runs as hooks write or may write; and what may change
-    /// NixOS's dircolors line ([`Reader::dircolors_doubts`]).
+    /// defines a global alias; an alias for an `fc` that writes nothing where
+    /// a file uses it; keys that may type others or that `SH_WORD_SPLIT` may
+    /// bind otherwise; what the functions zsh runs as hooks write or may
+    /// write; and what may change NixOS's dircolors line
+    /// ([`Reader::dircolors_doubts`]).
     pub(super) fn runs(&mut self) {
-        // A redirection to a device writes no file, unless a file sets TTY,
-        // or defines a global alias: zsh may put its value in place of any
-        // token of the redirection as it reads it, the `>` glued to a word
-        // in `print -r -- $1>$TTY` among them.
+        // A redirection to a device writes no file, unless a file defines a
+        // global alias: zsh may put its value in place of any token of the
+        // redirection as it reads it, the `>` glued to a word in
+        // `print -r -- $1>/dev/tty` among them.
         for (function, target, place) in std::mem::take(&mut self.devices) {
-            let terminal = matches!(target.as_str(), "$TTY" | "${TTY}");
-            let why = if let Some(set) = self.tty_set.clone().filter(|_| terminal) {
-                format!("{set} may set TTY to name the history file")
-            } else if let Some((_, text, at)) = self.global_alias_defs.first() {
-                format!(
-                    "{at} defines the global alias `{text}`, which zsh may put in place of a \
-                     word or an operator of it"
-                )
-            } else {
+            let Some((_, text, at)) = self.global_alias_defs.first() else {
                 continue;
             };
+            let why = format!(
+                "{at} defines the global alias `{text}`, which zsh may put in place of a word or \
+                 an operator of it"
+            );
             let doubt = format!(
                 "it cannot tell where the output that {} in {place} redirects to `{target}` \
                  goes, as {why}",

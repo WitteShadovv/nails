@@ -1046,7 +1046,7 @@ fn writes(text: &str, name: &str) -> usize {
 /// as in `${(@)name}`, or a `#`, `+`, `=`, `~` or `^` between), and in
 /// `${name=...}`, `${name:=...}` or `${name::=...}`, an element's too
 /// (`${name[1]::=...}`); also as the argument of an option, after its letters
-/// (`print -vTTY`).
+/// (`print -vZDOTDIR`).
 fn is_write(text: &str, at: usize, len: usize) -> bool {
     let part = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let modifiers = ['#', '+', '=', '~', '^'];

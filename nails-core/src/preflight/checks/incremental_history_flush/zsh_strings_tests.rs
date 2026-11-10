@@ -455,15 +455,13 @@ fn what_a_sched_a_zstyle_e_or_a_bindkey_s_runs_is_a_hook_s() {
 #[test]
 fn keys_that_edit_the_line_or_a_name_glued_to_a_key_in_a_bindkey_s_count() {
     // zsh 5.9.2 runs `setopt sharehistory` or `fc -AI` with each, as Ctrl-A
-    // moves to the start and Backspace erases, uses the alias `h` and sets
-    // TTY with the last two, which a key glued to the word hides.
+    // moves to the start and Backspace erases, and uses the alias `h` with
+    // the last, which a key glued to the word hides.
     for rc in [
         "bindkey -e\nbindkey -s '^M' '^Jhistory^Asetopt share^J'\n",
         "bindkey -e\nbindkey -s '^M' '^Jsetopt sharehistorx^Hy^J'\n",
         "bindkey -e\nbindkey -s '^M' '^Jfc -IX ^H^H^HAI^J'\n",
         "bindkey -e\nalias h='fc -l'\nbindkey -s '^M' '^Jh -W^J'\n",
-        "bindkey -e\npreexec() { print -r -- \"$1\" >> $TTY }\n\
-         bindkey -s '^M' '^JTTY=~/.zsh_history^J'\n",
         // A string bound in another keymap, where keys are commands.
         "bindkey -M vicmd -s Q 'x^M'\n",
         "bindkey -a -s Q 'x^M'\n",
