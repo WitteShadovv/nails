@@ -608,6 +608,61 @@ fn a_lookup_that_fails_leaves_the_configuration_unread_by_its_kind() {
     }
 }
 
+/// A lookup that fails after one that succeeded leaves the configuration
+/// unread as well: a main file that is no regular file whose next lookup
+/// fails, one whose resolution fails where nothing was found, each named by
+/// its error, and a drop-in whose read the automount guard does not make,
+/// where a point was set up after it was listed, named by the guard's
+/// reason.
+#[test]
+fn a_lookup_that_fails_after_one_that_succeeded_leaves_the_configuration_unread() {
+    use crate::filesystem::{MockFailure, MockLookup, PathKind};
+    use std::io::ErrorKind;
+    let main = Path::new("/etc/systemd/journald.conf");
+    let read = |fs: &crate::MockFilesystem| {
+        section_assignments(fs, Path::new("/"), "journald.conf", "Journal", RELEASE)
+    };
+    let failed = || UnreadCause::LookupFailed("Mock: the lookup fails here".to_string());
+
+    let fs = crate::MockFilesystem::new();
+    fs.mock_set_path_type(main.to_str().unwrap(), PathKind::Dir);
+    fs.mock_fail_only(
+        main,
+        MockLookup::PathExists,
+        MockFailure::Io(ErrorKind::Other),
+    );
+    assert_eq!(read(&fs), unread(main.to_path_buf(), failed()));
+
+    let fs = crate::MockFilesystem::new();
+    fs.mock_fail_only(
+        main,
+        MockLookup::Canonicalize,
+        MockFailure::Io(ErrorKind::Other),
+    );
+    assert_eq!(read(&fs), unread(main.to_path_buf(), failed()));
+
+    let fs = crate::MockFilesystem::new();
+    let dropin = Path::new("/etc/systemd/journald.conf.d/50-x.conf");
+    fs.mock_set_directory_contents(
+        Path::new("/etc/systemd/journald.conf.d"),
+        vec![dropin.to_path_buf()],
+    );
+    fs.mock_add_file(dropin.to_str().unwrap(), "[Journal]\nStorage=volatile\n");
+    let point = PathBuf::from("/usr/local");
+    fs.mock_fail_only(
+        dropin,
+        MockLookup::Read,
+        MockFailure::NotLookedUp(point.clone()),
+    );
+    assert_eq!(
+        read(&fs),
+        unread(
+            dropin.to_path_buf(),
+            UnreadCause::NotLookedUp(Skip::Automount { point })
+        )
+    );
+}
+
 /// A loop of links is an entry the systemd releases do not read alike, as it
 /// was before a failed lookup was told from a missing file.
 #[test]
