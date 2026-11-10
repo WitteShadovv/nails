@@ -297,12 +297,13 @@ pub const CHECK_MOUNTED_TWICE_HIDDEN: Message = Message {
 /// decoy's own mounts of it at `/` and by its fstab are left out, and so is
 /// a mount that shows none of the root folder, but another one counts. It
 /// says only what holds for each mount it names, as there may be no mount
-/// of that filesystem at `/` or by the fstab.
+/// of that filesystem at `/` or by the fstab, and only what NAILS can tell
+/// of the fstab, which follows no link in a bind line's source.
 pub const CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM: Message = Message {
     id: "check.mounted-twice-decoy-filesystem",
     text: "the filesystem of {root}, which --allow-decoy-storage accepted, is also mounted at \
-           {places}, and not by a line of /etc/fstab that mounts it from this computer's own \
-           storage",
+           {places}, and not by a line of /etc/fstab that NAILS can tell mounts it from this \
+           computer's own storage",
     note: "Shown instead of check.mounted-twice when the root folder is on a filesystem this \
            computer uses itself (a folder of / bound there, say), which the operator accepted \
            with --allow-decoy-storage. The mounts this computer makes of that filesystem at / \
@@ -310,10 +311,13 @@ pub const CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM: Message = Message {
            folder (another btrfs subvolume, say). The text names neither kind, as there may \
            be none: the filesystem can be a drive of its own that counts as this computer's \
            because it is also mounted at a system folder such as /srv, by hand. It says what \
-           holds for each mount at {places}: no line of the fstab made it from this \
-           computer's own storage, that is, no line that names the mount's device and mounts \
-           what the mount shows, and no bind line from another of this computer's own mounts \
-           of that filesystem. A mount at a folder that a line of the fstab is for counts \
+           holds for each mount at {places}: no line of the fstab that NAILS can tell made it \
+           from this computer's own storage, that is, no line that names the mount's device \
+           and mounts what the mount shows, and no bind line from another of this computer's \
+           own mounts of that filesystem. NAILS follows no link in a bind line's source, so a \
+           bind line whose source has a link in it, or whose place it cannot tell otherwise, \
+           is no such line: backend-entries fails it and says to write it with its real path. \
+           A mount at a folder that a line of the fstab is for counts \
            when it shows something else of the filesystem than the line mounts, such as a \
            subvolume mounted there by hand over the one the line names, and so does a mount \
            that a bind line of the fstab makes from the root's own volume, so the text speaks \
