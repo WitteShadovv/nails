@@ -113,6 +113,45 @@ fn a_lookup_that_fails_is_named_by_its_error() {
     assert_eq!(failing(ErrorKind::NotFound), DecoyFile::Absent);
 }
 
+/// A lookup that fails after one that succeeded is named as well: a read the
+/// automount guard does not make, where a point was set up after the file
+/// was seen to be one, gives the guard's reason, and a path that is no
+/// regular file whose lookup then fails is named by its error.
+#[test]
+fn a_lookup_that_fails_after_one_that_succeeded_is_named() {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let fs = MockFilesystem::new();
+    let file = Path::new("/usr/local/etc/updatedb.conf");
+    fs.mock_add_file(file.to_str().unwrap(), "x");
+    fs.mock_fail_only(
+        file,
+        MockLookup::Read,
+        MockFailure::NotLookedUp(PathBuf::from("/usr/local")),
+    );
+    assert_eq!(
+        read_mock(&fs, file.to_str().unwrap()),
+        DecoyFile::Unread(
+            "NAILS does not look up /usr/local/etc/updatedb.conf, since the lookup would mount \
+             the automount point /usr/local"
+                .into()
+        )
+    );
+
+    let dir = Path::new("/etc/cron.d");
+    fs.mock_set_path_type(dir.to_str().unwrap(), PathKind::Dir);
+    fs.mock_fail_only(
+        dir,
+        MockLookup::PathExists,
+        MockFailure::Io(std::io::ErrorKind::Other),
+    );
+    assert_eq!(
+        read_mock(&fs, "/etc/cron.d"),
+        DecoyFile::Unread(
+            "NAILS cannot follow /etc/cron.d (/etc/cron.d: Mock: the lookup fails here)".into()
+        )
+    );
+}
+
 #[test]
 fn what_the_system_does_not_show_is_named() {
     use std::os::unix::fs::PermissionsExt;

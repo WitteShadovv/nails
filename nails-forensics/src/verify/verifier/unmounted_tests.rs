@@ -884,3 +884,58 @@ fn what_a_mount_point_holds_is_told_by_what_it_is() {
         "{listed:#?}"
     );
 }
+
+/// A place the scan could look at once and then cannot, a mount point that
+/// is there but whose type it cannot then tell, and an fstab it could not
+/// read whose lookup then fails, is listed as not read with the error, never
+/// as one that holds nothing or a missing one.
+#[test]
+fn a_place_the_scan_cannot_look_at_again_is_listed_as_not_read() {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let other = || MockFailure::Io(std::io::ErrorKind::Other);
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
+    fs.mock_set_path_type("/mnt/decoy/etc", PathKind::Dir);
+    fs.mock_add_file("/mnt/decoy/etc/passwd", "root:x:0:0:root:/root:/bin/bash\n");
+    fs.mock_add_file("/mnt/decoy/etc/fstab", "UUID=1 /srv/d ext4 defaults 0 2\n");
+    fs.mock_set_path_type("/mnt/decoy/srv/d", PathKind::Dir);
+    fs.mock_fail_only(
+        Path::new("/mnt/decoy/srv/d"),
+        MockLookup::IsDirectory,
+        other(),
+    );
+    let run = || {
+        Verifier::new(fs.clone())
+            .offline_under("/mnt/decoy".into())
+            .run(false)
+            .unwrap()
+    };
+    let result = run();
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [
+            "/srv/d, which the decoy's /etc/fstab mounts (it could not be looked at under the root \
+             (/mnt/decoy/srv/d: Mock: the lookup fails here), so nothing there was read)"
+        ],
+        "{:#?}",
+        result.areas_not_checked
+    );
+
+    let fstab = Path::new("/mnt/decoy/etc/fstab");
+    fs.mock_fail_only(
+        fstab,
+        MockLookup::Read,
+        MockFailure::Io(std::io::ErrorKind::PermissionDenied),
+    );
+    fs.mock_fail_only(fstab, MockLookup::PathExists, other());
+    let result = run();
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [
+            "/etc/fstab, the decoy's table of what it mounts (it could not be looked at \
+             (/mnt/decoy/etc/fstab: Mock: the lookup fails here): what it mounts is not known)"
+        ],
+        "{:#?}",
+        result.areas_not_checked
+    );
+}
