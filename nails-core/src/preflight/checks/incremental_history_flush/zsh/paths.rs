@@ -12,8 +12,12 @@ use std::path::PathBuf;
 impl<F: Filesystem> Reader<'_, F> {
     /// The paths `value` may name: one for each value `XDG_CONFIG_HOME` may
     /// have, each different one once; `None` when one of them is no path the
-    /// check can know.
+    /// check can know, as one that names `XDG_CONFIG_HOME` is where an
+    /// environment the check does not know may set it.
     pub(super) fn resolve(&self, value: &Word) -> Option<Vec<PathBuf>> {
+        if self.xdg_config_unknown && value.text.contains("XDG_CONFIG_HOME") {
+            return None;
+        }
         let mut paths = Vec::new();
         for config in &self.xdg_config_homes {
             let path = self.resolve_in(value, config.as_deref())?;
@@ -36,6 +40,8 @@ impl<F: Filesystem> Reader<'_, F> {
         let home = self.home?.to_string_lossy().into_owned();
         let default_config = format!("{home}/.config");
         let config = config.map(str::to_string);
+        // `:-` puts the default in place of an empty value too.
+        let set_config = config.clone().filter(|config| !config.is_empty());
         let zdotdir = match self.zdotdirs.as_slice() {
             [one] => Some(one.to_string_lossy().into_owned()),
             _ => None,
@@ -50,15 +56,15 @@ impl<F: Filesystem> Reader<'_, F> {
             for (pattern, with) in [
                 (
                     "${XDG_CONFIG_HOME:-$HOME/.config}",
-                    config.clone().or(Some(default_config.clone())),
+                    set_config.clone().or(Some(default_config.clone())),
                 ),
                 (
                     "${XDG_CONFIG_HOME:-${HOME}/.config}",
-                    config.clone().or(Some(default_config.clone())),
+                    set_config.clone().or(Some(default_config.clone())),
                 ),
                 (
                     "${XDG_CONFIG_HOME:-~/.config}",
-                    config.clone().or(Some(default_config)),
+                    set_config.or(Some(default_config)),
                 ),
                 ("${ZDOTDIR:-$HOME}", zdotdir.clone()),
                 ("${ZDOTDIR:-${HOME}}", zdotdir.clone()),
@@ -88,11 +94,25 @@ impl<F: Filesystem> Reader<'_, F> {
     /// runs.
     pub(super) fn assign(&mut self, name: &str, value: Word, certain: bool, place: &str) {
         if name == "XDG_CONFIG_HOME" {
-            let config = Some(value.text);
+            // Each path it may name as it is set, from what it was before
+            // (`${XDG_CONFIG_HOME:-$HOME/.config}`), else the value as
+            // written.
+            let configs: Vec<Option<String>> = match self.resolve(&value) {
+                Some(paths) => paths
+                    .iter()
+                    .map(|path| Some(path.to_string_lossy().into_owned()))
+                    .collect(),
+                None => vec![Some(value.text)],
+            };
             if certain {
-                self.xdg_config_homes = vec![config];
-            } else if !self.xdg_config_homes.contains(&config) {
-                self.xdg_config_homes.push(config);
+                self.xdg_config_homes = configs;
+                self.xdg_config_unknown = false;
+            } else {
+                for config in configs {
+                    if !self.xdg_config_homes.contains(&config) {
+                        self.xdg_config_homes.push(config);
+                    }
+                }
             }
             return;
         }

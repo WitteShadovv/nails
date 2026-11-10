@@ -167,9 +167,12 @@ struct Reader<'a, F: Filesystem> {
     /// Whether the shell's environment or a file read may set `ZDOTDIR`,
     /// which zsh expands to nothing while neither does (`$ZDOTDIR/x`).
     zdotdir_set: bool,
-    /// What `XDG_CONFIG_HOME` may be as the files read so far set it: each
-    /// value as written, `None` while unset.
+    /// What `XDG_CONFIG_HOME` may be as the shell's environment and the
+    /// files read so far set it: each value as written, `None` while unset;
+    /// and whether it may be one an environment the check does not know
+    /// gives, until a file certainly sets it.
     xdg_config_homes: Vec<Option<String>>,
+    xdg_config_unknown: bool,
     /// The files being followed, outermost first.
     stack: Vec<PathBuf>,
     /// The directories the files read add to `fpath`, and whether zsh looks
@@ -898,7 +901,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         options: Default::default(),
         zdotdir_set: env.is_some_and(|env| env.zdotdir.is_some()),
         zdotdirs,
-        xdg_config_homes: vec![None],
+        xdg_config_homes: vec![env.and_then(|env| env.xdg_config_home.clone())],
+        xdg_config_unknown: env.is_none(),
         stack: Vec::new(),
         fpath: install
             .fpath
