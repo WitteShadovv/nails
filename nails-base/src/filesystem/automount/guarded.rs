@@ -4,7 +4,7 @@
 //! [`Guarded`]: a filesystem that asks the automount guard before every
 //! lookup it makes.
 
-use super::{Lookup, Skipped, Snapshot, Table};
+use super::{Lookup, Memo, Skipped, Snapshot, Table};
 use crate::filesystem::{
     DiskUsage, Filesystem, LoopRecord, MountEntry, MountRoot, MountSource, PatternScan,
     ProcessMatch,
@@ -39,7 +39,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// ledger.
 ///
 /// Clones share the snapshot and the ledger; two views made with
-/// [`new`](Guarded::new) share the snapshot only.
+/// [`new`](Guarded::new) share the snapshot only. A view made with
+/// [`remembering`](Guarded::remembering) shares both, and reads each place
+/// on the way once.
 ///
 /// [`canonicalize`]: Filesystem::canonicalize
 /// [`read_link`]: Filesystem::read_link
@@ -52,6 +54,9 @@ pub struct Guarded<F> {
     inner: F,
     snapshot: Arc<Snapshot>,
     skipped: Arc<Mutex<Vec<Skipped>>>,
+    /// What the view read of each place on the way, where it reads each
+    /// once.
+    memo: Option<Arc<Mutex<Memo>>>,
 }
 
 impl<F: Filesystem> Guarded<F> {
@@ -61,6 +66,22 @@ impl<F: Filesystem> Guarded<F> {
             inner,
             snapshot: Arc::clone(snapshot),
             skipped: Arc::new(Mutex::new(Vec::new())),
+            memo: None,
+        }
+    }
+
+    /// This view, reading each place on the way once: a lookup that passes
+    /// a place an earlier lookup of this view read takes what was read
+    /// then, what the kernel said there and where a link there leads. For
+    /// a reader that asks about every lookup of a walk before it makes the
+    /// walk, whose answers are as old as that walk either way. The view
+    /// keeps this one's snapshot and ledger.
+    pub fn remembering(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            snapshot: Arc::clone(&self.snapshot),
+            skipped: Arc::clone(&self.skipped),
+            memo: Some(Arc::new(Mutex::new(Memo::default()))),
         }
     }
 
@@ -80,7 +101,9 @@ impl<F: Filesystem> Guarded<F> {
     ///
     /// As [`Snapshot::check`].
     pub fn ask(&self, path: &Path, lookup: Lookup) -> Result<Option<PathBuf>> {
-        let answer = self.snapshot.check(&self.inner, path, lookup);
+        let answer = self
+            .snapshot
+            .check_with(&self.inner, path, lookup, self.memo.as_deref());
         if let Err(error) = &answer
             && let Some((path, reason)) = error.not_looked_up()
         {

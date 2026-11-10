@@ -39,11 +39,12 @@ use crate::next_step::{NextStep, shell_word, sudo_line};
 use crate::preflight::CheckResult;
 use crate::{NailsError, Result};
 use nails_api::Allowable;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 mod guarded;
 
@@ -148,6 +149,19 @@ impl Snapshot {
         path: &Path,
         lookup: Lookup,
     ) -> Result<Option<PathBuf>> {
+        self.check_with(fs, path, lookup, None)
+    }
+
+    /// [`check`](Self::check), with what each place on the way is taken
+    /// from `memo` where an earlier walk read it there, and kept there
+    /// otherwise.
+    fn check_with<F: Filesystem>(
+        &self,
+        fs: &F,
+        path: &Path,
+        lookup: Lookup,
+        memo: Option<&Mutex<Memo>>,
+    ) -> Result<Option<PathBuf>> {
         match &self.table {
             Table::Elsewhere => Ok(None),
             Table::Unreadable(error) => Err(NailsError::NotLookedUp {
@@ -156,7 +170,7 @@ impl Snapshot {
                     error: error.clone(),
                 },
             }),
-            Table::Running(table) => match on_the_way(fs, table, path, lookup) {
+            Table::Running(table) => match walk(fs, table, path, lookup, memo) {
                 Way::Clear => Ok(None),
                 Way::AtPoint(point) => Ok(Some(point)),
                 Way::Mounts(point) => Err(NailsError::NotLookedUp {
@@ -311,6 +325,65 @@ fn into_io(error: NailsError) -> std::io::Error {
 /// not there ends the walk: the lookup fails there. More links than the
 /// kernel follows in one lookup fail it with `ELOOP`.
 pub fn on_the_way<F: Filesystem>(fs: &F, table: &[MountEntry], path: &Path, lookup: Lookup) -> Way {
+    walk(fs, table, path, lookup, None)
+}
+
+/// What the guard read of the places on the way, for a view that reads each
+/// place once ([`Guarded::remembering`]).
+#[derive(Debug, Default)]
+struct Memo {
+    /// What each place is, as [`Filesystem::mount_root`] said.
+    places: HashMap<PathBuf, MountRoot>,
+    /// Where each link leads, as [`Filesystem::read_link`] read it.
+    links: HashMap<PathBuf, PathBuf>,
+}
+
+/// `memo`, locked: a walk that panicked left nothing half written in it.
+fn lock(memo: &Mutex<Memo>) -> MutexGuard<'_, Memo> {
+    memo.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What `place` is, as `fs` tells, or as `memo` keeps it from an earlier
+/// walk; what `fs` tells is kept there.
+fn read_place<F: Filesystem>(
+    fs: &F,
+    memo: Option<&Mutex<Memo>>,
+    place: &Path,
+) -> Result<MountRoot> {
+    let Some(memo) = memo else {
+        return fs.mount_root(place);
+    };
+    if let Some(known) = lock(memo).places.get(place) {
+        return Ok(*known);
+    }
+    let read = fs.mount_root(place)?;
+    lock(memo).places.insert(place.to_path_buf(), read);
+    Ok(read)
+}
+
+/// Where the link `place` leads, as `fs` reads it, or as `memo` keeps it
+/// from an earlier walk; what `fs` reads is kept there.
+fn read_target<F: Filesystem>(fs: &F, memo: Option<&Mutex<Memo>>, place: &Path) -> Result<PathBuf> {
+    let Some(memo) = memo else {
+        return fs.read_link(place);
+    };
+    if let Some(known) = lock(memo).links.get(place) {
+        return Ok(known.clone());
+    }
+    let target = fs.read_link(place)?;
+    lock(memo).links.insert(place.to_path_buf(), target.clone());
+    Ok(target)
+}
+
+/// [`on_the_way`], with what each place is and where each link leads taken
+/// from `memo` where an earlier walk read them, and kept there otherwise.
+fn walk<F: Filesystem>(
+    fs: &F,
+    table: &[MountEntry],
+    path: &Path,
+    lookup: Lookup,
+    memo: Option<&Mutex<Memo>>,
+) -> Way {
     let lookup = if enters_its_end(path) {
         Lookup::Enters { follow: true }
     } else {
@@ -367,7 +440,7 @@ pub fn on_the_way<F: Filesystem>(fs: &F, table: &[MountEntry], path: &Path, look
         if last && lookup.resolves() && !lookup.follows() {
             return Way::Clear;
         }
-        match fs.mount_root(&next) {
+        match read_place(fs, memo, &next) {
             Ok(MountRoot::Entry(_)) => at = next,
             // The directory of an indirect map is an autofs on top, as an
             // automount point is: the names in it are its points.
@@ -389,7 +462,7 @@ pub fn on_the_way<F: Filesystem>(fs: &F, table: &[MountEntry], path: &Path, look
                 if links > MAX_LINKS {
                     return Way::Failed(std::io::Error::from_raw_os_error(nix::libc::ELOOP));
                 }
-                let target = match fs.read_link(&next) {
+                let target = match read_target(fs, memo, &next) {
                     // A link to nothing by name: the lookup fails there.
                     Ok(target) if target.as_os_str().is_empty() => return Way::Clear,
                     Ok(target) => target,
