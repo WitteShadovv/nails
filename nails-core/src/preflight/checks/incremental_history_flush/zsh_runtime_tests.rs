@@ -25,6 +25,16 @@ fn an_fc_that_writes_the_history_file_counts_as_a_write() {
             "if true; then precmd() { 'fc' -AI ~/.zsh_lines; }; fi\n",
             "fc -AI",
         ),
+        // zsh 5.9 to 5.9.2 take the word after `-e` and `-t`, or the rest of
+        // theirs, as its argument and read on past it.
+        ("precmd() { fc -t %F -AI }\n", "fc -t %F -AI"),
+        ("precmd() { fc -e : -AI }\n", "fc -e : -AI"),
+        ("precmd() { fc -e - -AI }\n", "fc -e - -AI"),
+        ("precmd() { fc -t '%F %T' -AI }\n", "fc -t %F %T -AI"),
+        ("precmd() { fc -t %s -W }\n", "fc -t %s -W"),
+        ("zshaddhistory() { fc -t %s -AI }\n", "fc -t %s -AI"),
+        ("precmd() { fc -lt %F -AI }\n", "fc -lt %F -AI"),
+        ("precmd() { fc -t%F -AI }\n", "fc -t%F -AI"),
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
@@ -48,6 +58,11 @@ fn an_fc_that_writes_the_history_file_counts_as_a_write() {
             "precmd() { fc -l $n }\n",
             "it cannot tell whether `fc -l $n` in /home/alice/.zshrc writes the history file",
         ),
+        // An array may make the argument of `-t` and options after it.
+        (
+            "precmd() { fc -t $fmt }\n",
+            "it cannot tell whether `fc -t $fmt` in /home/alice/.zshrc writes the history file",
+        ),
         ("precmd() { print -r -- fc -AI }\n", beyond),
         (
             "zle -N fc-widget; bindkey '^X' fc-widget; print fc -W\n",
@@ -60,8 +75,21 @@ fn an_fc_that_writes_the_history_file_counts_as_a_write() {
         assert_eq!(found.writes, Vec::new(), "{rc}");
         assert_eq!(found.doubts, [doubt], "{rc}");
     }
-    // One that reads or lists the history writes nothing.
-    for rc in ["fc -R\n", "fc -l -10\n", "fc-list : family\n"] {
+    // One that reads or lists the history writes nothing, an `-A` that `-t`
+    // takes as its argument among them.
+    for rc in [
+        "fc -R\n",
+        "fc -l -10\n",
+        "fc-list : family\n",
+        "precmd() { fc -t -AI }\n",
+        "precmd() { fc -tAI }\n",
+        "precmd() { fc -lt '%F %T' }\n",
+        // One with a letter it does not take, which zsh 5.9 to 5.9.2 refuse
+        // whole (`history` takes no `-A`).
+        "precmd() { history -t %F -A }\n",
+        "precmd() { history -A }\n",
+        "precmd() { fc -AIq }\n",
+    ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");

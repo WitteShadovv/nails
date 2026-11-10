@@ -12,8 +12,9 @@
 use super::super::OH_MY_ZSH;
 use super::super::arith::READ_AS_NUMBER;
 use super::super::backstop::{
-    self, FC_WRITES, history_path, is_fc_flag, qualifier_code, reexpands, zdotdir_writes,
+    self, FC_WRITES, history_path, qualifier_code, reexpands, zdotdir_writes,
 };
+use super::super::builtins::fc_letters;
 use super::super::lexer::{Word, is_name};
 use super::hooks::hook_array;
 use super::names::{computed, names_parameter, targets};
@@ -237,17 +238,21 @@ impl Walker<'_> {
     }
 
     /// The events of an `fc` or a `history` (`command`, which takes the
-    /// flags of `fc -l`) of `args`. One that writes the history file, by a
-    /// flag ([`FC_WRITES`]: `fc -AI`, `fc -W`, `history -p -a`), does so
-    /// whenever it runs, as it does after every command from a hook
+    /// flags of `fc -l`) of `args`, its options read as zsh reads them
+    /// ([`fc_letters`]). One that writes the history file, by a flag
+    /// ([`FC_WRITES`]: `fc -AI`, `fc -W`, `history -p -a`, `fc -t %F -AI`),
+    /// does so whenever it runs, as it does after every command from a hook
     /// (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`), the way bash's
-    /// `history -a` does from `PROMPT_COMMAND`. One whose flags hold an
-    /// expansion, or a word brace expansion or a glob may make other words
-    /// of (`fc {-AI,-AI}`), which may be such a flag, is a doubt.
+    /// `history -a` does from `PROMPT_COMMAND`. One whose options or their
+    /// arguments hold an expansion, or a word brace expansion or a glob may
+    /// make other words of (`fc {-AI,-AI}`), which may be such a flag, is a
+    /// doubt.
     pub(super) fn fc(&mut self, command: &str, args: &[Word]) {
-        let mut flags = Vec::new();
-        for arg in args {
-            if arg.expands || arg.bare {
+        let words = args
+            .iter()
+            .map(|arg| (arg.text.as_str(), arg.expands || arg.bare));
+        match fc_letters(command, words) {
+            None => {
                 self.fcs += 1;
                 let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
                 self.events.push(Event::Doubt(format!(
@@ -255,17 +260,14 @@ impl Walker<'_> {
                     words.join(" "),
                     self.place
                 )));
-                return;
             }
-            if !is_fc_flag(&arg.text) {
-                break;
+            Some((letters, taken)) if letters.contains(FC_WRITES) => {
+                self.fcs += 1;
+                let flags: Vec<&str> = args[..taken].iter().map(|arg| arg.text.as_str()).collect();
+                self.events
+                    .push(Event::Fc(format!("{command} {}", flags.join(" "))));
             }
-            flags.push(arg.text.as_str());
-        }
-        if flags.iter().any(|flag| flag.contains(FC_WRITES)) {
-            self.fcs += 1;
-            self.events
-                .push(Event::Fc(format!("{command} {}", flags.join(" "))));
+            Some(_) => {}
         }
     }
 
