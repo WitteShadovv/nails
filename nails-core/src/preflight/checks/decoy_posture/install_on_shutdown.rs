@@ -660,17 +660,22 @@ struct SessionStart {
 /// overlay deletes is not looked for, so a unit the session disabled still
 /// counts. In the overlay, anything at the mask's place but a link to
 /// `/dev/null` takes the decoy's mask away, a unit file of the session's
-/// included. An error says NAILS cannot tell.
+/// included. An error says NAILS cannot tell, a link or a mask it could not
+/// look up included.
 fn session_starts_helper<F: Filesystem>(
     fs: &F,
     root: &Path,
     upper: Option<&Path>,
 ) -> Result<Option<SessionStart>, String> {
-    let decoy_enables = unit_linked(fs, root, UNIT);
-    if !decoy_enables && !upper.is_some_and(|upper| unit_linked(fs, upper, UNIT)) {
+    let decoy_enables = unit_linked(fs, root, UNIT)?;
+    let session_enables = match upper {
+        Some(upper) if !decoy_enables => unit_linked(fs, upper, UNIT)?,
+        _ => false,
+    };
+    if !decoy_enables && !session_enables {
         return Ok(None);
     }
-    let decoy_masks = masked(fs, root, UNIT);
+    let decoy_masks = masked(fs, root, UNIT)?;
     let session_masks = match upper {
         Some(upper) => {
             let path = upper.join(ADMIN_UNIT_DIR).join(UNIT);
@@ -685,7 +690,7 @@ fn session_starts_helper<F: Filesystem>(
             } else if fs.is_symlink(&path).map_err(doubt)?
                 || fs.path_exists(&path).map_err(doubt)?
             {
-                masked(fs, upper, UNIT)
+                masked(fs, upper, UNIT)?
             } else {
                 decoy_masks
             }
@@ -964,7 +969,18 @@ fn decoy_blocker<F: Filesystem>(
 /// the root overlay's upper at `upper` (`None`: the decoy alone).
 pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) -> Finding {
     let polling = polling::warning(fs, root);
-    let running = loggers::unit_active(fs, root, UNIT);
+    let running = match loggers::unit_active(fs, root, UNIT) {
+        loggers::Activity::Active => true,
+        loggers::Activity::Inactive => false,
+        // A helper NAILS cannot tell runs may install at activation.
+        loggers::Activity::Untold(why) => {
+            return Finding {
+                blocker: Some(cannot_tell(&why)),
+                warning: None,
+                polling,
+            };
+        }
+    };
     let start = match session_starts_helper(fs, root, upper) {
         Ok(start) => start.map(Ok),
         Err(why) => Some(Err(why)),

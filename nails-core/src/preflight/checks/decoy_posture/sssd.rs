@@ -84,8 +84,9 @@
 //! such as `/lib` on a merged `/usr` or `/etc/systemd/system` on NixOS, is not
 //! looked in. Nothing here writes.
 
-use super::loggers;
+use super::loggers::{self, Activity};
 use crate::Filesystem;
+use crate::filesystem::automount::describe;
 use crate::next_step::{NextStep, sudo_line};
 use std::path::Path;
 
@@ -178,36 +179,64 @@ const STATE_FILES: &[&str] = &[
 ];
 
 /// The warning for sssd in use on the decoy under `root`, or `None` when
-/// nothing shows it. `is_nixos` picks how its advice turns sssd off.
+/// nothing shows it and NAILS can tell. `is_nixos` picks how its advice turns
+/// sssd off.
 pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Option<String> {
-    let (signs, untold) = signs(fs, root, is_nixos);
-    if signs.is_empty() {
-        return None;
-    }
+    let found = signs(fs, root, is_nixos);
+    let what = match (found.signs.is_empty(), found.unknown.is_empty()) {
+        (true, true) => return None,
+        (false, true) => format!("sssd is in use on the decoy ({})", found.signs.join(", ")),
+        (true, false) => format!(
+            "NAILS cannot tell whether sssd is in use on the decoy: {}",
+            found.unknown.join("; ")
+        ),
+        (false, false) => format!(
+            "sssd is in use on the decoy ({}), and NAILS cannot tell all it would show: {}",
+            found.signs.join(", "),
+            found.unknown.join("; ")
+        ),
+    };
     Some(format!(
-        "sssd is in use on the decoy ({}). NAILS is not tested on a decoy joined to a \
-         domain (Active Directory, FreeIPA): the domain controller records the hidden \
-         session's logins and the account lookups sssd makes for it, out of NAILS's reach, \
-         and sssd keeps caches under /var/lib/sss and logs under /var/log/sssd. Use a decoy \
-         that is not joined to a domain, and where nothing on it needs sssd, {}{}{}",
-        signs.join(", "),
+        "{what}. NAILS is not tested on a decoy joined to a domain (Active Directory, FreeIPA): \
+         the domain controller records the hidden session's logins and the account lookups \
+         sssd makes for it, out of NAILS's reach, and sssd keeps caches under /var/lib/sss and \
+         logs under /var/log/sssd. Use a decoy that is not joined to a domain, and where nothing \
+         on it needs sssd, {}{}{}",
         turn_off(is_nixos),
         delete(&left_behind(fs, root)),
-        sudo_hint(untold),
+        sudo_hint(found.table_untold),
     ))
+}
+
+/// What [`signs`] finds of sssd on the decoy.
+struct Signs {
+    /// What shows sssd in use, one phrase each.
+    signs: Vec<String>,
+    /// Why NAILS cannot tell about a place that would show it, one clause
+    /// each.
+    unknown: Vec<String>,
+    /// Whether the socket of its ticket cache counts only because its table
+    /// cannot tell whether it listens.
+    table_untold: bool,
 }
 
 /// What shows sssd in use on the decoy under `root`, one phrase each: its
 /// active units (or, when none is, a daemon that runs), the socket of its
-/// ticket cache, and the first of its state files found. With them, whether
-/// the socket counts only because its table cannot tell whether it listens.
-/// `is_nixos` says whether the decoy is NixOS (see [`heimdal_serves_kcm`]).
-fn signs<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> (Vec<String>, bool) {
-    let mut signs: Vec<String> = UNITS
-        .iter()
-        .filter(|unit| loggers::unit_active(fs, root, unit))
-        .map(|unit| format!("{unit} is active"))
-        .collect();
+/// ticket cache, and the first of its state files found. With them, why
+/// NAILS cannot tell about a unit, the socket or a state file whose lookup
+/// failed or was not made, and whether the socket counts only because its
+/// table cannot tell whether it listens. `is_nixos` says whether the decoy is
+/// NixOS (see [`heimdal_serves_kcm`]).
+fn signs<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Signs {
+    let mut signs: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    for unit in UNITS {
+        match loggers::unit_active(fs, root, unit) {
+            Activity::Active => signs.push(format!("{unit} is active")),
+            Activity::Inactive => {}
+            Activity::Untold(why) => unknown.push(why),
+        }
+    }
     // A daemon matters on its own only where no unit shows it: one started
     // outside systemd, or by a systemd that left no marker.
     if signs.is_empty()
@@ -217,18 +246,36 @@ fn signs<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> (Vec<String>, bo
     {
         signs.push(format!("{daemon} runs"));
     }
-    let mut untold = false;
-    if let Some(sign) = kcm_sign(fs, root, is_nixos) {
-        untold = sign == KcmSign::Untold;
-        signs.push(sign.phrase());
+    let mut table_untold = false;
+    match kcm_sign(fs, root, is_nixos) {
+        Ok(Some(sign)) => {
+            table_untold = sign == KcmSign::Untold;
+            signs.push(sign.phrase());
+        }
+        Ok(None) => {}
+        Err(why) => unknown.push(why),
     }
-    if let Some(file) = STATE_FILES
-        .iter()
-        .find(|file| present(fs, &root.join(file)))
-    {
-        signs.push(format!("/{file} holds its state"));
+    // The first state file found is a sign, and the first NAILS cannot tell
+    // is there stands for the rest, which lie beside it.
+    let mut unseen = None;
+    for file in STATE_FILES {
+        match present(fs, &root.join(file)) {
+            Ok(true) => {
+                signs.push(format!("/{file} holds its state"));
+                break;
+            }
+            Ok(false) => {}
+            Err(why) => {
+                unseen.get_or_insert(why);
+            }
+        }
     }
-    (signs, untold)
+    unknown.extend(unseen);
+    Signs {
+        signs,
+        unknown,
+        table_untold,
+    }
 }
 
 /// What PID 1's socket table says of the ticket cache's socket, when the
@@ -259,16 +306,20 @@ impl KcmSign {
 /// tell, and Heimdal's daemon does not serve it. `None` when the file is gone,
 /// when the table shows nothing listening there, which is what a stopped
 /// socket leaves, or when the socket is Heimdal's.
-fn kcm_sign<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Option<KcmSign> {
-    if !present(fs, &root.join(KCM_SOCKET)) {
-        return None;
+///
+/// # Errors
+///
+/// Why NAILS cannot tell whether the socket's file is in place.
+fn kcm_sign<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Result<Option<KcmSign>, String> {
+    if !present(fs, &root.join(KCM_SOCKET))? {
+        return Ok(None);
     }
     let sign = match kcm_listening(fs, root) {
-        Some(false) => return None,
+        Some(false) => return Ok(None),
         Some(true) => KcmSign::Listens,
         None => KcmSign::Untold,
     };
-    (!heimdal_serves_kcm(fs, root, is_nixos)).then_some(sign)
+    Ok((!heimdal_serves_kcm(fs, root, is_nixos)).then_some(sign))
 }
 
 /// The end of the advice when the socket counts only because its table cannot
@@ -443,11 +494,12 @@ fn is_pid_dir(entry: &Path) -> bool {
 
 /// The state files sssd leaves behind when it stops, as paths on the decoy
 /// under `root`: every one of [`STATE_FILES`] there. Each keeps the warning
-/// after sssd is off.
+/// after sssd is off. One NAILS cannot tell is there is left out of the
+/// advice: the warning names it already.
 fn left_behind<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
     STATE_FILES
         .iter()
-        .filter(|file| present(fs, &root.join(file)))
+        .filter(|file| present(fs, &root.join(file)) == Ok(true))
         .map(|file| format!("/{file}"))
         .collect()
 }
@@ -487,8 +539,19 @@ fn is_daemon(name: &str) -> bool {
 ///
 /// A symlink is counted as itself, before anything follows it: following it
 /// would update its access time.
-fn present<F: Filesystem>(fs: &F, path: &Path) -> bool {
-    fs.is_symlink(path).unwrap_or(false) || fs.path_exists(path).unwrap_or(false)
+///
+/// # Errors
+///
+/// Why NAILS cannot tell: the lookup failed for another reason than that
+/// nothing is there, or the automount guard did not make it.
+fn present<F: Filesystem>(fs: &F, path: &Path) -> Result<bool, String> {
+    fs.entry_exists(path).map_err(|error| {
+        format!(
+            "NAILS cannot tell whether {} is there: {}",
+            path.display(),
+            describe(&path.display().to_string(), &error).sentence
+        )
+    })
 }
 
 #[cfg(test)]

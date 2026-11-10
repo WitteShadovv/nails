@@ -70,6 +70,16 @@
 //!   disk each time it starts, so every way back adds a pair dated at the
 //!   switch.
 //!
+//! # What it cannot tell
+//!
+//! Every probe reads the decoy through the automount guard
+//! ([`crate::filesystem::automount`]): a lookup that would mount an
+//! automount point that nothing is mounted on yet is not made. A blocker
+//! NAILS cannot tell about, because a lookup failed or was not made, counts
+//! as one the decoy has, and is refused with the same override; a warning it
+//! cannot tell about warns. Without a readable mount table nothing is looked
+//! up, and the check refuses as for a blocker.
+//!
 //! # No writes
 //!
 //! Every probe reads the filesystem; nothing here creates, rotates or vacuums
@@ -79,8 +89,9 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::journald_storage::journald_persistence_at;
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle, unnamed};
 use crate::filesystem::parse_mountinfo;
-use crate::{Filesystem, Result};
+use crate::{Filesystem, NailsError, Result};
 use nails_api::Allowable;
 use std::path::{Path, PathBuf};
 
@@ -90,7 +101,7 @@ mod loggers;
 mod sssd;
 mod sudo_logging;
 // The locate-database check reads the decoy's units the same way.
-pub(in crate::preflight::checks) use loggers::unit_active;
+pub(in crate::preflight::checks) use loggers::{Activity, unit_active};
 pub use sudo_logging::{SudoLogging, scan_sudoers};
 
 /// `/proc/self/mountinfo`, the authoritative mount table.
@@ -113,6 +124,74 @@ const KDUMP_UNITS: &[&str] = &["kdump-tools.service", "kdump.service"];
 const DEPENDENCY_DIR_SUFFIXES: &[&str] = &[".wants", ".requires", ".upholds"];
 /// The unit directory whose `/dev/null` link masks a unit above every other.
 const ADMIN_UNIT_DIR: &str = "etc/systemd/system";
+
+/// One way the decoy keeps a record of the hidden session on its disk, or may
+/// keep one where NAILS cannot tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistenceFinding {
+    /// What keeps the record, or why NAILS cannot tell, with what to do about
+    /// it.
+    pub sentence: String,
+    /// Why NAILS cannot tell whether the decoy keeps the record, when it
+    /// cannot: a path it could not look up or read, which counts as one that
+    /// keeps it.
+    pub untold: Option<String>,
+}
+
+impl PersistenceFinding {
+    /// A record the decoy keeps.
+    fn kept(sentence: impl Into<String>) -> Self {
+        Self {
+            sentence: sentence.into(),
+            untold: None,
+        }
+    }
+
+    /// A record NAILS cannot tell about, for `reason`, which says it all.
+    fn untold(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        Self {
+            sentence: reason.clone(),
+            untold: Some(reason),
+        }
+    }
+
+    /// A record NAILS cannot tell about, for `reason`, said as `sentence`.
+    fn untold_as(sentence: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            sentence: sentence.into(),
+            untold: Some(reason.into()),
+        }
+    }
+}
+
+/// Why nothing on the decoy is looked up without its mount table.
+fn no_mount_table(error: &str) -> String {
+    format!(
+        "NAILS cannot read the mount table ({error}), which shows where a lookup would mount an \
+         automount point, so it looks up nothing"
+    )
+}
+
+/// The findings of a probe of the decoy, read through `view`, with one for
+/// each lookup the guard did not make that they do not name: such a path
+/// may hold a record too.
+fn with_unnamed<F: Filesystem>(
+    mut findings: Vec<PersistenceFinding>,
+    view: &Guarded<F>,
+) -> Vec<PersistenceFinding> {
+    let named: String = findings
+        .iter()
+        .map(|finding| finding.sentence.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    findings.extend(
+        unnamed(&named, &view.skipped())
+            .into_iter()
+            .map(PersistenceFinding::untold),
+    );
+    findings
+}
 
 /// What an activation would make unattended-upgrades' shutdown helper on
 /// the decoy do, by the cause for which the check refuses it
@@ -179,65 +258,116 @@ impl DecoyPersistenceCheck {
     }
 
     /// The fail-closed log findings: the persistent log sinks on the decoy
-    /// (journald, syslog, audit). The other blocker is [`Self::kdump_finding`].
-    fn log_blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
+    /// (journald, syslog, audit), and each one NAILS cannot tell about. The
+    /// other blocker is [`Self::kdump_finding`].
+    fn log_blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<PersistenceFinding> {
         let mut out = Vec::new();
         match journald_persistence_at(fs, root) {
             Ok(false) => {}
-            Ok(true) => out.push(
+            Ok(true) => out.push(PersistenceFinding::kept(
                 "systemd-journald keeps a persistent journal on the decoy disk \
                  (/var/log/journal); set Storage=volatile under [Journal] in \
                  /etc/systemd/journald.conf or in a drop-in such as \
                  /etc/systemd/journald.conf.d/50-volatile.conf (drop-ins override \
-                 the main file)"
-                    .to_string(),
-            ),
-            Err(unread) => out.push(format!(
-                "NAILS cannot tell where systemd-journald keeps the journal, so it counts as \
-                 persistent: {}",
-                unread.with_advice()
+                 the main file)",
+            )),
+            Err(unread) => out.push(PersistenceFinding::untold_as(
+                format!(
+                    "NAILS cannot tell where systemd-journald keeps the journal, so it counts as \
+                     persistent: {}",
+                    unread.with_advice()
+                ),
+                unread.to_string(),
             )),
         }
         out.extend(loggers::active_logger_blockers(fs, root));
         out
     }
 
-    /// Read-only probe: whether the decoy keeps a persistent log or audit store
-    /// that a hidden session's metadata would land on (a persistent journald
-    /// journal, or an active syslog or audit daemon). Shared with
-    /// `status` so the reported posture tracks the same detection as this
-    /// pre-flight check without duplicating the journald parsing.
+    /// Read-only probe: whether the decoy keeps, or may keep, a persistent log
+    /// or audit store that a hidden session's metadata would land on (a
+    /// persistent journald journal, or an active syslog or audit daemon), as
+    /// [`Self::persistence`] finds them.
+    pub fn decoy_is_persistent<F: Filesystem>(fs: &F) -> bool {
+        !Self::persistence(fs).is_empty()
+    }
+
+    /// Read-only probe: each way the decoy keeps a persistent log or audit
+    /// store, one sentence with its fix each, or none on an amnesic decoy, as
+    /// [`Self::persistence`] finds them. The window's launcher refuses to
+    /// open on a decoy with any, and names them. Performs no writes.
+    pub fn persistence_findings<F: Filesystem>(fs: &F) -> Vec<String> {
+        Self::persistence(fs)
+            .into_iter()
+            .map(|finding| finding.sentence)
+            .collect()
+    }
+
+    /// Read-only probe: each way the decoy keeps a persistent log or audit
+    /// store, or may keep one where NAILS cannot tell, read through the
+    /// automount guard as the pre-flight check reads it: a path the guard did
+    /// not look up, or one whose lookup failed, is one NAILS cannot tell
+    /// about. Shared with `status` and the window's launcher so that both
+    /// track the same detection as this pre-flight check.
     ///
     /// Independent of the operator override: the decoy is physically persistent
     /// whether or not the operator accepted the risk, so an accepted run still
     /// reports an honest posture. Performs no writes.
-    pub fn decoy_is_persistent<F: Filesystem>(fs: &F) -> bool {
-        !Self::persistence_findings(fs).is_empty()
-    }
-
-    /// Read-only probe: each way the decoy keeps a persistent log or audit
-    /// store, one sentence with its fix each, or none on an amnesic decoy. The
-    /// window's launcher refuses to open on a decoy with any, and names them.
-    /// Performs no writes.
-    pub fn persistence_findings<F: Filesystem>(fs: &F) -> Vec<String> {
-        Self::log_blockers(fs, Path::new("/"))
+    pub fn persistence<F: Filesystem>(fs: &F) -> Vec<PersistenceFinding> {
+        let root = Path::new("/");
+        let snapshot = Snapshot::read(fs, root);
+        if let Some(error) = snapshot.unreadable() {
+            return vec![PersistenceFinding::untold(no_mount_table(error))];
+        }
+        let view = Guarded::new(fs.clone(), &snapshot);
+        let findings = Self::log_blockers(&view, root);
+        with_unnamed(findings, &view)
     }
 
     /// Read-only probe: whether kdump is armed on the decoy, or its state
-    /// cannot be read (which the pre-flight check refuses as if armed). Shared
-    /// with `status`. Independent of the operator override, and performs no
-    /// writes.
+    /// cannot be read (which the pre-flight check refuses as if armed), as
+    /// [`Self::kdump_on_decoy`] reads it.
     pub fn decoy_kdump_armed<F: Filesystem>(fs: &F) -> bool {
-        Self::kdump_finding(fs, Path::new("/")).is_some()
+        Self::kdump_on_decoy(fs).is_some()
+    }
+
+    /// Read-only probe: the kdump blocker of the decoy, read through the
+    /// automount guard as the pre-flight check reads it, if kdump is armed or
+    /// NAILS cannot tell. Shared with `status`. Independent of the operator
+    /// override, and performs no writes.
+    pub fn kdump_on_decoy<F: Filesystem>(fs: &F) -> Option<PersistenceFinding> {
+        let root = Path::new("/");
+        let snapshot = Snapshot::read(fs, root);
+        if let Some(error) = snapshot.unreadable() {
+            return Some(PersistenceFinding::untold(no_mount_table(error)));
+        }
+        let view = Guarded::new(fs.clone(), &snapshot);
+        let finding = Self::kdump_finding(&view, root);
+        with_unnamed(finding.into_iter().collect(), &view)
+            .into_iter()
+            .next()
     }
 
     /// Read-only probe: what an activation would make the decoy's
     /// unattended-upgrades do at its shutdown helper's signal, by the cause
     /// for which the pre-flight check refuses it, or `None` where it does
-    /// not. Shared with `status`. Independent of the operator override, and
-    /// performs no writes.
+    /// not, read through the automount guard as the pre-flight check reads
+    /// it: without the mount table, or where the guard did not make a lookup,
+    /// NAILS cannot tell. Shared with `status`. Independent of the operator
+    /// override, and performs no writes.
     pub fn decoy_install_at_shutdown<F: Filesystem>(fs: &F) -> Option<InstallAtShutdown> {
-        Self::install_at_shutdown_on(fs, Path::new("/"))
+        let root = Path::new("/");
+        let snapshot = Snapshot::read(fs, root);
+        if snapshot.unreadable().is_some() {
+            return Some(InstallAtShutdown::Unknown);
+        }
+        let view = Guarded::new(fs.clone(), &snapshot);
+        let found = Self::install_at_shutdown_on(&view, root);
+        // A lookup the guard did not make may hide a setting that is on.
+        if found.is_none() && !view.skipped().is_empty() {
+            return Some(InstallAtShutdown::Unknown);
+        }
+        found
     }
 
     /// [`Self::decoy_install_at_shutdown`] of the system tree under `root`.
@@ -264,15 +394,19 @@ impl DecoyPersistenceCheck {
     /// crash kernel. The crash kernel boots from the decoy's root device, never
     /// through the session's overlay, so what it writes lands on the decoy
     /// disk past every barrier the session keeps.
-    fn kdump_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<String> {
+    fn kdump_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<PersistenceFinding> {
         // Read below `root` like the unit markers, so a test on a temporary
         // tree never sees the live host's crash kernel.
         let path = root.join(KEXEC_CRASH_LOADED.trim_start_matches('/'));
         let path = path.as_path();
         let unknown = |why: String| {
-            Some(format!(
-                "cannot tell whether kdump is armed: {KEXEC_CRASH_LOADED} {why}, so it is \
-                 refused as if a crash kernel were loaded"
+            let reason = format!("{KEXEC_CRASH_LOADED} {why}");
+            Some(PersistenceFinding::untold_as(
+                format!(
+                    "cannot tell whether kdump is armed: {reason}, so it is refused as if a crash \
+                     kernel were loaded"
+                ),
+                reason,
             ))
         };
         let loaded = match fs.path_exists(path) {
@@ -289,14 +423,28 @@ impl DecoyPersistenceCheck {
             Err(e) => return unknown(format!("cannot be probed ({e})")),
         };
         let mut armed = Vec::new();
+        let mut untold = Vec::new();
         if loaded {
             armed.push("a crash kernel is loaded".to_string());
         }
         for unit in KDUMP_UNITS {
-            let state = match (
-                unit_enabled(fs, root, unit),
-                loggers::unit_active(fs, root, unit),
-            ) {
+            let enabled = match unit_enabled(fs, root, unit) {
+                Enabled::Yes => true,
+                Enabled::No => false,
+                Enabled::Untold(why) => {
+                    untold.push(why);
+                    false
+                }
+            };
+            let active = match loggers::unit_active(fs, root, unit) {
+                loggers::Activity::Active => true,
+                loggers::Activity::Inactive => false,
+                loggers::Activity::Untold(why) => {
+                    untold.push(why);
+                    false
+                }
+            };
+            let state = match (enabled, active) {
                 (true, true) => "enabled and active",
                 (true, false) => "enabled",
                 (false, true) => "active",
@@ -305,17 +453,28 @@ impl DecoyPersistenceCheck {
             armed.push(format!("{unit} is {state}"));
         }
         if armed.is_empty() {
-            return None;
+            // A unit NAILS cannot tell is enabled or runs may arm kdump.
+            let reason = untold.join("; ");
+            return (!untold.is_empty()).then(|| {
+                PersistenceFinding::untold_as(
+                    format!(
+                        "cannot tell whether kdump is armed: {reason}, so it is refused as if \
+                         kdump were armed. Disable kdump on the decoy (Ubuntu: systemctl \
+                         disable --now kdump-tools; Fedora: systemctl disable --now kdump)"
+                    ),
+                    reason,
+                )
+            });
         }
         let what = armed.join(" and ");
-        Some(format!(
+        Some(PersistenceFinding::kept(format!(
             "kdump is armed ({what}): if the kernel crashes during the hidden session, its \
              crash kernel mounts the decoy root by its device, outside the session's overlay, \
              and writes a dump of kernel memory (which can hold the hidden volume's encryption \
              key and the names of the files the session used) and the session's kernel log to \
              /var/crash on the decoy disk. Disable kdump on the decoy (Ubuntu: systemctl \
              disable --now kdump-tools; Fedora: systemctl disable --now kdump)"
-        ))
+        )))
     }
 
     /// The `/` mount entry's options, if the mount table can be read.
@@ -355,16 +514,22 @@ impl DecoyPersistenceCheck {
         out.extend(sudo_logging::decoy_sudo_findings(fs, root));
         out.extend(sssd::sssd_finding(fs, root, is_nixos));
 
-        if is_nixos
-            && fs
-                .path_exists(Path::new(NIXOS_UPGRADE_TIMER))
-                .unwrap_or(false)
-        {
-            out.push(
-                "nixos-upgrade.timer is enabled; an automatic decoy rebuild can run \
-                 (and touch EFI NVRAM) while the hidden session is active"
-                    .to_string(),
-            );
+        // A link to a timer that is not there enables nothing, so the timer
+        // is looked up through the link.
+        if is_nixos {
+            match fs.path_exists(Path::new(NIXOS_UPGRADE_TIMER)) {
+                Ok(false) => {}
+                Ok(true) => out.push(
+                    "nixos-upgrade.timer is enabled; an automatic decoy rebuild can run \
+                     (and touch EFI NVRAM) while the hidden session is active"
+                        .to_string(),
+                ),
+                Err(error) => out.push(format!(
+                    "NAILS cannot tell whether nixos-upgrade.timer is enabled, which can rebuild \
+                     the decoy (and touch EFI NVRAM) while the hidden session is active: {}",
+                    describe(NIXOS_UPGRADE_TIMER, &error).sentence
+                )),
+            }
         }
 
         out
@@ -412,6 +577,18 @@ impl DecoyPersistenceCheck {
     }
 }
 
+/// Whether a unit is enabled, as [`unit_enabled`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Enabled {
+    /// A link enables it, and nothing masks it.
+    Yes,
+    /// Nothing enables it, or a mask outranks what does.
+    No,
+    /// NAILS cannot tell, for this reason, which names the unit and the path
+    /// it could not look up.
+    Untold(String),
+}
+
 /// Whether `unit` is enabled under `root`: a link to it sits in a dependency
 /// directory ([`DEPENDENCY_DIR_SUFFIXES`]) of a unit directory, and
 /// `/etc/systemd/system` does not mask it.
@@ -422,15 +599,35 @@ impl DecoyPersistenceCheck {
 /// `enable`. A mask (`systemctl mask`) is a link to `/dev/null` in
 /// `/etc/systemd/system`, which outranks every link to the unit. It is followed
 /// only once an enabling link was found, so on a decoy without one no unit
-/// link is followed.
-fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
-    unit_linked(fs, root, unit) && !masked(fs, root, unit)
+/// link is followed. A place where a link may be whose lookup failed, or that
+/// the automount guard did not look up, leaves NAILS unable to tell, unless
+/// another link enables the unit; so does a mask it cannot look up.
+fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> Enabled {
+    match unit_linked(fs, root, unit) {
+        Ok(false) => Enabled::No,
+        Err(why) => Enabled::Untold(why),
+        Ok(true) => match masked(fs, root, unit) {
+            Ok(true) => Enabled::No,
+            Ok(false) => Enabled::Yes,
+            Err(why) => Enabled::Untold(why),
+        },
+    }
 }
 
 /// Whether a link to `unit` sits in a dependency directory of a unit
 /// directory under `root`, a mask aside (see [`unit_enabled`]).
-fn unit_linked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
-    loggers::UNIT_DIRS.iter().any(|dir| {
+///
+/// # Errors
+///
+/// Why NAILS cannot tell, where no link was found and the lookup of a place
+/// where one may be failed or was not made.
+fn unit_linked<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    unit: &str,
+) -> std::result::Result<bool, String> {
+    let mut untold = None;
+    let linked = loggers::UNIT_DIRS.iter().any(|dir| {
         fs.list_directory(&root.join(dir)).is_ok_and(|entries| {
             entries.iter().any(|entry| {
                 let dependency_dir = entry
@@ -441,20 +638,56 @@ fn unit_linked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
                             .iter()
                             .any(|suffix| name.ends_with(suffix))
                     });
-                dependency_dir && fs.is_symlink(&entry.join(unit)).unwrap_or(false)
+                if !dependency_dir {
+                    return false;
+                }
+                let link = entry.join(unit);
+                match fs.is_symlink(&link) {
+                    Ok(linked) => linked,
+                    Err(error) => {
+                        untold.get_or_insert_with(|| unseen_link(unit, &link, &error));
+                        false
+                    }
+                }
             })
         })
-    })
+    });
+    match untold {
+        Some(why) if !linked => Err(why),
+        _ => Ok(linked),
+    }
+}
+
+/// Why NAILS cannot tell whether `unit` is enabled, where the lookup of the
+/// enabling link `link` of `unit` failed with `error` or was not made.
+fn unseen_link(unit: &str, link: &Path, error: &NailsError) -> String {
+    format!(
+        "NAILS cannot tell whether {unit} is enabled: {}",
+        describe(&link.display().to_string(), error).sentence
+    )
 }
 
 /// Whether `/etc/systemd/system` under `root` masks `unit`: a link there that
 /// resolves to `/dev/null`.
-fn masked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+///
+/// # Errors
+///
+/// Why NAILS cannot tell: the lookup of the link failed or was not made, so
+/// the unit counts as enabled, which an enabling link makes it unless it is
+/// masked.
+fn masked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> std::result::Result<bool, String> {
     let unit_file = root.join(ADMIN_UNIT_DIR).join(unit);
-    fs.is_symlink(&unit_file).unwrap_or(false)
-        && fs
+    match fs.is_symlink(&unit_file) {
+        Ok(true) => Ok(fs
             .canonicalize(&unit_file)
-            .is_ok_and(|target| target == Path::new("/dev/null"))
+            .is_ok_and(|target| target == Path::new("/dev/null"))),
+        Ok(false) => Ok(false),
+        Err(error) => Err(format!(
+            "{unit} is enabled unless {} masks it, which NAILS cannot tell: {}",
+            unit_file.display(),
+            describe(&unit_file.display().to_string(), &error).sentence
+        )),
+    }
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
@@ -467,32 +700,88 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let log_blockers = Self::log_blockers(fs, &self.root);
-        let kdump_blocker = Self::kdump_finding(fs, &self.root);
-        let upgrades = install_on_shutdown::finding(fs, &self.root, self.upper.as_deref());
-        let mut warnings = Self::warnings(fs, &self.root, self.is_nixos);
+        // Without the table a lookup could mount an automount point, so none
+        // is made, and the blockers cannot be ruled out.
+        let snapshot = Snapshot::read(fs, &self.root);
+        if let Some(error) = snapshot.unreadable() {
+            let unseen = PersistenceFinding::untold(no_mount_table(error));
+            return Ok(self.verdict(vec![unseen], None, None, Vec::new()));
+        }
+        // The blockers and the warnings are read through views of their own,
+        // so a lookup the guard did not make refuses for a blocker, which the
+        // override lifts, and warns for a warning.
+        let blocking = Guarded::new(fs.clone(), &snapshot);
+        let warning = Guarded::new(fs.clone(), &snapshot);
+        let log_blockers = Self::log_blockers(&blocking, &self.root);
+        let kdump_blocker = Self::kdump_finding(&blocking, &self.root);
+        // unattended-upgrades' install at shutdown is read through the
+        // blockers' view, its warnings with it, as they come from the same
+        // reads: a lookup the guard did not make there refuses.
+        let upgrades = install_on_shutdown::finding(&blocking, &self.root, self.upper.as_deref());
+        let mut warnings = Self::warnings(&warning, &self.root, self.is_nixos);
         warnings.extend(upgrades.warning);
         warnings.extend(upgrades.polling);
+        let result = self.verdict(log_blockers, kdump_blocker, upgrades.blocker, warnings);
+        let on_blocker = if self.allow_persistent_decoy {
+            OnSkip::Warn
+        } else {
+            OnSkip::Refuse(Some(Allowable::PersistentDecoy))
+        };
+        let result = settle(result, &blocking.skipped(), on_blocker);
+        Ok(settle(result, &warning.skipped(), OnSkip::Warn))
+    }
+}
+
+impl DecoyPersistenceCheck {
+    /// The result for the blockers found, the log sinks, kdump and
+    /// unattended-upgrades' install at shutdown, and the warnings.
+    fn verdict(
+        &self,
+        log_blockers: Vec<PersistenceFinding>,
+        kdump_blocker: Option<PersistenceFinding>,
+        upgrade_blocker: Option<install_on_shutdown::Blocker>,
+        warnings: Vec<String>,
+    ) -> CheckResult {
+        use install_on_shutdown::AtTheSwitch;
         let logs = !log_blockers.is_empty();
         let kdump = kdump_blocker.is_some();
-        let upgrade = upgrades.blocker.is_some();
+        let upgrade = upgrade_blocker.is_some();
         // What the override lets happen is said only where NAILS can tell:
         // the install of a setting found on, or the ERROR lines of a file apt
         // refuses.
-        let at_the_switch = upgrades
-            .blocker
+        let at_the_switch = upgrade_blocker
             .as_ref()
             .map(|blocker| blocker.at_the_switch);
-        let (upgrade_blocker, upgrade_fix) = upgrades
-            .blocker
-            .map(|blocker| (blocker.finding, blocker.fix))
+        let (upgrade_blocker, upgrade_fix) = upgrade_blocker
+            .map(|blocker| {
+                let finding = match blocker.at_the_switch {
+                    AtTheSwitch::Installs | AtTheSwitch::ErrorLines => {
+                        PersistenceFinding::kept(blocker.finding)
+                    }
+                    AtTheSwitch::Unknown | AtTheSwitch::NeedsRoot => {
+                        PersistenceFinding::untold(blocker.finding)
+                    }
+                };
+                (finding, blocker.fix)
+            })
             .unzip();
 
         if logs || kdump || upgrade {
-            let findings = log_blockers
+            let blockers: Vec<PersistenceFinding> = log_blockers
                 .into_iter()
                 .chain(kdump_blocker)
                 .chain(upgrade_blocker)
+                .collect();
+            // A blocker NAILS cannot tell about counts, and the decoy may keep
+            // the record.
+            let keeps = if blockers.iter().any(|blocker| blocker.untold.is_some()) {
+                "keeps, or may keep,"
+            } else {
+                "keeps"
+            };
+            let findings = blockers
+                .iter()
+                .map(|blocker| blocker.sentence.as_str())
                 .collect::<Vec<_>>()
                 .join("; ");
             if self.allow_persistent_decoy {
@@ -512,24 +801,20 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
                     );
                 }
                 match at_the_switch {
-                    Some(install_on_shutdown::AtTheSwitch::Installs) => msg.push_str(
+                    Some(AtTheSwitch::Installs) => msg.push_str(
                         " At the switch unattended-upgrades installs the pending updates on the \
                          decoy disk and logs that run there.",
                     ),
-                    Some(install_on_shutdown::AtTheSwitch::ErrorLines) => {
+                    Some(AtTheSwitch::ErrorLines) => {
                         msg.push(' ');
                         msg.push_str(install_on_shutdown::ERROR_LINES);
                     }
-                    Some(
-                        install_on_shutdown::AtTheSwitch::Unknown
-                        | install_on_shutdown::AtTheSwitch::NeedsRoot,
-                    )
-                    | None => {}
+                    Some(AtTheSwitch::Unknown | AtTheSwitch::NeedsRoot) | None => {}
                 }
                 if !warnings.is_empty() {
                     msg.push_str(&format!(" Also: {}.", warnings.join("; ")));
                 }
-                return Ok(CheckResult::Warn(msg));
+                return CheckResult::Warn(msg);
             }
             let mut fixes = Vec::new();
             if logs {
@@ -552,28 +837,28 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
             if let Some(first) = remediation.get_mut(..1) {
                 first.make_ascii_uppercase();
             }
-            return Ok(CheckResult::fail_with(
-                format!("decoy keeps a persistent record of the hidden session: {findings}."),
+            return CheckResult::fail_with(
+                format!("decoy {keeps} a persistent record of the hidden session: {findings}."),
                 format!(
                     "{remediation}, or pass --allow-persistent-decoy to allow the risk for this \
                      run. See docs/decoy-requirements.md."
                 ),
             )
-            .accepted_by(Allowable::PersistentDecoy));
+            .accepted_by(Allowable::PersistentDecoy);
         }
 
         if !warnings.is_empty() {
-            return Ok(CheckResult::Warn(format!(
+            return CheckResult::Warn(format!(
                 "decoy posture warnings: {}. See docs/decoy-requirements.md.",
                 warnings.join("; ")
-            )));
+            ));
         }
 
-        Ok(CheckResult::Pass(
-            "decoy keeps no durable trace of the hidden session".into(),
-        ))
+        CheckResult::Pass("decoy keeps no durable trace of the hidden session".into())
     }
 }
 
+#[cfg(test)]
+mod lookup_tests;
 #[cfg(test)]
 mod tests;

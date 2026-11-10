@@ -44,7 +44,7 @@
 //! but a plain file leaves NAILS unable to tell, which refuses as well.
 
 use super::super::{CheckResult, PreFlightCheck};
-use super::decoy_posture::unit_active;
+use super::decoy_posture::{Activity, unit_active};
 use crate::next_step::{NextStep, sudo_line};
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
@@ -142,13 +142,24 @@ pub fn upgrade_run<F: Filesystem>(fs: &F, root: &Path) -> UpgradeRun {
 /// [`upgrade_run`], for a caller that is root (`as_root`) or not.
 fn upgrade_run_as<F: Filesystem>(fs: &F, root: &Path, as_root: bool) -> UpgradeRun {
     let mut signs = Vec::new();
-    if unit_active(fs, root, DAILY_UPGRADE) {
-        signs.push(format!("{DAILY_UPGRADE} is active"));
-    }
-    if unit_active(fs, root, DAILY_DOWNLOAD) {
-        signs.push(format!(
-            "{DAILY_DOWNLOAD} is active, whose download run takes the lock"
-        ));
+    // A unit NAILS cannot tell is active may run: unless another sign shows
+    // a run, that leaves NAILS unable to tell.
+    let mut untold = None;
+    let units = [
+        (DAILY_UPGRADE, format!("{DAILY_UPGRADE} is active")),
+        (
+            DAILY_DOWNLOAD,
+            format!("{DAILY_DOWNLOAD} is active, whose download run takes the lock"),
+        ),
+    ];
+    for (unit, sign) in units {
+        match unit_active(fs, root, unit) {
+            Activity::Active => signs.push(sign),
+            Activity::Inactive => {}
+            Activity::Untold(why) => {
+                untold.get_or_insert(why);
+            }
+        }
     }
     let mut seen = Vec::new();
     for lock in LOCKS {
@@ -197,10 +208,10 @@ fn upgrade_run_as<F: Filesystem>(fs: &F, root: &Path, as_root: bool) -> UpgradeR
             Err(e) => return lock_doubt(&shown, &e, as_root),
         }
     }
-    if signs.is_empty() {
-        UpgradeRun::Idle
-    } else {
-        UpgradeRun::InProgress(signs)
+    match untold {
+        _ if !signs.is_empty() => UpgradeRun::InProgress(signs),
+        Some(why) => UpgradeRun::Unknown(why),
+        None => UpgradeRun::Idle,
     }
 }
 

@@ -27,7 +27,9 @@
 //! syslog daemon, which is caught itself. Every probe reads; nothing here
 //! writes.
 
+use super::PersistenceFinding;
 use crate::Filesystem;
+use crate::filesystem::automount::describe;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -108,50 +110,61 @@ const AUDITD: Logger = Logger {
 };
 
 /// The fail-closed findings for active syslog/audit daemons on the decoy under
-/// `root`, one per daemon however it was detected.
+/// `root`, one per daemon however it was detected, and one for each daemon
+/// whose unit NAILS cannot tell runs, which counts as one that does.
 ///
 /// The enabled syslog daemon is found under `syslog.service` as well; when no
 /// daemon of [`SYSLOG_DAEMONS`] is found by its own names, an active
 /// `syslog.service` is reported by the unit it resolves to.
-pub(super) fn active_logger_blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
+pub(super) fn active_logger_blockers<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+) -> Vec<PersistenceFinding> {
     let running = running_process_names(fs, root);
-    let active = |logger: &Logger| {
-        logger.units.iter().any(|unit| unit_active(fs, root, unit))
-            || logger.processes.iter().any(|name| running.contains(*name))
+    let activity = |logger: &Logger| {
+        if logger.processes.iter().any(|name| running.contains(*name)) {
+            return Activity::Active;
+        }
+        Activity::any(logger.units.iter().map(|unit| unit_active(fs, root, unit)))
+    };
+    let finding = |logger: &Logger| match activity(logger) {
+        Activity::Active => Some(PersistenceFinding::kept(logger.message)),
+        Activity::Inactive => None,
+        Activity::Untold(why) => Some(PersistenceFinding::untold(why)),
     };
 
-    let mut out: Vec<String> = SYSLOG_DAEMONS
-        .iter()
-        .filter(|&logger| active(logger))
-        .map(|logger| logger.message.to_string())
-        .collect();
-    if out.is_empty()
-        && let Some(finding) = enabled_syslog_finding(fs, root)
+    let mut out: Vec<PersistenceFinding> = SYSLOG_DAEMONS.iter().filter_map(finding).collect();
+    if out.iter().all(|found| found.untold.is_some())
+        && let Some(found) = enabled_syslog_finding(fs, root)
     {
-        out.push(finding);
+        out.push(found);
     }
-    if active(&AUDITD) {
-        out.push(AUDITD.message.to_string());
-    }
+    out.extend(finding(&AUDITD));
     out
 }
 
 /// The finding for an active `syslog.service` whose daemon is not found by its
 /// own names: the unit it is, when it runs under that name (as on NixOS), or
-/// the unit its alias link names.
-fn enabled_syslog_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<String> {
-    let unit = resolve_alias(fs, root, SYSLOG_ALIAS).unwrap_or_else(|| SYSLOG_ALIAS.to_string());
-    if !unit_active(fs, root, &unit) {
-        return None;
+/// the unit its alias link names. NAILS cannot tell when it cannot look up the
+/// alias or tell whether the unit runs, which counts as one that runs.
+fn enabled_syslog_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<PersistenceFinding> {
+    let unit = match resolve_alias(fs, root, SYSLOG_ALIAS) {
+        Ok(unit) => unit.unwrap_or_else(|| SYSLOG_ALIAS.to_string()),
+        Err(why) => return Some(PersistenceFinding::untold(why)),
+    };
+    match unit_active(fs, root, &unit) {
+        Activity::Active => {}
+        Activity::Inactive => return None,
+        Activity::Untold(why) => return Some(PersistenceFinding::untold(why)),
     }
-    Some(if unit == SYSLOG_ALIAS {
+    Some(PersistenceFinding::kept(if unit == SYSLOG_ALIAS {
         "a syslog daemon (syslog.service) is active and writes logs to the decoy disk".to_string()
     } else {
         format!(
             "a syslog daemon ({unit}, enabled as syslog.service) is active and writes logs to \
              the decoy disk"
         )
-    })
+    }))
 }
 
 /// The unit an alias names: the file name of the unit file a link called
@@ -160,16 +173,70 @@ fn enabled_syslog_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<String> 
 ///
 /// Only a path that is a link is resolved, so a decoy without the alias (the
 /// amnesic one NAILS asks for) has nothing read beyond its metadata.
-fn resolve_alias<F: Filesystem>(fs: &F, root: &Path, alias: &str) -> Option<String> {
-    UNIT_DIRS.iter().find_map(|dir| {
+///
+/// # Errors
+///
+/// Why NAILS cannot tell which daemon the alias names: the lookup of the
+/// alias in a unit directory failed, or was not made, and the first link
+/// found in the order systemd reads the directories names the unit.
+fn resolve_alias<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    alias: &str,
+) -> Result<Option<String>, String> {
+    for dir in UNIT_DIRS {
         let link = root.join(dir).join(alias);
-        if !fs.is_symlink(&link).unwrap_or(false) {
-            return None;
+        match fs.is_symlink(&link) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                return Err(format!(
+                    "NAILS cannot tell which daemon {alias} names: {}",
+                    describe(&link.display().to_string(), &error).sentence
+                ));
+            }
         }
-        let target = fs.canonicalize(&link).ok()?;
-        let unit = target.file_name()?.to_str()?;
-        (unit != alias && unit.ends_with(".service")).then(|| unit.to_string())
-    })
+        let Ok(target) = fs.canonicalize(&link) else {
+            return Ok(None);
+        };
+        return Ok(target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|unit| *unit != alias && unit.ends_with(".service"))
+            .map(str::to_string));
+    }
+    Ok(None)
+}
+
+/// Whether a unit runs, as [`unit_active`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::preflight::checks) enum Activity {
+    /// It runs.
+    Active,
+    /// Nothing shows that it runs.
+    Inactive,
+    /// NAILS cannot tell whether it runs, for this reason, which names the
+    /// unit and the path it could not look up.
+    Untold(String),
+}
+
+impl Activity {
+    /// What a set of routes to a running unit says together: it runs when
+    /// one shows it running; else NAILS cannot tell when one cannot tell,
+    /// the first one's reason; else nothing shows it running.
+    pub(in crate::preflight::checks) fn any(routes: impl IntoIterator<Item = Activity>) -> Self {
+        let mut untold = None;
+        for route in routes {
+            match route {
+                Activity::Active => return Activity::Active,
+                Activity::Inactive => {}
+                Activity::Untold(why) => {
+                    untold.get_or_insert(why);
+                }
+            }
+        }
+        untold.map_or(Activity::Inactive, Activity::Untold)
+    }
 }
 
 /// Whether a systemd unit is active, inferred without writing anything.
@@ -182,21 +249,26 @@ fn resolve_alias<F: Filesystem>(fs: &F, root: &Path, alias: &str) -> Option<Stri
 /// running unit. A daemon started outside systemd leaves neither, and its
 /// process is what shows it ([`running_process_names`]). A oneshot unit that
 /// has run and exited, such as `kdump-tools.service`, keeps no process and no
-/// populated cgroup, so its marker is all that shows it.
+/// populated cgroup, so its marker is all that shows it. When the marker
+/// cannot be looked up and no other route shows the unit running, NAILS
+/// cannot tell.
 pub(in crate::preflight::checks) fn unit_active<F: Filesystem>(
     fs: &F,
     root: &Path,
     unit: &str,
-) -> bool {
+) -> Activity {
     let invocations = root.join(INVOCATION_DIR);
     // The marker is a link to the invocation id (see INVOCATION_DIR): a probe
     // that follows it, such as `path_exists`, never sees it.
-    if fs
-        .is_symlink(&invocations.join(format!("invocation:{unit}")))
-        .unwrap_or(false)
-    {
-        return true;
-    }
+    let marker = invocations.join(format!("invocation:{unit}"));
+    let marked = match fs.is_symlink(&marker) {
+        Ok(true) => return Activity::Active,
+        Ok(false) => Activity::Inactive,
+        Err(error) => Activity::Untold(format!(
+            "NAILS cannot tell whether {unit} runs: {}",
+            describe(&marker.display().to_string(), &error).sentence
+        )),
+    };
     if let Some(stem) = unit.strip_suffix(".service") {
         let prefix = format!("invocation:{stem}@");
         if let Ok(entries) = fs.list_directory(&invocations)
@@ -207,15 +279,20 @@ pub(in crate::preflight::checks) fn unit_active<F: Filesystem>(
                     .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".service"))
             })
         {
-            return true;
+            return Activity::Active;
         }
     }
     let events = root
         .join("sys/fs/cgroup/system.slice")
         .join(unit)
         .join("cgroup.events");
-    fs.read_file_content(&events)
+    if fs
+        .read_file_content(&events)
         .is_ok_and(|content| content.lines().any(|line| line == "populated 1"))
+    {
+        return Activity::Active;
+    }
+    marked
 }
 
 /// The `comm` and `argv[0]` basenames of every process under `<root>/proc`.
