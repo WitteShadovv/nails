@@ -1158,10 +1158,11 @@ the mount's device (for a ZFS dataset, the dataset) and mounts what the mount
 shows: the filesystem's top, or the btrfs subvolume its `subvol=` or
 `subvolid=` names (with both, the one both name), as the mount table shows
 that subvolume's path and id, but never a folder bound there by hand. Or it is
-a bind line whose source, read as it is written, lies on another of the
-decoy's own mounts of that filesystem, and the mount shows that source's
-folder; a source NAILS cannot tell, such as one with a symbolic link in it
-(see below), makes none. A line whose
+a bind line, whatever type it gives, whose source, read as it is written, lies
+on another of the decoy's own mounts of that filesystem, and the mount shows
+that source's folder; a source NAILS cannot tell, such as one with a symbolic
+link in it (see below), makes none, and neither does a line that is not plain
+(see below). `_netdev` makes no difference. A line whose
 `subvolid=` is no number makes no mount of the decoy's, and neither does a
 line with `subvolid=` for a mount whose id the mount table does not show, nor
 one that gives `subvol=` or `subvolid=` twice or a `subvol=` path with `..` in
@@ -1218,7 +1219,8 @@ is a btrfs line with neither option whose mount shows another subvolume than
 the top, as for a filesystem whose default subvolume is not its top. An fstab
 bind line whose source, as it is written, lies in the volume, at the root's
 folder or inside it as the mount that holds the source shows it, mounts the
-volume as well, and fails too. So does every crypttab line for a root that
+volume as well, and fails too, whatever type it gives, and so does a swap or
+image line whose file lies there. So does every crypttab line for a root that
 is the whole filesystem, and one for a filesystem that the decoy mounts
 neither at `/` nor at a system folder, such as an encrypted drive whose fstab
 line is for `/backup` or whose line for `/srv` is not mounted. A line that
@@ -1232,27 +1234,54 @@ the hidden root on storage of its own instead. For a `noauto` fstab line, and
 for an fstab line for another folder that mounts the volume itself, it says to
 remove the line.
 
+NAILS reads only plain lines of the decoy's fstab, the lines it reads as
+`libmount` and systemd do. A line is not plain that holds a control character
+other than a tab, or white space other than a space or a tab; whose first field
+or mount point holds a backslash that begins none of the escapes `\040`,
+`\011`, `\012` and `\134` (a space, a tab, a newline and a backslash), such as
+`/data/\170`; whose type or options hold a backslash, such as `bin\144`, which
+`libmount` reads as `bind`; whose type is a list, such as `ext4,xfs`; or whose
+first field is neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=`,
+`PARTLABEL=` or `ID=` tag, such as `dev/mapper/data`, which `mount` looks up
+from the folder it runs in. Such a first field is plain only for a line of a
+RAM, kernel, host-share, network, overlay, ZFS or FUSE filesystem that is no
+bind line, such as `tmpfs`, `server:/export` or `rpool/data`. Each line that is
+not plain fails `backend-entries`, with the flag or without it, as one that may
+mount the volume: the check names what it could not read and says to write the
+line plainly.
+
+Every bind line is judged by its source, whatever type it gives, since `mount`
+binds whatever the type says, and `_netdev`, which only has systemd mount a
+line after the network, lets no line go: a device or swap line for the
+volume's own mapping with `_netdev` fails as it does without it. Only a line of
+a RAM, kernel, host-share, network or overlay filesystem that is no bind line
+names no storage of this computer's. A swap file or an image file whose path,
+as it is written, lies at the root's folder or inside it, as the mount that
+holds it shows it, lies in the volume, and its line fails as a bind line from
+there does.
+
 NAILS does not follow symbolic links in the paths of the decoy's fstab: a bind
 line's source, and the path of a swap file or an image file. It looks at each
 part of such a path on its own, as the path is written, in the way `lstat`
 does, so it reads no link, mounts nothing and changes no access time. `mount`
 and `swapon` follow a link at boot, so a line whose path has a link in any part
-has to name its real path instead. So does a line whose path is not absolute
-(a bind line's source, a swap line, a `loop` line, or a line of a filesystem
-type that is read from a device or an image file), one whose path is a device
-node, outside `/dev` too, which a swap or image line uses as the device it is,
-and one whose path crosses the folder of an fstab line that the boot mounts (no
-`noauto`) while the mount that line makes is not there now, since what lies
-there at boot cannot be read: mount that filesystem and run the check again.
-So does a path with a part that cannot be looked up, and one that crosses an
-automount point that nothing is mounted on yet, which NAILS does not look past.
-Each such line fails `backend-entries`, with the flag or without it, as one
-that may mount the volume: the check says why, naming the link, the device node
-or the folder where there is one, and says to write the line with its real path.
-A path with no link in it, below mounts that are there, is judged as it is
-written. A bind line whose source as written lies in the volume fails whatever
-lies there, a link included, and for the second-mount rule above a bind line
-whose path cannot be told makes no mount of the decoy's own.
+has to name its real path instead. So does a line whose path is a device node,
+outside `/dev` too, which a swap or image line uses as the device it is, a path
+with a part that cannot be looked up, and one that crosses an automount point
+that nothing is mounted on yet, which NAILS does not look past. A path that
+crosses the folder of an fstab line while the mount that line makes is not
+there now cannot be told either, since what lies there once systemd mounts it
+cannot be read: mount that filesystem and run the check again. That holds for
+a `noauto` line too, which systemd mounts once a bind line's source, a swap
+file or an image file below its folder needs it, so a bind from a `noauto` disk
+needs that disk mounted for `check` and activation. Each such line fails
+`backend-entries`, with the flag or without it, as one that may mount the
+volume: the check says why, naming the link, the device node or the folder
+where there is one, and says to write the line with its real path. A path with
+no link in it, below mounts that are there, is judged as it is written. A bind
+line whose source as written lies in the volume fails whatever lies there, a
+link included, and for the second-mount rule above a bind line whose path
+cannot be told, or that is not plain, makes no mount of the decoy's own.
 
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that
@@ -1324,9 +1353,11 @@ volume: `nails check` and activation fail while a crypttab line opens it or a
 device it is stored on, while a crypttab line with `tcrypt-hidden` opens a
 device on the hidden volume's drive or one that cannot be found, or while an
 fstab line mounts it, a folder of it or a device below it, `noauto` lines and
-bind lines included, or names a path that NAILS cannot tell, which may lead to
-it: NAILS follows no symbolic link in the path of a bind line's source, a swap
-file or an image file, so such a line has to name its real path (see
+bind lines of any type included, or swaps on a file in it or mounts an image
+file in it, or names a path that NAILS cannot tell, which may lead to it, or
+is not plain: NAILS reads only plain lines and follows no symbolic link in the
+path of a bind line's source, a swap file or an image file, so such a line has
+to be written plainly and name its real path (see
 [Attaching the drive](#attaching-the-drive)). Where the
 hidden volume is a btrfs filesystem of several devices, a line that names any
 of them, or a device below one, counts as such a line. A crypttab
