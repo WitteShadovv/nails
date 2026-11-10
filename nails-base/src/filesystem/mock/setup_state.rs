@@ -3,6 +3,7 @@
 
 use super::super::{MountSource, ProcessMatch};
 use super::MockFilesystem;
+use super::state::{MockFailure, MockLookup};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 
@@ -125,6 +126,19 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(PathBuf::from(path), kind);
+    }
+
+    /// Make the lookup `lookup` of `path`, and it alone, fail as `failure`
+    /// says, while every other lookup of `path` answers as set: a reader's
+    /// lookup after one that succeeded fails, as where the path changed in
+    /// between, a file that is there cannot be read, or the automount guard
+    /// does not make a read since a point was set up after the lookups
+    /// before it. Only `path` itself is affected, not a path below it.
+    pub fn mock_fail_only(&self, path: &Path, lookup: MockLookup, failure: MockFailure) {
+        self.failures_only
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert((path.to_path_buf(), lookup), failure);
     }
 
     /// Set whether a path exists

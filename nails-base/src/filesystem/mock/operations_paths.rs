@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::MockFilesystem;
-use super::state::{DEFAULT_MOCK_FREE_SPACE_BYTES, MockOp};
+use super::state::{DEFAULT_MOCK_FREE_SPACE_BYTES, MockFailure, MockLookup, MockOp};
 use crate::filesystem::DiskUsage;
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
@@ -60,6 +60,26 @@ impl MockFilesystem {
             .find_map(|prefix| errors.get(prefix).copied())
     }
 
+    /// The error the lookup `lookup` of `path` alone fails with, when
+    /// [`mock_fail_only`](Self::mock_fail_only) set one.
+    pub(super) fn failure_only(&self, path: &Path, lookup: MockLookup) -> Option<NailsError> {
+        let failures = self
+            .failures_only
+            .lock()
+            .expect("MockFilesystem mutex poisoned");
+        failures
+            .get(&(path.to_path_buf(), lookup))
+            .map(|failure| match failure {
+                MockFailure::Io(kind) => lookup_failure(path, *kind),
+                MockFailure::NotLookedUp(point) => NailsError::NotLookedUp {
+                    path: path.to_path_buf(),
+                    reason: crate::error::Skip::Automount {
+                        point: point.clone(),
+                    },
+                },
+            })
+    }
+
     /// The error a lookup of `path` fails with, naming `path`, when one was
     /// set on it or on a directory on its way.
     pub(super) fn lookup_error(&self, path: &Path) -> Option<NailsError> {
@@ -76,6 +96,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn path_exists_impl(&self, path: &Path) -> Result<bool> {
+        if let Some(error) = self.failure_only(path, MockLookup::PathExists) {
+            return Err(error);
+        }
         if let Some(answer) = self.looked_up(path) {
             return answer;
         }
@@ -180,6 +203,9 @@ impl MockFilesystem {
     }
 
     pub(super) fn is_directory_impl(&self, path: &Path) -> Result<bool> {
+        if let Some(error) = self.failure_only(path, MockLookup::IsDirectory) {
+            return Err(error);
+        }
         if let Some(answer) = self.looked_up(path) {
             return answer;
         }
@@ -248,6 +274,9 @@ impl MockFilesystem {
     /// lexical path is what a fully existing, link-free path does anyway. A
     /// lookup error set on a path the resolution looks up fails it.
     pub(super) fn canonicalize_impl(&self, path: &Path) -> Result<PathBuf> {
+        if let Some(error) = self.failure_only(path, MockLookup::Canonicalize) {
+            return Err(error);
+        }
         self.resolve(path).map_err(|unresolved| match unresolved {
             Unresolved::Fails(kind) => lookup_failure(path, kind),
             Unresolved::Loop => loop_failure(path),
