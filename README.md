@@ -198,14 +198,19 @@ Also refused by the pre-flight checks:
   (`mount-namespace`).
 
 `nails check` runs every check and prints what activation would do. It leaves
-no file and no mount behind: its probes write only on the hidden volume and
-remove what they write, the small overlay it tries there is mounted detached,
-so no mount table ever lists it, and where the mount table, as read when each
-check starts, shows that a lookup would mount an automount point that nothing
-is mounted on yet, it makes none: it names the path and the point and says to
-mount the point. Nor does it try the overlay where the overlay module is not
-loaded yet and one of the directories the kernel's modprobe and udevd read
-their settings from lies behind such a point. The operator guide says
+no file behind, and no mount but in two rare cases: its probes write only on
+the hidden volume and remove what they write, the small overlay it tries there
+is mounted detached, so no mount table ever lists it, and where the mount
+table, as read when each check starts, shows that a lookup would mount an
+automount point that nothing is mounted on yet, it makes none: it names the
+path and the point and says to mount the point. Nor does it try the overlay
+where the overlay module is not loaded yet and one of the directories the
+kernel's modprobe and udevd read their settings from lies behind such a point.
+The two cases: where that module is not loaded yet, a settings file in those
+directories that links behind such a point, or a program a setting runs, can
+still make the module's load mount it, and a name of an indirect map, such as
+a home, whose mount expires while `check` runs can be mounted again by
+`check`'s own reading of the way there. The operator guide says
 [exactly what `check` touches](docs/operator-guide.md#what-check-touches).
 For the strongest posture, keep state such as `/var` and `/home` on storage that
 is wiped at boot (impermanence-style); the decoy *root* itself must stay on a
@@ -360,7 +365,8 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    ```
 
    `check` runs the same pre-flight checks as `activate` and leaves no file
-   and no mount behind ([what it touches](docs/operator-guide.md#what-check-touches)).
+   and no mount behind, but in two rare cases
+   ([what it touches](docs/operator-guide.md#what-check-touches)).
    `activate` asks for confirmation, prepares the hidden root and soft-reboots:
    **every program closes and you are logged out.** Log in again at the hidden
    session's login screen. NAILS logs nobody in, but a display manager set to
@@ -576,7 +582,7 @@ The binary lives on the hidden volume, so every invocation uses its full path.
 | Command | Where | Purpose |
 |---|---|---|
 | `init <PATH>` | decoy | Lay out a mounted hidden volume |
-| `check` | decoy | Report readiness to activate, leaving no file or mount behind |
+| `check` | decoy | Report readiness to activate, leaving no file or mount behind but in rare cases |
 | `activate` | decoy | Soft-reboot into the hidden session |
 | `deactivate` | hidden session | Soft-reboot back to the plain decoy (`--poweroff` to power off) |
 | `emergency` | either | Kill the hidden session at once and return (or power off); on the decoy, remove an interrupted activation |

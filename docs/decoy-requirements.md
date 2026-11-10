@@ -1301,16 +1301,18 @@ Nix among them.
 It does not look into a home that lies on the hidden volume, as `/etc/passwd`
 names it or where its links lead.
 
-The check writes nothing and mounts nothing. It opens each file it reads with
-`O_NOATIME`, so run as root it changes none of their access times (an
-unprivileged `nails check` cannot ask for that, and the links a lookup follows
-still get theirs), and it reads no file that a link leads onto the hidden
-volume. As the other checks that look into the homes and `/usr/local` do, it
+The check writes nothing, and mounts nothing but in the one case below. It
+opens each file it reads with `O_NOATIME`, so run as root it changes none of
+their access times (an unprivileged `nails check` cannot ask for that, and the
+links a lookup follows still get theirs), and it reads no file that a link
+leads onto the hidden volume. As the other checks that look into the homes and `/usr/local` do, it
 makes no lookup that would mount an automount point that nothing is mounted on
 yet ([What `check` touches](operator-guide.md#what-check-touches)): the
 warning names the path, or the home, and the automount point instead, and
-once something is mounted there, the check looks it up. Where it cannot read
-the mount table, it looks up nothing and says so.
+once something is mounted there, the check looks it up. A name of an indirect
+map, such as a home, whose mount expires while the check runs can be mounted
+again by its own reading of the way there. Where it cannot read the mount table, it looks up
+nothing and says so.
 
 When it warns, use the decoy's Nix only for what the decoy itself needs, and
 install the hidden session's software inside a hidden session. If the decoy
