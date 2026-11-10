@@ -625,6 +625,57 @@ fn a_display_manager_file_that_cannot_be_looked_up_is_not_read() {
     );
 }
 
+/// A file seen to be a regular one whose read the automount guard then does
+/// not make, where a point was set up after the lookup, is not read either:
+/// a display manager's file is noted, and an autostart file leaves its name
+/// undecided, as one that cannot be looked up does.
+#[test]
+fn a_file_whose_read_is_not_made_after_its_lookup_is_not_read() {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let fs = MockFilesystem::new();
+    let point = PathBuf::from("/usr/local");
+    let gdm = Path::new("/etc/gdm3/custom.conf");
+    fs.mock_set_file_content(
+        gdm.to_str().unwrap(),
+        "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\n",
+    );
+    fs.mock_fail_only(
+        gdm,
+        MockLookup::Read,
+        MockFailure::NotLookedUp(point.clone()),
+    );
+    seed_entry(&fs, "/home/alice/.config/autostart", "sync.desktop");
+    let sync = Path::new("/home/alice/.config/autostart/sync.desktop");
+    fs.mock_fail_only(
+        sync,
+        MockLookup::Read,
+        MockFailure::NotLookedUp(point.clone()),
+    );
+
+    let inventory = collect(&fs, false);
+    assert!(
+        names_for(&inventory, InheritedSource::Autologin).is_empty(),
+        "{:?}",
+        inventory.entries
+    );
+    let dm = not_read_at(&inventory, "/etc/gdm3/custom.conf").expect("not read");
+    assert_eq!(dm.automount_point.as_ref(), Some(&point));
+    assert_eq!(
+        dm.reason,
+        "NAILS does not look up /etc/gdm3/custom.conf, since the lookup would mount the \
+         automount point /usr/local"
+    );
+    let file = not_read_at(&inventory, sync.to_str().unwrap()).expect("not read");
+    assert_eq!(
+        file.entry,
+        Some(("sync".to_string(), InheritedSource::UserAutostart))
+    );
+    assert_eq!(
+        inventory.undecided().collect::<Vec<_>>(),
+        vec![("sync", InheritedSource::UserAutostart)]
+    );
+}
+
 /// Through the automount guard, a home behind an automount point that
 /// nothing is mounted on yet is not read: each place names the point, and
 /// nothing at or below it is looked up.

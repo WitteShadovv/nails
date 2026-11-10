@@ -905,6 +905,24 @@ fn a_decoy_path_that_cannot_be_looked_up_cannot_be_judged() {
         ),
         "{result:?}"
     );
+
+    // Each place on the way was seen to be no link, and the database itself
+    // then cannot be looked up.
+    let fs = debian(&record, Some(&record));
+    fs.mock_fail_only(
+        Path::new(&format!("{ROOT}/var/lib/dpkg/status")),
+        crate::filesystem::MockLookup::PathExists,
+        crate::filesystem::MockFailure::Io(std::io::ErrorKind::Other),
+    );
+    let result = run(&check(), &fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().ends_with(
+            "/var/lib/dpkg/status on the decoy cannot be looked up (/decoy/var/lib/dpkg/status: \
+             Mock: the lookup fails here)"
+        ),
+        "{result:?}"
+    );
 }
 
 /// The decoy at `/`, with dpkg's `decoy` record and hidden sessions with
