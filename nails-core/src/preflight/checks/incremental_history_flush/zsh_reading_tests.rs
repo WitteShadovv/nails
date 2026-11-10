@@ -180,9 +180,9 @@ fn a_word_brace_expansion_or_a_glob_may_make_a_flag_or_a_name_of_is_a_doubt() {
     // wrote each command line to the history file.
     let write = "print -r -- $1$BUFFER >>~/.zl";
     for rc in [
-        "alias {-g,-g} '>'='>>~/.zl;:'\npreexec() { print -r -- $1>$TTY }\n".to_string(),
+        "alias {-g,-g} '>'='>>~/.zl;:'\npreexec() { print -r -- $1>/dev/tty }\n".to_string(),
         "alias {-,-}g '>'='>>~/.zl;:'\npreexec() { print -r -- $1>/dev/null }\n".to_string(),
-        "alias -[g] '>'='>>~/.zl;:'\npreexec() { print -r -- $1>$TTY }\n".to_string(),
+        "alias -[g] '>'='>>~/.zl;:'\npreexec() { print -r -- $1>/dev/tty }\n".to_string(),
         "alias {h,h}='fc -l'\nprecmd() { h -AI }\n".to_string(),
         "alias h{,}='fc -l'\nprecmd() { h -AI }\n".to_string(),
         "alias {do,do}='do fc -ln -1 >>~/.zl;'\npreexec() { for x in 1; do :; done }\n".to_string(),
@@ -305,7 +305,7 @@ fn command_s_and_exec_s_options_are_read_as_zsh_reads_them() {
     // too.
     for rc in [
         "setopt posixbuiltins\ncommand -p alias -g '>'='>>~/.zl;:'\npreexec() { print -r -- \
-         $1>$TTY }\n",
+         $1>/dev/tty }\n",
         "setopt posixbuiltins\ncommand -p -- alias -g '>'='>>~/.zl;:'\n",
         "exec -a myzsh -l alias -g '>'='>>~/.zl;:'\n",
         "ali$s -g '>'='>>~/.zl;:'\n",

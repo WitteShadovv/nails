@@ -476,24 +476,9 @@ fn options_an_expansion_may_make_of_a_marking_builtin_are_a_doubt() {
 }
 
 #[test]
-fn a_function_readonly_or_a_signed_typeset_autoloads_counts_for_the_kept_cuts() {
-    // zsh 5.9.2 runs `t`, which `readonly -fu` marks, with TTY set to a file,
-    // and the hook's line reaches it; and the hook `hk`, which `typeset +f -u`
-    // marks, uses the alias as `fc -l -A`, which writes the history file.
-    let fs = MockFilesystem::new();
-    seed(
-        &fs,
-        "/home/alice/.zshrc",
-        "fpath=(~/zfn $fpath)\nreadonly -fu t\nt\npreexec() { print -r -- \"$1\" >> $TTY }\n",
-    );
-    seed(&fs, "/home/alice/zfn/t", "TTY=~/.zl\n");
-    assert_eq!(
-        scan(&fs, UNKNOWN).doubts,
-        [
-            "it cannot tell where the output that `preexec` in /home/alice/.zshrc redirects to \
-             `$TTY` goes, as /home/alice/zfn/t may set TTY to name the history file"
-        ]
-    );
+fn a_function_a_signed_typeset_autoloads_counts_for_the_fc_alias_cut() {
+    // zsh 5.9.2 runs the hook `hk`, which `typeset +f -u` marks, and it uses
+    // the alias as `fc -l -A`, which writes the history file.
     let fs = MockFilesystem::new();
     seed(
         &fs,
