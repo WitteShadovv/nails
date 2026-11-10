@@ -687,7 +687,11 @@ impl Walker<'_> {
     /// parameter whose name an expansion makes is a doubt, and so is a tie
     /// (`typeset -T TMOUT tmout`) of one whose value the check reads
     /// ([`tie_read`]), as zsh then sets it by the other name too
-    /// (`tmout=(...)`); each word is an assignment or a declaration.
+    /// (`tmout=(...)`), and so is the `-m` of `typeset`, `declare` and
+    /// `private`, with which zsh reads each word as a pattern and sets or
+    /// changes every parameter it matches (`typeset -m 'HOM?=/x'`, `typeset
+    /// -u -m 'T?Y'`), one the check reads by its name among them; each other
+    /// word is an assignment or a declaration.
     fn declare(&mut self, command: &str, args: &[Word], unconditional: bool) {
         // zsh takes the options from the words up to the first that starts
         // with neither `-` nor `+`, or a `--`.
@@ -695,6 +699,18 @@ impl Walker<'_> {
             .iter()
             .take_while(|arg| arg.text.starts_with(['-', '+']) && arg.text != "--")
             .collect();
+        // `local`, `readonly`, `export`, `integer` and `float` take no `-m`.
+        if matches!(command, "typeset" | "declare" | "private")
+            && flags.iter().any(|flag| flag.text[1..].contains('m'))
+        {
+            let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which parameters `{command} {}` in {} sets, as with -m zsh sets \
+                 each one a pattern of it matches",
+                words.join(" "),
+                self.place
+            )));
+        }
         let ties = flags
             .iter()
             .any(|flag| flag.text.starts_with('-') && (flag.text.contains('T') || computed(flag)));
