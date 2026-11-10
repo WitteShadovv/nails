@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The fstab lines the claims place by a path, judged where the path leads
-//! through its links: a bind line whose source leads into the volume mounts
-//! it, a swap file is claimed where its links lead, and a line whose path
-//! cannot be followed is an entry where that cannot be told.
+//! The fstab lines the claims place by a path, judged by the path as it is
+//! written, with no link in it followed: a bind line whose source lies in
+//! the volume mounts it, and a line whose path cannot be told (a link in it,
+//! one that is not absolute, a device node, a folder the boot mounts that is
+//! not mounted now) is an entry where that cannot be told.
 
 use super::*;
 
@@ -19,50 +20,61 @@ fn bind_of_a_folder(lines: &str) -> World {
 /// is part of and which the decoy's boot needs.
 const SLASH: (EntryKind, &str, bool) = (EntryKind::Blocking, "/dev/sda1 / ext4", true);
 
+/// The plain decoy's lines for `/` and `/home`, before `line`.
+fn with_the_decoys_lines(line: &str) -> String {
+    format!("/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n{line}\n")
+}
+
+/// The one entry of `judgement`, an entry where that cannot be told, for the
+/// line that reads `shown`: why it is one.
+fn untold_why<'a>(judgement: &'a Judgement, shown: &str) -> &'a str {
+    assert_eq!(
+        entry_needs(judgement),
+        [(EntryKind::Untold, shown, false)],
+        "{judgement:?}"
+    );
+    assert_eq!(judgement.entries[0].system_folder, None);
+    &judgement.entries[0].why
+}
+
 #[test]
-fn a_bind_line_whose_source_leads_into_the_volume_through_links_mounts_it() {
+fn a_bind_line_whose_source_has_a_link_in_it_cannot_be_told() {
     // A link to the root's folder or to a folder inside it, written as an
-    // absolute path or relative to the folder the link lies in, and a chain
-    // of links: mount follows them, so the line binds the volume, or a
-    // folder of it, at every boot, as its direct form does. The flag never
-    // lets it be.
-    let volume = "it mounts the volume at /mnt";
-    let folder = "it mounts a folder of the volume at /mnt";
-    for (links, line, why) in [
+    // absolute path or relative to the folder the link lies in, a chain of
+    // links, a link in a parent folder and one that leads to nothing: the
+    // boot's mount follows each, NAILS reads none, so where the line binds
+    // cannot be told. It is never the decoy's own line, so the flag never
+    // lets it be, and it says which link the source holds.
+    for (links, line, link) in [
         (
             &[("/data/link", "/data/x")][..],
             "/data/link /mnt none bind 0 0",
-            format!("its source leads to /data/x, so {volume}"),
+            "/data/link",
         ),
         (
-            &[("/data/link", "/data/x/sub")][..],
+            &[("/data/link", "x/sub")][..],
             "/data/link /srv/sub none bind 0 0",
-            format!("its source leads to /data/x/sub, so {folder}"),
+            "/data/link",
         ),
         (
-            &[("/data/link", "x")][..],
-            "/data/link/sub /srv/sub none bind 0 0",
-            format!("its source leads to /data/x/sub, so {folder}"),
-        ),
-        (
-            &[("/data/link", "../data/x")][..],
-            "/data/link /mnt none bind 0 0",
-            format!("its source leads to /data/x, so {volume}"),
-        ),
-        (
-            &[
-                ("/data/a", "/data/b"),
-                ("/data/b", "link"),
-                ("/data/link", "x"),
-            ][..],
+            &[("/data/a", "/data/b"), ("/data/b", "x")][..],
             "/data/a /mnt none bind 0 0",
-            format!("its source leads to /data/x, so {volume}"),
+            "/data/a",
         ),
-        // A link above the root's folder, with the rest of the path in it.
         (
             &[("/srv/d", "/data")][..],
             "/srv/d/x /mnt none bind 0 0",
-            format!("its source leads to /data/x, so {volume}"),
+            "/srv/d",
+        ),
+        (
+            &[("/data/link", "/data/nothing")][..],
+            "/data/link /mnt none bind 0 0",
+            "/data/link",
+        ),
+        (
+            &[("/data/link", "/data/x")][..],
+            "/data/link /mnt none rbind,noauto 0 0",
+            "/data/link",
         ),
     ] {
         let world = links.iter().fold(
@@ -73,13 +85,17 @@ fn a_bind_line_whose_source_leads_into_the_volume_through_links_mounts_it() {
         let shown: Vec<&str> = line.split_whitespace().take(3).collect();
         assert_eq!(
             entry_needs(&judgement),
-            [
-                SLASH,
-                (EntryKind::Blocking, shown.join(" ").as_str(), false)
-            ],
+            [SLASH, (EntryKind::Untold, shown.join(" ").as_str(), false)],
             "{line}"
         );
-        assert_eq!(judgement.entries[1].why, why, "{line}");
+        assert_eq!(
+            judgement.entries[1].why,
+            format!(
+                "where its source lies cannot be told: {link} is a symbolic link, which NAILS \
+                 does not follow"
+            ),
+            "{line}"
+        );
         assert_eq!(judgement.entries[1].system_folder, None, "{line}");
     }
 }
@@ -87,69 +103,248 @@ fn a_bind_line_whose_source_leads_into_the_volume_through_links_mounts_it() {
 #[test]
 fn a_bind_line_whose_source_has_no_link_is_judged_as_it_reads() {
     // The source is the place it names: the root's folder mounts the volume,
-    // a folder beside it or above it mounts none of it, and a link that
-    // leads out of the root's folder takes the line out with it.
-    let judgement = bind_of_a_folder("/data/x /mnt none bind 0 0\n").judge("/mnt");
-    assert_eq!(judgement.entries[1].why, "it mounts the volume at /mnt");
-    for world in [
-        bind_of_a_folder("/data/y /srv/y none bind 0 0\n"),
-        bind_of_a_folder("/data /srv/d none bind 0 0\n"),
-        bind_of_a_folder("/data/x/link /srv/u none bind 0 0\n").link("/data/x/link", "/home/u"),
+    // a folder inside it a folder of the volume, written with `.` or `..`
+    // too, and a folder beside it or above it none of it.
+    for (line, why) in [
+        ("/data/x /mnt none bind 0 0", "it mounts the volume at /mnt"),
+        (
+            "/data/./y/../x/ /mnt none bind 0 0",
+            "it mounts the volume at /mnt",
+        ),
+        (
+            "/data/x/sub /srv/sub none bind 0 0",
+            "it mounts a folder of the volume at /mnt",
+        ),
     ] {
-        assert_eq!(entry_needs(&world.judge("/mnt")), [SLASH]);
+        let judgement = bind_of_a_folder(&format!("{line}\n")).judge("/mnt");
+        assert_eq!(judgement.entries[1].kind, EntryKind::Blocking, "{line}");
+        assert_eq!(judgement.entries[1].why, why, "{line}");
+    }
+    for line in ["/data/y /srv/y none bind 0 0", "/data /srv/d none bind 0 0"] {
+        let world = bind_of_a_folder(&format!("{line}\n"));
+        assert_eq!(entry_needs(&world.judge("/mnt")), [SLASH], "{line}");
     }
 }
 
 #[test]
-fn a_line_whose_path_cannot_be_followed_is_an_entry_where_that_cannot_be_told() {
-    // A bind line whose source leads through a link to nothing, and a swap
-    // file whose path does: either may lead into the volume, which cannot
-    // be told. Neither is a line the decoy's boot needs or its own.
-    let judgement = bind_of_a_folder("/data/link /mnt none bind 0 0\n")
-        .link("/data/link", "/data/nothing")
-        .missing("/data/nothing")
+fn a_bind_line_whose_source_as_written_lies_in_the_volume_stays_a_finding() {
+    // A volume on a drive of its own at /mnt. A bind line whose source lies
+    // in it, as written, mounts it at boot by that path, and a link there,
+    // on the volume, is read by no one now: either way the line is a
+    // finding, never one that a link leading out of the volume lets go.
+    let line = "/mnt/data /srv/d none bind,nofail 0 0";
+    let judgement = external_veracrypt()
+        .fstab(&with_the_decoys_lines(line))
         .judge("/mnt");
     assert_eq!(
         entry_needs(&judgement),
-        [SLASH, (EntryKind::Untold, "/data/link /mnt none", false)]
+        [(EntryKind::Blocking, "/mnt/data /srv/d none", false)]
     );
     assert_eq!(
-        judgement.entries[1].why,
-        "where its source leads cannot be told: the link /data/link leads to nothing"
+        judgement.entries[0].why,
+        "it mounts a folder of the volume at /mnt"
     );
-    assert_eq!(judgement.entries[1].system_folder, None);
-    let judgement = bind_of_a_folder("/swapfile none swap sw 0 0\n")
-        .link("/swapfile", "/swap/file")
-        .missing("/swap")
+    let judgement = external_veracrypt()
+        .fstab(&with_the_decoys_lines(line))
+        .link("/mnt/data", "/var/d")
         .judge("/mnt");
     assert_eq!(
-        entry_needs(&judgement),
-        [SLASH, (EntryKind::Untold, "/swapfile none swap", false)]
-    );
-    assert_eq!(
-        judgement.entries[1].why,
-        "where the file it names lies cannot be told: the link /swapfile leads to nothing"
-    );
-    // A source that is no absolute path.
-    let judgement = bind_of_a_folder("none /srv/n none bind 0 0\n").judge("/mnt");
-    assert_eq!(
-        judgement.entries[1].why,
-        "where its source leads cannot be told: it is no absolute path"
+        untold_why(&judgement, "/mnt/data /srv/d none"),
+        "where its source lies cannot be told: /mnt/data is a symbolic link, which NAILS does \
+         not follow"
     );
 }
 
 #[test]
-fn a_line_whose_path_cannot_be_followed_claims_the_filesystem_its_text_names() {
+fn a_swap_or_image_line_through_a_link_to_the_volumes_device_cannot_be_told() {
+    // The volume is veracrypt1 (dm-9) on the external sdb, at /mnt. A line
+    // whose path is a link to its device node mounts it, or swaps on it, at
+    // boot, as the line that names the device does: that one is refused,
+    // and the one through a link is an entry where that cannot be told,
+    // a noauto one too.
+    let direct = external_veracrypt()
+        .fstab(&with_the_decoys_lines(
+            "/dev/mapper/veracrypt1 none swap sw 0 0",
+        ))
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&direct),
+        [(
+            EntryKind::Blocking,
+            "/dev/mapper/veracrypt1 none swap",
+            false
+        )]
+    );
+    for (link, target, line, shown) in [
+        (
+            "/hidden.link",
+            "/dev/mapper/veracrypt1",
+            "/hidden.link /media/x ext4 defaults,nofail 0 2",
+            "/hidden.link /media/x ext4",
+        ),
+        (
+            "/hidden.link",
+            "/dev/dm-9",
+            "/hidden.link /media/x ext4 noauto 0 0",
+            "/hidden.link /media/x ext4",
+        ),
+        (
+            "/swap.link",
+            "/dev/mapper/veracrypt1",
+            "/swap.link none swap sw 0 0",
+            "/swap.link none swap",
+        ),
+        (
+            "/swap.link",
+            "/dev/sdb",
+            "/swap.link none swap sw 0 0",
+            "/swap.link none swap",
+        ),
+    ] {
+        let world = external_veracrypt()
+            .fstab(&with_the_decoys_lines(line))
+            .link(link, target);
+        assert_eq!(
+            untold_why(&world.judge("/mnt"), shown),
+            format!(
+                "where the file it names lies cannot be told: {link} is a symbolic link, which \
+                 NAILS does not follow"
+            ),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_swap_or_image_line_whose_path_is_a_device_node_cannot_be_told() {
+    // A device node outside /dev, with no link on the way: swapon and mount
+    // use the device it is, which nothing tells from its path.
+    for (line, shown) in [
+        ("/srv/node none swap sw 0 0", "/srv/node none swap"),
+        (
+            "/srv/node /media/x ext4 defaults,nofail 0 2",
+            "/srv/node /media/x ext4",
+        ),
+        (
+            "/dev/../srv/node none swap sw 0 0",
+            "/dev/../srv/node none swap",
+        ),
+    ] {
+        let world = external_veracrypt()
+            .fstab(&with_the_decoys_lines(line))
+            .device_node("/srv/node");
+        assert_eq!(
+            untold_why(&world.judge("/mnt"), shown),
+            "where the file it names lies cannot be told: /srv/node is a device node",
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_swap_image_or_bind_line_whose_path_is_not_absolute_cannot_be_told() {
+    // swapon and mount look such a path up from the folder they run in. A
+    // line whose type names its source otherwise, as a ZFS dataset's does,
+    // has no path in it.
+    for (line, shown, what) in [
+        (
+            "swapfile none swap sw 0 0",
+            "swapfile none swap",
+            "the file it names",
+        ),
+        (
+            "srv/img.raw /mnt/img ext4 loop 0 0",
+            "srv/img.raw /mnt/img ext4",
+            "the file it names",
+        ),
+        (
+            "srv/img.raw /mnt/img ext4 defaults 0 0",
+            "srv/img.raw /mnt/img ext4",
+            "the file it names",
+        ),
+        (
+            "srv/x /srv/b none bind 0 0",
+            "srv/x /srv/b none",
+            "its source",
+        ),
+    ] {
+        let world = external_veracrypt().fstab(&with_the_decoys_lines(line));
+        assert_eq!(
+            untold_why(&world.judge("/mnt"), shown),
+            format!("where {what} lies cannot be told: it is no absolute path"),
+            "{line}"
+        );
+    }
+    let world =
+        external_veracrypt().fstab(&with_the_decoys_lines("rpool/data /data zfs defaults 0 0"));
+    assert!(world.judge("/mnt").entries.is_empty());
+}
+
+#[test]
+fn a_path_through_a_folder_the_boot_mounts_but_is_not_mounted_cannot_be_told() {
+    // The root /mnt is a bind of /data/x of /. The fstab mounts sdc1 at
+    // /backup at boot, which is not mounted now: what /backup/link is at
+    // boot, a link to /data/x say, cannot be read now.
+    let fstab = "/dev/sda1 / ext4 defaults 0 1\n/dev/sdc1 /backup ext4 defaults,nofail 0 2\n\
+                 /backup/link /mnt none bind 0 0\n";
+    let unmounted = plain_decoy("5 1 8:1 /data/x /mnt rw - ext4 /dev/sda1 rw\n")
+        .disk("sdc", "8:32")
+        .part("sdc1", "8:33", "sdc")
+        .fstab(fstab)
+        .missing("/backup/link");
+    let judgement = unmounted.judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [SLASH, (EntryKind::Untold, "/backup/link /mnt none", false)]
+    );
+    assert_eq!(
+        judgement.entries[1].why,
+        "where its source lies cannot be told: a line of /etc/fstab mounts /backup at boot, \
+         and that mount is not there now"
+    );
+    // Mounted from sdc1, the place is read there: a link is one, and a
+    // folder of that drive is judged as it reads.
+    let mounted = |world: World| {
+        world
+            .disk("sdc", "8:32")
+            .part("sdc1", "8:33", "sdc")
+            .fstab(fstab)
+    };
+    let table = "5 1 8:1 /data/x /mnt rw - ext4 /dev/sda1 rw\n\
+                 7 1 8:33 / /backup rw - ext4 /dev/sdc1 rw\n";
+    let judgement = mounted(plain_decoy(table))
+        .link("/backup/link", "/data/x")
+        .judge("/mnt");
+    assert_eq!(
+        judgement.entries[1].why,
+        "where its source lies cannot be told: /backup/link is a symbolic link, which NAILS \
+         does not follow"
+    );
+    assert_eq!(
+        entry_needs(&mounted(plain_decoy(table)).judge("/mnt")),
+        [SLASH]
+    );
+    // Something else mounted there, by hand, is no mount of that line.
+    let by_hand = "5 1 8:1 /data/x /mnt rw - ext4 /dev/sda1 rw\n\
+                   7 1 8:2 / /backup rw - ext4 /dev/sda2 rw\n";
+    let judgement = mounted(plain_decoy(by_hand)).judge("/mnt");
+    assert_eq!(judgement.entries[1].kind, EntryKind::Untold);
+    // A noauto line's folder is no folder the boot mounts.
+    let noauto = fstab.replace("defaults,nofail", "noauto");
+    let world = plain_decoy("5 1 8:1 /data/x /mnt rw - ext4 /dev/sda1 rw\n").fstab(&noauto);
+    assert_eq!(entry_needs(&world.judge("/mnt")), [SLASH]);
+}
+
+#[test]
+fn a_line_whose_path_cannot_be_told_claims_the_filesystem_its_text_names() {
     // A volume on a drive of its own at /mnt: a bind line whose source, as
     // it reads, lies on it claims its filesystem as the decoy's, as the
-    // direct form does, though its link leads to nothing.
+    // direct form does, though it holds a link.
     let judgement = external_veracrypt()
-        .fstab(
-            "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n\
-             /mnt/link /srv/sub none bind,nofail 0 0\n",
-        )
-        .link("/mnt/link", "/mnt/nothing")
-        .missing("/mnt/nothing")
+        .fstab(&with_the_decoys_lines(
+            "/mnt/link /srv/sub none bind,nofail 0 0",
+        ))
+        .link("/mnt/link", "/mnt/sub")
         .judge("/mnt");
     assert!(
         matches!(judgement.verdict, Verdict::OnDecoyFilesystem { .. }),
@@ -160,45 +355,25 @@ fn a_line_whose_path_cannot_be_followed_claims_the_filesystem_its_text_names() {
         entry_needs(&judgement),
         [(EntryKind::Untold, "/mnt/link /srv/sub none", false)]
     );
-}
-
-#[test]
-fn a_swap_file_is_claimed_where_its_links_lead() {
-    // The decoy's swap file at /swapfile is a link onto the volume of a
-    // drive of its own: swapon follows it, so the decoy swaps onto that
-    // filesystem, which is then the decoy's own storage. Without the link
-    // the file lies on the decoy's /, and the volume is separate.
-    let fstab = "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n\
-                 /swapfile none swap sw 0 0\n";
+    // A swap file through a link onto the volume is claimed where its text
+    // places it, on the decoy's /: the volume stays separate, and the line
+    // is an entry where that cannot be told.
     let through_a_link = external_veracrypt()
-        .fstab(fstab)
+        .fstab(&with_the_decoys_lines("/swapfile none swap sw 0 0"))
         .link("/swapfile", "/mnt/swap.img");
+    assert_eq!(through_a_link.verdict("/mnt"), Verdict::Separate);
     assert_eq!(
-        through_a_link.verdict("/mnt"),
-        Verdict::OnDecoyFilesystem {
-            how: Sharing::Filesystem,
-            at: PathBuf::from("/mnt"),
-            in_fstab: false,
-        }
-    );
-    assert_eq!(
-        through_a_link.claimed("/mnt").get("dm-9"),
-        Some(&Claimed::Mount(PathBuf::from("/mnt")))
-    );
-    // It is no bind line, and no entry for the hidden drive.
-    assert!(through_a_link.judge("/mnt").entries.is_empty());
-    assert_eq!(
-        external_veracrypt().fstab(fstab).verdict("/mnt"),
-        Verdict::Separate
+        entry_needs(&through_a_link.judge("/mnt")),
+        [(EntryKind::Untold, "/swapfile none swap", false)]
     );
 }
 
 #[test]
 fn a_path_that_was_not_looked_up_cannot_be_told() {
-    // The scene holds where each path the fstab names leads; one it does
-    // not hold is no path that is known to lead anywhere.
+    // The scene holds each path the fstab names as it reads; one it does not
+    // hold is no path that is known to lie anywhere.
     let mounts = parse_mountinfo("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n");
-    let paths = FollowedPaths::new();
+    let paths = NamedPaths::new();
     let scene = Scene {
         mounts: &mounts,
         fstab: &[],
@@ -207,6 +382,5 @@ fn a_path_that_was_not_looked_up_cannot_be_told() {
         unreadable: &[],
         paths: &paths,
     };
-    assert_eq!(scene.followed("/srv/x"), Err(Unfollowed::NotLookedUp));
-    assert_eq!(Unfollowed::NotLookedUp.reason(), "it was not looked up");
+    assert_eq!(scene.named_path("/srv/x"), Err(UntoldPath::NotLookedUp));
 }
