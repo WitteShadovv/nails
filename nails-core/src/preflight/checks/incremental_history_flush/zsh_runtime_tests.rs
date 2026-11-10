@@ -413,6 +413,57 @@ fn a_parameter_set_by_a_name_an_expansion_makes_is_a_doubt() {
 }
 
 #[test]
+fn a_typeset_that_sets_the_parameters_a_pattern_matches_is_a_doubt() {
+    // zsh 5.9 to 5.9.2 set every parameter the pattern of `-m` matches:
+    // TTY, which a hook writes to, histchars, after which a line that
+    // starts with `#` is code, HOME, FPATH and ZDOTDIR, where zsh reads
+    // files, and a prompt; `typeset -u -m` changes their values too.
+    for rc in [
+        "typeset -m 'T?Y=/home/alice/.zl'\npreexec() { print -r -- \"$1\" >> $TTY }\n",
+        "typeset -m 'histchar?=!^%'\n",
+        "typeset -m 'HOM?=/home/alice/h2'\n",
+        "typeset -m 'FPAT?=/home/alice/zfn'\n",
+        "ZDOTDIR=$HOME; typeset -m 'ZDOTDI?=/home/alice/zd'\n",
+        "typeset -m 'P?1=$(fc -AI)%# '\n",
+        "declare -m 'HOM?=/x'\n",
+        "private -m 'HOM?=/x'\n",
+        "typeset -u -m 'HOM?'\n",
+        "typeset +m 'T?Y=/x'\n",
+        "builtin typeset -gm 'T?Y=/x'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        let found = scan(&fs, UNKNOWN);
+        assert!(
+            found.doubts.iter().any(|doubt| {
+                doubt.starts_with(
+                "it cannot tell which parameters `"
+            ) && doubt.ends_with(
+                "` in /home/alice/.zshrc sets, as with -m zsh sets each one a pattern of it \
+                 matches"
+            )
+            }),
+            "{rc}: {found:?}"
+        );
+    }
+    // Without `-m` each name is read as written, and `local`, `readonly`,
+    // `export`, `integer` and `float` take no `-m`: zsh 5.9 to 5.9.2 refuse
+    // it.
+    for rc in [
+        "typeset -g TERM=xterm\n",
+        "f() { local -m 'HOM?=/x' }\nf\n",
+        "readonly -m 'HOM?=/x'\n",
+        "export -m 'FPAT?=/x'\n",
+        "integer -m 'T?OUT=1'\n",
+        "float -m 'T?OUT=1'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
 fn a_function_s_body_set_by_its_name_is_read_as_its_code() {
     // zsh 5.9.2 writes each command line to HISTFILE with the first two.
     for (rc, write) in [

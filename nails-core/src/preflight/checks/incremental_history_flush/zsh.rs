@@ -61,7 +61,8 @@
 //! of the files shows that it holds. A `setopt` with an expansion the check
 //! cannot list, an option whose name an expansion makes (`options[$o]=on`,
 //! `emulate -o $o`, `read -A options`, a `typeset` of a parameter whose name
-//! does), a glob qualifier that runs code (`*(e:...:)`, `*(+func)`), an
+//! does, or of the parameters a pattern matches, `typeset -m`), a glob
+//! qualifier that runs code (`*(e:...:)`, `*(+func)`), an
 //! expansion that reads a parameter's value again (`${(e)x}`, `${~x}`,
 //! `GLOB_SUBST`), code in a string zsh runs that an expansion makes (an alias's
 //! value, a trap's, a `sched`'s, a `zstyle -e`'s, a prompt's where
