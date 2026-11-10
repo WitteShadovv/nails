@@ -810,7 +810,12 @@ boot, and says to run it as root; activation runs as root. When NAILS cannot
 ask, it refuses as well, and so it does when the lock file is anything but a
 plain file: the helper opens it without following a link, so it cannot open a
 link, a directory or a socket there and takes that for a held lock, and NAILS
-refuses any other kind of file there too, as one it does not judge.
+refuses any other kind of file there too, as one it does not judge. A lookup
+of the lock file, or of a daily run's unit, that fails for another reason than
+that nothing is there leaves NAILS unable to tell, and it refuses, and so does
+a lookup `check` does not make because it would mount an automount point that
+nothing is mounted on yet, as below a `/var` an automounter mounts: the
+refusal names the point and says to mount it.
 
 **An install at shutdown.** With `Unattended-Upgrade::InstallOnShutdown` on,
 the helper reads apt's configuration again on the signal and runs an install
@@ -821,17 +826,19 @@ without it the helper polls for the signal and exits right after it starts the
 install, which then runs on into the switch. At the way back with
 `nails deactivate` the hidden session's own copy of the helper installs them
 into the session's overlay. `decoy-persistence` refuses while the decoy's
-helper runs with the setting on, and `--allow-persistent-decoy` turns that
-into a warning for one run. It reads the setting as apt reads it: first the
+helper runs with the setting on, and where NAILS cannot tell whether it runs,
+and `--allow-persistent-decoy` turns that into a warning for one run. It
+reads the setting as apt reads it: first the
 file the helper's `APT_CONFIG` names, if it runs with one, then each file of
 `/etc/apt/apt.conf.d` that apt reads, in apt's order (a name with an
 extension other than `.conf`, such as `.bak` or `.dpkg-old`, one starting with
 a dot, one with other characters than letters, digits, `_`, `-`, `:` and `.`,
 one ending with a dot, and what is not a file are skipped, as apt skips them),
 then `/etc/apt/apt.conf`, with apt's syntax, the last setting winning. A file
-NAILS cannot read, a line NAILS does not read the way apt does (one longer
-than 4000 bytes, or with a NUL byte in it), an `#include`, and a `Dir` or
-`RootDir` setting, which move the files apt reads, leave the setting unknown,
+or a directory of them NAILS cannot look up or read, a line NAILS does not
+read the way apt does (one longer than 4000 bytes, or with a NUL byte in it),
+an `#include`, and a `Dir` or `RootDir` setting, which move the files apt
+reads, leave the setting unknown,
 and `decoy-persistence` refuses that as if it were on. So does an
 `#x-apt-configure-index`: apt loads an index of its options there, which
 NAILS does not read, and stops reading the file with only a warning when it
@@ -918,7 +925,9 @@ python3-gi would let it wait. The decoy starts its enabled helper again at
 every way back, so each way back adds a pair, dated at the switch.
 `decoy-persistence` warns while the decoy's helper is enabled and
 `/usr/lib/python3/dist-packages/gi/__init__.py`, which python3-gi installs, is
-missing: install it (`apt install python3-gi`).
+missing: install it (`apt install python3-gi`). Where NAILS cannot tell whether
+the helper is enabled, or whether that file is there, it warns that it cannot
+tell.
 
 When only the hidden session would install, `decoy-persistence` warns and does
 not refuse: the decoy's helper is stopped but the session starts its own copy,
