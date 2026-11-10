@@ -169,8 +169,10 @@ struct Walker<'a> {
     sources: usize,
     /// How many `eval`s it read whole.
     evals: usize,
-    /// How often it read `ZDOTDIR` set ([`zdotdir_writes`]).
+    /// How often it read `ZDOTDIR` set ([`zdotdir_writes`]), and
+    /// `XDG_CONFIG_HOME` ([`backstop::xdg_config_home_writes`]).
     zdotdirs: usize,
+    xdg_config_homes: usize,
     /// How many `autoload` commands it read.
     autoloads: usize,
     /// How often it read `fpath` or `FPATH` set ([`backstop::fpath_writes`]).
@@ -849,6 +851,7 @@ struct Walked {
     sources: usize,
     evals: usize,
     zdotdirs: usize,
+    xdg_config_homes: usize,
     autoloads: usize,
     fpaths: usize,
     fcs: usize,
@@ -892,6 +895,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         sources: 0,
         evals: 0,
         zdotdirs: 0,
+        xdg_config_homes: 0,
         autoloads: 0,
         fpaths: 0,
         fcs: 0,
@@ -933,6 +937,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         sources: walker.sources,
         evals: walker.evals,
         zdotdirs: walker.zdotdirs,
+        xdg_config_homes: walker.xdg_config_homes,
         autoloads: walker.autoloads,
         fpaths: walker.fpaths,
         fcs: walker.fcs,

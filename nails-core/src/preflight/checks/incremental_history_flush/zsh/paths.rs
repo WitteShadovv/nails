@@ -90,19 +90,23 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Note the value `value` a file at `place` gives `ZDOTDIR` or
-    /// `XDG_CONFIG_HOME` (`name`); `certain` when the assignment certainly
-    /// runs.
-    pub(super) fn assign(&mut self, name: &str, value: Word, certain: bool, place: &str) {
+    /// `XDG_CONFIG_HOME` (`name`), or that it takes `XDG_CONFIG_HOME` away
+    /// (`None`), after which `${XDG_CONFIG_HOME:-...}` is its default;
+    /// `certain` when the assignment certainly runs.
+    pub(super) fn assign(&mut self, name: &str, value: Option<Word>, certain: bool, place: &str) {
         if name == "XDG_CONFIG_HOME" {
             // Each path it may name as it is set, from what it was before
             // (`${XDG_CONFIG_HOME:-$HOME/.config}`), else the value as
             // written.
-            let configs: Vec<Option<String>> = match self.resolve(&value) {
-                Some(paths) => paths
-                    .iter()
-                    .map(|path| Some(path.to_string_lossy().into_owned()))
-                    .collect(),
-                None => vec![Some(value.text)],
+            let configs: Vec<Option<String>> = match value {
+                None => vec![None],
+                Some(value) => match self.resolve(&value) {
+                    Some(paths) => paths
+                        .iter()
+                        .map(|path| Some(path.to_string_lossy().into_owned()))
+                        .collect(),
+                    None => vec![Some(value.text)],
+                },
             };
             if certain {
                 self.xdg_config_homes = configs;
@@ -116,6 +120,10 @@ impl<F: Filesystem> Reader<'_, F> {
             }
             return;
         }
+        // The walk takes ZDOTDIR away nowhere: a line that does is a doubt.
+        let Some(value) = value.filter(|_| name == "ZDOTDIR") else {
+            return;
+        };
         match self.resolve(&value) {
             Some(dirs) if certain => {
                 self.zdotdir_set = true;

@@ -1009,6 +1009,98 @@ fn an_xdg_config_home_the_environment_holds_is_where_the_files_put_it() {
 }
 
 #[test]
+fn an_xdg_config_home_the_files_take_away_or_set_otherwise_is_its_default_or_a_doubt() {
+    // zsh 5.9 to 5.9.2, with XDG_CONFIG_HOME=/home/alice/.cfg in their
+    // environment, read ~/.config/zsh and write each line after each of
+    // these, or read where the files set it.
+    let zdotdir = "export ZDOTDIR=\"${XDG_CONFIG_HOME:-$HOME/.config}/zsh\"\n";
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.cfg/zsh/.zshrc", "true\n");
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/.zshrc",
+        "setopt share_history\n",
+    );
+    let set = install(&fs, &[("XDG_CONFIG_HOME", "/home/alice/.cfg")]);
+    for unset in [
+        "unset XDG_CONFIG_HOME",
+        "unset -v XDG_CONFIG_HOME",
+        "[[ -n $x ]] || unset XDG_CONFIG_HOME",
+        "f() { local XDG_CONFIG_HOME; export ZDOTDIR=\"${XDG_CONFIG_HOME:-$HOME/.config}/zsh\" }\nf",
+    ] {
+        seed(&fs, "/home/alice/.zshenv", &format!("{unset}\n{zdotdir}"));
+        let found = scan_with(&fs, NOT_LOGIN, &set);
+        assert!(
+            found
+                .writes
+                .iter()
+                .any(|write| write.what == "/home/alice/.config/zsh/.zshrc names SHARE_HISTORY"),
+            "{unset}: {found:?}"
+        );
+    }
+    let doubt = "it cannot follow an XDG_CONFIG_HOME that a line of /home/alice/.zshenv may set or \
+                 take away";
+    for set_otherwise in [
+        "XDG_CONFIG_HOME+=2",
+        ": ${XDG_CONFIG_HOME:=$HOME/.cfg}",
+        "read -r XDG_CONFIG_HOME < ~/.xdgdir",
+        "print -v XDG_CONFIG_HOME -r -- ~/.cfg",
+        "for XDG_CONFIG_HOME in ~/.cfg; do :; done",
+        "XDG_CONFIG_HOME[1]=/",
+    ] {
+        seed(
+            &fs,
+            "/home/alice/.zshenv",
+            &format!("{set_otherwise}\n{zdotdir}"),
+        );
+        for known in [set.clone(), install(&fs, &[])] {
+            let found = scan_with(&fs, NOT_LOGIN, &known);
+            assert!(
+                found.doubts.contains(&doubt.to_string()),
+                "{set_otherwise}: {found:?}"
+            );
+        }
+    }
+    // Set, exported or read as the walk reads it, it is none.
+    for line in [
+        "export XDG_CONFIG_HOME",
+        "[[ -d $XDG_CONFIG_HOME ]] && print -r -- ${XDG_CONFIG_HOME}",
+    ] {
+        seed(&fs, "/home/alice/.zshenv", &format!("{line}\n"));
+        assert_eq!(scan_with(&fs, NOT_LOGIN, &set), Scan::default(), "{line}");
+    }
+}
+
+#[test]
+fn an_assignment_before_a_command_may_set_a_parameter_and_need_not() {
+    // zsh 5.9 to 5.9.2 keep what an assignment before a command sets only for
+    // that command, and read the files where the environment and the lines
+    // without one put them.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
+    seed(&fs, "/home/alice/.cfg/zsh/.zshrc", "setopt share_history\n");
+    let set = install(&fs, &[("XDG_CONFIG_HOME", "/home/alice/.cfg")]);
+    for (zshenv, file) in [
+        ("ZDOTDIR=/nope true\n", "/home/alice/.zshrc"),
+        ("ZDOTDIR=/nope export X=1\n", "/home/alice/.zshrc"),
+        (
+            "XDG_CONFIG_HOME=/nope true\nexport ZDOTDIR=\"${XDG_CONFIG_HOME:-$HOME/.config}/zsh\"\n",
+            "/home/alice/.cfg/zsh/.zshrc",
+        ),
+    ] {
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        let found = scan_with(&fs, NOT_LOGIN, &set);
+        assert!(
+            found
+                .writes
+                .iter()
+                .any(|write| write.what == format!("{file} names SHARE_HISTORY")),
+            "{zshenv}: {found:?}"
+        );
+    }
+}
+
+#[test]
 fn nix_profiles_are_split_as_zsh_splits_them() {
     use super::super::install::profile_words;
     assert_eq!(

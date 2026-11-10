@@ -12,7 +12,8 @@
 use super::super::OH_MY_ZSH;
 use super::super::arith::READ_AS_NUMBER;
 use super::super::backstop::{
-    self, FC_WRITES, history_path, qualifier_code, reexpands, zdotdir_writes,
+    self, FC_WRITES, history_path, qualifier_code, reexpands, xdg_config_home_writes,
+    zdotdir_writes,
 };
 use super::super::builtins::fc_letters;
 use super::super::lexer::{Word, is_name};
@@ -190,6 +191,7 @@ impl Walker<'_> {
         self.sources += nested.sources;
         self.evals += nested.evals;
         self.zdotdirs += nested.zdotdirs;
+        self.xdg_config_homes += nested.xdg_config_homes;
         self.autoloads += nested.autoloads;
         self.fpaths += nested.fpaths;
         self.fcs += nested.fcs;
@@ -421,14 +423,19 @@ impl Walker<'_> {
         }
         let mut words = words.into_iter().peekable();
         // Assignments before the command word, which put what they assign in
-        // its environment.
+        // its environment. zsh keeps what they set only for that command
+        // (and after a special builtin where POSIX_BUILTINS is on), so with a
+        // command after them they may set a parameter, and need not.
         let mut assignments = Vec::new();
         while let Some(word) = words.next_if(|word| is_assignment(&word.text)) {
             if word.expands {
                 input = Input::Computed;
             }
-            self.assignment(&word, unconditional);
             assignments.push(word);
+        }
+        let lasting = unconditional && words.peek().is_none();
+        for word in &assignments {
+            self.assignment(word, lasting);
         }
         if !self.precommands(&mut words) {
             // `command -v`, which prints what its words are.
@@ -502,7 +509,7 @@ impl Walker<'_> {
                 self.copy_function(&args);
             }
             "bindkey" => self.bindkey(&args, unconditional),
-            "unset" => self.unset(&args),
+            "unset" => self.unset(&args, unconditional),
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
             "add-zsh-hook" | "add-zle-hook-widget" => self.hook(&command.text, &args),
@@ -745,25 +752,28 @@ impl Walker<'_> {
                 "NIX_PROFILES"
             }
             _ => {
-                if word.text == "ZDOTDIR" {
-                    // Exported or declared as it is.
-                    self.zdotdirs += 1;
+                // Exported or declared as it is.
+                match word.text.as_str() {
+                    "ZDOTDIR" => self.zdotdirs += 1,
+                    "XDG_CONFIG_HOME" => self.xdg_config_homes += 1,
+                    _ => {}
                 }
                 self.mention(&word.text);
                 return;
             }
         };
         self.zdotdirs += zdotdir_writes(&word.text);
+        self.xdg_config_homes += xdg_config_home_writes(&word.text);
         self.mention_options(&word.text);
         let value = word.text[name.len() + 1..].to_string();
         self.events.push(Event::Assign {
             name,
-            value: Word {
+            value: Some(Word {
                 text: value,
                 expands: word.expands,
                 quoted: false,
                 bare: word.bare,
-            },
+            }),
             unconditional,
         });
     }

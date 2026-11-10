@@ -78,8 +78,10 @@
 //! the shell's environment, which names the command zsh runs for a
 //! redirection with none (`cat` and `more` by default, which the check reads
 //! as run there), a `source` without a path or with one it cannot resolve
-//! (a process substitution among them), a `ZDOTDIR` it cannot follow, one set
-//! otherwise than by an assignment (`${ZDOTDIR:=...}`), a quote, an expansion
+//! (a process substitution among them), a `ZDOTDIR` or an `XDG_CONFIG_HOME`
+//! it cannot follow, one set otherwise than by an assignment, or for
+//! `XDG_CONFIG_HOME` an `unset`, which takes it back to its default
+//! (`${ZDOTDIR:=...}`, `read XDG_CONFIG_HOME`), a quote, an expansion
 //! or a here-document that runs to the end of the file without closing, and an
 //! expansion that holds what the check cannot read as zsh does (a `case` in a
 //! `$(...)`, a `${ command }`) are doubts, and so are arithmetic that may set
@@ -99,8 +101,10 @@
 //! file are counted for what they name ([`backstop`]): an option named beyond
 //! what the code names counts as on, an `fpath` setting beyond what the walk
 //! read adds a directory the check cannot follow, and a `source`, `.`, `eval`,
-//! `autoload`, `fc` or `ZDOTDIR` setting beyond that is a doubt. The structure
-//! of the code still decides which `ZDOTDIR` zsh reads its files in.
+//! `autoload`, `fc`, `ZDOTDIR` or `XDG_CONFIG_HOME` setting beyond that is a
+//! doubt. The structure of the code still decides which `ZDOTDIR` zsh reads
+//! its files in, and an assignment before a command (`ZDOTDIR=/x cmd`), which
+//! zsh keeps for that command alone, may set it and need not.
 
 mod arith;
 mod backstop;
@@ -549,7 +553,10 @@ impl<F: Filesystem> Reader<'_, F> {
                 name: "NIX_PROFILES",
                 value,
                 ..
-            } => self.nix_profiles(&value),
+            } => match value {
+                Some(value) => self.nix_profiles(&value),
+                None => self.profiles = None,
+            },
             Event::ProfilesUnknown => self.profiles = None,
             Event::Expanding(name) => {
                 if !self.expanding.contains(&name) {

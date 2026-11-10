@@ -334,6 +334,10 @@ impl Walker<'_> {
                 )));
             }
         }
+        // In a function, without `-g`, a name declared as it is is the
+        // function's own and empty there, as `${XDG_CONFIG_HOME:-...}` then
+        // tells.
+        let local = self.function().is_some() && command != "export" && !options.has('g');
         for arg in args {
             // A hook's array or a prompt declared as it is.
             if hook_array(&arg.text) {
@@ -343,17 +347,31 @@ impl Walker<'_> {
                 self.prompts += 1;
             }
             self.assignment(arg, unconditional);
+            let name = match arg.text.as_str() {
+                "ZDOTDIR" => "ZDOTDIR",
+                "XDG_CONFIG_HOME" => "XDG_CONFIG_HOME",
+                _ => continue,
+            };
+            if local {
+                self.events.push(Event::Assign {
+                    name,
+                    value: Some(Word::default()),
+                    unconditional: false,
+                });
+            }
         }
     }
 
-    /// The events of an `unset` of `args` ([`options`]): what it takes away
-    /// holds no code (a prompt, a hook's array). A word where its options may
-    /// stand that an expansion, brace expansion or a glob may make any options
-    /// of is a doubt, and so is, but with `-f`, which takes functions away, a
-    /// name such a word may make, and a pattern of `-m` that such a word makes
-    /// or that may match a parameter the check reads ([`matches_read`]),
-    /// whose value may then be another than the one the check follows.
-    pub(super) fn unset(&mut self, args: &[Word]) {
+    /// The events of an `unset` of `args` ([`options`]), which runs
+    /// `unconditional` or not: what it takes away holds no code (a prompt, a
+    /// hook's array), and `XDG_CONFIG_HOME` taken away is its default after
+    /// it. A word where its options may stand that an expansion, brace
+    /// expansion or a glob may make any options of is a doubt, and so is, but
+    /// with `-f`, which takes functions away, a name such a word may make, and
+    /// a pattern of `-m` that such a word makes or that may match a parameter
+    /// the check reads ([`matches_read`]), whose value may then be another
+    /// than the one the check follows.
+    pub(super) fn unset(&mut self, args: &[Word], unconditional: bool) {
         for arg in args {
             self.prompts += usize::from(PROMPTS.contains(&arg.text.as_str()));
             self.hooks += usize::from(hook_array(&arg.text));
@@ -382,6 +400,13 @@ impl Walker<'_> {
                     "it cannot tell which parameter `unset {}` in {} takes away",
                     arg.text, self.place
                 )));
+            } else if !options.has('m') && arg.text == "XDG_CONFIG_HOME" {
+                self.xdg_config_homes += 1;
+                self.events.push(Event::Assign {
+                    name: "XDG_CONFIG_HOME",
+                    value: None,
+                    unconditional,
+                });
             }
         }
     }
