@@ -372,3 +372,47 @@ fn every_read_records_the_path_it_was_asked_about() {
     fs.reset();
     assert!(fs.mock_lookups().is_empty());
 }
+
+/// A read passes where the links on its way lead, and where the link at its
+/// end leads unless it reads the link itself: the path asked alone does not
+/// show that a lookup of `/etc/nixos/x` passes bob's home when `/etc/nixos`
+/// links there.
+#[test]
+fn a_read_reaches_where_the_links_on_its_way_lead() {
+    let fs = MockFilesystem::new();
+    fs.create_symlink(Path::new("/home/bob/nixos"), Path::new("/etc/nixos"))
+        .unwrap();
+    fs.create_symlink(
+        Path::new("../bob/nixos/flake.nix"),
+        Path::new("/home/x/flake.nix"),
+    )
+    .unwrap();
+    let bob = Path::new("/home/bob");
+
+    // The link read itself passes no further.
+    let _ = fs.is_symlink(Path::new("/etc/nixos"));
+    let _ = fs.read_link(Path::new("/etc/nixos"));
+    let _ = fs.mount_root(Path::new("/etc/nixos"));
+    let _ = fs.is_overlay_whiteout(Path::new("/etc/nixos"));
+    let _ = fs.change_time(Path::new("/etc/nixos"));
+    let _ = fs.record_lock_holder(Path::new("/etc/nixos"));
+    assert!(!fs.mock_reached(bob), "{:?}", fs.mock_lookups());
+    assert!(fs.mock_reached(Path::new("/etc/nixos")));
+
+    // A read that follows it, at the end or on the way, passes bob's home.
+    for path in ["/etc/nixos", "/etc/nixos/configuration.nix"] {
+        fs.mock_clear_lookups();
+        let _ = fs.path_exists(Path::new(path));
+        assert!(fs.mock_reached(bob), "{path}");
+        assert_eq!(fs.mock_lookups(), [PathBuf::from(path)]);
+    }
+    // A relative target, from the directory that holds the link.
+    fs.mock_clear_lookups();
+    let _ = fs.read_file_content(Path::new("/home/x/flake.nix"));
+    assert!(fs.mock_reached(bob));
+
+    fs.mock_clear_lookups();
+    let _ = fs.path_exists(Path::new("/etc/hostname"));
+    assert!(!fs.mock_reached(bob));
+    assert!(!fs.mock_reached(Path::new("/etc/nixos")));
+}
