@@ -127,6 +127,49 @@ fn no_trial_loads_the_overlay_module_where_its_settings_would_mount_a_point() {
     assert!(check.run(&fs).unwrap().is_fail());
 }
 
+/// A directory of modprobe's settings that is a link is asked about where
+/// it leads, as modprobe follows it: one that leads behind an automount
+/// point that nothing is mounted on yet makes no trial either.
+#[test]
+fn no_trial_is_made_where_a_settings_directory_links_behind_a_point() {
+    let root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mounted(&root, true);
+    fs.mock_set_device_id(std::path::Path::new("/"), 1);
+    fs.mock_set_device_id(&root, 42);
+    let point = std::path::Path::new("/srv/point");
+    fs.mock_set_mounted(point, true);
+    fs.mock_set_filesystem_type(point, "autofs");
+    fs.create_symlink(
+        std::path::Path::new("/srv/point/modprobe.d"),
+        std::path::Path::new("/etc/modprobe.d"),
+    )
+    .unwrap();
+    fs.mock_add_file("/proc/filesystems", "nodev\tsysfs\n\text4\n");
+    fs.mock_clear_lookups();
+    let result = UpperFsCapabilityCheck::default().run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "NAILS does not look up /etc/modprobe.d, since the lookup would mount the automount \
+             point /srv/point"
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(crate::filesystem::automount::mount_fix(&[point]).as_str())
+    );
+    assert!(
+        fs.mock_lookups()
+            .iter()
+            .all(|path| !path.starts_with("/srv/point")),
+        "{:?}",
+        fs.mock_lookups()
+    );
+}
+
 /// Where the overlay module is loaded, a trial loads nothing; where its
 /// settings lie behind no automount point, a load mounts nothing. Either
 /// way the check goes on to the probe, which the test runtime skips.
