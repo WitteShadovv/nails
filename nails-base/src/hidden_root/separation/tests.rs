@@ -6,7 +6,6 @@
 //! them on the distributions and layouts named in each test.
 
 use super::*;
-use crate::crypttab::parse_crypttab;
 use crate::filesystem::mountinfo::{parse_mountinfo, top_mount_at};
 use crate::filesystem::{Filesystem, MockFilesystem};
 use std::path::Path;
@@ -181,7 +180,7 @@ impl World {
     fn ask<T>(&self, root: &str, ask: impl FnOnce(&Scene<'_>, &MountEntry) -> T) -> T {
         let mounts = parse_mountinfo(&self.mountinfo);
         let (fstab, unplain) = read_fstab(&self.fstab);
-        let crypttab = parse_crypttab(&self.crypttab);
+        let (crypttab, unplain_crypttab) = read_crypttab(&self.crypttab);
         let paths = paths::read_all(&self.files, &mounts, Path::new("/"), &fstab, &self.devices);
         let hidden = top_mount_at(&mounts, Path::new(root)).expect("a mount at the root");
         ask(
@@ -193,6 +192,7 @@ impl World {
                 unreadable: &self.unreadable,
                 paths: &paths,
                 unplain: &unplain,
+                unplain_crypttab: &unplain_crypttab,
             },
             hidden,
         )

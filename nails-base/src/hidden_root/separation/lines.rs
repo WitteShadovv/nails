@@ -9,6 +9,7 @@
 //! ([`sharing`]).
 
 use super::paths::{as_written, is_claimed};
+use super::plain::{fuse_line, source};
 use super::{DeviceMap, Scene, Sharing};
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::fstab::FstabEntry;
@@ -35,7 +36,8 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
 /// `/`, or one that a line of its fstab makes. Such a line is plain (see
 /// [`read_fstab`](super::read_fstab)), for `mount`'s mount point and of a
 /// kind the claims count (a bind line of any type, no swap line and no other
-/// line of a RAM, kernel, host-share, network or overlay filesystem), and
+/// line of a RAM, kernel, host-share, network or overlay filesystem), no FUSE
+/// line, whose program makes a FUSE mount of its own and never `mount`, and
 /// `mount` shows what it mounts:
 ///
 /// - A device line names the device `mount` is on, or another device of its
@@ -72,7 +74,7 @@ fn decoys_own(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry, depth:
     scene
         .plain_lines()
         .filter(|entry| entry.file == mount.mount_point)
-        .filter(|entry| mounts_storage(entry))
+        .filter(|entry| mounts_storage(entry) && fuse_line(entry).is_none())
         .any(|entry| {
             if entry.is_bind() {
                 return depth > 0 && bind_makes(scene, entry, mount, hidden, depth - 1);
@@ -82,18 +84,18 @@ fn decoys_own(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry, depth:
 }
 
 /// Whether the device line `entry` names the device `mount` is on, or
-/// another device of its btrfs filesystem. A spec that leads to no device
-/// here names none, unless `mount` shows no device either, as a ZFS dataset
-/// does: then the spec is `mount`'s source and the line's type its type.
+/// another device of its btrfs filesystem, by its first field or, for a FUSE
+/// line, the source it gives its program ([`source`]). A spec that leads to
+/// no device here names none, unless `mount` shows no device either, as a
+/// ZFS dataset does: then the spec is `mount`'s source and the line's type
+/// its type.
 fn names_the_device(devices: &DeviceMap, entry: &FstabEntry, mount: &MountEntry) -> bool {
-    match (
-        devices.node_of_spec(&entry.spec),
-        devices.node_of_mount(mount),
-    ) {
+    let Some(spec) = source(entry) else {
+        return false;
+    };
+    match (devices.node_of_spec(spec), devices.node_of_mount(mount)) {
         (Some(named), Some(node)) => named == node || devices.same_btrfs(named, node),
-        (None, None) => {
-            entry.vfstype == mount.fstype && Path::new(&entry.spec) == mount.source.as_path()
-        }
+        (None, None) => entry.vfstype == mount.fstype && Path::new(spec) == mount.source.as_path(),
         _ => false,
     }
 }
@@ -359,9 +361,10 @@ pub(super) fn in_fstab(
         .fstab
         .iter()
         .filter(|entry| entry.file == at && !entry.is_bind() && mounts_storage(entry))
-        .any(|entry| match (devices.node_of_spec(&entry.spec), top) {
+        .filter_map(|entry| source(entry))
+        .any(|spec| match (devices.node_of_spec(spec), top) {
             (Some(named), Some(top)) => named == top || devices.same_btrfs(named, top),
-            (None, None) => Path::new(&entry.spec) == hidden.source.as_path(),
+            (None, None) => Path::new(spec) == hidden.source.as_path(),
             _ => false,
         })
 }
