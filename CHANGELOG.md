@@ -850,17 +850,17 @@ of this changelog for that version becomes the release notes word for word, and
   symbolic links in the path of a bind line's source, a swap file or an image file: it looks at each
   part of the path on its own, as `lstat` does, so it reads no link and changes no access time. A
   line whose path cannot be told this way fails `backend-entries`, with `--allow-decoy-storage` or
-  without it, as one that may mount the volume, and the check names the link, the device node or
-  the folder and says to write the line with its real path: a path with a link in any part, which
-  `mount` and `swapon` would follow at boot, one that is not absolute (a bind line's source, a swap
-  line, a `loop` line or a line of a filesystem type read from a device or an image file), a device
-  node, outside `/dev` too, one that crosses the folder of an fstab line the boot mounts (no
-  `noauto`) while that line's mount is not there now, one with a part that cannot be looked up, and
-  one that crosses an automount point nothing is mounted on yet. So a swap or image line whose path
-  is a link to the hidden volume's device node fails as well, where it passed before. A path with
-  no link in it, below mounts that are there, is judged as it is written, and a bind line whose
-  source as written lies in the volume fails whatever lies there. For the second-mount rule, a bind
-  line whose path cannot be told makes no mount of the decoy's own.
+  without it, as one that may mount the volume, and the check says why, naming the link, the device
+  node or the folder where there is one, and says to write the line with its real path: a path with
+  a link in any part, which `mount` and `swapon` would follow at boot, one that is not absolute (a
+  bind line's source, a swap line, a `loop` line or a line of a filesystem type read from a device
+  or an image file), a device node, outside `/dev` too, one that crosses the folder of an fstab line
+  the boot mounts (no `noauto`) while that line's mount is not there now, one with a part that
+  cannot be looked up, and one that crosses an automount point nothing is mounted on yet. So a swap
+  or image line whose path is a link to the hidden volume's device node fails as well, where it
+  passed before. A path with no link in it, below mounts that are there, is judged as it is written,
+  and a bind line whose source as written lies in the volume fails whatever lies there. For the
+  second-mount rule, a bind line whose path cannot be told makes no mount of the decoy's own.
 - `backend-entries` no longer says to remove the decoy's crypttab line for the volume that one of
   its own filesystems lies on when the hidden root is on that filesystem too: a bind of a folder of
   `/` on an encrypted decoy, say, or a subvolume of its encrypted btrfs. Such a line opens the hidden

@@ -1240,19 +1240,19 @@ and `swapon` follow a link at boot, so a line whose path has a link in any part
 has to name its real path instead. So does a line whose path is not absolute
 (a bind line's source, a swap line, a `loop` line, or a line of a filesystem
 type that is read from a device or an image file), one whose path is a device
-node, outside `/dev` too, since `mount` and `swapon` use the device it is, and
-one whose path crosses the folder of an fstab line that the boot mounts (no
+node, outside `/dev` too, which a swap or image line uses as the device it is,
+and one whose path crosses the folder of an fstab line that the boot mounts (no
 `noauto`) while the mount that line makes is not there now, since what lies
 there at boot cannot be read: mount that filesystem and run the check again.
 So does a path with a part that cannot be looked up, and one that crosses an
 automount point that nothing is mounted on yet, which NAILS does not look past.
 Each such line fails `backend-entries`, with the flag or without it, as one
-that may mount the volume: the check names the link, the device node or the
-folder and says to write the line with its real path. A path with no link in
-it, below mounts that are there, is judged as it is written. A bind line whose
-source as written lies in the volume fails whatever lies there, a link
-included, and for the second-mount rule above a bind line whose path cannot be
-told makes no mount of the decoy's own.
+that may mount the volume: the check says why, naming the link, the device node
+or the folder where there is one, and says to write the line with its real path.
+A path with no link in it, below mounts that are there, is judged as it is
+written. A bind line whose source as written lies in the volume fails whatever
+lies there, a link included, and for the second-mount rule above a bind line
+whose path cannot be told makes no mount of the decoy's own.
 
 A root is refused as well when a mount that no fstab line makes shows its
 folder, such as a bind of a folder of a `/home` or `/srv` partition that
