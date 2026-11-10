@@ -412,20 +412,26 @@ fn emulate_s_mode_is_read_by_its_first_letter() {
 fn a_builtin_s_words_handed_on_may_make_a_widget_or_its_style() {
     // One that hands its words on may make a widget or set the style
     // add-zle-hook-widget reads (`myzle -N zle-line-finish w`).
-    for (rc, doubt) in [
+    // `zstyle -s` sets a parameter by a name such words may make too.
+    for (rc, doubts) in [
         (
             "myzle() { builtin zle \"$@\" }\n",
-            "it cannot tell what `zle $@` in /home/alice/.zshrc does, as zsh may expand `$@` \
-             into its options",
+            &[
+                "it cannot tell what `zle $@` in /home/alice/.zshrc does, as zsh may expand `$@` \
+               into its options",
+            ][..],
         ),
         (
             "mystyle() { builtin zstyle \"$@\" }\n",
-            "it cannot tell which widgets `zstyle $@` in /home/alice/.zshrc makes \
-             add-zle-hook-widget run as each line is entered",
+            &[
+                "it cannot tell which parameter `zstyle $@` in /home/alice/.zshrc sets",
+                "it cannot tell which widgets `zstyle $@` in /home/alice/.zshrc makes \
+                 add-zle-hook-widget run as each line is entered",
+            ],
         ),
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
-        assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt], "{rc}");
+        assert_eq!(scan(&fs, UNKNOWN).doubts, doubts, "{rc}");
     }
 }

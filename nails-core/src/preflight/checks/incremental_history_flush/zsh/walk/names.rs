@@ -5,8 +5,12 @@
 //! its options: `print -v`'s, `read`'s, `zstyle -s`'s, `strftime -s`'s and
 //! the like. An option that takes an argument takes the rest of its word,
 //! or the word after it (`print -vPS1`, `print -rv PS1`, `strftime -sPS1`).
+//! A name, or a word where the options may stand, that an expansion, brace
+//! expansion or a glob may make is one the check cannot read
+//! ([`names_parameter`]).
 
 use super::super::lexer::Word;
+use super::declare::starts_computed;
 
 /// Whether `word`, a word of zsh code, holds an expansion.
 pub(super) fn computed(word: &Word) -> bool {
@@ -47,7 +51,7 @@ pub(super) fn option_arguments(args: &[Word], takes: &str, wanted: &str) -> Vec<
         if flags.is_empty() || flags == "-" {
             break;
         }
-        if computed(word) {
+        if computed(word) || word.bare {
             found.push(Word {
                 text: flags.to_string(),
                 expands: true,
@@ -94,7 +98,7 @@ fn every_name(args: &[Word]) -> Vec<Word> {
                     if !rest.is_empty() {
                         found.push(Word {
                             text: rest.to_string(),
-                            expands: computed(word),
+                            expands: computed(word) || word.bare,
                             quoted: false,
                             bare: word.bare,
                         });
@@ -174,15 +178,85 @@ pub(super) fn targets(command: &str, args: &[Word]) -> Vec<Word> {
     }
 }
 
+/// The letters of the options that take an argument of each builtin that
+/// sets a parameter by an option or past its options, as zsh reads them
+/// itself or as the builtin does (`zstyle -s`); `None` for any other.
+fn option_letters(command: &str) -> Option<&'static str> {
+    Some(match command {
+        "print" => "CfuvxX",
+        "printf" => "v",
+        "strftime" => "s",
+        "syswrite" => "co",
+        "syserror" => "ep",
+        "stat" | "zstat" => "AHfF",
+        "zstyle" | "zformat" | "zpty" | "zgetattr" | "zlistattr" => "",
+        _ => return None,
+    })
+}
+
+/// The first word among `args`, the words after a builtin whose options that
+/// take an argument are `takes`, that stands where its options may and that
+/// an expansion, brace expansion or a glob may make any options of (`$o`,
+/// `-$o`, `{-v,x}`): the options run up to the first word that starts
+/// otherwise than with a `-` or with what an expansion may give it, a `-` or
+/// `--` alone, or a `-` and a digit, each argument of an option passed over
+/// (`print -f "$f" $x` reads `$x` as options).
+fn unread_option<'a>(args: &'a [Word], takes: &str) -> Option<&'a Word> {
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        if starts_computed(word) {
+            return Some(word);
+        }
+        let flags = word.text.strip_prefix('-')?;
+        if flags.is_empty() || flags == "-" || flags.starts_with(|c: char| c.is_ascii_digit()) {
+            return None;
+        }
+        if computed(word) || word.bare {
+            return Some(word);
+        }
+        if let Some((at, letter)) = flags
+            .char_indices()
+            .find(|(_, letter)| takes.contains(*letter))
+            && flags[at + letter.len_utf8()..].is_empty()
+        {
+            words.next();
+        }
+    }
+    None
+}
+
 /// A word among `args`, the words after the builtin `command`, in which an
-/// expansion makes the name of a parameter it sets ([`targets`]), or, for a
-/// builtin of [`ANY_WORD`], any word an expansion makes; `None` when there is
-/// none.
+/// expansion, brace expansion or a glob makes the name of a parameter it
+/// sets ([`targets`]), or that stands where its options may and such a word
+/// may make any options of ([`unread_option`]), or, for a builtin of
+/// [`ANY_WORD`], any word they make; `None` when there is none. Where a word
+/// before a name the builtin takes by its place may make no word or several
+/// (an expansion or a glob outside quotes, `getopts $x a ${n}`), any such
+/// word after it may stand in that place.
 pub(super) fn names_parameter(command: &str, args: &[Word]) -> Option<Word> {
     if ANY_WORD.contains(&command) {
-        return args.iter().find(|word| computed(word)).cloned();
+        return args
+            .iter()
+            .find(|word| computed(word) || word.bare)
+            .cloned();
     }
-    targets(command, args)
+    if let Some(word) = option_letters(command).and_then(|takes| unread_option(args, takes)) {
+        return Some(word.clone());
+    }
+    let targets = targets(command, args);
+    let place = targets
+        .iter()
+        .filter_map(|target| args.iter().position(|word| word == target))
+        .max();
+    if let Some(place) = place
+        && let Some(at) = args[..place].iter().position(|word| word.bare)
+        && let Some(word) = args[at + 1..]
+            .iter()
+            .find(|word| computed(word) || word.bare)
+    {
+        return Some(word.clone());
+    }
+    targets
         .into_iter()
-        .find(|word| computed(word) && !word.text.starts_with(['-', '+']))
+        .find(|word| (computed(word) || word.bare) && !word.text.starts_with(['-', '+']))
 }

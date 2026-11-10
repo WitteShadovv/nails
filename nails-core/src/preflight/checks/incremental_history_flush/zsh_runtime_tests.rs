@@ -144,7 +144,13 @@ fn an_option_whose_name_an_expansion_makes_is_a_doubt() {
         ("emulate zsh -o $o", emulate("-o $o")),
         ("emulate zsh $flags", emulate("$flags")),
         ("emulate zsh -c \"$code\"", emulate("-c $code")),
-        ("typeset -g \"$name=on\"", parameter("typeset $name=on")),
+        (
+            "typeset -g \"$name=on\"",
+            "it cannot tell what `typeset -g $name=on` in /home/alice/.zshrc does, as zsh may \
+             expand `$name=on` into any of its options"
+                .to_string(),
+        ),
+        ("typeset -g -- \"$name=on\"", parameter("typeset $name=on")),
         ("print -v \"$name\" on", parameter("print $name")),
         ("read -r \"$name\" <<< on", parameter("read $name")),
     ] {
@@ -780,7 +786,7 @@ fn a_command_a_hook_runs_that_may_write_a_file_an_expansion_names_is_a_doubt() {
     // command outside a hook are none.
     for rc in [
         "preexec() { print -n \"\\e]0;$1\\a\" }\n",
-        "title() { print -n \"$1\" }\npreexec() { title \"$1\" }\n",
+        "title() { print -n -- \"$1\" }\npreexec() { title \"$1\" }\n",
         "f() { tee -a $log }\n",
         "precmd() { [[ -n $VIRTUAL_ENV ]] && psvar[1]=${VIRTUAL_ENV:t} }\n",
     ] {
@@ -863,7 +869,7 @@ fn a_name_a_builtin_takes_attached_to_its_flag_or_after_others_counts() {
     for set in [
         "print -rv out -- x",
         "print -vout x",
-        "print -fv $x",
+        "print -fv -- $x",
         "printf -vx %s $y",
     ] {
         let fs = MockFilesystem::new();
