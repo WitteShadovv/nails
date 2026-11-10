@@ -5,6 +5,7 @@
 
 use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
 use super::paths::{is_claimed, names_a_file};
+use super::plain::source;
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
     LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, UnplainLine, UntoldPath,
@@ -526,7 +527,10 @@ fn claims(
             if !is_claimed(entry) {
                 break 'line;
             }
-            let node = devices.node_of_spec(&entry.spec);
+            // The device or path the line names: a FUSE line's by the source
+            // it gives its program.
+            let spec = source(entry);
+            let node = spec.and_then(|spec| devices.node_of_spec(spec));
             if let Some(node) = node.filter(|n| entry_stack.iter().any(|s| s == n)) {
                 let finding = fstab_finding(scene, hidden, entry, own_device(node));
                 needs_own = own_device(node) && finding.boot_needs;
@@ -541,22 +545,24 @@ fn claims(
                 }
             }
             let noauto = entry.is_noauto();
-            if entry.is_bind() || (node.is_none() && names_a_file(entry)) {
-                // A bind, or a swap or image file: the filesystem holding
-                // the source or the file, read as written, with no link
-                // followed. A bind of the volume or of a folder of it mounts
-                // the volume, and a file in the volume lies on it. A path
-                // whose place cannot be told may lead anywhere, the volume
-                // included: a finding, which claims the filesystem its text
-                // places it on.
-                let source = match scene.named_path(&entry.spec) {
+            if let Some(spec) =
+                spec.filter(|_| entry.is_bind() || (node.is_none() && names_a_file(entry)))
+            {
+                // A bind, or a swap or image file or the file a FUSE program
+                // reads: the filesystem holding the source or the file, read
+                // as written, with no link followed. A bind of the volume or
+                // of a folder of it mounts the volume, and a file in the
+                // volume lies on it. A path whose place cannot be told may
+                // lead anywhere, the volume included: a finding, which claims
+                // the filesystem its text places it on.
+                let source = match scene.named_path(spec) {
                     Ok(source) => Some(source),
                     Err(why) => {
                         found.push(untold_finding(entry, &why));
                         None
                     }
                 };
-                let path = source.unwrap_or(Path::new(&entry.spec));
+                let path = source.unwrap_or(Path::new(spec));
                 if let Some(holder) = mount_holding(scene.mounts, path) {
                     if let Some(source) = source {
                         found.extend(in_volume_finding(hidden, entry, source, holder));
@@ -590,7 +596,7 @@ fn claims(
         // A line that is not plain claims what NAILS reads in it, and is a
         // finding of its own, its only one: what it mounts cannot be told.
         match scene.unplain.get(&index) {
-            Some(line) => entries.push(not_plain_finding(line)),
+            Some(line) => entries.push(not_plain_finding(FSTAB, line)),
             None => {
                 own_needed |= needs_own;
                 entries.append(&mut found);
@@ -602,7 +608,66 @@ fn claims(
     // subvolume root is part of at / or at a system folder, if it does, by
     // its mount at / or by one of the fstab findings, all entries so far.
     let own_place = decoys_own_place(scene, hidden, &entries);
-    for entry in scene.crypttab {
+    let drive = Drive {
+        stack,
+        entry_stack,
+        stack_names: &stack_names,
+        entry_names: &entry_names,
+        own_device: &own_device,
+    };
+    crypttab_claims(
+        scene,
+        hidden,
+        &drive,
+        own_needed,
+        own_place.as_deref(),
+        &mut claims,
+        &mut entries,
+    );
+    (claims, entries)
+}
+
+/// The hidden root's devices, by which the entries for the hidden drive are
+/// told.
+struct Drive<'a> {
+    /// The root's stack: the device it is mounted from and every device
+    /// below it.
+    stack: &'a [String],
+    /// The devices an entry for the hidden drive names: the root's stack,
+    /// the other devices of its btrfs filesystem and those below them.
+    entry_stack: &'a [String],
+    /// The names of the mappings in `stack`.
+    stack_names: &'a [&'a str],
+    /// The names of the mappings in `entry_stack`.
+    entry_names: &'a [&'a str],
+    /// Whether a device is the one the root is mounted from, or another
+    /// device of its btrfs filesystem.
+    own_device: &'a dyn Fn(&str) -> bool,
+}
+
+/// The claims of the decoy's crypttab lines and their entries for the hidden
+/// drive `drive`, added to `claims` and `entries`, which hold those of its
+/// mounts and its fstab. `own_needed` tells whether the decoy itself uses
+/// the root's own filesystem, and `own_place` where it mounts another part
+/// of it at `/` or at a system folder, if it does.
+fn crypttab_claims(
+    scene: &Scene<'_>,
+    hidden: &MountEntry,
+    drive: &Drive<'_>,
+    own_needed: bool,
+    own_place: Option<&Path>,
+    claims: &mut Vec<Claim>,
+    entries: &mut Vec<EntryFinding>,
+) {
+    let devices = scene.devices;
+    let Drive {
+        stack,
+        entry_stack,
+        stack_names,
+        entry_names,
+        own_device,
+    } = *drive;
+    for (index, entry) in scene.crypttab.iter().enumerate() {
         let line = format!("{} {}", entry.name, entry.source);
         let source = devices.node_of_spec(&entry.source);
         let mapping = devices.node_of_spec(&format!("/dev/mapper/{}", entry.name));
@@ -620,77 +685,97 @@ fn claims(
             || entry_names.contains(&entry.name.as_str())
             || source.is_some_and(|s| entry_stack.iter().any(|n| n == s) && !own_device(s));
         let needed = (own_needed && makes_own)
-            || boot_needs(devices, &claims, hidden, &own_device, [source, mapping]);
-        // A line that opens the hidden volume of a container blocks when the
-        // container is on the hidden drive, or when its device cannot be
-        // found, so nothing shows it is not; one for another drive is that
-        // drive's business, and claims it like any other line. The decoy's
-        // own boot can need it all the same, where one of its filesystems
-        // lies on what it opens.
-        if entry.is_tcrypt_hidden()
-            && source.is_none_or(|s| stack.iter().any(|n| n == s) || same_drive(devices, s, stack))
-        {
-            entries.push(blocking(
-                CRYPTTAB,
-                line,
-                "it opens the hidden volume of a TrueCrypt or VeraCrypt container".to_string(),
-                needed,
-            ));
-            continue;
-        }
-        if opens(entry_stack, &entry_names) {
-            let why = if entry.is_tcrypt() {
-                format!(
-                    "it opens the device the volume at {} is opened from; whether that is the \
-                     outer or the hidden volume cannot be told",
-                    hidden.mount_point.display()
-                )
-            } else {
-                format!(
-                    "it opens the volume at {} or a device it is stored on",
-                    hidden.mount_point.display()
-                )
-            };
-            // A line the boot opens that makes a device of that filesystem,
-            // while the decoy mounts another part of it at / or at a system
-            // folder, is the decoy's own line for that place too. Never one
-            // that opens the hidden volume of a container, whatever it names.
-            let own = makes_own && !entry.has_option("noauto") && !entry.is_tcrypt_hidden();
-            let system_folder = own_place.clone().filter(|_| own);
-            entries.push(EntryFinding {
-                system_folder,
-                ..blocking(CRYPTTAB, line, why, needed)
-            });
-            // One that opens only another device of the root's btrfs
-            // filesystem claims it all the same.
-            if opens(stack, &stack_names) {
-                continue;
+            || boot_needs(devices, claims, hidden, own_device, [source, mapping]);
+        // The findings for this line, and whether it claims what it opens.
+        let mut found = Vec::new();
+        let claimed = 'line: {
+            // A line that opens the hidden volume of a container blocks when
+            // the container is on the hidden drive, or when its device cannot
+            // be found, so nothing shows it is not; one for another drive is
+            // that drive's business, and claims it like any other line. The
+            // decoy's own boot can need it all the same, where one of its
+            // filesystems lies on what it opens.
+            if entry.is_tcrypt_hidden()
+                && source
+                    .is_none_or(|s| stack.iter().any(|n| n == s) || same_drive(devices, s, stack))
+            {
+                found.push(blocking(
+                    CRYPTTAB,
+                    line,
+                    "it opens the hidden volume of a TrueCrypt or VeraCrypt container".to_string(),
+                    needed,
+                ));
+                break 'line false;
             }
-        } else if entry.is_tcrypt() && source.is_some_and(|s| same_drive(devices, s, stack)) {
-            entries.push(EntryFinding {
-                kind: EntryKind::OuterWarning,
-                file: CRYPTTAB,
-                line,
-                why: "the decoy is configured to open storage on this drive".to_string(),
-                boot_needs: false,
-                system_folder: None,
-                not_plain: false,
-            });
-            continue;
+            if opens(entry_stack, entry_names) {
+                let why = if entry.is_tcrypt() {
+                    format!(
+                        "it opens the device the volume at {} is opened from; whether that is \
+                         the outer or the hidden volume cannot be told",
+                        hidden.mount_point.display()
+                    )
+                } else {
+                    format!(
+                        "it opens the volume at {} or a device it is stored on",
+                        hidden.mount_point.display()
+                    )
+                };
+                // A line the boot opens that makes a device of that
+                // filesystem, while the decoy mounts another part of it at /
+                // or at a system folder, is the decoy's own line for that
+                // place too. Never one that opens the hidden volume of a
+                // container, whatever it names.
+                let own = makes_own && !entry.has_option("noauto") && !entry.is_tcrypt_hidden();
+                let system_folder = own_place.filter(|_| own).map(Path::to_path_buf);
+                found.push(EntryFinding {
+                    system_folder,
+                    ..blocking(CRYPTTAB, line, why, needed)
+                });
+                // One that opens only another device of the root's btrfs
+                // filesystem claims it all the same.
+                break 'line !opens(stack, stack_names);
+            }
+            if entry.is_tcrypt() && source.is_some_and(|s| same_drive(devices, s, stack)) {
+                found.push(outer_warning(line));
+                break 'line false;
+            }
+            true
+        };
+        // A line that is not plain claims what NAILS reads in it, and is a
+        // finding of its own, its only one: what it opens cannot be told.
+        match scene.unplain_crypttab.get(&index) {
+            Some(unplain) => entries.push(not_plain_finding(CRYPTTAB, unplain)),
+            None => entries.append(&mut found),
         }
-        let tops: Vec<String> = source
-            .into_iter()
-            .chain(mapping)
-            .map(str::to_string)
-            .collect();
-        claims.push(device_claim(
-            scene,
-            Claimed::Encrypted(entry.name.clone()),
-            tops,
-            entry.has_option("noauto"),
-        ));
+        if claimed {
+            let tops: Vec<String> = source
+                .into_iter()
+                .chain(mapping)
+                .map(str::to_string)
+                .collect();
+            claims.push(device_claim(
+                scene,
+                Claimed::Encrypted(entry.name.clone()),
+                tops,
+                entry.has_option("noauto"),
+            ));
+        }
     }
-    (claims, entries)
+}
+
+/// The warning for the crypttab line that reads `line`, which opens a
+/// TrueCrypt or VeraCrypt volume on the hidden volume's drive other than the
+/// device the volume is opened from.
+fn outer_warning(line: String) -> EntryFinding {
+    EntryFinding {
+        kind: EntryKind::OuterWarning,
+        file: CRYPTTAB,
+        line,
+        why: "the decoy is configured to open storage on this drive".to_string(),
+        boot_needs: false,
+        system_folder: None,
+        not_plain: false,
+    }
 }
 
 /// The other devices of the btrfs filesystem that the device `top` is one
@@ -858,13 +943,14 @@ fn untold_finding(entry: &FstabEntry, why: &UntoldPath) -> EntryFinding {
     }
 }
 
-/// The finding for `line`, a line of the fstab that is not plain: NAILS does
-/// not read it as `libmount` and systemd do, so it may mount the volume, and
-/// what it mounts cannot be told.
-fn not_plain_finding(line: &UnplainLine) -> EntryFinding {
+/// The finding for `line`, a line of `file`, the fstab or the crypttab,
+/// that is not plain: NAILS does not read it as `libmount` and systemd do,
+/// so it may open or mount the volume, and what it opens or mounts cannot be
+/// told.
+fn not_plain_finding(file: &'static str, line: &UnplainLine) -> EntryFinding {
     EntryFinding {
         kind: EntryKind::Untold,
-        file: FSTAB,
+        file,
         line: line.shown.clone(),
         why: format!("NAILS reads only plain lines, and {}", line.reason()),
         boot_needs: false,

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The paths the decoy's fstab names, a bind line's source and the path of a
-//! swap or image file, read as they are written: no link in them is followed.
+//! swap or image file or of what a FUSE program reads, read as they are
+//! written: no link in them is followed.
 //!
 //! Each part of such a path is looked at on its own through the
 //! [`Filesystem`] trait, from `/` down, with one `statx` that follows no link
@@ -31,6 +32,7 @@ mod tests;
 
 use super::DeviceMap;
 use super::lines::unmounted_folders;
+use super::plain::source;
 use crate::Filesystem;
 use crate::filesystem::MountRoot;
 use crate::filesystem::mountinfo::MountEntry;
@@ -40,8 +42,9 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 /// The paths the lines of the decoy's fstab name ([`names_a_path`]), by the
-/// line's first field as it is written: each as it reads, with no `.` or
-/// `..` in it, or why where it lies cannot be told.
+/// path as the line writes it (its first field, or the source of a FUSE
+/// line): each as it reads, with no `.` or `..` in it, or why where it lies
+/// cannot be told.
 pub type NamedPaths = BTreeMap<String, Result<PathBuf, UntoldPath>>;
 
 /// Why where a path of the decoy's fstab lies cannot be told.
@@ -115,18 +118,19 @@ fn is_device_path(spec: &str) -> bool {
             .any(|part| part == Component::ParentDir)
 }
 
-/// Whether the first field of the fstab line `entry` is the path of a file:
-/// a swap file or an image file. That is an absolute path that is not the
-/// path of a device in `/dev` ([`is_device_path`]). A first field that is
-/// neither absolute nor a tag makes a line that is not plain, unless its type
-/// names no local path by it (see the `plain` module).
+/// Whether the first field of the fstab line `entry`, or the source a FUSE
+/// line gives its program ([`source`]), is the path of a file: a swap file,
+/// an image file, or what a FUSE program reads. That is an absolute path that
+/// is not the path of a device in `/dev` ([`is_device_path`]). A first field
+/// that is neither absolute nor a tag makes a line that is not plain, unless
+/// its type names no local path by it (see the `plain` module).
 pub(super) fn names_a_file(entry: &FstabEntry) -> bool {
-    entry.spec.starts_with('/') && !is_device_path(&entry.spec)
+    source(entry).is_some_and(|path| path.starts_with('/') && !is_device_path(path))
 }
 
 /// Whether the claims place the fstab line `entry` by the path it names,
 /// which [`read`] reads: a bind line's source, or the path of a swap or image
-/// file.
+/// file or of what a FUSE program reads.
 pub(super) fn names_a_path(entry: &FstabEntry) -> bool {
     is_claimed(entry) && (entry.is_bind() || names_a_file(entry))
 }
@@ -150,9 +154,10 @@ pub(super) fn as_written(path: &Path) -> Option<PathBuf> {
     Some(at)
 }
 
-/// The paths the lines of `fstab` name ([`names_a_path`]), each read with
-/// [`read`] below `root`, the folders of its lines that are not mounted now
-/// told by `mounts` and `devices` ([`unmounted_folders`]).
+/// The paths the lines of `fstab` name ([`names_a_path`]), by the path as it
+/// is written ([`source`]), each read with [`read`] below `root`, the
+/// folders of its lines that are not mounted now told by `mounts` and
+/// `devices` ([`unmounted_folders`]).
 pub(super) fn read_all<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
@@ -163,9 +168,12 @@ pub(super) fn read_all<F: Filesystem>(
     let unmounted = unmounted_folders(mounts, fstab, devices);
     let mut paths = NamedPaths::new();
     for entry in fstab.iter().filter(|entry| names_a_path(entry)) {
+        let Some(path) = source(entry) else {
+            continue;
+        };
         paths
-            .entry(entry.spec.clone())
-            .or_insert_with(|| read(fs, mounts, root, &unmounted, Path::new(&entry.spec)));
+            .entry(path.to_string())
+            .or_insert_with(|| read(fs, mounts, root, &unmounted, Path::new(path)));
     }
     paths
 }

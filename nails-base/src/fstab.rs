@@ -207,10 +207,10 @@ pub fn parse_fstab(text: &str) -> Vec<FstabEntry> {
 }
 
 /// [`parse_fstab`], each entry with the line it is read from as that line is
-/// written, trimmed: its fields still hold their escapes.
+/// written, without the spaces and tabs around it: its fields still hold
+/// their escapes. The lines are read as `libmount` reads them ([`lines`]).
 pub fn parse_fstab_lines(text: &str) -> Vec<(FstabEntry, &str)> {
-    text.lines()
-        .map(str::trim)
+    lines(text)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
@@ -232,6 +232,20 @@ pub fn parse_fstab_lines(text: &str) -> Vec<(FstabEntry, &str)> {
             Some((entry, line))
         })
         .collect()
+}
+
+/// The lines of the text of an fstab, as `libmount` reads them: the text
+/// split at each newline, one carriage return before it dropped, and only
+/// the spaces and tabs at either end of a line trimmed, as its `skip_blank()`
+/// skips them. Any other white space stays, so a line that starts with a
+/// vertical tab or a no-break space before a `#` is no comment, as it is
+/// none to `libmount` and systemd either. The crypttab parser splits its
+/// text the same way, though systemd also ends a crypttab line at a lone
+/// carriage return or a NUL, which then stay inside a line here.
+pub fn lines(text: &str) -> impl Iterator<Item = &str> {
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .map(|line| line.trim_matches([' ', '\t']))
 }
 
 /// The `/dev` path a spec names, as systemd's `fstab_node_to_udev_node()`
@@ -410,6 +424,38 @@ mod tests {
         }
         assert!(is_bind_option("rbind=x"));
         assert!(!is_bind_option("x-systemd.bind"));
+    }
+
+    /// The lines are split as `libmount` splits them: only spaces and tabs
+    /// are trimmed, so a vertical tab, a form feed or a no-break space before
+    /// a `#` makes a line, and one carriage return before each newline goes.
+    #[test]
+    fn only_spaces_and_tabs_are_trimmed_before_a_comment() {
+        let text = " \t# a comment\n\
+                    \u{b}#/srv/x /mnt3 none bind 0 0\n\
+                    \u{c}#/srv/x /mnt5 none bind 0 0\n\
+                    \u{a0}#/srv/x /mnt6 none bind 0 0\n\
+                    \t/dev/sdb1 /data ext4 defaults 0 2 \t\r\n\
+                    /dev/sdc1 /backup ext4 noauto 0 2\r";
+        let lines = parse_fstab_lines(text);
+        let read: Vec<&str> = lines.iter().map(|(_, line)| *line).collect();
+        assert_eq!(
+            read,
+            [
+                "\u{b}#/srv/x /mnt3 none bind 0 0",
+                "\u{c}#/srv/x /mnt5 none bind 0 0",
+                "\u{a0}#/srv/x /mnt6 none bind 0 0",
+                "/dev/sdb1 /data ext4 defaults 0 2",
+                "/dev/sdc1 /backup ext4 noauto 0 2",
+            ]
+        );
+        assert_eq!(lines[0].0.spec, "#/srv/x");
+        assert_eq!(lines[0].0.file, Path::new("/mnt3"));
+        assert_eq!(lines[3].0.options, ["defaults"]);
+        // A carriage return only goes right before the end of a line.
+        let (entry, line) = &parse_fstab_lines("/dev/sdb1 /data ext4 rw\r\r\n")[0];
+        assert_eq!(*line, "/dev/sdb1 /data ext4 rw\r");
+        assert_eq!(entry.options, ["rw"]);
     }
 
     /// systemd's fstab generator takes the last of `noauto` and `auto`, and of

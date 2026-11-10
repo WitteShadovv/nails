@@ -26,8 +26,8 @@ fn with_the_decoys_lines(line: &str) -> String {
 }
 
 /// Why a line whose first field is no absolute path and no tag is not plain.
-const RELATIVE: &str = "its first field is neither an absolute path nor a UUID=, LABEL=, PARTUUID=, PARTLABEL= or \
-     ID= tag";
+const RELATIVE: &str =
+    "its first field is neither an absolute path nor a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag";
 
 /// The one entry of `judgement`, an entry where that cannot be told, for the
 /// line that reads `shown`: why it is one.
@@ -659,6 +659,7 @@ fn a_path_that_was_not_looked_up_cannot_be_told() {
         unreadable: &[],
         paths: &paths,
         unplain: &UnplainLines::new(),
+        unplain_crypttab: &UnplainLines::new(),
     };
     assert_eq!(scene.named_path("/srv/x"), Err(UntoldPath::NotLookedUp));
 }

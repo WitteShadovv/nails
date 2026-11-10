@@ -48,10 +48,22 @@
 //! or mount point that begins none of the escapes `\040`, `\011`, `\012` and
 //! `\134`, a backslash in its type or options, a list of types, or a first
 //! field that is neither an absolute path nor a `UUID=`, `LABEL=`,
-//! `PARTUUID=`, `PARTLABEL=` or `ID=` tag, unless it is the line of a RAM,
-//! kernel, host-share, network, overlay, ZFS or FUSE filesystem and no bind
-//! line, fails too, with or without the flag. The check names what it could
-//! not read, and says to write the line plainly.
+//! `PARTUUID=` or `PARTLABEL=` tag, such as a relative path or an `ID=` tag,
+//! which NAILS does not resolve, unless it is the line of a RAM, kernel,
+//! host-share, network, overlay or ZFS filesystem and no bind line, fails
+//! too, with or without the flag. A bind line is one with a `bind` or `rbind` option, `bind=x` too,
+//! as `libmount` reads it. A FUSE line is read as `mount.fuse` reads it: the
+//! source it gives its program, the part after the `#` of a `fuse` line's
+//! first field and a `fuse.<program>` line's whole first field, is judged as
+//! a first field is, where it is an absolute path or such a tag, and fails
+//! otherwise, unless that program takes a remote source by it (`sshfs`,
+//! `s3fs`, an rclone remote and a few more); a `#` in the first field of a
+//! line of any other type that begins with `fuse` fails too. The check reads
+//! only plain crypttab lines as well, which NAILS reads as systemd does: a
+//! line that holds such a character, a quote or a backslash in one of its
+//! four fields, or a source that is neither an absolute path nor such a tag
+//! fails with or without the flag. The check names what it could not read,
+//! and says to write the line plainly.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
@@ -96,9 +108,19 @@ pub const UNTOLD: &str = "Write such a line with its real path long before the n
 pub const UNPLAIN: &str = "Write such a line plainly long before the next use, or remove it: \
      its fields apart by spaces or tabs, one filesystem type, no backslash in its type or options, \
      no backslash in its first two fields but in the escapes \\040, \\011, \\012 and \\134, and as \
-     its first field an absolute path or a UUID=, LABEL=, PARTUUID=, PARTLABEL= or ID= tag, unless \
-     it is no bind line and is for a RAM, kernel, host-share, network, overlay, ZFS or FUSE \
-     filesystem. Then run the command again.";
+     its first field an absolute path or a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag, unless it is \
+     no bind line and is for a RAM, kernel, host-share, network, overlay or ZFS filesystem or for a \
+     FUSE program that takes a remote source. A line of the type fuse gives its program that path \
+     or tag after a # (program#/path), and a line of another type that begins with fuse holds no \
+     # in its first field. Then run the command again.";
+
+/// What the operator does about a crypttab line that is not plain: NAILS
+/// reads only plain lines, so the line has to be written plainly, and once it
+/// is, the check tells what it opens.
+pub const UNPLAIN_CRYPTTAB: &str = "Write such a crypttab line plainly long before the next use, \
+     or remove it: its fields apart by spaces or tabs, with no quote and no backslash in them, and \
+     as its source an absolute path or a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag. Then run the \
+     command again.";
 
 /// Pre-flight check that no decoy fstab or crypttab entry opens or mounts the
 /// hidden volume.
@@ -265,8 +287,17 @@ fn entries_failure(
         if untold.iter().any(|f| !f.not_plain) {
             fix.push(UNTOLD);
         }
-        if untold.iter().any(|f| f.not_plain) {
+        if untold
+            .iter()
+            .any(|f| f.not_plain && f.file == separation::FSTAB)
+        {
             fix.push(UNPLAIN);
+        }
+        if untold
+            .iter()
+            .any(|f| f.not_plain && f.file == separation::CRYPTTAB)
+        {
+            fix.push(UNPLAIN_CRYPTTAB);
         }
     }
     message.push(

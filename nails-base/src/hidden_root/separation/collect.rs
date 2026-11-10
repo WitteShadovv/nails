@@ -11,14 +11,16 @@
 //! the threads that write them. `etc_root` is `/` for the running decoy;
 //! another root lets an offline scan judge a decoy's files.
 //!
-//! The fstab is read with each of its lines that is not plain (see the
-//! `plain` module). The paths it names, a bind line's source and the path of
-//! a swap or image file, are read below `etc_root` as they are written, one
-//! part at a time, with no link in them followed (see the `paths` module),
-//! once the block devices are known, which tell the folders of its lines
-//! whose mount is not there now. The path of a swap or image file is never
-//! resolved as the name of a device, and neither is a bind line's source that
-//! is an absolute path outside `/dev`.
+//! The fstab and the crypttab are read with each of their lines that is not
+//! plain (see the `plain` module). The paths the fstab names, a bind line's
+//! source and the path of a swap or image file or of what a FUSE program
+//! reads, are read below `etc_root` as they are written, one part at a time,
+//! with no link in them followed (see the `paths` module), once the block
+//! devices are known, which tell the folders of its lines whose mount is not
+//! there now. The path of a swap or image file is never resolved as the name
+//! of a device, and neither is a bind line's source that is an absolute path
+//! outside `/dev`. A FUSE line names a device by the source it gives its
+//! program, the part after the `#` of a `fuse` line's first field.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -71,10 +73,11 @@
 mod tests;
 
 use super::{DeviceMap, NamedPaths, SYS_CLASS_BLOCK, Served, UnplainLines, Untraced};
-use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge, read_fstab};
+use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge};
+use super::{read_crypttab, read_fstab};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
-use crate::crypttab::{CrypttabEntry, parse_crypttab};
+use crate::crypttab::CrypttabEntry;
 use crate::filesystem::LoopRecord;
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::FstabEntry;
@@ -97,6 +100,9 @@ pub struct Collected {
     /// The lines of the fstab that are not plain, by the index of their
     /// entry in `fstab`.
     pub unplain: UnplainLines,
+    /// The lines of the crypttab that are not plain, by the index of their
+    /// entry in `crypttab`.
+    pub unplain_crypttab: UnplainLines,
 }
 
 impl Collected {
@@ -110,6 +116,7 @@ impl Collected {
             unreadable: &self.unreadable,
             paths: &self.paths,
             unplain: &self.unplain,
+            unplain_crypttab: &self.unplain_crypttab,
         }
     }
 }
@@ -139,7 +146,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         (collected.fstab, collected.unplain) = read_fstab(&text);
     }
     if let Some(text) = read_optional(fs, &crypttab_path, &mut collected.unreadable) {
-        collected.crypttab = parse_crypttab(&text);
+        (collected.crypttab, collected.unplain_crypttab) = read_crypttab(&text);
     }
 
     let devices = &mut collected.devices;
@@ -158,14 +165,15 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         Err(_) => collected.unreadable.push(class.to_path_buf()),
     }
 
-    // The names the files and the mount table use for devices. The path of a
-    // file the fstab names is no name of one: resolved whole, its links would
-    // be read, and a `..` leads out of `/dev`.
+    // The names the files and the mount table use for devices, a FUSE
+    // line's by the source it gives its program. The path of a file the
+    // fstab names is no name of one: resolved whole, its links would be read,
+    // and a `..` leads out of `/dev`.
     let specs = collected
         .fstab
         .iter()
         .filter(|entry| !super::paths::names_a_file(entry))
-        .map(|entry| entry.spec.clone())
+        .filter_map(|entry| super::plain::source(entry).map(str::to_string))
         .chain(
             collected
                 .crypttab
