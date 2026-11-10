@@ -1167,9 +1167,10 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   makes no lookup and says it cannot tell: it names the path and the
   automount point, and says to mount the point (for example with `ls` on it)
   and run `check` again. A check that only warns warns. `decoy-persistence`
-  refuses where it cannot tell about the journal, a log daemon or kdump
-  (`--allow-persistent-decoy` lifts that, as it lifts the refusal of what it
-  finds), and `fstab-policy` refuses. Where the hidden root or the state
+  refuses where it cannot tell about the journal, a log daemon, kdump or
+  unattended-upgrades' install at shutdown (`--allow-persistent-decoy` lifts
+  that, as it lifts the refusal of what it finds), and `fstab-policy` and
+  `unattended-upgrade-run` refuse. Where the hidden root or the state
   file lies behind such a point, `check` runs no check at all, since the
   state file, the discovery of the build target and most checks look the root
   up: it prints the attach gate's refusal of the root,
