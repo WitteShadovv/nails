@@ -276,9 +276,12 @@ impl<F: Filesystem> Reader<'_, F> {
     /// X`). An alias defined twice alike counts once, so the second is a use.
     /// One named like a word of the NAILS commands the operator types
     /// ([`builtins::typed_word`]: `sudo`, `activate`, `--yes`) counts as used,
-    /// as zsh puts its value in place of that word of the line. One whose uses
-    /// the check cannot count ([`uncountable`]) is a doubt wherever it is
-    /// defined.
+    /// as zsh puts its value in place of that word of the line, and so does
+    /// one named like a command the widgets `run-help` and `which-command`
+    /// run with the line at hand ([`builtins::line_word`]), or like a name
+    /// the files make a hook, which `zle -A` gives the widget they run as.
+    /// One whose uses the check cannot count ([`uncountable`]) is a doubt
+    /// wherever it is defined.
     fn global_alias_uses(&mut self) {
         let mut definitions = std::mem::take(&mut self.global_alias_defs);
         definitions.sort();
@@ -289,6 +292,13 @@ impl<F: Filesystem> Reader<'_, F> {
                     "it cannot tell what the global alias `{text}` in {place} runs as you enter a \
                      NAILS command, as zsh puts its value in place of a word of that line named \
                      like it (`sudo`, `activate`, `--yes`)"
+                ));
+                continue;
+            }
+            if builtins::line_word(name) || self.hooks.contains(name) {
+                self.doubt(format!(
+                    "it cannot tell what the global alias `{text}` in {place} runs as a widget runs \
+                     a command of its name with the line you type at hand (`run-help`, `man`)"
                 ));
                 continue;
             }
