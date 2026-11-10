@@ -457,7 +457,7 @@ pub fn next_steps(base: &Path) -> Vec<String> {
             binary = shell_word(binary.as_os_str())
         ),
         format!(
-            "check readiness, leaving no file or mount behind: {}",
+            "check readiness, leaving no file or mount behind but in rare cases: {}",
             sudo_line_with(&binary, NextStep::Check)
         ),
         format!(

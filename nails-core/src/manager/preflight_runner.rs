@@ -126,17 +126,22 @@ pub struct RegistryInputs {
 /// NixOS-specific guidance.
 ///
 /// This is the one place the activation set of checks is defined. Running the
-/// registry it returns leaves no file and no mount behind: every check only
-/// inspects the system, except four whose probes write on the hidden volume
-/// and remove what they wrote (`hidden-volume`, `symlink-support`,
-/// `upper-fs-capability`, whose trial overlay is mounted detached, outside
-/// every mount table, and which loads the overlay module where it is not
-/// loaded yet, unless a directory the load makes modprobe or udevd read lies
-/// behind an automount point nothing is mounted on, where it refuses without
-/// a trial, and `storage-readiness`), so the same registry backs both
-/// activation and the `nails check` command. Staging of the hidden NixOS layout happens in the
-/// activation path (see [`crate::stage_hidden_nixos_config`]) before these
-/// checks run, never inside a check.
+/// registry it returns leaves no file behind, and no mount but in two rare
+/// cases: every check only inspects the system, except four whose probes
+/// write on the hidden volume and remove what they wrote (`hidden-volume`,
+/// `symlink-support`, `upper-fs-capability`, whose trial overlay is mounted
+/// detached, outside every mount table, and which loads the overlay module
+/// where it is not loaded yet, unless a directory the load makes modprobe or
+/// udevd read lies behind an automount point nothing is mounted on, where it
+/// refuses without a trial, and `storage-readiness`), so the same registry
+/// backs both activation and the `nails check` command. The two cases: a
+/// settings file in those directories that links behind such a point, or a
+/// program a setting runs, can make the module's load mount it, and the
+/// automount guard's own reading of the way to a name of an indirect map
+/// whose mount expired since the check read the mount table mounts it again.
+/// Staging of the hidden NixOS layout happens in the activation path (see
+/// [`crate::stage_hidden_nixos_config`]) before these checks run, never
+/// inside a check.
 ///
 /// # Errors
 ///
