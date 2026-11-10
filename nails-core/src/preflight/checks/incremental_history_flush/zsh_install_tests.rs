@@ -682,7 +682,7 @@ fn a_nixos_zsh_without_the_options_or_completion_passes() {
         &fs,
         "/home/alice/.zshrc",
         "zstyle ':completion:*' menu select\n\
-         alias h='fc -l'\nprecmd() { print -Pn '\\e]0;%~\\a' > $TTY }\n",
+         alias h='fc -l'\nprecmd() { print -Pn '\\e]0;%~\\a' }\n",
     );
     assert_eq!(
         scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)),

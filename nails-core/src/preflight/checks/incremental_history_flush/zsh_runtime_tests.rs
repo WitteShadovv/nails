@@ -312,75 +312,60 @@ fn a_hook_that_writes_the_line_itself_counts_as_a_write() {
 }
 
 #[test]
-fn a_hook_s_output_to_the_terminal_through_tty_is_no_doubt_until_a_file_sets_tty() {
-    // zsh 5.9.2 sets TTY to its terminal's name as it starts, whatever its
-    // environment holds, and writes nothing to HISTFILE for these.
+fn a_hook_s_output_to_tty_is_a_doubt_as_any_target_an_expansion_makes() {
+    // zsh sets TTY to its terminal's name as it starts, but the files may
+    // change it in ways the check cannot all read (a pattern of `typeset -m`,
+    // a name an expansion makes), so `$TTY` is a target an expansion makes,
+    // which may be the history file.
+    let doubt = |hook: &str, target: &str| {
+        format!(
+            "it cannot tell where the output that `{hook}` in /home/alice/.zshrc redirects to \
+             `{target}` goes, which may be the history file"
+        )
+    };
+    for (rc, hook, target) in [
+        (
+            "precmd() { print -Pn '\\e]0;%~\\a' > $TTY }\n",
+            "precmd",
+            "$TTY",
+        ),
+        ("precmd() { print -Pn x >\"$TTY\" }\n", "precmd", "$TTY"),
+        ("precmd() { print -Pn x >> ${TTY} }\n", "precmd", "${TTY}"),
+        ("preexec() { print -rn -- $1 &> $TTY }\n", "preexec", "$TTY"),
+        (
+            "precmd() { print -n x 2>$TTY }\nexport GPG_TTY=$TTY\n",
+            "precmd",
+            "$TTY",
+        ),
+        (
+            "preexec() { print -r -- $1 >> $TTY/x }\n",
+            "preexec",
+            "$TTY/x",
+        ),
+        (
+            "preexec() { print -r -- $1 >> ${TTY:-/dev/tty} }\n",
+            "preexec",
+            "${TTY:-/dev/tty}",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt(hook, target)], "{rc}");
+    }
+    // The terminal by its device is none, and neither is `$TTY` read.
     for rc in [
-        "precmd() { print -Pn '\\e]0;%~\\a' > $TTY }\n",
-        "precmd() { print -Pn x >\"$TTY\" }\n",
-        "precmd() { print -Pn x >> ${TTY} }\n",
-        "preexec() { print -rn -- $1 &> $TTY }\n",
-        "precmd() { print -n x 2>$TTY }\nexport GPG_TTY=$TTY\n",
+        "precmd() { print -Pn '\\e]0;%~\\a' > /dev/tty }\n",
+        "export GPG_TTY=$TTY\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
     }
-    // A file that may set TTY, any of them, makes it the doubt it is for any
-    // other target an expansion makes: zsh 5.9.2 writes each command line to
-    // HISTFILE with the first one.
-    let doubt = |set: &str| {
-        format!(
-            "it cannot tell where the output that `preexec` in /home/alice/.zshrc redirects to \
-             `$TTY` goes, as {set} may set TTY to name the history file"
-        )
-    };
-    let hook = "preexec() { print -r -- $1 >> $TTY }\n";
-    for set in [
-        "TTY=~/.zsh_history",
-        "typeset -g TTY=~/.zsh_history",
-        "f() { local TTY }",
-        "read -r TTY < ~/.ttyname",
-        ": ${TTY::=~/.zsh_history}",
-        "TTY+=x",
-        "for TTY in ~/.zsh_history; do :; done",
-        "print -v TTY ~/.zsh_history",
-        "zstyle -s :x y TTY",
-        "unset TTY",
-    ] {
-        let fs = MockFilesystem::new();
-        seed(&fs, "/home/alice/.zshrc", &format!("{hook}{set}\n"));
-        assert_eq!(
-            scan(&fs, UNKNOWN).doubts,
-            [doubt("/home/alice/.zshrc")],
-            "{set}"
-        );
-    }
-    let fs = MockFilesystem::new();
-    seed(&fs, "/home/alice/.zshrc", hook);
-    seed(&fs, "/home/alice/.zshenv", "TTY=~/.zsh_history\n");
-    assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt("/home/alice/.zshenv")]);
-    // Any other target is read as before.
-    let elsewhere = |target: &str| {
-        format!(
-            "it cannot tell where the output that `preexec` in /home/alice/.zshrc redirects to \
-             `{target}` goes, which may be the history file"
-        )
-    };
-    for target in ["$TTY/x", "${TTY:-/dev/tty}", "$TTYx", "${TTY}x", "$TTY$x"] {
-        let fs = MockFilesystem::new();
-        seed(
-            &fs,
-            "/home/alice/.zshrc",
-            &format!("preexec() {{ print -r -- $1 >> {target} }}\n"),
-        );
-        assert_eq!(scan(&fs, UNKNOWN).doubts, [elsewhere(target)], "{target}");
-    }
 }
 
 #[test]
 fn a_parameter_set_by_a_name_an_expansion_makes_is_a_doubt() {
-    // zsh 5.9.2 runs each with SHARE_HISTORY on, or with TTY or ZDOTDIR set
+    // zsh 5.9.2 runs each with SHARE_HISTORY on, or with HOME or ZDOTDIR set
     // to what a part of the name holds.
     let parameter =
         |what: &str| format!("it cannot tell which parameter `{what}` in /home/alice/.zshrc sets");
@@ -389,10 +374,7 @@ fn a_parameter_set_by_a_name_an_expansion_makes_is_a_doubt() {
             "n='options[share'; m='history]'; : ${(P)${:-$n$m}::=on}\n",
             ": ${(P)${:-$n$m}::=on}",
         ),
-        (
-            "n=TTY; : ${(P)n::=~/.zsh_history}\n",
-            ": ${(P)n::=~/.zsh_history}",
-        ),
+        ("n=HOME; : ${(P)n::=~/h2}\n", ": ${(P)n::=~/h2}"),
         ("(( ${(P)n::=1} ))\n", "(( ${(P)n::=1} ))"),
     ] {
         let fs = MockFilesystem::new();
@@ -402,7 +384,7 @@ fn a_parameter_set_by_a_name_an_expansion_makes_is_a_doubt() {
         assert!(found.doubts.contains(&parameter(what)), "{rc}: {found:?}");
     }
     for (rc, what) in [
-        ("zstyle -s :x y ${:-TT}Y\n", "zstyle ${:-TT}Y"),
+        ("zstyle -s :x y ${:-HO}ME\n", "zstyle ${:-HO}ME"),
         ("zstyle -g $name\n", "zstyle $name"),
         ("getopts a $name\n", "getopts $name"),
         ("strftime -s $name %s 0\n", "strftime $name"),
@@ -443,11 +425,10 @@ fn a_parameter_set_by_a_name_an_expansion_makes_is_a_doubt() {
 #[test]
 fn a_typeset_that_sets_the_parameters_a_pattern_matches_is_a_doubt() {
     // zsh 5.9 to 5.9.2 set every parameter the pattern of `-m` matches:
-    // TTY, which a hook writes to, histchars, after which a line that
-    // starts with `#` is code, HOME, FPATH and ZDOTDIR, where zsh reads
-    // files, and a prompt; `typeset -u -m` changes their values too.
+    // histchars, after which a line that starts with `#` is code, HOME,
+    // FPATH and ZDOTDIR, where zsh reads files, and a prompt; `typeset -u -m`
+    // changes their values too.
     for rc in [
-        "typeset -m 'T?Y=/home/alice/.zl'\npreexec() { print -r -- \"$1\" >> $TTY }\n",
         "typeset -m 'histchar?=!^%'\n",
         "typeset -m 'HOM?=/home/alice/h2'\n",
         "typeset -m 'FPAT?=/home/alice/zfn'\n",
@@ -456,8 +437,8 @@ fn a_typeset_that_sets_the_parameters_a_pattern_matches_is_a_doubt() {
         "declare -m 'HOM?=/x'\n",
         "private -m 'HOM?=/x'\n",
         "typeset -u -m 'HOM?'\n",
-        "typeset +m 'T?Y=/x'\n",
-        "builtin typeset -gm 'T?Y=/x'\n",
+        "typeset +m 'HOM?=/x'\n",
+        "builtin typeset -gm 'HOM?=/x'\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
@@ -619,51 +600,50 @@ fn warns(fs: &MockFilesystem) -> bool {
 
 #[test]
 fn a_name_is_read_as_zsh_reads_a_word_before_it_names_a_parameter() {
-    // zsh 5.9.2 sets TTY with each of these, as it takes quotes and
+    // zsh 5.9.2 sets HOME with each of these, as it takes quotes and
     // backslashes off a word, joins a line that ends in a backslash with the
     // next, decodes `$'...'` and reads an option's argument after its
-    // letters, and a hook's output to $TTY then goes to the history file.
-    let hook = "preexec() { print -r -- \"$1\" >> $TTY }\n";
+    // letters, and then reads the user's startup files elsewhere.
     for set in [
-        "x='\n#'; TTY=$HOME/.zsh_history",
-        "T\\\nTY=$HOME/.zsh_history",
-        "read T''TY <<< $HOME/.zsh_history",
-        "typeset -g T''TY=$HOME/.zsh_history",
-        "print -v T\\TY $HOME/.zsh_history",
-        "export \"T\"TY=$HOME/.zsh_history",
-        "print -vTTY $HOME/.zsh_history",
-        "zstyle :x y ~/.zsh_history; zstyle -s :x y 'TTY'",
-        ": ${TTY[1,-1]::=$HOME/.zsh_history}",
-        "print -v $'\\x54'TY $HOME/.zsh_history",
-        "print -v $'\\124'TY $HOME/.zsh_history",
+        "x='\n#'; HOME=/home/alice/h2",
+        "HO\\\nME=/home/alice/h2",
+        "read HO''ME <<< /home/alice/h2",
+        "typeset -g HO''ME=/home/alice/h2",
+        "print -v HO\\ME /home/alice/h2",
+        "export \"HO\"ME=/home/alice/h2",
+        "print -vHOME /home/alice/h2",
+        "zstyle :x y /home/alice/h2; zstyle -s :x y 'HOME'",
+        ": ${HOME[1,-1]::=/home/alice/h2}",
+        "print -v $'\\x48'OME /home/alice/h2",
+        "print -v $'\\110'OME /home/alice/h2",
     ] {
         let fs = MockFilesystem::new();
-        seed(&fs, "/home/alice/.zshrc", &format!("{set}\n{hook}"));
+        seed(&fs, "/home/alice/.zshenv", &format!("{set}\n"));
         assert!(warns(&fs), "{set}");
     }
     // A name an expansion makes, for the builtins that set one by a name,
     // and what names it as an option's argument.
     for set in [
-        "printf -vTTY %s $HOME/.zsh_history",
-        "n=T; zformat -f ${n}TY \"%s\" s:$HOME/.zsh_history",
-        "n=T; print -z $HOME/.zsh_history; getln ${n}TY",
-        "n=T; zpty -r w ${n}TY",
-        "n=T; syswrite -c ${n}TY x",
-        "n=T; stat -A ${n}TY /",
+        "printf -vHOME %s /home/alice/h2",
+        "n=HO; zformat -f ${n}ME \"%s\" s:/home/alice/h2",
+        "n=HO; print -z /home/alice/h2; getln ${n}ME",
+        "n=HO; zpty -r w ${n}ME",
+        "n=HO; syswrite -c ${n}ME x",
+        "n=HO; stat -A ${n}ME /",
         "x=options; y=history; set -A $x share$y on",
     ] {
         let fs = MockFilesystem::new();
-        seed(&fs, "/home/alice/.zshrc", &format!("{set}\n{hook}"));
+        seed(&fs, "/home/alice/.zshenv", &format!("{set}\n"));
         assert!(warns(&fs), "{set}");
     }
-    // A comment, a read and a name of which TTY is a part set none.
+    // A comment, a read and a name of which HOME is a part set none.
     for rc in [
-        "# write to TTY in a hook\n",
-        "print $TTY ${TTY} ${#TTY} ${TTY:-x}\n",
-        "GPG_TTY=$TTY; MYTTY=1; TTYS=2\n",
+        "# set HOME in a hook\n",
+        "print -r -- $HOME ${HOME} ${#HOME} ${HOME:-x}\n",
+        "MY_HOME=$HOME; MYHOME=1; HOMES=2\n",
     ] {
         let fs = MockFilesystem::new();
-        seed(&fs, "/home/alice/.zshrc", &format!("{rc}{hook}"));
+        seed(&fs, "/home/alice/.zshenv", rc);
         assert!(!warns(&fs), "{rc}");
     }
 }
@@ -671,15 +651,15 @@ fn a_name_is_read_as_zsh_reads_a_word_before_it_names_a_parameter() {
 #[test]
 fn the_forms_of_a_file_hold_what_zsh_reads_its_words_as() {
     let forms = backstop::Forms::of(
-        "print -v T\\TY x\nT\\\nTY=1\nx=$'\\x54\\u0054\\U00000059'=\n# TTY=1\n",
+        "print -v HO\\ME x\nHO\\\nME=1\nx=$'\\x48\\u004f\\U0000004d'E=\n# HOME=1\n",
     );
-    assert_eq!(forms.writes("TTY"), 3);
+    assert_eq!(forms.writes("HOME"), 3);
     // A line a backslash joins to a comment line holds no more code.
     let forms = backstop::Forms::of("x=a\\\n  #; source ~/.zsh/history.zsh\n");
     assert_eq!(forms.uses("source"), 0);
     assert_eq!(backstop::named("x=a\\\n  #; source ~/x\n").sources, 0);
     // A line that starts with `#` inside a quote is code once it closes.
-    assert_eq!(backstop::Forms::of("x='\n#'; TTY=1\n").writes("TTY"), 1);
+    assert_eq!(backstop::Forms::of("x='\n#'; HOME=1\n").writes("HOME"), 1);
 }
 
 #[test]
@@ -840,19 +820,18 @@ fn a_function_named_like_a_builtin_is_a_hook() {
 
 #[test]
 fn a_name_a_builtin_takes_attached_to_its_flag_or_after_others_counts() {
-    // zsh 5.9.2 sets TTY with each to the history file, which the hook then
-    // appends each command line to.
-    let hook = "preexec() { print -r -- \"$1\" >> $TTY }\n";
+    // zsh 5.9.2 sets HOME with each, and then reads the user's startup
+    // files elsewhere.
     for set in [
-        "n=T; print -v${n}TY -- ~/.zsh_history",
-        "n=T; print -rv ${n}TY -- ~/.zsh_history",
-        "n=T; print -nrv ${n}TY -- ~/.zsh_history",
-        "n=T; print -v\"${n}TY\" -- ~/.zsh_history",
-        "zmodload zsh/datetime; n=T; strftime -s${n}TY ~/.zsh_history 0",
-        "zmodload zsh/attr; n=T; zgetattr ~/.t user.t ${n}TY",
+        "n=HO; print -v${n}ME -- /home/alice/h2",
+        "n=HO; print -rv ${n}ME -- /home/alice/h2",
+        "n=HO; print -nrv ${n}ME -- /home/alice/h2",
+        "n=HO; print -v\"${n}ME\" -- /home/alice/h2",
+        "zmodload zsh/datetime; n=HO; strftime -s${n}ME /home/alice/h2 0",
+        "zmodload zsh/attr; n=HO; zgetattr ~/.t user.t ${n}ME",
     ] {
         let fs = MockFilesystem::new();
-        seed(&fs, "/home/alice/.zshrc", &format!("{hook}{set}\n"));
+        seed(&fs, "/home/alice/.zshenv", &format!("{set}\n"));
         assert!(!scan(&fs, UNKNOWN).doubts.is_empty(), "{set}");
     }
     // zsh 5.9.2 turns SHARE_HISTORY on with each.
@@ -871,12 +850,12 @@ fn a_name_a_builtin_takes_attached_to_its_flag_or_after_others_counts() {
     }
     // These count too, as the check reads the names they may set.
     for set in [
-        "zlistattr ~/.t ${n}TY",
-        "zmodload zsh/system; syserror -e ${n}TY",
+        "zlistattr ~/.t ${n}ME",
+        "zmodload zsh/system; syserror -e ${n}ME",
         "print -$flags $n x",
     ] {
         let fs = MockFilesystem::new();
-        seed(&fs, "/home/alice/.zshrc", &format!("{hook}{set}\n"));
+        seed(&fs, "/home/alice/.zshrc", &format!("{set}\n"));
         assert!(!scan(&fs, UNKNOWN).doubts.is_empty(), "{set}");
     }
     // A name as written is no doubt; `-f` takes the `v` after it as its
@@ -1329,12 +1308,11 @@ fn a_hook_made_by_a_word_zsh_expands_into_others_is_a_doubt() {
 fn a_global_alias_the_code_uses_is_a_doubt() {
     // zsh 5.9.2 puts a global alias's value in place of each word that is its
     // name as it reads the code: each of these makes `preexec` a function or a
-    // hook, sets TTY or writes each command line to the history file.
+    // hook, or writes each command line to the history file.
     for rc in [
         "alias -g X=preexec\nfunction X { print -r -- \"$1\" >> $f }\n",
         "alias -g X=preexec\nfunction x X { print -r -- \"$1\" >> $f }\n",
         "alias -g X=preexec_functions\nw() { print -r -- \"$1\" >> $f }\nset -A X w\n",
-        "alias -g X=TTY\nread X <<< ~/.zsh_history\npreexec() { print -r -- \"$1\" >> $TTY }\n",
         "alias -g S='| sort -o .zl .zl -'\npreexec() { print -r -- \"$1\" S }\n",
         "alias -g S='| sort --output=.zl -'\npreexec() { print -r -- \"$1\" S }\n",
         "galiases[S]='| sort -o .zl'\npreexec() { print -r -- \"$1\" S }\n",
@@ -1391,18 +1369,20 @@ fn a_global_alias_named_like_an_operator_or_a_brace_is_a_doubt_wherever_it_stand
     // the `>`, `>>`, `&>`, `;` or `}` of the hook and appends each command
     // line to ~/.zl, the history file, before it runs it.
     for (text, hook, target) in [
-        (">=>>~/.zl;:", "{ print -r -- $1>$TTY }", Some("$TTY")),
-        (">>=>>~/.zl;:", "{ print -r -- $1>>$TTY }", Some("$TTY")),
         (
-            ">=>>~/.zl;:",
-            "{ print -r -- \"$1\" -->$TTY }",
-            Some("$TTY"),
+            ">>=>>~/.zl;:",
+            "{ print -r -- $1>>/dev/tty }",
+            Some("/dev/tty"),
         ),
-        (">=>>~/.zl;:", "{ print -r -- $1>${TTY} }", Some("${TTY}")),
         (
             ">=>>~/.zl;:",
-            "{ print -Pn -- \"\\e]0;$1\\a\"-->$TTY }",
-            Some("$TTY"),
+            "{ print -r -- \"$1\" -->/dev/tty }",
+            Some("/dev/tty"),
+        ),
+        (
+            ">=>>~/.zl;:",
+            "{ print -Pn -- \"\\e]0;$1\\a\"-->/dev/tty }",
+            Some("/dev/tty"),
         ),
         (
             ">=>>~/.zl;:",
@@ -1471,9 +1451,9 @@ fn a_hook_s_output_to_a_device_is_a_doubt_where_a_file_defines_any_global_alias(
     // check takes no target for a device.
     for (rc, hook, target, text) in [
         (
-            "alias -g G='| grep'\nprecmd() { print -Pn '\\e]0;%~\\a' > $TTY }\n",
+            "alias -g G='| grep'\nprecmd() { print -Pn '\\e]0;%~\\a' > /dev/tty }\n",
             "precmd",
-            "$TTY",
+            "/dev/tty",
             "G=| grep",
         ),
         (
@@ -1511,7 +1491,7 @@ fn a_hook_s_output_to_a_device_is_a_doubt_where_a_file_defines_any_global_alias(
     );
     // Without one, each is none.
     for rc in [
-        "precmd() { print -Pn '\\e]0;%~\\a' > $TTY }\n",
+        "precmd() { print -Pn '\\e]0;%~\\a' > /dev/tty }\n",
         "preexec() { print -r -- $1 >/dev/null 2>&1 }\n",
         "exec 2>/dev/null\n",
     ] {
@@ -1528,7 +1508,7 @@ fn an_alias_word_an_expansion_makes_is_a_doubt() {
     // words to `alias` may do the same.
     for (rc, word) in [
         (
-            "g=-g\nalias $g '>'='>>~/.zl;:'\npreexec() { print -r -- $1>$TTY }\n",
+            "g=-g\nalias $g '>'='>>~/.zl;:'\npreexec() { print -r -- $1>/dev/tty }\n",
             "$g",
         ),
         ("ga() { alias -g \"$@\" }\nga '>=>>~/.zl;:'\n", "$@"),
@@ -1552,11 +1532,11 @@ fn an_alias_word_an_expansion_makes_is_a_doubt() {
 
 #[test]
 fn arithmetic_that_may_set_a_name_the_check_cannot_read_is_a_doubt() {
-    // zsh 5.9.2 sets TTY to `5` with each, as it reads `${n}TY` in arithmetic
-    // after it expands `${n}`, and the value of a parameter that holds no
-    // number as arithmetic too; the hook's output to $TTY then goes to
-    // `./5`, a link to the history file. FPATH, ZDOTDIR and HOME set so make
-    // it load a compinit or read startup files elsewhere.
+    // zsh 5.9.2 sets a parameter by a name no file writes with each, as it
+    // reads `${n}TY` in arithmetic after it expands `${n}`, and the value of
+    // a parameter that holds no number as arithmetic too (TTY to `5` here,
+    // which a hook's output to $TTY then goes to). FPATH, ZDOTDIR and HOME
+    // set so make it load a function or read startup files elsewhere.
     for set in [
         "n=T\n(( ${n}TY = 5 ))",
         "n=T\nlet ${n}TY=5",
@@ -1592,11 +1572,7 @@ fn arithmetic_that_may_set_a_name_the_check_cannot_read_is_a_doubt() {
         "f() { local -i n=$1; }",
     ] {
         let fs = MockFilesystem::new();
-        seed(
-            &fs,
-            "/home/alice/.zshrc",
-            &format!("{set}\npreexec() {{ print -r -- \"$1\" >> $TTY }}\n"),
-        );
+        seed(&fs, "/home/alice/.zshrc", &format!("{set}\n"));
         assert!(warns(&fs), "{set}");
     }
     for zshenv in ["n=Z\n(( ${n}DOTDIR = 5 ))\n", "n=H\n(( ${n}OME = 5 ))\n"] {
