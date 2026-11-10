@@ -45,6 +45,16 @@ fn changed(shown: &str) -> String {
     )
 }
 
+/// What a doubt that `shown`, a directory among them, changed after the
+/// shell started says.
+fn changed_directory(shown: &str) -> String {
+    format!(
+        "it cannot tell what the shell read as it started, as {shown} changed after it started \
+         (a shell started now reads what is there now, and zsh changes the directory that holds \
+         its history file as it starts unless HIST_FCNTL_LOCK is on)"
+    )
+}
+
 #[test]
 fn a_startup_file_that_changed_after_the_shell_started_is_a_doubt() {
     // zsh 5.9 to 5.9.2 keep SHARE_HISTORY on after it is taken out of
@@ -97,7 +107,7 @@ fn a_file_removed_after_the_shell_started_shows_in_its_directory() {
     dirs(&fs);
     assert_eq!(started(&fs), Scan::default());
     fs.mock_set_change_time(HOME, at(STARTED + 5));
-    assert_eq!(started(&fs).doubts, [changed("/home/alice")]);
+    assert_eq!(started(&fs).doubts, [changed_directory("/home/alice")]);
     // A file sourced from a directory that is no longer there: the deepest
     // one on the way that is.
     let fs = MockFilesystem::new();
@@ -106,14 +116,76 @@ fn a_file_removed_after_the_shell_started_shows_in_its_directory() {
     fs.mock_set_change_time("/home/alice/.zshrc", at(STARTED - 10));
     assert_eq!(started(&fs), Scan::default());
     fs.mock_set_change_time(HOME, at(STARTED + 5));
-    assert_eq!(started(&fs).doubts, [changed("/home/alice")]);
+    assert_eq!(started(&fs).doubts, [changed_directory("/home/alice")]);
     // The directory of a file there, which holds its compiled form.
     let fs = MockFilesystem::new();
     dirs(&fs);
     fs.mock_set_path_type("/etc/zsh", PathKind::Dir);
     seed(&fs, "/etc/zsh/zshrc", "true\n");
     fs.mock_set_change_time("/etc/zsh", at(STARTED + 5));
-    assert_eq!(started(&fs).doubts, [changed("/etc/zsh")]);
+    assert_eq!(started(&fs).doubts, [changed_directory("/etc/zsh")]);
+}
+
+#[test]
+fn a_directory_above_what_the_shell_read_counts_too() {
+    // zsh 5.9 to 5.9.2 keep SHARE_HISTORY on after `mv ~/.zsh/plugins
+    // ~/.zsh/plugins.old; mv ~/.zsh/plugins.new ~/.zsh/plugins` takes the
+    // file that turned it on away: the directories renamed and the one that
+    // holds them change, what is in them keeps its change times.
+    for dir in ["/home/alice/.zsh/plugins", "/home/alice/.zsh", "/home", "/"] {
+        let fs = MockFilesystem::new();
+        dirs(&fs);
+        for path in ["/home/alice/.zsh", "/home/alice/.zsh/plugins"] {
+            fs.mock_set_path_type(path, PathKind::Dir);
+        }
+        fs.mock_set_path_type("/home/alice/.zsh/plugins/hist", PathKind::Dir);
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            "source ~/.zsh/plugins/hist/hist.zsh\n",
+        );
+        seed(&fs, "/home/alice/.zsh/plugins/hist/hist.zsh", "true\n");
+        assert_eq!(started(&fs), Scan::default(), "{dir}");
+        fs.mock_set_change_time(dir, at(STARTED + 5));
+        assert_eq!(started(&fs).doubts, [changed_directory(dir)], "{dir}");
+    }
+}
+
+#[test]
+fn only_what_changed_is_fixed_by_a_zsh_started_after_it() {
+    use super::super::restart_fix;
+    let fix = |doubts: &[&str]| {
+        restart_fix(
+            &doubts
+                .iter()
+                .map(|doubt| (*doubt).to_string())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let file = changed("/home/alice/.zshrc");
+    let directory = changed_directory("/home/alice");
+    let restart = "Type the decoy commands in a zsh you start after the change, the way you \
+                   started this one: it reads the startup files as they are then.";
+    assert_eq!(fix(&[&file]), Some(restart));
+    // Where a directory changed, the history file's lock may have changed it.
+    let lock = fix(&[&file, &directory]).expect("a fix");
+    assert!(lock.starts_with(restart), "{lock}");
+    assert!(lock.contains("turn HIST_FCNTL_LOCK on"), "{lock}");
+    // What the check cannot read, a new zsh cannot fix: the start, a change
+    // time or a link, beside such a doubt or alone; nor another doubt.
+    for other in [
+        "it cannot tell what the shell read as it started, as it cannot tell when it started \
+         (/proc/stat gives no boot time)",
+        "it cannot tell what the shell read as it started, as when /etc changed cannot be read \
+         (permission denied)",
+        "it cannot tell what the shell read as it started in /home/alice/.d/x, as /home/alice/.d \
+         leads through more than 40 links",
+        "it cannot follow the file /home/alice/.zshrc sources as `$f`",
+    ] {
+        assert_eq!(fix(&[other]), None, "{other}");
+        assert_eq!(fix(&[&file, other]), None, "{other}");
+    }
+    assert_eq!(fix(&[]), None);
 }
 
 #[test]
@@ -142,12 +214,14 @@ fn a_link_on_the_way_that_changed_after_the_shell_started_is_a_doubt() {
     fs.mock_set_change_time("/etc", at(STARTED + 60));
     assert_eq!(
         started(&fs).doubts,
-        [changed("/etc, /etc/static and /etc/zshrc")]
+        [changed_directory("/etc, /etc/static and /etc/zshrc")]
     );
     fs.mock_set_change_time(HOME, at(STARTED + 60));
     assert_eq!(
         started(&fs).doubts,
-        [changed("/etc, /etc/static, /etc/zshrc and 1 more")]
+        [changed_directory(
+            "/etc, /etc/static, /etc/zshrc and 1 more"
+        )]
     );
 }
 

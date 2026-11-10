@@ -40,8 +40,8 @@
 //! that code, so such a `.zwc` is a doubt, and so is a path zsh expands into
 //! others (a glob, `{a,b}`). zsh runs with what it read as it started: for a
 //! zsh that runs now, a path the check reads or looks for that changed after
-//! the shell started, a link on the way to it or the directory it is in, is
-//! a doubt ([`since`]).
+//! the shell started, a link or a directory on the way to it, is a doubt
+//! ([`since`]).
 //!
 //! An option counts as on wherever a file zsh reads names it, outside a line
 //! that is a comment, in either form: a `setopt` or an `unsetopt`, an array, a
@@ -129,7 +129,7 @@ use lexer::Word;
 #[cfg(test)]
 use lexer::{End, Token, tokens};
 use shadows::{Changer, Snapshot};
-pub(super) use since::STALE;
+pub(super) use since::restart_fix;
 use std::path::{Path, PathBuf};
 use walk::{Event, Input, Read, events};
 

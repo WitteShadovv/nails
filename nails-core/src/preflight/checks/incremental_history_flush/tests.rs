@@ -1432,6 +1432,23 @@ fn a_typed_zsh_whose_files_changed_after_it_started_is_told_to_start_again() {
         CheckResult::Pass(_)
     ));
     assert!(matches!(run(&fs, shell(None)), CheckResult::Pass(_)));
+    // Where the check cannot tell when the shell started, a new one is no
+    // fix.
+    let unread = Some(Err("/proc/stat gives no boot time".to_string()));
+    let message = warning(run(&fs, shell(unread)));
+    assert!(message.ends_with(ZSH_FIX), "{message}");
+    // Where a directory changed, which the history file's lock may change
+    // as zsh starts, the fix says so.
+    fs.mock_set_change_time(HOME, started + Duration::from_secs(30));
+    let message = warning(run(&fs, shell(Some(Ok(started)))));
+    assert!(
+        message.ends_with(
+            "Where the history file is in a directory named here, first turn HIST_FCNTL_LOCK on \
+             in the startup files or keep the history file in a directory of its own, or the new \
+             zsh changes that directory again as it starts."
+        ),
+        "{message}"
+    );
     // Beside another doubt, the fix is the one for that.
     seed(&fs, "/home/alice/.zshrc", "eval \"$x\"\n");
     let message = warning(run(&fs, shell(Some(Ok(started)))));

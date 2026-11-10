@@ -385,12 +385,6 @@ const REOPENED_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshen
                                 RCS or GLOBAL_RCS, it may read the other startup files too: \
                                 take that out of them.";
 
-/// The fix for a zsh that may have read other startup files as it started
-/// than those there now, and that the check finds nothing else in.
-const RESTART_ZSH_FIX: &str = "Type the decoy commands in a zsh you start after the change, \
-                               the way you started this one: it reads the startup files as they \
-                               are then.";
-
 /// The fix for a zsh whose command line turns an option on, or makes it
 /// read other startup files.
 const COMMAND_LINE_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, with \
@@ -467,18 +461,12 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
             }
             // A zsh whose only doubt is what changed after it started reads
             // its files as they are now once started again.
-            let stale = scan.writes.is_empty()
-                && !scan.doubts.is_empty()
-                && scan
-                    .doubts
-                    .iter()
-                    .all(|doubt| doubt.starts_with(zsh::STALE));
-            judge_zsh(
-                &scan,
-                program,
-                part,
-                if stale { RESTART_ZSH_FIX } else { fix },
-            )
+            let restart = scan
+                .writes
+                .is_empty()
+                .then(|| zsh::restart_fix(&scan.doubts))
+                .flatten();
+            judge_zsh(&scan, program, part, restart.unwrap_or(fix))
         }
         Kind::Bash => judge_bash(&startup::bash(fs, shell.homes), program, part),
         Kind::Fish if nails_teardown::shells::fish_is_private(shell.argv) => CheckResult::Pass(

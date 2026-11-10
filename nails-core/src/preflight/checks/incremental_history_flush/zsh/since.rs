@@ -15,13 +15,22 @@
 //! rename into place changes, and the directory zsh looks in for it and its
 //! compiled form, or, for a path that leads to nothing now, the deepest
 //! directory on the way that is there, whose entries change as a file in it
-//! is made, removed or renamed. The Nix store and what is below it are left
-//! out: nothing in a store path changes once it is there, and a new one is
-//! reached only through a link that changed. On NixOS the link to the
-//! system it runs (`/run/current-system`), which each switch replaces,
+//! is made, removed or renamed; and each directory above those, up to the
+//! root, as one renamed into place keeps the change times of what is in it
+//! (`mv ~/.zsh/plugins.new ~/.zsh/plugins`). The Nix store and what is below
+//! it are left out: nothing in a store path changes once it is there, and a
+//! new one is reached only through a link that changed. On NixOS the link to
+//! the system it runs (`/run/current-system`), which each switch replaces,
 //! counts too, so a switch shows whatever `/etc` is made of: links into the
 //! store, or a mount of an image whose files may keep the image's change
 //! times.
+//!
+//! A directory changes as any file in it is made or removed, and zsh makes
+//! and removes a lock file beside its history file as it reads that file as
+//! it starts, unless `HIST_FCNTL_LOCK` is on: so a zsh whose history file is
+//! in a directory that counts (the home, `ZDOTDIR`) without that option
+//! changes it as it starts, however new it is, and the fix the warning gives
+//! then says so.
 //!
 //! A change up to three seconds before the shell started counts too: the
 //! boot time its start is read from is cut to the second, the times are
@@ -53,7 +62,43 @@ const NIXOS: &str = "/etc/NIXOS";
 const SYSTEM: &str = "/run/current-system";
 
 /// How each doubt of what changed after the shell started starts.
-pub(in super::super) const STALE: &str = "it cannot tell what the shell read as it started";
+const STALE: &str = "it cannot tell what the shell read as it started";
+
+/// What a doubt of what changed after the shell started says past what
+/// changed, which a zsh started after the change fixes; and what it says
+/// where a directory changed.
+const CHANGED: &str = "changed after it started (a shell started now reads what is there now";
+const DIRECTORY: &str = ", and zsh changes the directory that holds its history file as it \
+                         starts unless HIST_FCNTL_LOCK is on";
+
+/// The fix for a zsh that may have read other startup files as it started
+/// than those there now, and that the check finds nothing else in; and the
+/// one where a directory changed, which may be the one the history file is
+/// in.
+const RESTART_FIX: &str = "Type the decoy commands in a zsh you start after the change, the way \
+                           you started this one: it reads the startup files as they are then.";
+const DIRECTORY_FIX: &str = "Type the decoy commands in a zsh you start after the change, the \
+                             way you started this one: it reads the startup files as they are \
+                             then. Where the history file is in a directory named here, first \
+                             turn HIST_FCNTL_LOCK on in the startup files or keep the history \
+                             file in a directory of its own, or the new zsh changes that \
+                             directory again as it starts.";
+
+/// The fix for a zsh whose files gave `doubts` and no write, where each of
+/// them is that what it read changed after it started, which a zsh started
+/// after the change fixes; `None` where another doubt is among them, one the
+/// check cannot read when the shell or a path changed among them.
+pub(in super::super) fn restart_fix(doubts: &[String]) -> Option<&'static str> {
+    let restarts = |doubt: &String| doubt.starts_with(STALE) && doubt.contains(CHANGED);
+    if doubts.is_empty() || !doubts.iter().all(restarts) {
+        return None;
+    }
+    Some(if doubts.iter().any(|doubt| doubt.contains(DIRECTORY)) {
+        DIRECTORY_FIX
+    } else {
+        RESTART_FIX
+    })
+}
 
 /// Whether a path whose status changed at `changed` may have changed after
 /// a shell that started at `started` read it: a change in the second
@@ -138,6 +183,12 @@ impl<F: Filesystem> Reader<'_, F> {
             }
         }
         changed.sort();
+        // A directory, which a link may lead to but which is none.
+        let directory = changed.iter().any(|path| {
+            let path = Path::new(path);
+            matches!(self.fs.is_symlink(path), Ok(false))
+                && matches!(self.fs.is_directory(path), Ok(true))
+        });
         if !changed.is_empty() {
             let shown = match changed.len() {
                 1 => changed[0].clone(),
@@ -150,13 +201,8 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
                 count => format!("{} and {} more", changed[..NAMED].join(", "), count - NAMED),
             };
-            doubts.insert(
-                0,
-                format!(
-                    "{STALE}, as {shown} changed after it started (a shell started now reads \
-                     what is there now)"
-                ),
-            );
+            let directory = if directory { DIRECTORY } else { "" };
+            doubts.insert(0, format!("{STALE}, as {shown} {CHANGED}{directory})"));
         }
         for doubt in doubts {
             self.doubt(doubt);
@@ -164,9 +210,9 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// The paths whose change times tell whether a lookup of `path` finds
-    /// what it found as the shell started (see [the module](self)), but those
-    /// in the Nix store; `Err` with why when the check cannot follow the
-    /// links on the way.
+    /// what it found as the shell started (see [the module](self)), each
+    /// directory above them among them, but those in the Nix store; `Err`
+    /// with why when the check cannot follow the links on the way.
     fn counted(&self, path: &Path) -> Result<Vec<PathBuf>, String> {
         let mut counted = Vec::new();
         let holder = match path.parent() {
@@ -190,6 +236,12 @@ impl<F: Filesystem> Reader<'_, F> {
                 counted.push(holder);
             }
         }
+        let above: Vec<PathBuf> = counted
+            .iter()
+            .flat_map(|path| path.ancestors().skip(1))
+            .map(Path::to_path_buf)
+            .collect();
+        counted.extend(above);
         counted.retain(|path| !path.starts_with(STORE));
         Ok(counted)
     }
