@@ -14,9 +14,14 @@
 //! - every `/etc/fstab` entry, swap and `noauto` ones included, except a line
 //!   of a RAM, kernel, host-share, network or overlay filesystem that is no
 //!   bind line, whose first field names no storage of the decoy's (`_netdev`
-//!   lets no line go); a bind line of any type (or a swap or image file) is
-//!   claimed through the mount that holds its source, read as written: no
-//!   link in it is followed (see the `paths` module);
+//!   lets no line go); a bind line of any type (one with a `bind` or `rbind`
+//!   option, `bind=x` too), or a swap or image file, or the file a FUSE line
+//!   gives its program, is claimed through the mount that holds its path,
+//!   read as written: no link in it is followed (see the `paths` and `placed`
+//!   modules). A FUSE line names a device or a path by the source it gives its
+//!   program, the part after the `#` of a `fuse` line's first field (see the
+//!   `plain` module), and claims as well the mount that holds the program
+//!   `mount.fuse` runs, where the line names it by an absolute path;
 //! - every `/etc/crypttab` source and its `/dev/mapper/<name>`;
 //! - the mounts at `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`,
 //!   `/boot/efi`, `/nix` and `/opt` that are not at or under the hidden root.
@@ -28,26 +33,29 @@
 //! for a device on the hidden drive or one that cannot be found, an fstab bind
 //! line whose source, as written, lies in the volume, at the root's folder or
 //! inside it as the mount that holds the source shows it, which mounts the
-//! volume or a folder of it, and a swap or image file line whose file lies
-//! there, which the boot swaps on or mounts. Such an entry is an enabler
+//! volume or a folder of it, a swap or image file line whose file lies
+//! there, which the boot swaps on or mounts, and a FUSE line whose program
+//! lies there, which the boot runs. Such an entry is an enabler
 //! stored on the decoy; the attach gate ignores the finding (writing to the
-//! root stays safe) and the `backend-entries` check reports it. A bind line,
-//! or a swap or image file line, whose path cannot be told ([`UntoldPath`])
-//! may mount the volume too, and is reported as an entry where that cannot be
-//! told ([`EntryKind::Untold`]), wherever its text places it: a path with a
+//! root stays safe) and the `backend-entries` check reports it. A line placed
+//! by a path whose place cannot be told ([`UntoldPath`]) may mount the volume
+//! too, and is reported as an entry where that cannot be told
+//! ([`EntryKind::Untold`]), wherever its text places it: a path with a
 //! symbolic link in any part, which is not followed, one that is not absolute
 //! or is a device node, one that crosses the folder of a line, a `noauto` one
 //! too, while that line's mount is not there now, one that cannot be looked
 //! up, and one whose lookup would mount an automount point. So is every fstab
-//! line that is not plain ([`read_fstab`]): NAILS reads only plain lines, and
-//! that is the only finding such a line makes, while it claims what NAILS
-//! reads in it and makes no mount of the decoy's own ([`decoys_own_mount`]).
+//! or crypttab line that is not plain ([`read_fstab`], [`read_crypttab`]):
+//! NAILS reads only plain lines, and that is the only finding such a line
+//! makes, while it claims what NAILS reads in it and makes no mount of the
+//! decoy's own ([`decoys_own_mount`]).
 //! A finding is no claim, except an fstab entry the
 //! boot mounts or swaps on, one for another device of the root's btrfs
 //! filesystem, which is the decoy's own storage too, and a line placed by its
 //! path: every bind line, a `noauto` one too, claims the filesystem its source
-//! lies on, and every swap or image file line the one that holds its file, as
-//! their text places them, also where their path cannot be told. A
+//! lies on, every swap or image file line the one that holds its file, and a
+//! FUSE line the one that holds its program, as their text places them, also
+//! where their path cannot be told. A
 //! finding the decoy's own boot needs, an fstab entry that mounts another of
 //! its filesystems or its swap, or the whole filesystem a root bound from a
 //! folder of it or a subvolume of it lies on (the decoy's line for `/` below a
@@ -131,6 +139,7 @@ mod extra;
 mod judge;
 mod lines;
 mod paths;
+mod placed;
 mod plain;
 #[cfg(test)]
 mod tests;
@@ -139,7 +148,7 @@ pub use collect::{Collected, collect, judge_storage};
 pub use judge::{claimed_devices, judge, shown_fstype};
 pub use lines::{decoys_own_mount, sharing};
 pub use paths::{NamedPaths, UntoldPath};
-pub use plain::{Unplain, UnplainLine, UnplainLines, read_fstab};
+pub use plain::{Unplain, UnplainLine, UnplainLines, read_crypttab, read_fstab};
 
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;
@@ -462,13 +471,17 @@ pub struct Scene<'a> {
     pub devices: &'a DeviceMap,
     /// Inputs that exist but could not be read (never taken as empty).
     pub unreadable: &'a [PathBuf],
-    /// The paths the fstab names, a bind line's source and a swap or image
-    /// file, as they read, with no link in them followed.
+    /// The paths the fstab names, a bind line's source, a swap or image file
+    /// and a FUSE program, as they read, with no link in them followed.
     pub paths: &'a NamedPaths,
     /// The lines of the fstab that are not plain, by the index of their
     /// entry in [`Scene::fstab`]: NAILS does not read them as `libmount` and
     /// systemd do (see [`read_fstab`]).
     pub unplain: &'a UnplainLines,
+    /// The lines of the crypttab that are not plain, by the index of their
+    /// entry in [`Scene::crypttab`]: NAILS does not read them as systemd does
+    /// (see [`read_crypttab`]).
+    pub unplain_crypttab: &'a UnplainLines,
 }
 
 impl<'a> Scene<'a> {
@@ -725,13 +738,14 @@ fn join(paths: &[PathBuf]) -> String {
 /// How serious an entry for the hidden drive is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
-    /// The entry opens or mounts the hidden volume itself.
+    /// The entry opens or mounts the hidden volume itself, or reads or runs
+    /// a file in it.
     Blocking,
     /// The entry opens only another volume on the same drive.
     OuterWarning,
     /// Where the entry leads cannot be told, so it may mount the hidden
-    /// volume: a bind line, or a swap or image file line, whose path cannot
-    /// be told ([`UntoldPath`]), or a line that is not plain
+    /// volume: a line placed by a path that cannot be told
+    /// ([`UntoldPath`]), or a line that is not plain
     /// ([`EntryFinding::not_plain`]).
     Untold,
 }

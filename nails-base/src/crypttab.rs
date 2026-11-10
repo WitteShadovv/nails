@@ -75,8 +75,19 @@ impl CrypttabEntry {
 /// Parse crypttab text. Comments, blank lines and lines with fewer than two
 /// fields are skipped.
 pub fn parse_crypttab(text: &str) -> Vec<CrypttabEntry> {
-    text.lines()
-        .map(str::trim)
+    parse_crypttab_lines(text)
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect()
+}
+
+/// [`parse_crypttab`], each entry with the line it is read from as that line
+/// is written, without the spaces and tabs around it. The lines are split as
+/// the fstab's are ([`lines`](crate::fstab::lines)): only spaces and tabs are
+/// trimmed, so a line that starts with other white space before a `#` is no
+/// comment, as it is none to systemd's crypttab generator either.
+pub fn parse_crypttab_lines(text: &str) -> Vec<(CrypttabEntry, &str)> {
+    crate::fstab::lines(text)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
@@ -90,12 +101,13 @@ pub fn parse_crypttab(text: &str) -> Vec<CrypttabEntry> {
                 .next()
                 .map(|options| options.split(',').map(str::to_string).collect())
                 .unwrap_or_default();
-            Some(CrypttabEntry {
+            let entry = CrypttabEntry {
                 name,
                 source,
                 key,
                 options,
-            })
+            };
+            Some((entry, line))
         })
         .collect()
 }
@@ -203,6 +215,33 @@ mod tests {
         assert!(!keyfile.is_tcrypt_hidden());
         assert!(!entry("veracrypt-pim=485").is_tcrypt());
         assert!(!entry("keyfile-offset=4096,keyfile-size=64").is_tcrypt());
+    }
+
+    /// systemd's crypttab generator trims only spaces, tabs and line ends:
+    /// a no-break space or a vertical tab before a `#` makes a line it opens
+    /// a volume for (systemd 260.5's generator wrote the units that open
+    /// `/dev/sdh` for `\u{a0}#vq7` and `/dev/sdi` for `\v#vq8`), so it is no
+    /// comment here either.
+    #[test]
+    fn only_spaces_and_tabs_are_trimmed_before_a_comment() {
+        let lines = parse_crypttab_lines(
+            "\t # a comment\n\
+             \u{a0}#vq7 /dev/sdh none luks,nofail\n\
+             \u{b}#vq8 /dev/sdi none luks,nofail\n\
+             data /dev/sdb none luks \t\r\n",
+        );
+        let read: Vec<(&str, &str, &str)> = lines
+            .iter()
+            .map(|(entry, line)| (entry.name.as_str(), entry.source.as_str(), *line))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("#vq7", "/dev/sdh", "\u{a0}#vq7 /dev/sdh none luks,nofail"),
+                ("#vq8", "/dev/sdi", "\u{b}#vq8 /dev/sdi none luks,nofail"),
+                ("data", "/dev/sdb", "data /dev/sdb none luks"),
+            ]
+        );
     }
 
     #[test]

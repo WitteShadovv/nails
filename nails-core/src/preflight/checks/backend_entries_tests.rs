@@ -1026,7 +1026,7 @@ fn a_swap_or_image_line_whose_path_is_a_device_node_fails() {
 
 /// Why a line whose first field is no absolute path and no tag is not plain.
 const RELATIVE: &str = "its first field is neither an absolute path nor a UUID=, LABEL=, \
-                        PARTUUID=, PARTLABEL= or ID= tag";
+                        PARTUUID= or PARTLABEL= tag";
 
 /// The finding for the line that is not plain whose first three fields read
 /// `shown`, for `reason`.
