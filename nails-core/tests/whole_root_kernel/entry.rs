@@ -1463,6 +1463,9 @@ mod hidden_build;
 #[path = "entry_hidden_fstab.rs"]
 mod hidden_fstab;
 
+#[path = "entry_persona.rs"]
+mod persona;
+
 #[test]
 fn nothing_the_way_back_mounts_shows_below_the_hidden_volume() {
     // In the hidden session the carried filesystems are shared binds on
