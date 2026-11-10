@@ -11,10 +11,12 @@
 //! as a pure function over what the decoy claims as its own storage:
 //!
 //! - the mount at `/`;
-//! - every `/etc/fstab` entry, swap and `noauto` ones included, except RAM,
-//!   kernel, host-share, network and overlay filesystems; a bind (or a swap
-//!   or image file) is claimed through the mount that holds its source, read
-//!   as written: no link in it is followed (see the `paths` module);
+//! - every `/etc/fstab` entry, swap and `noauto` ones included, except a line
+//!   of a RAM, kernel, host-share, network or overlay filesystem that is no
+//!   bind line, whose first field names no storage of the decoy's (`_netdev`
+//!   lets no line go); a bind line of any type (or a swap or image file) is
+//!   claimed through the mount that holds its source, read as written: no
+//!   link in it is followed (see the `paths` module);
 //! - every `/etc/crypttab` source and its `/dev/mapper/<name>`;
 //! - the mounts at `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`,
 //!   `/boot/efi`, `/nix` and `/opt` that are not at or under the hidden root.
@@ -23,19 +25,21 @@
 //! stack, or into another device of its btrfs filesystem and what lies below
 //! that, or names one of their mappings, is an entry for the hidden drive,
 //! reported as an [`EntryFinding`]; so is a crypttab entry with `tcrypt-hidden`
-//! for a device on the hidden drive or one that cannot be found, and an fstab
-//! bind line whose source, as written, lies in the volume, at the root's folder
-//! or inside it as the mount that holds the source shows it, which mounts the
-//! volume or a folder of it. Such an entry is an enabler stored on the decoy;
-//! the attach gate ignores the finding (writing to the root stays safe) and the
-//! `backend-entries` check reports it. A bind line, or a swap or image file
-//! line, whose path cannot be told ([`UntoldPath`]) may mount the volume too,
-//! and is reported as an entry where that cannot be told
-//! ([`EntryKind::Untold`]), wherever its text places it: a path with a symbolic
-//! link in any part, which is not followed, one that is not absolute or is a
-//! device node, one that crosses a folder the boot mounts while that mount is
-//! not there now, one that cannot be looked up, and one whose lookup would
-//! mount an automount point. A finding is no claim, except an fstab entry the
+//! for a device on the hidden drive or one that cannot be found, an fstab bind
+//! line whose source, as written, lies in the volume, at the root's folder or
+//! inside it as the mount that holds the source shows it, which mounts the
+//! volume or a folder of it, and a swap or image file line whose file lies
+//! there, which the boot swaps on or mounts. Such an entry is an enabler
+//! stored on the decoy; the attach gate ignores the finding (writing to the
+//! root stays safe) and the `backend-entries` check reports it. A bind line,
+//! or a swap or image file line, whose path cannot be told ([`UntoldPath`])
+//! may mount the volume too, and is reported as an entry where that cannot be
+//! told ([`EntryKind::Untold`]), wherever its text places it: a path with a
+//! symbolic link in any part, which is not followed, one that is not absolute
+//! or is a device node, one that crosses the folder of a line, a `noauto` one
+//! too, while that line's mount is not there now, one that cannot be looked
+//! up, and one whose lookup would mount an automount point.
+//! A finding is no claim, except an fstab entry the
 //! boot mounts or swaps on, one for another device of the root's btrfs
 //! filesystem, which is the decoy's own storage too, and a line placed by its
 //! path: every bind line, a `noauto` one too, claims the filesystem its source

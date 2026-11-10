@@ -634,10 +634,13 @@ fn on_a_decoy_filesystem_a_separate_drive_also_mounted_at_a_system_folder_counts
         "/dev/vda1 / ext4 defaults 0 1\n/dev/sdb1 /srv ext4 defaults 0 2\n",
     );
     assert!(elsewhere_on_the_decoy(&fs).is_empty());
-    // So does a line that names it by a link udev made for it.
+    // So does a line that names it by a link udev made for it, and one that
+    // systemd mounts after the network.
     let fs = decoy_fs(table, "UUID=b1 /srv ext4 defaults 0 2\n");
     fs.create_symlink(Path::new("/dev/sdb1"), Path::new("/dev/disk/by-uuid/b1"))
         .unwrap();
+    assert!(elsewhere_on_the_decoy(&fs).is_empty());
+    let fs = decoy_fs(table, "/dev/sdb1 /srv ext4 _netdev 0 0\n");
     assert!(elsewhere_on_the_decoy(&fs).is_empty());
     // A line for another device at /srv, one whose spec leads to no device,
     // or one of a kind the judge claims nothing by (swap, RAM, kernel, a
@@ -650,7 +653,6 @@ fn on_a_decoy_filesystem_a_separate_drive_also_mounted_at_a_system_folder_counts
         "/dev/sdb1 /srv swap defaults 0 0\n",
         "/dev/sdb1 /srv tmpfs defaults 0 0\n",
         "/dev/sdb1 /srv virtiofs defaults 0 0\n",
-        "/dev/sdb1 /srv ext4 _netdev 0 0\n",
         "/dev/sdb1 /srv overlay defaults 0 0\n",
     ] {
         let fs = decoy_fs(table, fstab);

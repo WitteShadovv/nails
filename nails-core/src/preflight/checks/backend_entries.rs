@@ -23,9 +23,10 @@
 //! as on an encrypted decoy. A line that mounts that filesystem at any other
 //! folder still is one, since it may name the hidden drive's disk, and so are
 //! a line whose mount is not there, a line that mounts the volume itself (a
-//! bind line from the root's folder among them), a `noauto` crypttab line,
-//! one with `tcrypt-hidden`, one for any other device and every line for a
-//! root that is the whole filesystem.
+//! bind line of any type from the root's folder among them), a swap or image
+//! line whose file lies in the root's folder, a `noauto` crypttab line, one
+//! with `tcrypt-hidden`, one for any other device and every line for a root
+//! that is the whole filesystem. `_netdev` lets no line go.
 //!
 //! An entry that opens only another volume on the same drive (a VeraCrypt
 //! outer volume of another partition) warns: the decoy is configured to open
@@ -35,11 +36,11 @@
 //! they are written, one part at a time, and no link in them is followed. A
 //! line whose path cannot be told fails as well, with or without the flag: a
 //! path with a symbolic link in any part, one that is not absolute, a device
-//! node, one that crosses a folder that a line of the fstab mounts at boot
-//! while that mount is not there now, one with a part that cannot be looked
-//! up, and one whose lookup would mount an automount point. Such a line may
-//! mount the volume, so the check says why it cannot tell where the line
-//! leads, and to write it with its real path.
+//! node, one that crosses the folder of a line of the fstab, a `noauto` one
+//! too, while that line's mount is not there now, one with a part that cannot
+//! be looked up, and one whose lookup would mount an automount point. Such a
+//! line may mount the volume, so the check says why it cannot tell where the
+//! line leads, and to write it with its real path.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot

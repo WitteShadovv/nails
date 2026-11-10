@@ -14,8 +14,10 @@
 //! The paths the fstab names, a bind line's source and the path of a swap or
 //! image file, are read below `etc_root` as they are written, one part at a
 //! time, with no link in them followed (see the `paths` module), once the
-//! block devices are known, which tell the folders the boot mounts whose
-//! mount is not there now. They are never resolved as the names of devices.
+//! block devices are known, which tell the folders of its lines whose mount
+//! is not there now. The path of a swap or image file is never resolved as
+//! the name of a device, and neither is a bind line's source that is an
+//! absolute path outside `/dev`.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as

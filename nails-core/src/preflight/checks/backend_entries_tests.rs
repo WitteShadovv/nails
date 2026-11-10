@@ -1054,46 +1054,178 @@ fn a_swap_or_image_line_whose_path_is_not_absolute_fails_with_the_flag_too() {
 }
 
 #[test]
-fn a_bind_line_below_a_folder_the_boot_mounts_but_is_not_mounted_fails_with_the_flag_too() {
-    // The fstab mounts vdc1 at /backup at boot, but it is not mounted now:
-    // what /backup/link is at boot, a link to /srv/x say, cannot be read.
-    let fstab = "/dev/vda1 / ext4 defaults 0 1\n/dev/vdc1 /backup ext4 defaults,nofail 0 2\n\
-                 /backup/link /mnt none bind 0 0\n";
-    let fs = rendered(BIND_OF_ROOT, fstab);
-    fs.mock_set_mount_root_error("/backup/link", std::io::ErrorKind::NotFound);
-    let finding = untold(
-        "/backup/link /mnt none",
-        "its source",
-        "a line of /etc/fstab mounts /backup at boot, and that mount is not there now",
-    );
-    assert!(hidden_volume_with_the_flag(&fs).is_warn());
-    fails_as_untold(&fs, Allow::DecoyStorage, &finding);
-    let result = run_allowing(&fs, Allow::Nothing);
-    assert!(
-        result
-            .message()
-            .contains(&format!("It may name it as well: {finding}")),
-        "{}",
-        result.message()
-    );
-    // Once vdc1 is mounted at /backup, the place is read there: a link is
-    // one, and a folder there is judged as it reads.
-    let mounted = format!("{BIND_OF_ROOT}7 1 8:33 / /backup rw - ext4 /dev/vdc1 rw\n");
-    let fs = rendered(&mounted, fstab);
-    fs.create_symlink(Path::new("/srv/x"), Path::new("/backup/link"))
-        .unwrap();
-    fails_as_untold(
-        &fs,
-        Allow::DecoyStorage,
-        &untold(
+fn a_bind_line_below_a_folder_of_a_line_that_is_not_mounted_fails_with_the_flag_too() {
+    // The fstab mounts vdc1 at /backup, at boot, by an automount or, for a
+    // noauto line, once the bind line below it needs it (N1 to N3 of the
+    // verify), but it is not mounted now: what /backup/link is then, a link
+    // to /srv/x say, cannot be read.
+    for options in ["noauto", "defaults,nofail", "noauto,x-systemd.automount"] {
+        let fstab = format!(
+            "/dev/vda1 / ext4 defaults 0 1\n/dev/vdc1 /backup ext4 {options} 0 2\n\
+             /backup/link /mnt none bind 0 0\n"
+        );
+        let fs = rendered(BIND_OF_ROOT, &fstab);
+        fs.mock_set_mount_root_error("/backup/link", std::io::ErrorKind::NotFound);
+        let finding = untold(
             "/backup/link /mnt none",
             "its source",
-            "/backup/link is a symbolic link, which NAILS does not follow",
+            "a line of /etc/fstab mounts /backup, and that mount is not there now",
+        );
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{options}");
+        fails_as_untold(&fs, Allow::DecoyStorage, &finding);
+        let result = run_allowing(&fs, Allow::Nothing);
+        assert!(
+            result
+                .message()
+                .contains(&format!("It may name it as well: {finding}")),
+            "{options}: {}",
+            result.message()
+        );
+        // Once vdc1 is mounted at /backup, the place is read there: a link
+        // is one, and a folder there is judged as it reads.
+        let mounted = format!("{BIND_OF_ROOT}7 1 8:33 / /backup rw - ext4 /dev/vdc1 rw\n");
+        let fs = rendered(&mounted, &fstab);
+        fs.create_symlink(Path::new("/srv/x"), Path::new("/backup/link"))
+            .unwrap();
+        fails_as_untold(
+            &fs,
+            Allow::DecoyStorage,
+            &untold(
+                "/backup/link /mnt none",
+                "its source",
+                "/backup/link is a symbolic link, which NAILS does not follow",
+            ),
+        );
+        let result = run_allowing(&rendered(&mounted, &fstab), Allow::DecoyStorage);
+        assert!(result.is_pass(), "{options}: {result:?}");
+        assert_eq!(result.message(), only_the_decoys_own_line("/"));
+    }
+}
+
+#[test]
+fn a_bind_line_of_any_type_or_with_netdev_fails_with_the_flag_too() {
+    // mount binds whatever type a bind line gives, and `_netdev` only has
+    // systemd mount it after the network: each of these binds the root's
+    // folder at the root at every boot, as the plain line does (T1 to T4 of
+    // the verify). hidden-volume passes the root with the flag's warning.
+    for (line, shown) in [
+        ("/srv/x /mnt tmpfs bind 0 0", "/srv/x /mnt tmpfs"),
+        ("/srv/x /mnt none bind,_netdev 0 0", "/srv/x /mnt none"),
+        ("/srv/x /mnt nfs bind 0 0", "/srv/x /mnt nfs"),
+        ("/srv/x /mnt overlay rbind 0 0", "/srv/x /mnt overlay"),
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
+        );
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{line}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{line}: {result:?}");
+        assert_eq!(
+            result.message(),
+            format!(
+                "The decoy's configuration names the volume at /mnt: /etc/fstab: '{shown}' (it \
+                 mounts the volume at /mnt). {STORED}"
+            ),
+            "{line}"
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{line}");
+    }
+}
+
+#[test]
+fn a_line_for_the_volume_with_netdev_or_of_a_host_share_type_fails() {
+    // The volume is the mapping `data` on the whole of sdb, at /mnt. A device
+    // or swap line for it with `_netdev` mounts it, or swaps on it, after
+    // the network, and a bind line from it of a host-share or overlay type
+    // binds a folder of it (X1 to X4 of the verify).
+    for (line, finding) in [
+        (
+            "/dev/mapper/data /media/x ext4 defaults,_netdev,nofail 0 0",
+            "/etc/fstab: '/dev/mapper/data /media/x ext4' (it mounts the volume at /mnt)",
         ),
+        (
+            "/dev/mapper/data none swap sw,_netdev 0 0",
+            "/etc/fstab: '/dev/mapper/data none swap' (it mounts the volume at /mnt)",
+        ),
+        (
+            "/mnt/data /srv/d 9p bind,nofail 0 0",
+            "/etc/fstab: '/mnt/data /srv/d 9p' (it mounts a folder of the volume at /mnt)",
+        ),
+        (
+            "/mnt/data /srv/d overlay bind,nofail 0 0",
+            "/etc/fstab: '/mnt/data /srv/d overlay' (it mounts a folder of the volume at /mnt)",
+        ),
+    ] {
+        let result = decoy()
+            .file(
+                "/etc/fstab",
+                &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}\n"),
+            )
+            .run();
+        assert!(result.is_fail(), "{line}: {result:?}");
+        assert_eq!(
+            result.message(),
+            format!("The decoy's configuration names the volume at /mnt: {finding}. {STORED}"),
+            "{line}"
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{line}");
+    }
+    // The gate refuses the volume the device line mounts at /media/x, as it
+    // does without `_netdev`.
+    let decoy = decoy().encrypted().file(
+        "/etc/fstab",
+        "/dev/nvme0n1p3 / ext4 defaults 0 1\n\
+         /dev/mapper/data /media/x ext4 defaults,_netdev,nofail 0 0\n",
     );
-    let result = run_allowing(&rendered(&mounted, fstab), Allow::DecoyStorage);
-    assert!(result.is_pass(), "{result:?}");
-    assert_eq!(result.message(), only_the_decoys_own_line("/"));
+    let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+        .run(&decoy.fs)
+        .unwrap();
+    assert!(gate.is_fail(), "{gate:?}");
+    assert!(
+        gate.message()
+            .contains("it is the filesystem this computer mounts at /media/x per /etc/fstab"),
+        "{}",
+        gate.message()
+    );
+}
+
+#[test]
+fn a_swap_or_image_file_in_the_roots_folder_fails_with_the_flag_too() {
+    // A swap file or an image file in the folder of / bound at the root lies
+    // in the volume: the decoy swaps on it, or mounts it, at every boot (F1
+    // to F3 of the verify), as a bind line from there mounts it.
+    for (line, shown) in [
+        (
+            "/srv/x/swapfile none swap sw 0 0",
+            "/srv/x/swapfile none swap",
+        ),
+        (
+            "/srv/x/disk.img /media/i ext4 loop,nofail 0 0",
+            "/srv/x/disk.img /media/i ext4",
+        ),
+        (
+            "/srv/x/disk.img /media/i ext4 nofail 0 0",
+            "/srv/x/disk.img /media/i ext4",
+        ),
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
+        );
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{line}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{line}: {result:?}");
+        assert_eq!(
+            result.message(),
+            format!(
+                "The decoy's configuration names the volume at /mnt: /etc/fstab: '{shown}' (the \
+                 file it names lies in the volume at /mnt). {STORED}"
+            ),
+            "{line}"
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{line}");
+    }
 }
 
 /// What the mock lists in `/proc/devices` for the encrypted decoys.

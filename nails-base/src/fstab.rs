@@ -78,6 +78,12 @@ const NETWORK_TYPES: &[&str] = &[
     "davfs",
 ];
 
+/// Whether `vfstype` is the type of a filesystem backed by a server
+/// (including FUSE network types), whatever the options of a line say.
+pub fn is_network_type(vfstype: &str) -> bool {
+    NETWORK_TYPES.contains(&vfstype) || vfstype.starts_with("fuse.sshfs")
+}
+
 impl FstabEntry {
     /// Whether an option is present (`noauto`, `bind`, `ro`, …).
     pub fn has_option(&self, name: &str) -> bool {
@@ -106,11 +112,10 @@ impl FstabEntry {
         is_host_share_type(&self.vfstype)
     }
 
-    /// A network filesystem (including FUSE network types).
+    /// A network filesystem (including FUSE network types), or a line
+    /// marked `_netdev`.
     pub fn is_network(&self) -> bool {
-        NETWORK_TYPES.contains(&self.vfstype.as_str())
-            || self.vfstype.starts_with("fuse.sshfs")
-            || self.has_option("_netdev")
+        is_network_type(&self.vfstype) || self.has_option("_netdev")
     }
 
     /// A bind mount.
