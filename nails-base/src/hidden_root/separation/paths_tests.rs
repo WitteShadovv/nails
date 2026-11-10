@@ -65,9 +65,10 @@ fn a_path_without_links_reads_as_it_is_written() {
     // the root: with no link on the way that is where the kernel goes too.
     assert_eq!(read_plain(&fs, "/srv/./x/../y/"), reads("/srv/y"));
     assert_eq!(read_plain(&fs, "/../srv/x"), reads("/srv/x"));
-    assert_eq!(as_written("/srv/./x/../y/"), Some(PathBuf::from("/srv/y")));
-    assert_eq!(as_written("/../srv"), Some(PathBuf::from("/srv")));
-    assert_eq!(as_written("srv/x"), None);
+    let written = |path: &str| as_written(Path::new(path));
+    assert_eq!(written("/srv/./x/../y/"), Some(PathBuf::from("/srv/y")));
+    assert_eq!(written("/../srv"), Some(PathBuf::from("/srv")));
+    assert_eq!(written("srv/x"), None);
 }
 
 #[test]
@@ -339,7 +340,8 @@ fn a_folder_the_boot_mounts_is_mounted_while_a_mount_its_line_makes_is_there() {
     // mounts, a bind line's a bind of its source's folder, and a RAM,
     // kernel or network line's any mount there, as systemd mounts /dev/shm
     // before the fstab's line for it. The line for /, a noauto line and a
-    // swap line have no folder the boot mounts.
+    // swap line have no folder the boot mounts, and a folder reads with no
+    // `.` or `..`, as systemd mounts it.
     let table = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
                  2 1 8:2 / /home rw - ext4 /dev/sda2 rw\n\
                  3 1 8:1 /srv/data /data rw - ext4 /dev/sda1 rw\n\
@@ -350,7 +352,7 @@ fn a_folder_the_boot_mounts_is_mounted_while_a_mount_its_line_makes_is_there() {
          /srv/data /data none bind 0 0\nnone /dev/shm tmpfs defaults 0 0\n\
          /dev/sda2 /backup ext4 defaults 0 2\nserver:/x /net nfs defaults 0 0\n\
          /srv/elsewhere /srv/b none bind 0 0\n/dev/sdz1 /srv/c ext4 noauto 0 0\n\
-         /swapfile none swap sw 0 0\n",
+         /swapfile none swap sw 0 0\n/dev/sdz2 /srv/./d/../e/ ext4 defaults 0 2\n",
     );
     let mut devices = DeviceMap::default();
     for (name, dev) in [("sda1", "8:1"), ("sda2", "8:2")] {
@@ -361,7 +363,7 @@ fn a_folder_the_boot_mounts_is_mounted_while_a_mount_its_line_makes_is_there() {
     }
     assert_eq!(
         unmounted_boot_folders(&parse_mountinfo(table), &fstab, &devices),
-        ["/backup", "/net", "/srv/b"].map(PathBuf::from)
+        ["/backup", "/net", "/srv/b", "/srv/e"].map(PathBuf::from)
     );
 }
 
