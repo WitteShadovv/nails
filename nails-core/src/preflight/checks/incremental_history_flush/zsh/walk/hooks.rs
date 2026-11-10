@@ -172,13 +172,15 @@ impl Walker<'_> {
     /// ([`zle_options`]): the function it makes a hook ([`Event::Hook`]), as
     /// a key bound to a widget may run it as a line is typed: `zle -N`'s,
     /// `zle -C`'s, which complete a word, a `zle -T` transformation's and
-    /// `zle -F`'s, which run as zle prints and as a descriptor has input. One
-    /// an expansion names is a doubt, and so is a word of its options that
-    /// an expansion, brace expansion or a glob may make (`{-N,zle-line-finish}`),
-    /// which may be any, and so is a widget it makes run as each line is
-    /// entered with the function of another (`zle -A old zle-line-finish`). A
-    /// widget made, copied or deleted may change what typed keys do
-    /// ([`Event::Rebind`]).
+    /// `zle -F`'s, which run as zle prints and as a descriptor has input,
+    /// and the name `zle -A` gives a widget, as the widgets `run-help` and
+    /// `which-command` run the command named as the key ran them, with the
+    /// line at hand (`zle -A run-help logit`). One an expansion names is a
+    /// doubt, and so is a word of its options that an expansion, brace
+    /// expansion or a glob may make (`{-N,zle-line-finish}`), which may be
+    /// any, and so is a widget it makes run as each line is entered with the
+    /// function of another (`zle -A old zle-line-finish`). A widget made,
+    /// copied or deleted may change what typed keys do ([`Event::Rebind`]).
     pub(super) fn zle(&mut self, args: &[Word]) {
         for arg in args {
             self.mention(&arg.text);
@@ -240,6 +242,11 @@ impl Walker<'_> {
                 self.place
             )));
             return;
+        }
+        if op == Some('A')
+            && let Some(widget) = words.get(1)
+        {
+            self.events.push(Event::Hook(widget.text.clone()));
         }
         if op == Some('U') {
             // `zle -U string`: what the string types runs as the line typed,
