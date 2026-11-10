@@ -1706,9 +1706,16 @@ fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
     }
     // zsh 5.9 to 5.9.2 read a file a function's code sources as the
     // function runs, a hook's at each prompt, after every command at the top:
-    // with these SHARE_HISTORY is on from the first prompt on.
+    // with these SHARE_HISTORY is on from the first prompt on, a path given
+    // in an option's word among them.
     for rc in [
         "precmd() { . ~/.zshrc.local }\ncp ~/.src ~/.zshrc.local\n",
+        "precmd() { . ~/.zshrc.local }\nsort -o/home/alice/.zshrc.local ~/.src\n",
+        "precmd() { . ~/.zshrc.local }\nsort --output=/home/alice/.zshrc.local ~/.src\n",
+        "precmd() { . ~/.zshrc.local }\ncurl -s -o/home/alice/.zshrc.local file:///x\n",
+        "precmd() { . ~/.zshrc.local }\nsort -o.zshrc.local ~/.src\n",
+        "precmd() { . ~/.zshrc.local }\nsort -mo.zshrc.local ~/.src\n",
+        "precmd() { . ~/.zshrc.local }\nsort --output=.zshrc.local ~/.src\n",
         "precmd() { . ~/.zshrc.local }\nsed -i -f ~/.s ~/.zshrc.local\n",
         "precmd() { . ~/.zshrc.local }\nsponge ~/.zshrc.local < ~/.src\n",
         "precmd() { . ~/.zshrc.local }\npreexec() { cp ~/.src ~/.zshrc.local }\n",
@@ -1732,6 +1739,7 @@ fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
         "cat ~/.zshrc.local >/dev/null\nchmod 600 ~/.zshrc.local\n. ~/.zshrc.local\n",
         "edit() { : }\nedit ~/.zshrc.local\n. ~/.zshrc.local\n",
         "sed -i -f ~/.s ~/.other\n. ~/.zshrc.local\n",
+        "sort -o/home/alice/.other ~/.src\nrm -rf ~/.cache/x\n. ~/.zshrc.local\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
