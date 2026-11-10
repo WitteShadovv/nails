@@ -24,8 +24,8 @@ const AUTOREMOVE: &[u8] =
     include_bytes!("../../../../../nails-base/src/packages/fixtures/apt/01autoremove");
 
 /// The setting turned on, as a person writes it.
-const ON: &str = "Unattended-Upgrade::InstallOnShutdown \"true\";\n";
-const OFF: &str = "Unattended-Upgrade::InstallOnShutdown \"false\";\n";
+pub(super) const ON: &str = "Unattended-Upgrade::InstallOnShutdown \"true\";\n";
+pub(super) const OFF: &str = "Unattended-Upgrade::InstallOnShutdown \"false\";\n";
 
 /// An invocation id as systemd writes it.
 const INVOCATION_ID: &str = "8028a17235414b4e80c950b24a7487d7"; // pragma: allowlist secret
@@ -166,7 +166,7 @@ fn stock_without_gi(release: &[u8]) -> tempfile::TempDir {
 /// A mock decoy whose helper runs (when `running`) and whose
 /// `apt.conf.d` holds `parts`: each name with its content, or with none
 /// for a file whose read fails. python3-gi is installed.
-fn mock_decoy(running: bool, parts: &[(&str, Option<&str>)]) -> MockFilesystem {
+pub(super) fn mock_decoy(running: bool, parts: &[(&str, Option<&str>)]) -> MockFilesystem {
     let fs = MockFilesystem::new();
     fs.mock_add_file("/usr/lib/python3/dist-packages/gi/__init__.py", "");
     if running {
