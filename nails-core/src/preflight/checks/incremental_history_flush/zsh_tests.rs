@@ -288,7 +288,8 @@ fn a_path_is_resolved_in_every_home_and_config_home_it_may_be_in() {
         ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"]
     );
 
-    // An XDG_CONFIG_HOME set under a condition, and the default beside it.
+    // An XDG_CONFIG_HOME set under a condition, and the default beside it,
+    // for a zsh whose environment holds none.
     let fs = MockFilesystem::new();
     seed(
         &fs,
@@ -310,12 +311,27 @@ fn a_path_is_resolved_in_every_home_and_config_home_it_may_be_in() {
         "/home/alice/.config/zsh/history.zsh",
         "setopt inc_append_history_time\n",
     );
+    let known = Install {
+        env: Some(install::Env::default()),
+        ..Install::default()
+    };
+    let found = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &known);
     assert_eq!(
-        on(&fs, NOT_LOGIN),
+        found
+            .writes
+            .iter()
+            .map(|write| write.what.as_str())
+            .collect::<Vec<_>>(),
         [
             "/home/alice/.cfg/zsh/history.zsh names SHARE_HISTORY",
             "/home/alice/.config/zsh/history.zsh names INC_APPEND_HISTORY_TIME",
         ]
+    );
+    // One whose environment the check does not know may hold another.
+    assert_eq!(
+        scan(&fs, NOT_LOGIN).doubts,
+        ["it cannot follow the file /home/alice/.zshrc sources as \
+             `${XDG_CONFIG_HOME:-$HOME/.config}/zsh/history.zsh`"]
     );
 }
 

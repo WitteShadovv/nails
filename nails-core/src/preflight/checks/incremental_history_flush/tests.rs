@@ -200,6 +200,16 @@ fn oh_my_zsh_turns_share_history_on_where_it_is_loaded() {
 
 #[test]
 fn the_user_files_are_read_from_the_zdotdir_a_zshenv_sets() {
+    // A shell whose environment holds no variable the check reads.
+    let zsh = |fs: &MockFilesystem| {
+        run(
+            fs,
+            InspectedShell {
+                environment: Some(Vec::new()),
+                ..typed("zsh", &["-zsh"])
+            },
+        )
+    };
     for value in [
         "\"$HOME/.config/zsh\"",
         "${XDG_CONFIG_HOME:-$HOME/.config}/zsh",

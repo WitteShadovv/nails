@@ -27,7 +27,9 @@ use std::time::SystemTime;
 /// for the functions it autoloads (`FPATH`), what NixOS's `/etc/zshenv`
 /// reads the Nix profiles from (`NIX_PROFILES`, and the `USER` and
 /// `XDG_STATE_HOME` its `set-environment` writes them with), where zsh
-/// reads the user's startup files (`HOME`, `ZDOTDIR`), the name zsh gives
+/// reads the user's startup files (`HOME`, `ZDOTDIR`), what the files may
+/// put them in (`XDG_CONFIG_HOME`, as `${XDG_CONFIG_HOME:-$HOME/.config}`
+/// expands to), the name zsh gives
 /// every program it runs (`ARGV0`), the mail messages it expands before a
 /// prompt (`MAILPATH`), the commands it runs for a redirection that has none
 /// (`NULLCMD`, `READNULLCMD`), as `LD_` without a value, whether a variable
@@ -36,13 +38,14 @@ use std::time::SystemTime;
 /// [`PROMPTS`]), which run code where `PROMPT_SUBST` is on. `ARGV0` and the
 /// dynamic loader may make the program of NixOS's dircolors line print
 /// other code ([`super::shadows`]).
-pub(in super::super) const ENVIRONMENT: [&str; 35] = [
+pub(in super::super) const ENVIRONMENT: [&str; 36] = [
     "FPATH",
     "NIX_PROFILES",
     "USER",
     "XDG_STATE_HOME",
     "HOME",
     "ZDOTDIR",
+    "XDG_CONFIG_HOME",
     "ARGV0",
     "MAILPATH",
     "NULLCMD",
@@ -134,6 +137,7 @@ pub(in super::super) struct Env {
     pub xdg_state_home: Option<String>,
     pub home: Option<String>,
     pub zdotdir: Option<String>,
+    pub xdg_config_home: Option<String>,
     pub argv0: Option<String>,
     pub mailpath: Option<String>,
     /// Whether a variable of the dynamic loader is set ([`LOADER`]).
@@ -181,6 +185,7 @@ impl Install {
                 xdg_state_home: get("XDG_STATE_HOME"),
                 home: get("HOME"),
                 zdotdir: get("ZDOTDIR"),
+                xdg_config_home: get("XDG_CONFIG_HOME"),
                 argv0: get("ARGV0"),
                 mailpath: get("MAILPATH"),
                 loader: get(LOADER).is_some(),
