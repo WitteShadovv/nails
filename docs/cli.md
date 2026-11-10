@@ -82,7 +82,7 @@ EXIT STATUS:
 * `status` — Show the session, security posture and hidden volume
 * `verify` — Check for known NAILS traces (evidence, not proof)
 * `rehearse` — Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
-* `check` — Check readiness to activate, leaving no file or mount behind
+* `check` — Check readiness to activate, leaving no file or mount behind but in rare cases
 * `init` — Initialize NAILS directory structure on a hidden volume
 * `config` — Inspect and check the configuration file (nails.toml)
 * `completions` — Print a shell completion script on stdout (for `source <(...)`)
@@ -129,7 +129,7 @@ WHAT HAPPENS:
 EXAMPLES:
   nails activate                      Enter the hidden session
   nails activate --overlay-only       Enter with the decoy's own system (NixOS)
-  nails activate --dry-run            Preview, leaving no file or mount behind
+  nails activate --dry-run            Preview, as check does
 
 ###### **Options:**
 
@@ -139,7 +139,7 @@ EXAMPLES:
 * `--nixos-flake <FLAKE_REF>` — NixOS: the hidden configuration as a flake reference <path>#<host>
 
    The hidden system is built from it into the hidden root's store before the soft-reboot. Supports attribute selection after the `#`.
-* `--dry-run` — Preview activation steps, leaving no file or mount behind
+* `--dry-run` — Preview activation steps, leaving no file or mount behind but in rare cases
 * `--overlay-only` — NixOS: enter with the decoy's own system, without building the hidden configuration (the hidden /etc and home still apply)
 * `--allow-persistent-decoy` — Allow a persistent decoy posture instead of refusing activation
 
@@ -372,7 +372,7 @@ Remove the rehearsal state and its planted files from the hidden volume
 
 ## `nails check`
 
-Check readiness to activate, leaving no file or mount behind
+Check readiness to activate, leaving no file or mount behind but in rare cases
 
 **Usage:** `nails check [OPTIONS]`
 

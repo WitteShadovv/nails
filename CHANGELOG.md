@@ -579,7 +579,8 @@ of this changelog for that version becomes the release notes word for word, and
   home mounted on first use. Before each lookup it reads the links on the way without following them
   and asks the mount table, as read when the check starts, and at the root of each mount on the way
   the kernel which filesystem is on top, so that a direct point whose mount expired since is not
-  looked up either. Where the lookup would mount a point, it is not made: the check says it cannot
+  looked up either (a name of an indirect map whose mount expired so can be mounted again by that
+  reading of the way). Where the lookup would mount a point, it is not made: the check says it cannot
   tell, names the path and the automount point, and says to mount the point (for example
   `ls /usr/local`) and run `check` again. A warn-only check warns, the residue catalog also for a
   channel it would only note; `decoy-persistence` refuses for the journal, a log daemon or kdump
@@ -1534,8 +1535,9 @@ of this changelog for that version becomes the release notes word for word, and
   the check fails before it writes anything. The README, the help and the next step `init` prints
   said that `check` (and `activate --dry-run`) changes nothing, and the 0.3.0-rc.2 notes called it a
   read-only report that writes nothing; the README, the help and `init` now say that it leaves no
-  file or mount behind, and the operator guide says what it touches: probe files on the hidden
-  volume that it removes again, the modification times they leave there, and no mount.
+  file or mount behind but in rare cases, and the operator guide says what it touches: probe files
+  on the hidden volume that it removes again, the modification times they leave there, and no mount
+  but in the two rare cases it names.
 - On Debian 13 the way back now has the decoy's wtmpdb boot writer record the decoy's start as an
   ordinary `reboot`, stamped with the time of the switch. The 0.3.0-rc.3 notes said the way back
   already kept the writer from recording `soft-reboot`; that was wrong. Kept from the system bus,

@@ -222,7 +222,7 @@ Keep all of it `root`-owned on the hidden volume.
    `storage-readiness`, `swap`,
    `memory-wipe`, `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
    `incremental-history-flush` and `space`. `nails check` runs the same checks
-   and leaves no file and no mount behind (see
+   and leaves no file and no mount behind, but in two rare cases (see
    [What `check` touches](#what-check-touches)).
 2. It snapshots `/run` and writes the session plan to `/run/overlay-runtime`,
    together with a RAM copy of the binary and the configuration, and a copy of
@@ -1013,9 +1013,11 @@ session's records (see "What a soft-reboot leaves" under
 ### What `check` touches
 
 `nails check` (and `activate --dry-run`, which is the same command) writes no
-log file, no state file and nothing in `/run`, and it leaves no file and no
-mount behind. Activation runs the same checks and touches the same things with
-them. On NixOS, unless it runs with `--overlay-only`, it first stages the
+log file, no state file and nothing in `/run`, and it leaves no file behind,
+and no mount but in two rare cases, which the list below names: the overlay
+module's first load, and a name of an indirect map, such as a home, whose
+mount expires while `check` runs. Activation runs the same checks and touches
+the same things with them. On NixOS, unless it runs with `--overlay-only`, it first stages the
 hidden configuration on the hidden volume, just before the checks: it
 writes the hidden module in `config/nixos/`, and the link to it and the hidden
 hardware configuration in `root/upper/etc/nixos/`, where they are missing.
@@ -1040,22 +1042,24 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   anything a killed `check` leaves are on that storage too.
   `upper-fs-capability` does not run on such a root: it reports itself
   skipped.
-- **No mount the system can see.** The trial overlay is mounted detached,
-  through the kernel's mount API: no mount table lists it at any moment, so
-  systemd never sees it and writes no `.mount` unit line about it to the
-  journal. It is gone when the probe ends, and also when `nails` is killed.
-  Where the kernel cannot mount it that way (without root, before Linux 5.2, or
-  in a sandbox that blocks the call), `upper-fs-capability` fails before it
-  writes anything; it never falls back to an ordinary mount. Trying the overlay
-  loads the kernel's overlay module if it is not loaded yet, as activation
-  does. The kernel then starts modprobe, which reads its settings, and udevd
-  reads its rules as it handles the module's event, both below
-  `/usr/local/lib` too. So where `/proc/filesystems` does not list `overlay`
-  and one of those directories lies behind an automount point that nothing is
-  mounted on yet, `upper-fs-capability` makes no trial: it refuses, since it
-  cannot tell, and names the point. What is in those directories is not
-  looked at: a settings file there that links behind such a point, or a
-  program a setting runs, can still make the load mount it.
+- **A trial overlay the system cannot see.** The trial overlay is mounted
+  detached, through the kernel's mount API: no mount table lists it at any
+  moment, so systemd never sees it and writes no `.mount` unit line about it
+  to the journal. It is gone when the probe ends, and also when `nails` is
+  killed. Where the kernel cannot mount it that way (without root, before
+  Linux 5.2, or in a sandbox that blocks the call), `upper-fs-capability`
+  fails before it writes anything; it never falls back to an ordinary mount.
+- **The overlay module's first load.** Trying the overlay loads the kernel's
+  overlay module if it is not loaded yet, as activation does. The kernel then
+  starts modprobe, which reads its settings, and udevd reads its rules as it
+  handles the module's event, both below `/usr/local/lib` too. So where
+  `/proc/filesystems` does not list `overlay` and one of those directories
+  lies behind an automount point that nothing is mounted on yet,
+  `upper-fs-capability` makes no trial: it refuses, since it cannot tell, and
+  names the point. What is in those directories is not looked at: a settings
+  file there that links behind such a point, or a program a setting runs, can
+  still make the load mount it. This is one of the two cases in which `check`
+  can leave a mount behind.
 - **A kernel log line, in two cases.** When the filesystem under the trial
   overlay lacks something overlayfs wants (such as `upper fs does not support
   tmpfile`), overlayfs writes a warning to the kernel log, and journald keeps
@@ -1108,7 +1112,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   nothing. So a direct automount point the table does not show, such as one
   whose mount expires while `check` runs, is not looked up either. A name of
   an indirect map that expires in that time can be mounted again by the
-  check's own reading of the way there. For example,
+  check's own reading of the way there: this is the other case in which
+  `check` can leave a mount behind. For example,
   with an `x-systemd.automount` line for `/usr/local` that nothing has
   mounted yet, `decoy-persistence` and `fstab-policy` refuse until it is
   mounted, since journald's drop-ins and systemd's units below it may hold

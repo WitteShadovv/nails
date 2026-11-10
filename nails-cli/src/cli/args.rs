@@ -178,7 +178,7 @@ pub enum Commands {
     Verify(VerifyArgs),
     /// Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
     Rehearse(RehearseArgs),
-    /// Check readiness to activate, leaving no file or mount behind
+    /// Check readiness to activate, leaving no file or mount behind but in rare cases
     Check(CheckArgs),
     /// Initialize NAILS directory structure on a hidden volume
     Init(InitArgs),
@@ -269,7 +269,7 @@ WHAT HAPPENS:
 EXAMPLES:
   nails activate                      Enter the hidden session
   nails activate --overlay-only       Enter with the decoy's own system (NixOS)
-  nails activate --dry-run            Preview, leaving no file or mount behind")]
+  nails activate --dry-run            Preview, as check does")]
 pub struct ActivateArgs {
     /// Proceed without the confirmation prompt
     ///
@@ -289,7 +289,7 @@ pub struct ActivateArgs {
     )]
     pub nixos_flake: Option<String>,
 
-    /// Preview activation steps, leaving no file or mount behind
+    /// Preview activation steps, leaving no file or mount behind but in rare cases
     #[arg(long)]
     pub dry_run: bool,
 
