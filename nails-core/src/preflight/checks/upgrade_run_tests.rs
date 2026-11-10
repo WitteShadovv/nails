@@ -457,3 +457,42 @@ fn a_daily_unit_nails_cannot_tell_runs_refuses() {
         UpgradeRun::InProgress(vec!["apt-daily-upgrade.service is active".to_string()])
     );
 }
+
+/// `check` asks the automount guard before each lookup: below a `/var` that
+/// an automounter mounts and nothing has mounted yet, `/var/run`'s lock file
+/// is not looked up, which leaves NAILS unable to tell and refuses, naming
+/// the point and how to mount it, with no flag that lifts it.
+#[test]
+fn a_lock_file_behind_an_automount_point_is_not_looked_up() {
+    use crate::preflight::checks::automount_fixture::{reached, with_automounts};
+    let fs = MockFilesystem::new();
+    with_automounts(&fs, &["/var"]);
+    let result = check(&fs);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "NAILS cannot tell whether a daily unattended-upgrade run is in progress \
+             (/var/run/unattended-upgrades.lock cannot be looked up: NAILS does not look up \
+             /var/run/unattended-upgrades.lock, since the lookup would mount the automount \
+             point /var"
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(crate::filesystem::automount::mount_fix(&[Path::new("/var")]).as_str())
+    );
+    assert!(
+        !matches!(
+            result,
+            CheckResult::Fail {
+                allowable: Some(_),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!reached(&fs, "/var"), "{:?}", fs.mock_lookups());
+    // The entry's own look, right before the switch, is not guarded.
+    assert_eq!(upgrade_run(&fs, Path::new("/")), UpgradeRun::Idle);
+}
