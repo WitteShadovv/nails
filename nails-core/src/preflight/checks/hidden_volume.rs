@@ -53,11 +53,11 @@ use std::path::{Component, Path, PathBuf};
 /// - **Mounted elsewhere too**: the `sudo umount` line for the other mounts,
 ///   what hides one that `umount` cannot reach by its path, and turning the
 ///   desktop's automatic mounting of removable media off long before the next
-///   use. For a root the operator accepted on a filesystem the decoy uses,
-///   the failure says that no line of the fstab made the other mounts from
-///   the computer's own storage, and the fix first says not to unmount one
-///   the computer makes by itself but to use a volume of its own, then how
-///   to unmount one made by hand
+///   use. For a root the operator accepted on a filesystem the decoy uses, the
+///   failure says that no line of the fstab that NAILS can tell made the other
+///   mounts from the computer's own storage, and the fix first says not to
+///   unmount one the computer makes by itself but to use a volume of its own,
+///   then how to unmount one made by hand
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example
@@ -240,17 +240,19 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 /// media and the section to read come last.
 ///
 /// For a root on a filesystem the decoy uses, which the operator accepted
-/// (`decoy_filesystem`), the computer's own mounts of it, at `/` and by a
-/// line of the fstab from its own storage, are left out, and the failure
-/// says that no such line made the other mounts. It names no mount at `/` or
-/// by the fstab, as there may be none: a drive of its own also mounted at
-/// `/srv` by hand counts as the computer's storage. Its fix starts by saying
-/// that one the computer makes by itself is not to be unmounted, as the root
-/// then needs a volume of its own: once a partition the computer mounts with
-/// no fstab line is unmounted, the check can no longer tell that a root on it
-/// lies on the computer's storage. Only then come the unmount lines, for a
-/// mount made by hand, and the advice about removable media only when one of
-/// the mounts lies under `/media` or `/run/media`.
+/// (`decoy_filesystem`), the computer's own mounts of it, at `/` and by a line
+/// of the fstab from its own storage, are left out, and the failure says that
+/// no such line that NAILS can tell made the other mounts: a bind line whose
+/// source has a link in it makes none it can tell (the judge,
+/// [`separation`](crate::hidden_root::separation), follows no link). It names
+/// no mount at `/` or by the fstab, as there may be none: a drive of its own
+/// also mounted at `/srv` by hand counts as the computer's storage. Its fix
+/// starts by saying that one the computer makes by itself is not to be
+/// unmounted, as the root then needs a volume of its own: once a partition the
+/// computer mounts with no fstab line is unmounted, the check can no longer
+/// tell that a root on it lies on the computer's storage. Only then come the
+/// unmount lines, for a mount made by hand, and the advice about removable
+/// media only when one of the mounts lies under `/media` or `/run/media`.
 fn mounted_twice<F: Filesystem>(
     fs: &F,
     root: &Path,
