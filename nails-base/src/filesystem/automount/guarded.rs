@@ -262,6 +262,11 @@ impl<F: Filesystem> Filesystem for Guarded<F> {
         self.inner.is_overlay_whiteout(path)
     }
 
+    fn is_device_node(&self, path: &Path) -> Result<bool> {
+        self.enters(path, false)?;
+        self.inner.is_device_node(path)
+    }
+
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         match self.ask(path, Lookup::Resolves { follow: true })? {
             Some(point) => Ok(point),

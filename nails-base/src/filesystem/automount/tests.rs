@@ -482,6 +482,7 @@ fn entering_calls() -> Vec<(&'static str, Call)> {
         ("is_overlay_whiteout", |fs, p| {
             fs.is_overlay_whiteout(p).map(drop)
         }),
+        ("is_device_node", |fs, p| fs.is_device_node(p).map(drop)),
         ("disk_usage", |fs, p| fs.disk_usage(p).map(drop)),
         ("get_permissions", |fs, p| fs.get_permissions(p).map(drop)),
         ("is_readable", |fs, p| fs.is_readable(p).map(drop)),
@@ -617,10 +618,11 @@ fn every_call_that_reads_or_writes_a_path_is_guarded_as_one_that_enters_it() {
 
 /// The calls that read what is at their path and read a link there itself:
 /// they never follow it.
-const READ_THE_LINK: [&str; 5] = [
+const READ_THE_LINK: [&str; 6] = [
     "is_symlink",
     "entry_exists",
     "is_overlay_whiteout",
+    "is_device_node",
     "record_lock_holder",
     "change_time",
 ];

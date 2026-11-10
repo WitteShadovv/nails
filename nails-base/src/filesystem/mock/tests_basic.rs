@@ -356,6 +356,26 @@ fn a_mount_root_is_what_the_test_says_and_unknown_otherwise() {
 }
 
 #[test]
+fn a_device_node_is_one_the_test_sets_or_a_whiteout() {
+    let fs = MockFilesystem::new();
+    assert!(!fs.is_device_node(Path::new("/srv/node")).unwrap());
+    fs.mock_set_device_node("/srv/node");
+    assert!(fs.is_device_node(Path::new("/srv/node")).unwrap());
+    // A device node is no regular file, and a whiteout is the character
+    // device it is.
+    assert!(!fs.is_regular_file(Path::new("/srv/node")).unwrap());
+    fs.mock_set_whiteout("/upper/gone");
+    assert!(fs.is_device_node(Path::new("/upper/gone")).unwrap());
+    // A link is none, and a lookup that fails for mount_root fails here.
+    fs.create_symlink(Path::new("/srv/node"), Path::new("/srv/link"))
+        .unwrap();
+    assert!(!fs.is_device_node(Path::new("/srv/link")).unwrap());
+    fs.mock_set_mount_root_error("/srv/missing", std::io::ErrorKind::NotFound);
+    let error = fs.is_device_node(Path::new("/srv/missing")).unwrap_err();
+    assert_eq!(error.io_kind(), Some(std::io::ErrorKind::NotFound));
+}
+
+#[test]
 fn inode_reports_a_set_inode_an_error_or_a_distinct_default() {
     let fs = MockFilesystem::new();
     let file = Path::new("/a/file");
