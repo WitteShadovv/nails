@@ -36,6 +36,11 @@ pub(super) fn beyond(named: &Named, read: &[usize; 3], walked: &Walked, place: &
             "it cannot follow a ZDOTDIR that a line of {place} may set"
         )));
     }
+    if named.xdg_config_homes > walked.xdg_config_homes {
+        events.push(Event::Doubt(format!(
+            "it cannot follow an XDG_CONFIG_HOME that a line of {place} may set or take away"
+        )));
+    }
     if named.autoloads > walked.autoloads {
         events.push(Event::Doubt(format!(
             "it cannot follow an `autoload` that a line of {place} may run"

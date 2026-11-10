@@ -63,10 +63,11 @@ pub(in super::super) enum Event {
     },
     /// Oh My Zsh is loaded.
     OhMyZsh,
-    /// `ZDOTDIR` or `XDG_CONFIG_HOME` is set.
+    /// `ZDOTDIR`, `XDG_CONFIG_HOME` or `NIX_PROFILES` is set to `value`, or
+    /// unset (`None`).
     Assign {
         name: &'static str,
-        value: Word,
+        value: Option<Word>,
         unconditional: bool,
     },
     /// A directory is added to `fpath`, where zsh looks for the functions it
