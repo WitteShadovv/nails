@@ -718,6 +718,56 @@ fn every_call_that_resolves_a_link_at_the_end_follows_it_only_where_it_follows_o
     );
 }
 
+/// How often each of `paths` was looked up on `fs`.
+fn looked_up(fs: &MockFilesystem, paths: &[&str]) -> Vec<usize> {
+    let lookups = fs.mock_lookups();
+    paths
+        .iter()
+        .map(|path| {
+            lookups
+                .iter()
+                .filter(|asked| *asked == Path::new(path))
+                .count()
+        })
+        .collect()
+}
+
+/// A remembering view reads each place on the way once, and where a link
+/// there leads, and keeps the snapshot and the ledger of the view it was
+/// made from: a lookup that would mount a point is still not made. A view
+/// made with `new` reads each place each time.
+#[test]
+fn a_remembering_view_reads_each_place_on_the_way_once() {
+    let fs = mock(&[ROOT, USR_LOCAL]);
+    link(&fs, "/opt/l", "/usr/local/x");
+    let view = guarded(&fs);
+    let walk = view.remembering();
+    for path in ["/etc/a/x", "/etc/a/y", "/etc/a/z"] {
+        assert!(!walk.path_exists(Path::new(path)).unwrap(), "{path}");
+    }
+    // The guard's read of each path, then the lookup itself.
+    assert_eq!(
+        looked_up(&fs, &["/etc", "/etc/a", "/etc/a/x"]),
+        [1, 1, 2],
+        "{:?}",
+        fs.mock_lookups()
+    );
+    for _ in 0..2 {
+        let result = walk.path_exists(Path::new("/opt/l/y")).map(drop);
+        assert!(skipped_at_usr_local(&result), "{result:?}");
+    }
+    // What the link is, and where it leads.
+    assert_eq!(looked_up(&fs, &["/opt/l"]), [2], "{:?}", fs.mock_lookups());
+    assert!(!reaches(&fs.mock_lookups(), "/usr/local"));
+    assert_eq!(view.skipped().len(), 2);
+
+    fs.mock_clear_lookups();
+    for path in ["/etc/a/x", "/etc/a/y"] {
+        assert!(!view.path_exists(Path::new(path)).unwrap(), "{path}");
+    }
+    assert_eq!(looked_up(&fs, &["/etc", "/etc/a"]), [2, 2]);
+}
+
 #[test]
 fn a_call_that_reads_a_path_reaches_the_filesystem_once_it_is_asked() {
     let fs = mock(&[ROOT, USR_LOCAL]);

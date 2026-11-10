@@ -102,13 +102,13 @@ exclude_re = [
 
     # --- Near-equivalent ---
 
-    # on_the_way reads a link with read_link right after mount_root said the
-    # place is one. That read finds nothing there only where the link was
+    # walk(), which on_the_way and a remembering view run, reads a link with
+    # read_link right after mount_root said the place is one. That read finds nothing there only where the link was
     # removed in between, which no mock can stage: both calls fail alike on
     # every error the mock sets. Under `false` such a lookup is not made and
     # fails with that error, which is closed too. (Column 35 is the guard of
     # read_link's error; mount_root's, at a column of its own, is killed.)
-    'nails-base/src/filesystem/automount/mod\.rs:\d+:35: replace match guard nothing_there\(&error\) with false in on_the_way$',
+    'nails-base/src/filesystem/automount/mod\.rs:\d+:35: replace match guard nothing_there\(&error\) with false in walk$',
 
     # `&` in place of the first `|` of read_config_bytes_noatime's flags
     # drops CLOEXEC alone. The descriptor is closed before the function
