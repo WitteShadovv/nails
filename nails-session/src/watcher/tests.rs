@@ -490,6 +490,28 @@ fn a_disk_mounted_below_the_hidden_root_alerts_and_the_volume_and_carried_mounts
     );
 }
 
+/// A watcher that could not read the session plan goes by the hidden root
+/// alone: a disk outside it alerts, and nothing at or below it does, as no
+/// device tells the session's own storage apart.
+#[test]
+fn without_the_plan_only_a_disk_outside_the_hidden_root_alerts() {
+    let extra = "8 2 8:33 / /mnt/data/usb rw - vfat /dev/sdc1 rw\n\
+                 9 1 8:34 / /run/media/user/USB rw - vfat /dev/sdd1 rw\n";
+    let mut watch = MountWatch::outside(Path::new("/mnt/data"));
+    let found = watch.observe(&watched_table(extra), &block_sources);
+    assert_eq!(
+        found.iter().map(|m| &m.mount_point).collect::<Vec<_>>(),
+        [Path::new("/run/media/user/USB")],
+        "{found:?}"
+    );
+    assert!(
+        watch
+            .observe(&watched_table(extra), &block_sources)
+            .is_empty(),
+        "once"
+    );
+}
+
 /// A notification daemon that never answers holds up neither the probes nor
 /// the automatic emergency: the alert waits on its own thread.
 #[test]
