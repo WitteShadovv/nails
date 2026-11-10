@@ -29,7 +29,7 @@ mod cover;
 pub use cover::CoverWatch;
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::config::BackendWatchConfig;
@@ -226,19 +226,38 @@ pub fn is_unguarded_mount(
     plan: &Plan,
     is_block: &dyn Fn(&MountEntry) -> bool,
 ) -> bool {
+    is_unguarded_outside(mount, is_block) && !plan.is_hidden_storage(mount)
+}
+
+/// Whether `mount` is a read-write mount of a disk that is neither the decoy
+/// root mounted at `/run/nextroot` on the way back nor, by what `is_block`
+/// judges, no disk at all: [`is_unguarded_mount`] before the session's own
+/// storage is told apart.
+fn is_unguarded_outside(mount: &MountEntry, is_block: &dyn Fn(&MountEntry) -> bool) -> bool {
     !mount.read_only()
         && !mount
             .mount_point
             .starts_with(nails_teardown::whole_root::nextroot::NEXTROOT)
         && is_block(mount)
-        && !plan.is_hidden_storage(mount)
+}
+
+/// What tells the session's own storage from a disk mounted during the
+/// session.
+#[derive(Debug)]
+enum Storage {
+    /// The session plan ([`Plan::is_hidden_storage`]).
+    Plan(Box<Plan>),
+    /// The hidden root alone, for a watcher that could not read the plan:
+    /// every mount at or below it counts as the session's own, as for a plan
+    /// that does not record the hidden root's device.
+    Root(PathBuf),
 }
 
 /// The watcher's view of disk mounts made during the session: each
 /// unguarded read-write mount is reported once, by mount id.
 #[derive(Debug)]
 pub struct MountWatch {
-    plan: Plan,
+    storage: Storage,
     seen: BTreeSet<i32>,
 }
 
@@ -249,7 +268,19 @@ impl MountWatch {
     /// resolved ([`resolved_root`]).
     pub fn new(plan: Plan) -> Self {
         Self {
-            plan,
+            storage: Storage::Plan(Box::new(plan)),
+            seen: BTreeSet::new(),
+        }
+    }
+
+    /// Watch for disk mounts outside `hidden_root`, for a watcher that could
+    /// not read the session plan: without it no device tells the session's
+    /// own storage apart, so every mount at or below the root counts as the
+    /// session's own. The root is the one the mount table names
+    /// ([`resolved_root`]).
+    pub fn outside(hidden_root: &Path) -> Self {
+        Self {
+            storage: Storage::Root(hidden_root.to_path_buf()),
             seen: BTreeSet::new(),
         }
     }
@@ -265,7 +296,12 @@ impl MountWatch {
         self.seen.retain(|id| current.contains(id));
         mounts
             .iter()
-            .filter(|m| is_unguarded_mount(m, &self.plan, is_block))
+            .filter(|m| match &self.storage {
+                Storage::Plan(plan) => is_unguarded_mount(m, plan, is_block),
+                Storage::Root(root) => {
+                    is_unguarded_outside(m, is_block) && !m.mount_point.starts_with(root)
+                }
+            })
             .filter(|m| self.seen.insert(m.mount_id))
             .cloned()
             .collect()
