@@ -42,9 +42,17 @@
 //! following a link and takes one it cannot open for a held lock, as it
 //! cannot open a link, a directory or a socket; a lock file that is anything
 //! but a plain file leaves NAILS unable to tell, which refuses as well.
+//!
+//! `nails check` asks the automount guard before each lookup
+//! ([`crate::filesystem::automount`]): one that would mount an automount
+//! point nothing is mounted on yet, as below a `/var` an automounter mounts,
+//! is not made, which leaves NAILS unable to tell and refuses, naming the
+//! point and how to mount it. The entry's look right before the switch is
+//! not guarded.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::decoy_posture::{Activity, unit_active};
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, settle};
 use crate::next_step::{NextStep, sudo_line};
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
@@ -265,11 +273,23 @@ impl<F: Filesystem> PreFlightCheck<F> for UpgradeRunCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let run = upgrade_run(fs, &self.root);
-        Ok(match run.refusal() {
+        let view = Guarded::new(fs.clone(), &Snapshot::read(fs, &self.root));
+        let run = upgrade_run(&view, &self.root);
+        let skipped = view.skipped();
+        let result = match run.refusal() {
             None => CheckResult::Pass("no daily unattended-upgrade run is in progress".into()),
+            // Where the guard made no lookup, mounting the point is the fix,
+            // which settle gives.
+            Some(why) if !skipped.is_empty() && matches!(run, UpgradeRun::Unknown(_)) => {
+                CheckResult::Fail {
+                    message: why,
+                    remediation: None,
+                    allowable: None,
+                }
+            }
             Some(why) => CheckResult::fail_with(why, run.fix()),
-        })
+        };
+        Ok(settle(result, &skipped, OnSkip::Refuse(None)))
     }
 }
 
