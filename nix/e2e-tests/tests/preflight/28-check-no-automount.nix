@@ -35,10 +35,10 @@
 # each naming the automount point with the line that says to mount it, and
 # inherited.not_read lists carol's autostart directory; no row names
 # /srv/archive. A listing of /auto, the indirect map's directory, mounts
-# nothing either. As the positive control, ls mounts each point, and the
-# next check names none of them and reads what they hold: an updatedb in
-# /usr/local/bin and carol's sync.desktop, and its trial overlay loads the
-# module.
+# nothing either. As the positive control, ls mounts each point the checks
+# read (/usr/local and the two homes), and the next check names none of them
+# and reads what they hold: an updatedb in /usr/local/bin and carol's
+# sync.desktop, and its trial overlay loads the module.
 #
 # The decoy's own daemons read their settings below /usr/local/lib, and so
 # can mount /usr/local themselves: systemd-udevd did as it handled device

@@ -1091,8 +1091,9 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   refuses where it cannot tell about the journal, a log daemon or kdump
   (`--allow-persistent-decoy` lifts that, as it lifts the refusal of what it
   finds), and `fstab-policy` refuses. Where the hidden root or the state
-  file lies behind such a point, `check` runs no check at all, since each
-  would look the root up: it prints the attach gate's refusal of the root,
+  file lies behind such a point, `check` runs no check at all, since the
+  state file, the discovery of the build target and most checks look the root
+  up: it prints the attach gate's refusal of the root,
   says that the checks could not be assembled, names the point and exits
   with `1` (`check_error` under `--json`, which then carries no refusal and
   no rows). A hidden root that is itself a direct automount point is refused
@@ -1104,9 +1105,12 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   the point. `memory-wipe` and `cryptsetup-argon2id`, which
   only inform, keep their pass, and where what they could read leaves the
   answer open, name the path and the point. Without the mount table these
-  checks look up nothing on the decoy and say so, and on NixOS, unless it runs
-  with `--overlay-only`, `check` then runs no check, since it cannot find the
-  build target without a lookup. The table is the one read
+  checks look up nothing on the decoy, and each says so where its answer
+  depends on what it did not read: `memory-wipe`, whose answer the kernel's
+  command line can give, then leaves out the RAM-wipe mechanism it could not
+  look for. On NixOS, unless it runs with `--overlay-only`, `check` then runs
+  no check, since it cannot find the build target without a lookup. The table
+  is the one read
   when each check starts, and at the root of each mount on the way a check
   also asks the kernel which filesystem is on top there, which mounts
   nothing. So a direct automount point the table does not show, such as one
@@ -1824,14 +1828,9 @@ the same warning before it asks to log you out (unless `-y` skips the
 question), so you can answer no, and again among the warnings of its result,
 which then exits `9`. A hidden session that deleted or replaced the database
 itself draws a warning that names the `discard` that brings the decoy's back.
-Where the mount table cannot be read, the kernel's own word on each directory
-above a database or a package's file (`statx`) tells whether it lies on a decoy
-filesystem of its own, such as a separate `/var`. The check asks only about a
-directory whose own directories it has seen to be neither symbolic links nor
-automount points, such as an EFI system partition mounted on first use,
-since asking about a path below a link follows the link and asking about one
-below an automount point mounts it, and takes a directory the decoy lacks for
-no mount point.
+Where the mount table cannot be read, the check looks up nothing on the decoy
+and says it cannot tell, since the table shows where a lookup would mount an
+automount point that nothing is mounted on yet.
 
 The check says it cannot tell only where nothing can decide without leaving a
 trace or reading what cannot be read:
@@ -1863,9 +1862,11 @@ trace or reading what cannot be read:
   run, which apt asks for there too (the decoy's journal counts only once
   hidden sessions keep a copy of the record, since before that they see the
   decoy's record as the decoy does);
-- no mount table, and a kernel older than 5.8, which does not say what is a
-  mount point, or a directory on the way that the kernel cannot be asked
-  about.
+- no mount table;
+- a database, a package's file or a directory on the way to one that lies
+  behind an automount point that nothing is mounted on yet: the check makes no
+  lookup that would mount it, names the point and says to mount it (see
+  [What `check` touches](#what-check-touches)).
 
 To bring hidden sessions back in line, make the decoy's changes in a hidden
 session too:
