@@ -54,7 +54,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn record_lock_holder(&self, path: &Path) -> Result<Option<i32>> {
-        self.looked_at(path);
+        self.looked_at_itself(path);
         self.record_lock_holder_impl(path)
     }
 
@@ -64,17 +64,17 @@ impl Filesystem for MockFilesystem {
     }
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {
-        self.looked_at(path);
+        self.looked_at_itself(path);
         self.is_symlink_impl(path)
     }
 
     fn read_link(&self, path: &Path) -> Result<PathBuf> {
-        self.looked_at(path);
+        self.looked_at_itself(path);
         self.read_link_impl(path)
     }
 
     fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
-        self.looked_at(path);
+        self.looked_at_itself(path);
         self.is_overlay_whiteout_impl(path)
     }
 
@@ -130,7 +130,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn mount_root(&self, path: &Path) -> Result<crate::filesystem::MountRoot> {
-        self.looked_at(path);
+        self.looked_at_itself(path);
         // A path that does not exist is an error here too, as for `statx`.
         if let Some(error) = self.lookup_error(path) {
             return Err(error);
@@ -230,7 +230,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn change_time(&self, path: &Path) -> Result<std::time::SystemTime> {
-        self.looked_at(path);
+        self.looked_at_itself(path);
         self.change_time_impl(path)
     }
 

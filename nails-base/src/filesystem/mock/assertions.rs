@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::{MockFilesystem, MockOp};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 impl MockFilesystem {
     /// Get written file content for test verification
@@ -42,7 +42,76 @@ impl MockFilesystem {
         self.lookups
             .lock()
             .expect("MockFilesystem mutex poisoned")
-            .clone()
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    /// Whether a read [`mock_lookups`](Self::mock_lookups) recorded passed
+    /// `place` or a path below it, with the links `create_symlink` recorded
+    /// followed as the kernel follows them: each link on the way, and the one
+    /// at the end where the read follows it, as every read does but
+    /// `is_symlink`, `read_link`, `mount_root`, `is_overlay_whiteout`,
+    /// `change_time` and `record_lock_holder`. A lookup of `/etc/nixos/x`
+    /// where `/etc/nixos` links to `/home/bob/nixos` passes `/home/bob`,
+    /// though the path asked names none of it.
+    pub fn mock_reached(&self, place: &Path) -> bool {
+        let lookups = self
+            .lookups
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clone();
+        lookups.iter().any(|(path, follows)| {
+            self.passed(path, *follows)
+                .iter()
+                .any(|passed| passed.starts_with(place))
+        })
+    }
+
+    /// The places a lookup of `path` passes: each place on its way, and on
+    /// the way where each link on it leads, the link at its end followed
+    /// where `follows`.
+    fn passed(&self, path: &Path, follows: bool) -> Vec<PathBuf> {
+        // The kernel's own limit on links followed during one lookup.
+        const MAX_HOPS: usize = 40;
+
+        let links = self
+            .symlink_targets
+            .lock()
+            .expect("MockFilesystem mutex poisoned");
+        let mut passed = Vec::new();
+        let mut current = path.to_path_buf();
+        for _ in 0..MAX_HOPS {
+            let components: Vec<_> = current.components().collect();
+            let mut place = PathBuf::new();
+            let mut next = None;
+            for (i, component) in components.iter().enumerate() {
+                // The kernel takes `..` from where the walk is.
+                match component {
+                    Component::ParentDir => {
+                        place.pop();
+                        continue;
+                    }
+                    Component::CurDir => continue,
+                    _ => place.push(component),
+                }
+                passed.push(place.clone());
+                if i + 1 == components.len() && !follows {
+                    break;
+                }
+                if let Some(target) = links.get(&place) {
+                    let mut resolved = place.parent().unwrap_or(Path::new("/")).join(target);
+                    resolved.extend(&components[i + 1..]);
+                    next = Some(resolved);
+                    break;
+                }
+            }
+            match next {
+                Some(resolved) => current = resolved,
+                None => break,
+            }
+        }
+        passed
     }
 
     /// Forget the reads [`mock_lookups`](Self::mock_lookups) recorded so
@@ -54,12 +123,23 @@ impl MockFilesystem {
             .clear();
     }
 
-    /// Record a read of `path` for [`mock_lookups`](Self::mock_lookups).
+    /// Record a read of `path` for [`mock_lookups`](Self::mock_lookups), one
+    /// that follows a link at its end.
     pub(super) fn looked_at(&self, path: &Path) {
         self.lookups
             .lock()
             .expect("MockFilesystem mutex poisoned")
-            .push(path.to_path_buf());
+            .push((path.to_path_buf(), true));
+    }
+
+    /// Record a read of `path` itself for
+    /// [`mock_lookups`](Self::mock_lookups): one that does not follow a link
+    /// at its end.
+    pub(super) fn looked_at_itself(&self, path: &Path) {
+        self.lookups
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push((path.to_path_buf(), false));
     }
 
     /// Get operation log for verifying call ordering in tests
