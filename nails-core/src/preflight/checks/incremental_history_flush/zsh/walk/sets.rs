@@ -10,6 +10,7 @@
 
 use super::super::arith::NUMERIC;
 use super::super::lexer::Word;
+use super::declare::options;
 use super::names::{computed, targets};
 use super::{Event, Walker};
 
@@ -75,11 +76,6 @@ impl Walker<'_> {
         let Some(function) = self.function() else {
             return;
         };
-        let flags: String = args
-            .iter()
-            .take_while(|arg| arg.text.starts_with(['-', '+']) && arg.text.len() > 1)
-            .map(|arg| arg.text.as_str())
-            .collect();
         let declares = matches!(
             command,
             "local"
@@ -92,7 +88,10 @@ impl Walker<'_> {
                 | "readonly"
         );
         if declares {
-            let local = command != "export" && !flags.contains(['g', 'x']);
+            // Its options read as zsh reads them, past a number (`local -L 3
+            // -x LINE=$1` exports it).
+            let options = options(command, args);
+            let local = command != "export" && !options.has('g') && !options.has('x');
             for arg in args {
                 if let Some((target, value)) = arg.text.split_once('=')
                     && computed(arg)

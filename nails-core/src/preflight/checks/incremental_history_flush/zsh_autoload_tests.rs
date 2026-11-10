@@ -468,8 +468,8 @@ fn options_an_expansion_may_make_of_a_marking_builtin_are_a_doubt() {
         let found = scan(&fs, UNKNOWN);
         let (command, args) = line.split_once(' ').unwrap();
         let doubt = format!(
-            "it cannot tell which functions `{command} {args}` in /home/alice/.zshrc marks to be \
-             autoloaded, as zsh may expand `{word}` into its options"
+            "it cannot tell what `{command} {args}` in /home/alice/.zshrc does, as zsh may expand \
+             `{word}` into any of its options"
         );
         assert!(found.doubts.contains(&doubt), "{line}: {found:?}");
     }

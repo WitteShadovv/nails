@@ -19,6 +19,7 @@
 use super::super::arith::READ_AS_NUMBER;
 use super::super::lexer::{Token, Word};
 use super::command::assigned;
+use super::declare::options;
 use super::names::{option_arguments, targets};
 use super::{Arith, Event, Walker};
 
@@ -560,26 +561,23 @@ impl Walker<'_> {
         }
     }
 
-    /// Note what a `typeset` or the like (`command`) of `args` declares: an
-    /// array whose keys are strings (`-A`), a parameter that holds numbers
-    /// (`-i`, `-E`, `-F`, `integer`, `float`), whose value zsh reads as
-    /// arithmetic as it declares one that is not local to the function it
-    /// runs in, and those values assigned.
+    /// Note what a `typeset` or the like (`command`) of `args` declares, its
+    /// options read as zsh reads them ([`options`]): an array whose keys are
+    /// strings (`-A`), a parameter that holds numbers (`-i`, `-E`, `-F`,
+    /// `integer`, `float`), whose value zsh reads as arithmetic as it
+    /// declares one that is not local to the function it runs in, and those
+    /// values assigned.
     pub(super) fn declared(&mut self, command: &str, args: &[Word]) {
-        let flags: String = args
-            .iter()
-            .take_while(|arg| arg.text.starts_with(['-', '+']) && arg.text.len() > 1)
-            .map(|arg| arg.text.as_str())
-            .collect();
-        let numeric = matches!(command, "integer" | "float") || flags.contains(['i', 'E', 'F']);
-        let local = self.function().is_some() && command != "export" && !flags.contains('g');
+        let options = options(command, args);
+        let numeric = matches!(command, "integer" | "float")
+            || ['i', 'E', 'F']
+                .into_iter()
+                .any(|letter| options.has(letter));
+        let local = self.function().is_some() && command != "export" && !options.has('g');
         // One a function declares is its own: the name's keys elsewhere are
         // not strings for it.
-        let keyed = flags.contains('A') && !local;
-        for arg in args
-            .iter()
-            .skip_while(|arg| arg.text.starts_with(['-', '+']) && arg.text.len() > 1)
-        {
+        let keyed = options.has('A') && !local;
+        for arg in &args[options.names..] {
             // The base or the precision of a number (`typeset -i 16 x`).
             if arg.text.chars().all(|c| c.is_ascii_digit()) {
                 continue;

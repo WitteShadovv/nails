@@ -4,18 +4,12 @@
 //! The functions a command marks to be autoloaded, as the walk reads it:
 //! `autoload`, and `functions`, `typeset`, `declare` and `readonly` with the
 //! options that mark a function so, read as zsh reads a builtin's options
-//! (Src/builtin.c). `local`, `export`, `integer`, `float` and `private` take
-//! no `-f`: zsh 5.9 to 5.9.2 refuse it.
+//! ([`super::declare::options`]). `local`, `export`, `integer`, `float` and
+//! `private` take no `-f`: zsh 5.9 to 5.9.2 refuse it.
 
 use super::super::lexer::Word;
-use super::command::is_assignment;
+use super::declare::{options, unread_doubt};
 use super::{Event, Walker};
-
-/// The letters of the options of `typeset` and `declare` that take a number,
-/// in the rest of their word or as the word after it (`typeset -L 3`), and of
-/// `readonly`, whose `p` takes none.
-const NUMBERED: &str = "EFLRZip";
-const READONLY_NUMBERED: &str = "EFLRZi";
 
 /// What the words after `functions`, or a builtin of the `typeset` family,
 /// mark to be autoloaded.
@@ -33,92 +27,27 @@ pub(super) enum Marks<'a> {
 }
 
 /// What `args`, the words after `command` (`functions`, `typeset`,
-/// `declare` or `readonly`), mark to be autoloaded, read as zsh reads a
-/// builtin's options: each word that starts with `-` or `+` holds options up
-/// to the first word that does not, an assignment among them, or that is a
-/// sign and a digit (`-2`, a name); `-`, `+` and `--` end them and are
-/// dropped, and `--fu` reads as `-fu`. An option that takes an argument
-/// takes the rest of its word, or the word after it, and zsh reads no more
-/// letters of its word then: `functions -x` any word, which an expansion may
-/// make several of, and with none after it zsh runs nothing; a
-/// [`NUMBERED`] one of the others a number, the word after it only where
-/// that starts with a digit (`typeset -fLt 3 -u` drops the `t`). A function
-/// is autoloaded where a word that starts with `-` holds `u` or `U`, for
-/// `functions` alone, and for the others with an `f` in a word of either
-/// sign (`typeset -fu`, `readonly +f -u`, `declare +g -fU`).
+/// `declare` or `readonly`), mark to be autoloaded, their options read as
+/// zsh reads a builtin's ([`options`]): a function is autoloaded where a word
+/// that starts with `-` holds `u` or `U`, for `functions` alone, and for the
+/// others with an `f` in a word of either sign (`typeset -fu`, `readonly +f
+/// -u`, `declare +g -fU`); `functions -x` with no word after it runs nothing.
 pub(super) fn marks<'a>(command: &str, args: &'a [Word]) -> Marks<'a> {
-    let functions = command == "functions";
-    let numbered = if command == "readonly" {
-        READONLY_NUMBERED
-    } else {
-        NUMBERED
-    };
-    let digit = |text: &str| text.starts_with(|c: char| c.is_ascii_digit());
-    // The letters of the options, but a `U` that a `+` turns off, whether
-    // a word that starts with `-` holds `u` or `U`, and whether any holds
-    // an `f`.
-    let mut flags = String::new();
-    let mut undefined = false;
-    let mut f = false;
-    let mut at = 0;
-    'words: while let Some(word) = args.get(at) {
-        // An assignment to a name as written (`LINE=$1`) is no option, and
-        // ends them.
-        if is_assignment(&word.text) {
-            break;
-        }
-        if word.expands || word.bare {
-            return Marks::Doubt(word);
-        }
-        let Some(rest) = word.text.strip_prefix(['-', '+']) else {
-            break;
-        };
-        if digit(rest) {
-            break;
-        }
-        at += 1;
-        if rest.is_empty() || rest == "-" {
-            break;
-        }
-        let minus = word.text.starts_with('-');
-        let letters = rest.strip_prefix('-').unwrap_or(rest);
-        for (index, letter) in letters.char_indices() {
-            f |= letter == 'f';
-            undefined |= minus && matches!(letter, 'u' | 'U');
-            if minus || letter != 'U' {
-                flags.push(letter);
-            }
-            let tail = &letters[index + letter.len_utf8()..];
-            if functions && letter == 'x' {
-                // Its argument: the rest of the word, or the word after it.
-                if tail.is_empty() {
-                    match args.get(at) {
-                        None => return Marks::None,
-                        Some(next) if next.expands || next.bare => return Marks::Doubt(next),
-                        Some(_) => at += 1,
-                    }
-                }
-                continue 'words;
-            }
-            if !functions && numbered.contains(letter) {
-                if digit(tail) {
-                    continue 'words;
-                }
-                if args
-                    .get(at)
-                    .is_some_and(|next| !next.expands && !next.bare && digit(&next.text))
-                {
-                    at += 1;
-                    continue 'words;
-                }
-            }
-        }
+    let options = options(command, args);
+    if let Some(word) = options.unread {
+        return Marks::Doubt(word);
     }
-    if undefined && (functions || f) {
-        Marks::Names(at, flags)
-    } else {
-        Marks::None
+    let undefined = options.on('u') || options.on('U');
+    if options.fails || !undefined || !(command == "functions" || options.has('f')) {
+        return Marks::None;
     }
+    let flags = options
+        .letters
+        .iter()
+        .filter(|&&(letter, minus)| minus || letter != 'U')
+        .map(|&(letter, _)| letter)
+        .collect();
+    Marks::Names(options.names, flags)
 }
 
 impl Walker<'_> {
@@ -137,14 +66,8 @@ impl Walker<'_> {
                 true
             }
             Marks::Doubt(word) => {
-                let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
-                self.events.push(Event::Doubt(format!(
-                    "it cannot tell which functions `{command} {}` in {} marks to be autoloaded, \
-                     as zsh may expand `{}` into its options",
-                    words.join(" "),
-                    self.place,
-                    word.text
-                )));
+                let doubt = unread_doubt(command, args, word, self.place);
+                self.events.push(Event::Doubt(doubt));
                 false
             }
             Marks::None => false,

@@ -114,7 +114,7 @@ fn alias_target(text: &str) -> Option<&str> {
 /// or `+`, which may be a flag: `None` for a word with no such group, or any
 /// other group (a range, a `BRACE_CCL` one), a glob or an expansion, which
 /// may make other words.
-fn brace_list(word: &Word) -> Option<Vec<String>> {
+pub(super) fn brace_list(word: &Word) -> Option<Vec<String>> {
     if !word.bare
         || word.expands
         || word.text.contains([
