@@ -4,11 +4,28 @@
 //! NixOS configuration pre-flight check
 //!
 //! Validates NixOS configuration overlay structure in hidden storage.
+//!
+//! The base configuration in the decoy's `/etc/nixos` is looked up through
+//! the automount guard ([`crate::filesystem::automount`]): a file there can
+//! link into a home that an automounter mounts, and a lookup that would mount
+//! an automount point that nothing is mounted on yet is not made. Such a
+//! lookup, or one that fails for another reason than that nothing is there,
+//! leaves NAILS unable to tell, which refuses, naming the path and the
+//! point, and how to mount it.
 
 use super::{CheckResult, PreFlightCheck};
-use crate::{Filesystem, NixParser, RealNixParser, Result, parse_check_composed_config};
-use std::path::PathBuf;
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle};
+use crate::{
+    Filesystem, NailsError, NixParser, RealNixParser, Result, parse_check_composed_config,
+};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// The decoy's base NixOS configuration: the hardware configuration, and the
+/// configuration or the flake beside it.
+const BASE_HARDWARE: &str = "/etc/nixos/hardware-configuration.nix";
+const BASE_CONFIG: &str = "/etc/nixos/configuration.nix";
+const BASE_FLAKE: &str = "/etc/nixos/flake.nix";
 
 /// The `init` line that stages the hidden NixOS layout, with the real binary
 /// path.
@@ -97,22 +114,11 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        // Check 1: Base hardware-configuration.nix exists
-        let base_config = PathBuf::from("/etc/nixos/hardware-configuration.nix");
-        if !fs.path_exists(&base_config)? {
-            return Ok(CheckResult::fail(
-                "Base /etc/nixos/hardware-configuration.nix not found. Ensure NixOS is properly installed.".to_string()
-            ));
-        }
-
-        // Check 2: Base NixOS config exists (non-flake or flake)
-        let base_config_nix = PathBuf::from("/etc/nixos/configuration.nix");
-        let base_flake = PathBuf::from("/etc/nixos/flake.nix");
-        if !fs.path_exists(&base_config_nix)? && !fs.path_exists(&base_flake)? {
-            return Ok(CheckResult::fail(
-                "Base NixOS config missing: neither /etc/nixos/configuration.nix nor /etc/nixos/flake.nix exists."
-                    .to_string(),
-            ));
+        // Checks 1 and 2: the decoy's base configuration, looked up through
+        // the automount guard.
+        let decoy = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
+        if let Some(refusal) = base_config_refusal(&decoy) {
+            return Ok(settle(refusal, &decoy.skipped(), OnSkip::Refuse(None)));
         }
 
         // Check 3: Hidden etc/nixos directory exists
@@ -188,6 +194,43 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
         Ok(CheckResult::Pass(
             "NixOS configuration overlay structure is valid".into(),
         ))
+    }
+}
+
+/// The refusal of a decoy whose base NixOS configuration, looked up through
+/// `decoy`, is missing, or that NAILS cannot tell about: the hardware
+/// configuration (check 1), and the configuration or the flake beside it
+/// (check 2), either of which counts where it is there. A lookup that failed
+/// for another reason than that nothing is there, or that the automount
+/// guard did not make, is never a file that is not there.
+fn base_config_refusal<F: Filesystem>(decoy: &F) -> Option<CheckResult> {
+    let untold = |path: &str, error: &NailsError| {
+        CheckResult::fail(format!(
+            "NAILS cannot tell whether the base NixOS configuration exists: {}",
+            describe(path, error).sentence
+        ))
+    };
+    match decoy.path_exists(Path::new(BASE_HARDWARE)) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Some(CheckResult::fail(
+                "Base /etc/nixos/hardware-configuration.nix not found. Ensure NixOS is properly installed.".to_string(),
+            ));
+        }
+        Err(error) => return Some(untold(BASE_HARDWARE, &error)),
+    }
+    let config = decoy.path_exists(Path::new(BASE_CONFIG));
+    if matches!(config, Ok(true)) {
+        return None;
+    }
+    match (config, decoy.path_exists(Path::new(BASE_FLAKE))) {
+        (_, Ok(true)) => None,
+        (Ok(_), Ok(false)) => Some(CheckResult::fail(
+            "Base NixOS config missing: neither /etc/nixos/configuration.nix nor /etc/nixos/flake.nix exists."
+                .to_string(),
+        )),
+        (Err(error), _) => Some(untold(BASE_CONFIG, &error)),
+        (_, Err(error)) => Some(untold(BASE_FLAKE, &error)),
     }
 }
 
