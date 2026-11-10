@@ -3,10 +3,9 @@
 
 //! The fstab lines the claims place by a path, judged by the path as it is
 //! written, with no link in it followed: a bind line whose source lies in
-//! the volume mounts it, whatever its type, a swap or image file there lies
-//! in it, and a line whose path cannot be told (a link in it, one that is not
-//! absolute, a device node, a folder of a line, a noauto one too, that is not
-//! mounted now) is an entry where that cannot be told.
+//! the volume mounts it, and a line whose path cannot be told (a link in it,
+//! one that is not absolute, a device node, a folder the boot mounts that is
+//! not mounted now) is an entry where that cannot be told.
 
 use super::*;
 
@@ -25,6 +24,10 @@ const SLASH: (EntryKind, &str, bool) = (EntryKind::Blocking, "/dev/sda1 / ext4",
 fn with_the_decoys_lines(line: &str) -> String {
     format!("/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n{line}\n")
 }
+
+/// Why a line whose first field is no absolute path and no tag is not plain.
+const RELATIVE: &str = "its first field is neither an absolute path nor a UUID=, LABEL=, PARTUUID=, PARTLABEL= or \
+     ID= tag";
 
 /// The one entry of `judgement`, an entry where that cannot be told, for the
 /// line that reads `shown`: why it is one.
@@ -243,36 +246,28 @@ fn a_swap_or_image_line_whose_path_is_a_device_node_cannot_be_told() {
 }
 
 #[test]
-fn a_swap_image_or_bind_line_whose_path_is_not_absolute_cannot_be_told() {
-    // swapon and mount look such a path up from the folder they run in. A
-    // line whose type names its source otherwise, as a ZFS dataset's does,
-    // has no path in it.
-    for (line, shown, what) in [
-        (
-            "swapfile none swap sw 0 0",
-            "swapfile none swap",
-            "the file it names",
-        ),
+fn a_swap_image_or_bind_line_whose_path_is_not_absolute_is_not_plain() {
+    // swapon and mount look such a path up from the folder they run in: a
+    // line that is not plain, which NAILS does not read. A line whose type
+    // names its source otherwise, as a ZFS dataset's does, has no path in
+    // it.
+    for (line, shown) in [
+        ("swapfile none swap sw 0 0", "swapfile none swap"),
         (
             "srv/img.raw /mnt/img ext4 loop 0 0",
             "srv/img.raw /mnt/img ext4",
-            "the file it names",
         ),
         (
             "srv/img.raw /mnt/img ext4 defaults 0 0",
             "srv/img.raw /mnt/img ext4",
-            "the file it names",
         ),
-        (
-            "srv/x /srv/b none bind 0 0",
-            "srv/x /srv/b none",
-            "its source",
-        ),
+        ("srv/x /srv/b none bind 0 0", "srv/x /srv/b none"),
+        ("srv/x /srv/b tmpfs bind 0 0", "srv/x /srv/b tmpfs"),
     ] {
         let world = external_veracrypt().fstab(&with_the_decoys_lines(line));
         assert_eq!(
             untold_why(&world.judge("/mnt"), shown),
-            format!("where {what} lies cannot be told: it is no absolute path"),
+            format!("NAILS reads only plain lines, and {RELATIVE}"),
             "{line}"
         );
     }
@@ -553,6 +548,7 @@ fn a_path_that_was_not_looked_up_cannot_be_told() {
         devices: &DeviceMap::default(),
         unreadable: &[],
         paths: &paths,
+        unplain: &UnplainLines::new(),
     };
     assert_eq!(scene.named_path("/srv/x"), Err(UntoldPath::NotLookedUp));
 }

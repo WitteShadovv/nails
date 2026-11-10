@@ -105,14 +105,6 @@ pub(super) fn is_claimed(entry: &FstabEntry) -> bool {
             || entry.vfstype == "overlay")
 }
 
-/// Filesystem types that `mount` reads from a block device, or through a
-/// loop device from an image file, as a first field that is a path names it.
-const BLOCK_TYPES: &[&str] = &[
-    "auto", "bcachefs", "btrfs", "erofs", "exfat", "ext2", "ext3", "ext4", "f2fs", "hfs",
-    "hfsplus", "iso9660", "jfs", "minix", "msdos", "nilfs2", "ntfs", "ntfs3", "reiserfs",
-    "squashfs", "udf", "ufs", "vfat", "xfs",
-];
-
 /// Whether `spec`, the first field of an fstab line, is the path of a device
 /// in `/dev`, which no `..` in it leads out of.
 fn is_device_path(spec: &str) -> bool {
@@ -122,31 +114,13 @@ fn is_device_path(spec: &str) -> bool {
             .any(|part| part == Component::ParentDir)
 }
 
-/// Whether `spec`, the first field of an fstab line, names a device by a
-/// tag: `UUID=`, `LABEL=` and the like.
-fn is_tag(spec: &str) -> bool {
-    spec.split_once('=')
-        .is_some_and(|(key, _)| !key.is_empty() && key.bytes().all(|b| b.is_ascii_uppercase()))
-}
-
 /// Whether the first field of the fstab line `entry` is the path of a file:
 /// a swap file or an image file. That is an absolute path that is not the
-/// path of a device in `/dev` ([`is_device_path`]), and for a swap line, a
-/// `loop` line or a line of a filesystem type `mount` reads from a device or
-/// an image file, any first field that is neither a device's path nor a tag,
-/// which `swapon` and `mount` look up from the folder they run in.
+/// path of a device in `/dev` ([`is_device_path`]). A first field that is
+/// neither absolute nor a tag makes a line that is not plain, unless its type
+/// names no local path by it (see the `plain` module).
 pub(super) fn names_a_file(entry: &FstabEntry) -> bool {
-    let spec = entry.spec.as_str();
-    if is_device_path(spec) || is_tag(spec) {
-        return false;
-    }
-    spec.starts_with('/')
-        || entry.is_swap()
-        || entry
-            .options
-            .iter()
-            .any(|option| option == "loop" || option.starts_with("loop="))
-        || BLOCK_TYPES.contains(&entry.vfstype.as_str())
+    entry.spec.starts_with('/') && !is_device_path(&entry.spec)
 }
 
 /// Whether the claims place the fstab line `entry` by the path it names,

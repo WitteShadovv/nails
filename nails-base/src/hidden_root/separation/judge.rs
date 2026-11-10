@@ -7,8 +7,8 @@ use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
 use super::paths::{is_claimed, names_a_file};
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
-    LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, UntoldPath, Untraced,
-    Verdict, is_system_folder,
+    LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, UnplainLine, UntoldPath,
+    Untraced, Verdict, is_system_folder,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::fstab::FstabEntry;
@@ -517,68 +517,85 @@ fn claims(
         .filter_map(|n| devices.nodes.get(n).and_then(Node::dm_name))
         .collect();
 
-    for entry in scene.fstab {
-        if !is_claimed(entry) {
-            continue;
-        }
-        let node = devices.node_of_spec(&entry.spec);
-        if let Some(node) = node.filter(|n| entry_stack.iter().any(|s| s == n)) {
-            let finding = fstab_finding(scene, hidden, entry, own_device(node));
-            own_needed |= own_device(node) && finding.boot_needs;
-            entries.push(finding);
-            // An entry the boot mounts (or swaps on) makes the device the
-            // decoy's own storage as well; only a `noauto` one is a mere
-            // recipe for the hidden drive. One that names only another
-            // device of the root's btrfs filesystem claims it all the same.
-            if entry.is_noauto() && stack.iter().any(|s| s == node) {
-                continue;
+    for (index, entry) in scene.fstab.iter().enumerate() {
+        // The findings for this line, and whether one of them makes the
+        // root's own filesystem one the decoy's boot needs.
+        let mut found = Vec::new();
+        let mut needs_own = false;
+        'line: {
+            if !is_claimed(entry) {
+                break 'line;
             }
-        }
-        let noauto = entry.is_noauto();
-        if entry.is_bind() || (node.is_none() && names_a_file(entry)) {
-            // A bind, or a swap or image file: the filesystem holding the
-            // source or the file, read as written, with no link followed. A
-            // bind of the volume or of a folder of it mounts the volume, and
-            // a file in the volume lies on it. A path whose place cannot be
-            // told may lead anywhere, the volume included: a finding, which
-            // claims the filesystem its text places it on.
-            let source = match scene.named_path(&entry.spec) {
-                Ok(source) => Some(source),
-                Err(why) => {
-                    entries.push(untold_finding(entry, &why));
-                    None
+            let node = devices.node_of_spec(&entry.spec);
+            if let Some(node) = node.filter(|n| entry_stack.iter().any(|s| s == n)) {
+                let finding = fstab_finding(scene, hidden, entry, own_device(node));
+                needs_own = own_device(node) && finding.boot_needs;
+                found.push(finding);
+                // An entry the boot mounts (or swaps on) makes the device
+                // the decoy's own storage as well; only a `noauto` one is a
+                // mere recipe for the hidden drive. One that names only
+                // another device of the root's btrfs filesystem claims it all
+                // the same.
+                if entry.is_noauto() && stack.iter().any(|s| s == node) {
+                    break 'line;
                 }
+            }
+            let noauto = entry.is_noauto();
+            if entry.is_bind() || (node.is_none() && names_a_file(entry)) {
+                // A bind, or a swap or image file: the filesystem holding
+                // the source or the file, read as written, with no link
+                // followed. A bind of the volume or of a folder of it mounts
+                // the volume, and a file in the volume lies on it. A path
+                // whose place cannot be told may lead anywhere, the volume
+                // included: a finding, which claims the filesystem its text
+                // places it on.
+                let source = match scene.named_path(&entry.spec) {
+                    Ok(source) => Some(source),
+                    Err(why) => {
+                        found.push(untold_finding(entry, &why));
+                        None
+                    }
+                };
+                let path = source.unwrap_or(Path::new(&entry.spec));
+                if let Some(holder) = mount_holding(scene.mounts, path) {
+                    if let Some(source) = source {
+                        found.extend(in_volume_finding(hidden, entry, source, holder));
+                    }
+                    claims.push(mount_claim(scene, holder, noauto));
+                }
+                break 'line;
+            }
+            // What the boot mounted at the entry's mount point is the
+            // decoy's, whether or not its spec leads to a device here (a
+            // label with an escaped space, a missing udev link).
+            if !entry.is_swap()
+                && !noauto
+                && !entry.file.starts_with(&hidden.mount_point)
+                && let Some(live) = top_mount_at(scene.mounts, &entry.file)
+            {
+                claims.push(mount_claim(scene, live, false));
+            }
+            let what = if entry.is_swap() {
+                Claimed::Swap(entry.spec.clone())
+            } else {
+                Claimed::Mount(entry.file.clone())
             };
-            let path = source.unwrap_or(Path::new(&entry.spec));
-            if let Some(holder) = mount_holding(scene.mounts, path) {
-                if let Some(source) = source {
-                    entries.extend(in_volume_finding(hidden, entry, source, holder));
-                }
-                claims.push(mount_claim(scene, holder, noauto));
+            claims.push(device_claim(
+                scene,
+                what,
+                node.into_iter().map(str::to_string).collect(),
+                noauto,
+            ));
+        }
+        // A line that is not plain claims what NAILS reads in it, and is a
+        // finding of its own, its only one: what it mounts cannot be told.
+        match scene.unplain.get(&index) {
+            Some(line) => entries.push(not_plain_finding(line)),
+            None => {
+                own_needed |= needs_own;
+                entries.append(&mut found);
             }
-            continue;
         }
-        // What the boot mounted at the entry's mount point is the decoy's,
-        // whether or not its spec leads to a device here (a label with an
-        // escaped space, a missing udev link).
-        if !entry.is_swap()
-            && !noauto
-            && !entry.file.starts_with(&hidden.mount_point)
-            && let Some(live) = top_mount_at(scene.mounts, &entry.file)
-        {
-            claims.push(mount_claim(scene, live, false));
-        }
-        let what = if entry.is_swap() {
-            Claimed::Swap(entry.spec.clone())
-        } else {
-            Claimed::Mount(entry.file.clone())
-        };
-        claims.push(device_claim(
-            scene,
-            what,
-            node.into_iter().map(str::to_string).collect(),
-            noauto,
-        ));
     }
 
     // Where the decoy mounts another part of the filesystem a folder or a
@@ -657,6 +674,7 @@ fn claims(
                 why: "the decoy is configured to open storage on this drive".to_string(),
                 boot_needs: false,
                 system_folder: None,
+                not_plain: false,
             });
             continue;
         }
@@ -836,6 +854,22 @@ fn untold_finding(entry: &FstabEntry, why: &UntoldPath) -> EntryFinding {
         why: format!("where {what} cannot be told: {}", why.reason()),
         boot_needs: false,
         system_folder: None,
+        not_plain: false,
+    }
+}
+
+/// The finding for `line`, a line of the fstab that is not plain: NAILS does
+/// not read it as `libmount` and systemd do, so it may mount the volume, and
+/// what it mounts cannot be told.
+fn not_plain_finding(line: &UnplainLine) -> EntryFinding {
+    EntryFinding {
+        kind: EntryKind::Untold,
+        file: FSTAB,
+        line: line.shown.clone(),
+        why: format!("NAILS reads only plain lines, and {}", line.reason()),
+        boot_needs: false,
+        system_folder: None,
+        not_plain: true,
     }
 }
 
@@ -852,6 +886,7 @@ fn blocking(file: &'static str, line: String, why: String, boot_needs: bool) -> 
         why,
         boot_needs,
         system_folder: None,
+        not_plain: false,
     }
 }
 

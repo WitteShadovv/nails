@@ -244,11 +244,13 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
 /// of the fstab from its own storage, are left out, and the failure says that
 /// no such line that NAILS can tell made the other mounts: a bind line whose
 /// source has a link in it makes none it can tell (the judge,
-/// [`separation`](crate::hidden_root::separation), follows no link). It names
-/// no mount at `/` or by the fstab, as there may be none: a drive of its own
-/// also mounted at `/srv` by hand counts as the computer's storage. Its fix
-/// starts by saying that one the computer makes by itself is not to be
-/// unmounted, as the root then needs a volume of its own: once a partition the
+/// [`separation`](crate::hidden_root::separation), follows no link), and
+/// neither does a line that is not plain, which NAILS does not read as
+/// `libmount` and systemd do. It names no mount at `/` or by the fstab, as
+/// there may be none: a drive of its own also mounted at `/srv` by hand counts
+/// as the computer's storage. Its fix starts by saying that one the computer
+/// makes by itself is not to be unmounted, as the root then needs a volume of
+/// its own: once a partition the
 /// computer mounts with no fstab line is unmounted, the check can no longer
 /// tell that a root on it lies on the computer's storage. Only then come the
 /// unmount lines, for a mount made by hand, and the advice about removable

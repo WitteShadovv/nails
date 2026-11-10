@@ -11,13 +11,14 @@
 //! the threads that write them. `etc_root` is `/` for the running decoy;
 //! another root lets an offline scan judge a decoy's files.
 //!
-//! The paths the fstab names, a bind line's source and the path of a swap or
-//! image file, are read below `etc_root` as they are written, one part at a
-//! time, with no link in them followed (see the `paths` module), once the
-//! block devices are known, which tell the folders of its lines whose mount
-//! is not there now. The path of a swap or image file is never resolved as
-//! the name of a device, and neither is a bind line's source that is an
-//! absolute path outside `/dev`.
+//! The fstab is read with each of its lines that is not plain (see the
+//! `plain` module). The paths it names, a bind line's source and the path of
+//! a swap or image file, are read below `etc_root` as they are written, one
+//! part at a time, with no link in them followed (see the `paths` module),
+//! once the block devices are known, which tell the folders of its lines
+//! whose mount is not there now. The path of a swap or image file is never
+//! resolved as the name of a device, and neither is a bind line's source that
+//! is an absolute path outside `/dev`.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -69,14 +70,14 @@
 #[path = "collect_tests.rs"]
 mod tests;
 
-use super::{DeviceMap, NamedPaths, SYS_CLASS_BLOCK, Served, Untraced};
-use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge};
+use super::{DeviceMap, NamedPaths, SYS_CLASS_BLOCK, Served, UnplainLines, Untraced};
+use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge, read_fstab};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
 use crate::crypttab::{CrypttabEntry, parse_crypttab};
 use crate::filesystem::LoopRecord;
 use crate::filesystem::mountinfo::MountEntry;
-use crate::fstab::{FstabEntry, parse_fstab};
+use crate::fstab::FstabEntry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -93,6 +94,9 @@ pub struct Collected {
     pub unreadable: Vec<PathBuf>,
     /// The paths the fstab names, as they read.
     pub paths: NamedPaths,
+    /// The lines of the fstab that are not plain, by the index of their
+    /// entry in `fstab`.
+    pub unplain: UnplainLines,
 }
 
 impl Collected {
@@ -105,6 +109,7 @@ impl Collected {
             devices: &self.devices,
             unreadable: &self.unreadable,
             paths: &self.paths,
+            unplain: &self.unplain,
         }
     }
 }
@@ -131,7 +136,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
     let fstab_path = etc_root.join("etc/fstab");
     let crypttab_path = etc_root.join("etc/crypttab");
     if let Some(text) = read_optional(fs, &fstab_path, &mut collected.unreadable) {
-        collected.fstab = parse_fstab(&text);
+        (collected.fstab, collected.unplain) = read_fstab(&text);
     }
     if let Some(text) = read_optional(fs, &crypttab_path, &mut collected.unreadable) {
         collected.crypttab = parse_crypttab(&text);

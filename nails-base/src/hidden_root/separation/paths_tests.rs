@@ -264,12 +264,12 @@ fn under_another_root_each_part_is_read_inside_it() {
 
 #[test]
 fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
-    // A bind line's source, under /dev too and of any type, a swap or image
-    // file outside /dev, `_netdev` or not, a relative one of a swap line, a
-    // loop line or a line of a type mount reads from a device or an image,
-    // and a path under /dev that `..` leads out of. No device line, tag, RAM
-    // or network line other than a bind line, and no line whose type names
-    // its source otherwise, as a ZFS dataset's does.
+    // A bind line's source, under /dev too, relative too and of any type, a
+    // swap or image file outside /dev, and a path under /dev that `..` leads
+    // out of. No device line, tag, RAM or network line other than a bind
+    // line, no line whose type names its source otherwise, as a ZFS
+    // dataset's does, and no relative first field of a swap, loop or device
+    // line, which makes the line one that is not plain.
     let fstab = parse_fstab(
         "/dev/sda1 / ext4 defaults 0 1\nUUID=f1 /home ext4 defaults 0 2\n\
          /swapfile none swap sw 0 0\n/srv/x /mnt none bind 0 0\n\
@@ -303,18 +303,12 @@ fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
             "/srv/x",
             "/swapfile",
             "none",
-            "srv/a.img",
-            "srv/b.img",
-            "srv/c.img",
-            "swapfile"
         ]
     );
     assert_eq!(paths["/swapfile"], link("/swapfile"));
     assert_eq!(paths["/srv/x"], reads("/srv/x"));
     assert_eq!(paths["/dev/../srv/node"], reads("/srv/node"));
-    for relative in ["none", "srv/a.img", "srv/b.img", "srv/c.img", "swapfile"] {
-        assert_eq!(paths[relative], Err(UntoldPath::Relative), "{relative}");
-    }
+    assert_eq!(paths["none"], Err(UntoldPath::Relative));
 }
 
 #[test]

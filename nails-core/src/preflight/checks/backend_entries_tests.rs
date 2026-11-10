@@ -1021,9 +1021,32 @@ fn a_swap_or_image_line_whose_path_is_a_device_node_fails() {
     }
 }
 
+/// Why a line whose first field is no absolute path and no tag is not plain.
+const RELATIVE: &str = "its first field is neither an absolute path nor a UUID=, LABEL=, \
+                        PARTUUID=, PARTLABEL= or ID= tag";
+
+/// The finding for the line that is not plain whose first three fields read
+/// `shown`, for `reason`.
+fn not_plain(shown: &str, reason: &str) -> String {
+    format!("/etc/fstab: '{shown}' (NAILS reads only plain lines, and {reason})")
+}
+
+/// That the check of `fs` fails with `allow` naming only `finding`, a line
+/// that is not plain, and says to write it plainly.
+fn fails_as_not_plain(fs: &MockFilesystem, allow: Allow, finding: &str) {
+    let result = run_allowing(fs, allow);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!("The decoy's configuration may name the volume at /mnt: {finding}. {STORED}")
+    );
+    assert_eq!(result.remediation(), Some(UNPLAIN));
+}
+
 #[test]
 fn a_swap_or_image_line_whose_path_is_not_absolute_fails_with_the_flag_too() {
-    // swapon and mount look up such a path from the folder they run in.
+    // swapon and mount look up such a path from the folder they run in: the
+    // line is not plain, and NAILS reads no such line.
     for (line, shown) in [
         ("swapfile none swap sw 0 0", "swapfile none swap"),
         (
@@ -1035,20 +1058,21 @@ fn a_swap_or_image_line_whose_path_is_not_absolute_fails_with_the_flag_too() {
             BIND_OF_ROOT,
             &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
         );
-        fails_as_untold(
-            &fs,
-            Allow::DecoyStorage,
-            &untold(shown, "the file it names", "it is no absolute path"),
-        );
+        fails_as_not_plain(&fs, Allow::DecoyStorage, &not_plain(shown, RELATIVE));
         let result = run_allowing(&fs, Allow::Nothing);
         assert!(result.is_fail(), "{line}: {result:?}");
         assert!(
             result.message().contains(&format!(
                 "It may name it as well: {}",
-                untold(shown, "the file it names", "it is no absolute path")
+                not_plain(shown, RELATIVE)
             )),
             "{line}: {}",
             result.message()
+        );
+        assert_eq!(
+            result.remediation(),
+            Some(format!("{STORAGE_OF_ITS_OWN}\n{UNPLAIN}").as_str()),
+            "{line}"
         );
     }
 }
@@ -1191,6 +1215,113 @@ fn a_line_for_the_volume_with_netdev_or_of_a_host_share_type_fails() {
 }
 
 #[test]
+fn a_line_that_is_not_plain_fails_with_the_flag_too() {
+    // libmount reads `bin\144` as `bind` and `\162bind` as `rbind` (E1 and
+    // E2 of the verify), and `/srv/\170` as `/srv/x`: each binds the root's
+    // folder at the root at every boot. NAILS reads no such line, and says
+    // to write it plainly. hidden-volume passes the root with the flag's
+    // warning.
+    for (line, shown, reason) in [
+        (
+            "/srv/x /mnt none bin\\144 0 0",
+            "/srv/x /mnt none",
+            "its options hold a backslash".to_string(),
+        ),
+        (
+            "/srv/x /mnt none \\162bind 0 0",
+            "/srv/x /mnt none",
+            "its options hold a backslash".to_string(),
+        ),
+        (
+            "/srv/\\170 /mnt none bind 0 0",
+            "/srv/\\170 /mnt none",
+            "its first field holds \\170, which is no escape of a space, a tab, a newline or a \
+             backslash"
+                .to_string(),
+        ),
+        (
+            "srv/x /mnt none bind 0 0",
+            "srv/x /mnt none",
+            RELATIVE.to_string(),
+        ),
+        (
+            "/srv/x /mnt none,ext4 bind 0 0",
+            "/srv/x /mnt none,ext4",
+            "its type is a list of types".to_string(),
+        ),
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
+        );
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{line}");
+        fails_as_not_plain(&fs, Allow::DecoyStorage, &not_plain(shown, &reason));
+    }
+    // Without the flag, the line for / is named first, which the decoy's
+    // own boot needs, and the fix says what to do about each kind.
+    let fs = rendered(
+        BIND_OF_ROOT,
+        "/dev/vda1 / ext4 defaults 0 1\n/srv/x /mnt none bin\\144 0 0\n",
+    );
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().ends_with(&format!(
+            "It may name it as well: {}. {STORED}",
+            not_plain("/srv/x /mnt none", "its options hold a backslash")
+        )),
+        "{}",
+        result.message()
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(format!("{STORAGE_OF_ITS_OWN}\n{UNPLAIN}").as_str())
+    );
+}
+
+#[test]
+fn a_relative_device_or_a_list_of_types_fails_without_the_flag() {
+    // The volume is the mapping `data` (dm-9) on the whole of sdb, at /mnt.
+    // libmount looks a relative first field up from /, where systemd runs
+    // mount, so each of these mounts the volume at boot (R1 to R4 of the
+    // verify) and fails, while the gate, which reads no such line, passes the
+    // volume.
+    for (line, shown, reason) in [
+        (
+            "dev/mapper/data /media/x ext4 nofail 0 0",
+            "dev/mapper/data /media/x ext4",
+            RELATIVE.to_string(),
+        ),
+        (
+            "dev/mapper/data /media/x ntfs-3g nofail,x-systemd.automount 0 0",
+            "dev/mapper/data /media/x ntfs-3g",
+            RELATIVE.to_string(),
+        ),
+        (
+            "dev/mapper/data /media/x ext4,xfs nofail 0 0",
+            "dev/mapper/data /media/x ext4,xfs",
+            format!("its type is a list of types and {RELATIVE}"),
+        ),
+        (
+            "dev/dm-9 /media/x cramfs nofail 0 0",
+            "dev/dm-9 /media/x cramfs",
+            RELATIVE.to_string(),
+        ),
+    ] {
+        let decoy = decoy().encrypted().file(
+            "/etc/fstab",
+            &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}\n"),
+        );
+        decoy.fs.mock_set_device_node("/dev/dm-9");
+        fails_as_not_plain(&decoy.fs, Allow::Nothing, &not_plain(shown, &reason));
+        let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+            .run(&decoy.fs)
+            .unwrap();
+        assert!(gate.is_pass(), "{line}: {gate:?}");
+    }
+}
+
+#[test]
 fn a_swap_or_image_file_in_the_roots_folder_fails_with_the_flag_too() {
     // A swap file or an image file in the folder of / bound at the root lies
     // in the volume: the decoy swaps on it, or mounts it, at every boot (F1
@@ -1226,6 +1357,43 @@ fn a_swap_or_image_file_in_the_roots_folder_fails_with_the_flag_too() {
         );
         assert_eq!(result.remediation(), Some(REMEDIATION), "{line}");
     }
+}
+
+#[test]
+fn plain_lines_that_name_no_part_of_the_volume_pass() {
+    // Lines of filesystems whose first field names no local path, a bind,
+    // swap file or image beside the root's folder, a noauto drive below which
+    // no path is read, and escapes of a space in a path: the flag lets the
+    // line for / be, and nothing else names the volume.
+    let lines = "tmpfs /tmp tmpfs mode=1777,nosuid 0 0\n\
+                 none /dev/shm tmpfs defaults 0 0\n\
+                 server:/export /net nfs4 _netdev 0 0\n\
+                 //server/share /media/s cifs credentials=/etc/cifs,_netdev 0 0\n\
+                 mybucket /media/s3 fuse.s3fs _netdev,allow_other 0 0\n\
+                 store /nix/.ro-store 9p trans=virtio,version=9p2000.L 0 0\n\
+                 overlay /srv/o overlay lowerdir=/srv/y,upperdir=/var/u,workdir=/var/w 0 0\n\
+                 rpool/data /data zfs defaults 0 0\n\
+                 /srv/y /srv/b none bind 0 0\n\
+                 /srv/y/swapfile none swap sw 0 0\n\
+                 /srv/y/disk.img /media/i ext4 loop,nofail 0 0\n\
+                 UUID=b2 /backup ext4 noauto 0 2\n\
+                 /dev/vdb1 /media/My\\040Disk ntfs-3g noauto,user 0 0\n";
+    let fs = rendered(
+        BIND_OF_ROOT,
+        &format!("/dev/vda1 / ext4 defaults 0 1\n{lines}"),
+    );
+    assert!(hidden_volume_with_the_flag(&fs).is_warn());
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(result.message(), only_the_decoys_own_line("/"));
+    // So for a volume of its own, with no flag.
+    let result = decoy()
+        .file(
+            "/etc/fstab",
+            &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{lines}"),
+        )
+        .run();
+    assert!(result.is_pass(), "{result:?}");
 }
 
 /// What the mock lists in `/proc/devices` for the encrypted decoys.

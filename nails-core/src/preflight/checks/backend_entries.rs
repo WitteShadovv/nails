@@ -42,6 +42,17 @@
 //! line may mount the volume, so the check says why it cannot tell where the
 //! line leads, and to write it with its real path.
 //!
+//! The check reads only plain fstab lines, which NAILS reads as `libmount`
+//! and systemd do: a line that holds a control character other than a tab,
+//! or white space other than a space or a tab, a backslash in its first field
+//! or mount point that begins none of the escapes `\040`, `\011`, `\012` and
+//! `\134`, a backslash in its type or options, a list of types, or a first
+//! field that is neither an absolute path nor a `UUID=`, `LABEL=`,
+//! `PARTUUID=`, `PARTLABEL=` or `ID=` tag, unless it is the line of a RAM,
+//! kernel, host-share, network, overlay, ZFS or FUSE filesystem and no bind
+//! line, fails too, with or without the flag. The check names what it could
+//! not read, and says to write the line plainly.
+//!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
 //! go: the hidden root lies on the decoy's own storage then, and the check says
@@ -78,6 +89,16 @@ pub const UNTOLD: &str = "Write such a line with its real path long before the n
      absolute and with no symbolic link in it, and a device by its path in /dev, or remove it. If \
      a folder on its way is not mounted now, mount it. Then run the command again, with sudo if it \
      ran without.";
+
+/// What the operator does about an fstab line that is not plain: NAILS reads
+/// only plain lines, so the line has to be written plainly, and once it is,
+/// the check tells what it mounts.
+pub const UNPLAIN: &str = "Write such a line plainly long before the next use, or remove it: \
+     its fields apart by spaces or tabs, one filesystem type, no backslash in its type or options, \
+     no backslash in its first two fields but in the escapes \\040, \\011, \\012 and \\134, and as \
+     its first field an absolute path or a UUID=, LABEL=, PARTUUID=, PARTLABEL= or ID= tag, unless \
+     it is no bind line and is for a RAM, kernel, host-share, network, overlay, ZFS or FUSE \
+     filesystem. Then run the command again.";
 
 /// Pre-flight check that no decoy fstab or crypttab entry opens or mounts the
 /// hidden volume.
@@ -209,9 +230,9 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
 }
 
 /// The failure for the entries for the hidden drive: those that open or
-/// mount it, `blocking`, and those whose path cannot be told, `untold`,
-/// which may (at least one of the two is there). The fix says what to do
-/// about each kind.
+/// mount it, `blocking`, and those whose path cannot be told or that are not
+/// plain, `untold`, which may (at least one of the two is there). The fix
+/// says what to do about each kind.
 fn entries_failure(
     root: &Path,
     blocking: &[&EntryFinding],
@@ -241,7 +262,12 @@ fn entries_failure(
             "It may name it as well".to_string()
         };
         message.push(format!("{may}: {}.", describe(untold)));
-        fix.push(UNTOLD);
+        if untold.iter().any(|f| !f.not_plain) {
+            fix.push(UNTOLD);
+        }
+        if untold.iter().any(|f| f.not_plain) {
+            fix.push(UNPLAIN);
+        }
     }
     message.push(
         "Such an entry is stored on the decoy, where an examination reads it, and can open or \
