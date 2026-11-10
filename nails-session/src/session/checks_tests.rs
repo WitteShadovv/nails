@@ -485,6 +485,130 @@ fn without_the_mount_table_the_policy_check_looks_up_nothing() {
     assert!(fs.mock_lookups().is_empty(), "{:?}", fs.mock_lookups());
 }
 
+/// A decoy root with the fstab `fstab` and a direct automount point at
+/// `srv/point` that nothing is mounted on: the real folder there holds what
+/// a link into the point leads to, so a lookup made through one anyway
+/// reads it and changes the check's answer.
+fn beside_a_point(fstab: &str) -> (tempfile::TempDir, PathBuf, Arc<Snapshot>) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc/systemd/system")).unwrap();
+    std::fs::create_dir_all(root.join("srv/point/wants")).unwrap();
+    std::fs::write(root.join("etc/fstab"), fstab).unwrap();
+    let snapshot = automounts_below(&root, &["srv/point"]);
+    (dir, root, snapshot)
+}
+
+/// fstab-policy's answer for the decoy root `root`, judged by `snapshot`.
+fn judged(root: &Path, snapshot: &Arc<Snapshot>) -> CheckResult {
+    FstabPolicyCheck::new(root.to_path_buf(), PathBuf::from("/mnt/data")).judge(
+        &crate::filesystem::RealFilesystem,
+        snapshot,
+        &parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n"),
+    )
+}
+
+/// Whether `result` refuses with the fix that mounts the point of
+/// [`beside_a_point`], naming it.
+fn refuses_for_the_point(result: &CheckResult, root: &Path) -> bool {
+    let point = root.join("srv/point");
+    result.is_fail()
+        && result.message().contains(&format!(
+            "since the lookup would mount the automount point {}",
+            point.display()
+        ))
+        && result.remediation()
+            == Some(crate::filesystem::automount::mount_fix(&[point.as_path()]).as_str())
+}
+
+const ROOT_ONLY: &str = "/dev/vda2 / ext4 defaults 0 1\n";
+
+/// A link at the end of a lookup is followed where the lookup follows it:
+/// an fstab that links behind an automount point is not read.
+#[test]
+fn an_fstab_that_links_behind_an_automount_point_is_not_read() {
+    let (_dir, root, snapshot) = beside_a_point(ROOT_ONLY);
+    std::fs::write(root.join("srv/point/fstab"), ROOT_ONLY).unwrap();
+    std::fs::remove_file(root.join("etc/fstab")).unwrap();
+    std::os::unix::fs::symlink("../srv/point/fstab", root.join("etc/fstab")).unwrap();
+    let result = judged(&root, &snapshot);
+    assert!(refuses_for_the_point(&result, &root), "{result:?}");
+    assert!(
+        result.message().starts_with(&format!(
+            "{root}/etc/fstab cannot be read: NAILS does not look up {root}/etc/fstab",
+            root = root.display()
+        )),
+        "{result:?}"
+    );
+}
+
+/// A directory of links that links behind an automount point is not listed,
+/// as a `*.wants` directory made a link is: the check refuses, naming it.
+#[test]
+fn a_wants_directory_that_links_behind_an_automount_point_is_not_listed() {
+    let (_dir, root, snapshot) = beside_a_point(ROOT_ONLY);
+    std::os::unix::fs::symlink(
+        "../../../srv/point/wants",
+        root.join("etc/systemd/system/local-fs.target.wants"),
+    )
+    .unwrap();
+    let result = judged(&root, &snapshot);
+    assert!(refuses_for_the_point(&result, &root), "{result:?}");
+    assert!(
+        result.message().contains(&format!(
+            "/etc/systemd/system/local-fs.target.wants: refused (NAILS cannot list this unit \
+             directory: NAILS does not look up {}/etc/systemd/system/local-fs.target.wants,",
+            root.display()
+        )),
+        "{result:?}"
+    );
+}
+
+/// A unit file that links behind an automount point is not resolved: where
+/// it leads, here a mask, is not looked up, and the check cannot tell
+/// whether it masks the unit, a mount unit `local-fs.target` wants.
+#[test]
+fn a_unit_that_links_behind_an_automount_point_is_not_resolved() {
+    let (_dir, root, snapshot) = beside_a_point(ROOT_ONLY);
+    let units = root.join("etc/systemd/system");
+    std::fs::create_dir_all(units.join("local-fs.target.wants")).unwrap();
+    std::os::unix::fs::symlink(
+        "../data.mount",
+        units.join("local-fs.target.wants/data.mount"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("/dev/null", root.join("srv/point/data.mount")).unwrap();
+    std::os::unix::fs::symlink("../../../srv/point/data.mount", units.join("data.mount")).unwrap();
+    let result = judged(&root, &snapshot);
+    assert!(refuses_for_the_point(&result, &root), "{result:?}");
+    assert!(
+        result.message().contains(&format!(
+            "NAILS does not look up {}/etc/systemd/system/data.mount,",
+            root.display()
+        )),
+        "{result:?}"
+    );
+}
+
+/// A mount point in the fstab that links behind an automount point is not
+/// resolved: it keeps its path as written, and the check refuses it.
+#[test]
+fn a_mount_point_that_links_behind_an_automount_point_keeps_its_path() {
+    let (_dir, root, snapshot) =
+        beside_a_point(&format!("{ROOT_ONLY}/dev/vdb1 /data ext4 defaults 0 2\n"));
+    std::fs::create_dir_all(root.join("srv/point/data")).unwrap();
+    std::os::unix::fs::symlink("srv/point/data", root.join("data")).unwrap();
+    let result = judged(&root, &snapshot);
+    assert!(refuses_for_the_point(&result, &root), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains(&format!("NAILS does not look up {}/data,", root.display())),
+        "{result:?}"
+    );
+    assert!(!result.message().contains("/srv/point/data"), "{result:?}");
+}
+
 /// A decision for a path the guard did not look up asks only for the mount;
 /// any other refusal keeps its own fix.
 #[test]
