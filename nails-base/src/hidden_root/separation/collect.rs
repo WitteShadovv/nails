@@ -12,8 +12,10 @@
 //! another root lets an offline scan judge a decoy's files.
 //!
 //! The paths the fstab names, a bind line's source and the path of a swap or
-//! image file, are followed through their links, as `mount` and `swapon`
-//! follow them, below `etc_root` (see the `paths` module).
+//! image file, are read below `etc_root` as they are written, one part at a
+//! time, with no link in them followed (see the `paths` module), once the
+//! block devices are known, which tell the folders the boot mounts whose
+//! mount is not there now. They are never resolved as the names of devices.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -65,7 +67,7 @@
 #[path = "collect_tests.rs"]
 mod tests;
 
-use super::{DeviceMap, FollowedPaths, SYS_CLASS_BLOCK, Served, Untraced};
+use super::{DeviceMap, NamedPaths, SYS_CLASS_BLOCK, Served, Untraced};
 use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
@@ -87,8 +89,8 @@ pub struct Collected {
     pub devices: DeviceMap,
     /// Inputs that exist but could not be read.
     pub unreadable: Vec<PathBuf>,
-    /// Where the paths the fstab names lead.
-    pub paths: FollowedPaths,
+    /// The paths the fstab names, as they read.
+    pub paths: NamedPaths,
 }
 
 impl Collected {
@@ -129,7 +131,6 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
     if let Some(text) = read_optional(fs, &fstab_path, &mut collected.unreadable) {
         collected.fstab = parse_fstab(&text);
     }
-    collected.paths = super::paths::follow_all(fs, mounts, etc_root, &collected.fstab);
     if let Some(text) = read_optional(fs, &crypttab_path, &mut collected.unreadable) {
         collected.crypttab = parse_crypttab(&text);
     }
@@ -150,10 +151,13 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         Err(_) => collected.unreadable.push(class.to_path_buf()),
     }
 
-    // The names the files and the mount table use for devices.
+    // The names the files and the mount table use for devices. The path of a
+    // file the fstab names is no name of one: resolved whole, its links would
+    // be read, and a `..` leads out of `/dev`.
     let specs = collected
         .fstab
         .iter()
+        .filter(|entry| !super::paths::names_a_file(entry))
         .map(|entry| entry.spec.clone())
         .chain(
             collected
@@ -191,6 +195,8 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         Err(unread) => collected.unreadable.push(unread),
     }
     collected.devices.extra = super::extra::extra_devices(fs, mounts, &collected.devices);
+    collected.paths =
+        super::paths::read_all(fs, mounts, etc_root, &collected.fstab, &collected.devices);
     collected
 }
 

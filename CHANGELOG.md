@@ -846,15 +846,21 @@ of this changelog for that version becomes the release notes word for word, and
   volume, or a folder of it. It let such a line pass, and with `--allow-decoy-storage` the check
   passed a root bound from a folder of `/` that the decoy's own fstab binds at the root at every
   boot. It says to remove such a line, unless the boot mounts it at a system folder, where it says
-  to keep it and to put the hidden root on storage of its own instead. The judge reads a bind
-  line's source, and the path of a swap or image file, through its links, one place at a time, as
-  `mount` and `swapon` follow them, for the attach gate and the second-mount rule too, so a bind
-  line whose source leads to the root's folder through a link is refused as well, and a swap file
-  whose path leads through a link onto a filesystem claims that filesystem. A line whose path
-  cannot be followed (a link that leads to nothing, links that go round, a place that cannot be
-  looked up, an automount point that nothing is mounted on yet, which the lookup would mount, or a
-  path that is not absolute) fails `backend-entries` as one that may mount the volume, and the
-  check says why.
+  to keep it and to put the hidden root on storage of its own instead. NAILS does not follow
+  symbolic links in the path of a bind line's source, a swap file or an image file: it looks at each
+  part of the path on its own, as `lstat` does, so it reads no link and changes no access time. A
+  line whose path cannot be told this way fails `backend-entries`, with `--allow-decoy-storage` or
+  without it, as one that may mount the volume, and the check names the link, the device node or
+  the folder and says to write the line with its real path: a path with a link in any part, which
+  `mount` and `swapon` would follow at boot, one that is not absolute (a bind line's source, a swap
+  line, a `loop` line or a line of a filesystem type read from a device or an image file), a device
+  node, outside `/dev` too, one that crosses the folder of an fstab line the boot mounts (no
+  `noauto`) while that line's mount is not there now, one with a part that cannot be looked up, and
+  one that crosses an automount point nothing is mounted on yet. So a swap or image line whose path
+  is a link to the hidden volume's device node fails as well, where it passed before. A path with
+  no link in it, below mounts that are there, is judged as it is written, and a bind line whose
+  source as written lies in the volume fails whatever lies there. For the second-mount rule, a bind
+  line whose path cannot be told makes no mount of the decoy's own.
 - `backend-entries` no longer says to remove the decoy's crypttab line for the volume that one of
   its own filesystems lies on when the hidden root is on that filesystem too: a bind of a folder of
   `/` on an encrypted decoy, say, or a subvolume of its encrypted btrfs. Such a line opens the hidden
@@ -1478,7 +1484,8 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/fstab` makes (a line that names the mount's device, or the ZFS dataset, and mounts what it
   shows, on btrfs the subvolume its `subvol=` or `subvolid=` names as the mount table shows that
   subvolume's path and id, so a `subvolid=` that cannot be read on either side makes none, or a bind
-  line from another of the decoy's own mounts of it), and neither does a mount that shows none of
+  line from another of the decoy's own mounts of it whose source has no symbolic link in it, which
+  NAILS does not follow), and neither does a mount that shows none of
   the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So
   `hidden-volume` passes a bind of a folder of `/` and a subvolume beside the fstab's `/home` with
   the flag's warning, and so does `backend-entries`, which lets be the decoy's own fstab lines for

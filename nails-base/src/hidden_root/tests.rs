@@ -747,18 +747,20 @@ fn on_a_decoy_filesystem_a_bind_line_of_the_fstab_makes_its_mount() {
         &format!("{persist}/persist/home /home none bind 0 0\n"),
     );
     assert!(elsewhere_on_the_decoy(&fs).is_empty());
-    // So does a bind line whose source leads there through a link, which
-    // mount follows, and one whose link leads to nothing makes none.
+    // A bind line whose source holds a link makes none, wherever the link
+    // leads: no link is followed, so what the line binds cannot be told.
     let through_a_link = format!("{persist}/persist/link /home none bind 0 0\n");
-    let fs = decoy_fs(table, &through_a_link);
-    fs.create_symlink(Path::new("home"), Path::new("/persist/link"))
-        .unwrap();
-    assert!(elsewhere_on_the_decoy(&fs).is_empty());
-    let fs = decoy_fs(table, &through_a_link);
-    fs.create_symlink(Path::new("/persist/gone"), Path::new("/persist/link"))
-        .unwrap();
-    fs.mock_set_mount_root_error("/persist/gone", std::io::ErrorKind::NotFound);
-    assert_eq!(elsewhere_on_the_decoy(&fs), vec![PathBuf::from("/home")]);
+    for target in ["home", "/persist/gone"] {
+        let fs = decoy_fs(table, &through_a_link);
+        fs.create_symlink(Path::new(target), Path::new("/persist/link"))
+            .unwrap();
+        fs.mock_set_mount_root_error("/persist/gone", std::io::ErrorKind::NotFound);
+        assert_eq!(
+            elsewhere_on_the_decoy(&fs),
+            vec![PathBuf::from("/home")],
+            "{target}"
+        );
+    }
     // Without the bind line /home is no mount of the decoy's; a bind line
     // whose source lies on another filesystem does not make it either.
     for fstab in [

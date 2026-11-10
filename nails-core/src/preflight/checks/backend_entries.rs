@@ -31,13 +31,15 @@
 //! outer volume of another partition) warns: the decoy is configured to open
 //! storage on that drive.
 //!
-//! A bind line's source and the path of a swap or image file are followed
-//! through their links, as `mount` and `swapon` follow them. A line whose
-//! path cannot be followed (a link on the way that leads to nothing, links
-//! that go round, a place that cannot be looked up, an automount point that
-//! the lookup would mount, a path that is not absolute) fails as well: it may
-//! mount the volume, and the check says why it cannot tell where the line
-//! leads.
+//! A bind line's source and the path of a swap or image file are read as
+//! they are written, one part at a time, and no link in them is followed. A
+//! line whose path cannot be told fails as well, with or without the flag: a
+//! path with a symbolic link in any part, one that is not absolute, a device
+//! node, one that crosses a folder that a line of the fstab mounts at boot
+//! while that mount is not there now, one with a part that cannot be looked
+//! up, and one whose lookup would mount an automount point. Such a line may
+//! mount the volume, so the check says why it cannot tell where the line
+//! leads, and to write it with its real path.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
@@ -68,11 +70,13 @@ pub const REMOVE_AND_MOVE: &str = "Remove the lines only the hidden volume needs
      next use, and open the volume by hand each time. Do not remove a line the decoy's own boot \
      needs: put the hidden root on storage of its own instead.";
 
-/// What the operator does about an entry whose path cannot be followed: once
-/// it leads to a place that can be looked up, the check tells what it mounts.
-pub const UNFOLLOWED: &str = "Make a line whose path cannot be followed lead to a place that can \
-     be looked up, or remove it, long before the next use. If the command ran without sudo, run \
-     it again with sudo.";
+/// What the operator does about an entry whose path cannot be told: no link
+/// in it is followed, so the line has to name its real path, and once it does
+/// with every folder on the way mounted, the check tells what it mounts.
+pub const UNTOLD: &str = "Write such a line with its real path long before the next use, \
+     absolute and with no symbolic link in it, and a device by its path in /dev, or remove it. If \
+     a folder on its way is not mounted now, mount it. Then run the command again, with sudo if it \
+     ran without.";
 
 /// Pre-flight check that no decoy fstab or crypttab entry opens or mounts the
 /// hidden volume.
@@ -204,7 +208,7 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
 }
 
 /// The failure for the entries for the hidden drive: those that open or
-/// mount it, `blocking`, and those whose path cannot be followed, `untold`,
+/// mount it, `blocking`, and those whose path cannot be told, `untold`,
 /// which may (at least one of the two is there). The fix says what to do
 /// about each kind.
 fn entries_failure(
@@ -236,7 +240,7 @@ fn entries_failure(
             "It may name it as well".to_string()
         };
         message.push(format!("{may}: {}.", describe(untold)));
-        fix.push(UNFOLLOWED);
+        fix.push(UNTOLD);
     }
     message.push(
         "Such an entry is stored on the decoy, where an examination reads it, and can open or \

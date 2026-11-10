@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Following the paths of the decoy's fstab on `MockFilesystem` fixtures:
-//! the links on the way, read one at a time, where a lookup stops, and why
-//! a path cannot be followed.
+//! Reading the paths of the decoy's fstab on `MockFilesystem` fixtures and
+//! on a real one: each part looked at on its own, no link followed, and why
+//! where a path lies cannot be told.
 
 use super::*;
 use crate::filesystem::MockFilesystem;
@@ -14,15 +14,27 @@ use std::io::ErrorKind;
 /// The mount table of a plain decoy.
 const PLAIN: &str = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n";
 
-/// Where `path` of the running decoy leads on `fs`, below the mounts of
-/// `table`.
-fn followed_in(fs: &MockFilesystem, table: &str, path: &str) -> Result<PathBuf, Unfollowed> {
-    follow(fs, &parse_mountinfo(table), Path::new("/"), Path::new(path))
+/// `path` of the running decoy as it reads on `fs`, below the mounts of
+/// `table`, with the boot's folders `unmounted` not mounted now.
+fn read_in(
+    fs: &MockFilesystem,
+    table: &str,
+    unmounted: &[&str],
+    path: &str,
+) -> Result<PathBuf, UntoldPath> {
+    let unmounted: Vec<PathBuf> = unmounted.iter().map(PathBuf::from).collect();
+    read(
+        fs,
+        &parse_mountinfo(table),
+        Path::new("/"),
+        &unmounted,
+        Path::new(path),
+    )
 }
 
-/// [`followed_in`] the plain decoy.
-fn followed(fs: &MockFilesystem, path: &str) -> Result<PathBuf, Unfollowed> {
-    followed_in(fs, PLAIN, path)
+/// [`read_in`] the plain decoy, every folder the boot mounts mounted.
+fn read_plain(fs: &MockFilesystem, path: &str) -> Result<PathBuf, UntoldPath> {
+    read_in(fs, PLAIN, &[], path)
 }
 
 /// A mock filesystem with these links, each `(link, target)`.
@@ -35,117 +47,160 @@ fn linked(links: &[(&str, &str)]) -> MockFilesystem {
     fs
 }
 
-fn leads(path: &str) -> Result<PathBuf, Unfollowed> {
+fn reads(path: &str) -> Result<PathBuf, UntoldPath> {
     Ok(PathBuf::from(path))
 }
 
+fn link(at: &str) -> Result<PathBuf, UntoldPath> {
+    Err(UntoldPath::Link(PathBuf::from(at)))
+}
+
 #[test]
-fn a_path_without_links_stays_as_it_is() {
+fn a_path_without_links_reads_as_it_is_written() {
     let fs = MockFilesystem::new();
     for path in ["/srv/x", "/srv/x/sub", "/swapfile", "/"] {
-        assert_eq!(followed(&fs, path), leads(path), "{path}");
+        assert_eq!(read_plain(&fs, path), reads(path), "{path}");
     }
-    // `.` is no step, and `..` goes up from the place reached so far, never
-    // above the root.
-    assert_eq!(followed(&fs, "/srv/./x/../y/"), leads("/srv/y"));
-    assert_eq!(followed(&fs, "/../srv/x"), leads("/srv/x"));
+    // `.` is no part, and `..` goes back up a part as written, never above
+    // the root: with no link on the way that is where the kernel goes too.
+    assert_eq!(read_plain(&fs, "/srv/./x/../y/"), reads("/srv/y"));
+    assert_eq!(read_plain(&fs, "/../srv/x"), reads("/srv/x"));
+    assert_eq!(as_written("/srv/./x/../y/"), Some(PathBuf::from("/srv/y")));
+    assert_eq!(as_written("/../srv"), Some(PathBuf::from("/srv")));
+    assert_eq!(as_written("srv/x"), None);
 }
 
 #[test]
-fn a_link_on_the_way_is_followed_as_mount_follows_it() {
-    // A link to the folder, absolute or relative to the folder it lies in,
-    // in any part of the path, and a chain of links.
+fn a_link_in_any_part_of_the_path_is_not_followed() {
+    // A link at the end, in a parent folder, one whose target is not there
+    // and one that leads to itself: none is read, so the first link on the
+    // way is what the path holds, wherever it leads.
     let fs = linked(&[
         ("/srv/link", "/srv/x"),
-        ("/srv/rel", "x"),
-        ("/srv/up", "../srv/x"),
-        ("/srv/a", "/srv/b"),
-        ("/srv/b", "rel/sub"),
         ("/data", "/srv"),
-    ]);
-    for (path, place) in [
-        ("/srv/link", "/srv/x"),
-        ("/srv/link/sub", "/srv/x/sub"),
-        ("/srv/rel", "/srv/x"),
-        ("/srv/up", "/srv/x"),
-        ("/srv/a", "/srv/x/sub"),
-        ("/data/x", "/srv/x"),
-        ("/data/link", "/srv/x"),
-        // `..` after a link goes up from where the link leads.
-        ("/srv/link/../y", "/srv/y"),
-        ("/data/../etc", "/etc"),
-    ] {
-        assert_eq!(followed(&fs, path), leads(place), "{path}");
-    }
-}
-
-#[test]
-fn a_place_that_is_not_there_ends_the_lookup_with_the_rest_as_written() {
-    // No link leads on from a place that is not there.
-    let fs = MockFilesystem::new();
-    fs.mock_set_mount_root_error("/srv/gone", ErrorKind::NotFound);
-    assert_eq!(followed(&fs, "/srv/gone"), leads("/srv/gone"));
-    assert_eq!(followed(&fs, "/srv/gone/x"), leads("/srv/gone/x"));
-    assert_eq!(followed(&fs, "/srv/gone/../x"), leads("/srv/x"));
-    // So past a link that leads to a place that is there.
-    let fs = linked(&[("/srv/link", "/srv/x")]);
-    fs.mock_set_mount_root_error("/srv/x/new", ErrorKind::NotFound);
-    assert_eq!(followed(&fs, "/srv/link/new/sub"), leads("/srv/x/new/sub"));
-}
-
-#[test]
-fn a_link_that_leads_to_nothing_cannot_be_followed() {
-    let fs = linked(&[
-        ("/srv/link", "/srv/nothing"),
-        ("/srv/chain", "/srv/link"),
-        ("/srv/deep", "x/nothing"),
+        ("/srv/gone", "/srv/nothing"),
+        ("/srv/self", "self"),
     ]);
     fs.mock_set_mount_root_error("/srv/nothing", ErrorKind::NotFound);
-    fs.mock_set_mount_root_error("/srv/x/nothing", ErrorKind::NotFound);
-    let dangling = |link: &str| Err(Unfollowed::Dangling(PathBuf::from(link)));
-    assert_eq!(followed(&fs, "/srv/link"), dangling("/srv/link"));
-    assert_eq!(followed(&fs, "/srv/link/sub"), dangling("/srv/link"));
-    // The link named is the one whose target is not there, the last of a
-    // chain, also where only the end of the target is missing.
-    assert_eq!(followed(&fs, "/srv/chain"), dangling("/srv/link"));
-    assert_eq!(followed(&fs, "/srv/deep"), dangling("/srv/deep"));
+    for (path, at) in [
+        ("/srv/link", "/srv/link"),
+        ("/srv/link/sub", "/srv/link"),
+        ("/data/x", "/data"),
+        ("/data/link", "/data"),
+        ("/srv/gone", "/srv/gone"),
+        ("/srv/self/x", "/srv/self"),
+        // Also where a `..` would lead back out of what the link names.
+        ("/srv/link/../y", "/srv/link"),
+    ] {
+        assert_eq!(read_plain(&fs, path), link(at), "{path}");
+    }
+    // A path that only passes beside a link has none in it.
+    assert_eq!(read_plain(&fs, "/srv/x/sub"), reads("/srv/x/sub"));
     assert_eq!(
-        Unfollowed::Dangling(PathBuf::from("/srv/link")).reason(),
-        "the link /srv/link leads to nothing"
+        UntoldPath::Link(PathBuf::from("/srv/link")).reason(),
+        "/srv/link is a symbolic link, which NAILS does not follow"
     );
 }
 
 #[test]
-fn links_that_go_round_cannot_be_followed() {
-    let fs = linked(&[("/srv/a", "/srv/b"), ("/srv/b", "a"), ("/srv/self", "self")]);
-    assert_eq!(followed(&fs, "/srv/a"), Err(Unfollowed::Loop));
-    assert_eq!(followed(&fs, "/srv/self/x"), Err(Unfollowed::Loop));
-    // The kernel follows 40 links in one lookup, and fails at the 41st.
-    let names: Vec<String> = (0..=41).map(|i| format!("/l{i}")).collect();
-    let chain: Vec<(&str, &str)> = names
-        .windows(2)
-        .map(|pair| (pair[0].as_str(), pair[1].as_str()))
-        .collect();
-    let fs = linked(&chain);
-    assert_eq!(followed(&fs, "/l1"), leads("/l41"));
-    assert_eq!(followed(&fs, "/l0"), Err(Unfollowed::Loop));
+fn a_part_that_is_not_there_ends_the_looking_until_a_dot_dot_leads_back() {
+    // What is not there holds no link, so the rest reads as written.
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_root_error("/srv/gone", ErrorKind::NotFound);
+    assert_eq!(read_plain(&fs, "/srv/gone"), reads("/srv/gone"));
+    assert_eq!(read_plain(&fs, "/srv/gone/x"), reads("/srv/gone/x"));
+    assert_eq!(read_plain(&fs, "/srv/gone/../x"), reads("/srv/x"));
+    // Back at a place that is there, each part is looked at again: a link
+    // there is one, also two levels down.
+    let fs = linked(&[("/srv/link", "/srv/x")]);
+    fs.mock_set_mount_root_error("/srv/gone", ErrorKind::NotFound);
+    assert_eq!(read_plain(&fs, "/srv/gone/../link"), link("/srv/link"));
+    assert_eq!(read_plain(&fs, "/srv/gone/a/../../link"), link("/srv/link"));
+    assert_eq!(read_plain(&fs, "/srv/gone/link/.."), reads("/srv/gone"));
+}
+
+#[test]
+fn a_path_that_is_a_device_node_cannot_be_told() {
+    // swapon and mount use a device node as the device it is, wherever it
+    // lies, outside /dev too. Only the path itself is asked: a device node
+    // on the way is no folder, and a lookup below it fails.
+    let fs = MockFilesystem::new();
+    fs.mock_set_device_node("/srv/node");
+    fs.mock_set_device_node("/dev/null");
     assert_eq!(
-        Unfollowed::Loop.reason(),
-        "the links on its way go round, or are more than the kernel follows"
+        read_plain(&fs, "/srv/node"),
+        Err(UntoldPath::Device(PathBuf::from("/srv/node")))
+    );
+    assert_eq!(
+        read_plain(&fs, "/dev/../srv/node"),
+        Err(UntoldPath::Device(PathBuf::from("/srv/node")))
+    );
+    assert_eq!(
+        read_plain(&fs, "/dev/null"),
+        Err(UntoldPath::Device(PathBuf::from("/dev/null")))
+    );
+    fs.mock_set_mount_root_error("/srv/node/x", ErrorKind::NotADirectory);
+    assert_eq!(
+        read_plain(&fs, "/srv/node/x"),
+        Err(UntoldPath::Unreadable(PathBuf::from("/srv/node/x")))
+    );
+    // A link to a device node is a link, and nothing that is not there is
+    // asked.
+    let fs = linked(&[("/swap.link", "/dev/sdb")]);
+    fs.mock_set_device_node("/dev/sdb");
+    assert_eq!(read_plain(&fs, "/swap.link"), link("/swap.link"));
+    fs.mock_set_mount_root_error("/srv/gone", ErrorKind::NotFound);
+    fs.mock_set_device_node("/srv/gone/node");
+    assert_eq!(read_plain(&fs, "/srv/gone/node"), reads("/srv/gone/node"));
+    assert_eq!(
+        UntoldPath::Device(PathBuf::from("/srv/node")).reason(),
+        "/srv/node is a device node"
     );
 }
 
 #[test]
-fn a_place_that_cannot_be_looked_up_or_a_link_that_cannot_be_read_stops_the_lookup() {
+fn a_path_that_crosses_a_folder_the_boot_mounts_but_is_not_mounted_cannot_be_told() {
+    // What lies there at boot is on the filesystem the boot mounts, which
+    // cannot be read now: at the folder, below it, through a `..` that comes
+    // back out of it, and where nothing is there now.
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_root_error("/backup/link", ErrorKind::NotFound);
+    let unmounted = Err(UntoldPath::Unmounted(PathBuf::from("/backup")));
+    for path in [
+        "/backup",
+        "/backup/link",
+        "/backup/link/x",
+        "/backup/../srv/x",
+    ] {
+        assert_eq!(read_in(&fs, PLAIN, &["/backup"], path), unmounted, "{path}");
+    }
+    // A link before that folder is the first thing on the way.
+    let fs = linked(&[("/srv/l", "/backup")]);
+    assert_eq!(
+        read_in(&fs, PLAIN, &["/srv/l/x"], "/srv/l/x"),
+        link("/srv/l")
+    );
+    // A path that does not cross it reads as written.
+    assert_eq!(
+        read_in(&fs, PLAIN, &["/backup"], "/backups/x"),
+        reads("/backups/x")
+    );
+    assert_eq!(
+        UntoldPath::Unmounted(PathBuf::from("/backup")).reason(),
+        "a line of /etc/fstab mounts /backup at boot, and that mount is not there now"
+    );
+}
+
+#[test]
+fn a_part_that_cannot_be_looked_up_stops_the_reading() {
     let fs = MockFilesystem::new();
     fs.mock_set_mount_root_error("/root/x", ErrorKind::PermissionDenied);
-    let unreadable = |place: &str| Err(Unfollowed::Unreadable(PathBuf::from(place)));
-    assert_eq!(followed(&fs, "/root/x/swapfile"), unreadable("/root/x"));
-    // A link whose target cannot be read.
-    fs.mock_set_is_symlink("/srv/l", true);
-    assert_eq!(followed(&fs, "/srv/l/x"), unreadable("/srv/l"));
     assert_eq!(
-        Unfollowed::Unreadable(PathBuf::from("/root/x")).reason(),
+        read_plain(&fs, "/root/x/swapfile"),
+        Err(UntoldPath::Unreadable(PathBuf::from("/root/x")))
+    );
+    assert_eq!(
+        UntoldPath::Unreadable(PathBuf::from("/root/x")).reason(),
         "/root/x on its way could not be looked up"
     );
 }
@@ -154,101 +209,188 @@ fn a_place_that_cannot_be_looked_up_or_a_link_that_cannot_be_read_stops_the_look
 fn no_lookup_is_made_that_would_mount_an_automount_point() {
     // A direct automount point nothing is mounted on yet, and a name in the
     // directory of an indirect map, as the mount table shows them, on the
-    // way or at the end, through a link too.
+    // way or at the end.
     let table = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
                  20 1 0:50 / /data rw - autofs systemd-1 rw,fd=50,pgrp=1,direct\n\
                  21 1 0:51 / /net rw - autofs auto.net rw,fd=51,pgrp=1,indirect\n";
-    let fs = linked(&[("/srv/link", "/data/x")]);
-    let automount = |point: &str| Err(Unfollowed::Automount(PathBuf::from(point)));
-    assert_eq!(followed_in(&fs, table, "/data/x"), automount("/data"));
-    assert_eq!(followed_in(&fs, table, "/data"), automount("/data"));
-    assert_eq!(followed_in(&fs, table, "/srv/link"), automount("/data"));
+    let fs = MockFilesystem::new();
+    let automount = |point: &str| Err(UntoldPath::Automount(PathBuf::from(point)));
+    assert_eq!(read_in(&fs, table, &[], "/data/x"), automount("/data"));
+    assert_eq!(read_in(&fs, table, &[], "/data"), automount("/data"));
     assert_eq!(
-        followed_in(&fs, table, "/net/host/x"),
+        read_in(&fs, table, &[], "/net/host/x"),
         automount("/net/host")
     );
-    // Once a filesystem is mounted there, the lookup goes on.
+    // Once a filesystem is mounted there, the reading goes on.
     let mounted = format!("{table}22 20 8:17 / /data rw - ext4 /dev/sdb1 rw\n");
-    assert_eq!(followed_in(&fs, &mounted, "/srv/link"), leads("/data/x"));
+    assert_eq!(read_in(&fs, &mounted, &[], "/data/x"), reads("/data/x"));
     // One that the mount table does not show, as statx says it.
-    let fs = MockFilesystem::new();
     fs.mock_set_automount("/media/auto");
-    assert_eq!(followed(&fs, "/media/auto/x"), automount("/media/auto"));
+    assert_eq!(read_plain(&fs, "/media/auto/x"), automount("/media/auto"));
     assert_eq!(
-        Unfollowed::Automount(PathBuf::from("/data")).reason(),
+        UntoldPath::Automount(PathBuf::from("/data")).reason(),
         "the lookup would mount the automount point /data, which nothing is mounted on yet"
     );
 }
 
 #[test]
-fn a_path_that_is_not_absolute_cannot_be_followed() {
+fn a_path_that_is_not_absolute_cannot_be_told() {
     let fs = MockFilesystem::new();
-    for path in ["srv/x", "none", ""] {
-        assert_eq!(followed(&fs, path), Err(Unfollowed::Relative), "{path:?}");
+    for path in ["srv/x", "swapfile", "none", ""] {
+        assert_eq!(read_plain(&fs, path), Err(UntoldPath::Relative), "{path:?}");
     }
-    assert_eq!(Unfollowed::Relative.reason(), "it is no absolute path");
+    assert_eq!(UntoldPath::Relative.reason(), "it is no absolute path");
+    assert_eq!(UntoldPath::NotLookedUp.reason(), "it was not looked up");
 }
 
 #[test]
-fn under_another_root_a_link_is_followed_inside_it() {
-    let fs = linked(&[
-        ("/media/decoy/srv/link", "/srv/x"),
-        ("/media/decoy/srv/up", "../../../etc"),
-    ]);
+fn under_another_root_each_part_is_read_inside_it() {
+    let fs = linked(&[("/media/decoy/srv/link", "/srv/x")]);
     let inside = |path: &str| {
-        follow(
+        read(
             &fs,
             &parse_mountinfo(PLAIN),
             Path::new("/media/decoy"),
+            &[],
             Path::new(path),
         )
     };
-    assert_eq!(inside("/srv/link/sub"), leads("/srv/x/sub"));
+    assert_eq!(inside("/srv/link/sub"), link("/srv/link"));
+    assert_eq!(inside("/srv/x"), reads("/srv/x"));
     // `..` goes no higher than that root.
-    assert_eq!(inside("/srv/up"), leads("/etc"));
+    assert_eq!(inside("/srv/../../../etc"), reads("/etc"));
 }
 
 #[test]
-fn the_paths_the_claims_place_a_line_by_are_followed_and_no_other() {
-    // A bind line's source, under /dev too, and a swap or image file outside
-    // /dev; no device line, and no RAM or network line.
+fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
+    // A bind line's source, under /dev too, a swap or image file outside
+    // /dev, a relative one of a swap line, a loop line or a line of a type
+    // mount reads from a device or an image, and a path under /dev that `..`
+    // leads out of. No device line, tag, RAM or network line, and no line
+    // whose type names its source otherwise, as a ZFS dataset's does.
     let fstab = parse_fstab(
         "/dev/sda1 / ext4 defaults 0 1\nUUID=f1 /home ext4 defaults 0 2\n\
          /swapfile none swap sw 0 0\n/srv/x /mnt none bind 0 0\n\
          /dev/shm /run/shm none bind 0 0\ntmpfs /tmp tmpfs defaults 0 0\n\
          server:/x /net nfs defaults 0 0\n/srv/img.raw /mnt/img ext4 loop 0 0\n\
-         none /srv/y none bind 0 0\n/srv/x /mnt/again none rbind 0 0\n",
+         none /srv/y none bind 0 0\n/srv/x /mnt/again none rbind 0 0\n\
+         swapfile none swap sw 0 0\nsrv/a.img /mnt/a ext4 loop 0 0\n\
+         srv/b.img /mnt/b ext4 defaults 0 0\nsrv/c.img /mnt/c auto loop=/dev/loop7 0 0\n\
+         rpool/data /data zfs defaults 0 0\nLABEL=swap none swap sw 0 0\n\
+         /dev/../srv/node none swap sw 0 0\n/dev/sdb2 none swap sw 0 0\n",
     );
     let fs = linked(&[("/swapfile", "/var/swapfile")]);
-    let paths = follow_all(&fs, &parse_mountinfo(PLAIN), Path::new("/"), &fstab);
+    let paths = read_all(
+        &fs,
+        &parse_mountinfo(PLAIN),
+        Path::new("/"),
+        &fstab,
+        &DeviceMap::default(),
+    );
     assert_eq!(
         paths.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["/dev/shm", "/srv/img.raw", "/srv/x", "/swapfile", "none"]
+        [
+            "/dev/../srv/node",
+            "/dev/shm",
+            "/srv/img.raw",
+            "/srv/x",
+            "/swapfile",
+            "none",
+            "srv/a.img",
+            "srv/b.img",
+            "srv/c.img",
+            "swapfile"
+        ]
     );
-    assert_eq!(paths["/swapfile"], leads("/var/swapfile"));
-    assert_eq!(paths["/srv/x"], leads("/srv/x"));
-    assert_eq!(paths["none"], Err(Unfollowed::Relative));
+    assert_eq!(paths["/swapfile"], link("/swapfile"));
+    assert_eq!(paths["/srv/x"], reads("/srv/x"));
+    assert_eq!(paths["/dev/../srv/node"], reads("/srv/node"));
+    for relative in ["none", "srv/a.img", "srv/b.img", "srv/c.img", "swapfile"] {
+        assert_eq!(paths[relative], Err(UntoldPath::Relative), "{relative}");
+    }
 }
 
 #[test]
-fn on_a_real_filesystem_the_lookup_follows_links_and_stops_as_the_kernel_does() {
+fn the_paths_are_read_with_the_folders_the_boot_mounts_but_are_not_mounted() {
+    // /backup is the folder of a line the boot mounts whose drive is not
+    // mounted now, and /srv/n that of a noauto line: only the first counts.
+    let fstab = parse_fstab(
+        "/dev/sda1 / ext4 defaults 0 1\n/dev/sdc1 /backup ext4 defaults,nofail 0 2\n\
+         /dev/sdd1 /srv/n ext4 noauto 0 0\n/backup/link /mnt none bind 0 0\n\
+         /srv/n/x /srv/y none bind 0 0\n",
+    );
+    let paths = read_all(
+        &MockFilesystem::new(),
+        &parse_mountinfo(PLAIN),
+        Path::new("/"),
+        &fstab,
+        &DeviceMap::default(),
+    );
+    assert_eq!(
+        paths["/backup/link"],
+        Err(UntoldPath::Unmounted(PathBuf::from("/backup")))
+    );
+    assert_eq!(paths["/srv/n/x"], reads("/srv/n/x"));
+}
+
+#[test]
+fn a_folder_the_boot_mounts_is_mounted_while_a_mount_its_line_makes_is_there() {
+    // The mount of a device line is one of its device that shows what it
+    // mounts, a bind line's a bind of its source's folder, and a RAM,
+    // kernel or network line's any mount there, as systemd mounts /dev/shm
+    // before the fstab's line for it. The line for /, a noauto line and a
+    // swap line have no folder the boot mounts.
+    let table = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+                 2 1 8:2 / /home rw - ext4 /dev/sda2 rw\n\
+                 3 1 8:1 /srv/data /data rw - ext4 /dev/sda1 rw\n\
+                 4 1 0:30 / /dev/shm rw - tmpfs tmpfs rw\n\
+                 5 1 8:2 /other /backup rw - ext4 /dev/sda2 rw\n";
+    let fstab = parse_fstab(
+        "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n\
+         /srv/data /data none bind 0 0\nnone /dev/shm tmpfs defaults 0 0\n\
+         /dev/sda2 /backup ext4 defaults 0 2\nserver:/x /net nfs defaults 0 0\n\
+         /srv/elsewhere /srv/b none bind 0 0\n/dev/sdz1 /srv/c ext4 noauto 0 0\n\
+         /swapfile none swap sw 0 0\n",
+    );
+    let mut devices = DeviceMap::default();
+    for (name, dev) in [("sda1", "8:1"), ("sda2", "8:2")] {
+        devices.by_dev.insert(dev.to_string(), name.to_string());
+        devices
+            .by_spec
+            .insert(format!("/dev/{name}"), name.to_string());
+    }
+    assert_eq!(
+        unmounted_boot_folders(&parse_mountinfo(table), &fstab, &devices),
+        ["/backup", "/net", "/srv/b"].map(PathBuf::from)
+    );
+}
+
+#[test]
+fn on_a_real_filesystem_no_link_is_followed_and_a_device_node_is_seen() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
     let at = dir.path().canonicalize().unwrap();
     std::fs::create_dir_all(at.join("x/sub")).unwrap();
     symlink(at.join("x"), at.join("absolute")).unwrap();
-    symlink("x/sub", at.join("relative")).unwrap();
-    symlink("relative", at.join("chain")).unwrap();
     symlink(at.join("nothing"), at.join("dangling")).unwrap();
-    symlink("round", at.join("round")).unwrap();
+    symlink("/dev/null", at.join("node")).unwrap();
     let fs = crate::filesystem::RealFilesystem;
-    let follow_real = |path: &str| follow(&fs, &[], Path::new("/"), &at.join(path));
-    assert_eq!(follow_real("absolute/sub"), Ok(at.join("x/sub")));
-    assert_eq!(follow_real("chain"), Ok(at.join("x/sub")));
-    assert_eq!(follow_real("x/missing/y"), Ok(at.join("x/missing/y")));
+    let read_real = |path: &Path| read(&fs, &[], Path::new("/"), &[], path);
+    assert_eq!(read_real(&at.join("x/sub")), Ok(at.join("x/sub")));
     assert_eq!(
-        follow_real("dangling"),
-        Err(Unfollowed::Dangling(at.join("dangling")))
+        read_real(&at.join("x/missing/y")),
+        Ok(at.join("x/missing/y"))
     );
-    assert_eq!(follow_real("round"), Err(Unfollowed::Loop));
+    for name in ["absolute", "dangling", "node"] {
+        assert_eq!(
+            read_real(&at.join(name).join("sub")),
+            Err(UntoldPath::Link(at.join(name))),
+            "{name}"
+        );
+    }
+    // Every Linux system has /dev/null, a character device.
+    assert_eq!(
+        read_real(Path::new("/dev/null")),
+        Err(UntoldPath::Device(PathBuf::from("/dev/null")))
+    );
 }

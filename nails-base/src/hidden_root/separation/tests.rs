@@ -24,8 +24,8 @@ mod path_lines;
 mod reach;
 
 /// One scene: the inputs of the judge, built up in the test. The paths the
-/// fstab names are followed on `files`, which holds no link unless the test
-/// makes one.
+/// fstab names are read on `files`, which holds no link and no device node
+/// unless the test makes one.
 #[derive(Default)]
 struct World {
     mountinfo: String,
@@ -71,6 +71,12 @@ impl World {
     fn missing(self, path: &str) -> Self {
         self.files
             .mock_set_mount_root_error(path, std::io::ErrorKind::NotFound);
+        self
+    }
+
+    /// A device node at `path`.
+    fn device_node(self, path: &str) -> Self {
+        self.files.mock_set_device_node(path);
         self
     }
 
@@ -175,7 +181,7 @@ impl World {
         let mounts = parse_mountinfo(&self.mountinfo);
         let fstab = parse_fstab(&self.fstab);
         let crypttab = parse_crypttab(&self.crypttab);
-        let paths = paths::follow_all(&self.files, &mounts, Path::new("/"), &fstab);
+        let paths = paths::read_all(&self.files, &mounts, Path::new("/"), &fstab, &self.devices);
         let hidden = top_mount_at(&mounts, Path::new(root)).expect("a mount at the root");
         ask(
             &Scene {

@@ -4,10 +4,12 @@
 //! What a line of the decoy's fstab mounts: whether a mount is one the decoy
 //! makes itself, at `/` or by a line ([`decoys_own_mount`]), what of a
 //! filesystem a device line mounts, as its options name it and as the mount
-//! it made shows it, and how a mount shows its filesystem ([`sharing`]).
+//! it made shows it, which folders the boot mounts that are not mounted now
+//! ([`unmounted_boot_folders`]), and how a mount shows its filesystem
+//! ([`sharing`]).
 
-use super::paths::is_claimed;
-use super::{Scene, Sharing};
+use super::paths::{as_written, is_claimed};
+use super::{DeviceMap, Scene, Sharing};
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::fstab::FstabEntry;
 use crate::hidden_root::mount_holding;
@@ -44,10 +46,11 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
 ///   to no device here names none, unless `mount` shows no device either, as
 ///   a ZFS dataset does: then the spec is `mount`'s source and the line's
 ///   type its type.
-/// - A bind line's source, as its links lead, lies on another mount of that
-///   filesystem than `hidden`, one of the decoy's own itself, and `mount`
-///   shows the folder of it that the source names. A source whose links
-///   cannot be followed makes none.
+/// - A bind line's source, read as written with no link followed, lies on
+///   another mount of that filesystem than `hidden`, one of the decoy's own
+///   itself, and `mount` shows the folder of it that the source names. A
+///   source whose place cannot be told ([`UntoldPath`](super::UntoldPath)),
+///   one with a link in it among them, makes none.
 ///
 /// So the fstab makes none of these: a filesystem mounted at a folder that a
 /// line names for another device, in place of that device's mount or over
@@ -64,8 +67,6 @@ fn decoys_own(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry, depth:
     if mount.mount_point == Path::new("/") {
         return true;
     }
-    let devices = scene.devices;
-    let node = devices.node_of_mount(mount);
     scene
         .fstab
         .iter()
@@ -75,24 +76,101 @@ fn decoys_own(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry, depth:
             if entry.is_bind() {
                 return depth > 0 && bind_makes(scene, entry, mount, hidden, depth - 1);
             }
-            let named = match (devices.node_of_spec(&entry.spec), node) {
-                (Some(named), Some(node)) => named == node || devices.same_btrfs(named, node),
-                // A filesystem with no device, such as a ZFS dataset, is
-                // named by its source.
-                (None, None) => {
-                    entry.vfstype == mount.fstype
-                        && Path::new(&entry.spec) == mount.source.as_path()
-                }
-                _ => false,
-            };
-            named && shows_what_it_mounts(entry, mount)
+            names_the_device(scene.devices, entry, mount) && shows_what_it_mounts(entry, mount)
         })
 }
 
-/// Whether the bind line `entry` makes `mount`: its source, as its links
-/// lead, lies on a mount of the same filesystem, neither `hidden` nor `mount`
-/// itself, that is one of the decoy's own, and `mount` shows the folder of
-/// it the source names.
+/// Whether the device line `entry` names the device `mount` is on, or
+/// another device of its btrfs filesystem. A spec that leads to no device
+/// here names none, unless `mount` shows no device either, as a ZFS dataset
+/// does: then the spec is `mount`'s source and the line's type its type.
+fn names_the_device(devices: &DeviceMap, entry: &FstabEntry, mount: &MountEntry) -> bool {
+    match (
+        devices.node_of_spec(&entry.spec),
+        devices.node_of_mount(mount),
+    ) {
+        (Some(named), Some(node)) => named == node || devices.same_btrfs(named, node),
+        (None, None) => {
+            entry.vfstype == mount.fstype && Path::new(&entry.spec) == mount.source.as_path()
+        }
+        _ => false,
+    }
+}
+
+/// The folders of the lines of `fstab` that the boot mounts (no swap, no
+/// `noauto`) at a folder other than `/` whose mount is not there now: the
+/// visible mount at the folder, as `mounts` shows it, is none that a line for
+/// that folder makes ([`line_makes`]), or nothing is mounted there. What a
+/// path below such a folder leads to at boot cannot be read now.
+pub(super) fn unmounted_boot_folders(
+    mounts: &[MountEntry],
+    fstab: &[FstabEntry],
+    devices: &DeviceMap,
+) -> Vec<PathBuf> {
+    let at_boot: Vec<&FstabEntry> = fstab
+        .iter()
+        .filter(|entry| {
+            !entry.is_swap()
+                && !entry.is_noauto()
+                && entry.file.is_absolute()
+                && entry.file != Path::new("/")
+        })
+        .collect();
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for entry in &at_boot {
+        if folders.contains(&entry.file) {
+            continue;
+        }
+        let mounted = top_mount_at(mounts, &entry.file).is_some_and(|mount| {
+            at_boot
+                .iter()
+                .filter(|line| line.file == entry.file)
+                .any(|line| line_makes(mounts, devices, line, mount))
+        });
+        if !mounted {
+            folders.push(entry.file.clone());
+        }
+    }
+    folders
+}
+
+/// Whether the fstab line `line` makes `mount`, the visible mount at its
+/// folder, as far as the mount shows: for a RAM, kernel, host-share, network
+/// or overlay line, any mount; for a bind line, a bind from another mount of
+/// the filesystem that holds its source, as written, that shows the folder
+/// the source names; for a device line, a mount of the device it names
+/// ([`names_the_device`]) that shows what it mounts
+/// ([`shows_what_it_mounts`]).
+fn line_makes(
+    mounts: &[MountEntry],
+    devices: &DeviceMap,
+    line: &FstabEntry,
+    mount: &MountEntry,
+) -> bool {
+    if !mounts_storage(line) {
+        return true;
+    }
+    if !line.is_bind() {
+        return names_the_device(devices, line, mount) && shows_what_it_mounts(line, mount);
+    }
+    let Some(source) = as_written(&line.spec) else {
+        return false;
+    };
+    let Some(holder) = mount_holding(mounts, &source) else {
+        return false;
+    };
+    source.strip_prefix(&holder.mount_point).is_ok_and(|below| {
+        holder.mount_id != mount.mount_id
+            && holder.dev == mount.dev
+            && mount.root == holder.root.join(below)
+    })
+}
+
+/// Whether the bind line `entry` makes `mount`: its source, read as written
+/// ([`Scene::paths`]), lies on a mount of the same filesystem, neither
+/// `hidden` nor `mount` itself, that is one of the decoy's own, and `mount`
+/// shows the folder of it the source names. A source whose place cannot be
+/// told makes none.
 fn bind_makes(
     scene: &Scene<'_>,
     entry: &FstabEntry,
@@ -100,7 +178,7 @@ fn bind_makes(
     hidden: &MountEntry,
     depth: usize,
 ) -> bool {
-    let Ok(source) = scene.followed(&entry.spec) else {
+    let Ok(source) = scene.named_path(&entry.spec) else {
         return false;
     };
     let Some(holder) = mount_holding(scene.mounts, source) else {
