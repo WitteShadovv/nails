@@ -687,10 +687,22 @@ impl<F: Filesystem> Reader<'_, F> {
         input: Input,
         place: &str,
     ) {
-        if made::creates(&name) {
+        // A command known to write the files it names, and any other but
+        // one that writes nothing in them, a function the files define or
+        // autoload, whose code the check reads, and a stock one whose work
+        // it reads by its name (`prompt`), for a path as written.
+        let creates = made::creates(&name);
+        if creates
+            || (made::may_write(&name)
+                && !self.defined.contains(&name)
+                && !self.autoloads.contains(&name)
+                && !walk::STOCK_NAMES.contains(&name.as_str()))
+        {
             for arg in args.iter().filter(|arg| !arg.text.starts_with('-')) {
-                let what = format!("`{name}` in {place} writes to `{}`", arg.text);
-                self.makes(&arg.text, what, function.clone());
+                if creates || !made::computed(&arg.text) {
+                    let what = format!("`{name}` in {place} names `{}`", arg.text);
+                    self.makes(&arg.text, what, function.clone());
+                }
             }
         }
         if function.is_none() {
