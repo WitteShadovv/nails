@@ -17,7 +17,7 @@
 //! The module the helper imports is looked up where python3-gi installs it;
 //! nothing is read or written.
 
-use super::super::unit_enabled;
+use super::super::{Enabled, unit_enabled};
 use super::UNIT;
 use crate::Filesystem;
 use std::path::Path;
@@ -33,15 +33,33 @@ const GI_MODULE: &str = "usr/lib/python3/dist-packages/gi/__init__.py";
 /// let it wait, so every way back to the decoy, which starts it again, adds
 /// a pair dated at the switch. The module is looked up, not read.
 pub(super) fn warning<F: Filesystem>(fs: &F, root: &Path) -> Option<String> {
-    if !unit_enabled(fs, root, UNIT) {
-        return None;
-    }
+    let untold = match unit_enabled(fs, root, UNIT) {
+        Enabled::Yes => None,
+        Enabled::No => return None,
+        Enabled::Untold(why) => Some(why),
+    };
     let lines = "it writes two WARNING lines to /var/log/unattended-upgrades/\
                  unattended-upgrades-shutdown.log on the decoy disk each time it starts, that it \
                  polls for logind's shutdown signal instead of waiting for it, so every way back \
                  to the decoy adds a pair dated at the switch";
     let fix = "apt install python3-gi";
-    match fs.is_regular_file(&root.join(GI_MODULE)) {
+    let gi = fs.is_regular_file(&root.join(GI_MODULE));
+    // A helper NAILS cannot tell is enabled warns where python3-gi may be
+    // missing.
+    if let Some(why) = untold {
+        return match gi {
+            Ok(true) => None,
+            Ok(false) => Some(format!(
+                "{why}, and python3-gi is not installed (no /{GI_MODULE}): if {UNIT} is enabled, \
+                 {lines} ({fix})"
+            )),
+            Err(e) => Some(format!(
+                "{why}, and whether python3-gi is installed (/{GI_MODULE} cannot be looked up: \
+                 {e}): if {UNIT} is enabled without python3-gi, {lines} ({fix})"
+            )),
+        };
+    }
+    match gi {
         Ok(true) => None,
         Ok(false) => Some(format!(
             "{UNIT} is enabled on the decoy and python3-gi is not installed (no /{GI_MODULE}): \

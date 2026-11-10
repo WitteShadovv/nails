@@ -889,7 +889,7 @@ fn the_syslog_alias_is_resolved_on_a_real_unit_directory() {
     mark_active(root, "nanolog.service");
     let found = loggers::active_logger_blockers(&RealFilesystem, root);
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(found[0].contains("nanolog.service"), "{found:?}");
+    assert!(found[0].sentence.contains("nanolog.service"), "{found:?}");
 }
 
 #[test]
@@ -1040,8 +1040,8 @@ fn a_kdump_unit_counts_as_enabled_by_any_link_that_pulls_it_in() {
         let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root);
         assert!(
             finding
-                .as_deref()
-                .is_some_and(|f| f.contains("(kdump-tools.service is enabled)")),
+                .as_ref()
+                .is_some_and(|f| f.sentence.contains("(kdump-tools.service is enabled)")),
             "{rel}: {finding:?}"
         );
     }
@@ -1115,7 +1115,9 @@ fn a_loaded_crash_kernel_and_an_enabled_active_unit_are_named_together() {
         "/lib/systemd/system/kdump-tools.service",
     );
     mark_active(root, "kdump-tools.service");
-    let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root).unwrap();
+    let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root)
+        .unwrap()
+        .sentence;
     assert!(
         finding
             .contains("(a crash kernel is loaded and kdump-tools.service is enabled and active)"),

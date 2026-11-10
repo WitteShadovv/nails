@@ -259,18 +259,22 @@ fn resolved_storage<F: Filesystem>(
 }
 
 /// Whether `/var/log/journal` is a real on-disk directory (not tmpfs, not
-/// absent), which is what makes `Storage=auto` behave persistently.
-pub fn persistent_journal_dir_present<F: Filesystem>(fs: &F, root: &Path) -> bool {
+/// absent), which is what makes `Storage=auto` behave persistently, or why
+/// NAILS cannot tell: its lookup failed for another reason than that nothing
+/// is there, or the automount guard did not make it ([`Unread::lookup`]).
+pub fn persistent_journal_dir_present<F: Filesystem>(fs: &F, root: &Path) -> Result<bool, Unread> {
     let dir = root.join(JOURNAL_DIR);
     let dir = dir.as_path();
-    if !fs.is_directory(dir).unwrap_or(false) {
-        return false;
+    match fs.is_directory(dir) {
+        Ok(true) => {}
+        Ok(false) => return Ok(false),
+        Err(error) => return Err(Unread::lookup(dir, &error)),
     }
     // A journal directory backed by tmpfs is volatile despite existing.
-    !matches!(
+    Ok(!matches!(
         fs.get_filesystem_type(dir),
         Ok(Some(ref fstype)) if fstype == "tmpfs"
-    )
+    ))
 }
 
 /// Decide whether the effective storage persists to the decoy disk.
@@ -297,12 +301,27 @@ pub fn journald_persists_to_decoy_at<F: Filesystem>(fs: &F, root: &Path) -> bool
 
 /// Whether the journal persists to the decoy disk under `root`, or why NAILS
 /// cannot tell: journald's configuration holds an entry that the systemd
-/// releases do not read alike, or a file NAILS cannot read ([`Unread`]).
+/// releases do not read alike, or a file NAILS cannot read ([`Unread`]), or
+/// under `Storage=auto` NAILS cannot tell whether `/var/log/journal` is a
+/// directory on the disk.
 pub fn journald_persistence_at<F: Filesystem>(fs: &F, root: &Path) -> Result<bool, Unread> {
-    Ok(journal_persists_to_disk(
-        resolved_storage(fs, root, host_systemd_major())?,
-        persistent_journal_dir_present(fs, root),
-    ))
+    persistence_under_version(fs, root, host_systemd_major())
+}
+
+/// [`journald_persistence_at`] under a service manager of major version
+/// `systemd_major`, `None` when it is not known. `/var/log/journal` is
+/// looked up only for `Storage=auto`, the one setting it decides.
+fn persistence_under_version<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    systemd_major: Option<u32>,
+) -> Result<bool, Unread> {
+    let storage = resolved_storage(fs, root, systemd_major)?;
+    let dir_present = match storage {
+        JournaldStorage::Auto => persistent_journal_dir_present(fs, root)?,
+        JournaldStorage::Persistent | JournaldStorage::Volatile | JournaldStorage::None => false,
+    };
+    Ok(journal_persists_to_disk(storage, dir_present))
 }
 
 #[cfg(test)]
@@ -771,7 +790,7 @@ mod tests {
         // No journal directory in the tree: auto stays volatile.
         assert!(!journal_persists_to_disk(
             storage,
-            persistent_journal_dir_present(&RealFilesystem, root)
+            persistent_journal_dir_present(&RealFilesystem, root).unwrap()
         ));
         // With an on-disk journal directory, auto persists. (The tempdir itself
         // may sit on tmpfs, so the directory verdict is supplied directly.)
@@ -832,5 +851,76 @@ mod tests {
 
         fs.mock_set_path_type(entry, PathKind::Missing);
         assert_eq!(journald_persistence_at(&fs, Path::new("/")), Ok(false));
+    }
+
+    /// Under `Storage=auto` the journal persists when `/var/log/journal` is a
+    /// directory on the disk, so a lookup of it that fails leaves NAILS unable
+    /// to tell, and the journal counts as persistent: an unreadable
+    /// directory used to count as none, and `auto` as volatile. A decoy set
+    /// to `volatile` or `none` persists nothing whatever the directory is, so
+    /// it is not looked up there.
+    #[test]
+    fn under_auto_a_journal_directory_that_cannot_be_looked_up_counts_as_persistent() {
+        use std::io::ErrorKind;
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::Other] {
+            for (storage, told) in [
+                ("auto", None),
+                ("volatile", Some(false)),
+                ("none", Some(false)),
+                ("persistent", Some(true)),
+            ] {
+                let fs = MockFilesystem::new();
+                fs.mock_add_file(MAIN, &format!("[Journal]\nStorage={storage}\n"));
+                fs.mock_set_lookup_error(DIR, kind);
+                let read = persistence_under_version(&fs, Path::new("/"), Some(258));
+                match told {
+                    Some(persists) => assert_eq!(read, Ok(persists), "{storage} {kind:?}"),
+                    None => {
+                        let unread = read.expect_err("auto cannot be told");
+                        assert_eq!(unread.path, Path::new(DIR), "{kind:?}");
+                        let expected = match kind {
+                            ErrorKind::PermissionDenied => {
+                                "NAILS cannot read /var/log/journal; run the command again with \
+                                 sudo"
+                            }
+                            _ => {
+                                "NAILS cannot look up /var/log/journal (Mock: the lookup fails \
+                                 here); find out why it cannot be looked up, then run the command \
+                                 again"
+                            }
+                        };
+                        assert_eq!(unread.with_advice(), expected);
+                        assert!(journald_persists_to_decoy_at(&fs, Path::new("/")));
+                    }
+                }
+                // Only `auto` asks about the directory.
+                assert_eq!(
+                    fs.mock_lookups().iter().any(|path| path == Path::new(DIR)),
+                    storage == "auto",
+                    "{storage}"
+                );
+            }
+        }
+    }
+
+    /// A journal directory behind an automount point that nothing is mounted
+    /// on yet is not looked up through the guard, and NAILS cannot tell.
+    #[test]
+    fn a_journal_directory_the_guard_does_not_look_up_counts_as_persistent() {
+        use crate::filesystem::automount::{Guarded, Snapshot};
+        let fs = MockFilesystem::new();
+        crate::preflight::checks::automount_fixture::with_automounts(&fs, &[DIR]);
+        fs.mock_add_file(MAIN, "[Journal]\nStorage=auto\n");
+        let guarded = Guarded::new(fs.clone(), &Snapshot::read(&fs, Path::new("/")));
+        let unread = persistence_under_version(&guarded, Path::new("/"), Some(258))
+            .expect_err("the guard does not look it up");
+        assert_eq!(
+            unread.to_string(),
+            "NAILS does not look up /var/log/journal, since the lookup would mount the automount \
+             point /var/log/journal"
+        );
+        assert!(!crate::preflight::checks::automount_fixture::reached(
+            &fs, DIR
+        ));
     }
 }
