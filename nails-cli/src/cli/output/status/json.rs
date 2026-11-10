@@ -70,7 +70,8 @@ pub struct StatusData<'a> {
     required_units: &'a [RequiredUnitView],
     /// Whether `/run/nextroot` is populated.
     nextroot_mounted: bool,
-    /// Whether the decoy keeps a persistent journal or syslog.
+    /// Whether the decoy keeps a persistent journal or syslog, or may keep one
+    /// where NAILS cannot tell.
     decoy_persistent: bool,
     /// Whether kdump is armed on the decoy, or its state cannot be read.
     decoy_kdump_armed: bool,

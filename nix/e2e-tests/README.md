@@ -503,8 +503,9 @@ promise of `check` as a whole:
   automount point and giving the line that says to mount it; locate-database
   names all three points, `inherited.not_read` lists carol's autostart
   directory with its point, and no row names `/srv/archive`. A listing of
-  `/auto` mounts nothing. As the positive control, `ls` of each point mounts
-  it, and the next check names none of them, reports the updatedb written to
+  `/auto` mounts nothing. As the positive control, `ls` of each point the
+  checks read (`/usr/local` and the two homes) mounts it, and the next check
+  names none of them, reports the updatedb written to
   `/usr/local/bin` as one a person can start, lists carol's `sync.desktop`
   and loads the overlay module with its trial.
 

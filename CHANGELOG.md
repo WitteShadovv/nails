@@ -727,10 +727,10 @@ of this changelog for that version becomes the release notes word for word, and
   channel it would only note; `decoy-persistence` refuses for the journal, a log daemon or kdump
   (`--allow-persistent-decoy` lifts it), and `fstab-policy` refuses; `memory-wipe` and the Argon2id
   advice keep their informational pass and, where what they could read leaves the answer open, name
-  the path and the point. Without the mount table these checks look up nothing. Where the hidden
-  root or the state file lies behind such a point, `check` prints the attach gate's refusal of the
-  root and assembles no checks, since each would look the root up: it names the point and exits 1
-  (`check_error`). On NixOS, `suspicious-nails-reference` refuses where its walk of `/etc/nixos`
+  the path and the point. Without the mount table these checks look up nothing on the decoy. Where
+  the hidden root or the state file lies behind such a point, `check` prints the attach gate's
+  refusal of the root and assembles no checks, since the state file, the discovery of the build
+  target and most checks look the root up: it names the point and exits 1 (`check_error`). On NixOS, `suspicious-nails-reference` refuses where its walk of `/etc/nixos`
   would pass such a point, and the discovery of the build target fails there, naming it, as it does
   without the mount table, so that `check` without `--overlay-only` assembles no checks.
   `upper-fs-capability` makes no trial where the overlay module is not loaded and one of the
