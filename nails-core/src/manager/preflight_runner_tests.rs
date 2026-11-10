@@ -810,6 +810,35 @@ fn a_hidden_root_behind_an_automount_point_builds_no_registry() {
         "NAILS does not look up /srv/state/state.json, since the lookup would mount the \
          automount point /srv/state"
     );
+
+    // A hidden root that is a link is looked up where the link leads, also
+    // where the state file is kept elsewhere.
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table(&direct("/srv/point"));
+    fs.create_symlink(Path::new("/srv/point/hidden"), Path::new("/mnt/hidden"))
+        .unwrap();
+    let state = PathBuf::from("/var/lib/nails/state.json");
+    let manager = NailsManager::new(
+        fs.clone(),
+        Config {
+            hidden_volume_root: PathBuf::from("/mnt/hidden"),
+            state_file_path: state.clone(),
+            ..explicit_config()
+        },
+        state,
+    );
+    assert_eq!(
+        build(&manager).expect_err("no registry").to_string(),
+        "NAILS does not look up /mnt/hidden, since the lookup would mount the automount point \
+         /srv/point"
+    );
+    assert!(
+        fs.mock_lookups()
+            .iter()
+            .all(|path| !path.starts_with("/srv/point")),
+        "{:?}",
+        fs.mock_lookups()
+    );
 }
 
 #[test]
