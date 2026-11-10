@@ -567,8 +567,8 @@ in
         assert row["status"] == "fail", row
         assert row["message"] == (
             "the filesystem of /mnt/bind, which --allow-decoy-storage accepted, is also mounted "
-            "at /mnt/again, and not by a line of /etc/fstab that mounts it from this computer's "
-            "own storage"
+            "at /mnt/again, and not by a line of /etc/fstab that NAILS can tell mounts it from "
+            "this computer's own storage"
         ), row
         assert row["remediation"].startswith(
             "If this computer mounts it at /mnt/again by itself, do not unmount it there: use a "
@@ -698,8 +698,8 @@ in
         assert row["status"] == "fail", row
         assert row["message"] == (
             "the filesystem of /mnt/data, which --allow-decoy-storage accepted, is also mounted "
-            "at /opt, and not by a line of /etc/fstab that mounts it from this computer's own "
-            "storage"
+            "at /opt, and not by a line of /etc/fstab that NAILS can tell mounts it from this "
+            "computer's own storage"
         ), row
         assert row["remediation"].startswith(
             "If this computer mounts it at /opt by itself, do not unmount it there: use a "
