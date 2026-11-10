@@ -1031,3 +1031,7 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
 #[cfg(test)]
 #[path = "install_on_shutdown_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "install_on_shutdown/lookup_tests.rs"]
+mod lookup_tests;

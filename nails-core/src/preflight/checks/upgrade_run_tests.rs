@@ -401,3 +401,59 @@ fn the_probe_writes_nothing() {
     assert!(fs.mock_written_paths().is_empty());
     assert_eq!(fs.mock_ops().len(), before);
 }
+
+/// A lock file whose lookup fails for another reason than that nothing is
+/// there may be held: NAILS cannot tell, and refuses, naming the path.
+#[test]
+fn a_lock_file_that_cannot_be_looked_up_refuses() {
+    for (path, kind) in [
+        (LOCK, std::io::ErrorKind::PermissionDenied),
+        (VAR_LOCK, std::io::ErrorKind::Other),
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error(path, kind);
+        let unknown = upgrade_run(&fs, Path::new("/"));
+        assert!(
+            matches!(&unknown, UpgradeRun::Unknown(why)
+                if why.starts_with(&format!("{path} cannot be looked up: "))),
+            "{unknown:?}"
+        );
+        let result = check(&fs);
+        assert!(result.is_fail(), "{result:?}");
+        assert_eq!(result.remediation(), Some(UNREAD));
+    }
+    // A lock file that is not there was not taken since the boot.
+    let fs = MockFilesystem::new();
+    fs.mock_set_lookup_error(LOCK, std::io::ErrorKind::NotFound);
+    assert_eq!(upgrade_run(&fs, Path::new("/")), UpgradeRun::Idle);
+}
+
+/// A daily run's unit whose marker cannot be looked up, and that no other
+/// route shows running, may run: NAILS cannot tell, and refuses, unless
+/// another sign shows a run.
+#[test]
+fn a_daily_unit_nails_cannot_tell_runs_refuses() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_lookup_error(
+        "/run/systemd/units/invocation:apt-daily.service",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let unknown = upgrade_run(&fs, Path::new("/"));
+    assert!(
+        matches!(&unknown, UpgradeRun::Unknown(why)
+            if why.starts_with("NAILS cannot tell whether apt-daily.service runs: NAILS cannot \
+                                look up /run/systemd/units/invocation:apt-daily.service")),
+        "{unknown:?}"
+    );
+    assert!(check(&fs).is_fail());
+    // A sign of a run says more.
+    fs.create_symlink(
+        Path::new("8028a17235414b4e80c950b24a7487d7"), // pragma: allowlist secret
+        Path::new("/run/systemd/units/invocation:apt-daily-upgrade.service"),
+    )
+    .unwrap();
+    assert_eq!(
+        upgrade_run(&fs, Path::new("/")),
+        UpgradeRun::InProgress(vec!["apt-daily-upgrade.service is active".to_string()])
+    );
+}
