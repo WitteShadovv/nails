@@ -84,6 +84,15 @@ pub fn is_network_type(vfstype: &str) -> bool {
     NETWORK_TYPES.contains(&vfstype) || vfstype.starts_with("fuse.sshfs")
 }
 
+/// Whether the mount option `option` makes a bind mount: its name, the part
+/// before a `=`, is `bind` or `rbind`. `libmount` and systemd's
+/// `fstab_test_option()` match an option by that name, so `bind=x` and
+/// `rbind=` bind as `bind` and `rbind` do, whatever the type of the line.
+pub fn is_bind_option(option: &str) -> bool {
+    let name = option.split_once('=').map_or(option, |(name, _)| name);
+    matches!(name, "bind" | "rbind")
+}
+
 impl FstabEntry {
     /// Whether an option is present (`noauto`, `bind`, `ro`, …).
     pub fn has_option(&self, name: &str) -> bool {
@@ -118,9 +127,10 @@ impl FstabEntry {
         is_network_type(&self.vfstype) || self.has_option("_netdev")
     }
 
-    /// A bind mount.
+    /// A bind mount: an option `bind` or `rbind`, with a value too
+    /// ([`is_bind_option`]).
     pub fn is_bind(&self) -> bool {
-        self.has_option("bind") || self.has_option("rbind")
+        self.options.iter().any(|option| is_bind_option(option))
     }
 
     /// Whether the last of the options `yes` and `no` the entry gives is
@@ -360,6 +370,46 @@ mod tests {
         assert!(entry("none", "bind").is_bind());
         assert!(!entry("ext4", "noauto,x-systemd.automount").is_noauto());
         assert!(entry("ext4", "noauto,x-systemd.automount").is_automount());
+    }
+
+    /// `libmount` and systemd match an option by its name before `=`:
+    /// util-linux 2.42's `mount` binds for `bind=x`, `bind=` and `rbind=`
+    /// whatever the type, and systemd's `fstab_test_option()` takes them for
+    /// `bind` and `rbind`. A name in another case, in quotes or with more
+    /// after it is none.
+    #[test]
+    fn an_option_named_bind_or_rbind_makes_a_bind_with_a_value_too() {
+        let entry = |t: &str, o: &str| FstabEntry {
+            spec: "/srv/x".into(),
+            file: "/mnt".into(),
+            vfstype: t.into(),
+            options: o.split(',').map(str::to_string).collect(),
+        };
+        for (vfstype, options) in [
+            ("none", "bind"),
+            ("none", "rbind,nofail"),
+            ("tmpfs", "bind=x"),
+            ("nfs", "nofail,bind="),
+            ("overlay", "rbind="),
+            ("9p", "bind=1,nofail"),
+            ("none", "bind=\"a,b\""),
+            ("proc", "rbind=yes"),
+        ] {
+            assert!(entry(vfstype, options).is_bind(), "{vfstype} {options}");
+        }
+        for (vfstype, options) in [
+            ("none", "Bind"),
+            ("none", "binds"),
+            ("none", "\"bind\""),
+            ("none", "x-a=bind"),
+            ("none", "=bind"),
+            ("none", "bin"),
+            ("ext4", "defaults"),
+        ] {
+            assert!(!entry(vfstype, options).is_bind(), "{vfstype} {options}");
+        }
+        assert!(is_bind_option("rbind=x"));
+        assert!(!is_bind_option("x-systemd.bind"));
     }
 
     /// systemd's fstab generator takes the last of `noauto` and `auto`, and of

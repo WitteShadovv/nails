@@ -38,6 +38,7 @@ fn the_lines_of_common_decoys_are_plain() {
         "/dev/disk/by-id/virtio-extra /srv/data ext4 defaults 0 2",
         "/swapfile none swap sw 0 0",
         "/srv/x /mnt none bind 0 0",
+        "/srv/x /mnt tmpfs bind=x 0 0",
         "/a\\012b\\134c /srv/d none rbind,nofail 0 0",
         "/srv/img.raw /mnt/img ext4 loop 0 0",
         "tmpfs /tmp tmpfs mode=1777,nosuid 0 0",
@@ -196,6 +197,35 @@ fn a_first_field_that_is_no_absolute_path_and_no_tag_is_not_plain() {
         "ext4", "swap", "auto", "fuseblk", "ntfs-3g", "squashfs", "bcachefs",
     ] {
         assert!(!names_no_local_path(vfstype), "{vfstype}");
+    }
+}
+
+#[test]
+fn a_bind_option_with_a_value_makes_a_bind_line() {
+    // libmount binds for `bind=x`, `rbind=` and `bind="a,b"` whatever the
+    // type: such a line's first field is the path of its source, so a
+    // relative one is not plain whatever the type.
+    for line in [
+        "srv/x /mnt none bind=x 0 0",
+        "srv/x /mnt none bind=\"a,b\" 0 0",
+        "srv/x /mnt zfs bind=x 0 0",
+        "srv/x /mnt fuse bind=x 0 0",
+        "srv/x /mnt tmpfs rbind=,nofail 0 0",
+        "a#/srv/x /mnt fuse.bindfs bind 0 0",
+    ] {
+        assert_eq!(why(line), [Unplain::Relative], "{line}");
+    }
+    // An absolute source is plain, and the judge reads it.
+    for line in [
+        "/srv/x /mnt tmpfs bind=x 0 0",
+        "/srv/x /mnt nfs bind=x 0 0",
+        "/srv/x /mnt overlay rbind= 0 0",
+        "/srv/x/sub /srv/sub 9p bind=1,nofail 0 0",
+        "/srv/x /mnt none bind=\"a,b\" 0 0",
+        "/srv/x /mnt proc bind=x 0 0",
+        "/srv/x /mnt tmpfs bind=x,noauto,x-systemd.automount 0 0",
+    ] {
+        assert_eq!(why(line), [], "{line}");
     }
 }
 
