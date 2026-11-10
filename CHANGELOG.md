@@ -843,39 +843,62 @@ of this changelog for that version becomes the release notes word for word, and
   mounts of it, so the check never says to remove it.
 - `backend-entries` now refuses an fstab bind line whose source lies in the hidden volume, at the
   root's folder or inside it as the mount that holds the source shows it, whatever type the line
-  gives and with `_netdev` too: such a line mounts the volume, or a folder of it, since `mount`
-  binds whatever the type says. It let such a line pass, and with `--allow-decoy-storage` the check
-  passed a root bound from a folder of `/` that the decoy's own fstab binds at the root at every
-  boot. It says to remove such a line, unless the boot mounts it at a system folder, where it says
-  to keep it and to put the hidden root on storage of its own instead. So it does for a swap or
-  image line whose file lies there, which the boot swaps on or mounts. NAILS does not follow
-  symbolic links in the path of a bind line's source, a swap file or an image file: it looks at each
-  part of the path on its own, as `lstat` does, so it reads no link and changes no access time. A
-  line whose path cannot be told this way fails `backend-entries`, with `--allow-decoy-storage` or
-  without it, as one that may mount the volume, and the check says why, naming the link, the device
-  node or the folder where there is one, and says to write the line with its real path: a path with
-  a link in any part, which `mount` and `swapon` would follow at boot, a device node, outside `/dev`
-  too, one that crosses the folder of an fstab line, a `noauto` one too, while that line's mount is
-  not there now, one with a part that cannot be looked up, and one that crosses an automount point
-  nothing is mounted on yet. systemd mounts a `noauto` line once a bind line's source, a swap file
-  or an image file below its folder needs it, so a bind from a `noauto` disk needs that disk mounted
-  for `check` and activation. So a swap or image line whose path is a link to the hidden volume's
-  device node fails as well, where it passed before. A path with no link in it, below mounts that
-  are there, is judged as it is written, and a bind line whose source as written lies in the volume
-  fails whatever lies there. For the second-mount rule, a bind line whose path cannot be told makes
-  no mount of the decoy's own.
+  gives, with `_netdev` too, and also when it binds by an option with a value, such as `bind=x` or
+  `rbind=`, which `libmount` and systemd read as `bind` and `rbind`: such a line mounts the volume,
+  or a folder of it, since `mount` binds whatever the type says. It let such a line pass, and with
+  `--allow-decoy-storage` the check passed a root bound from a folder of `/` that the decoy's own
+  fstab binds at the root at every boot. It says to remove such a line, unless the boot mounts it at
+  a system folder, where it says to keep it and to put the hidden root on storage of its own
+  instead. So it does for a swap or image line whose file lies there, which the boot swaps on or
+  mounts. NAILS does not follow symbolic links in the path of a bind line's source, a swap file or
+  an image file: it looks at each part of the path on its own, as `lstat` does, so it reads no link
+  and changes no access time. A line whose path cannot be told this way fails `backend-entries`,
+  with `--allow-decoy-storage` or without it, as one that may mount the volume, and the check says
+  why, naming the link, the device node or the folder where there is one, and says to write the line
+  with its real path: a path with a link in any part, which `mount` and `swapon` would follow at
+  boot, a device node, outside `/dev` too, one that crosses the folder of an fstab line, a `noauto`
+  one too, while that line's mount is not there now, one with a part that cannot be looked up, and
+  one that crosses an automount point nothing is mounted on yet. systemd mounts a `noauto` line once
+  a bind line's source, a swap file or an image file below its folder needs it, so a bind from a
+  `noauto` disk needs that disk mounted for `check` and activation. So a swap or image line whose
+  path is a link to the hidden volume's device node fails as well, where it passed before. A path
+  with no link in it, below mounts that are there, is judged as it is written, and a bind line whose
+  source as written lies in the volume fails whatever lies there. For the second-mount rule, a bind
+  line whose path cannot be told makes no mount of the decoy's own.
 - `backend-entries` reads only plain fstab lines, which NAILS reads as `libmount` and systemd do,
   and fails every other line, with `--allow-decoy-storage` or without it, as one that may mount the
   volume: a line that holds a control character other than a tab, or white space other than a space
   or a tab, a backslash in its first field or mount point that begins none of the escapes `\040`,
   `\011`, `\012` and `\134`, a backslash in its type or options, a list of types, or a first field
-  that is neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=`, `PARTLABEL=` or `ID=` tag,
-  unless it is the line of a RAM, kernel, host-share, network, overlay, ZFS or FUSE filesystem and
-  no bind line. The check names what it could not read and says to write the line plainly. NAILS's
-  parser left the type and options undecoded and read a relative first field only for some types, so
-  `bin\144`, which `libmount` reads as `bind`, and `dev/mapper/data` with the type `ntfs-3g` or
-  `ext4,xfs`, which `mount` looks up from `/`, passed the check. Such a line claims what NAILS reads
-  in it, and for the second-mount rule it makes no mount of the decoy's own.
+  that is neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=` or `PARTLABEL=` tag (an `ID=`
+  tag among them, which `libmount` looks up in `/dev/disk/by-id` and NAILS does not), unless it is
+  the line of a RAM, kernel, host-share, network, overlay or ZFS filesystem and no bind line. As
+  `libmount` does, NAILS skips only spaces and tabs before a `#`, so a line that starts with a
+  vertical tab or a no-break space before a `#` is a line that is not plain, where it was taken for
+  a comment. A FUSE line is read as `mount.fuse` reads it: the source it gives its program, the
+  part after the `#` of a `fuse` line's first field (`fuse2fs#/dev/sdb1`) and the whole first field
+  of a `fuse.<program>` line, is judged as any line's first field is, and one that is neither an
+  absolute path nor such a tag fails, unless the program takes a remote source by it (`sshfs`,
+  `s3fs`, `goofys`, `gcsfuse`, `ceph`, `vmhgfs-fuse`, and `rclone` for a remote's name); so does a
+  `fuse` line with no `#`, and a `#` in the first field of a line of another type that begins with
+  `fuse`, such as `fuse3`, whose `#` `mount.fuse3` splits too. The check names what it could not
+  read and says to write the line plainly. NAILS's parser left the type and options undecoded and
+  read a relative first field only for some types, so `bin\144`, which `libmount` reads as `bind`,
+  and `dev/mapper/data` with the type `ntfs-3g` or `ext4,xfs`, which `mount` looks up from `/`,
+  passed the check, and so did `fuse2fs#/dev/mapper/data` of the type `fuse`, which mounts the
+  volume through FUSE, `srv/x` of the type `fuse.bindfs`, and `ID=` tags. Such a line claims what
+  NAILS reads in it, and for the second-mount rule it makes no mount of the decoy's own.
+- `backend-entries` reads only plain crypttab lines as well, which NAILS reads as systemd does, and
+  fails every other line, with `--allow-decoy-storage` or without it, as one that may open the
+  volume, and says to write it plainly: a line that holds a control character other than a tab, or
+  white space other than a space or a tab, a quote or a backslash in one of its four fields, or a
+  source that is neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=` or `PARTLABEL=` tag.
+  systemd's crypttab generator keeps the quotes and backslashes of a field and writes them into the
+  command that opens the volume, which reads them, so for the source `'/dev/sdb'` it opens
+  `/dev/sdb`; it ends a line at a lone carriage return or a NUL too, skips only spaces and tabs
+  before a `#`, and the command opens a relative source from `/`. NAILS kept the quotes, took a line
+  that starts with other white space before a `#` for a comment and resolved no relative source, so
+  such lines passed the check.
 - `backend-entries` and the attach gate no longer let a device or swap line for the hidden volume's
   device go when it carries `_netdev`, which only has systemd mount it after the network: such a
   line fails `backend-entries` as it does without the option, and the gate counts what it mounts as
