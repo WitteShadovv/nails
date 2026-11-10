@@ -819,13 +819,14 @@ of this changelog for that version becomes the release notes word for word, and
   line once its command ends, a refused activation would add its own.
 - The `incremental-history-flush` check no longer warns that it cannot tell at forms that many zsh
   setups hold, each by a rule for the form it knows, but for `compinit`, which stays a doubt (see
-  below). A hook's output to `$TTY`
-  (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`) goes to the terminal zsh sets it to as it starts,
-  while no file it reads names `TTY` otherwise than to read it, in any form zsh reads a name in, no
-  arithmetic it reads may set a parameter by a name it cannot read and no file defines a global
-  alias, and so does one to a device (`/dev/null`, `/dev/tty`, `/dev/stderr`) while no file defines
-  a global alias, of any name: zsh looks a global alias up for every token it reads, so with
-  `alias -g '>'='>>~/.zl;:'` it reads `print -r -- $1>$TTY` as a write to `~/.zl`. It reads an
+  below), and a hook's output to `$TTY` (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`), which stays
+  one as any target an expansion makes is: `$TTY` names what the parameter holds, which the files
+  can change in more ways than the check can read exactly (a pattern, an option or a name an
+  expansion makes, arithmetic), so a reading of them cannot show that it still names the terminal.
+  Write to `/dev/tty` instead. A hook's output to a device (`/dev/null`, `/dev/tty`,
+  `/dev/stderr`) goes to no file while no file defines a global alias, of any name: zsh looks a
+  global alias up for every token it reads, so with `alias -g '>'='>>~/.zl;:'` it reads
+  `print -r -- $1>/dev/tty` as a write to `~/.zl`. It reads an
   `alias` where zsh runs it past a precommand and its options too (`command -p alias -g ...`), and
   an `alias` word, a command's name or a line it cannot read as zsh may is a doubt of its own. An
   alias for an `fc` with no `-A`, `-W`, `-P` or `-p` (`alias h='fc -l'`) given as written is no
@@ -880,10 +881,10 @@ of this changelog for that version becomes the release notes word for word, and
   options on, and the forms beside them that the same rule takes warn too. It reads a function's
   body set by its name (`functions[preexec]='...'`) as that function's code, a function's own file
   and a file a hook sources as the hook's code, and the names a line holds in every form zsh may
-  read a word in: with quotes and backslashes taken off (`print -v T\TY`), `$'...'` decoded, a line
+  read a word in: with quotes and backslashes taken off (`print -v HO\ME`), `$'...'` decoded, a line
   that ends in a backslash joined with the next, in the words of the code where a line that starts
-  with `#` is inside a quote, and as an option's argument after its letters (`print -vTTY`,
-  `print -rv TTY`, `strftime -sTTY`). A function that a hook or a trap runs by name, there or in an
+  with `#` is inside a quote, and as an option's argument after its letters (`print -vHOME`,
+  `print -rv HOME`, `strftime -sHOME`). A function that a hook or a trap runs by name, there or in an
   `eval` or a `$(...)`, counts as a hook, and so do one copied to a hook's name (`functions -c`),
   one an element, `set -A` or `read -A` of a `*_functions` array names, the function of every widget
   (`zle -N`, `zle -C`, `zle -F`, a `zle -T` transformation's), which a key bound to it may run as a
@@ -901,8 +902,8 @@ of this changelog for that version becomes the release notes word for word, and
   `functions=(...)` or `aliases=(...)` array and an alias or a function's body given otherwise than
   by an element as written (`aliases[h]+=...`, `${aliases[h]::=...}`, `print -v 'aliases[h]'`,
   `read`, `set -A aliases`), at a hook's redirection to any file but a device, which may be the one
-  `HISTFILE` names (`>> ~/.zlog`, a glob, a link), and to a device or to `$TTY` where a file defines
-  a global alias, at a command a hook runs that is no function,
+  `HISTFILE` names (`>> ~/.zlog`, a glob, a link), and to a device where a file defines a global
+  alias, at a command a hook runs that is no function,
   alias or builtin that writes no file when an expansion makes a word it is given (`tee -a $f`) or
   it reads what the shell's code may make the command line (`print -r -- "$1" | tee -a ~/.zlog`,
   `tee -a ~/.zlog <<< "$1"`, `LINE=$1 logger`), at an `exec` that keeps a descriptor open on any
@@ -921,13 +922,13 @@ of this changelog for that version becomes the release notes word for word, and
   It warns that it
   cannot tell, too, at arithmetic that holds an expansion other than a count or a test of a
   parameter, or names a parameter that holds no number, which zsh reads as arithmetic again and
-  which may set one by a name the check cannot read (`n='TTY=5'; (( n ))`, `(( ${n}TY = 5 ))`,
+  which may set one by a name the check cannot read (`n='HOME=5'; (( n ))`, `(( ${n}ME = 5 ))`,
   `a[n]=x`, `a=([n]=x)`, `printf %d n`, `[[ n -eq 5 ]]`, `integer n`), at a function or a hook made
   by a name zsh expands into another (`function {preexec,x}`, `function $n`,
   `add-zsh-hook {preexec,w}`), at a global alias the code uses, which zsh puts in place of that word
   (`function X`, `read X`), at one whose name holds an operator, a brace or a blank, or is empty,
   wherever it is defined, as zsh splits such a token off a word with no blank beside it
-  (`alias -g '>'=...` stands for the `>` of `$1>$TTY`, `alias -g '}'=...` for the `}` of `$1}`) and
+  (`alias -g '>'=...` stands for the `>` of `$1>/dev/tty`, `alias -g '}'=...` for the `}` of `$1}`) and
   the check cannot count its uses, at an `alias` with a word an expansion, brace expansion or a glob
   may make other words of (`alias $g ...`, `alias {-g,-g} ...`, `alias -[g] ...`), which may be
   `-g`, but for a list of words that start with no `-` or `+` (`alias -s {jpg,png}=feh`), which it
@@ -952,8 +953,9 @@ of this changelog for that version becomes the release notes word for word, and
   arithmetic each time it uses it, at a prompt, after a command or at a `cd`, so that
   `TMOUT='pipestatus[$(cmd)1]'` runs `cmd` at each prompt: one a file gives it, one set in a form
   the walk does not read (`read TMOUT`, `print -v TMOUT`) and one the shell's environment holds, at
-  a tie (`typeset -T TMOUT tmout`) of one of them, of `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`,
-  `fpath` or of an array of hook functions, by which zsh sets it by the other name too, at
+  a tie (`typeset -T TMOUT tmout`, past an option's number too, as in `typeset -Z 3 -T ZDOTDIR zd`)
+  of one of them, of `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`, `fpath` or of an array of hook
+  functions, by which zsh sets it by the other name too, at
   a `$HOME` that a letter, a digit or a `_` follows in a path (`$HOMEBREW_PREFIX/x`), which names
   another parameter, or a `:` or a `[`, with which zsh applies a modifier or a subscript to the home
   (`source $HOME:a/x`, and so for `$ZDOTDIR` and `$XDG_CONFIG_HOME`), at a file the startup
@@ -1005,12 +1007,30 @@ of this changelog for that version becomes the release notes word for word, and
   function whose code runs it from the directory a word after it names or from `fpath`, is a doubt,
   and so is the `.zwc` beside the directory of a function autoloaded by its path, which zsh runs
   in place of the file when it is newer. A `typeset`, `declare` or `private` with `-m`, which sets
-  every parameter its patterns match (`typeset -m 'T?Y=~/.zl'`, `typeset -m 'histchar?=!^%'`,
-  `typeset -u -m 'HOM?'`), is a doubt. An `fc` is read past the word `-e` or `-t` takes
-  (`fc -t %F -AI`, `fc -e - -AI`), and one with a letter it does not take writes nothing, as zsh
-  then refuses it (`history -A`). The `XDG_CONFIG_HOME` of the shell's environment is what
-  `${XDG_CONFIG_HOME:-$HOME/.config}` names, and for a zsh whose environment the check does not know,
-  a path that names `XDG_CONFIG_HOME` is one it cannot follow until a file sets it. A function or a
+  every parameter its patterns match (`typeset -m 'histchar?=!^%'`, `typeset -u -m 'HOM?'`), is a
+  doubt, its options read as zsh reads them, past a word an option takes as its number
+  (`typeset -L 3 -m 'HOM?=h2'`). A builtin that sets or takes away a parameter where an expansion,
+  brace expansion or a glob may make its options or the name is a doubt: a word of the `typeset`
+  family, `local`, `export`, `readonly`, `integer`, `float` and `private` among it, where its options
+  may stand (`private -$o 'HOM?=/x'` with `o=m`), a name such a word makes
+  (`typeset {ZDOT,}DIR=~/.zd`, `unset {ZDOT,}DIR`, `read -r {ZDOT,}DIR`), and a word where the options
+  of `print`, `printf`, `zstyle`, `strftime` or the like may stand (`print ${f}DIR ~/.zd` with
+  `f=-vZDOT`, `print "$x"`, which `print -r -- "$x"` is not). So is an `unset -m` whose pattern may
+  match a parameter the check reads (`unset -m 'ZDOTDI?'`, `unset -m '(ZDOTDIR|x)'`), and an
+  attribute given `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES` or `fpath` that changes what zsh
+  expands it to, what it holds or whether a later assignment sets it (`typeset -l ZDOTDIR`, with
+  which `. $ZDOTDIR/rc` sources a file in lower case, `readonly ZDOTDIR`). An `fc` is read past the
+  word `-e` or `-t` takes (`fc -t %F -AI`, `fc -e - -AI`), and one with a letter it does not take
+  writes nothing, as zsh then refuses it (`history -A`). The `XDG_CONFIG_HOME` of the shell's
+  environment is what `${XDG_CONFIG_HOME:-$HOME/.config}` names, until a file sets it, or takes it
+  away (`unset XDG_CONFIG_HOME`, after which that names `~/.config`, and in a function a `local`
+  that makes it the function's own and empty), and as for `ZDOTDIR`, a line that sets or takes it
+  away otherwise than as the walk reads it is a doubt (`XDG_CONFIG_HOME+=x`,
+  `${XDG_CONFIG_HOME:=...}`, `read`, `print -v`, `unset -m 'XDG_CONFIG_HOM?'`). For a zsh whose
+  environment the check does not know, a path that names `XDG_CONFIG_HOME` is one it cannot follow
+  until a file sets it. An assignment before a command (`ZDOTDIR=/x true`), which zsh keeps for that
+  command alone (but before a special builtin where `POSIX_BUILTINS` is on), may set the parameter
+  and need not, so the check reads the files where it puts them and where they were before. A function or a
   regular alias named `run-help` or `which-command`, which the widgets of those names run with the
   line being typed on the buffer stack as Alt-h, Alt-? or a key a file binds to them is pressed, or
   named as a key runs those widgets (`.run-help`, a name `zle -A` gives a widget), or named `man`,
@@ -1019,7 +1039,8 @@ of this changelog for that version becomes the release notes word for word, and
   like `whence`, which zsh's own alias `which-command` stands for, counts as used. `compctl`, whose
   completion runs without `compinit` (a `-K` function that reads the line with `read -l`), is a
   doubt wherever it stands. A command that names, before zsh reads a file, a path whose last part
-  is that file's name, as written, writes to it, but one that writes nothing in the files it names
+  is that file's name, as written, writes to it, in an option's word too (`sort -o~/.x`,
+  `sort --output=~/.x`, `curl -o.x`), but one that writes nothing in the files it names
   (`cat`, `touch`), a function the files define and zsh's own `prompt`, whose work the check reads:
   `sed -i`, `patch` and `sponge` among them.
   For the shell the command was typed into, or likely typed into, the

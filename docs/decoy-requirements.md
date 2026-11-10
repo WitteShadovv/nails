@@ -555,8 +555,10 @@ history yourself so an interactive shell has nowhere to write:
   `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, Home
   Manager's `programs.zsh` through `history.share`, which is on by default,
   and so does Oh My Zsh), keep `fc -A`, `fc -W` and `fc -p`, and a write to
-  any file but a device, out of zsh's hooks (and a write to a device or to
-  `$TTY` too where your files define a global alias) and `history -a` and
+  any file but a device, out of zsh's hooks (`$TTY` counts as any file, as
+  your files may change what it holds: write to `/dev/tty` instead; and a
+  write to a device too where your files define a global alias) and
+  `history -a` and
   `history -w` out of bash's `PROMPT_COMMAND`, and type the decoy commands in
   fish only as `fish --private`. For zsh, the check counts any mention of the
   three options in a file zsh reads as on, an `unsetopt` too, as no reading of
@@ -597,7 +599,7 @@ history yourself so an interactive shell has nowhere to write:
   start the shell from, arithmetic in your files that names a parameter that
   holds no number (`(( i++ ))` before `i` is set in it), a global alias your
   files use or one named like an operator (`alias -g '>'=...`), any global alias
-  where a hook writes to `$TTY` or a device, an `alias` word an expansion, brace
+  where a hook writes to a device, an `alias` word an expansion, brace
   expansion or a glob may make a flag of (`alias $g`, `alias {-g,-g}`), a
   `bindkey` word with a glob or a brace outside quotes, or an expansion there
   that may make several words of it (`bindkey ^[[A up-line-or-search` written
@@ -607,7 +609,14 @@ history yourself so an interactive shell has nowhere to write:
   (`setopt {-m,...}`, `functions {-c,f} preexec`), a `histchars` your files set,
   `RC_QUOTES`, `IGNORE_BRACES` or `IGNORE_CLOSE_BRACES` where a function's `}`
   follows a command's words, a `typeset -m`, which sets every parameter its
-  pattern matches, an `autoload -X`, `ALIAS_FUNC_DEF` where an alias shares a function's
+  pattern matches, an `unset -m` whose pattern may match one the check reads
+  (`ZDOTDIR`, `HOME` and the like), a word of a builtin that sets or takes
+  away a parameter where an expansion, brace expansion or a glob may make its
+  options or the name (`private -$o x`, `typeset {a,b}=x`, `print "$x"`, which
+  `print -r -- "$x"` is not), an attribute that changes what `ZDOTDIR` or
+  `XDG_CONFIG_HOME` expands to or keeps a later assignment from setting it
+  (`typeset -l`, `readonly`), an `XDG_CONFIG_HOME` set otherwise than by an
+  assignment or an `unset` (`read`, `+=`), an `autoload -X`, `ALIAS_FUNC_DEF` where an alias shares a function's
   name, a prompt with code where `PROMPT_SUBST` (or `PROMPT_VARS`) may be on, a
   `NULLCMD` or `READNULLCMD` of any value in the environment you start the shell
   from, a `TMOUT`, `PERIOD` or `REPORTTIME` (and the like) that is no number,

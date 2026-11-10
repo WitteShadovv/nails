@@ -1399,21 +1399,22 @@ afterwards:
     an alias a hook runs by name, there or in an `eval` or a `$(...)`. In a
     hook a word that names that file (`tee -a ~/.zsh_history`) counts as a
     write too, and a redirection there to any other file is a doubt, as it may
-    be the one `HISTFILE` names or a link to it (`>> ~/.zlog`, a glob), but for
-    standard output or error (`>&2`), for a device (`/dev/null`, `/dev/tty`,
-    `/dev/stderr`, `/dev/fd/2`) and for a redirection to `$TTY` alone (`$TTY`,
-    `"$TTY"`, `${TTY}`), the terminal zsh sets it to as it starts. A device and
-    `$TTY` count so only while no file it reads defines a global alias, of any
-    name, as zsh looks a global alias up for every token it reads, an operator's
-    too (with `alias -g '>'='>>~/.zl;:'` it reads `print -r -- $1>$TTY` as a
-    write to `~/.zl`): it reads an `alias` where zsh runs it past a precommand
-    and its options too (`command -p alias -g ...`), and an `alias` word, a
-    command's name or a line it cannot read as zsh may is a doubt of its own
-    (see below). `$TTY` counts so only while no file it reads names `TTY`
-    otherwise than to read it, in any form zsh reads a
-    name in (`TTY=...`, `local TTY`, `read T''TY`, `print -vTTY`), and no
-    arithmetic it reads may set a parameter by a name it cannot read (see
-    below). A write to a descriptor above 2 (`>&7`, `print -u 7`, `/dev/fd/7`)
+    be the one `HISTFILE` names or a link to it (`>> ~/.zlog`, a glob, `$TTY`),
+    but for standard output or error (`>&2`) and for a device (`/dev/null`,
+    `/dev/tty`, `/dev/stderr`, `/dev/fd/2`). A redirection to `$TTY` (`$TTY`,
+    `"$TTY"`, `${TTY}`) is such a doubt as any target an expansion makes is:
+    it names what the parameter holds, which your files can change in more
+    ways than the check can read exactly (a pattern, an option or a name an
+    expansion makes, arithmetic), so the check cannot show that it still names
+    the terminal zsh set it to as it started; write to `/dev/tty` instead. A
+    device counts as no file only while no file it reads defines a global
+    alias, of any name, as zsh looks a global alias up for every token it
+    reads, an operator's too (with `alias -g '>'='>>~/.zl;:'` it reads
+    `print -r -- $1>/dev/tty` as a write to `~/.zl`): it reads an `alias` where
+    zsh runs it past a precommand and its options too
+    (`command -p alias -g ...`), and an `alias` word, a command's name or a
+    line it cannot read as zsh may is a doubt of its own (see below). A write
+    to a descriptor above 2 (`>&7`, `print -u 7`, `/dev/fd/7`)
     is a doubt there, as it may be any file the shell has open. A redirection
     with no command (`>/dev/null` alone), or with only words that may all expand
     to none and no assignment before them (`/no/such*(N) >/dev/null`,
@@ -1450,7 +1451,7 @@ afterwards:
     gives a widget. One whose name holds an
     operator, a brace or a blank, or is empty, is a doubt wherever it is
     defined, as zsh splits such a token off a word with no blank beside it
-    (`$1>$TTY`, `$1;`, `$1}`) and the check cannot count its uses. So is an
+    (`$1>/dev/tty`, `$1;`, `$1}`) and the check cannot count its uses. So is an
     `alias` with a word an expansion, brace expansion or a glob may make other
     words of (`alias $g ...`, `alias {-g,-g} ...`, and `alias -[g] ...`, which a
     file named `-g` where zsh runs makes `-g`), which may be `-g`, but for a
@@ -1480,10 +1481,10 @@ afterwards:
     changes a keymap, which may change what its keys type (any key of a range
     bound with `-R` too, and a binding past `-L`, a lone `-`, a keymap glued to
     `-M` or such a dropped word, as zsh reads them). What they type counts
-    for the names the check counts (an `fc` alias, `TTY` and the rest, see
-    below). A history tool that keeps its own record elsewhere, such as atuin,
-    it does not see as one, though the command its hook runs with the line you
-    typed is such a doubt;
+    for the names the check counts (an `fc` alias and the rest, see below). A
+    history tool that keeps its own record elsewhere, such as atuin, it does
+    not see as one, though the command its hook runs with the line you typed is
+    such a doubt;
   - an `emulate -R` of ksh's mode, whose reset to ksh's defaults turns
     `SHARE_HISTORY` on, as `-R` sets every option to the mode's defaults (sh's,
     csh's and zsh's hold none of the three), zsh picking the mode by its first
@@ -1543,10 +1544,19 @@ afterwards:
     reads as arithmetic that is no number (see below), and a prompt there that
     holds an expansion holds code where `PROMPT_SUBST` may be on, as zsh shows
     it unless a file sets it. An `XDG_CONFIG_HOME` there is what a path of your
-    files names with it (`${XDG_CONFIG_HOME:-$HOME/.config}/zsh`); for a zsh
-    whose environment it does not know, as one it reads because it found no
-    shell you typed into, such a path is one it cannot follow until a file
-    sets it;
+    files names with it (`${XDG_CONFIG_HOME:-$HOME/.config}/zsh`), until a
+    file sets it or takes it away: after `unset XDG_CONFIG_HOME`, and in a
+    function after a `local XDG_CONFIG_HOME`, which makes it the function's
+    own and empty, that path names `~/.config/zsh`. As for `ZDOTDIR`, a line
+    that sets or takes it away otherwise than by an assignment or an `unset`
+    as written (`XDG_CONFIG_HOME+=x`, `: ${XDG_CONFIG_HOME:=...}`, `read`,
+    `print -v`, `unset -m 'XDG_CONFIG_HOM?'`) is a doubt. For a zsh whose
+    environment it does not know, as one it reads because it found no shell
+    you typed into, such a path is one it cannot follow until a file sets it.
+    An assignment before a command (`ZDOTDIR=/x true`), which zsh keeps for
+    that command alone (but before a special builtin where `POSIX_BUILTINS`
+    is on), may set the parameter and need not, so the check reads the files
+    both where it puts them and where they were;
   - zsh's own `promptinit`, and the `add-zsh-hook` and `add-zle-hook-widget`
     it autoloads, it knows by their bytes as zsh 5.9, 5.9.1 and 5.9.2 ship
     them, and reads for what that code does, and a changed one as code.
@@ -1603,7 +1613,7 @@ afterwards:
     an assignment to a parameter that holds a number, a glob qualifier's
     subscript and more, and reads what an expansion gives there and the value
     of each parameter it names as arithmetic again, so an assignment in them
-    may set a parameter whose name no file writes (`n='TTY=5'; (( n ))`). An
+    may set a parameter whose name no file writes (`n='HOME=5'; (( n ))`). An
     expression that holds an expansion other than a count or a test of a
     parameter (`$#x`, `${+x}`) or an index a pattern finds in an array of zsh's
     own (`${precmd_functions[(I)f]}`), or names a parameter other than one zsh
@@ -1622,7 +1632,8 @@ afterwards:
     shell's environment holds, and so is one set in a form the check does not
     read (`read TMOUT`, `print -v TMOUT`); a number, as a hardened
     `/etc/profile` sets `TMOUT=900` with `readonly` and `export`, passes. A
-    tie (`typeset -T TMOUT tmout`), by which zsh sets a parameter by the other
+    tie (`typeset -T TMOUT tmout`, and past an option's number, as in
+    `typeset -Z 3 -T ZDOTDIR zd`), by which zsh sets a parameter by the other
     name too (`tmout=(...)`), is a doubt where it names one of them,
     `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`, `fpath` or an array of hook
     functions, whose values the check reads;
@@ -1634,7 +1645,9 @@ afterwards:
     before zsh reads it, at the top or in a function the top runs, writes to a
     path whose last part is its name or its compiled form's (`.zwc`, which zsh
     runs in its place): any command given such a path, as written or as brace
-    expansion makes it, but one that writes nothing in the files it names
+    expansion makes it, in an option's word too (`sort -o~/.x`,
+    `sort --output=~/.x`, `curl -o.x`), but one that writes nothing in the files
+    it names
     (`cat`, `grep`, `touch`, `chmod`, `mkdir`, a builtin such as `print`) and
     a function your files define or autoload, whose code the check reads, or
     one of zsh's own whose work it reads by its name (`prompt`), so an editor
@@ -1674,8 +1687,22 @@ afterwards:
   of a parameter whose name an expansion makes, and a `print -v` that holds the
   name in its word or takes it after other flags, as `-v$name` and
   `-rv $name`), when a `typeset`, `declare` or `private` with `-m` sets or
-  changes every parameter its patterns match (`typeset -m 'T?Y=~/.zl'`,
-  `typeset -u -m 'HOM?'`), which may be one the check reads, when a parameter is set by a name another one holds
+  changes every parameter its patterns match (`typeset -m 'histchar?=!^%'`,
+  `typeset -u -m 'HOM?'`, and past a word an option takes as its number, as
+  in `typeset -L 3 -m 'HOM?=h2'`), which may be one the check reads, when an
+  `unset -m` has a pattern that may match one the check reads
+  (`unset -m 'ZDOTDI?'`, `unset -m '(ZDOTDIR|x)'`; `unset -m 'POWERLEVEL9K_*'`
+  passes), when a builtin that sets or takes away a parameter has a word
+  where its options may stand that an expansion, brace expansion or a glob
+  may make (`private -$o 'HOM?=/x'`, `local -$o x`, `unset $n`, and for
+  `print`, `printf`, `zstyle`, `strftime` and the like `print ${f}DIR ~/.zd`
+  and `print "$x"`: write `print -r -- "$x"`) or such a word makes the name it
+  sets (`typeset {ZDOT,}DIR=~/.zd`, `unset {ZDOT,}DIR`, `read -r {ZDOT,}DIR`),
+  when an attribute is given `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES` or
+  `fpath` that changes what zsh expands it to, what it holds or whether a
+  later assignment sets it (`typeset -l ZDOTDIR`, and so `-u`, `-L 3`, `-i`,
+  and `readonly ZDOTDIR`; `typeset -U fpath` passes), when a parameter is set
+  by a name another one holds
   (`${(P)name::=on}`) or that an expansion makes in a `zstyle -s`, `getopts`,
   `strftime -s` (`-s$name` too), `vared`, `zparseopts`, `zformat -f`, `getln`,
   `zpty -r`, `syswrite -c`, `syserror -e`, `zgetattr`, `zlistattr` or
@@ -1763,7 +1790,8 @@ afterwards:
   running none of them. Beside reading zsh's files as code, it counts in their
   lines, without reading the code and wherever they stand, the three options,
   `source`, a `.` with a word after it, `eval`, an alias that stands for `.`,
-  `autoload`, the `ZDOTDIR`, `fpath` and `NIX_PROFILES` settings, the arrays
+  `autoload`, the `ZDOTDIR`, `XDG_CONFIG_HOME`, `fpath` and `NIX_PROFILES`
+  settings, the arrays
   of hook functions, the prompts,
   and the parameters that hold the aliases and the functions' bodies
   (`aliases`, `galiases`, `saliases`, `functions`), leaving
@@ -1771,7 +1799,7 @@ afterwards:
   in: as written, with each backslash-newline joined, with quotes and
   backslashes taken off and `$'...'` decoded, and in the words of the code as
   it reads them, in which a line that starts with `#` inside a quote is code.
-  The names of `TTY`, of an `fc` alias, of a global alias that is a word and
+  The names of an `fc` alias, of a global alias that is a word and
   of `HOME`, `ZSH_VERSION`, `ARGV0`, `MAILPATH`, `NULLCMD` and
   `module_path` it counts the same way. What a line names beyond what it read
   as code it follows makes it fail closed, in case it read the code otherwise
