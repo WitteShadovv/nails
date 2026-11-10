@@ -724,8 +724,9 @@ of this changelog for that version becomes the release notes word for word, and
   reading of the way). Where the lookup would mount a point, it is not made: the check says it cannot
   tell, names the path and the automount point, and says to mount the point (for example
   `ls /usr/local`) and run `check` again. A warn-only check warns, the residue catalog also for a
-  channel it would only note; `decoy-persistence` refuses for the journal, a log daemon or kdump
-  (`--allow-persistent-decoy` lifts it), and `fstab-policy` refuses; `memory-wipe` and the Argon2id
+  channel it would only note; `decoy-persistence` refuses for the journal, a log daemon, kdump or
+  unattended-upgrades' install at shutdown (`--allow-persistent-decoy` lifts it), and
+  `fstab-policy` and `unattended-upgrade-run` refuse; `memory-wipe` and the Argon2id
   advice keep their informational pass and, where what they could read leaves the answer open, name
   the path and the point. Without the mount table these checks look up nothing on the decoy. Where
   the hidden root or the state file lies behind such a point, `check` prints the attach gate's
@@ -1612,8 +1613,10 @@ of this changelog for that version becomes the release notes word for word, and
   `/usr/local/bin` or a fish configuration could go unseen, and the attach gate called such a hidden
   root missing. Now only a path that does not exist, or one below a file, is missing, and any other
   failure makes the check say it cannot tell and name the path: a warn-only check warns,
-  `decoy-persistence` refuses for the journal, a log daemon or kdump (`--allow-persistent-decoy`
-  lifts it), and the attach gate refuses the root with the error (`not_separate_volume`, exit 4).
+  `decoy-persistence` refuses for the journal, a log daemon, kdump or unattended-upgrades' install
+  at shutdown (`--allow-persistent-decoy` lifts it), `unattended-upgrade-run` refuses where it
+  cannot tell whether a daily run is in progress, and the attach gate refuses the root with the
+  error (`not_separate_volume`, exit 4).
   `init` and the staging of the hidden NixOS configuration write nothing over a file whose lookup
   failed, `config set` and `config unset` refuse a volume where they find no file of NAILS and
   cannot look one up, `discard` stops at a path it cannot look up, the platform check refuses a host
