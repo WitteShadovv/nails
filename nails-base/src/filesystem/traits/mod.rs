@@ -232,6 +232,15 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// on the way first.
     fn mount_root(&self, path: &Path) -> Result<MountRoot>;
 
+    /// Whether `path` itself is a block or character device node, as
+    /// `lstat(2)` reads it: a symbolic link there is not followed, so a link
+    /// is none, and an automount point there is not mounted. An error when
+    /// the path cannot be looked up, one that does not exist among them. As
+    /// with [`mount_root`](Self::mount_root), a link or an automount point on
+    /// the way to it is not spared: a caller that must spare them looks at
+    /// each directory on the way first.
+    fn is_device_node(&self, path: &Path) -> Result<bool>;
+
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 

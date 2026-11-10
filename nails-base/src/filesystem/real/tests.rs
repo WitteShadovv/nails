@@ -1150,6 +1150,26 @@ fn read_link_gives_the_target_without_following_it() {
 }
 
 #[test]
+fn a_device_node_is_seen_as_lstat_reads_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = RealFilesystem;
+    // Every Linux system has /dev/null, a character device.
+    assert!(real.is_device_node(Path::new("/dev/null")).unwrap());
+    let file = dir.path().join("file");
+    fs::write(&file, "text").unwrap();
+    assert!(!real.is_device_node(&file).unwrap());
+    assert!(!real.is_device_node(dir.path()).unwrap());
+    // A link to a device node is none: it is not followed.
+    let link = dir.path().join("null");
+    std::os::unix::fs::symlink("/dev/null", &link).unwrap();
+    assert!(!real.is_device_node(&link).unwrap());
+    let error = real
+        .is_device_node(&dir.path().join("missing"))
+        .unwrap_err();
+    assert_eq!(error.io_kind(), Some(std::io::ErrorKind::NotFound));
+}
+
+#[test]
 fn a_link_to_a_mount_point_is_no_mount_point_itself() {
     let dir = tempfile::tempdir().unwrap();
     let link = dir.path().join("root");

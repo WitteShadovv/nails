@@ -91,7 +91,11 @@ impl MockFilesystem {
         };
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(&target).is_some_and(|info| {
-            info.exists && !info.is_directory && !info.is_symlink && !info.is_whiteout
+            info.exists
+                && !info.is_directory
+                && !info.is_symlink
+                && !info.is_whiteout
+                && !info.is_device
         }))
     }
 
@@ -116,6 +120,27 @@ impl MockFilesystem {
     pub(super) fn is_overlay_whiteout_impl(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(path).is_some_and(|info| info.is_whiteout))
+    }
+
+    /// Whether `path` itself is a device node: one set as such, or a
+    /// whiteout, the character device it is. A link is none, and a path whose
+    /// `mount_root` fails fails here too, as the same lookup would.
+    pub(super) fn is_device_node_impl(&self, path: &Path) -> Result<bool> {
+        if let Some(Err(kind)) = self
+            .mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+        {
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(*kind, "Mock: fstatat fails here"),
+            ));
+        }
+        let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+        Ok(paths
+            .get(path)
+            .is_some_and(|info| !info.is_symlink && (info.is_device || info.is_whiteout)))
     }
 
     /// Resolve the symlinks recorded by `create_symlink`, component by

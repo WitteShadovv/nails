@@ -67,6 +67,23 @@ pub(super) fn mount_root(path: &Path) -> Result<MountRoot> {
     }
 }
 
+/// Whether `path` itself is a block or character device node, as one
+/// `fstatat` reads it that follows no link and triggers no automount there.
+pub(super) fn is_device_node(path: &Path) -> Result<bool> {
+    use rustix::fs::{AtFlags, CWD, FileType, statat};
+
+    let stat = statat(
+        CWD,
+        path,
+        AtFlags::NO_AUTOMOUNT.union(AtFlags::SYMLINK_NOFOLLOW),
+    )
+    .map_err(|e| NailsError::io(path, std::io::Error::from(e)))?;
+    Ok(matches!(
+        FileType::from_raw_mode(stat.st_mode),
+        FileType::BlockDevice | FileType::CharacterDevice
+    ))
+}
+
 pub(super) fn inode(path: &Path) -> Result<Option<u64>> {
     use std::os::unix::fs::MetadataExt;
     match std::fs::metadata(path) {

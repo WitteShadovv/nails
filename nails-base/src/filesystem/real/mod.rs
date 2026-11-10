@@ -120,6 +120,10 @@ impl Filesystem for RealFilesystem {
         file_ops::mount_root(path)
     }
 
+    fn is_device_node(&self, path: &Path) -> Result<bool> {
+        file_ops::is_device_node(path)
+    }
+
     fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
         file_ops::is_overlay_whiteout(path)
     }

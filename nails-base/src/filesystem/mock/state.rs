@@ -17,6 +17,8 @@ pub(super) struct PathInfo {
     pub(super) is_symlink: bool,
     /// An overlayfs whiteout (a 0:0 character device).
     pub(super) is_whiteout: bool,
+    /// Another block or character device node.
+    pub(super) is_device: bool,
     pub(super) is_readable: bool,
     pub(super) is_writable: bool,
     pub(super) free_space: u64,
@@ -30,6 +32,7 @@ impl Default for PathInfo {
             is_directory: false,
             is_symlink: false,
             is_whiteout: false,
+            is_device: false,
             is_readable: true,
             is_writable: true,
             free_space: DEFAULT_MOCK_FREE_SPACE_BYTES,
