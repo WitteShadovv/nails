@@ -36,8 +36,10 @@ pub(super) struct Named {
     pub(super) sources: usize,
     /// `eval`.
     pub(super) evals: usize,
-    /// `ZDOTDIR` where it is not read ([`zdotdir_writes`]).
+    /// `ZDOTDIR` where it is not read ([`zdotdir_writes`]), and
+    /// `XDG_CONFIG_HOME` ([`xdg_config_home_writes`]).
     pub(super) zdotdirs: usize,
+    pub(super) xdg_config_homes: usize,
     /// `autoload`.
     pub(super) autoloads: usize,
     /// `fpath` and `FPATH` where they are not read ([`fpath_writes`]).
@@ -80,6 +82,7 @@ impl Named {
             sources: self.sources.max(other.sources),
             evals: self.evals.max(other.evals),
             zdotdirs: self.zdotdirs.max(other.zdotdirs),
+            xdg_config_homes: self.xdg_config_homes.max(other.xdg_config_homes),
             autoloads: self.autoloads.max(other.autoloads),
             fpaths: self.fpaths.max(other.fpaths),
             fcs: self.fcs.max(other.fcs),
@@ -104,6 +107,7 @@ impl Named {
         self.sources += whole_words(piece, "source") + dot_words(piece) + alias_dots(piece);
         self.evals += whole_words(piece, "eval");
         self.zdotdirs += zdotdir_writes(piece);
+        self.xdg_config_homes += xdg_config_home_writes(piece);
         self.autoloads += whole_words(piece, "autoload");
         self.fpaths += fpath_writes(piece);
         self.fcs += fc_writes(piece);
@@ -918,6 +922,12 @@ pub(super) fn qualifier_code(text: &str) -> bool {
 /// How often `text` names `ZDOTDIR` otherwise than to read it ([`writes`]).
 pub(super) fn zdotdir_writes(text: &str) -> usize {
     writes(text, "ZDOTDIR")
+}
+
+/// How often `text` names `XDG_CONFIG_HOME` otherwise than to read it
+/// ([`writes`]).
+pub(super) fn xdg_config_home_writes(text: &str) -> usize {
+    writes(text, "XDG_CONFIG_HOME")
 }
 
 /// How often `text` names `NIX_PROFILES` otherwise than to read it
