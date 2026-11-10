@@ -379,6 +379,29 @@ class RunBuildTest(unittest.TestCase):
         # Passing logs are removed; only failures are worth uploading.
         self.assertFalse((logs / "basic-workflow.log").exists())
 
+    def test_a_pass_on_retry_keeps_the_log_of_the_attempt_that_failed(self) -> None:
+        logs = self.tmp / "logs"
+        with (
+            mock.patch.dict(os.environ, self.environ(FAKE_NIX_FAIL="1"), clear=True),
+            mock.patch.object(run, "missing_outputs", side_effect=[["verify"], []]),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            status = run.run_build(
+                ["basic-workflow", "verify"], log_dir=logs, retries=1
+            )
+        self.assertEqual(status, 0, stderr.getvalue())
+        self.assertIn("FLAKY", stderr.getvalue())
+        # The failed attempt's log stays for the upload, beside nothing else:
+        # the passing attempts' logs are removed.
+        self.assertEqual(
+            sorted(log.name for log in logs.glob("*.log")), ["verify.attempt-1.log"]
+        )
+        self.assertEqual(
+            (logs / "verify.attempt-1.log").read_text(encoding="utf-8"),
+            "verify logged this\n",
+        )
+        self.assertIn("verify: the log of attempt 1 is kept", stderr.getvalue())
+
     def test_the_time_limit_stops_a_hung_test_and_keeps_its_log(self) -> None:
         logs = self.tmp / "logs"
         durations = self.tmp / "durations.jsonl"
@@ -1111,8 +1134,15 @@ class RunDriversTest(unittest.TestCase):
         self.assertFalse(outcomes["steady"].flaky)
         self.assertEqual(outcomes["wobbly"].result, "pass")
         self.assertTrue(outcomes["wobbly"].flaky)
-        # Passing logs are removed; only failures are worth uploading.
-        self.assertEqual(list(logs.glob("*.log")), [])
+        # Passing logs are removed; only failures are worth uploading, the
+        # attempt that failed before a pass on its retry among them.
+        self.assertEqual(
+            [log.name for log in logs.glob("*.log")], ["wobbly.attempt-1.log"]
+        )
+        self.assertEqual(
+            (logs / "wobbly.attempt-1.log").read_text(encoding="utf-8"), "broken\n"
+        )
+        self.assertIn("wobbly.attempt-1.log", self.stderr)
 
     def test_a_failing_driver_fails_the_run_and_keeps_its_log(self) -> None:
         status, outcomes, logs = self.execute(["steady", "broken"], retries=1)
