@@ -9,6 +9,31 @@ use std::sync::{Arc, Mutex};
 
 pub(super) const DEFAULT_MOCK_FREE_SPACE_BYTES: u64 = 1 << 40;
 
+/// One kind of lookup of the mock that
+/// [`mock_fail_only`](MockFilesystem::mock_fail_only) makes fail alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MockLookup {
+    /// [`Filesystem::path_exists`](crate::Filesystem::path_exists).
+    PathExists,
+    /// [`Filesystem::is_directory`](crate::Filesystem::is_directory).
+    IsDirectory,
+    /// [`Filesystem::canonicalize`](crate::Filesystem::canonicalize).
+    Canonicalize,
+    /// The reads of a file's text or bytes.
+    Read,
+}
+
+/// How a lookup that [`mock_fail_only`](MockFilesystem::mock_fail_only)
+/// makes fail fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockFailure {
+    /// With an I/O error of this kind, naming the path.
+    Io(std::io::ErrorKind),
+    /// As a lookup the automount guard does not make, since it would mount
+    /// this automount point: one set up after the lookups made before it.
+    NotLookedUp(PathBuf),
+}
+
 /// Path metadata for MockFilesystem
 #[derive(Debug, Clone)]
 pub(super) struct PathInfo {
@@ -125,6 +150,9 @@ pub struct MockFilesystem {
     /// Every path a read looked up, in order
     /// ([`mock_lookups`](Self::mock_lookups)).
     pub(super) lookups: Arc<Mutex<Vec<PathBuf>>>,
+    /// Lookups that fail alone, set with
+    /// [`mock_fail_only`](Self::mock_fail_only), each by its path and kind.
+    pub(super) failures_only: Arc<Mutex<HashMap<(PathBuf, MockLookup), MockFailure>>>,
     /// Paths whose `is_mounted` check fails, mapped to the error message to
     /// return. Lets tests exercise the status command's handling of an
     /// unreadable mount table without a bespoke fake filesystem.
@@ -214,6 +242,7 @@ impl MockFilesystem {
             paths: Arc::new(Mutex::new(HashMap::new())),
             lookup_errors: Arc::new(Mutex::new(HashMap::new())),
             lookups: Arc::new(Mutex::new(Vec::new())),
+            failures_only: Arc::new(Mutex::new(HashMap::new())),
             is_mounted_errors: Arc::new(Mutex::new(HashMap::new())),
             nails_process_matches: Arc::new(Mutex::new(None)),
             unreadable_dirs: Arc::new(Mutex::new(HashSet::new())),
@@ -288,6 +317,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.lookups
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.failures_only
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

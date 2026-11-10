@@ -25,4 +25,4 @@ mod tests_lookup;
 mod tests_mounts;
 
 pub use setup_state::PathKind;
-pub use state::{MockFilesystem, MockOp};
+pub use state::{MockFailure, MockFilesystem, MockLookup, MockOp};
