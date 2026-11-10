@@ -1704,6 +1704,17 @@ fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
         "f=~/.zshrc.local\nprint -r -- \"$(<~/.src)\" >> $f\n. ~/.zshrc.local\n",
         "f=~/.zshrc.local\nlog() { cat ~/.src >> $f }\nlog\n. ~/.zshrc.local\n",
         "zcompile ~/.zshrc.local.zwc ~/.src\n. ~/.zshrc.local\n",
+        // An editor that writes in place, or any command but one that writes
+        // nothing in the files it names (`sed -i -f ~/.s` turns `:` into
+        // the option on zsh 5.9 and 5.9.2).
+        "sed -i -f ~/.s ~/.zshrc.local\n. ~/.zshrc.local\n",
+        "sponge ~/.zshrc.local < ~/.src\n. ~/.zshrc.local\n",
+        "patch -s ~/.zshrc.local ~/.p\n. ~/.zshrc.local\n",
+        "gzip -dc ~/.src.gz | sponge ~/.zshrc.local\n. ~/.zshrc.local\n",
+        "perl -pi -e 's/^/x/' ~/.zshrc.local\n. ~/.zshrc.local\n",
+        "/usr/bin/awk -i inplace 1 ~/.zshrc.local\n. ~/.zshrc.local\n",
+        "f=~/.zshrc.local\nsed -i -f ~/.s $f\n. ~/.zshrc.local\n",
+        "vim -es -c 'normal! x' -c wq ~/.zshrc.local\n. ~/.zshrc.local\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
@@ -1716,6 +1727,8 @@ fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
     // with these SHARE_HISTORY is on from the first prompt on.
     for rc in [
         "precmd() { . ~/.zshrc.local }\ncp ~/.src ~/.zshrc.local\n",
+        "precmd() { . ~/.zshrc.local }\nsed -i -f ~/.s ~/.zshrc.local\n",
+        "precmd() { . ~/.zshrc.local }\nsponge ~/.zshrc.local < ~/.src\n",
         "precmd() { . ~/.zshrc.local }\npreexec() { cp ~/.src ~/.zshrc.local }\n",
         "fpath=(~/zfn $fpath)\nautoload -Uz hk\nprecmd_functions+=(hk)\ncp ~/.src ~/zfn/hk\n",
     ] {
@@ -1726,13 +1739,17 @@ fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
         seed(&fs, "/home/alice/.src", "setopt share_history\n");
         assert!(warns(&fs), "{rc}");
     }
-    // A write after zsh reads it at the top, or to another file, and a
-    // `touch`, which writes nothing in it, are none.
+    // A write after zsh reads it at the top, or to another file, a command
+    // that writes nothing in it (`touch`, `cat`), and a function the files
+    // define, whose code the check reads, are none.
     for rc in [
         ". ~/.zshrc.local\nprint x >> ~/.zshrc.local\n",
         "print x >> ~/.cache/log\n. ~/.zshrc.local\n",
         "touch $HISTFILE\n. ~/.zshrc.local\n",
         "precmd() { . ~/.zshrc.local }\nprint x >> ~/.cache/log\n",
+        "cat ~/.zshrc.local >/dev/null\nchmod 600 ~/.zshrc.local\n. ~/.zshrc.local\n",
+        "edit() { : }\nedit ~/.zshrc.local\n. ~/.zshrc.local\n",
+        "sed -i -f ~/.s ~/.other\n. ~/.zshrc.local\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
