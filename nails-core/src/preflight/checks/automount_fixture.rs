@@ -31,7 +31,8 @@ pub(crate) fn with_automounts(fs: &MockFilesystem, points: &[&str]) {
     fs.mock_set_mount_table(&table);
 }
 
-/// Whether `fs` was asked to look up `point` or a path below it.
+/// Whether `fs` was asked to look up `point` or a path below it, or a path
+/// whose links on the way lead there ([`MockFilesystem::mock_reached`]).
 pub(crate) fn reached(fs: &MockFilesystem, point: &str) -> bool {
-    fs.mock_lookups().iter().any(|path| path.starts_with(point))
+    fs.mock_reached(std::path::Path::new(point))
 }

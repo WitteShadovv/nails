@@ -1179,9 +1179,10 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   as covered once it is mounted, since the automount point stays below the
   volume. On NixOS the decoy's `/etc/nixos` can link into a home:
   `suspicious-nails-reference` refuses where its walk of `/etc/nixos` would
-  pass such a point, and where finding the NixOS build target would, which
-  `check` does unless it runs with `--overlay-only`, it runs no check, naming
-  the point. `memory-wipe` and `cryptsetup-argon2id`, which
+  pass such a point, `nixos-config` where its lookup of the base
+  configuration there would, and where finding the NixOS build target would,
+  which `check` does unless it runs with `--overlay-only`, it runs no check,
+  naming the point. `memory-wipe` and `cryptsetup-argon2id`, which
   only inform, keep their pass, and where what they could read leaves the
   answer open, name the path and the point. Without the mount table these
   checks look up nothing on the decoy, and each says so where its answer

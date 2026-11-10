@@ -69,8 +69,8 @@ fn guarded(fs: &MockFilesystem) -> Guarded<MockFilesystem> {
 }
 
 /// Whether `paths` holds `point` or a path below it.
-fn reaches(paths: &[PathBuf], point: &str) -> bool {
-    paths.iter().any(|path| path.starts_with(point))
+fn reaches(fs: &MockFilesystem, point: &str) -> bool {
+    fs.mock_reached(Path::new(point))
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn a_direct_point_at_the_end_is_skipped_or_answered_from_the_table() {
     );
     assert_eq!(way(&fs, "/usr/local/.", RESOLVES), "mounts /usr/local");
     // The point is never read for the answer.
-    assert!(!reaches(&fs.mock_lookups(), "/usr/local"));
+    assert!(!reaches(&fs, "/usr/local"));
 
     let view = guarded(&fs);
     let point = Path::new("/usr/local");
@@ -224,11 +224,11 @@ fn a_direct_point_at_the_end_is_skipped_or_answered_from_the_table() {
     // Through a link, the answer is where the link leads.
     link(&fs, "/opt/local", "/usr/local");
     assert_eq!(view.canonicalize(Path::new("/opt/local")).unwrap(), point);
-    assert!(!reaches(&fs.mock_lookups(), "/usr/local"));
+    assert!(!reaches(&fs, "/usr/local"));
     assert!(view.skipped().is_empty());
     // A lookup that reads it is not made.
     assert!(view.path_exists(point).is_err());
-    assert!(!reaches(&fs.mock_lookups(), "/usr/local"));
+    assert!(!reaches(&fs, "/usr/local"));
 }
 
 /// An automount point the table does not show, as one set up after it was
@@ -602,7 +602,7 @@ fn every_call_that_reads_or_writes_a_path_is_guarded_as_one_that_enters_it() {
             // A call below a root it is given asks about the path it makes.
             assert!(view.skipped()[n].path.starts_with(path), "{name}");
         }
-        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
+        assert!(!reaches(&fs, "/usr/local"), "{name}");
         assert!(fs.mock_written_paths().is_empty(), "{name}");
 
         // Elsewhere the call is made.
@@ -657,7 +657,7 @@ fn every_call_that_follows_a_link_at_the_end_is_not_made_where_it_leads_behind_a
                 assert_eq!(view.skipped().len(), n + 1, "{name} {path}");
             }
         }
-        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
+        assert!(!reaches(&fs, "/usr/local"), "{name}");
         assert!(fs.mock_written_paths().is_empty(), "{name}");
     }
 }
@@ -698,7 +698,7 @@ fn every_call_that_resolves_a_link_at_the_end_follows_it_only_where_it_follows_o
                 );
             }
         }
-        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
+        assert!(!reaches(&fs, "/usr/local"), "{name}");
     }
     let fs = links_to_usr_local();
     let view = guarded(&fs);
@@ -758,7 +758,7 @@ fn a_remembering_view_reads_each_place_on_the_way_once() {
     }
     // What the link is, and where it leads.
     assert_eq!(looked_up(&fs, &["/opt/l"]), [2], "{:?}", fs.mock_lookups());
-    assert!(!reaches(&fs.mock_lookups(), "/usr/local"));
+    assert!(!reaches(&fs, "/usr/local"));
     assert_eq!(view.skipped().len(), 2);
 
     fs.mock_clear_lookups();
@@ -796,7 +796,7 @@ fn every_call_that_resolves_a_path_is_answered_at_a_point_and_skipped_below_it()
         let view = guarded(&fs);
         assert!(call(&view, Path::new("/usr/local")).is_ok(), "{name}");
         assert!(view.skipped().is_empty(), "{name}");
-        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
+        assert!(!reaches(&fs, "/usr/local"), "{name}");
         for path in ["/usr/local/bin", "/net/srv"] {
             let result = call(&view, Path::new(path));
             if name == "resolve_in_root" {
@@ -810,8 +810,8 @@ fn every_call_that_resolves_a_path_is_answered_at_a_point_and_skipped_below_it()
             }
         }
         assert_eq!(view.skipped().len(), 2, "{name}");
-        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
-        assert!(!reaches(&fs.mock_lookups(), "/net/srv"), "{name}");
+        assert!(!reaches(&fs, "/usr/local"), "{name}");
+        assert!(!reaches(&fs, "/net/srv"), "{name}");
         // Elsewhere the call is made.
         let _ = call(&view, Path::new("/etc/x"));
         assert!(
@@ -844,7 +844,7 @@ fn a_mount_query_is_made_unless_resolving_its_path_would_mount() {
         assert!(skipped_at_usr_local(&result), "{name}: {result:?}");
         assert!(call(&view, Path::new("/opt/m")).is_ok(), "{name}");
         assert_eq!(view.skipped().len(), 1, "{name}");
-        assert!(!reaches(&fs.mock_lookups(), "/usr/local"), "{name}");
+        assert!(!reaches(&fs, "/usr/local"), "{name}");
     }
     let fs = mock(&[ROOT, USR_LOCAL]);
     let view = guarded(&fs);
