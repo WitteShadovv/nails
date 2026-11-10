@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Check readiness to activate, leaving no file or mount behind
+Check readiness to activate, leaving no file or mount behind but in rare cases
 
 Usage: nails check [OPTIONS]
 
