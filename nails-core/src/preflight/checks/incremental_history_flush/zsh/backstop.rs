@@ -23,6 +23,7 @@
 //! inside a quote does not hide. What the most of them name counts.
 
 use super::arith::READ_AS_NUMBER;
+use super::builtins::fc_letters;
 use super::lexer::{Token, lex};
 use super::walk::{HOOKS, PROMPTS, option};
 
@@ -478,7 +479,8 @@ pub(super) fn is_fc_flag(word: &str) -> bool {
 /// How often an `fc`, or a `history`, which takes its flags, stands in
 /// `line` as a word of its own with a flag after it that writes the history
 /// file ([`FC_WRITES`]), or an expansion, brace expansion or a glob that may
-/// make one, before its options end or the command does.
+/// make one, before its options end or the command does, as zsh reads them
+/// ([`fc_letters`]).
 fn fc_writes(line: &str) -> usize {
     let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
     ["fc", "history"]
@@ -501,20 +503,13 @@ fn fc_writes(line: &str) -> usize {
                 .split([';', '&', '|', '(', ')', '`', '}'])
                 .next()
                 .unwrap_or_default();
-            for word in command.split_whitespace() {
+            // An expansion, brace expansion or a glob may make a flag.
+            let words = command.split_whitespace().map(|word| {
                 let word = word.replace(['\'', '"', '\\'], "");
-                // An expansion, brace expansion or a glob may make a flag.
-                if word.contains(['$', '{', '*', '?', '[']) {
-                    return true;
-                }
-                if !is_fc_flag(&word) {
-                    return false;
-                }
-                if word.contains(FC_WRITES) {
-                    return true;
-                }
-            }
-            false
+                let computed = word.contains(['$', '{', '*', '?', '[']);
+                (word, computed)
+            });
+            fc_letters(found, words).is_none_or(|(letters, _)| letters.contains(FC_WRITES))
         })
         .count()
 }

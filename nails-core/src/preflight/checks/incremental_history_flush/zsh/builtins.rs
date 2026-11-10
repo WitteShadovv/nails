@@ -3,8 +3,9 @@
 
 //! The functions zsh runs by their name as hooks, and its builtins: which
 //! ones run a function the files define as a hook, and which write no file
-//! their words name; and the names zsh runs code by as the operator types a
-//! NAILS command or a line is at hand.
+//! their words name; the names zsh runs code by as the operator types a
+//! NAILS command or a line is at hand; and the options `fc` and `history`
+//! take, as zsh reads them.
 
 use super::super::{TYPED_COMMANDS, TYPED_WORDS};
 
@@ -95,4 +96,63 @@ pub(super) fn quiet(command: &str) -> bool {
     command == "[["
         || command == "]]"
         || (builtin(command) && !WRITERS.split_whitespace().any(|writer| writer == command))
+}
+
+/// The letters `fc` and `history` (`command`) take as options in zsh 5.9
+/// to 5.9.2 (Src/builtin.c): with any other among its options, zsh runs
+/// neither (`bad option`).
+fn fc_options(command: &str) -> &'static str {
+    if command == "history" {
+        "adDEfiLmnpPrt"
+    } else {
+        "aAdDeEfiIlLmnpPrRstW"
+    }
+}
+
+/// The letters of the options of an `fc` or a `history` (`command`) of
+/// `words`, each one as written, its quotes taken off, and whether an
+/// expansion, brace expansion or a glob may make other words of it, read as
+/// zsh reads a builtin's options (Src/builtin.c): each word that starts with
+/// `-` holds them, up to the first that does not, is `-` or `--`, or has a
+/// digit past its `-` (`-10`), and `-e` and `-t` take the rest of their word
+/// or the word after it, past which zsh reads on (`fc -t %F -AI`); none
+/// where one of them is none the command takes, as zsh then runs nothing;
+/// with how many words they took. `None` where one of those words may be
+/// made by an expansion.
+pub(super) fn fc_letters<S: AsRef<str>>(
+    command: &str,
+    words: impl IntoIterator<Item = (S, bool)>,
+) -> Option<(String, usize)> {
+    let mut letters = String::new();
+    let mut taken = 0;
+    let mut argument = false;
+    for (word, computed) in words {
+        if computed {
+            return None;
+        }
+        if !std::mem::take(&mut argument) {
+            let Some(rest) = word.as_ref().strip_prefix('-') else {
+                break;
+            };
+            let rest = rest.strip_prefix('-').unwrap_or(rest);
+            if rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_digit()) {
+                break;
+            }
+            for (at, letter) in rest.char_indices() {
+                letters.push(letter);
+                if matches!(letter, 'e' | 't') {
+                    argument = at + 1 == rest.len();
+                    break;
+                }
+            }
+        }
+        taken += 1;
+    }
+    if !letters
+        .chars()
+        .all(|letter| fc_options(command).contains(letter))
+    {
+        letters.clear();
+    }
+    Some((letters, taken))
 }
