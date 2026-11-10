@@ -526,6 +526,25 @@ def _write_nix_log(drv: str, path: Path) -> None:
     path.write_text(completed.stdout or completed.stderr, encoding="utf-8")
 
 
+def _keep_failed_attempt(logs: Path, test: str, attempt: int) -> Path | None:
+    """Keep the log of ``test``'s failed ``attempt`` (1 for the first) before
+    its retry writes its own, as ``<test>.attempt-<attempt>.log``, so a test
+    that passes on its retry still leaves the log of the attempt that failed,
+    as far as it got. Returns where the log is kept, or ``None`` where the
+    attempt left none.
+    """
+    path = logs / f"{test}.log"
+    if not path.exists():
+        return None
+    kept = logs / f"{test}.attempt-{attempt}.log"
+    path.replace(kept)
+    print(
+        f"{test}: the log of attempt {attempt} is kept as {kept.name}",
+        file=sys.stderr,
+    )
+    return kept
+
+
 def run_build(
     tests: Sequence[str],
     attr_prefix: str = DEFAULT_ATTR_PREFIX,
@@ -550,7 +569,9 @@ def run_build(
     test starts and finishes.
 
     Failed tests are rebuilt up to ``retries`` more times (Nix does not cache a
-    failure); a test that passes on a retry is a flaky pass. With
+    failure); a test that passes on a retry is a flaky pass. The log of each
+    failed attempt before a retry is kept in ``log_dir`` as
+    ``<test>.attempt-<n>.log`` (:func:`_keep_failed_attempt`). With
     ``require_boot``, a test that passed without being built, because the
     store or a binary cache already held its output, fails as not booted, so
     that a runner whose own Nix settings or store hold an earlier run's pass
@@ -589,7 +610,7 @@ def run_build(
     # served from the store or a binary cache: its pass is an earlier run's.
     served = {test for test in tests if test not in outcomes}
 
-    for _attempt in range(retries):
+    for done in range(1, retries + 1):
         if not failed:
             break
         if limit is not None and limit.left() < MIN_TEST_SECONDS:
@@ -603,6 +624,8 @@ def run_build(
             f"retrying {len(failed)} failed test(s): {' '.join(failed)}",
             file=sys.stderr,
         )
+        for test in failed:
+            _keep_failed_attempt(logs, test, done)
         retry_map = {test_to_drv[test]: test for test in failed}
         retried = _build_once(failed, retry_map, jobs, clock, logs, limit)
         stopped = stopped or retried.stopped
@@ -852,8 +875,9 @@ def run_drivers(
     """Execute every test's driver one after another, ignoring cached results.
 
     The drivers are built first, all at once (see :func:`build_drivers`).
-    Logs of failed tests stay in ``log_dir`` (passing logs are removed); the
-    retry and flaky rules match ``run_build``. A driver runs at most its own
+    Logs of failed tests stay in ``log_dir`` (passing logs are removed), and
+    so does the log of each failed attempt before a retry; the retry and
+    flaky rules match ``run_build``. A driver runs at most its own
     timeout and a grace beyond it, and with a ``limit`` at most its share of
     the run and no further than the run's deadline; past that it timed out and
     is stopped with its VMs. No test starts, and none is retried, with less
@@ -904,6 +928,8 @@ def run_drivers(
                 continue
             print(f"running {test}", file=sys.stderr)
             log_path = logs / f"{test}.log"
+            if attempt:
+                _keep_failed_attempt(logs, test, attempt)
             own = timeouts.get(test, 900)
             seconds = own + DRIVER_GRACE_SECONDS
             if limit is not None:
