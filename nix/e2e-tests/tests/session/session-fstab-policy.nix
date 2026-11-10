@@ -393,14 +393,17 @@ in
         ) in row["message"], row
         assert "If a folder on its way is not mounted now, mount it." in row["remediation"], row
         # Mounted, the directory is read on the disk, and the line names
-        # nothing of the hidden volume.
-        machine.succeed("mount /srv/bsrc")
+        # nothing of the hidden volume. systemd makes the mount point, which
+        # nothing has made yet.
+        machine.succeed("systemctl start srv-bsrc.mount && mountpoint -q /srv/bsrc")
         row = backend_entries(CONFIG)
         assert row["status"] == "pass", row
         # The session part goes on without the bind and its disk's line.
         machine.succeed(
-            "umount /srv/bsrc && sed -i '\\|/srv/bsrc|d' /etc/fstab && systemctl daemon-reload"
+            "systemctl stop srv-bsrc.mount && sed -i '\\|/srv/bsrc|d' /etc/fstab && "
+            "systemctl daemon-reload"
         )
+        machine.fail("mountpoint -q /srv/bsrc")
         machine.fail(f"test -e /run/systemd/generator/nails-bind.target.requires/{BIND_UNIT}")
 
     with subtest("check reports the decision for every decoy filesystem"):
