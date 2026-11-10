@@ -43,7 +43,7 @@ use super::pulls::MAX_UNITS;
 use super::unit_dirs::{Load, UnitDirs, instance_of, template_of};
 use super::unit_file::{UnitFile, resolve_specifiers};
 use super::{acts_on_device, unit_path};
-use crate::session::fstab::{FstabEntry, checkers, escape_path, mount_unit};
+use crate::session::fstab::{FstabEntry, checkers, escape_path, is_bind_option, mount_unit};
 use crate::session::policy::Units;
 use std::path::Path;
 
@@ -158,12 +158,12 @@ pub(super) fn lines_of<'a>(fstab: &'a [FstabEntry], name: &str) -> Vec<&'a Fstab
         .collect()
 }
 
-/// Whether a mount of the type `vfstype` with `options` is a bind mount.
+/// Whether a mount of the type `vfstype` with `options` is a bind mount: an
+/// option named `bind` or `rbind`, with a value too (`bind=x`), as systemd's
+/// `fstab_test_option()` matches an option by its name before `=`
+/// ([`is_bind_option`]).
 fn is_bind(vfstype: &str, options: &[&str]) -> bool {
-    matches!(vfstype, "bind" | "rbind")
-        || options
-            .iter()
-            .any(|option| matches!(*option, "bind" | "rbind"))
+    matches!(vfstype, "bind" | "rbind") || options.iter().any(|option| is_bind_option(option))
 }
 
 /// Whether systemd counts a mount of the type `vfstype` with `options` as

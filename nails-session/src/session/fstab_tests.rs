@@ -195,10 +195,14 @@ fn the_device_and_the_checkers_of_an_entry_are_named_as_the_generator_names_them
         ]
     );
     // A bind, a network share, a swap file and the kernel's own names wait
-    // for no device, and pull in no fsck.
+    // for no device, and pull in no fsck. systemd matches an option by its
+    // name before `=`, so `bind=x` and `rbind=` make a bind too, of a device
+    // node as well.
     for line in [
         "/srv/src /data none bind 0 0",
         "/dev/shm/x /data none rbind 0 0",
+        "/dev/sdb1 /data ext4 bind=x 0 0",
+        "/dev/sdb1 /data none rbind=,nofail 0 0",
         "server:/export /net nfs4 defaults 0 0",
         "/swapfile none swap sw 0 0",
         "/dev/root /data ext4 defaults 0 2",

@@ -200,6 +200,8 @@ fn a_line_that_is_not_plain_is_never_the_decoys_own() {
         "/data/x /srv/again none bind 0 0",
         "/data/x /srv/again tmpfs bind 0 0",
         "/data/x /srv/again none bind,_netdev 0 0",
+        "/data/x /srv/again tmpfs bind=x 0 0",
+        "/data/x /srv/again none rbind= 0 0",
     ] {
         assert!(own(line), "{line}");
     }
@@ -207,6 +209,7 @@ fn a_line_that_is_not_plain_is_never_the_decoys_own() {
         "/data/\\170 /srv/again none bind 0 0",
         "/data/x /srv/again none bind,x-a=\\x2d 0 0",
         "/data/x /srv/again none,tmpfs bind 0 0",
+        "data/x /srv/again none bind=x 0 0",
     ] {
         assert!(!own(line), "{line}");
     }

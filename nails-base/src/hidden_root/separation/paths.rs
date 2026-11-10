@@ -93,10 +93,11 @@ impl UntoldPath {
 }
 
 /// Whether the claims count the fstab line `entry`, one whose first field can
-/// name local storage: every bind line, whatever its type, and every other
-/// line but one of a RAM, kernel, host-share, network or overlay filesystem,
-/// which keeps nothing on the decoy's disks. `_netdev` lets no line go: it
-/// only has systemd mount the line after the network.
+/// name local storage: every bind line, whatever its type (a `bind` or
+/// `rbind` option, with a value too: `bind=x`), and every other line but one
+/// of a RAM, kernel, host-share, network or overlay filesystem, which keeps
+/// nothing on the decoy's disks. `_netdev` lets no line go: it only has
+/// systemd mount the line after the network.
 pub(super) fn is_claimed(entry: &FstabEntry) -> bool {
     entry.is_bind()
         || !(entry.is_virtual()

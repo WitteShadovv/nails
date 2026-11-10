@@ -812,6 +812,51 @@ fn a_skip_that_requires_a_masked_mount_is_warned_of() {
 }
 
 #[test]
+fn an_option_named_bind_or_rbind_with_a_value_makes_a_bind() {
+    // systemd's `fstab_test_option()` matches an option by its name before
+    // `=`, so `bind=x` and `rbind=` make a bind, in a unit file and on an
+    // fstab line: the mount waits for no device, and requires the mounts of
+    // its source whatever its type, a network filesystem's too.
+    let decoy = Decoy::new();
+    decoy.write(
+        "/etc/systemd/system/srv-u.mount",
+        "[Mount]\nWhat=/dev/vdq1\nWhere=/srv/u\nType=ext4\nOptions=bind=1\n",
+    );
+    let fstab = crate::session::fstab::parse_fstab(
+        "/dev/vdq2 /srv/data ext4 bind=x 0 0\n/srv/src/a /srv/n nfs rbind= 0 0\n",
+    );
+    let graph = deps::Graph::new(decoy.dirs(), &fstab, &[]);
+    let units = |name: &str| -> Vec<String> {
+        deps::edges(&graph, name)
+            .unwrap()
+            .into_iter()
+            .map(|edge| edge.unit)
+            .collect()
+    };
+    for (name, device) in [
+        ("srv-u.mount", "dev-vdq1.device"),
+        ("srv-data.mount", "dev-vdq2.device"),
+    ] {
+        let pulled = units(name);
+        assert!(
+            !pulled.iter().any(|unit| unit == device),
+            "{name}: {pulled:?}"
+        );
+        assert!(
+            pulled.iter().any(|unit| unit == "dev.mount"),
+            "{name}: {pulled:?}"
+        );
+    }
+    let pulled = units("srv-n.mount");
+    for unit in ["srv-src-a.mount", "srv-src.mount"] {
+        assert!(
+            pulled.iter().any(|pulled| pulled == unit),
+            "{unit}: {pulled:?}"
+        );
+    }
+}
+
+#[test]
 fn the_units_a_unit_pulls_in_are_read_from_every_source_each_once() {
     let decoy = Decoy::new();
     decoy.write(

@@ -16,7 +16,8 @@
 use std::path::{Path, PathBuf};
 
 pub use nails_base::fstab::{
-    FstabEntry, escape_path, is_host_share_type, is_virtual_type, parse_fstab, spec_device,
+    FstabEntry, escape_path, is_bind_option, is_host_share_type, is_virtual_type, parse_fstab,
+    spec_device,
 };
 
 /// The `/etc/fstab` of the root at `root`, read as that root resolves it

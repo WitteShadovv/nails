@@ -403,6 +403,116 @@ fn a_bind_line_is_judged_by_its_source_whatever_its_type_or_netdev_says() {
 }
 
 #[test]
+fn a_bind_option_with_a_value_makes_a_bind_line() {
+    // util-linux 2.42's mount binds for `bind=x`, `rbind=` and `bind="a,b"`
+    // whatever the type, and so does systemd's mount of such a line: each of
+    // these binds the root's folder, or a folder of it, at every boot.
+    for (line, why) in [
+        (
+            "/data/x /mnt none bind=x 0 0",
+            "it mounts the volume at /mnt",
+        ),
+        (
+            "/data/x /mnt tmpfs bind=x 0 0",
+            "it mounts the volume at /mnt",
+        ),
+        (
+            "/data/x /mnt nfs bind=x 0 0",
+            "it mounts the volume at /mnt",
+        ),
+        (
+            "/data/x /mnt overlay rbind= 0 0",
+            "it mounts the volume at /mnt",
+        ),
+        (
+            "/data/x /mnt proc bind=yes,nofail 0 0",
+            "it mounts the volume at /mnt",
+        ),
+        (
+            "/data/x /mnt none bind=\"a,b\" 0 0",
+            "it mounts the volume at /mnt",
+        ),
+        (
+            "/data/x /mnt tmpfs bind=x,noauto,x-systemd.automount 0 0",
+            "it mounts the volume at /mnt",
+        ),
+        (
+            "/data/x/sub /srv/sub 9p bind=1,nofail 0 0",
+            "it mounts a folder of the volume at /mnt",
+        ),
+    ] {
+        let judgement = bind_of_a_folder(&format!("{line}\n")).judge("/mnt");
+        let shown: Vec<&str> = line.split_whitespace().take(3).collect();
+        assert_eq!(
+            entry_needs(&judgement),
+            [
+                SLASH,
+                (EntryKind::Blocking, shown.join(" ").as_str(), false)
+            ],
+            "{line}"
+        );
+        assert_eq!(judgement.entries[1].why, why, "{line}");
+        assert_eq!(judgement.entries[1].system_folder, None, "{line}");
+    }
+    // From a volume of its own.
+    for (line, why) in [
+        (
+            "/mnt/data /srv/d tmpfs bind=x,nofail 0 0",
+            "it mounts a folder of the volume at /mnt",
+        ),
+        (
+            "/mnt/data /srv/d 9p rbind=,nofail 0 0",
+            "it mounts a folder of the volume at /mnt",
+        ),
+        (
+            "/mnt/data /srv/d none bind=x,nofail 0 0",
+            "it mounts a folder of the volume at /mnt",
+        ),
+        (
+            "/mnt /srv/d nfs bind=x,nofail 0 0",
+            "it mounts the volume at /mnt",
+        ),
+    ] {
+        let judgement = external_veracrypt()
+            .fstab(&with_the_decoys_lines(line))
+            .judge("/mnt");
+        let shown: Vec<&str> = line.split_whitespace().take(3).collect();
+        assert_eq!(
+            entry_needs(&judgement),
+            [(EntryKind::Blocking, shown.join(" ").as_str(), false)],
+            "{line}"
+        );
+        assert_eq!(judgement.entries[0].why, why, "{line}");
+    }
+    // A relative source of such a line is not plain, whatever its type.
+    for (line, shown) in [
+        ("data/x /mnt none bind=x 0 0", "data/x /mnt none"),
+        ("data/x /mnt zfs bind=x 0 0", "data/x /mnt zfs"),
+    ] {
+        let judgement = bind_of_a_folder(&format!("{line}\n")).judge("/mnt");
+        assert_eq!(
+            entry_needs(&judgement),
+            [SLASH, (EntryKind::Untold, shown, false)],
+            "{line}"
+        );
+        assert_eq!(
+            judgement.entries[1].why,
+            format!("NAILS reads only plain lines, and {RELATIVE}"),
+            "{line}"
+        );
+    }
+    // A name in another case or in quotes makes no bind: the line is one of
+    // a RAM filesystem, which names no storage.
+    for line in [
+        "/data/x /mnt tmpfs Bind 0 0",
+        "/data/x /mnt tmpfs \"bind\" 0 0",
+    ] {
+        let judgement = bind_of_a_folder(&format!("{line}\n")).judge("/mnt");
+        assert_eq!(entry_needs(&judgement), [SLASH], "{line}");
+    }
+}
+
+#[test]
 fn netdev_lets_no_line_for_the_volumes_device_go() {
     // X1 and X2 of the verify: a device or swap line for the volume's own
     // mapping with `_netdev` mounts it, or swaps on it, after the network, as

@@ -751,6 +751,15 @@ fn on_a_decoy_filesystem_a_bind_line_of_the_fstab_makes_its_mount() {
         &format!("{persist}/persist/home /home none bind 0 0\n"),
     );
     assert!(elsewhere_on_the_decoy(&fs).is_empty());
+    // So does a line that binds by an option with a value, whatever its type,
+    // as libmount binds for it.
+    for line in [
+        "/persist/home /home tmpfs bind=x 0 0\n",
+        "/persist/home /home none rbind= 0 0\n",
+    ] {
+        let fs = decoy_fs(table, &format!("{persist}{line}"));
+        assert!(elsewhere_on_the_decoy(&fs).is_empty(), "{line}");
+    }
     // A bind line whose source holds a link makes none, wherever the link
     // leads: no link is followed, so what the line binds cannot be told.
     let through_a_link = format!("{persist}/persist/link /home none bind 0 0\n");
