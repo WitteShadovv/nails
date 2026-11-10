@@ -152,10 +152,9 @@ pub(super) fn names_a_path(entry: &FstabEntry) -> bool {
     is_claimed(entry) && (entry.is_bind() || names_a_file(entry))
 }
 
-/// `spec` as the path it names, as written, with no `.` or `..` in it: `None`
-/// for one that is not absolute.
-pub(super) fn as_written(spec: &str) -> Option<PathBuf> {
-    let path = Path::new(spec);
+/// `path` as written, with no `.` or `..` in it, which is where it leads
+/// while no part of it is a link: `None` for one that is not absolute.
+pub(super) fn as_written(path: &Path) -> Option<PathBuf> {
     if !path.is_absolute() {
         return None;
     }

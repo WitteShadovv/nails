@@ -100,35 +100,33 @@ fn names_the_device(devices: &DeviceMap, entry: &FstabEntry, mount: &MountEntry)
 /// The folders of the lines of `fstab` that the boot mounts (no swap, no
 /// `noauto`) at a folder other than `/` whose mount is not there now: the
 /// visible mount at the folder, as `mounts` shows it, is none that a line for
-/// that folder makes ([`line_makes`]), or nothing is mounted there. What a
+/// that folder makes ([`line_makes`]), or nothing is mounted there. A folder
+/// is read with no `.` or `..` in it, as systemd reads a mount point. What a
 /// path below such a folder leads to at boot cannot be read now.
 pub(super) fn unmounted_boot_folders(
     mounts: &[MountEntry],
     fstab: &[FstabEntry],
     devices: &DeviceMap,
 ) -> Vec<PathBuf> {
-    let at_boot: Vec<&FstabEntry> = fstab
+    let at_boot: Vec<(PathBuf, &FstabEntry)> = fstab
         .iter()
-        .filter(|entry| {
-            !entry.is_swap()
-                && !entry.is_noauto()
-                && entry.file.is_absolute()
-                && entry.file != Path::new("/")
-        })
+        .filter(|entry| !entry.is_swap() && !entry.is_noauto())
+        .filter_map(|entry| Some((as_written(&entry.file)?, entry)))
+        .filter(|(folder, _)| folder != Path::new("/"))
         .collect();
     let mut folders: Vec<PathBuf> = Vec::new();
-    for entry in &at_boot {
-        if folders.contains(&entry.file) {
+    for (folder, _) in &at_boot {
+        if folders.contains(folder) {
             continue;
         }
-        let mounted = top_mount_at(mounts, &entry.file).is_some_and(|mount| {
+        let mounted = top_mount_at(mounts, folder).is_some_and(|mount| {
             at_boot
                 .iter()
-                .filter(|line| line.file == entry.file)
-                .any(|line| line_makes(mounts, devices, line, mount))
+                .filter(|(other, _)| other == folder)
+                .any(|(_, line)| line_makes(mounts, devices, line, mount))
         });
         if !mounted {
-            folders.push(entry.file.clone());
+            folders.push(folder.clone());
         }
     }
     folders
@@ -153,7 +151,7 @@ fn line_makes(
     if !line.is_bind() {
         return names_the_device(devices, line, mount) && shows_what_it_mounts(line, mount);
     }
-    let Some(source) = as_written(&line.spec) else {
+    let Some(source) = as_written(Path::new(&line.spec)) else {
         return false;
     };
     let Some(holder) = mount_holding(mounts, &source) else {
