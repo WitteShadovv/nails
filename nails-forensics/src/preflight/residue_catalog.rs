@@ -405,9 +405,10 @@ mod tests {
         fs.mock_set_mount_table(&table);
     }
 
-    /// Whether `fs` was asked to look up `point` or a path below it.
+    /// Whether `fs` was asked to look up `point` or a path below it, its
+    /// links on the way followed.
     fn reached(fs: &crate::MockFilesystem, point: &str) -> bool {
-        fs.mock_lookups().iter().any(|path| path.starts_with(point))
+        fs.mock_reached(std::path::Path::new(point))
     }
 
     /// A probe path behind an automount point that nothing is mounted on yet,

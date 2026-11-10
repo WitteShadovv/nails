@@ -1039,9 +1039,10 @@ fn run_on(fs: &MockFilesystem) -> CheckResult {
         .unwrap()
 }
 
-/// Whether `fs` looked up `point` or a path below it.
+/// Whether `fs` looked up `point` or a path below it, its links on the way
+/// followed.
 fn reached(fs: &MockFilesystem, point: &str) -> bool {
-    fs.mock_lookups().iter().any(|path| path.starts_with(point))
+    fs.mock_reached(Path::new(point))
 }
 
 /// Each automount point the check did not look behind is named, and the

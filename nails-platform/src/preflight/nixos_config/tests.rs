@@ -494,6 +494,11 @@ impl crate::NixParser for FixedNixParser {
 fn valid_hidden_config(fs: &MockFilesystem) {
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
+    all_but_the_base_hardware(fs);
+}
+
+/// [`valid_hidden_config`] without the base hardware configuration.
+fn all_but_the_base_hardware(fs: &MockFilesystem) {
     fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
     fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
 
@@ -634,4 +639,93 @@ fn nixos_config_check_performs_no_writes() {
         ))
         .is_none()
     );
+}
+
+/// The decoy's root, as the mount table lists it.
+const ROOT_MOUNT: &str = "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n";
+
+/// alice's home as a direct automount point that nothing is mounted on yet.
+const ALICE_POINT: &str = "30 1 0:50 / /home/alice rw,relatime - autofs systemd-1 \
+                           rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n";
+
+/// A base file that links into a home behind an automount point that nothing
+/// is mounted on yet is not looked up: the check refuses, naming the point
+/// and how to mount it, and nothing at or below the point is looked up,
+/// though the mock sees where a lookup through the link would go. Once the
+/// point is mounted, the file is looked up and counts.
+#[test]
+fn a_base_file_that_links_behind_an_automount_point_is_not_looked_up() {
+    let fs = MockFilesystem::new();
+    all_but_the_base_hardware(&fs);
+    let base = Path::new("/etc/nixos/hardware-configuration.nix");
+    fs.create_symlink(
+        Path::new("/home/alice/nixos/hardware-configuration.nix"),
+        base,
+    )
+    .unwrap();
+    let alice = Path::new("/home/alice");
+    // A lookup of the base file goes through the link to the point.
+    let _ = fs.path_exists(base);
+    assert!(fs.mock_reached(alice));
+
+    fs.mock_set_mount_table(&format!("{ROOT_MOUNT}{ALICE_POINT}"));
+    fs.mock_clear_lookups();
+    let check = NixOSConfigCheck::with_parser(
+        PathBuf::from("/mnt/hidden"),
+        Arc::new(FixedNixParser { result: Ok(()) }),
+    );
+    let result = check.run(&fs).unwrap();
+    assert_eq!(
+        result,
+        CheckResult::fail_with(
+            "NAILS cannot tell whether the base NixOS configuration exists: NAILS does not look \
+             up /etc/nixos/hardware-configuration.nix, since the lookup would mount the automount \
+             point /home/alice",
+            crate::filesystem::automount::mount_fix(&[alice]),
+        )
+    );
+    assert!(!fs.mock_reached(alice), "{:?}", fs.mock_lookups());
+
+    fs.mock_set_mount_table(ROOT_MOUNT);
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+}
+
+/// A base file whose lookup fails for another reason than that nothing is
+/// there is not a missing one: the check refuses, naming the path and the
+/// error. Of the configuration and the flake, one found is enough.
+#[test]
+fn a_base_file_that_cannot_be_looked_up_is_not_a_missing_one() {
+    for (path, kind, says) in [
+        (
+            "/etc/nixos/hardware-configuration.nix",
+            std::io::ErrorKind::Other,
+            "NAILS cannot tell whether the base NixOS configuration exists: NAILS cannot look up \
+             /etc/nixos/hardware-configuration.nix (",
+        ),
+        (
+            "/etc/nixos/configuration.nix",
+            std::io::ErrorKind::PermissionDenied,
+            "NAILS cannot tell whether the base NixOS configuration exists: NAILS cannot look up \
+             /etc/nixos/configuration.nix; run the command again with sudo",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        valid_hidden_config(&fs);
+        fs.mock_set_lookup_error(path, kind);
+        let check = NixOSConfigCheck::with_parser(
+            PathBuf::from("/mnt/hidden"),
+            Arc::new(FixedNixParser { result: Ok(()) }),
+        );
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail(), "{path}: {result:?}");
+        assert!(result.message().starts_with(says), "{path}: {result:?}");
+
+        // A flake beside it is a base configuration on its own.
+        if path == "/etc/nixos/configuration.nix" {
+            fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+            fs.mock_set_path_type("/etc/nixos/flake.nix", PathKind::File);
+            assert!(check.run(&fs).unwrap().is_pass());
+        }
+    }
 }
