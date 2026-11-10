@@ -178,7 +178,53 @@ fn a_function_or_alias_a_widget_runs_with_the_line_at_hand_is_a_hook() {
         "unalias run-help\nrun-help() { man zshbuiltins }\n",
         "alias run-help=man\n",
         "run-help_x() { print -r -- \"$*\" >>~/.zl }\n",
+        "man() { command man \"$@\" }\n",
+        "zle -A run-help logit\n",
     ] {
         assert_eq!(found(rc), Scan::default(), "{rc}");
     }
+}
+
+#[test]
+fn what_run_help_and_which_command_run_by_another_name_is_a_hook() {
+    // zsh 5.9 to 5.9.2 run `man` for the widget `run-help`, as zsh's own
+    // alias `run-help` stands for it, and a command named as the key ran the
+    // widget: a name `zle -A` gives it, or one that starts with a dot. Each
+    // of these appends the line to `~/.zl` as Alt-h, Alt-? or Enter is
+    // pressed.
+    let reads = "local l; read -z l; print -r -- \"$l\" >>~/.zl";
+    for rc in [
+        format!("man() {{ {reads} }}\n"),
+        format!("man() {{ {reads} }}\nbindkey '^M' run-help\n"),
+        format!("logit() {{ {reads} }}\nalias man=logit\n"),
+        format!("logit() {{ {reads} }}\nzle -A run-help logit\nbindkey '^M' logit\n"),
+        format!("logit() {{ {reads} }}\nzle -A which-command logit\nbindkey '^[w' logit\n"),
+        format!("logit() {{ {reads} }}\nzle -A run-help a\nzle -A a logit\n"),
+        format!(".run-help() {{ {reads} }}\nbindkey '^M' .run-help\n"),
+        format!("function .which-command {{ {reads} }}\n"),
+    ] {
+        assert!(warned(&found(&rc)), "{rc}");
+    }
+    // A global alias of such a name runs in place of that command.
+    for name in [
+        "run-help",
+        "which-command",
+        "man",
+        "whence",
+        ".run-help",
+        "run-help-sudo",
+    ] {
+        let alias = format!("alias -g {name}=logit");
+        assert_eq!(
+            found(&format!("{LOGIT}{alias}\n")).doubts,
+            [format!(
+                "it cannot tell what the global alias `{name}=logit` in /home/alice/.zshrc runs \
+                 as a widget runs a command of its name with the line you type at hand \
+                 (`run-help`, `man`)"
+            )],
+            "{alias}"
+        );
+    }
+    let rc = format!("{LOGIT}zle -A run-help h\nalias -g h=logit\n");
+    assert!(warned(&found(&rc)), "{rc}");
 }

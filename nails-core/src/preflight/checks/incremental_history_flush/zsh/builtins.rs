@@ -72,13 +72,29 @@ pub(super) fn typed(name: &str) -> bool {
 
 /// Whether zsh runs a function or a regular alias named `name` with the
 /// line being typed at hand: `run-help` and `which-command`, which the
-/// widgets of those names run as a command, with the line's first word as
-/// their argument and the whole line on the buffer stack (`read -z` reads it
-/// back), and which zsh 5.9 to 5.9.2 bind to Alt-h, Alt-H and Alt-? in its
-/// emacs keymap; and a `run-help-...` helper, which zsh's own `run-help` runs
-/// with the line's words.
+/// widgets of those names run as a command named as the key ran them, with
+/// the line's first word as their argument and the whole line on the buffer
+/// stack (`read -z` reads it back), and which zsh 5.9 to 5.9.2 bind to Alt-h,
+/// Alt-H and Alt-? in its emacs keymap; `.run-help` and `.which-command`, as
+/// a key bound to them by those names runs; `man`, which zsh's own alias
+/// `run-help` stands for, and which zsh's own `run-help` runs for a command
+/// it has no help file for (`ls`) with the line still on the buffer stack;
+/// and a `run-help-...` helper, which zsh's own `run-help` runs with the
+/// line's words. `whence`, which zsh's own alias `which-command` stands for,
+/// is a builtin ([`builtin`]).
 pub(super) fn line_command(name: &str) -> bool {
-    matches!(name, "run-help" | "which-command") || name.starts_with("run-help-")
+    matches!(
+        name,
+        "run-help" | "which-command" | ".run-help" | ".which-command" | "man"
+    ) || name.starts_with("run-help-")
+}
+
+/// Whether a global alias named `name` may run as the widgets `run-help`
+/// and `which-command` run a command with the line at hand: one named like
+/// that command ([`line_command`]), or like `whence`, which zsh's own alias
+/// `which-command` stands for.
+pub(super) fn line_word(name: &str) -> bool {
+    line_command(name) || name == "whence"
 }
 
 /// Whether a global alias named `name` runs as the operator enters a NAILS
