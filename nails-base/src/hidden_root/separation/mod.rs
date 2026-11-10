@@ -38,7 +38,10 @@
 //! symbolic link in any part, which is not followed, one that is not absolute
 //! or is a device node, one that crosses the folder of a line, a `noauto` one
 //! too, while that line's mount is not there now, one that cannot be looked
-//! up, and one whose lookup would mount an automount point.
+//! up, and one whose lookup would mount an automount point. So is every fstab
+//! line that is not plain ([`read_fstab`]): NAILS reads only plain lines, and
+//! that is the only finding such a line makes, while it claims what NAILS
+//! reads in it and makes no mount of the decoy's own ([`decoys_own_mount`]).
 //! A finding is no claim, except an fstab entry the
 //! boot mounts or swaps on, one for another device of the root's btrfs
 //! filesystem, which is the decoy's own storage too, and a line placed by its
@@ -128,6 +131,7 @@ mod extra;
 mod judge;
 mod lines;
 mod paths;
+mod plain;
 #[cfg(test)]
 mod tests;
 
@@ -135,6 +139,7 @@ pub use collect::{Collected, collect, judge_storage};
 pub use judge::{claimed_devices, judge, shown_fstype};
 pub use lines::{decoys_own_mount, sharing};
 pub use paths::{NamedPaths, UntoldPath};
+pub use plain::{Unplain, UnplainLine, UnplainLines, read_fstab};
 
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;
@@ -460,6 +465,10 @@ pub struct Scene<'a> {
     /// The paths the fstab names, a bind line's source and a swap or image
     /// file, as they read, with no link in them followed.
     pub paths: &'a NamedPaths,
+    /// The lines of the fstab that are not plain, by the index of their
+    /// entry in [`Scene::fstab`]: NAILS does not read them as `libmount` and
+    /// systemd do (see [`read_fstab`]).
+    pub unplain: &'a UnplainLines,
 }
 
 impl<'a> Scene<'a> {
@@ -471,6 +480,15 @@ impl<'a> Scene<'a> {
             Some(Err(why)) => Err(why.clone()),
             None => Err(UntoldPath::NotLookedUp),
         }
+    }
+
+    /// The lines of the fstab that are plain, in their order.
+    fn plain_lines(&self) -> impl Iterator<Item = &'a FstabEntry> + '_ {
+        self.fstab
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !self.unplain.contains_key(index))
+            .map(|(_, entry)| entry)
     }
 }
 
@@ -711,9 +729,10 @@ pub enum EntryKind {
     Blocking,
     /// The entry opens only another volume on the same drive.
     OuterWarning,
-    /// Where the entry leads cannot be told ([`UntoldPath`]): a bind line, or
-    /// a swap or image file line, whose path cannot be told, which may mount
-    /// the hidden volume.
+    /// Where the entry leads cannot be told, so it may mount the hidden
+    /// volume: a bind line, or a swap or image file line, whose path cannot
+    /// be told ([`UntoldPath`]), or a line that is not plain
+    /// ([`EntryFinding::not_plain`]).
     Untold,
 }
 
@@ -751,6 +770,11 @@ pub struct EntryFinding {
     /// told or whose mount is not there, for every line of a volume that is
     /// the whole filesystem, and for any other crypttab line.
     pub system_folder: Option<PathBuf>,
+    /// Whether the entry is an fstab line that is not plain (see
+    /// [`read_fstab`]), an [`EntryKind::Untold`] one: NAILS reads only plain
+    /// lines, so its line has to be written plainly before NAILS can tell
+    /// what it mounts.
+    pub not_plain: bool,
 }
 
 /// Whether the decoy mounts its own filesystems at `at`, with the hidden root

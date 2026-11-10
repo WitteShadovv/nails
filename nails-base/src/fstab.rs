@@ -190,6 +190,15 @@ fn unescape(field: &str) -> String {
 
 /// Parse fstab text. Comments, blank lines and short lines are skipped.
 pub fn parse_fstab(text: &str) -> Vec<FstabEntry> {
+    parse_fstab_lines(text)
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect()
+}
+
+/// [`parse_fstab`], each entry with the line it is read from as that line is
+/// written, trimmed: its fields still hold their escapes.
+pub fn parse_fstab_lines(text: &str) -> Vec<(FstabEntry, &str)> {
     text.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -204,12 +213,13 @@ pub fn parse_fstab(text: &str) -> Vec<FstabEntry> {
                 .split(',')
                 .map(str::to_string)
                 .collect();
-            Some(FstabEntry {
+            let entry = FstabEntry {
                 spec,
                 file,
                 vfstype,
                 options,
-            })
+            };
+            Some((entry, line))
         })
         .collect()
 }
