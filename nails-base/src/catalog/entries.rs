@@ -298,7 +298,8 @@ pub const CHECK_MOUNTED_TWICE_HIDDEN: Message = Message {
 /// a mount that shows none of the root folder, but another one counts. It
 /// says only what holds for each mount it names, as there may be no mount
 /// of that filesystem at `/` or by the fstab, and only what NAILS can tell
-/// of the fstab, which follows no link in a bind line's source.
+/// of the fstab, which follows no link in a bind line's source and reads only
+/// plain lines.
 pub const CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM: Message = Message {
     id: "check.mounted-twice-decoy-filesystem",
     text: "the filesystem of {root}, which --allow-decoy-storage accepted, is also mounted at \
@@ -317,6 +318,9 @@ pub const CHECK_MOUNTED_TWICE_DECOY_FILESYSTEM: Message = Message {
            own mounts of that filesystem. NAILS follows no link in a bind line's source, so a \
            bind line whose source has a link in it, or whose place it cannot tell otherwise, \
            is no such line: backend-entries fails it and says to write it with its real path. \
+           Nor is a line that is not plain, which NAILS does not read as libmount and systemd \
+           do (an escape or a backslash it does not decode, say): backend-entries fails it and \
+           says to write it plainly. \
            A mount at a folder that a line of the fstab is for counts \
            when it shows something else of the filesystem than the line mounts, such as a \
            subvolume mounted there by hand over the one the line names, and so does a mount \

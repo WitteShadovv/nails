@@ -9,7 +9,6 @@ use super::*;
 use crate::crypttab::parse_crypttab;
 use crate::filesystem::mountinfo::{parse_mountinfo, top_mount_at};
 use crate::filesystem::{Filesystem, MockFilesystem};
-use crate::fstab::parse_fstab;
 use std::path::Path;
 
 #[path = "extra_tests.rs"]
@@ -20,6 +19,8 @@ mod member_lines;
 mod own_lines;
 #[path = "path_lines_tests.rs"]
 mod path_lines;
+#[path = "plain_lines_tests.rs"]
+mod plain_lines;
 #[path = "reach_tests.rs"]
 mod reach;
 
@@ -179,7 +180,7 @@ impl World {
     /// `ask` of the scene and the mount at `root`.
     fn ask<T>(&self, root: &str, ask: impl FnOnce(&Scene<'_>, &MountEntry) -> T) -> T {
         let mounts = parse_mountinfo(&self.mountinfo);
-        let fstab = parse_fstab(&self.fstab);
+        let (fstab, unplain) = read_fstab(&self.fstab);
         let crypttab = parse_crypttab(&self.crypttab);
         let paths = paths::read_all(&self.files, &mounts, Path::new("/"), &fstab, &self.devices);
         let hidden = top_mount_at(&mounts, Path::new(root)).expect("a mount at the root");
@@ -191,6 +192,7 @@ impl World {
                 devices: &self.devices,
                 unreadable: &self.unreadable,
                 paths: &paths,
+                unplain: &unplain,
             },
             hidden,
         )

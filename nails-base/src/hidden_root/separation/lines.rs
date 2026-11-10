@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What a line of the decoy's fstab mounts: whether a mount is one the decoy
-//! makes itself, at `/` or by a line ([`decoys_own_mount`]), what of a
+//! makes itself, at `/` or by a plain line ([`decoys_own_mount`]), what of a
 //! filesystem a device line mounts, as its options name it and as the mount
 //! it made shows it, which folders of its lines are not mounted now
 //! ([`unmounted_folders`]), and how a mount shows its filesystem
@@ -32,10 +32,11 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
 
 /// Whether `mount`, a mount of the filesystem that `hidden` (the visible
 /// mount at the hidden root) shows, is one the decoy makes itself: the one at
-/// `/`, or one that a line of its fstab makes. Such a line is for `mount`'s
-/// mount point and of a kind the claims count (a bind line of any type, no
-/// swap line and no other line of a RAM, kernel, host-share, network or
-/// overlay filesystem), and `mount` shows what it mounts:
+/// `/`, or one that a line of its fstab makes. Such a line is plain (see
+/// [`read_fstab`](super::read_fstab)), for `mount`'s mount point and of a
+/// kind the claims count (a bind line of any type, no swap line and no other
+/// line of a RAM, kernel, host-share, network or overlay filesystem), and
+/// `mount` shows what it mounts:
 ///
 /// - A device line names the device `mount` is on, or another device of its
 ///   btrfs filesystem, and `mount` shows what the line mounts: the
@@ -69,8 +70,7 @@ fn decoys_own(scene: &Scene<'_>, mount: &MountEntry, hidden: &MountEntry, depth:
         return true;
     }
     scene
-        .fstab
-        .iter()
+        .plain_lines()
         .filter(|entry| entry.file == mount.mount_point)
         .filter(|entry| mounts_storage(entry))
         .any(|entry| {
