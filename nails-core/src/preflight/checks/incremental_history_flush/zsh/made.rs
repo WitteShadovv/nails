@@ -6,16 +6,25 @@
 //! the code may make first (`cp ~/.src ~/.gen; . ~/.gen`), so where a file
 //! read names it beyond the `source` commands and the tests that name it,
 //! that is a doubt, but for the code of a stock function, which makes none
-//! before zsh reads it; and a file the check
-//! reads, there or not, the code may write before zsh reads it, so where a
-//! command that runs before that writes to a path whose last part is its
-//! name (for a file a function's code reads, which a hook may read after
-//! every command, any such command, and one whose path an expansion makes at
-//! the top or in a function the top runs), or one an expansion or a brace expansion may make its name
-//! (`>> ~/.zshrc.local`, `>> $log`, `cp ~/.src ${f}en`), that is a doubt
-//! too. A program that writes a file it is not given the name of, the check
-//! does not see. A hook may give the programs it runs the command line in
-//! their environment, once it sets a parameter to what an expansion makes
+//! before zsh reads it; and a file the check reads, there or not, the code
+//! may write before zsh reads it, so where a command that runs before that
+//! writes to it, that is a doubt too ([`Reader::made`]). A write is a
+//! redirection to a path whose last part is its name, or that a brace
+//! expansion or an expansion may make it (`>> ~/.zshrc.local`, `>> $log`),
+//! a command known to write the files its words name given such a path
+//! ([`creates`]: `cp ~/.src ${f}en`, `sed -i`), and any other command given
+//! a path whose last part is its name as written or as brace expansion
+//! makes it (`sponge ~/.x`, `patch ~/.x ~/.p`), but one that writes nothing
+//! in the files it names ([`may_write`]: `cat`, `touch`, a builtin such as
+//! `print`), a function the files define or autoload, whose code the check
+//! reads, and a stock one whose work it reads by its name. For a file a
+//! function's code reads, which a hook may read after every command, any such
+//! write counts, and one whose path an expansion makes at the top or in a
+//! function the top runs. A program that writes a file it is not given the
+//! name of, or that it is given by a path whose last part an expansion makes
+//! where it is not known to write the files it names, the check does not
+//! see. A hook may give the programs it runs the command line in their
+//! environment, once it sets a parameter to what an expansion makes
 //! (`preexec() { LINE=$1; logger }`).
 
 use super::{Forms, Reader, builtins};
@@ -323,15 +332,46 @@ fn named(texts: &[&Forms], bases: &[(&str, bool)]) -> Vec<usize> {
 /// included.
 const IN_FUNCTION: usize = usize::MAX;
 
-/// The commands that make or write the files their words name.
+/// The commands known to make or write the files their words name, an
+/// editor that writes in place among them.
 const CREATES: &[&str] = &[
     "cp", "mv", "ln", "install", "tee", "dd", "rsync", "curl", "wget", "tar", "unzip", "zcompile",
-    "zf_ln", "zf_mv", "mkfifo", "mknod",
+    "zf_ln", "zf_mv", "mkfifo", "mknod", "sed", "perl", "sponge", "patch", "truncate", "ed", "ex",
+    "awk", "gawk",
 ];
 
-/// Whether `command` makes or writes the files its words name.
+/// The programs that write nothing in the files their words name: they
+/// read them, tell what they are, or change their times or their mode, or
+/// make an empty one, or a directory.
+const NO_CONTENT: &[&str] = &[
+    "cat", "head", "tail", "grep", "egrep", "fgrep", "less", "more", "wc", "ls", "stat", "file",
+    "diff", "cmp", "readlink", "realpath", "dirname", "basename", "touch", "chmod", "chown",
+    "chgrp", "mkdir",
+];
+
+/// The name `command` runs by, past its directory.
+fn program(command: &str) -> &str {
+    command.rsplit('/').next().unwrap_or(command)
+}
+
+/// Whether `command` is known to make or write the files its words name
+/// ([`CREATES`]).
 pub(super) fn creates(command: &str) -> bool {
-    CREATES.contains(&command.rsplit('/').next().unwrap_or(command))
+    CREATES.contains(&program(command))
+}
+
+/// Whether `command` may make or write what the files its words name hold:
+/// any command but a builtin that writes no file ([`builtins::quiet`]:
+/// `print`, `[[`) and a program that writes nothing in them
+/// ([`NO_CONTENT`]).
+pub(super) fn may_write(command: &str) -> bool {
+    !builtins::quiet(program(command)) && !NO_CONTENT.contains(&program(command))
+}
+
+/// Whether an expansion may make the last part of the path `text` names
+/// (`$f`, `${name}.zsh`), which may then be any file's name.
+pub(super) fn computed(text: &str) -> bool {
+    any_expansion(last_part(text)).contains(ANY)
 }
 
 impl<F: Filesystem> Reader<'_, F> {

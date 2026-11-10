@@ -31,7 +31,7 @@ mod unread;
 
 pub(super) use super::builtins::HOOKS;
 pub(super) use event::{Arith, Event, Input};
-pub(super) use hooks::may_expand;
+pub(super) use hooks::{STOCK_NAMES, may_expand};
 pub(super) use strings::{PROMPTS, expands};
 
 /// The option that `word` names, by its place in [`OPTIONS`], and whether the

@@ -42,7 +42,7 @@ pub(super) fn hook_array(name: &str) -> bool {
 /// The functions of zsh's own whose work the check reads by the name a file
 /// runs them by: the hooks `add-zsh-hook` and `add-zle-hook-widget` make,
 /// the theme `prompt` runs, and what `promptinit` defines.
-const STOCK_NAMES: &[&str] = &[
+pub(in super::super) const STOCK_NAMES: &[&str] = &[
     "add-zsh-hook",
     "add-zle-hook-widget",
     "promptinit",
