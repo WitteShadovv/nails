@@ -219,3 +219,70 @@ fn apts_files_behind_an_automount_point_are_not_looked_up() {
         fs.mock_lookups()
     );
 }
+
+/// The refusal says the decoy keeps a record where the helper installs, and
+/// that it keeps, or may keep, one where NAILS cannot tell.
+#[test]
+fn the_refusal_says_may_keep_only_where_nails_cannot_tell() {
+    let check = DecoyPersistenceCheck::new(false, false);
+    // An amnesic decoy, whose one blocker is the install at shutdown.
+    let decoy = || {
+        let fs = mock_decoy(true, &[("99local", Some(ON))]);
+        fs.mock_add_file(
+            "/etc/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        fs
+    };
+    let on = decoy();
+    let result = check.run(&on).unwrap();
+    assert!(
+        result.message().starts_with(
+            "decoy keeps a persistent record of the hidden session: unattended-upgrades \
+             installs the pending updates"
+        ),
+        "{result:?}"
+    );
+
+    let untold = decoy();
+    untold.mock_set_lookup_error("/etc/apt/apt.conf.d/99local", ErrorKind::Other);
+    let result = check.run(&untold).unwrap();
+    assert!(
+        result.message().starts_with(
+            "decoy keeps, or may keep, a persistent record of the hidden session: NAILS cannot \
+             tell whether unattended-upgrades installs the pending updates at activation"
+        ),
+        "{result:?}"
+    );
+}
+
+/// status cannot tell where the guard made no lookup the probe needed, even
+/// where what it did read finds nothing: behind an automount point, and
+/// without the mount table.
+#[test]
+fn status_cannot_tell_where_a_lookup_was_not_made() {
+    let fs = MockFilesystem::new();
+    enable(&fs);
+    fs.mock_add_file("/usr/lib/python3/dist-packages/gi/__init__.py", "");
+    assert_eq!(DecoyPersistenceCheck::decoy_install_at_shutdown(&fs), None);
+
+    with_automounts(&fs, &["/usr/lib/python3/dist-packages/gi"]);
+    fs.mock_clear_lookups();
+    assert_eq!(
+        DecoyPersistenceCheck::decoy_install_at_shutdown(&fs),
+        Some(InstallAtShutdown::Unknown)
+    );
+    assert!(
+        !reached(&fs, "/usr/lib/python3/dist-packages/gi"),
+        "{:?}",
+        fs.mock_lookups()
+    );
+
+    fs.mock_set_mount_table_error("permission denied");
+    fs.mock_clear_lookups();
+    assert_eq!(
+        DecoyPersistenceCheck::decoy_install_at_shutdown(&fs),
+        Some(InstallAtShutdown::Unknown)
+    );
+    assert!(fs.mock_lookups().is_empty(), "{:?}", fs.mock_lookups());
+}
