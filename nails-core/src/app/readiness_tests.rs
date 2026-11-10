@@ -400,6 +400,48 @@ fn decoy_filesystems_name_an_fstab_behind_an_automount_point_once() {
     );
 }
 
+/// An fstab that links behind an automount point that nothing is mounted on
+/// yet is not read either: the link is followed where it leads, as the
+/// read would follow it, and one line names the point. Read anyway, the
+/// fstab there would add a line for `/data`.
+#[test]
+fn decoy_filesystems_read_no_fstab_that_links_behind_an_automount_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    let point = root.join("srv/point");
+    std::fs::create_dir_all(&point).unwrap();
+    std::fs::write(
+        point.join("fstab"),
+        "/dev/vda2 / ext4 defaults 0 1\n/dev/vdb1 /data ext4 defaults 0 2\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("../srv/point/fstab", root.join("etc/fstab")).unwrap();
+    let table = nails_teardown::mountinfo::parse_mountinfo(&format!(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+         40 1 0:40 / {} rw,relatime - autofs systemd-1 rw,fd=40,pgrp=1,timeout=0,minproto=5,\
+         maxproto=5,direct,pipe_ino=40\n",
+        point.display()
+    ));
+    let mounts = nails_teardown::mountinfo::parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    let rows = decoy_filesystems(
+        &RealFilesystem,
+        &Snapshot::from_table(table),
+        &root,
+        &mounts,
+        Path::new("/mnt/data"),
+    );
+    assert_eq!(
+        rows,
+        [format!(
+            "NAILS does not look up {root}/etc/fstab, since the lookup would mount the \
+             automount point {point}",
+            root = root.display(),
+            point = point.display()
+        )]
+    );
+}
+
 /// `count` tallies exactly the entries whose status matches the one asked
 /// for; the human `check` summary relies on it to report, for instance, how
 /// many inherited components are ignored.
