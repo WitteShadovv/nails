@@ -4,8 +4,8 @@
 //! What a line of the decoy's fstab mounts: whether a mount is one the decoy
 //! makes itself, at `/` or by a line ([`decoys_own_mount`]), what of a
 //! filesystem a device line mounts, as its options name it and as the mount
-//! it made shows it, which folders the boot mounts that are not mounted now
-//! ([`unmounted_boot_folders`]), and how a mount shows its filesystem
+//! it made shows it, which folders of its lines are not mounted now
+//! ([`unmounted_folders`]), and how a mount shows its filesystem
 //! ([`sharing`]).
 
 use super::paths::{as_written, is_claimed};
@@ -33,8 +33,9 @@ pub fn sharing(mount: &MountEntry) -> Sharing {
 /// Whether `mount`, a mount of the filesystem that `hidden` (the visible
 /// mount at the hidden root) shows, is one the decoy makes itself: the one at
 /// `/`, or one that a line of its fstab makes. Such a line is for `mount`'s
-/// mount point and of a kind the claims count (no swap, RAM, kernel,
-/// host-share, network or overlay line), and `mount` shows what it mounts:
+/// mount point and of a kind the claims count (a bind line of any type, no
+/// swap line and no other line of a RAM, kernel, host-share, network or
+/// overlay filesystem), and `mount` shows what it mounts:
 ///
 /// - A device line names the device `mount` is on, or another device of its
 ///   btrfs filesystem, and `mount` shows what the line mounts: the
@@ -97,30 +98,32 @@ fn names_the_device(devices: &DeviceMap, entry: &FstabEntry, mount: &MountEntry)
     }
 }
 
-/// The folders of the lines of `fstab` that the boot mounts (no swap, no
-/// `noauto`) at a folder other than `/` whose mount is not there now: the
-/// visible mount at the folder, as `mounts` shows it, is none that a line for
-/// that folder makes ([`line_makes`]), or nothing is mounted there. A folder
+/// The folders of the lines of `fstab` (no swap line) at a folder other than
+/// `/` whose mount is not there now: the visible mount at the folder, as
+/// `mounts` shows it, is none that a line for that folder makes
+/// ([`line_makes`]), or nothing is mounted there. A `noauto` line counts as
+/// well: systemd mounts it once a mount or swap below its folder needs it, as
+/// a bind line's source, a swap file or an image file there does. A folder
 /// is read with no `.` or `..` in it, as systemd reads a mount point. What a
-/// path below such a folder leads to at boot cannot be read now.
-pub(super) fn unmounted_boot_folders(
+/// path below such a folder leads to once it is mounted cannot be read now.
+pub(super) fn unmounted_folders(
     mounts: &[MountEntry],
     fstab: &[FstabEntry],
     devices: &DeviceMap,
 ) -> Vec<PathBuf> {
-    let at_boot: Vec<(PathBuf, &FstabEntry)> = fstab
+    let lines: Vec<(PathBuf, &FstabEntry)> = fstab
         .iter()
-        .filter(|entry| !entry.is_swap() && !entry.is_noauto())
+        .filter(|entry| !entry.is_swap())
         .filter_map(|entry| Some((as_written(&entry.file)?, entry)))
         .filter(|(folder, _)| folder != Path::new("/"))
         .collect();
     let mut folders: Vec<PathBuf> = Vec::new();
-    for (folder, _) in &at_boot {
+    for (folder, _) in &lines {
         if folders.contains(folder) {
             continue;
         }
         let mounted = top_mount_at(mounts, folder).is_some_and(|mount| {
-            at_boot
+            lines
                 .iter()
                 .filter(|(other, _)| other == folder)
                 .any(|(_, line)| line_makes(mounts, devices, line, mount))
@@ -134,11 +137,11 @@ pub(super) fn unmounted_boot_folders(
 
 /// Whether the fstab line `line` makes `mount`, the visible mount at its
 /// folder, as far as the mount shows: for a RAM, kernel, host-share, network
-/// or overlay line, any mount; for a bind line, a bind from another mount of
-/// the filesystem that holds its source, as written, that shows the folder
-/// the source names; for a device line, a mount of the device it names
-/// ([`names_the_device`]) that shows what it mounts
-/// ([`shows_what_it_mounts`]).
+/// or overlay line that is no bind line, any mount; for a bind line, of any
+/// type, a bind from another mount of the filesystem that holds its source,
+/// as written, that shows the folder the source names; for a device line, a
+/// mount of the device it names ([`names_the_device`]) that shows what it
+/// mounts ([`shows_what_it_mounts`]).
 fn line_makes(
     mounts: &[MountEntry],
     devices: &DeviceMap,
@@ -192,8 +195,9 @@ fn bind_makes(
         && decoys_own(scene, holder, hidden, depth)
 }
 
-/// Whether the fstab line `entry` mounts a filesystem the claims count: no
-/// swap, RAM, kernel, host-share, network or overlay line.
+/// Whether the fstab line `entry` mounts a filesystem the claims count: a
+/// bind line of any type, and no swap line or other line of a RAM, kernel,
+/// host-share, network or overlay filesystem.
 fn mounts_storage(entry: &FstabEntry) -> bool {
     !entry.is_swap() && is_claimed(entry)
 }

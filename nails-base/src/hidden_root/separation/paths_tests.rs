@@ -188,7 +188,7 @@ fn a_path_that_crosses_a_folder_the_boot_mounts_but_is_not_mounted_cannot_be_tol
     );
     assert_eq!(
         UntoldPath::Unmounted(PathBuf::from("/backup")).reason(),
-        "a line of /etc/fstab mounts /backup at boot, and that mount is not there now"
+        "a line of /etc/fstab mounts /backup, and that mount is not there now"
     );
 }
 
@@ -264,11 +264,12 @@ fn under_another_root_each_part_is_read_inside_it() {
 
 #[test]
 fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
-    // A bind line's source, under /dev too, a swap or image file outside
-    // /dev, a relative one of a swap line, a loop line or a line of a type
-    // mount reads from a device or an image, and a path under /dev that `..`
-    // leads out of. No device line, tag, RAM or network line, and no line
-    // whose type names its source otherwise, as a ZFS dataset's does.
+    // A bind line's source, under /dev too and of any type, a swap or image
+    // file outside /dev, `_netdev` or not, a relative one of a swap line, a
+    // loop line or a line of a type mount reads from a device or an image,
+    // and a path under /dev that `..` leads out of. No device line, tag, RAM
+    // or network line other than a bind line, and no line whose type names
+    // its source otherwise, as a ZFS dataset's does.
     let fstab = parse_fstab(
         "/dev/sda1 / ext4 defaults 0 1\nUUID=f1 /home ext4 defaults 0 2\n\
          /swapfile none swap sw 0 0\n/srv/x /mnt none bind 0 0\n\
@@ -278,7 +279,9 @@ fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
          swapfile none swap sw 0 0\nsrv/a.img /mnt/a ext4 loop 0 0\n\
          srv/b.img /mnt/b ext4 defaults 0 0\nsrv/c.img /mnt/c auto loop=/dev/loop7 0 0\n\
          rpool/data /data zfs defaults 0 0\nLABEL=swap none swap sw 0 0\n\
-         /dev/../srv/node none swap sw 0 0\n/dev/sdb2 none swap sw 0 0\n",
+         /dev/../srv/node none swap sw 0 0\n/dev/sdb2 none swap sw 0 0\n\
+         /srv/t /mnt/t tmpfs bind 0 0\n/srv/n /mnt/n none bind,_netdev 0 0\n\
+         /srv/swap.img none swap sw,_netdev 0 0\n",
     );
     let fs = linked(&[("/swapfile", "/var/swapfile")]);
     let paths = read_all(
@@ -294,6 +297,9 @@ fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
             "/dev/../srv/node",
             "/dev/shm",
             "/srv/img.raw",
+            "/srv/n",
+            "/srv/swap.img",
+            "/srv/t",
             "/srv/x",
             "/swapfile",
             "none",
@@ -312,9 +318,10 @@ fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
 }
 
 #[test]
-fn the_paths_are_read_with_the_folders_the_boot_mounts_but_are_not_mounted() {
+fn the_paths_are_read_with_the_folders_of_lines_that_are_not_mounted() {
     // /backup is the folder of a line the boot mounts whose drive is not
-    // mounted now, and /srv/n that of a noauto line: only the first counts.
+    // mounted now, and /srv/n that of a noauto line, which systemd mounts
+    // for a bind line's source below it: both count.
     let fstab = parse_fstab(
         "/dev/sda1 / ext4 defaults 0 1\n/dev/sdc1 /backup ext4 defaults,nofail 0 2\n\
          /dev/sdd1 /srv/n ext4 noauto 0 0\n/backup/link /mnt none bind 0 0\n\
@@ -331,28 +338,35 @@ fn the_paths_are_read_with_the_folders_the_boot_mounts_but_are_not_mounted() {
         paths["/backup/link"],
         Err(UntoldPath::Unmounted(PathBuf::from("/backup")))
     );
-    assert_eq!(paths["/srv/n/x"], reads("/srv/n/x"));
+    assert_eq!(
+        paths["/srv/n/x"],
+        Err(UntoldPath::Unmounted(PathBuf::from("/srv/n")))
+    );
 }
 
 #[test]
-fn a_folder_the_boot_mounts_is_mounted_while_a_mount_its_line_makes_is_there() {
+fn a_folder_of_a_line_is_mounted_while_a_mount_its_line_makes_is_there() {
     // The mount of a device line is one of its device that shows what it
-    // mounts, a bind line's a bind of its source's folder, and a RAM,
-    // kernel or network line's any mount there, as systemd mounts /dev/shm
-    // before the fstab's line for it. The line for /, a noauto line and a
-    // swap line have no folder the boot mounts, and a folder reads with no
-    // `.` or `..`, as systemd mounts it.
+    // mounts, `_netdev` or not, a bind line's, of any type, a bind of its
+    // source's folder, and the mount of another RAM, kernel or network
+    // line any mount there, as systemd mounts /dev/shm before the fstab's
+    // line for it. A noauto line's folder counts too. The line for / and a
+    // swap line have no such folder, and a folder reads with no `.` or `..`,
+    // as systemd mounts it.
     let table = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
                  2 1 8:2 / /home rw - ext4 /dev/sda2 rw\n\
                  3 1 8:1 /srv/data /data rw - ext4 /dev/sda1 rw\n\
                  4 1 0:30 / /dev/shm rw - tmpfs tmpfs rw\n\
-                 5 1 8:2 /other /backup rw - ext4 /dev/sda2 rw\n";
+                 5 1 8:2 /other /backup rw - ext4 /dev/sda2 rw\n\
+                 6 1 0:31 / /srv/t rw - tmpfs tmpfs rw\n\
+                 7 1 0:32 / /srv/u rw - tmpfs tmpfs rw\n";
     let fstab = parse_fstab(
         "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n\
          /srv/data /data none bind 0 0\nnone /dev/shm tmpfs defaults 0 0\n\
          /dev/sda2 /backup ext4 defaults 0 2\nserver:/x /net nfs defaults 0 0\n\
          /srv/elsewhere /srv/b none bind 0 0\n/dev/sdz1 /srv/c ext4 noauto 0 0\n\
-         /swapfile none swap sw 0 0\n/dev/sdz2 /srv/./d/../e/ ext4 defaults 0 2\n",
+         /swapfile none swap sw 0 0\n/dev/sdz2 /srv/./d/../e/ ext4 defaults 0 2\n\
+         /srv/data /srv/t tmpfs bind 0 0\n/dev/sdz3 /srv/u ext4 _netdev 0 0\n",
     );
     let mut devices = DeviceMap::default();
     for (name, dev) in [("sda1", "8:1"), ("sda2", "8:2")] {
@@ -362,8 +376,11 @@ fn a_folder_the_boot_mounts_is_mounted_while_a_mount_its_line_makes_is_there() {
             .insert(format!("/dev/{name}"), name.to_string());
     }
     assert_eq!(
-        unmounted_boot_folders(&parse_mountinfo(table), &fstab, &devices),
-        ["/backup", "/net", "/srv/b", "/srv/e"].map(PathBuf::from)
+        unmounted_folders(&parse_mountinfo(table), &fstab, &devices),
+        [
+            "/backup", "/net", "/srv/b", "/srv/c", "/srv/e", "/srv/t", "/srv/u"
+        ]
+        .map(PathBuf::from)
     );
 }
 
