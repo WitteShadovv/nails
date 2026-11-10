@@ -45,8 +45,12 @@ impl<F: Filesystem> PreFlightCheck<F> for SuspiciousNailsReferenceCheck {
         // asked of the automount guard first, and where one would mount a
         // point, or the mount table cannot be read, nothing is read and the
         // check refuses, since it cannot tell.
+        // The walk is asked about as a whole before the scan makes it, so
+        // its answers are as old as the walk either way, and the view reads
+        // each place on the way once: a `result` link in /etc/nixos leads
+        // the walk through a whole system closure in the store.
         let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
-        ask_the_walk(&guarded, Path::new(DECOY_NIXOS_DIR));
+        ask_the_walk(&guarded.remembering(), Path::new(DECOY_NIXOS_DIR));
         let skipped = guarded.skipped();
         if let Some(first) = skipped.first() {
             let refusal = CheckResult::fail(format!(
@@ -67,9 +71,13 @@ impl<F: Filesystem> PreFlightCheck<F> for SuspiciousNailsReferenceCheck {
 /// one that fails for another reason is left to the walk, which reads it as
 /// before.
 fn ask_the_walk<F: Filesystem>(guarded: &Guarded<F>, dir: &Path) {
-    if !matches!(guarded.is_directory(dir), Ok(true)) {
-        return;
+    if matches!(guarded.is_directory(dir), Ok(true)) {
+        ask_the_listing(guarded, dir);
     }
+}
+
+/// [`ask_the_walk`] of `dir`, a directory: its listing, and each entry.
+fn ask_the_listing<F: Filesystem>(guarded: &Guarded<F>, dir: &Path) {
     let Ok(entries) = guarded.list_directory(dir) else {
         return;
     };
@@ -77,7 +85,7 @@ fn ask_the_walk<F: Filesystem>(guarded: &Guarded<F>, dir: &Path) {
         // Whether an entry is a file is the same lookup as whether it is a
         // directory, so asking that once asks both.
         if matches!(guarded.is_directory(&entry), Ok(true)) {
-            ask_the_walk(guarded, &entry);
+            ask_the_listing(guarded, &entry);
         }
     }
 }
@@ -317,6 +325,95 @@ mod tests {
             fs.mock_lookups()
                 .iter()
                 .all(|path| !path.starts_with("/home/alice")),
+            "{:?}",
+            fs.mock_lookups()
+        );
+    }
+
+    /// A decoy whose /etc/nixos holds `configuration.nix` and the directory
+    /// `hosts`, in which `laptop` links into alice's home, a direct
+    /// automount point that nothing is mounted on yet.
+    fn a_host_linked_into_an_unmounted_home() -> MockFilesystem {
+        use crate::filesystem::PathKind;
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
+        fs.mock_set_path_type("/etc/nixos/hosts", PathKind::Dir);
+        let file = Path::new("/etc/nixos/configuration.nix");
+        let hosts = Path::new("/etc/nixos/hosts");
+        let laptop = Path::new("/etc/nixos/hosts/laptop");
+        fs.mock_set_file_content(file.to_str().unwrap(), "{ }");
+        fs.mock_set_directory_contents(
+            Path::new("/etc/nixos"),
+            vec![file.to_path_buf(), hosts.to_path_buf()],
+        );
+        fs.mock_set_directory_contents(hosts, vec![laptop.to_path_buf()]);
+        fs.create_symlink(Path::new("/home/alice/laptop"), laptop)
+            .unwrap();
+        fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n\
+             30 1 0:50 / /home/alice rw,relatime - autofs systemd-1 \
+             rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n",
+        );
+        fs.mock_clear_lookups();
+        fs
+    }
+
+    /// How often `path` was looked up on `fs`.
+    fn times(fs: &MockFilesystem, path: &str) -> usize {
+        fs.mock_lookups()
+            .iter()
+            .filter(|asked| *asked == Path::new(path))
+            .count()
+    }
+
+    /// The walk goes into each directory of /etc/nixos, so a link below its
+    /// top that leads behind an automount point keeps it from there too.
+    /// Each place on the way is read once, and each directory is asked once
+    /// whether it is one.
+    #[test]
+    fn a_link_deeper_in_etc_nixos_behind_an_automount_point_is_not_followed() {
+        let fs = a_host_linked_into_an_unmounted_home();
+        let result = SuspiciousNailsReferenceCheck::new(PathBuf::from("/mnt/hidden"))
+            .run(&fs)
+            .unwrap();
+        assert_eq!(
+            result,
+            CheckResult::fail_with(
+                "NAILS cannot tell whether the decoy's /etc/nixos names the hidden environment: \
+                 NAILS does not look up /etc/nixos/hosts/laptop, since the lookup would mount \
+                 the automount point /home/alice",
+                crate::filesystem::automount::mount_fix(&[Path::new("/home/alice")]),
+            )
+        );
+        assert!(
+            fs.mock_lookups()
+                .iter()
+                .all(|path| !path.starts_with("/home/alice")),
+            "{:?}",
+            fs.mock_lookups()
+        );
+        // The guard read /etc once; hosts was read by the guard, asked
+        // whether it is a directory, and listed.
+        assert_eq!(times(&fs, "/etc"), 1, "{:?}", fs.mock_lookups());
+        assert_eq!(times(&fs, "/etc/nixos/hosts"), 3, "{:?}", fs.mock_lookups());
+    }
+
+    /// A directory of /etc/nixos the walk cannot list is left to the scan,
+    /// which reads it as before: the walk asks about nothing below it.
+    #[test]
+    fn a_directory_of_etc_nixos_the_walk_cannot_list_is_left_to_the_scan() {
+        let fs = a_host_linked_into_an_unmounted_home();
+        fs.mock_set_unreadable_dir("/etc/nixos/hosts");
+        let result = SuspiciousNailsReferenceCheck::new(PathBuf::from("/mnt/hidden"))
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_pass(), "{result:?}");
+        assert!(
+            fs.mock_lookups()
+                .iter()
+                .all(|path| !path.starts_with("/etc/nixos/hosts/laptop")
+                    && !path.starts_with("/home/alice")),
             "{:?}",
             fs.mock_lookups()
         );
