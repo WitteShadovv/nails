@@ -566,13 +566,19 @@ history yourself so an interactive shell has nowhere to write:
   NixOS `/etc/zshenv.local`). Start that zsh after your last change to its
   startup files, and on NixOS after the rebuild: zsh keeps what it read as it
   started, so the check warns for the zsh you type into when a file it reads
-  or looks for, a link on the way to it or the directory it is in changed
-  after that zsh started (an edit, `rm ~/.zshrc`, a rebuild, or any program
-  that makes or removes a file in your home). With NixOS's `programs.zsh`,
-  `SHARE_HISTORY` taken out of `programs.zsh.setOptions` and
-  `programs.zsh.enableCompletion` (or just `programs.zsh.enableGlobalCompInit`)
-  turned off, a zsh you start after the rebuild and type `nails activate` into
-  passes with the files `programs.zsh` generates: the check knows the lines
+  or looks for, a link or a directory on the way to it changed after that zsh
+  started (an edit, `rm ~/.zshrc`, a rebuild, or any program that makes or
+  removes a file in your home). As zsh reads a history file that holds lines
+  at its start, it makes and removes a lock file beside it unless
+  `HIST_FCNTL_LOCK` is on,
+  so with the history file in your home or `ZDOTDIR` turn that option on, as
+  NixOS does by default, or keep the history file in a directory of its own:
+  else the check warns for a zsh however new it is. With NixOS's
+  `programs.zsh`, `SHARE_HISTORY` taken out of `programs.zsh.setOptions`
+  (`HIST_FCNTL_LOCK` kept there) and `programs.zsh.enableCompletion` (or just
+  `programs.zsh.enableGlobalCompInit`) turned off, a zsh you start after the
+  rebuild and type `nails activate` into passes with the files
+  `programs.zsh` generates: the check knows the lines
   NixOS generates there as they are written, and follows `promptinit` into
   zsh's own directory and the Nix profiles. It warns wherever your files
   autoload `compinit`, as NixOS's `/etc/zshrc` does with
@@ -600,7 +606,8 @@ history yourself so an interactive shell has nowhere to write:
   a builtin's word brace expansion or a glob may make a flag or a name of
   (`setopt {-m,...}`, `functions {-c,f} preexec`), a `histchars` your files set,
   `RC_QUOTES`, `IGNORE_BRACES` or `IGNORE_CLOSE_BRACES` where a function's `}`
-  follows a command's words, `ALIAS_FUNC_DEF` where an alias shares a function's
+  follows a command's words, a `typeset -m`, which sets every parameter its
+  pattern matches, an `autoload -X`, `ALIAS_FUNC_DEF` where an alias shares a function's
   name, a prompt with code where `PROMPT_SUBST` (or `PROMPT_VARS`) may be on, a
   `NULLCMD` or `READNULLCMD` of any value in the environment you start the shell
   from, a `TMOUT`, `PERIOD` or `REPORTTIME` (and the like) that is no number,
@@ -613,10 +620,11 @@ history yourself so an interactive shell has nowhere to write:
   path you start `nails` by) that writes a file or hands a program a word an
   expansion makes (`nails() { sudo /mnt/data/nails "$@" }`; one that only runs
   its own name through `command`, as `sudo() { command sudo "$@" }`, passes),
-  one named `run-help`, `which-command` or `run-help-...` that does so, which
-  zsh runs with the line you type as you press Alt-h or Alt-?, and a global
-  alias named like a word of the NAILS commands you type (`activate`,
-  `--yes`).
+  one named `run-help`, `which-command`, `man` or `run-help-...` that does
+  so, which zsh runs with the line you type as you press Alt-h or Alt-?, or
+  named like a widget a key runs them by (`.run-help`, a name `zle -A` gives
+  one), and a global alias named like a word of the NAILS commands you type
+  (`activate`, `--yes`) or like one of those commands.
   For any other zsh than one from the Nix store, and when the check finds no
   shell you typed into, it cannot tell where zsh finds a function your files
   autoload (`promptinit` too), a doubt. With Home Manager's `programs.zsh`,

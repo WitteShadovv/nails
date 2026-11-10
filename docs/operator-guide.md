@@ -1332,18 +1332,31 @@ afterwards:
     to, and the directory zsh looks in for it and its compiled form, or for one
     that is not there now the deepest directory on the way that is, which
     changes as a file in it is made, removed or renamed (`rm ~/.zshrc`, or any
-    program that makes or removes a file in your home), from up to three
+    program that makes or removes a file in your home), and each directory
+    above those up to `/`, as one renamed into place keeps the change times of
+    what is in it (`mv ~/.zsh/plugins.new ~/.zsh/plugins`), from up to three
     seconds before the shell started on, as the times are compared by the
     second; the Nix store, where nothing changes, is left out.
     The time is that of the shell's process, which an `exec zsh` keeps, and a
     step of the system clock forward after it can hide a change made before
     the step by no more than the step. So after you change your startup files
     or rebuild, type the decoy commands in a zsh you start then, with `zsh` or
-    in a new terminal;
+    in a new terminal. As zsh reads a history file that holds lines at its
+    start, it makes and removes a lock file beside it, unless
+    `HIST_FCNTL_LOCK` is on, which changes the directory the history file is
+    in: a zsh whose history file is in your home or in its `ZDOTDIR` warns
+    without that option however new it is. Turn `HIST_FCNTL_LOCK` on, as NixOS's `programs.zsh` does by default,
+    or keep the history file in a directory of its own
+    (`HISTFILE=~/.local/state/zsh/history`), and the warning says so where a
+    directory changed. Where the check cannot read when the shell started or
+    when a path changed, a new zsh does not help, and the warning gives the fix
+    it gives otherwise;
   - an `fc` that writes the history file (`fc -A`, `fc -W`, `fc -P`, or
     `fc -p`, whose list zsh writes to its file as it pops it, with other flags
-    too, as in `fc -AI`, and `history`, which takes the same flags) counts as a
-    write wherever it stands: a hook (`precmd`, `preexec`, `zshaddhistory`,
+    too, as in `fc -AI`, and past the word that `-e` or `-t` takes, as in
+    `fc -t %F -AI`, and `history -p` and `history -P`), its options read as zsh
+    reads a builtin's, where a letter the command does not take makes zsh run
+    none of it (`fc -AIq`, `history -A`), counts as a write wherever it stands: a hook (`precmd`, `preexec`, `zshaddhistory`,
     `TRAPDEBUG`) runs it after every command, as bash's `history -a` from
     `PROMPT_COMMAND`. One with an expansion among its flags, or a word brace
     expansion or a glob may make a flag of (`fc {-AI,-AI}`), is a doubt. So does
@@ -1374,8 +1387,12 @@ afterwards:
     named `run-help` or `which-command`, which the widgets of those names run
     with the line you are typing on the buffer stack, where `read -z` reads it
     back, as you press Alt-h or Alt-? or a key your files bind to them, or
-    named `run-help-` and a command, which zsh's own `run-help` hands the
-    line's words, the code
+    named as a key may run those widgets, as they run the command of that name
+    (`.run-help`, `.which-command`, and any name `zle -A` gives a widget, as in
+    `zle -A run-help logit`), or named `man`, which zsh's own alias `run-help`
+    stands for and which zsh's own `run-help` runs with the line for a command
+    it has no help file for, or named `run-help-` and a command, which zsh's
+    own `run-help` hands the line's words, the code
     `sched`, `zstyle -e` and `bindkey -s` run and the line `zle -U` and
     `print -z` type, the code of a function's own file and of a file a hook
     sources, a prompt theme that `prompt` runs from a hook, and a function or
@@ -1426,7 +1443,11 @@ afterwards:
     option they and `nails` take, the global ones, `-h`, `-V` and `-vv` among
     them (`alias -g activate=...`, `alias -g -- --yes=...`,
     `galiases[status]=...`), or whose name holds a backslash or a quote past
-    those zsh takes off. One whose name holds an
+    those zsh takes off, and one named like a command the widgets `run-help`
+    and `which-command` run with the line you type at hand (`run-help`, `man`,
+    `which-command`, `whence`, their names with a dot, `run-help-...`), or
+    like a function your files make a hook, as `zle -A` does for the name it
+    gives a widget. One whose name holds an
     operator, a brace or a blank, or is empty, is a doubt wherever it is
     defined, as zsh splits such a token off a word with no blank beside it
     (`$1>$TTY`, `$1;`, `$1}`) and the check cannot count its uses. So is an
@@ -1469,16 +1490,20 @@ afterwards:
     letter past one `r` (`ksh`, `rksh`, `korn`); an `emulate` whose flags or
     mode an expansion, brace expansion or a glob makes is a doubt;
   - the file of each function they autoload (`autoload`, `functions -u`, and
-    `typeset -fu`, `declare`, `local` and `readonly` with `-f` and `-u` or
-    `-U`, their options read as zsh reads a builtin's, of either sign before or
-    after the others, as in `typeset +f -u` and `readonly -fu`, and past one
-    that takes a number, as in `typeset -p 1 -fu` and `functions -x 2 -u`,
-    where a word an expansion makes is a doubt), by its path or by its name in
-    each directory they add to
+    `typeset -fu`, `declare` and `readonly` with `-f` and `-u` or `-U`, their
+    options read as zsh reads a builtin's, of either sign before or after the
+    others, as in `typeset +f -u` and `readonly -fu`, and past one that takes a
+    number or a word, as in `typeset -p 1 -fu` and `functions -x 2 -u`, where
+    zsh reads no more letters of a word whose letter took the next word as its
+    number, as in `typeset -fLt 3 -u`, and `readonly`'s `-p` takes none, and
+    where a word an expansion makes is a doubt; `local` takes no `-f`), by its
+    path or by its name in each directory they add to
     `fpath` and in those zsh's `fpath` starts with, where zsh looks for it as
     it first runs it, and in the directory of a function loaded by its path,
     which zsh puts in front of `fpath` for the functions that one autoloads
-    (and by its name with `autoload -d`). An element of `fpath` that an
+    (and by its name with `autoload -d`). An `autoload -X`, which loads the
+    function whose code runs it from the directory a word after it names or
+    from `fpath`, is a doubt. An element of `fpath` that an
     expansion changes (`${(s:/:)fpath}`, `$FPATH[2,10]`) or joins into one
     (`"$fpath"`, `fpath=($FPATH)`, `fpath+=$fpath`, where only `"${fpath[@]}"`
     and `"${(@)fpath}"` keep the elements apart in quotes) is a directory it
@@ -1503,7 +1528,7 @@ afterwards:
     directory it was built with, or in one that an `FPATH` from its environment
     names, which the check does not read. Of that environment it keeps `FPATH`,
     `NIX_PROFILES`, `USER`, `XDG_STATE_HOME`, `HOME`, `ZDOTDIR`,
-    `ARGV0`, `MAILPATH`, `NULLCMD`, `READNULLCMD`, the prompts zsh takes
+    `XDG_CONFIG_HOME`, `ARGV0`, `MAILPATH`, `NULLCMD`, `READNULLCMD`, the prompts zsh takes
     from it (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`,
     `RPS2`, `RPROMPT2`, `PS3`, `PROMPT3`, `PS4`, `PROMPT4`, `SPROMPT` and
     `PROMPT_EOL_MARK`) and the parameters zsh reads as arithmetic each time it
@@ -1517,7 +1542,11 @@ afterwards:
     the command zsh runs for a redirection with none, one of the parameters zsh
     reads as arithmetic that is no number (see below), and a prompt there that
     holds an expansion holds code where `PROMPT_SUBST` may be on, as zsh shows
-    it unless a file sets it;
+    it unless a file sets it. An `XDG_CONFIG_HOME` there is what a path of your
+    files names with it (`${XDG_CONFIG_HOME:-$HOME/.config}/zsh`); for a zsh
+    whose environment it does not know, as one it reads because it found no
+    shell you typed into, such a path is one it cannot follow until a file
+    sets it;
   - zsh's own `promptinit`, and the `add-zsh-hook` and `add-zle-hook-widget`
     it autoloads, it knows by their bytes as zsh 5.9, 5.9.1 and 5.9.2 ship
     them, and reads for what that code does, and a changed one as code.
@@ -1604,12 +1633,20 @@ afterwards:
     any file it reads, a function's file among them, where a command that runs
     before zsh reads it, at the top or in a function the top runs, writes to a
     path whose last part is its name or its compiled form's (`.zwc`, which zsh
-    runs in its place), or one an expansion or a brace expansion may make so
-    (`>> ~/.zshrc.local`, `>> $log`, `cp ~/.src ${f}en`), and for a file a
-    function's code reads, which zsh reads as the function runs, a hook's at
-    each prompt, any such command (`precmd() { . ~/.x }; cp ~/.y ~/.x`); a
-    `touch` writes nothing in a file. A program that writes a file it is not
-    given the name of it does not see;
+    runs in its place): any command given such a path, as written or as brace
+    expansion makes it, but one that writes nothing in the files it names
+    (`cat`, `grep`, `touch`, `chmod`, `mkdir`, a builtin such as `print`) and
+    a function your files define or autoload, whose code the check reads, or
+    one of zsh's own whose work it reads by its name (`prompt`), so an editor
+    that writes in place counts (`sed -i`, `patch`, `sponge`), and a
+    redirection, or a command known to write the files it names (`cp`, `mv`,
+    `tee`, `sed`, `perl`, `sponge`), given a path an expansion may make so
+    (`>> $log`, `cp ~/.src ${f}en`); for a file a function's code reads, which
+    zsh reads as the function runs, a hook's at each prompt, any such command
+    (`precmd() { . ~/.x }; cp ~/.y ~/.x`). A program that writes a file it is
+    not given the name of, or that it is given by a path an expansion makes
+    where the check does not know that program to write the files it names,
+    it does not see;
   - an option counts as on wherever a file zsh reads names it, outside a line
     that is a comment (where a file sets `histchars`, whose third character
     starts a comment in place of `#`, such a line may run, a doubt): a `setopt`,
@@ -1636,7 +1673,9 @@ afterwards:
   `emulate zsh -o $o`, `read -A options`, a `typeset`, `print -v` or `set -A`
   of a parameter whose name an expansion makes, and a `print -v` that holds the
   name in its word or takes it after other flags, as `-v$name` and
-  `-rv $name`), when a parameter is set by a name another one holds
+  `-rv $name`), when a `typeset`, `declare` or `private` with `-m` sets or
+  changes every parameter its patterns match (`typeset -m 'T?Y=~/.zl'`,
+  `typeset -u -m 'HOM?'`), which may be one the check reads, when a parameter is set by a name another one holds
   (`${(P)name::=on}`) or that an expansion makes in a `zstyle -s`, `getopts`,
   `strftime -s` (`-s$name` too), `vared`, `zparseopts`, `zformat -f`, `getln`,
   `zpty -r`, `syswrite -c`, `syserror -e`, `zgetattr`, `zlistattr` or
@@ -1672,8 +1711,10 @@ afterwards:
   directory added to `fpath` that does not resolve (as for NixOS's profiles,
   `$p/share/zsh/site-functions`, where it cannot tell the profiles
   `NIX_PROFILES` names), when zsh may run compiled code in place of a file (the `.zwc` that
-  `zcompile` writes beside a file or for an `fpath` directory, and one an
-  element of `fpath` names, which zsh reads as the functions it holds), when a
+  `zcompile` writes beside a file, for an `fpath` directory or for the
+  directory of a function autoloaded by its path, and one an element of
+  `fpath` or such a directory names, which zsh reads as the functions it
+  holds), when a
   `source`
   names no file, when `ZDOTDIR` is set otherwise than by an assignment
   (`: ${ZDOTDIR:=...}`), when a quote, an expansion or a here-document runs to
@@ -1744,7 +1785,8 @@ afterwards:
 
   So zsh passes only when no file it reads names the three options, nothing
   is left the check cannot tell and, for the zsh you typed the command into,
-  nothing it read changed after it started: zsh's default, under which a zsh
+  nothing it read changed after it started (with its history file in your
+  home, only with `HIST_FCNTL_LOCK` on, see above): zsh's default, under which a zsh
   writes its history only as it exits, which the kill at activation keeps it
   from doing.
   Nearly every `.zshrc` autoloads `compinit`, which makes the check warn (see
@@ -1759,7 +1801,8 @@ afterwards:
   tells you to take that out of them and of what they source. On NixOS,
   `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default, and runs
   `compinit` there with `programs.zsh.enableCompletion` on, as by default. Take
-  the option out of `programs.zsh.setOptions`, turn
+  the option out of `programs.zsh.setOptions`, keep `HIST_FCNTL_LOCK` there, as
+  by default, so that a zsh does not change your home as it starts, turn
   `programs.zsh.enableCompletion` off (or just
   `programs.zsh.enableGlobalCompInit`, which leaves out the `compinit` line
   and keeps the completions linked) and rebuild: then a zsh you start after

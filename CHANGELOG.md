@@ -833,7 +833,8 @@ of this changelog for that version becomes the release notes word for word, and
   uses its name, in any form zsh reads it in, which would hand that `fc` the words after it
   (`h -W`). Of the shell the command was typed into, the check now reads from `/proc` the program it
   runs and the variables of its environment that tell where zsh finds the functions it autoloads and
-  the user's startup files (`FPATH`, `HOME`, `ZDOTDIR`, and the `NIX_PROFILES`, `USER`
+  the user's startup files (`FPATH`, `HOME`, `ZDOTDIR`, `XDG_CONFIG_HOME`, which
+  `${XDG_CONFIG_HOME:-$HOME/.config}` in the files names, and the `NIX_PROFILES`, `USER`
   and `XDG_STATE_HOME` that NixOS's `/etc/zshenv` reads the Nix profiles with), `ARGV0`, `MAILPATH`,
   `NULLCMD`, `READNULLCMD`, whether a variable of the dynamic loader is set, and the prompts zsh
   takes from its environment (`PS1`, `PROMPT`, `prompt`, `RPS1`, `RPROMPT`, `PS2`, `PROMPT2`,
@@ -867,10 +868,10 @@ of this changelog for that version becomes the release notes word for word, and
   an `LD_` variable or `ARGV0` in a file read before it or in a function autoloaded and run before
   it, and `ARGV0` or an `LD_` variable in the shell's environment, which the check must know), and
   the loop in `/etc/zshenv` that puts three directories of each Nix profile in front of `fpath`, are
-  known as NixOS writes them, so with `SHARE_HISTORY` taken out of `programs.zsh.setOptions` and
-  `programs.zsh.enableCompletion` off (or `programs.zsh.enableGlobalCompInit` alone), which leaves
-  out the `compinit` line, a zsh started after the rebuild passes with the files `programs.zsh`
-  generates. On NixOS the check reads the `/etc/zshenv.local` that the
+  known as NixOS writes them, so with `SHARE_HISTORY` taken out of `programs.zsh.setOptions`
+  (`HIST_FCNTL_LOCK` kept there, as by default) and `programs.zsh.enableCompletion` off (or
+  `programs.zsh.enableGlobalCompInit` alone), which leaves out the `compinit` line, a zsh started
+  after the rebuild passes with the files `programs.zsh` generates. On NixOS the check reads the `/etc/zshenv.local` that the
   zshenv nixpkgs builds into zsh reads, and `/etc/set-environment` where there is no `/etc/zshenv`,
   and the fix `zsh -f` names it. A zsh from elsewhere, or one the check reads without a typed shell,
   warns that it cannot tell where the functions the files autoload are, as before.
@@ -888,8 +889,8 @@ of this changelog for that version becomes the release notes word for word, and
   (`zle -N`, `zle -C`, `zle -F`, a `zle -T` transformation's), which a key bound to it may run as a
   line is typed, a function named like a builtin, which the hooks of zsh's own
   `add-zle-hook-widget` run, or like their dispatcher (`azhw:...`), a prompt theme `prompt` runs from a hook, `command_not_found_handler`, and the code
-  `sched`, `zstyle -e` and `bindkey -s` run. An `fc -p`, and a `history` with the flags of an `fc`
-  that writes, count as a write, and so do a global alias for the history file
+  `sched`, `zstyle -e` and `bindkey -s` run. An `fc -p`, and a `history -p` or `history -P`, count
+  as a write, and so do a global alias for the history file
   (`alias -g /dev/tty=~/.zsh_history`) and an element of zsh/mapfile's `mapfile` that names it. A
   prompt set in a form the walk does not read (`print -v PS1`, `${PS1::=...}`, `read PS1`, `prompt`,
   `PROMPT_EOL_MARK`) holds code the check cannot follow where `PROMPT_SUBST` may be on, and a
@@ -994,24 +995,48 @@ of this changelog for that version becomes the release notes word for word, and
   counts as used, as zsh puts its value in place of that word as the line is entered. zsh 5.9.2
   wrote the line with each. zsh 5.9, 5.9.1 and 5.9.2 wrote the line or kept `SHARE_HISTORY` on
   with each of these too, and the check now reads them. A function that `readonly -f` marks to be
-  autoloaded, or `typeset`, `declare`, `local` and `functions` with an option of either sign before
-  or after the others or past one that takes a number (`readonly -fu`, `typeset +f -u`,
+  autoloaded, or `typeset`, `declare` and `functions` with an option of either sign before or after
+  the others or past one that takes a number or a word (`readonly -fu`, `typeset +f -u`,
   `declare +g -fU`, `functions +t -u`, `typeset -p 1 -fu`, `functions -x 2 -u`), is read as an
-  `autoload`'s, a `compinit` among them, the options read as zsh reads a builtin's, and a word where
-  they may stand that an expansion makes is a doubt. A function or a regular alias named `run-help`
-  or `which-command`, which the widgets of those names run with the line being typed on the buffer
-  stack as Alt-h, Alt-? or a key a file binds to them is pressed, or named `run-help-` and a
-  command, which zsh's own `run-help` hands the line's words, counts as a hook. `compctl`, whose
+  `autoload`'s, a `compinit` among them, the options read as zsh reads a builtin's: a letter that
+  takes the next word as its number ends its own word (`typeset -fLt 3 -u`), `readonly`'s `-p`
+  takes no number, and a word where they may stand that an expansion makes is a doubt, the one
+  `functions -x` takes too (`functions -x $a -u` with `a=(2 -u)`). An `autoload -X`, which loads the
+  function whose code runs it from the directory a word after it names or from `fpath`, is a doubt,
+  and so is the `.zwc` beside the directory of a function autoloaded by its path, which zsh runs
+  in place of the file when it is newer. A `typeset`, `declare` or `private` with `-m`, which sets
+  every parameter its patterns match (`typeset -m 'T?Y=~/.zl'`, `typeset -m 'histchar?=!^%'`,
+  `typeset -u -m 'HOM?'`), is a doubt. An `fc` is read past the word `-e` or `-t` takes
+  (`fc -t %F -AI`, `fc -e - -AI`), and one with a letter it does not take writes nothing, as zsh
+  then refuses it (`history -A`). The `XDG_CONFIG_HOME` of the shell's environment is what
+  `${XDG_CONFIG_HOME:-$HOME/.config}` names, and for a zsh whose environment the check does not know,
+  a path that names `XDG_CONFIG_HOME` is one it cannot follow until a file sets it. A function or a
+  regular alias named `run-help` or `which-command`, which the widgets of those names run with the
+  line being typed on the buffer stack as Alt-h, Alt-? or a key a file binds to them is pressed, or
+  named as a key runs those widgets (`.run-help`, a name `zle -A` gives a widget), or named `man`,
+  which zsh's own alias `run-help` stands for, or named `run-help-` and a command, which zsh's own
+  `run-help` hands the line's words, counts as a hook, and a global alias named like one of them or
+  like `whence`, which zsh's own alias `which-command` stands for, counts as used. `compctl`, whose
   completion runs without `compinit` (a `-K` function that reads the line with `read -l`), is a
-  doubt wherever it stands. For the shell the command was typed into, or likely typed into, the
+  doubt wherever it stands. A command that names, before zsh reads a file, a path whose last part
+  is that file's name, as written, writes to it, but one that writes nothing in the files it names
+  (`cat`, `touch`), a function the files define and zsh's own `prompt`, whose work the check reads:
+  `sed -i`, `patch` and `sponge` among them.
+  For the shell the command was typed into, or likely typed into, the
   check reads when its process started, and a startup file, a file they source or a function's
   file it reads or looks for that changed after that, by its status change time, is a doubt: the
   file, each link on the way to it and the directory zsh looks in for it and its compiled form, or
-  for one that is not there now the deepest directory on the way that is, the Nix store aside, and
-  on NixOS `/run/current-system`, which each switch replaces. zsh
+  for one that is not there now the deepest directory on the way that is, and each directory above
+  those up to `/`, the Nix store aside, and on NixOS `/run/current-system`, which each switch
+  replaces. zsh
   keeps what it read as it started, so a shell started before an edit, a removal or a NixOS
   rebuild kept `SHARE_HISTORY` on and wrote each line while the check read the files as they are
-  now, and so did startup code that rewrites or removes a file after zsh read it.
+  now, and so did startup code that rewrites or removes a file after zsh read it, and a rename of a
+  directory above the file. As zsh reads a history file that holds lines at its start, it makes and
+  removes a lock file beside it unless `HIST_FCNTL_LOCK` is on, so a zsh whose history file is in
+  the home or its `ZDOTDIR` without that option warns however new it is, and the warning says to
+  turn the option on or to keep the history file in a directory of its own. Where the check cannot
+  read when the shell started, the fix the warning gives is the usual one, not a new zsh.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
