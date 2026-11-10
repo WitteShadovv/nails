@@ -559,7 +559,7 @@ impl Walker<'_> {
             // `functions -u`, `typeset -fu` and the like mark functions to be
             // autoloaded ([`super::autoload`]); the others declare parameters
             // or print functions.
-            "functions" | "typeset" | "declare" | "local" | "readonly"
+            "functions" | "typeset" | "declare" | "readonly"
                 if self.marked(&command.text, &args) => {}
             "export" | "typeset" | "declare" | "local" | "readonly" | "integer" | "float"
             | "private" => {

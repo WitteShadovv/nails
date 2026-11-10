@@ -18,6 +18,15 @@ pub(super) fn unfound(names: &str) -> String {
     )
 }
 
+/// What a doubt about the function that `line`, an `autoload -X` in
+/// `.zshrc`, loads says.
+fn x_doubt(line: &str) -> String {
+    format!(
+        "it cannot tell which function `{line}` in /home/alice/.zshrc loads, as -X loads the one \
+         whose code runs it, from the directory a word after it names or from fpath"
+    )
+}
+
 /// What a doubt about the `fpath` directory that `.zshrc` adds as `dir`
 /// says.
 fn dir_doubt(dir: &str) -> String {
@@ -165,7 +174,32 @@ fn an_autoloaded_function_the_check_cannot_find_is_a_doubt() {
         ),
         (
             "fpath=(~/.zfunc $fpath)\nhist() { autoload -X }\nhist\n",
-            "it cannot tell which functions `autoload -X` in /home/alice/.zshrc loads".to_string(),
+            x_doubt("autoload -X"),
+        ),
+        // zsh 5.9 to 5.9.2 load the function `-X` runs in from the
+        // directory the word names, and with `-d` from fpath where that does
+        // not hold it: the stock compinit, or a file that turns the option on
+        // (`~/.zfunc/hist`), though the word names no such directory or
+        // function.
+        (
+            "compinit() { autoload -dX ~/.nope }\ncompinit -D\n",
+            x_doubt("autoload -dX ~/.nope"),
+        ),
+        (
+            "compinit() { autoload -X zfn }\ncompinit -D\n",
+            x_doubt("autoload -X zfn"),
+        ),
+        (
+            "fpath=(~/.zfunc $fpath)\nhist() { autoload -dX ~/.nope }\nhist\n",
+            x_doubt("autoload -dX ~/.nope"),
+        ),
+        (
+            "fpath=(~/.zfunc $fpath)\nhist() { builtin autoload -X -d nope }\nhist\n",
+            x_doubt("autoload -X -d nope"),
+        ),
+        (
+            "fpath=(~/.zfunc $fpath)\nhist() { autoload -X ~/.zfunc }\nhist\n",
+            x_doubt("autoload -X ~/.zfunc"),
         ),
         (
             "alias al='autoload -Uz'\n",
@@ -309,6 +343,15 @@ fn a_function_is_autoloaded_by_the_options_zsh_reads_as_it_does() {
         "typeset -fL 3 -u",
         "typeset -i 3 -fu",
         "typeset --fu",
+        // A number as the word after its letter: zsh takes it and reads no
+        // more letters of that word.
+        "typeset -fLt 3 -u",
+        "typeset -fLq 3 -u",
+        "declare -fRx 2 -u",
+        "readonly -fZt 4 -u",
+        "typeset -fpz 1 -u",
+        "typeset -uLt 3 -f",
+        "typeset -Lt 3 -fu",
         "declare +f -U",
         "declare +g -fu",
         "readonly -fu",
@@ -348,6 +391,9 @@ fn a_function_is_autoloaded_by_the_options_zsh_reads_as_it_does() {
         "functions - -u",
         "typeset -f -- -u",
         "readonly -u",
+        // `readonly`'s `p` takes no number, and `local` no `-f`.
+        "readonly -fp 1 -u",
+        "local -fu",
         "export -fu",
         "integer -fu",
         "float -fu",
@@ -362,6 +408,13 @@ fn a_function_is_autoloaded_by_the_options_zsh_reads_as_it_does() {
         seed(&fs, "/home/alice/.zfunc/hist_setup", SETS);
         assert_eq!(scan(&fs, UNKNOWN).writes, [], "{marks}");
     }
+    // With no word for `-x`, zsh 5.9 to 5.9.2 print `argument expected: -x`
+    // and run nothing.
+    for line in ["functions -ux", "functions -u -x", "functions -Ux"] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{line}");
+    }
 }
 
 #[test]
@@ -369,6 +422,9 @@ fn options_an_expansion_may_make_of_a_marking_builtin_are_a_doubt() {
     for (line, word) in [
         ("functions $o hist_setup", "$o"),
         ("functions -x 2 $o hist_setup", "$o"),
+        // An array may give `-x` its number and then options (`a=(2 -u)`).
+        ("functions -x $a hist_setup", "$a"),
+        ("functions -ux $a hist_setup", "$a"),
         ("typeset -$o hist_setup", "-$o"),
         ("typeset -f $o hist_setup", "$o"),
         ("readonly -p $n -fu hist_setup", "$n"),
