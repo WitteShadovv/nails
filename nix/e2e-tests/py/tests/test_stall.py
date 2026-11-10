@@ -72,9 +72,10 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(
             why, "PID 1 holds jobs that wait for no job: local-fs.target/start"
         )
+        # The dumps come before the key press, which wakes PID 1.
         self.assertEqual(
             machine.qmp_client.sent,
-            [("alt", "up"), ("alt", "sysrq", "w"), ("alt", "sysrq", "t")],
+            [("alt", "sysrq", "w"), ("alt", "sysrq", "t"), ("alt", "up")],
         )
         logged = machine.logged[-1]
         self.assertIn("local-fs.target", logged)
