@@ -21,6 +21,7 @@ mod declare;
 mod descriptors;
 mod ends;
 mod event;
+mod first;
 mod fpath;
 mod hooks;
 mod keys;
@@ -166,8 +167,11 @@ struct Walker<'a> {
     /// A `return` or `exit` was seen: the rest of the file may not run.
     may_stop: bool,
     /// A command of the file ran outside a function's body, at which zsh
-    /// may have stopped the file with an error ([`Event::Assign`]).
+    /// may have stopped the file with an error ([`Event::Assign`]); and
+    /// whether its first line that holds code is one command zsh certainly
+    /// parses as the walk reads it ([`first::lone_first`]).
     ran: bool,
+    lone_first: bool,
     /// The code runs where zsh is at its top level as it runs it, not as a
     /// function's body: a trap's string, a `sched`'s, a line keys type
     /// ([`ends`]).
@@ -347,9 +351,9 @@ impl Walker<'_> {
             self.arrays = open.arrays;
             for event in &mut self.events[open.start..] {
                 match event {
-                    Event::Set { unconditional, .. }
-                    | Event::Source { unconditional, .. }
-                    | Event::Assign { unconditional, .. } => *unconditional = false,
+                    Event::Set { unconditional, .. } | Event::Assign { unconditional, .. } => {
+                        *unconditional = false;
+                    }
                     _ => {}
                 }
             }
@@ -921,6 +925,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Wa
         events: Vec::new(),
         may_stop: false,
         ran: false,
+        lone_first: first::lone_first(text),
         top,
         tmouts: 0,
         literal: false,

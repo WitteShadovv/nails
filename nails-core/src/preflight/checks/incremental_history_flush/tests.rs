@@ -18,6 +18,7 @@ fn typed(program: &str, argv: &[&str]) -> InspectedShell {
         exe: None,
         environment: None,
         started: None,
+        uid: Some(1000),
     }
 }
 
@@ -44,9 +45,10 @@ fn warning(result: CheckResult) -> String {
     }
 }
 
-/// A file of `text` at `path`.
+/// A file of `text` at `path`, alice's.
 fn seed(fs: &MockFilesystem, path: &str, text: &str) {
     fs.mock_set_file_content(path, text);
+    fs.mock_set_owner(std::path::Path::new(path), 1000, 100);
 }
 
 #[test]
@@ -579,6 +581,7 @@ fn a_login_shell_is_named_as_one_and_judged_by_its_program() {
             exe: None,
             environment: None,
             started: None,
+            uid: Some(1000),
         }
     );
     let fs = MockFilesystem::new();
@@ -651,6 +654,7 @@ fn a_shell_of_another_account_is_read_in_both_homes() {
         exe: None,
         environment: None,
         started: None,
+        uid: None,
     };
     assert!(warning(run(&fs, shell)).contains("/home/alice/.bashrc runs `history -a`"));
 }
@@ -671,6 +675,7 @@ fn a_turn_off_in_one_of_two_homes_does_not_hide_an_option() {
         exe: None,
         environment: None,
         started: None,
+        uid: None,
     };
     let message = warning(run(&fs, shell.clone()));
     assert!(
@@ -699,6 +704,7 @@ fn a_shell_the_command_was_likely_typed_into_is_read_beside_every_shell() {
         exe: None,
         environment: None,
         started: None,
+        uid: None,
     };
     let fs = MockFilesystem::new();
     match run(&fs, likely("zsh")) {

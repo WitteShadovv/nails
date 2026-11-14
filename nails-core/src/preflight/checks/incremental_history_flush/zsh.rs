@@ -586,11 +586,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 self.options[1] = Some(format!("Oh My Zsh, which {place} loads, sets"));
             }
             Event::Doubt(doubt) => self.doubt(doubt),
-            Event::Source {
-                path,
-                unconditional,
-                function,
-            } => self.source(&path, certain && unconditional, function, place),
+            Event::Source { path, function, .. } => self.source(&path, function, place),
             Event::Assign {
                 name: "NIX_PROFILES",
                 value,

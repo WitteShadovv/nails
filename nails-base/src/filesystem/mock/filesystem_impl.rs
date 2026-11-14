@@ -120,6 +120,11 @@ impl Filesystem for MockFilesystem {
         self.get_permissions_impl(path)
     }
 
+    fn owner(&self, path: &Path) -> Result<u32> {
+        self.looked_at_itself(path);
+        self.owner_impl(path)
+    }
+
     fn is_readable(&self, path: &Path) -> Result<bool> {
         self.looked_at(path);
         self.is_readable_impl(path)

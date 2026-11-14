@@ -70,9 +70,14 @@ pub(super) fn install(fs: &MockFilesystem, vars: &[(&str, &str)]) -> Install {
     )
 }
 
-/// What `fs` sets for a zsh started as `start`, in the home, with `install`.
+/// What `fs` sets for a zsh started as `start`, in the home, with `install`,
+/// that runs as alice ([`ALICE`]).
 fn scan_with(fs: &MockFilesystem, start: Start, install: &Install) -> Scan {
-    zsh(fs, &[PathBuf::from(HOME)], start, install)
+    let install = Install {
+        uid: Some(ALICE),
+        ..install.clone()
+    };
+    zsh(fs, &[PathBuf::from(HOME)], start, &install)
 }
 
 #[test]
@@ -89,6 +94,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
                 ..Default::default()
             }),
             started: None,
+            uid: None,
         }
     );
     // An FPATH in its environment replaces it, as zsh 5.9.2 takes it.
@@ -109,6 +115,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
             version: Some("5.9.2".to_string()),
             env: None,
             started: None,
+            uid: None,
         }
     );
 }

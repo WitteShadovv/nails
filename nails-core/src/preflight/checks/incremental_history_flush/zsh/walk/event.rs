@@ -58,15 +58,16 @@ pub(in super::super) enum Event {
     /// which runs the file's code as its own.
     Source {
         path: Word,
-        unconditional: bool,
         function: Option<String>,
     },
     /// Oh My Zsh is loaded.
     OhMyZsh,
     /// `ZDOTDIR`, `XDG_CONFIG_HOME` or `NIX_PROFILES` is set to `value`, or
     /// unset (`None`); `first` when no command of the file runs before it,
-    /// and its value names no parameter but those whose expansion cannot
-    /// fail, so that zsh cannot stop the file at an error before it.
+    /// the line it is on is that one command alone, which zsh certainly
+    /// parses as the walk reads it ([`super::first::lone_first`]), and its
+    /// value names no parameter but those whose expansion cannot fail, so
+    /// that zsh cannot stop the file at an error before it.
     Assign {
         name: &'static str,
         value: Option<Word>,

@@ -59,7 +59,7 @@ struct Run {
 /// no error that stops the file it is in: it names no parameter but `HOME`
 /// and those `${...:-...}` gives a default for (`${XDG_CONFIG_HOME:-...}`),
 /// which the check resolves, and runs no command.
-fn cannot_fail(value: &str) -> bool {
+pub(super) fn cannot_fail(value: &str) -> bool {
     let mut rest = value.to_string();
     for safe in [
         "${XDG_CONFIG_HOME:-$HOME/.config}",
@@ -286,13 +286,12 @@ impl Walker<'_> {
         let uncertain = !unconditional || nested.confused || later;
         for mut event in nested.events {
             if uncertain
-                && let Event::Set { unconditional, .. }
-                | Event::Source { unconditional, .. }
-                | Event::Assign { unconditional, .. } = &mut event
+                && let Event::Set { unconditional, .. } | Event::Assign { unconditional, .. } =
+                    &mut event
             {
                 *unconditional = false;
             }
-            if (self.ran || later)
+            if (self.ran || later || !self.lone_first)
                 && let Event::Assign { first, .. } = &mut event
             {
                 *first = false;
@@ -641,7 +640,7 @@ impl Walker<'_> {
         match command.text.as_str() {
             "setopt" | "unsetopt" => self.setopt(&command.text, &args, unconditional),
             "set" => self.set_builtin(&args, unconditional),
-            "source" | "." => self.source(&command.text, args, unconditional, function),
+            "source" | "." => self.source(&command.text, args, function),
             "eval" if args.iter().all(|arg| !arg.expands && !arg.bare) => {
                 // Its words are code the walk reads as zsh would run them,
                 // past the `--` that may end its options.
@@ -790,13 +789,7 @@ impl Walker<'_> {
 
     /// The events of a `source` or a `.` (`command`) of `args`, in the
     /// function `function` when in one.
-    fn source(
-        &mut self,
-        command: &str,
-        args: Vec<Word>,
-        unconditional: bool,
-        function: Option<String>,
-    ) {
+    fn source(&mut self, command: &str, args: Vec<Word>, function: Option<String>) {
         self.sources += 1;
         let mut args = args.into_iter();
         match args.next() {
@@ -805,11 +798,7 @@ impl Walker<'_> {
             }
             Some(path) => {
                 self.mention_word(&path);
-                self.events.push(Event::Source {
-                    path,
-                    unconditional,
-                    function,
-                });
+                self.events.push(Event::Source { path, function });
             }
             None => self.events.push(Event::Doubt(format!(
                 "it cannot tell what `{command}` in {} reads",
@@ -933,7 +922,7 @@ impl Walker<'_> {
         self.xdg_config_homes += xdg_config_home_writes(&word.text);
         self.mention_options(&word.text);
         let value = word.text[name.len() + 1..].to_string();
-        let first = !self.ran && cannot_fail(&value);
+        let first = !self.ran && self.lone_first && cannot_fail(&value);
         self.events.push(Event::Assign {
             name,
             value: Some(Word {

@@ -92,11 +92,25 @@ const UNKNOWN: Start = Start {
 /// A file of `text` at `path`.
 fn seed(fs: &MockFilesystem, path: &str, text: &str) {
     fs.mock_set_file_content(path, text);
+    fs.mock_set_owner(Path::new(path), ALICE, 100);
+}
+
+/// The user alice's id: the shell the tests read runs as her, and she owns
+/// the files they seed ([`seed`]), so that zsh opens them.
+const ALICE: u32 = 1000;
+
+/// What the check knows of a zsh that runs as alice ([`ALICE`]), and nothing
+/// else.
+fn as_alice() -> Install {
+    Install {
+        uid: Some(ALICE),
+        ..Install::default()
+    }
 }
 
 /// What `fs` sets for a zsh started as `start`, in the home.
 fn scan(fs: &MockFilesystem, start: Start) -> Scan {
-    zsh(fs, &[PathBuf::from(HOME)], start, &Install::default())
+    zsh(fs, &[PathBuf::from(HOME)], start, &as_alice())
 }
 
 /// The settings `fs` turns on, as the warning names them.

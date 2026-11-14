@@ -172,12 +172,36 @@ impl<F: Filesystem> Reader<'_, F> {
         (plain && path.is_absolute()).then_some(path)
     }
 
+    /// Whether zsh certainly opens the startup file at `path`, which it
+    /// opens as the user it runs as and skips without a word where it cannot
+    /// (Src/init.c, `source`): a file that is no link, that user owns and
+    /// whose owner may read it, as its owner's bits decide what its owner may
+    /// do, whatever its other bits and any access list say. The check reads
+    /// it as root, so of a file that is a link, another user's (as `sudo
+    /// $EDITOR ~/.zshenv` may leave it, root's) or one whose owner may not
+    /// read it, and where it does not know the user, it cannot tell. The
+    /// directories on the way are those of the file of the next stage beside
+    /// it, which the values from before it would name, so zsh reads that one
+    /// only where it can search them too.
+    pub(super) fn opens(&self, path: &Path) -> bool {
+        let Some(uid) = self.install.uid else {
+            return false;
+        };
+        matches!(self.fs.is_symlink(path), Ok(false))
+            && self.fs.owner(path).is_ok_and(|owner| owner == uid)
+            && self
+                .fs
+                .get_permissions(path)
+                .is_ok_and(|mode| mode & 0o400 != 0)
+    }
+
     /// Read the user's file of the stage `stage` (`zshrc`) from each place
     /// `ZDOTDIR` may put it in: where zsh reads the one there, `ZDOTDIR`
     /// holds that place, or is unset for the home's, and where an `emulate`
     /// of sh's mode may last, the home's with `ZDOTDIR` as it is; `certain`
-    /// when zsh certainly reads the stage's file. The home's first, so the
-    /// warning names a file of a place the files set.
+    /// when zsh certainly reads the stage's file, where it can open it
+    /// ([`Reader::opens`]). The home's first, so the warning names a file of
+    /// a place the files set.
     pub(super) fn user_files(&mut self, stage: &str, certain: bool) {
         let before = self.values.zdotdirs.clone();
         let mut dirs = before.clone();
@@ -193,6 +217,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 && !read.contains(&path)
             {
                 read.push(path.clone());
+                let certain = certain && self.opens(&path);
                 self.file(&path, certain);
             }
             add_all(&mut after, std::mem::take(&mut self.values.zdotdirs));
@@ -313,17 +338,14 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Read the file the file at `place` sources as `path`, in the function
-    /// `function` when in one, whose code it then runs as that one's;
-    /// `certain` when zsh certainly runs the `source`. Sourced in a function,
-    /// it is read for every value the files ever give `ZDOTDIR` and
-    /// `XDG_CONFIG_HOME`, as the function runs later ([`Reader::late`]).
-    pub(super) fn source(
-        &mut self,
-        path: &Word,
-        certain: bool,
-        function: Option<String>,
-        place: &str,
-    ) {
+    /// `function` when in one, whose code it then runs as that one's.
+    /// Sourced in a function, it is read for every value the files ever give
+    /// `ZDOTDIR` and `XDG_CONFIG_HOME`, as the function runs later
+    /// ([`Reader::late`]). zsh need not read it: the `source` may not run,
+    /// and zsh may not open the file (it opens it as the user it runs as, by
+    /// the directories on the way too, which need not be those of a file the
+    /// values from before it name), so it drops none of them.
+    pub(super) fn source(&mut self, path: &Word, function: Option<String>, place: &str) {
         self.known_files.push(path.text.clone());
         let later = function.is_some() || self.in_function_code();
         let files = if later {
@@ -335,9 +357,8 @@ impl<F: Filesystem> Reader<'_, F> {
         };
         match files {
             Some(files) => {
-                let one = files.len() == 1 && !later;
                 for file in files {
-                    self.file_in(&file, certain && one, function.clone());
+                    self.file_in(&file, false, function.clone());
                 }
             }
             None => self.doubt(format!(
