@@ -89,5 +89,6 @@ jsonschema = { workspace = true }
 clap_mangen = { workspace = true }
 clap-markdown = { workspace = true }
 # The signals of the tests: the Ctrl+C a cancel envelope answers and the
-# hangup a countdown must outlive (`raise`), and SIGKILL to a child (`kill`).
-nix = { workspace = true, features = ["signal"] }
+# hangup a countdown must outlive (`raise`), and SIGKILL to a child (`kill`);
+# and the children they fork and wait for (`fork`, `waitpid`).
+nix = { workspace = true, features = ["signal", "process"] }

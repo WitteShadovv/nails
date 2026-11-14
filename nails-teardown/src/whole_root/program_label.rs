@@ -416,6 +416,28 @@ pub enum Outside {
     Still(String),
 }
 
+/// How a unit that runs from a RAM copy was started, as the check of its
+/// domain asks it ([`enter_domain`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Started {
+    /// Whether PID 1 started it, as it starts NAILS's units.
+    pub by_pid1: bool,
+    /// Whether it is its own start again from its copy ([`STARTED_AGAIN`]).
+    pub again: bool,
+    /// Start it again from the copy at the path, with the same command line
+    /// and [`STARTED_AGAIN`] set: this returns only where that start fails.
+    pub start_again: fn(&Path) -> io::Error,
+}
+
+impl Started {
+    /// [`enter_domain`] for the unit started so from the copy at `copy`.
+    pub fn enter_domain(&self, selinux: &dyn Selinux, copy: &Path) -> Result<(), Outside> {
+        enter_domain(selinux, copy, self.by_pid1, self.again, || {
+            (self.start_again)(copy)
+        })
+    }
+}
+
 /// Keep a unit that PID 1 started from the RAM copy at `copy` from doing its
 /// work anywhere but in [`DOMAIN`], where a policy is loaded as `selinux`
 /// tells it. A unit that runs elsewhere gives `copy` the label
