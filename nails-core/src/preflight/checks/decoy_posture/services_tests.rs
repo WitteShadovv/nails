@@ -1619,3 +1619,33 @@ fn a_hook_link_nails_cannot_look_up_warns() {
         "{result:?}"
     );
 }
+
+#[test]
+fn a_hook_in_the_directory_of_an_instance_prefix_warns() {
+    // systemd reads systemd-@0.service.d and systemd-@.service.d for the
+    // instance systemd-coredump@0.service too.
+    for dir in [
+        "systemd-.service.d",
+        "systemd-@.service.d",
+        "systemd-@0.service.d",
+    ] {
+        let decoy = coredump_decoy();
+        decoy
+            .unit(
+                "crash-hook@.service",
+                "[Service]\nType=oneshot\nExecStart=/usr/local/bin/crash-hook %i\n",
+            )
+            .file(
+                &format!("/etc/systemd/system/{dir}/50-hook.conf"),
+                "[Unit]\nOnSuccess=crash-hook@%i.service\n",
+            );
+        let result = decoy.check(false);
+        assert!(result.is_warn(), "{dir}: {result:?}");
+        assert!(
+            result
+                .message()
+                .contains("systemd-coredump starts crash-hook@%i.service (OnSuccess=)"),
+            "{dir}: {result:?}"
+        );
+    }
+}
