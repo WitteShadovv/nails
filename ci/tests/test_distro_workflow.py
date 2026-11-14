@@ -349,7 +349,7 @@ class SelectTest(unittest.TestCase):
 
     def test_an_input_names_the_suite_and_is_not_filtered(self) -> None:
         self.change("docs/ci.md")
-        for suite in ("all", "smoke", "records", "refusal", "probe"):
+        for suite in ("all", "smoke", "records", "refusal", "probe", "staged"):
             with self.subTest(suite=suite):
                 self.assert_selects(suite, SUITE_INPUT=suite)
                 self.assert_selects(
@@ -435,6 +435,14 @@ class ResultTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("::warning::One or more distro probes", result.stdout)
+        result = self.report(
+            SUITES="staged",
+            GATING_JOBS="0",
+            GATING_RESULT="skipped",
+            DISTRO_RESULT="failure",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("::warning::One or more staged scenarios", result.stdout)
 
     def test_passes_a_run_that_planned_no_gating_job(self) -> None:
         result = self.report(SUITES="smoke", GATING_JOBS="0", GATING_RESULT="skipped")

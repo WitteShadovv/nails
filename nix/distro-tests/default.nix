@@ -9,7 +9,9 @@
 # 13 runs the Nix scenario among its smokes, and Debian 13 and both Ubuntu
 # images the unattended-upgrades scenario. Beside the smokes are the host
 # drivers: the records scenarios, the refusals of the families the family table
-# does not admit, the probes and the oracle images.
+# does not admit, the probes and the oracle images. An image staged for its
+# family's admission also runs its smoke and records scenarios, with a
+# test-only build that admits the family, when a run asks for them.
 {
   self,
   pkgs,
@@ -23,6 +25,7 @@ let
 
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   makeSmoke = import ./tests/smoke.nix { inherit self pkgs nix-vm-test; };
+  admitted = import ./lib/admitted.nix { inherit self; };
   makeNixTrace = import ./tests/nix-trace.nix { inherit self pkgs nix-vm-test; };
   makeAptShutdown = import ./tests/apt-shutdown.nix { inherit self pkgs nix-vm-test; };
 
@@ -85,6 +88,63 @@ let
   recordsName = name: "${name}-records";
   records = lib.mapAttrs' (name: drv: lib.nameValuePair (recordsName name) drv) recordsSet.drivers;
 
+  # The images staged for their family's admission: the scenarios that
+  # admission needs and that run before the commit that admits the family,
+  # each with a test-only build of nails that admits it (lib/admitted.nix).
+  # An image's smoke is keyed "<image>-staged-smoke" and its login- and
+  # boot-record scenario "<image>-staged-records"; both run in the Nix build
+  # sandbox, as the smokes do, and only in the staged suite of distro-e2e.yml,
+  # which only a dispatch runs: never the nightly, a pull request or the
+  # matrix of the admitted families. The commit that admits a family takes its
+  # image out of this list, enables it in images.json, which puts its smoke in
+  # the smoke suite, and moves its records scenario to records.nix.
+  stagedImages = [ "arch-boxes" ];
+  stagedScenarios = lib.listToAttrs (
+    lib.concatMap (
+      name:
+      let
+        entry = images.${name};
+        nails = admitted entry.osId;
+      in
+      [
+        (lib.nameValuePair "${name}-staged-smoke" (
+          import ./tests/smoke.nix {
+            inherit
+              self
+              pkgs
+              nix-vm-test
+              nails
+              ;
+          } name entry
+        ))
+        (lib.nameValuePair "${name}-staged-records" (
+          import ./tests/session-records.nix { inherit self pkgs nix-vm-test; } {
+            inherit entry nails;
+            # Classic wtmp on systemd 262, which resets the start time across
+            # a soft-reboot, and lastlog2 through PAM's login stack.
+            assertKind = "classic-wtmp-reset";
+            login = true;
+            target = "sandboxed";
+          }
+        ))
+      ]
+    ) stagedImages
+  );
+  # Staged scenario name ("<image>-smoke", "<image>-records") -> its
+  # attribute, and the seconds each gets.
+  stagedTable = lib.listToAttrs (
+    lib.concatMap (name: [
+      (lib.nameValuePair "${name}-smoke" "${name}-staged-smoke")
+      (lib.nameValuePair "${name}-records" "${name}-staged-records")
+    ]) stagedImages
+  );
+  stagedTimeouts = lib.listToAttrs (
+    lib.concatMap (name: [
+      (lib.nameValuePair "${name}-staged-smoke" smokeTimeout)
+      (lib.nameValuePair "${name}-staged-records" recordsSet.timeout)
+    ]) stagedImages
+  );
+
   # Fact-capture probes for the families not admitted yet, keyed "<name>-probe".
   # Like the records scenarios they are host drivers. The metadata lists the
   # ones whose image is pinned, for a dispatch of distro-e2e.yml that runs the
@@ -134,13 +194,16 @@ let
       )
       // driverTimeouts probeSet probeName
       // driverTimeouts recordsSet recordsName
-      // driverTimeouts refusalSet refusalName;
+      // driverTimeouts refusalSet refusalName
+      // stagedTimeouts;
     # Probe name -> its attribute, for every probe a run can boot.
     probes = lib.genAttrs probeSet.runnable probeName;
     # Distribution -> its records scenario's attribute.
     records = lib.genAttrs recordsSet.runnable recordsName;
     # Image name -> its refusal's attribute, for every refusal a run can boot.
     refusals = lib.genAttrs refusalSet.runnable refusalName;
+    # Staged scenario name -> its attribute (stagedImages).
+    staged = stagedTable;
   };
 
   # Every entry reduced to the derivation path of a minimal VM test, so the
@@ -170,6 +233,7 @@ tests
 // records
 // probes
 // refusals
+// stagedScenarios
 // oracleImages
 // {
   _metadata = metadata;

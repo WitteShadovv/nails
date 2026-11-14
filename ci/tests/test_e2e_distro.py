@@ -23,6 +23,7 @@ def sample_metadata(
     probes: dict[str, str] | None = None,
     records: dict[str, str] | None = None,
     refusals: dict[str, str] | None = None,
+    staged: dict[str, str] | None = None,
 ) -> distro.DistroMetadata:
     scenarios = scenarios or {
         "debian-12": ["debian-12-smoke"],
@@ -38,11 +39,17 @@ def sample_metadata(
         records = {name: f"{name}-records" for name in ("debian-13", "ubuntu-24.04")}
     if refusals is None:
         refusals = {name: f"{name}-refusal" for name in ("arch-boxes", "fedora-44")}
+    if staged is None:
+        staged = {
+            "arch-boxes-smoke": "arch-boxes-staged-smoke",
+            "arch-boxes-records": "arch-boxes-staged-records",
+        }
     if timeouts is None:
         timeouts = {name: 2400 for members in scenarios.values() for name in members}
         timeouts.update({attr: 1200 for attr in probes.values()})
         timeouts.update({attr: 1800 for attr in records.values()})
         timeouts.update({attr: 900 for attr in refusals.values()})
+        timeouts.update({attr: 2400 for attr in staged.values()})
     return distro.DistroMetadata(
         distros=list(scenarios),
         scenarios=scenarios,
@@ -50,6 +57,7 @@ def sample_metadata(
         probes=probes,
         records=records,
         refusals=refusals,
+        staged=staged,
     )
 
 
@@ -145,10 +153,23 @@ class ParseMetadataTest(unittest.TestCase):
         self.assertEqual(meta.records, {"debian-13": "debian-13-records"})
         self.assertEqual(meta.refusals, {"fedora-44": "fedora-44-refusal"})
 
+    def test_parses_staged_scenarios_and_they_are_optional(self) -> None:
+        empty: dict[str, object] = {"distros": [], "scenarios": {}, "timeouts": {}}
+        self.assertEqual(distro.parse_distro_metadata(empty).staged, {})
+        payload = {
+            "distros": [],
+            "scenarios": {},
+            "timeouts": {"arch-boxes-staged-smoke": 2400},
+            "staged": {"arch-boxes-smoke": "arch-boxes-staged-smoke"},
+        }
+        meta = distro.parse_distro_metadata(payload)
+        self.assertEqual(meta.staged, {"arch-boxes-smoke": "arch-boxes-staged-smoke"})
+
     def test_rejects_a_driver_without_timeout(self) -> None:
         for key, table in (
             ("records", {"debian-13": "debian-13-records"}),
             ("refusals", {"fedora-44": "fedora-44-refusal"}),
+            ("staged", {"arch-boxes-smoke": "arch-boxes-staged-smoke"}),
         ):
             with self.subTest(key=key):
                 payload = {"distros": [], "scenarios": {}, "timeouts": {}, key: table}
@@ -156,7 +177,7 @@ class ParseMetadataTest(unittest.TestCase):
                     distro.parse_distro_metadata(payload)
 
     def test_rejects_driver_tables_that_are_not_a_mapping(self) -> None:
-        for key in ("records", "refusals"):
+        for key in ("records", "refusals", "staged"):
             with self.subTest(key=key):
                 payload: dict[str, object] = {
                     "distros": [],
@@ -337,10 +358,44 @@ class PlanDriverMatrixTest(unittest.TestCase):
         with self.assertRaises(distro.DistroError):
             distro.plan_driver_matrix(sample_metadata(), "smoke")
 
+    def test_one_job_per_staged_scenario_none_gating(self) -> None:
+        meta = sample_metadata()
+        include = distro.plan_matrix(meta, ["staged"])["include"]
+        self.assertEqual(
+            [(job["distro"], job["tests"]) for job in include],
+            [
+                ("arch-boxes-smoke", ["arch-boxes-staged-smoke"]),
+                ("arch-boxes-records", ["arch-boxes-staged-records"]),
+            ],
+        )
+        for job in include:
+            self.assertEqual((job["suite"], job["gating"]), ("staged", False))
+            self.assertEqual(job["seconds"], 2400)
+
+    def test_a_staged_scenario_is_chosen_by_its_name(self) -> None:
+        include = distro.plan_matrix(sample_metadata(), ["staged"], ["arch-boxes-smoke"])[
+            "include"
+        ]
+        self.assertEqual([job["tests"] for job in include], [["arch-boxes-staged-smoke"]])
+        with self.assertRaisesRegex(
+            distro.DistroError, "unknown staged scenario: arch-boxes"
+        ):
+            distro.plan_matrix(sample_metadata(), ["staged"], ["arch-boxes"])
+
+    def test_no_staged_image_raises(self) -> None:
+        with self.assertRaisesRegex(distro.DistroError, "no image is staged"):
+            distro.plan_matrix(sample_metadata(staged={}), ["staged"])
+
 
 class ExpandSuitesTest(unittest.TestCase):
     def test_all_is_smoke_records_and_refusal(self) -> None:
         self.assertEqual(distro.expand_suites(["all"]), ["smoke", "records", "refusal"])
+
+    def test_staged_comes_last_and_only_when_named(self) -> None:
+        self.assertEqual(
+            distro.expand_suites(["staged", "probe", "all"]),
+            ["smoke", "records", "refusal", "probe", "staged"],
+        )
 
     def test_suites_come_once_in_plan_order(self) -> None:
         self.assertEqual(

@@ -952,18 +952,22 @@ TMPDIR=/var/tmp/r XDG_RUNTIME_DIR=/var/tmp/r ./fedora-44-refusal/bin/test-driver
 
 The tier needs KVM, so it is a VM tier, not a container one. A hosted
 `ubuntu-26.04` runner exposes `/dev/kvm`; a self-hosted KVM runner is selected by
-passing its label list. `.github/workflows/distro-e2e.yml` runs it in four
-suites: `smoke`, `records` and `refusal`, which run together as `all`, and
-`probe`. The CI matrix is planned by `python3 -m ci.e2e distro-plan`: the smoke
-shards are kept at or below eight parallel jobs (distributions times their
+passing its label list. `.github/workflows/distro-e2e.yml` runs it in five
+suites: `smoke`, `records` and `refusal`, which run together as `all`, `probe`
+and `staged`. The CI matrix is planned by `python3 -m ci.e2e distro-plan`: the
+smoke shards are kept at or below eight parallel jobs (distributions times their
 shards), and each records scenario, refusal and probe is a job of its own that
-builds its driver and runs `bin/test-driver` on the runner. The nightly runs
+builds its driver and runs `bin/test-driver` on the runner. Each staged
+scenario, the smoke or records scenario of an image staged for its family's
+admission run with a test-only build that admits the family, is a job of its
+own too, built in the sandbox as a smoke scenario is; only a dispatch runs
+them. The nightly runs
 run `all`. On a pull request, a push runs the records and refusal suites when
 the change touches what the tier is built from, and `all` when the pull request
 carries the `distro-e2e` label, and adding the label runs `all` at once. A
 dispatch takes the suite and the runner as inputs. The records and refusal jobs
 gate: the workflow's `distro-result` fails when one of them fails. The smoke
-scenarios and the probes are informational
+and staged scenarios and the probes are informational
 ([details](../../docs/ci.md#the-vm-tests-distro-e2eyml)). The NixOS suite in
 `e2e.yml` is unchanged and stays NixOS-only.
 

@@ -378,8 +378,8 @@ def build_parser() -> argparse.ArgumentParser:
         "distros",
         nargs="*",
         help=(
-            "distributions, records scenarios, refused images or probes to run, "
-            "or all of each suite when none are named"
+            "distributions, records scenarios, refused images, probes or staged "
+            "scenarios to run, or all of each suite when none are named"
         ),
     )
     distro_cmd.add_argument(
@@ -389,7 +389,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "a suite to plan, again for more: the smoke scenarios, the records "
             "scenarios, the refusals, the fact probes of the images not admitted "
-            "yet, or all (smoke, records and refusal, the default)"
+            "yet, the scenarios of the images staged for admission, or all "
+            "(smoke, records and refusal, the default)"
         ),
     )
     distro_cmd.add_argument(
@@ -398,7 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=distro.MAX_DISTRO_JOBS,
         help=(
             "upper bound on parallel smoke jobs (distros x shards); each "
-            "records scenario, refusal and probe is one job"
+            "records scenario, refusal, probe and staged scenario is one job"
         ),
     )
     distro_cmd.set_defaults(handler=_command_distro_plan)
