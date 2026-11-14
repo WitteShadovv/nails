@@ -198,11 +198,31 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyRootCheck {
         "the decoy root can be mounted again for the way back"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(judge_decoy_root(
-            &read_mountinfo().unwrap_or_default(),
-            &self.root,
-        ))
+        Ok(self.judge(read_mountinfo()))
     }
+}
+
+impl DecoyRootCheck {
+    /// The result for the mount table `mounts`, as it was read: without it
+    /// NAILS cannot tell what the decoy root is mounted from, and refuses.
+    fn judge(&self, mounts: std::io::Result<Vec<MountEntry>>) -> CheckResult {
+        match mounts {
+            Ok(mounts) => judge_decoy_root(&mounts, &self.root),
+            Err(error) => without_mount_table(
+                "the decoy root can be mounted again for the way back",
+                &error,
+            ),
+        }
+    }
+}
+
+/// The refusal of a check that judges by the mount table, which it cannot
+/// read for `error`: NAILS cannot tell `what`.
+fn without_mount_table(what: &str, error: &std::io::Error) -> CheckResult {
+    CheckResult::fail_with(
+        format!("NAILS cannot tell whether {what}: it cannot read the mount table ({error})"),
+        crate::filesystem::mountinfo::UNREADABLE_FIX,
+    )
 }
 
 /// Judge where the machine is.
@@ -266,13 +286,10 @@ impl SessionStateCheck {
             Ok(mounts) => {
                 judge_session(&probe::probe_with(&self.paths, &self.hidden_root, &mounts))
             }
-            Err(error) => CheckResult::fail_with(
-                format!(
-                    "NAILS cannot tell whether the hidden session is already active or an \
-                     interrupted activation left a next root mounted: it cannot read the mount \
-                     table ({error})"
-                ),
-                crate::filesystem::mountinfo::UNREADABLE_FIX,
+            Err(error) => without_mount_table(
+                "the hidden session is already active or an interrupted activation left a next \
+                 root mounted",
+                &error,
             ),
         }
     }
@@ -447,11 +464,26 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
     }
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let snapshot = Snapshot::read(fs, &self.root);
-        Ok(self.judge(fs, &snapshot, &read_mountinfo().unwrap_or_default()))
+        Ok(self.judge_read(fs, &snapshot, read_mountinfo()))
     }
 }
 
 impl FstabPolicyCheck {
+    /// [`judge`](Self::judge) with the decoy's mount table `mounts` as it
+    /// was read: a decision depends on what is mounted, so without the table
+    /// NAILS cannot tell whether every decision is safe, and refuses.
+    fn judge_read<F: Filesystem>(
+        &self,
+        fs: &F,
+        snapshot: &Arc<Snapshot>,
+        mounts: std::io::Result<Vec<MountEntry>>,
+    ) -> CheckResult {
+        match mounts {
+            Ok(mounts) => self.judge(fs, snapshot, &mounts),
+            Err(error) => without_mount_table("every decoy filesystem has a safe decision", &error),
+        }
+    }
+
     /// The result for the decoy root, given the decoy's mount table `mounts`,
     /// with each lookup on the running system asked of `snapshot` first. A
     /// lookup the guard does not make refuses the entry, and so does a table
