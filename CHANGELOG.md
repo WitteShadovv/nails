@@ -847,6 +847,23 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
   no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line. `nails check` does not test this yet; see
   docs/decoy-requirements.md.
+- On the same hosts, where SELinux runs or may run, PID 1 starts NAILS's own steps through
+  `/usr/bin/env` instead of starting the copy of NAILS in `/run` itself: the last step before each
+  switch, the hidden session's watcher and sleep guard, and the steps the way back leaves for the
+  decoy's first start. Under SELinux a program PID 1 starts runs in the domain the policy gives the
+  type of its file; the copy in `/run` has the type of the files there, which keeps the step in
+  PID 1's own domain, and `/usr/bin/env` has the type of the system's programs, which a targeted
+  policy starts in a service domain of its own. It is decided from the host facts alone, never
+  from a flag or a setting, recorded in the session plan so the way back starts its steps the same
+  way, and nothing is installed into the decoy's policy. Activation is refused while
+  `/usr/bin/env` does not resolve to an executable file in the decoy root, before it writes
+  anything, or in the hidden root it builds; `deactivate` refuses to return while the hidden root
+  lacks it, and a plain `emergency` powers off instead of returning. On a decoy root mounted
+  without `noatime` its starts from the decoy root, at the switch into the hidden session and at
+  the decoy's first start after the way back, can update the program's access time, at most once
+  a day under `relatime`, as activation's own `systemctl` calls do. Elsewhere, as on a stock Debian,
+  Ubuntu or NixOS, nothing changes. No test of this repository runs these steps under a loaded
+  SELinux policy yet; see docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new
