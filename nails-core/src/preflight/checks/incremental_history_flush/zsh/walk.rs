@@ -163,6 +163,9 @@ struct Walker<'a> {
     events: Vec<Event>,
     /// A `return` or `exit` was seen: the rest of the file may not run.
     may_stop: bool,
+    /// A command of the file ran outside a function's body, at which zsh
+    /// may have stopped the file with an error ([`Event::Assign`]).
+    ran: bool,
     /// The structure did not close as zsh's would.
     confused: bool,
     /// How many `source` and `.` commands it read.
@@ -233,6 +236,9 @@ impl Walker<'_> {
         };
         if let Some(outer) = self.frames.last_mut() {
             outer.nested = true;
+        }
+        if frame != Frame::Function && self.function().is_none() {
+            self.ran = true;
         }
         self.frames.push(Open {
             name,
@@ -307,6 +313,7 @@ impl Walker<'_> {
                         bare: true,
                     }),
                     first: *first,
+                    in_function: false,
                 };
             }
         }
@@ -384,6 +391,7 @@ impl Walker<'_> {
             .is_some_and(|first| !command::is_assignment(&first.text))
             && words.iter().all(|word| word.bare);
         if std::mem::take(&mut self.pending.redirected) && (words.is_empty() || vanish) {
+            self.ran |= self.function().is_none();
             // A redirection with no command runs the command NULLCMD names
             // (`cat`) or, for an input alone, READNULLCMD (`more`), a function
             // the files define by that name among them.
@@ -408,7 +416,9 @@ impl Walker<'_> {
             Input::None
         };
         let feeder = Self::feeder(&words);
+        let ran = !words.is_empty() && !self.pending.body && self.function().is_none();
         self.command(words, after, piped, input);
+        self.ran |= ran;
         if !piped_after {
             self.pending.feeders = Some(Vec::new());
         } else if self.pending.piped {
@@ -657,6 +667,7 @@ impl Walker<'_> {
             self.events.push(Event::Fpath {
                 dir: None,
                 first: false,
+                in_function: false,
             });
         } else if name == "fpath" {
             self.fpaths += 1;
@@ -820,6 +831,7 @@ impl Walker<'_> {
                     // A command of its own, which sets no option; in a
                     // condition, its end (`if (( ... )) cmd`).
                     self.pending.function_next = false;
+                    self.ran |= self.function().is_none();
                     self.counted();
                     self.mention_arithmetic(&text);
                     if self.pending.words.is_empty() && self.in_head() && self.next_starts_body() {
@@ -863,6 +875,8 @@ struct Walked {
     alias_params: usize,
     function_params: usize,
     may_stop: bool,
+    /// A command of it ran outside a function's body ([`Walker::ran`]).
+    ran: bool,
     /// How many `((` and `$[` the texts of its tokens hold
     /// ([`arith::marks`]).
     marks: usize,
@@ -891,6 +905,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         arrays: BTreeMap::new(),
         events: Vec::new(),
         may_stop: false,
+        ran: false,
         confused: false,
         sources: 0,
         evals: 0,
@@ -949,6 +964,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         alias_params: walker.alias_params,
         function_params: walker.function_params,
         may_stop: walker.may_stop,
+        ran: walker.ran,
         marks,
         unfinished: walker.pending.function_next,
     }

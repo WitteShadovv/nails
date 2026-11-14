@@ -97,6 +97,7 @@ impl Walker<'_> {
     /// (`array`), may split into others ([`Event::FpathSplits`]).
     pub(super) fn fpath_dir(&mut self, word: &Word, first: bool, given: Given) {
         let array = given == Given::Array;
+        let in_function = self.function().is_some();
         // An array's element, which zsh splits under SH_WORD_SPLIT, unlike a
         // value assigned, and a subscript outside braces, which KSH_ARRAYS
         // makes the first element and `[1]` (`$fpath[1]`).
@@ -123,6 +124,7 @@ impl Walker<'_> {
                         bare: false,
                     }),
                     first,
+                    in_function,
                 })
                 .collect();
             self.events.extend(dirs);
@@ -131,6 +133,7 @@ impl Walker<'_> {
         self.events.push(Event::Fpath {
             dir: Some(word.clone()),
             first,
+            in_function,
         });
     }
 
