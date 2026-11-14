@@ -1,23 +1,27 @@
-"""Logical scans of a btrfs filesystem in a disk image, beside the raw one.
+"""Reads of the older roots of a btrfs filesystem in a disk image.
 
 A raw scan of a disk image (``disk_forensics.run_strings_scan``) reads the
 bytes as they lie on the disk. On a btrfs that compresses file contents it
 cannot see what a compressed extent holds, and it never tells a deleted file
 from free space. The smoke scenario (``nix/distro-tests/tests/smoke.nix``)
-therefore also reads a btrfs decoy the way btrfs-progs does, offline and
-read-only, from a sparse copy of its partition:
+therefore reads the live tree's files through the decoy's own kernel, and the
+history of a btrfs decoy the way btrfs-progs does, offline and read-only, from
+a sparse copy of its partition: ``btrfs-find-root`` lists the older roots of
+the tree of tree roots that copy-on-write left on the disk, and ``btrfs
+restore -t`` restores from one of them, so a file written and deleted since is
+still found while its blocks have not been reused.
 
-- the live tree: ``btrfs restore`` writes the files out decompressed, and the
-  scan searches their contents;
-- the history: ``btrfs-find-root`` lists the older roots of the tree of tree
-  roots that copy-on-write left on the disk, and ``btrfs restore -t`` restores
-  from one of them, so a file written and deleted since is still found while
-  its blocks have not been reused.
+``btrfs restore`` does not read the live tree for the scenario: btrfs-progs
+stops on an inline zstd extent whose frame holds a whole block of which the
+file uses less ("zstd frame incomplete"), which the kernel reads, and with
+``-i`` it goes on past such a file without failing, so a read of the live tree
+with it would leave files unread unseen. Each file the scenario looks for in
+an older root was written by the decoy's kernel, which btrfs restore reads.
 
 Three planted controls show what each read sees on the image: a file btrfs
-keeps plain, which the raw scan finds; a compressed file, which only the
-logical scan finds; and a compressed file written and deleted, which only the
-history finds.
+keeps plain, which the raw scan finds; a compressed file, which the raw scan
+misses and the read through the kernel finds; and a compressed file written
+and deleted, which only the history finds.
 
 The pure parts (reading ``sfdisk --json``, ``btrfs-find-root`` and a
 superblock, building a path filter) are unit-tested without a VM by the
@@ -277,6 +281,15 @@ def restore(
         check=False,
         timeout=1800,
     )
+
+
+def paths_in_tree(tree: str | os.PathLike[str], paths: Iterable[str]) -> list[str]:
+    """Which of `paths`, each absolute in the filesystem, `tree` holds: a file,
+    a folder or a link, whatever it holds. btrfs restore writes out a file it
+    then cannot read as well, so a path found here was in the tree it read."""
+    return [
+        path for path in paths if os.path.lexists(os.path.join(tree, path.lstrip("/")))
+    ]
 
 
 def tokens_in_tree(tree: str | os.PathLike[str], tokens: Sequence[str]) -> set[str]:
