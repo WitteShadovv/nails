@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
+from typing import Any
 
 import distro_checks as dc
 
@@ -854,3 +855,229 @@ class PlatformRowProblemTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RootMountTest(unittest.TestCase):
+    def test_a_btrfs_subvolume_drops_its_bracket(self) -> None:
+        self.assertEqual(
+            dc.root_mount("/dev/sda3[/] btrfs rw,relatime,compress=zstd:1,subvol=/\n"),
+            ("/dev/sda3", "btrfs", "rw,relatime,compress=zstd:1,subvol=/"),
+        )
+
+    def test_an_ext4_root(self) -> None:
+        self.assertEqual(
+            dc.root_mount("/dev/vda1 ext4 rw,relatime\n"),
+            ("/dev/vda1", "ext4", "rw,relatime"),
+        )
+
+    def test_anything_but_one_root_is_an_error(self) -> None:
+        for text in ("", "a ext4 rw\nb ext4 rw\n", "/dev/vda1 ext4\n"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                dc.root_mount(text)
+
+
+class CompressesTest(unittest.TestCase):
+    def test_compress_and_compress_force_compress(self) -> None:
+        for options in ("rw,compress=zstd:1", "rw,compress-force=lzo", "compress"):
+            with self.subTest(options=options):
+                self.assertTrue(dc.compresses(options))
+
+    def test_no_option_or_an_off_value_does_not(self) -> None:
+        for options in ("rw,space_cache=v2", "compress=no", "compress=none", ""):
+            with self.subTest(options=options):
+                self.assertFalse(dc.compresses(options))
+
+
+class DiskSwapTest(unittest.TestCase):
+    PROC_SWAPS = (
+        "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+        "/swap/swapfile                          file\t\t524284\t\t0\t\t-1\n"
+        "/dev/zram0                              partition\t4096\t\t0\t\t100\n"
+    )
+
+    def test_zram_is_no_disk_swap(self) -> None:
+        self.assertEqual(dc.disk_swaps(self.PROC_SWAPS), ["/swap/swapfile"])
+
+    def test_no_swap(self) -> None:
+        self.assertEqual(dc.disk_swaps("Filename Type Size Used Priority\n"), [])
+
+    def test_fstab_swap_lines(self) -> None:
+        fstab = (
+            "# /swap/swapfile none swap defaults 0 0\n"
+            "/swap/swapfile none swap defaults 0 0\n"
+            "UUID=x / btrfs rw 0 0\n"
+            "/dev/sdb2 none swap sw,pri=5 0 0\n"
+        )
+        self.assertEqual(
+            dc.fstab_swaps(fstab),
+            [("/swap/swapfile", ["defaults"]), ("/dev/sdb2", ["sw", "pri=5"])],
+        )
+
+    def test_noauto_goes_on_every_swap_line_and_nothing_else_changes(self) -> None:
+        fstab = (
+            "# /swap/swapfile none swap defaults 0 0\n"
+            "/swap/swapfile none swap defaults 0 0\n"
+            "UUID=x / btrfs rw,noatime 0 0\n"
+            "/dev/sdb2\tnone\tswap\tsw,noauto\t0 0\n"
+            "/dev/sdc1 none swap sw"
+        )
+        self.assertEqual(
+            dc.with_swaps_noauto(fstab),
+            "# /swap/swapfile none swap defaults 0 0\n"
+            "/swap/swapfile none swap defaults,noauto 0 0\n"
+            "UUID=x / btrfs rw,noatime 0 0\n"
+            "/dev/sdb2\tnone\tswap\tsw,noauto\t0 0\n"
+            "/dev/sdc1 none swap sw,noauto",
+        )
+
+    def test_an_options_field_that_repeats_an_earlier_field_is_found_in_place(
+        self,
+    ) -> None:
+        # The options are replaced where they stand, after the third field.
+        self.assertEqual(
+            dc.with_swaps_noauto("sw none swap sw 0 0\n"),
+            "sw none swap sw,noauto 0 0\n",
+        )
+
+    def test_the_swap_unit_is_the_escaped_path(self) -> None:
+        self.assertEqual(dc.swap_unit("/swap/swapfile"), "swap-swapfile.swap")
+        self.assertEqual(
+            dc.swap_unit("/dev/disk/by-uuid/a-b"), "dev-disk-by\\x2duuid-a\\x2db.swap"
+        )
+
+
+class MountedAtTest(unittest.TestCase):
+    def test_the_filesystem_behind_an_automount(self) -> None:
+        self.assertEqual(
+            dc.mounted_at("systemd-1 autofs\n/dev/sda2 vfat\n"), ("/dev/sda2", "vfat")
+        )
+
+    def test_only_the_automount(self) -> None:
+        self.assertIsNone(dc.mounted_at("systemd-1 autofs\n"))
+        self.assertIsNone(dc.mounted_at(""))
+
+    def test_unique_keeps_the_first_order(self) -> None:
+        self.assertEqual(dc.unique(["/efi", "/boot", "/efi"]), ["/efi", "/boot"])
+
+
+class BaselineResidueTest(unittest.TestCase):
+    @staticmethod
+    def report(*findings: tuple[str, str, str]) -> str:
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-11-14T08:00:00Z",
+                "result": {
+                    "status": "Secure",
+                    "findings": [
+                        {"severity": severity, "category": category, "message": message}
+                        for severity, category, message in findings
+                    ],
+                },
+            }
+        )
+
+    def test_notes_are_no_residue(self) -> None:
+        self.assertEqual(
+            dc.baseline_residue(
+                self.report(("Info", "timesync", "clock stamp present"))
+            ),
+            [],
+        )
+
+    def test_a_warning_and_a_critical_finding_are(self) -> None:
+        self.assertEqual(
+            dc.baseline_residue(
+                self.report(
+                    (
+                        "Warn",
+                        "block-device",
+                        "Open loop device not backing the hidden volume",
+                    ),
+                    ("Info", "note", "RAM caveat"),
+                    ("Critical", "file", "a trace"),
+                )
+            ),
+            [
+                "Warn block-device: Open loop device not backing the hidden volume",
+                "Critical file: a trace",
+            ],
+        )
+
+
+class RehearseScanTest(unittest.TestCase):
+    ROOT = "/dev/sda3"
+    COMPRESSED = (
+        "the decoy filesystem compresses file contents, so a leaked canary may be"
+        " stored compressed, which this raw plaintext scan cannot match"
+    )
+    COW = (
+        "the decoy is on a copy-on-write filesystem that can compress file contents per"
+        " file or subvolume, invisibly to the mount options, so this raw plaintext scan"
+        " cannot prove the canary absent"
+    )
+
+    @staticmethod
+    def device(name: str, blind: str | None = None, **extra: Any) -> dict[str, Any]:
+        entry: dict[str, Any] = {"device": name, "bytes_scanned": 4096, "hits": []}
+        entry["blind_spot"] = blind
+        entry.update(extra)
+        return entry
+
+    def problems(
+        self, rc: int, devices: list[dict[str, Any]], rootfs: str, options: str
+    ) -> list[str]:
+        return dc.rehearse_scan_problems(
+            rc, {"devices": devices}, self.ROOT, rootfs, options
+        )
+
+    def test_a_compressed_btrfs_root_exits_9_with_its_blind_spot(self) -> None:
+        devices = [self.device(self.ROOT, self.COMPRESSED), self.device("/dev/sda2")]
+        self.assertEqual(self.problems(9, devices, "btrfs", "rw,compress=zstd:1"), [])
+
+    def test_a_plain_btrfs_root_names_copy_on_write(self) -> None:
+        devices = [self.device(self.ROOT, self.COW)]
+        self.assertEqual(self.problems(9, devices, "btrfs", "rw,space_cache=v2"), [])
+        wrong = [self.device(self.ROOT, self.COMPRESSED)]
+        self.assertTrue(self.problems(9, wrong, "btrfs", "rw,space_cache=v2"))
+
+    def test_an_ext4_root_exits_0_without_a_blind_spot(self) -> None:
+        devices = [self.device(self.ROOT), self.device("/dev/sda15")]
+        self.assertEqual(self.problems(0, devices, "ext4", "rw,relatime"), [])
+
+    def test_never_the_other_exit_code(self) -> None:
+        compressed = [self.device(self.ROOT, self.COMPRESSED)]
+        self.assertIn(
+            "the scan exited 0, not 9",
+            self.problems(0, compressed, "btrfs", "compress=zstd"),
+        )
+        plain = [self.device(self.ROOT)]
+        self.assertIn("the scan exited 9, not 0", self.problems(9, plain, "ext4", "rw"))
+
+    def test_a_blind_spot_missing_or_on_another_device_fails(self) -> None:
+        missing = [self.device(self.ROOT)]
+        self.assertTrue(self.problems(9, missing, "btrfs", "compress=zstd:1"))
+        elsewhere = [
+            self.device(self.ROOT, self.COMPRESSED),
+            self.device("/dev/sda2", self.COW),
+        ]
+        self.assertIn(
+            f"/dev/sda2: an unexpected blind spot: {self.COW}",
+            self.problems(9, elsewhere, "btrfs", "compress=zstd:1"),
+        )
+
+    def test_a_hit_an_error_or_an_unread_root_fails(self) -> None:
+        hit = [self.device(self.ROOT, hits=[{"offset": 1}])]
+        self.assertTrue(self.problems(0, hit, "ext4", "rw"))
+        error = [self.device(self.ROOT, error="cannot open")]
+        self.assertTrue(self.problems(0, error, "ext4", "rw"))
+        other = [self.device("/dev/sdb1")]
+        self.assertIn(
+            "the scan did not read the decoy root's device /dev/sda3: ['/dev/sdb1']",
+            self.problems(0, other, "ext4", "rw"),
+        )
+        self.assertEqual(
+            self.problems(0, [], "ext4", "rw"), ["the scan read no device"]
+        )
+        empty = [dict(self.device(self.ROOT), bytes_scanned=0)]
+        self.assertIn("the scan read no byte", self.problems(0, empty, "ext4", "rw"))

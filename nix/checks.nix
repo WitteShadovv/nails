@@ -309,8 +309,10 @@ in
   # and unit-tested without a VM, the same fast lane as e2e-helpers. The smoke
   # and refusal scenarios load distro_checks on the driver; this proves the pure
   # rules they depend on -- the smoke scenario's mount-aware canary uppers,
-  # boot-filesystem read-back and overlay feature-option check, and the refusal
-  # scenario's listings, change comparison and journal search -- stay correct,
+  # boot-filesystem read-back and overlay feature-option check, its swap,
+  # residue-baseline and rehearsal expectations and the btrfs logical scan
+  # (btrfs_scan), and the refusal scenario's listings, change comparison and
+  # journal search -- stay correct,
   # linted and typed on every `nix flake check`, not only when a distro VM test
   # runs. The probes load probe_facts the same way, for their queries and for the
   # reading of their output into the fixture record, and the committed probe
@@ -331,8 +333,10 @@ in
       python3 -m unittest discover -s nix/distro-tests/py/tests -t nix/distro-tests/py
       ruff check nix/distro-tests/py
       MYPYPATH=nix/distro-tests/py mypy \
+        nix/distro-tests/py/btrfs_scan.py \
         nix/distro-tests/py/distro_checks.py \
         nix/distro-tests/py/probe_facts.py \
+        nix/distro-tests/py/tests/test_btrfs_scan.py \
         nix/distro-tests/py/tests/test_distro_checks.py \
         nix/distro-tests/py/tests/test_probe_facts.py
     '';

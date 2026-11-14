@@ -777,3 +777,210 @@ def platform_row_problem(
         " part of the caveat until the unit is shown fixed and removed from the"
         " table."
     )
+
+
+# --- The decoy's root, its disk swap and its boot automounts ---------------
+#
+# What the smoke scenario reads of the decoy before its first switch, so it can
+# hold every later phase to it: the device and the mount options of the root
+# (which tell what a rehearsal's raw scan can see there), the disk swap of the
+# fstab (which the decoy turns on at each boot, a soft-reboot's included), and
+# the boot filesystems systemd's GPT auto-generator mounts on demand (an ESP at
+# /efi that the fstab does not list).
+
+
+def root_mount(findmnt_output: str) -> tuple[str, str, str]:
+    """The device, type and options of the root in ``findmnt -rn -o
+    SOURCE,FSTYPE,OPTIONS /`` output.
+
+    findmnt shows a btrfs subvolume after the device in brackets
+    (``/dev/sda3[/]``); the device alone is returned.
+    """
+    lines = [line for line in findmnt_output.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError(f"expected one root mount, got {lines!r}")
+    fields = lines[0].split()
+    if len(fields) != 3:
+        raise ValueError(f"expected a source, a type and options: {lines[0]!r}")
+    source, fstype, options = fields
+    return source.split("[", 1)[0], fstype, options
+
+
+def compresses(options: str) -> bool:
+    """Whether a btrfs mount's options turn compression on (``compress`` or
+    ``compress-force``, with or without an algorithm), as the kernel shows
+    them."""
+    for option in options.split(","):
+        name, _, value = option.partition("=")
+        if name in ("compress", "compress-force") and value not in (
+            "no",
+            "none",
+            "off",
+        ):
+            return True
+    return False
+
+
+def disk_swaps(proc_swaps: str) -> list[str]:
+    """The swaps in ``/proc/swaps`` that are on a disk: every one but zram,
+    which keeps what it swaps in RAM."""
+    swaps: list[str] = []
+    for line in proc_swaps.splitlines()[1:]:
+        fields = line.split()
+        if fields and not fields[0].startswith("/dev/zram"):
+            swaps.append(fields[0])
+    return swaps
+
+
+def fstab_swaps(fstab: str) -> list[tuple[str, list[str]]]:
+    """The swap lines of an fstab: each one's device or file and its options."""
+    swaps: list[tuple[str, list[str]]] = []
+    for line in fstab.splitlines():
+        fields = line.split()
+        if not fields or fields[0].startswith("#") or len(fields) < 4:
+            continue
+        if fields[2] == "swap":
+            swaps.append((fields[0], fields[3].split(",")))
+    return swaps
+
+
+def with_swaps_noauto(fstab: str) -> str:
+    """The fstab with ``noauto`` added to the options of every swap line that
+    lacks it, every other line kept byte for byte.
+
+    No boot turns such a swap on, a soft-reboot's included, and NAILS masks its
+    unit in the hidden root instead of skipping it, as nothing requires it.
+    """
+    lines: list[str] = []
+    for line in fstab.splitlines(keepends=True):
+        fields = line.split()
+        if (
+            len(fields) >= 4
+            and not fields[0].startswith("#")
+            and fields[2] == "swap"
+            and "noauto" not in fields[3].split(",")
+        ):
+            options = fields[3]
+            # Keep the line's spacing: replace the options field where it is.
+            start = 0
+            for field in fields[:3]:
+                start = line.index(field, start) + len(field)
+            at = line.index(options, start)
+            line = f"{line[:at]}{options},noauto{line[at + len(options) :]}"
+        lines.append(line)
+    return "".join(lines)
+
+
+def swap_unit(spec: str) -> str:
+    """The unit systemd's fstab generator makes for a swap file or device."""
+    return escape_path(spec) + ".swap"
+
+
+def mounted_at(findmnt_output: str) -> tuple[str, str] | None:
+    """The device and type mounted at a point, from ``findmnt -rn -o
+    SOURCE,FSTYPE -M <point>`` output; None when only an automount's autofs is
+    there."""
+    for line in findmnt_output.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[1] != "autofs":
+            return fields[0], fields[1]
+    return None
+
+
+def unique(items: Iterable[str]) -> list[str]:
+    """`items` without repeats, in their first order."""
+    seen: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.append(item)
+    return seen
+
+
+# --- The pre-activation residue baseline ---------------------------------
+
+#: The severities of a residue finding that are residue, not a note.
+RESIDUE_SEVERITIES = ("Warn", "Critical")
+
+
+def baseline_residue(report_json: str) -> list[str]:
+    """The findings of an activation's residue report (``reports/
+    activation-residue-*.json``) that are residue: each a line of its
+    severity, category and message. Info findings are notes and stay out."""
+    report = json.loads(report_json)
+    findings = report["result"]["findings"]
+    return [
+        f"{finding['severity']} {finding['category']}: {finding['message']}"
+        for finding in findings
+        if finding["severity"] in RESIDUE_SEVERITIES
+    ]
+
+
+# --- What a rehearsal's scan of the decoy must report --------------------
+
+#: What the rehearsal's scan says of a device whose filesystem compresses file
+#: contents, and of one on a copy-on-write filesystem that may compress them
+#: per file (``nails_forensics::rehearse::storage::ScanBlindSpot``).
+COMPRESSED_BLIND_SPOT = "compresses file contents"
+COPY_ON_WRITE_BLIND_SPOT = "copy-on-write filesystem"
+
+#: The exit code of a scan that finds nothing but names a blind spot.
+SCAN_WARNINGS_EXIT = 9
+
+
+def expected_blind_spot(rootfs: str, root_options: str) -> str | None:
+    """What the scan must say of the decoy root's device, from the image table's
+    root filesystem and the root's mount options: the compression blind spot on
+    a btrfs that compresses, the copy-on-write one on one that does not, and
+    nothing on any other filesystem."""
+    if rootfs != "btrfs":
+        return None
+    return (
+        COMPRESSED_BLIND_SPOT if compresses(root_options) else COPY_ON_WRITE_BLIND_SPOT
+    )
+
+
+def rehearse_scan_problems(
+    rc: int,
+    scan: Mapping[str, Any],
+    root_device: str,
+    rootfs: str,
+    root_options: str,
+) -> list[str]:
+    """Why a rehearsal's scan of the decoy, after a clean session, is not what
+    this image must give; empty when it is.
+
+    Every device is scanned without error and holds no hit. The root's device
+    is among them and carries :func:`expected_blind_spot`, and every other
+    device none. The scan exits :data:`SCAN_WARNINGS_EXIT` when the root has a
+    blind spot and 0 otherwise: never one of the two on every image.
+    """
+    problems: list[str] = []
+    devices = scan.get("devices") or []
+    if not devices:
+        return ["the scan read no device"]
+    if not any(device.get("bytes_scanned", 0) > 0 for device in devices):
+        problems.append("the scan read no byte")
+    expected = expected_blind_spot(rootfs, root_options)
+    names = [device.get("device") for device in devices]
+    if root_device not in names:
+        problems.append(
+            f"the scan did not read the decoy root's device {root_device}: {names}"
+        )
+    for device in devices:
+        name = device.get("device")
+        if "error" in device:
+            problems.append(f"{name}: {device['error']}")
+        if device.get("hits"):
+            problems.append(f"{name}: hits {device['hits']}")
+        blind = device.get("blind_spot")
+        wanted = expected if name == root_device else None
+        if wanted is None and blind is not None:
+            problems.append(f"{name}: an unexpected blind spot: {blind}")
+        if wanted is not None and (blind is None or wanted not in blind):
+            problems.append(
+                f"{name}: the blind spot should say {wanted!r}, it says {blind!r}"
+            )
+    wanted_rc = SCAN_WARNINGS_EXIT if expected is not None else 0
+    if rc != wanted_rc:
+        problems.append(f"the scan exited {rc}, not {wanted_rc}")
+    return problems
