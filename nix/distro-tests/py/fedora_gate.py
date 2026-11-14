@@ -424,6 +424,15 @@ class Gate:
             "rpm -q selinux-policy-targeted systemd kernel audit plocate 2>&1; "
             "uname -r",
         )
+        # What a VeraCrypt backend could use on this decoy: the kernel's FIPS
+        # mode, the cryptsetup the image holds, and the ciphers and hashes
+        # its kernel ships as modules or has loaded.
+        self.fact(
+            "crypto",
+            "cat /proc/sys/crypto/fips_enabled; rpm -q cryptsetup 2>&1; "
+            "ls /usr/lib/modules/$(uname -r)/kernel/crypto/ | sort; "
+            "grep -E '^name' /proc/crypto | sort -u",
+        )
         self.fact("backdoor-id", "id -Z")
         op = self.fact("operator-id", self.operator("id -Z"))
         self.check(
