@@ -346,6 +346,7 @@ in
         nix/distro-tests/py/tests/test_btrfs_controls.py \
         nix/distro-tests/py/tests/test_btrfs_scan.py \
         nix/distro-tests/py/tests/test_distro_checks.py \
+        nix/distro-tests/py/tests/test_fedora_gate.py \
         nix/distro-tests/py/tests/test_fedora_rpms.py \
         nix/distro-tests/py/tests/test_probe_facts.py \
         nix/distro-tests/py/tests/test_selinux_gate.py

@@ -1,14 +1,14 @@
 """The gate scenario of an enforcing Fedora decoy, before Fedora is admitted.
 
 ``nix/distro-tests/fedora-gate.nix`` builds one host driver per pinned Fedora
-image (``<image>-gate``) and calls :func:`run` with the driver's machine. The
-image boots with SELinux enforcing, and NAILS is a test-only build that admits
-Fedora. Every ``nails`` command runs from a real operator domain: a login
-session of its own, a transient unit with the login PAM stack, whose
-pam_selinux gives the user its default context (``unconfined_t``), checked
-with ``id -Z`` first. The harness's own shell runs as a service
-(``unconfined_service_t``), so ``runcon`` and ``su -l`` from it do not reach
-that domain.
+image (``<image>-gate``, and ``<image>-gate-noda`` with the policy's dontaudit
+rules off) and calls :func:`run` with the driver's machine. The image boots
+with SELinux enforcing, and NAILS is a test-only build that admits Fedora.
+Every ``nails`` command runs from a real operator domain: a login session of
+its own, a transient unit with the login PAM stack, whose pam_selinux gives
+the user its default context (``unconfined_t``), checked with ``id -Z``
+first. The harness's own shell runs as a service, in the domain the gate
+records (``unconfined_service_t``), not in an operator's.
 
 The scenario runs the assertions of the gate's smoke and way-back lists in one
 QEMU process:
@@ -21,34 +21,46 @@ QEMU process:
    every repository disabled and started: check refuses tuned and warns of
    firewalld and ABRT, and names none of them once the documented fixes are
    in; the locate database; lsm-status, before and after ``setenforce 0``;
-   check clean on the prepared decoy;
-3. a plain soft-reboot, the control whose denials are no denial of NAILS;
+   check clean on the prepared decoy; a failed login, which btmp records;
+3. a plain soft-reboot, the control whose denials, failed units and changes
+   on the decoy disk are no sign of NAILS;
 4. a first session, ended with ``deactivate``: SELinux enforcing in it; the
    labels of the hidden ``/``, ``/home`` and ``/var``; a copied-up file keeps
    its type and a new one gets the policy's; NAILS's processes never in
    ``init_t``; the overlay feature options pinned; the canaries land in the
-   uppers; no unit the hidden root masks failed; a login in the session; a
-   kernel log marker; a disk attached in the session reads ``getro 1``; and
-   after the way back: enforcing; the marker not in the decoy's journal, which
-   took no kernel record of the session, and the cursor above it; nothing the
-   session made left in ``/run``; ``utab`` as recorded; ``/run/initramfs``
-   unchanged; the attached disk ``getro 0``; the login and boot records as a
-   power cycle leaves them, with no record of the hidden login;
+   uppers; no NAILS unit and no unit the hidden root masks failed; a login
+   and a failed login in the session, each recorded in the session's own
+   files; a kernel log marker and a file in ``/run``; a disk attached in the
+   session read-only by the disk guard's udev rule; the rehearsal planted;
+   and after the way back: enforcing; the marker not in the decoy's journal,
+   which took no kernel record of the session, and the cursor above it;
+   nothing the session made left in ``/run``; ``utab`` given back, a line of
+   a bind mount the decoy made among it; ``/run/initramfs`` unchanged; the
+   attached disk writable again; none of the session's files on the decoy;
+   no failed unit but one a soft-reboot is known to leave; the login and boot
+   records as a power cycle leaves them, with no record of the hidden logins;
+   the rehearsal's scan, which names the compressing btrfs root as not
+   checked;
 5. a package the decoy removes after a hidden session changed its own copy of
    the package database: check warns of it with its fix;
 6. a second session, as a user through sudo with the fresh-home persona: its
-   home labelled ``user_home_dir_t``; the same assertions in it; the entry's
-   drift advisory; ended with the emergency, and the same way-back assertions;
-7. a last plain soft-reboot, and a login on the decoy, the positive control of
-   the login records.
+   home labelled ``user_home_dir_t``; the same assertions in it, the
+   rehearsal's aside; the entry's drift advisory; ended with the emergency,
+   and the same way-back assertions;
+7. a last plain soft-reboot, the second control; the decoy disk after each way
+   back changed only where a control changed it; and a login on the decoy,
+   the positive control of the login records.
 
-Every denial is counted from the boot before NAILS ran, in both roots: one is
-new when it is NAILS's own, or when neither the boot before NAILS ran nor the
-first plain soft-reboot logged its signature (``selinux_gate``). Each
-assertion is recorded with its outcome and the run goes on where it can, so
-one run says which assertions hold and which do not; ``<image>-gate.json``
-and ``<image>-gate.kmsg.txt`` in the directory ``NAILS_GATE_OUT`` names hold
-them, and the run fails at its end when one does not hold.
+Every denial and SELinux error is counted from the boot before NAILS ran, in
+both roots, from the kernel log and, while auditd runs on the stock decoy,
+from its log: one is new when it is NAILS's own, or when neither the decoy
+before the first entry (each check aside) nor the first plain soft-reboot
+logged its signature (``selinux_gate``). The audit serial numbers of the boot
+must leave no gap between the two logs. Each assertion is recorded with its
+outcome and the run goes on where it can, so one run says which assertions
+hold and which do not; ``<name>.json`` and ``<name>.kmsg.txt`` in the
+directory ``NAILS_GATE_OUT`` names hold them, and the run fails at its end
+when one does not hold.
 """
 
 from __future__ import annotations
@@ -59,6 +71,7 @@ import shlex
 import tempfile
 import traceback
 import uuid
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import distro_checks
@@ -66,19 +79,27 @@ import fedora_rpms
 import selinux_gate as sg
 
 NAILS = "/run/tools/nails"
-RAM = "/run/overlay-runtime/control"
+RUNTIME = "/run/overlay-runtime"
+RAM = f"{RUNTIME}/control"
 CONFIG = "/run/nails-gate.toml"
 FRESH_CONFIG = "/run/nails-gate-fresh.toml"
 HIDDEN = "/mnt/data"
 UPPER = f"{HIDDEN}/root/upper"
 # The hidden root's configuration: the disk guard on, so that a disk attached
-# in the session is set read-only.
+# in the session is set read-only. The watcher sweeps the disks, the guard's
+# fallback, at the start of the session and then once an hour, so a disk the
+# gate attaches later is set read-only by the guard's udev rule or not at all.
 CONFIG_TEXT = (
     f'hidden_volume_root = "{HIDDEN}"\n'
     "minimum_space_mb = 100\n"
     "\n[session_mounts]\nread_only = true\n"
+    "\n[backend_watch]\npoll_interval_secs = 3600\n"
 )
 FRESH_TEXT = '\n[persona]\nmode = "fresh-home"\n'
+# The disk guard's udev rule in a session, and its record of the disks it set
+# read-only.
+GUARD_RULE = "/run/udev/rules.d/60-overlay-runtime.rules"
+GUARD_RECORD = f"{RUNTIME}/read-only-devices"
 # The operator of the second session: a user who runs nails through sudo, with
 # a home on the decoy's /home.
 USER = "gate"
@@ -94,7 +115,13 @@ LOGIN_TTY = "tty5"
 # each entry, as an operator logs in to run the activation: its records are the
 # decoy's, and the judgment must keep them apart from the hidden session's.
 OPERATOR_TTY = "tty4"
-# A disk attached in the session, as a USB disk would be.
+# A file each session writes in /run, which its way back must take away.
+RUN_PROBE = "/run/gate-probe"
+# A bind mount the decoy makes before the first entry with a userspace option,
+# which libmount keeps in utab: the way back must give its line back.
+UTAB_BIND = "/srv/gate-utab"
+UTAB_OPTION = "x-gate.utab"
+# A disk attached in a session, as a USB disk would be.
 HOTPLUG_BYTES = 64 << 20
 # The hidden volume: a disk of its own, attached at the start of the run and
 # backed by a file on the driver's host, so that it survives every switch and
@@ -133,6 +160,45 @@ rm -f /var/lib/sss/db/config.ldb /var/lib/sss/db/config_kcm.ldb \\
   /var/lib/sss/mc/sid /var/lib/sss/secrets/secrets.ldb \\
   /var/lib/sss/pipes/nss /var/lib/sss/pipes/pam
 """
+# The policy without its dontaudit rules, for the variant that counts the
+# denials those rules keep out of the log: libsemanage rebuilds and loads it,
+# and keeps the setting in its store, so the next boot loads it the same way.
+NO_DONTAUDIT = "semodule -DB"
+NO_DONTAUDIT_FLAG = "/var/lib/selinux/targeted/disable_dontaudit"
+# A failed console login of the user the script is given: util-linux's login
+# on a terminal of its own, given a wrong password once, which it records in
+# btmp before it says "Login incorrect". The script ends login then and prints
+# what the terminal showed.
+FAILED_LOGIN = r"""
+import errno, os, pty, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv("/bin/login", ["login", sys.argv[1]])
+seen, sent, deadline = b"", False, time.monotonic() + 40
+while time.monotonic() < deadline:
+    if os.waitpid(pid, os.WNOHANG)[0]:
+        pid = 0
+        break
+    if not select.select([fd], [], [], 0.5)[0]:
+        continue
+    try:
+        data = os.read(fd, 4096)
+    except OSError as error:
+        if error.errno != errno.EIO:
+            raise
+        time.sleep(0.2)
+        continue
+    seen += data
+    if not sent and b"assword" in seen:
+        os.write(fd, b"not-the-password\n")
+        sent = True
+    elif sent and b"incorrect" in seen:
+        break
+if pid:
+    os.kill(pid, 9)
+    os.waitpid(pid, 0)
+sys.stdout.write(seen.decode("utf-8", "replace"))
+"""
 # What check warns of on the prepared decoy because of the harness and the VM,
 # not the decoy: each with why.
 HARNESS_WARNINGS = {
@@ -145,7 +211,16 @@ HARNESS_WARNINGS = {
 # The trees the canaries go to: the whole root is overlaid, /home and /var
 # are filesystems of their own on Fedora's btrfs.
 CANARY_TREES = ("home", "etc", "var", "usr", "root", "opt", "srv")
-# The units the hidden root keeps from running: none may be failed in it.
+# The files each session writes besides the canaries, which the decoy must
+# not hold after the way back.
+SESSION_FILES = (
+    "/etc/gate-new",
+    "/root/gate-new",
+    "/var/tmp/gate-new",
+    "/home/gate-dir",
+)
+# The units the hidden root keeps from running: none may be failed in either
+# root.
 HIDDEN_MASKED = (
     "systemd-remount-fs.service",
     "systemd-growfs-root.service",
@@ -154,12 +229,41 @@ HIDDEN_MASKED = (
     "grub-boot-success.timer",
     "grub-boot-success.service",
 )
+# The prefix of every unit NAILS runs: the session's watcher and the decoy's
+# reconcile step.
+NAILS_UNITS = "overlay-runtime"
+# The units a switch is known to leave failed on these images, with why. Any
+# other failed unit fails the gate, unless the first plain soft-reboot left it
+# failed as well.
+SOFT_REBOOT_FAILURES = {
+    "systemd-zram-setup@zram0.service": "the stop of the zram swap at a switch "
+    "can fail to reset the device (status=1/FAILURE), and the next root then "
+    "cannot set it up (zram: Cannot change disksize for initialized device): "
+    "that root and every later one run without the zram swap until power-off",
+}
 # The pieces the way back leaves in /run for the decoy's first start, which
 # its reconcile step removes.
 WAY_BACK_PIECES = (
     "/run/overlay-runtime-boot",
     "/run/systemd/system/overlay-runtime-boot.service",
 )
+# The decoy's login and boot record files: the records checks judge them, so
+# the comparison of the decoy disk leaves them out, with the folders sqlite
+# writes its journal in beside them.
+RECORD_PATHS = (
+    "/var/log/wtmp",
+    "/var/log/btmp",
+    "/var/log/lastlog",
+    "/var/log/wtmp.db",
+    "/var/lib/lastlog",
+    "/var/lib/wtmpdb",
+)
+# The filesystem types of the decoy's disk mounts.
+DISK_FSTYPES = ("btrfs", "ext4", "xfs", "vfat")
+# The blind spot the rehearsal's scan must name for a btrfs root mounted to
+# compress, and its exit status when it names one and finds nothing.
+COMPRESSED_BLIND_SPOT = "compresses file contents"
+SCAN_WARNINGS_EXIT = 9
 # What a check depends on that next does not have yet.
 NEEDS_LABEL = "the RAM copy labelled as a program (bin_t)"
 NEEDS_POSTURE = "the posture checks of tuned, firewalld and ABRT"
@@ -170,6 +274,119 @@ TUNED_DROPIN = "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n"
 # when a policy is.
 POLICY_KEPT = "Failed to load new SELinux policy. Continuing with old policy."
 POLICY_LOADED = "Successfully loaded SELinux policy"
+
+
+def judged_row(rows: Mapping[str, Mapping[str, Any]], name: str) -> bool:
+    """Whether check's report holds the row ``name`` with a verdict a later
+    assertion can read: a pass or a warning. A report check could not print
+    holds no row, so an assertion that a row no longer names something holds
+    only where this does."""
+    row = rows.get(name)
+    return row is not None and row.get("status") in ("pass", "warn")
+
+
+def failed_units_problems(
+    failed: Iterable[str], allowed: Mapping[str, str]
+) -> dict[str, list[str]]:
+    """The failed units of a root, sorted by what they say: NAILS's own, those
+    the hidden root masks, those ``allowed`` names (each with why), and the
+    others."""
+    found: dict[str, list[str]] = {"nails": [], "masked": [], "known": [], "other": []}
+    for unit in failed:
+        if unit.startswith(NAILS_UNITS):
+            found["nails"].append(unit)
+        elif unit in HIDDEN_MASKED:
+            found["masked"].append(unit)
+        elif unit in allowed:
+            found["known"].append(unit)
+        else:
+            found["other"].append(unit)
+    return found
+
+
+def changed_paths(listing: str) -> set[str]:
+    """The paths of a listing of changed files on the decoy, without those the
+    records checks judge (:data:`RECORD_PATHS`, a folder of them with what is
+    below it)."""
+    found = set()
+    for line in listing.splitlines():
+        path = line.strip()
+        if not path.startswith("/"):
+            continue
+        if any(path == kept or path.startswith(kept + "/") for kept in RECORD_PATHS):
+            continue
+        found.add(path)
+    return found
+
+
+def decoy_disk_residue(
+    way_back: set[str], controls: Iterable[set[str]]
+) -> list[str]:
+    """What a way back changed on the decoy disk that no plain soft-reboot
+    changed: the paths of ``way_back`` in none of ``controls``."""
+    seen: set[str] = set()
+    for control in controls:
+        seen |= control
+    return sorted(way_back - seen)
+
+
+def rehearse_scan_problems(
+    rc: int, scan: Mapping[str, Any], root_device: str
+) -> list[str]:
+    """Why the rehearsal's scan of the decoy after a clean session is not what
+    a decoy whose btrfs root compresses must give; empty when it is: every
+    device read without an error or a hit, some bytes read, the root's device
+    among them with the compression blind spot and no other device with one,
+    and the exit status of a scan that names a blind spot."""
+    problems: list[str] = []
+    devices = scan.get("devices") or []
+    if not devices:
+        return ["the scan read no device"]
+    if not any(int(device.get("bytes_scanned", 0) or 0) > 0 for device in devices):
+        problems.append("the scan read no byte")
+    names = [device.get("device") for device in devices]
+    if root_device not in names:
+        problems.append(
+            f"the scan did not read the root's device {root_device}: {names}"
+        )
+    for device in devices:
+        name = device.get("device")
+        if "error" in device:
+            problems.append(f"{name}: {device['error']}")
+        if device.get("hits"):
+            problems.append(f"{name}: hits {device['hits']}")
+        blind = device.get("blind_spot")
+        if name == root_device:
+            if not blind or COMPRESSED_BLIND_SPOT not in str(blind):
+                problems.append(
+                    f"{name}: the blind spot should say {COMPRESSED_BLIND_SPOT!r}, "
+                    f"it says {blind!r}"
+                )
+        elif blind is not None:
+            problems.append(f"{name}: an unexpected blind spot: {blind}")
+    if rc != SCAN_WARNINGS_EXIT:
+        problems.append(f"the scan exited {rc}, not {SCAN_WARNINGS_EXIT}")
+    return problems
+
+
+def in_window(
+    audit: Iterable[Mapping[str, Any]], start: float | None, end: float | None
+) -> list[Mapping[str, Any]]:
+    """The records of auditd's log written from ``start`` up to ``end``."""
+    return [
+        record
+        for record in audit
+        if (start is None or float(record["time"]) >= start)
+        and (end is None or float(record["time"]) < end)
+    ]
+
+
+def wall_of(marker: Mapping[str, Any]) -> float | None:
+    """The guest's wall clock when a marker was written, or None."""
+    try:
+        return float(str(marker.get("wall", "")).split()[0])
+    except (ValueError, IndexError):
+        return None
 
 
 class Gate:
@@ -191,7 +408,8 @@ class Gate:
         self.settings = settings
         self.out_dir = out_dir
         self.image = str(settings["image"])
-        self.name = f"{self.image}-gate"
+        variant = str(settings.get("variant", ""))
+        self.name = f"{self.image}-gate" + (f"-{variant}" if variant else "")
         self.nonce = uuid.uuid4().hex[:10]
         self.boot = -1
         self.boots: list[dict[str, Any]] = []
@@ -201,6 +419,11 @@ class Gate:
         self.calls = 0
         self.where = "decoy before the first entry"
         self.lost = False
+        # The changes on the decoy disk across each switch, by its label.
+        self.disk: dict[str, set[str]] = {}
+        # The failed units a plain soft-reboot left, which a way back may leave
+        # too, with why.
+        self.allowed_failed: dict[str, str] = dict(SOFT_REBOOT_FAILURES)
 
     # --- recording -------------------------------------------------------
 
@@ -241,6 +464,10 @@ class Gate:
         self.facts[f"b{self.boot}.{label}"] = out.strip()
         return out.strip()
 
+    def wall(self) -> str:
+        """The guest's wall clock, to the nanosecond."""
+        return self.vm.succeed("date +%s.%N").strip()
+
     # --- the operator ----------------------------------------------------
 
     def operator(self, cmd: str, user: str = "root") -> str:
@@ -268,6 +495,12 @@ class Gate:
             f"-p User={user} -p TTYPath=/dev/{tty} "
             f"-p UtmpIdentifier={tty} -p UtmpMode=user /bin/true"
         )
+
+    def failed_login(self, label: str, user: str) -> str:
+        """A console login of ``user`` that fails (:data:`FAILED_LOGIN`)."""
+        script = f"<<'GATEEOF'\n{FAILED_LOGIN}\nGATEEOF\n"
+        _, out = self.sh(label, f"python3 - {shlex.quote(user)} {script}")
+        return out
 
     def nails(
         self, args: str, user: str = "root", config: str = CONFIG, to: str = ""
@@ -306,6 +539,19 @@ class Gate:
             pass
         return status, rows
 
+    def rehearse(self, label: str, args: str) -> tuple[int, dict[str, Any], str]:
+        """``nails --json rehearse <args>`` as root's operator: its exit status,
+        its report and its whole output."""
+        status, out = self.sh(label, self.nails(f"--json rehearse {args}"), 1200)
+        start = out.find("{")
+        report: dict[str, Any] = {}
+        try:
+            if start >= 0:
+                report, _ = json.JSONDecoder().raw_decode(out[start:])
+        except ValueError:
+            pass
+        return status, report, out
+
     # --- the kernel log --------------------------------------------------
 
     def read_kmsg(self) -> None:
@@ -336,12 +582,33 @@ class Gate:
                 return marker["seq"]
         return None
 
+    def read_audit_log(self) -> None:
+        """What auditd wrote of this boot while it ran: the kernel gives a
+        running auditd every audit record instead of its log, so the denials
+        of those moments are only there."""
+        current = self.boots[self.boot]
+        _, out = self.vm.execute(
+            "cat $(ls -r /var/log/audit/audit.log* 2>/dev/null) 2>/dev/null; true",
+            check_return=False,
+            timeout=300,
+        )
+        current["audit"] = sg.audit_log(out, float(current.get("btime", 0)))
+        self.facts[f"b{self.boot}.audit-log-records"] = len(current["audit"])
+
     # --- boots and switches ----------------------------------------------
 
     def new_boot(self, why: str) -> None:
         self.boot += 1
         self.boots.append(
-            {"why": why, "records": {}, "dropped": 0, "markers": [], "console": []}
+            {
+                "why": why,
+                "records": {},
+                "dropped": 0,
+                "markers": [],
+                "console": [],
+                "audit": [],
+                "btime": 0,
+            }
         )
 
     def prepare(self) -> None:
@@ -395,6 +662,8 @@ class Gate:
         after = self.vm.succeed("cat /proc/sys/kernel/random/boot_id").strip()
         assert after != before, f"{label}: the kernel did not restart"
         self.new_boot(label)
+        btime = self.vm.succeed("awk '$1 == \"btime\" {print $2}' /proc/stat").strip()
+        self.boots[self.boot]["btime"] = int(btime) if btime.isdigit() else 0
         self.prepare()
 
     def wait_reconcile(self) -> None:
@@ -417,9 +686,37 @@ class Gate:
         )
         return [line.split()[0] for line in out.splitlines() if line.strip()]
 
+    def judge_failed(self, where: str, label: str) -> list[str]:
+        """The failed units of the root the gate is in: none of NAILS's, none
+        the hidden root masks, and no other but one a soft-reboot is known to
+        leave failed (:data:`SOFT_REBOOT_FAILURES`) or the first plain
+        soft-reboot left failed. Each known one is recorded with where it was
+        seen, and the swap the root runs with beside it."""
+        failed = self.failed_units(label)
+        swap = self.fact(f"swap-{label}", "swapon --show --noheadings; true")
+        found = failed_units_problems(failed, self.allowed_failed)
+        self.check(f"{where}: no NAILS unit failed", not found["nails"], failed)
+        self.check(
+            f"{where}: no unit the hidden root keeps off failed",
+            not found["masked"],
+            failed,
+        )
+        self.check(
+            f"{where}: no unit failed but one a switch is known to leave failed",
+            not found["other"],
+            {
+                "failed": failed,
+                "known": {unit: self.allowed_failed[unit] for unit in found["known"]},
+                "swap": swap,
+            },
+        )
+        self.facts.setdefault("known-failed-units", {})[where] = found["known"]
+        return failed
+
     def records_capture(self, label: str) -> Any:
         """The decoy's login and boot records, read live: wtmp, btmp,
-        lastlog, lastlog2 and wtmpdb where the image has them."""
+        lastlog, lastlog2 and wtmpdb where the image has them. In a session
+        they are the session's own."""
         records = self.records
         _, found = self.vm.execute(
             "find /var -name 'wtmp*.db' 2>/dev/null | head -n1", check_return=False
@@ -455,6 +752,24 @@ class Gate:
             "find /run/initramfs -xdev -type f -exec sha256sum {} + | sort",
         )
 
+    def disk_changes(self, label: str, since: str) -> set[str]:
+        """Every file and folder on the decoy's disk mounts whose contents or
+        inode (its labels among the extended attributes) changed since the
+        wall clock ``since``: the hidden volume and the gate's bind left out,
+        and the record files the records checks judge."""
+        listing = self.fact(
+            f"disk-changes-{label}",
+            "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
+            f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
+            f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
+            f'find "$target" -xdev \\( -newerct @{since} -o -newermt @{since} \\) '
+            "-print; done | sort -u",
+            600,
+        )
+        changed = changed_paths(listing)
+        self.disk[label] = changed
+        return changed
+
     # --- the decoy -------------------------------------------------------
 
     def decoy(self) -> None:
@@ -472,6 +787,13 @@ class Gate:
             "SELINUX=enforcing" in config and "SELINUXTYPE=targeted" in config,
             config,
         )
+        if self.settings.get("dontaudit") is False:
+            flag = self.fact("no-dontaudit", f"ls {NO_DONTAUDIT_FLAG} 2>&1; true")
+            self.check(
+                "the policy runs without its dontaudit rules",
+                flag == NO_DONTAUDIT_FLAG,
+                flag,
+            )
         self.fact(
             "versions",
             "rpm -q selinux-policy-targeted systemd kernel audit plocate 2>&1; "
@@ -486,7 +808,8 @@ class Gate:
             "ls /usr/lib/modules/$(uname -r)/kernel/crypto/ | sort; "
             "grep -E '^name' /proc/crypto | sort -u",
         )
-        self.fact("backdoor-id", "id -Z")
+        backdoor = self.fact("backdoor-id", "id -Z")
+        self.facts["harness-domain"] = sg.context_type(backdoor)
         op = self.fact("operator-id", self.operator("id -Z"))
         self.check(
             "the operator's login runs in unconfined_t",
@@ -513,6 +836,7 @@ class Gate:
         self.locate()
         self.lsm()
         self.clean_check()
+        self.failed_positive()
 
     def journal(self) -> None:
         status, rows = self.check_rows("check-journal")
@@ -536,8 +860,9 @@ class Gate:
         row = rows.get("decoy-persistence", {})
         self.check(
             "check no longer names the journal once it is volatile",
-            "journal" not in str(row.get("message", "")).lower(),
-            row,
+            judged_row(rows, "decoy-persistence")
+            and "journal" not in str(row.get("message", "")).lower(),
+            row or "check printed no decoy-persistence row",
         )
 
     def auditd(self) -> None:
@@ -574,15 +899,18 @@ class Gate:
             gone == "gone",
             gone,
         )
+        if gone == "gone":
+            self.read_audit_log()
         _, rows = self.check_rows("check-auditd-off")
         row = rows.get("decoy-persistence", {})
         self.check(
             "check no longer names auditd once it is off",
-            "audit"
+            judged_row(rows, "decoy-persistence")
+            and "audit"
             not in (
                 str(row.get("message", "")) + str(row.get("remediation", ""))
             ).lower(),
-            row,
+            row or "check printed no decoy-persistence row",
         )
 
     def posture(self) -> None:
@@ -656,7 +984,10 @@ class Gate:
         found["ABRT"] = row.get("status") == "warn" and "abrt" in text.lower()
         self.check(
             "check names tuned no more after its documented fix",
-            found["tuned"] and "tuned" not in text and status != 4,
+            found["tuned"]
+            and judged_row(rows, "decoy-persistence")
+            and "tuned" not in text
+            and status != 4,
             text,
             NEEDS_POSTURE,
         )
@@ -681,7 +1012,9 @@ class Gate:
             # Where check never named a daemon, a pass here would say nothing.
             self.check(
                 f"check names {daemon} no more after its documented fix",
-                found[daemon] and daemon.lower() not in text.lower(),
+                found[daemon]
+                and judged_row(rows, "decoy-persistence")
+                and daemon.lower() not in text.lower(),
                 text if found[daemon] else "not judged: check never named it",
                 NEEDS_POSTURE,
             )
@@ -739,8 +1072,8 @@ class Gate:
         self.facts["clean-check-warnings"] = warned
         self.check(
             "check refuses nothing on the prepared decoy",
-            not failed and status in (0, 9),
-            {"exit": status, "failed": failed},
+            bool(rows) and not failed and status in (0, 9),
+            {"exit": status, "rows": len(rows), "failed": failed},
         )
         allowed = dict(HARNESS_WARNINGS)
         if not self.settings.get("validated"):
@@ -749,8 +1082,21 @@ class Gate:
         self.check(
             "check warns of nothing on the prepared decoy but what the harness, "
             "the VM and an untested release bring",
-            set(warned) <= set(allowed),
+            bool(rows) and set(warned) <= set(allowed),
             {name: row.get("message", "") for name, row in warned.items()},
+        )
+
+    def failed_positive(self) -> None:
+        """A failed login on the decoy is recorded where the reader sees it:
+        the records the gate reads can show one."""
+        before = self.records_capture("before-decoy-failed-login")
+        self.facts["decoy-failed-login"] = self.failed_login("decoy-failed-login", USER)
+        after = self.records_capture("after-decoy-failed-login")
+        added = self.records.utmp_added(before.btmp, after.btmp)
+        self.check(
+            "a failed login on the decoy writes a btmp record the reader sees",
+            bool(added),
+            added or self.facts["decoy-failed-login"][-500:],
         )
 
     # --- a session -------------------------------------------------------
@@ -759,17 +1105,29 @@ class Gate:
         """What the way back is compared with, taken on the decoy right before
         the entry."""
         state: dict[str, Any] = {}
-        state["run"] = self.run_listing()
-        state["wall"] = self.session.wall_clock(self.vm)
+        if n == 1:
+            bind = self.fact(
+                "utab-bind",
+                f"mkdir -p {UTAB_BIND}; mountpoint -q {UTAB_BIND} || "
+                f"mount --bind -o {UTAB_OPTION} {UTAB_BIND} {UTAB_BIND}; "
+                f"grep -F TARGET={UTAB_BIND} /run/mount/utab",
+            )
+            self.check(
+                "the decoy's utab holds the line of its bind mount before the entry",
+                UTAB_OPTION in bind,
+                bind,
+            )
+        state["bound"] = self.vm.execute(f"mountpoint -q {UTAB_BIND}")[0] == 0
         state["mountinfo"] = self.vm.succeed("cat /proc/self/mountinfo")
         state["utab"] = self.vm.succeed("cat /run/mount/utab 2>/dev/null || true")
         state["initramfs"] = self.initramfs()
         state["records"] = self.records_capture(f"before-{n}")
         state["noexec"] = "noexec" in self.vm.succeed("findmnt -no OPTIONS /run")
         state["failed"] = self.failed_units(f"failed-before-{n}")
+        self.fact(f"swap-before-{n}", "swapon --show --noheadings; true")
         return state
 
-    def enter(self, n: int, user: str, config: str) -> bool:
+    def enter(self, n: int, user: str, config: str, state: dict[str, Any]) -> bool:
         # The operator logs in on the decoy's console first, then checks and
         # activates.
         self.facts[f"operator-{n}"] = user
@@ -778,6 +1136,11 @@ class Gate:
         self.facts[f"check-before-{n}"] = rows
         drift = rows.get("package-drift", {})
         self.facts[f"drift-{n}"] = drift
+        # What the way back is held to, taken as close to the entry as the
+        # harness can: /run as the decoy has it, and the time from which the
+        # decoy disk's changes count.
+        state["run"] = self.run_listing()
+        state["since"] = self.wall()
         self.mark(f"enter-{n}")
         place = self.follow(
             self.nails("activate -y", user, config, to=f"{HIDDEN}/activate-{n}.log"),
@@ -793,7 +1156,7 @@ class Gate:
             return False
         return True
 
-    def hidden(self, n: int, user: str) -> None:
+    def hidden(self, n: int, user: str, state: dict[str, Any]) -> None:
         """The assertions inside a hidden session."""
         vm = self.vm
         self.enforcing(f"in hidden session {n}")
@@ -898,21 +1261,38 @@ class Gate:
             ):
                 missing.append(upper)
         self.check(f"session {n}: each canary lands in its upper", not missing, missing)
-        failed = self.failed_units(f"failed-hidden-{n}")
-        self.check(
-            f"session {n}: no unit the hidden root keeps off failed",
-            not set(failed) & set(HIDDEN_MASKED),
-            failed,
-        )
+        failed = self.judge_failed(f"session {n}", f"failed-hidden-{n}")
         self.facts[f"failed-hidden-{n}"] = failed
-        # A login in the hidden session: its records land in the upper, and
-        # none may reach the decoy.
+        # A login and a failed login in the hidden session: their records land
+        # in the session's own files, and none may reach the decoy.
         start = self.fact(
             f"hidden-start-{n}",
             "systemctl show -P UserspaceTimestamp --timestamp=unix",
         )
         self.facts[f"hidden-start-{n}"] = start.lstrip("@")
         self.sh(f"hidden-login-{n}", self.pam_login(USER))
+        self.facts[f"hidden-failed-login-{n}"] = self.failed_login(
+            f"hidden-failed-login-{n}", USER
+        )
+        inside = self.records_capture(f"hidden-{n}")
+        before = state["records"]
+        logins = [
+            row
+            for row in self.records.utmp_added(before.wtmp, inside.wtmp)
+            if row.get("line") == LOGIN_TTY and row.get("type") == "USER_PROCESS"
+        ]
+        self.check(
+            f"session {n}: the session's own wtmp records its login",
+            bool(logins),
+            logins or self.records.utmp_added(before.wtmp, inside.wtmp),
+        )
+        failures = self.records.utmp_added(before.btmp, inside.btmp)
+        self.check(
+            f"session {n}: the session's own btmp records its failed login",
+            bool(failures),
+            failures or self.facts[f"hidden-failed-login-{n}"][-500:],
+        )
+        state["hidden-btmp"] = failures
         _, label = self.sh(
             f"rt-{n}",
             f"touch {HIDDEN}/.gate-rt && chcon -t etc_t {HIDDEN}/.gate-rt && "
@@ -923,10 +1303,70 @@ class Gate:
             ":etc_t:" in label,
             label,
         )
+        vm.succeed(f"echo {self.nonce}-{n} > {RUN_PROBE}-{n}")
         self.vm.execute(f"echo GATEIN-{self.nonce}-{n} > /dev/kmsg", check_return=False)
         self.read_kmsg()
         self.facts[f"in-session-seq-{n}"] = sg.marker_seq(
             self.boots[self.boot]["records"].values(), f"GATEIN-{self.nonce}-{n}"
+        )
+
+    def plant(self) -> None:
+        """The rehearsal's first step in the first session, and the refusal
+        of its scan there."""
+        status, report, out = self.rehearse("rehearse-plant", "plant --user root")
+        data = report.get("data", {})
+        channels = data.get("channels", []) if isinstance(data, dict) else []
+        self.facts["rehearse-plant"] = {"exit": status, "data": data}
+        self.check(
+            "session 1: the rehearsal plants its canary",
+            status == 0
+            and str(data.get("next_step", "")).startswith("Step 2 of 3")
+            and any(
+                c.get("kind") == "overlay-file" and "skipped" not in c for c in channels
+            ),
+            out[-2000:],
+        )
+        status, report, out = self.rehearse("rehearse-scan-in-session", "scan")
+        self.check(
+            "session 1: the rehearsal refuses its scan in the planting session",
+            status == 6 and report.get("error", {}).get("code") == "same_boot",
+            out[-1000:],
+        )
+
+    def scan(self) -> None:
+        """The rehearsal's scan on the decoy, in the planting boot, after its
+        first way back: nothing found, and the compressing root named as not
+        checked."""
+        self.sh("rehearse-hidden-root", HIDDEN_ROOT)
+        _, token = self.sh(
+            "rehearse-token",
+            f"python3 -c 'import json; print(json.load(open(\"{HIDDEN}/rehearse/"
+            "state.json\"))[\"token\"])'",
+        )
+        token = token.strip()
+        status, report, out = self.rehearse("rehearse-status", "status")
+        self.check(
+            "way back 1: the rehearsal's next step is its scan",
+            status == 0
+            and str(report.get("data", {}).get("next_step", "")).startswith(
+                "Step 3 of 3"
+            ),
+            out[-1000:],
+        )
+        root_device = self.fact("root-device", "findmnt -nvo SOURCE /")
+        status, report, out = self.rehearse("rehearse-scan", "scan")
+        scan = report.get("data", {}).get("scan", {}) or {}
+        self.facts["rehearse-scan"] = {"exit": status, "scan": scan}
+        problems = rehearse_scan_problems(status, scan, root_device)
+        if token and token in out:
+            problems.append("the scan printed the token")
+        if not token:
+            problems.append("the rehearsal's state holds no token")
+        self.check(
+            "way back 1: the rehearsal's scan finds nothing and names the "
+            "compressing root as not checked",
+            not problems,
+            problems or scan,
         )
 
     def attach(self, serial: str, size: int) -> str:
@@ -945,17 +1385,36 @@ class Gate:
 
     def hotplug(self, n: int) -> str:
         """A disk attached during the session, as a USB disk would be: the
-        disk guard sets it read-only."""
+        disk guard's udev rule sets it read-only as udev handles it, and
+        records it. Its read-only flag is read as soon as udev has settled,
+        and the watcher's sweep, the fallback, does not run again in the
+        gate's sessions (:data:`CONFIG_TEXT`)."""
+        rule = self.fact(f"guard-rule-{n}", f"cat {GUARD_RULE} 2>&1; true")
+        self.check(
+            f"session {n}: the disk guard's udev rule is in place",
+            "guard-device" in rule,
+            rule,
+            NEEDS_LABEL,
+        )
         disk = self.attach(f"extra{n}", HOTPLUG_BYTES)
         out = self.fact(
             f"hotplug-{n}",
             f"for i in $(seq 30); do [ -b {disk} ] && break; sleep 1; done; "
-            f"udevadm settle -t 30; sleep 2; blockdev --getro {disk}",
+            f"udevadm settle -t 30; readlink -f {disk}; blockdev --getro {disk}",
         )
+        lines = out.strip().splitlines()
         self.check(
             f"session {n}: a disk attached in the session reads getro 1",
-            out.strip().splitlines()[-1:] == ["1"],
+            lines[-1:] == ["1"],
             out,
+            NEEDS_LABEL,
+        )
+        node = lines[-2] if len(lines) >= 2 else disk
+        record = self.fact(f"guard-record-{n}", f"cat {GUARD_RECORD} 2>&1; true")
+        self.check(
+            f"session {n}: the disk guard recorded the attached disk",
+            any(line.split()[-1:] == [node] for line in record.splitlines()),
+            {"disk": node, "record": record},
             NEEDS_LABEL,
         )
         return disk
@@ -978,13 +1437,25 @@ class Gate:
             f"way back {n} ({how}) reaches the decoy", place == "decoy", place
         )
 
+    def run_residue(self, n: int, state: dict[str, Any]) -> list[str]:
+        """What the session left in /run: the entries carried over the way
+        back (changed before it started, :data:`leave-wall`) that /run did not
+        hold right before the entry."""
+        return list(
+            self.session.carried_run_residue(
+                self.vm, state["run"], str(self.facts[f"leave-wall-{n}"])
+            )
+        )
+
     def after(self, n: int, state: dict[str, Any], disk: str | None) -> None:
         """The way-back assertions, on the decoy: taken before any login on it."""
         vm = self.vm
         # The records first, once the reconcile step is done, before any
-        # login on the decoy writes its own.
+        # login on the decoy writes its own, and the decoy disk's changes
+        # before the harness writes anything.
         self.wait_reconcile()
         after = self.records_capture(f"after-{n}")
+        self.disk_changes(f"way-back-{n}", state["since"])
         self.enforcing(f"after way back {n}")
         try:
             self.session.assert_decoy_root(vm)
@@ -1046,7 +1517,19 @@ class Gate:
             seen.strip() == "1",
             seen,
         )
-        residue = self.session.carried_run_residue(vm, state["run"], state["wall"])
+        gone = self.fact(
+            f"run-probe-{n}",
+            f"for p in {RUN_PROBE}-{n} {RUNTIME}; do "
+            'test -e "$p" -o -L "$p" && echo "$p"; done; true',
+        )
+        self.check(
+            f"way back {n}: the session's file in /run and NAILS's runtime "
+            "folder are gone",
+            not gone,
+            gone,
+        )
+        residue = self.run_residue(n, state)
+        self.facts[f"run-residue-{n}"] = residue
         self.check(
             f"way back {n}: nothing of the session stays in /run", not residue, residue
         )
@@ -1063,7 +1546,9 @@ class Gate:
         )
         noexec = "noexec" in vm.succeed("findmnt -no OPTIONS /run")
         self.check(
-            f"way back {n}: /run is noexec again where the decoy had it so",
+            f"way back {n}: /run is "
+            + ("noexec again, as" if state["noexec"] else "not noexec, as before")
+            + " the decoy had it",
             noexec == state["noexec"],
             {"before": state["noexec"], "after": noexec},
         )
@@ -1075,6 +1560,19 @@ class Gate:
             not foreign and not lost,
             {"foreign": foreign, "lost": lost, "utab": utab_now},
         )
+        bound = vm.execute(f"mountpoint -q {UTAB_BIND}")[0] == 0
+        if state["bound"]:
+            self.check(
+                f"way back {n}: the decoy's bind mount is back with its utab line",
+                bound
+                and any(
+                    f"TARGET={UTAB_BIND}" in line and UTAB_OPTION in line
+                    for line in utab_now.splitlines()
+                ),
+                {"mounted": bound, "utab": utab_now},
+            )
+        else:
+            self.facts[f"utab-bind-{n}"] = "not judged: the bind was not there before"
         self.check(
             f"way back {n}: /run/initramfs is unchanged",
             self.initramfs() == state["initramfs"],
@@ -1085,7 +1583,20 @@ class Gate:
             self.check(
                 f"way back {n}: the attached disk reads getro 0", ro.strip() == "0", ro
             )
-        failed = self.failed_units(f"failed-after-{n}")
+        files = [f"/{t}/{distro_checks.canary_name(t)}-{n}" for t in CANARY_TREES]
+        on_decoy = self.fact(
+            f"session-files-{n}",
+            "for p in "
+            + " ".join(shlex.quote(p) for p in (*files, *SESSION_FILES))
+            + '; do test -e "$p" -o -L "$p" && echo "$p"; done; '
+            "grep -nx '# gate' /etc/protocols; true",
+        )
+        self.check(
+            f"way back {n}: none of the session's files is on the decoy",
+            not on_decoy,
+            on_decoy,
+        )
+        failed = self.judge_failed(f"way back {n}", f"failed-after-{n}")
         self.facts[f"failed-after-{n}"] = failed
         self.records_judged(n, state, after)
 
@@ -1100,9 +1611,9 @@ class Gate:
     def records_judged(self, n: int, state: dict[str, Any], after: Any) -> None:
         """The login and boot records after the way back read as a plain
         shutdown and boot at the same moments: one boot record added, dated at
-        the way back, and no record of the hidden session's login. The
-        operator's own logins on the decoy, before the entry, are the decoy's:
-        a row of theirs is dated before the switch."""
+        the way back, and no record of the hidden session's login or failed
+        login. The operator's own logins on the decoy, before the entry, are
+        the decoy's: a row of theirs is dated before the switch."""
         records = self.records
         before = state["records"]
         window = (
@@ -1127,7 +1638,11 @@ class Gate:
             hidden_login,
         )
         failed = records.utmp_added(before.btmp, after.btmp)
-        self.check(f"way back {n}: btmp gained nothing", not failed, failed)
+        self.check(
+            f"way back {n}: btmp holds no failed login of the hidden session",
+            bool(state.get("hidden-btmp")) and not failed,
+            {"added": failed, "in the session": state.get("hidden-btmp")},
+        )
         operator = str(self.facts.get(f"operator-{n}", ""))
         # The hidden session's own time: from the start of its userspace,
         # which the operator's logins for check and activate come before,
@@ -1199,13 +1714,54 @@ class Gate:
     # --- the controls ----------------------------------------------------
 
     def control(self, label: str) -> None:
+        since = self.wall()
         self.mark(f"{label}-start")
         place = self.follow("systemctl soft-reboot", label)
         if place == "lost":
             return
         self.mark(f"{label}-end")
+        self.wait_reconcile()
+        self.disk_changes(label, since)
         self.enforcing(f"after {label}")
-        self.failed_units(f"failed-{label}")
+        failed = self.failed_units(f"failed-{label}")
+        swap = self.fact(f"swap-{label}", "swapon --show --noheadings; true")
+        found = failed_units_problems(failed, self.allowed_failed)
+        self.check(f"after {label}: no NAILS unit failed", not found["nails"], failed)
+        if label == "control-1":
+            # What a plain soft-reboot leaves failed before any session may
+            # be failed after a way back too.
+            for unit in found["other"]:
+                self.allowed_failed[unit] = f"failed after the plain {label} as well"
+        self.facts.setdefault("known-failed-units", {})[f"after {label}"] = [
+            *found["known"],
+            *found["other"],
+        ]
+        self.facts[f"failed-{label}"] = {"failed": failed, "swap": swap}
+
+    def judge_disk(self) -> None:
+        """The decoy disk after each way back changed only where a plain
+        soft-reboot changed it, its login records aside, which the records
+        checks judge: a label or a file the session or NAILS wrote on the
+        decoy would show as a path no control changed."""
+        self.where = "the decoy disk"
+        controls = [paths for label, paths in self.disk.items() if "control" in label]
+        self.facts["disk-controls"] = {
+            label: sorted(paths)
+            for label, paths in self.disk.items()
+            if "control" in label
+        }
+        for label, paths in self.disk.items():
+            if not label.startswith("way-back-"):
+                continue
+            residue = decoy_disk_residue(paths, controls)
+            self.check(
+                f"{label.replace('-', ' ')}: the decoy disk changed only where a "
+                "plain soft-reboot changes it",
+                bool(controls) and not residue,
+                {"changed": sorted(paths), "not in a control": residue}
+                if controls
+                else "no control was taken",
+            )
 
     def records_positive(self) -> None:
         """A login on the decoy is recorded where the reader sees it: the
@@ -1235,71 +1791,115 @@ class Gate:
     # --- the denials -----------------------------------------------------
 
     @staticmethod
-    def is_baseline(label: str) -> bool:
-        """Whether the phase that starts at the marker ``label`` is one of the
-        harness's own: the decoy prepared as a user prepares it (accounts,
-        packages, settings, a login, nothing of NAILS but a check, which runs
-        in its own phase), or the first plain soft-reboot, before any session.
-        Their denials, NAILS's aside, are what the decoy logs without NAILS."""
-        return label.startswith("prep-") or label in (
-            "control-1-start",
-            "control-1-end",
-        )
+    def baseline_labels(boot: Mapping[str, Any]) -> set[str]:
+        """The phases of ``boot`` whose denials, NAILS's aside, are what the
+        decoy logs without NAILS: those of the reference boot before the
+        first entry (the decoy prepared as a user prepares it: accounts,
+        packages, settings, logins, and the first plain soft-reboot), each
+        run of check aside, which runs in a phase of its own."""
+        if boot.get("why") != "reference":
+            return set()
+        found = set()
+        for marker in boot.get("markers", []):
+            label = str(marker["label"])
+            if label == "enter-1":
+                break
+            if not label.startswith("check-"):
+                found.add(label)
+        return found
+
+    def phases(
+        self, boot: Mapping[str, Any]
+    ) -> list[tuple[str | None, int | None, int | None, list[Mapping[str, Any]]]]:
+        """The phases of ``boot``: the part before its first marker, then one
+        a marker, each with its bounds in the kernel log and the records
+        auditd's log holds of it, by the wall clock of its markers."""
+        markers = [m for m in boot["markers"] if m["seq"] is not None]
+        audit = boot.get("audit", [])
+        found: list[
+            tuple[str | None, int | None, int | None, list[Mapping[str, Any]]]
+        ] = []
+        if markers:
+            first = markers[0]
+            found.append(
+                (None, None, first["seq"], in_window(audit, None, wall_of(first)))
+            )
+        for start, end in zip(markers, [*markers[1:], None], strict=False):
+            found.append(
+                (
+                    start["label"],
+                    start["seq"],
+                    end["seq"] if end else None,
+                    in_window(audit, wall_of(start), wall_of(end) if end else None),
+                )
+            )
+        return found
 
     def baseline(self) -> set[str]:
         """The signatures of the denials logged without NAILS: the reference
-        boot up to its first marker, the harness's own phases and the first
-        plain soft-reboot. A denial of a NAILS process or path never counts."""
+        boot before the first entry, each check aside (:meth:`baseline_labels`).
+        A denial of a NAILS process or path never counts."""
         found: set[str] = set()
         for boot in self.boots:
-            markers = [m for m in boot["markers"] if m["seq"] is not None]
+            if boot["why"] != "reference":
+                continue
             records = list(boot["records"].values())
-            if markers and boot["why"] == "reference":
+            labels = self.baseline_labels(boot)
+            for label, first, last, audit in self.phases(boot):
+                if label is not None and label not in labels:
+                    continue
+                window = sg.phase(records, first, last, audit=audit)
                 found |= {
-                    a["signature"]
-                    for a in sg.denials(records, None, markers[0]["seq"])
-                    if a["source"] != "nails"
+                    a["signature"] for a in window["denials"] if a["source"] != "nails"
                 }
-            for start, end in zip(markers, [*markers[1:], None], strict=False):
-                if self.is_baseline(start["label"]):
-                    found |= {
-                        a["signature"]
-                        for a in sg.denials(
-                            records, start["seq"], end["seq"] if end else None
-                        )
-                        if a["source"] != "nails"
-                    }
         return found
 
     def judge_denials(self) -> None:
         """Every phase NAILS ran in, in both roots, holds no new denial, and
-        no phase holds a denial of NAILS's own."""
+        no phase holds a denial of NAILS's own; the kernel lost no record, and
+        no audit record of the boot reached neither log."""
         known = self.baseline()
         self.facts["baseline-signatures"] = sorted(known)
         for boot in self.boots:
-            markers = [m for m in boot["markers"] if m["seq"] is not None]
             records = list(boot["records"].values())
             dropped = boot["dropped"] or sg.gaps(sorted(boot["records"]))
             self.where = f"boot {boot['why']}"
             self.check("the kernel log lost no record", not dropped, dropped)
             missing = [m["label"] for m in boot["markers"] if m["seq"] is None]
             self.check("every marker reached the kernel log", not missing, missing)
-            for start, end in zip(markers, [*markers[1:], None], strict=False):
-                label = start["label"]
-                found = sg.phase(
-                    records, start["seq"], end["seq"] if end else None, known
+            if not boot["markers"]:
+                continue
+            serials = sg.audit_serials(r["msg"] for r in records) | {
+                int(r["serial"]) for r in boot.get("audit", [])
+            }
+            holes = sg.serial_gaps(serials)
+            self.check(
+                "every audit record of the boot is in the kernel log or auditd's log",
+                bool(serials) and not holes,
+                {"gaps": holes[:20], "highest": max(serials, default=None)},
+            )
+            labels = self.baseline_labels(boot)
+            for label, first, last, audit in self.phases(boot):
+                found = sg.phase(records, first, last, known, audit)
+                name = label or "the boot's start"
+                boot.setdefault("phases", []).append({"label": name, **found})
+                self.check(
+                    f"the kernel lost no record from {name} on",
+                    not found["suppressed"],
+                    found["suppressed"][:10],
                 )
-                boot.setdefault("phases", []).append({"label": label, **found})
                 new = found["new"]
-                if self.is_baseline(label) or label == "boot-ready":
+                if label is None or label in labels:
                     new = [a for a in new if a["source"] == "nails"]
                 needs = NEEDS_LABEL if any(a["source"] == "nails" for a in new) else ""
                 self.check(
-                    f"no new denial from marker {label} on",
+                    f"no new denial from {'marker ' + label if label else name} on",
                     not new,
-                    [f"{a['signature']} ({a['why']})" for a in new],
+                    [f"{a['signature']} ({a['why']}, {a['log']} log)" for a in new],
                     needs,
                 )
+                if label is None:
+                    continue
                 if label.split("-")[0] in ("enter", "leave", "control") and not (
                     label.endswith("-end")
                 ):
@@ -1365,6 +1965,10 @@ class Gate:
             )
         finally:
             try:
+                self.judge_disk()
+            except Exception as error:  # noqa: BLE001
+                self.check("the decoy disk is judged", False, str(error))
+            try:
                 self.judge_denials()
             except Exception as error:  # noqa: BLE001
                 self.check("the denials are judged", False, str(error))
@@ -1379,6 +1983,8 @@ class Gate:
         self.prepare()
         self.attach(HIDDEN_DISK, HIDDEN_BYTES)
         self.sh("prepare-decoy", PREPARE_DECOY)
+        if self.settings.get("dontaudit") is False:
+            self.sh("no-dontaudit", NO_DONTAUDIT, 900)
         self.power_cycle("reference")
         self.fact("cmdline", "cat /proc/cmdline")
         self.mark("boot-ready")
@@ -1388,9 +1994,10 @@ class Gate:
         self.sh("hidden-root-1", HIDDEN_ROOT)
         state = self.before_entry(1)
         self.mark("prep-session-1")
-        if self.enter(1, "root", CONFIG):
-            self.hidden(1, "root")
+        if self.enter(1, "root", CONFIG, state):
+            self.hidden(1, "root", state)
             disk = self.hotplug(1)
+            self.plant()
             self.sh(
                 "hidden-rpm-1",
                 "rpm -e --nodeps --noscripts "
@@ -1398,6 +2005,7 @@ class Gate:
             )
             if self.leave(1, "deactivate", "root", CONFIG):
                 self.after(1, state, disk)
+                self.scan()
         if self.lost:
             return
         # The decoy changes its own packages after the hidden session
@@ -1422,16 +2030,17 @@ class Gate:
             row,
         )
         state = self.before_entry(2)
-        if self.enter(2, USER, FRESH_CONFIG):
+        if self.enter(2, USER, FRESH_CONFIG, state):
             log = self.facts.get("activate-2.log", "")
             self.check(
                 "the entry shows the drift advisory with its fix",
                 removed in log,
                 log[-2000:],
             )
-            self.hidden(2, USER)
+            self.hidden(2, USER, state)
+            disk = self.hotplug(2)
             if self.leave(2, "emergency", "root", FRESH_CONFIG):
-                self.after(2, state, None)
+                self.after(2, state, disk)
         if self.lost:
             return
         self.control("control-2")
