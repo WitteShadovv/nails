@@ -912,10 +912,9 @@ fn a_line_that_opens_the_hidden_volume_of_a_container_is_never_the_decoys_own() 
 
 #[test]
 fn a_subvolume_option_on_a_filesystem_that_is_not_btrfs_tells_nothing() {
-    // ext4 has no subvolumes, so what a line with subvol= mounts of the
-    // root's filesystem cannot be told, though its path is the root's folder:
-    // it reads as a line that mounts the filesystem the root is part of,
-    // which the check says to keep.
+    // ext4 has no subvolumes and refuses subvol=, which NAILS reads only on
+    // a btrfs line: the line is not plain, though its path is the root's
+    // folder, and what it mounts cannot be told.
     let judgement = plain_decoy("5 1 8:1 /x /mnt rw - ext4 /dev/sda1 rw\n")
         .fstab("/dev/sda1 / ext4 defaults 0 1\n/dev/sda1 /backup ext4 subvol=/x 0 2\n")
         .judge("/mnt");
@@ -923,13 +922,15 @@ fn a_subvolume_option_on_a_filesystem_that_is_not_btrfs_tells_nothing() {
         entry_needs(&judgement),
         [
             (EntryKind::Blocking, "/dev/sda1 / ext4", true),
-            (EntryKind::Blocking, "/dev/sda1 /backup ext4", true),
+            (EntryKind::Untold, "/dev/sda1 /backup ext4", false),
         ]
     );
     assert_eq!(
         judgement.entries[1].why,
-        "it mounts the filesystem the volume at /mnt is part of"
+        "NAILS reads only plain lines, and it gives subvol, an option whose effect NAILS does \
+         not read"
     );
+    assert_eq!(judgement.entries[1].options, ["subvol"]);
 }
 
 #[test]

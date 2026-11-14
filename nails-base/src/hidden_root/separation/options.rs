@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The options of the decoy's fstab and crypttab lines that the judge reads,
-//! read as systemd reads them.
+//! Whether the boot mounts a line of the decoy's fstab or opens a line of its
+//! crypttab, as systemd reads its options.
 //!
 //! systemd's fstab and crypttab generators match an option by its name, given
 //! alone or with a value (`fstab_test_option()`, [`option_named`]), and of
@@ -14,27 +14,20 @@
 //! [`crypttab_noauto`]), as it reads `bind` and `rbind`
 //! ([`is_bind_option`](crate::fstab::is_bind_option)). The shared parsers'
 //! own `has_option` matches a whole option, which the judge does not use for
-//! these.
+//! these. The generator mounts a line for `/` or `/usr` whatever `noauto`
+//! says, and links one that names a unit by `x-systemd.wanted-by=` or
+//! `x-systemd.required-by=` into that unit, whatever `noauto` says.
 //!
-//! An option the judge reads whose value changes what it means in a way the
-//! judge does not read makes an fstab line that is not plain
-//! ([`Unplain::NoValue`]): an `x-systemd.wanted-by=` or
-//! `x-systemd.required-by=` that names no unit, which systemd takes for a unit
-//! that takes the place of `local-fs.target`, so the boot mounts the line no
-//! more, and `subvol` or `subvolid` given alone or with no value, which btrfs
-//! does not mount as the judge would read it. `x-systemd.wanted-by` given
-//! alone is no such option to systemd, which reads only one with a `=`.
+//! A line counts as one the boot does not mount or open only when NAILS
+//! reads every option it gives (see the `known` module): any other line may
+//! be pulled in at boot by an option NAILS does not read, so the claims count
+//! it as one the boot mounts or opens.
 
-use super::plain::Unplain;
+use super::known::{reads_every_known, reads_every_known_crypttab};
+use super::paths::as_written;
 use crate::crypttab::CrypttabEntry;
 use crate::fstab::{FstabEntry, option_named};
-
-/// The options that name the units that pull an fstab line in, which systemd
-/// reads only with a `=` and a unit.
-const PULLED_IN_BY: &[&str] = &["x-systemd.wanted-by", "x-systemd.required-by"];
-
-/// The btrfs options that name the subvolume an fstab line mounts.
-const SUBVOLUME: &[&str] = &["subvol", "subvolid"];
+use std::path::Path;
 
 /// Whether an option of `options` has one of `names`, alone or with a value.
 fn has_named(options: &[String], names: &[&str]) -> bool {
@@ -73,48 +66,34 @@ fn automount(entry: &FstabEntry) -> bool {
         )
 }
 
+/// Whether systemd's fstab generator mounts the fstab line `entry` whatever
+/// its options say: a line for `/` or `/usr`, which it takes for mandatory.
+fn mandatory(entry: &FstabEntry) -> bool {
+    !entry.is_swap()
+        && as_written(&entry.file).is_some_and(|at| at == Path::new("/") || at == Path::new("/usr"))
+}
+
 /// Whether the boot never mounts the fstab line `entry`, as systemd's fstab
 /// generator reads it: the last of `noauto` and `auto` is `noauto`, by name,
 /// and the line has no automount, which the boot sets up whatever `noauto`
-/// says, and names no unit to pull it in
-/// ([`names_units_that_pull_it_in`](FstabEntry::names_units_that_pull_it_in)).
+/// says, names no unit to pull it in
+/// ([`names_units_that_pull_it_in`](FstabEntry::names_units_that_pull_it_in)),
+/// is no line for `/` or `/usr` ([`mandatory`]), and gives only options
+/// NAILS reads, each in a form it reads ([`reads_every_known`]).
 pub(super) fn fstab_noauto(entry: &FstabEntry) -> bool {
     last_is(&entry.options, "noauto", "auto")
         && !automount(entry)
         && !entry.names_units_that_pull_it_in()
+        && !mandatory(entry)
+        && reads_every_known(entry)
 }
 
 /// Whether the boot does not open the crypttab line `entry` by itself, as
 /// systemd's crypttab generator reads it: the last of `noauto` and `auto` is
-/// `noauto`, by name, so `cryptsetup.target` does not pull it in.
+/// `noauto`, by name, so `cryptsetup.target` does not pull it in, and the
+/// line gives only options NAILS reads ([`reads_every_known_crypttab`]).
 pub(super) fn crypttab_noauto(entry: &CrypttabEntry) -> bool {
-    last_is(&entry.options, "noauto", "auto")
-}
-
-/// Why the options of the fstab line `entry` make a line that is not plain
-/// (see the module docs): nothing for options the judge reads as systemd
-/// and btrfs do.
-pub(super) fn unplain_fstab(entry: &FstabEntry) -> Vec<Unplain> {
-    let mut why = Vec::new();
-    for name in PULLED_IN_BY {
-        if entry
-            .options
-            .iter()
-            .any(|option| option_named(option, name) == Some(Some("")))
-        {
-            why.push(Unplain::NoValue(name));
-        }
-    }
-    for name in SUBVOLUME {
-        if entry
-            .options
-            .iter()
-            .any(|option| matches!(option_named(option, name), Some(None | Some(""))))
-        {
-            why.push(Unplain::NoValue(name));
-        }
-    }
-    why
+    last_is(&entry.options, "noauto", "auto") && reads_every_known_crypttab(entry)
 }
 
 #[cfg(test)]

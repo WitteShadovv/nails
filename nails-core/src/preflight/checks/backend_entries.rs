@@ -13,35 +13,43 @@
 //! ignores these entries (writing to the root stays safe); this check reports
 //! them, from the same judge ([`separation`]), so `check` and activation share
 //! it. `--allow-decoy-storage` covers only the decoy's own lines for a root it
-//! accepted as a part of a filesystem the decoy uses (a bind of a folder of
-//! it, or a btrfs subvolume of it): the fstab lines that the decoy's boot
-//! mounted at `/` or at a system folder ([`separation::is_system_folder`])
-//! for another part of that filesystem, while the mount there shows it, are
-//! no finding then ([`EntryFinding::system_folder`]), and neither are the
-//! crypttab lines its boot opens that make a device that filesystem lies on
-//! while the decoy mounts another part of it at `/` or by such an fstab line,
-//! as on an encrypted decoy. A line that mounts that filesystem at any other
-//! folder still is one, since it may name the hidden drive's disk, and so are
-//! a line whose mount is not there, a line that mounts the volume itself (a
-//! bind line of any type from the root's folder among them), a swap or image
-//! line whose file lies in the root's folder, a `noauto` crypttab line, one
-//! with `tcrypt-hidden`, one for any other device and every line for a root
-//! that is the whole filesystem. `_netdev` lets no line go. The check reads
-//! `noauto`, `auto` and the automount options by their names, alone or with
-//! a value, as systemd's generators do: `noauto=1` and `auto,noauto=` are
-//! `noauto`, `noauto,auto=0` is not, and `x-systemd.automount=0` is an
-//! automount, which the boot sets up whatever `noauto` says.
+//! accepted as a part of a filesystem the decoy uses (a bind of a folder of it,
+//! or a btrfs subvolume of it): the fstab lines that the decoy's boot mounted
+//! at `/` or at a system folder ([`separation::is_system_folder`]) for another
+//! part of that filesystem, while the mount there shows it, are no finding then
+//! ([`EntryFinding::system_folder`]), and neither are the crypttab lines its
+//! boot opens that make a device that filesystem lies on while the decoy mounts
+//! another part of it at `/` or by such an fstab line, as on an encrypted
+//! decoy. A line that mounts that filesystem at any other folder still is one,
+//! since it may name the hidden drive's disk, and so are a line whose mount is
+//! not there, a line that mounts the volume itself (a bind line of any type
+//! from the root's folder among them), a swap or image line whose file lies in
+//! the root's folder, a `noauto` crypttab line, one with `tcrypt-hidden`, one
+//! for any other device and every line for a root that is the whole filesystem.
+//! `_netdev` lets no line go. The check reads `noauto`, `auto` and the
+//! automount options by their names, alone or with a value, as systemd's
+//! generators do: `noauto=1` and `auto,noauto=` are `noauto`, `noauto,auto=0`
+//! is not, and `x-systemd.automount=0` is an automount, which the boot sets up
+//! whatever `noauto` says. A line counts as one the boot mounts or does not
+//! mount, and the flag lets it be, only when the check reads every option it
+//! gives (see below).
 //!
 //! An entry that opens only another volume on the same drive (a VeraCrypt
 //! outer volume of another partition) warns: the decoy is configured to open
 //! storage on that drive.
 //!
-//! A crypttab line's key file and `header=`, which `systemd-cryptsetup`
-//! reads, a `tcrypt-keyfile=`, and the device after the last `:` of its key
-//! field or a `header=`, which systemd's crypttab generator mounts for it
+//! A crypttab line's key file and `header=`, which `systemd-cryptsetup` reads,
+//! a `tcrypt-keyfile=`, and the device after the last `:` of its key field or a
+//! `header=`, which systemd's crypttab generator mounts for it
 //! (`/key:/dev/sdb`, `header=/hdr:/dev/sdb`), are read as its source is: a
 //! device of the hidden drive fails the line, as one that the boot reads or
-//! mounts, the decoy's own crypttab line too.
+//! mounts, the decoy's own crypttab line too. So are its `tpm2-device=` and
+//! `fido2-device=` other than `auto`, which `systemd-cryptsetup` opens and
+//! writes to, and its `tpm2-signature=` and `tpm2-pcrlock=` files, and of every
+//! fstab line the devices and paths its options name: ext4's `journal_path=`
+//! and `journal_dev=`, XFS's `logdev=` and `rtdev=`, btrfs's `device=`,
+//! `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`, cifs's
+//! `credentials=` and an overlay's folders.
 //!
 //! A bind line's source, the path of a swap or image file, of what a FUSE
 //! program reads and of a FUSE program named by its path, and a crypttab source
@@ -60,25 +68,31 @@
 //! it cannot tell where the line leads, and to write it with its real path.
 //!
 //! The check reads only plain fstab lines, whose fields NAILS splits and
-//! decodes as `libmount` and systemd do and of whose options it reads those it
-//! needs as they read them: a line that holds a control character other than a
-//! tab, or white space other than a space or a tab, a backslash in its first
-//! field or mount point that begins none of the escapes `\040`, `\011`, `\012`
-//! and `\134`, a backslash in its type or options, a list of types, or a first
-//! field that is neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=`
-//! or `PARTLABEL=` tag, such as a relative path or an `ID=` tag, which NAILS
-//! does not resolve, or that leads into `/dev` but does not start with `/dev/`
-//! or holds a `..` (`//dev/sdb`), unless it is the line of a RAM, kernel,
+//! decodes as `libmount` and systemd do and whose options are on its lists, in
+//! the forms they list (see the `separation` module): a line that holds a
+//! control character other than a tab, or white space other than a space or a
+//! tab, a backslash in its first field or mount point that begins none of the
+//! escapes `\040`, `\011`, `\012` and `\134`, a backslash in its type or
+//! options, a quote in its options, a list of types, or a first field that is
+//! neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=` or
+//! `PARTLABEL=` tag, such as a relative path or an `ID=` tag, which NAILS does
+//! not resolve, or that leads into `/dev` but does not start with `/dev/` or
+//! holds a `..` (`//dev/sdb`), unless it is the line of a RAM, kernel,
 //! host-share, network, overlay or ZFS filesystem and no bind line, fails too,
-//! with or without the flag, and so does a line that gives an
-//! `x-systemd.wanted-by=` or `x-systemd.required-by=` with no unit, which
-//! systemd links to a unit named by nothing instead of `local-fs.target`, or
-//! `subvol` or `subvolid` with no value. A bind line is one with a `bind` or
-//! `rbind` option, `bind=x` too, as `libmount` reads it. A FUSE line is read as
-//! `mount.fuse` reads it: the source it gives its program, the part after the
-//! `#` of a `fuse` line's first field and a `fuse.<program>` line's whole first
-//! field, is judged as a first field is, where it is an absolute path or such a
-//! tag, and fails otherwise, unless that program takes a remote source by it
+//! with or without the flag. So does a line of local storage that gives an
+//! option no list holds, such as `X-mount.subdir=`, which has `libmount` mount
+//! a folder of the filesystem, or one in a form NAILS does not read, such as an
+//! `x-systemd.wanted-by=` or `x-systemd.required-by=` that names a unit other
+//! than `local-fs.target`, which systemd links the line into in place of
+//! `local-fs.target`, one that names none, a flag with a value, or `subvol` or
+//! `subvolid` with no value; and a line of any type with an option no list
+//! holds whose value may name a path or a device, absolute, a tag, or with a
+//! `/` or a `:` in it. A bind line is one with a `bind` or `rbind` option,
+//! `bind=x` too, as `libmount` reads it. A FUSE line is read as `mount.fuse`
+//! reads it: the source it gives its program, the part after the `#` of a
+//! `fuse` line's first field and a `fuse.<program>` line's whole first field,
+//! is judged as a first field is, where it is an absolute path or such a tag,
+//! and fails otherwise, unless that program takes a remote source by it
 //! (`sshfs`, `s3fs`, an rclone remote and a few more); a `#` in the first field
 //! of a line of any other type that begins with `fuse` fails too, and so does a
 //! FUSE program named by a path with a `/` that is not absolute. The check
@@ -86,12 +100,14 @@
 //! a quote or a backslash in one of its four fields, a source that is neither
 //! an absolute path nor such a tag, a source, key file or header that leads
 //! into `/dev` so, a key file or header on a device the boot mounts whose path
-//! holds a `..`, which can lead out of that mount, or a `keyscript=`, a program
-//! Debian's initramfs hands the key field to, fails with or without the flag.
-//! Of a plain crypttab line it reads the name, the source, the key file, the
-//! `header=` and `tcrypt-keyfile=` options and what the boot mounts for them,
-//! `noauto`, `auto` and the TrueCrypt options. The check names what it could
-//! not read, and says to write the line plainly.
+//! holds a `..`, which can lead out of that mount, a `keyscript=`, a program
+//! Debian's initramfs hands the key field to, or an option no list holds or in
+//! a form NAILS does not read, such as a `tpm2-device=` in a `driver:param`
+//! form, fails with or without the flag. Of a plain crypttab line it reads the
+//! name, the source, the key file, the `header=`, `tcrypt-keyfile=` and token
+//! options and what the boot mounts for them, `noauto`, `auto` and the
+//! TrueCrypt options. The check names what it could not read, and the options
+//! it does not read, and says to write the line plainly.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
@@ -133,17 +149,18 @@ pub const UNTOLD: &str = "Write such a line with its real path long before the n
 /// What the operator does about an fstab line that is not plain: NAILS reads
 /// only plain lines, so the line has to be written plainly, and once it is,
 /// the check tells what it mounts.
-pub const UNPLAIN: &str = "Write such a line plainly long before the next use, or remove it: \
-     its fields apart by spaces or tabs, one filesystem type, no backslash in its type or options, \
-     no backslash in its first two fields but in the escapes \\040, \\011, \\012 and \\134, and as \
-     its first field a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag, a device by its path that starts \
-     with /dev/ and holds no .., or another absolute path, unless it is no bind line and is for a \
-     RAM, kernel, host-share, network, overlay or ZFS filesystem or for a FUSE program that takes a \
-     remote source. A line of the type fuse gives its program that path or tag after a # \
-     (program#/path), a line of another type that begins with fuse holds no # in its first field, \
-     and a FUSE program is named alone or by its absolute path. An x-systemd.wanted-by= or \
-     x-systemd.required-by= names a unit, and subvol= and subvolid= give a value. Then run the \
-     command again.";
+pub const UNPLAIN: &str = "Write such a line plainly long before the next use, or remove it: its \
+     fields apart by spaces or tabs, one filesystem type, no backslash in its type or options, no \
+     quote in its options, no backslash in its first two fields but in the escapes \\040, \\011, \
+     \\012 and \\134, and as its first field a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag, a \
+     device by its path that starts with /dev/ and holds no .., or another absolute path, unless \
+     it is no bind line and is for a RAM, kernel, host-share, network, overlay or ZFS filesystem \
+     or for a FUSE program that takes a remote source. A line of the type fuse gives its program \
+     that path or tag after a # (program#/path), a line of another type that begins with fuse \
+     holds no # in its first field, and a FUSE program is named alone or by its absolute path. Its \
+     options are ones NAILS reads, in the forms its decoy requirements list: an \
+     x-systemd.wanted-by= or x-systemd.required-by= names local-fs.target, subvol= and subvolid= \
+     give a value, and a flag such as nofail has none. Then run the command again.";
 
 /// What the operator does about a crypttab line that is not plain: NAILS
 /// reads only plain lines, so the line has to be written plainly, and once it
@@ -153,7 +170,24 @@ pub const UNPLAIN_CRYPTTAB: &str = "Write such a crypttab line plainly long befo
      as its source a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag, a device by its path that starts \
      with /dev/ and holds no .., or another absolute path, such as a container file's. Its key \
      file and its header= name a device or a file in the same way, the path of a file on a device \
-     (path:device) holds no .., and the line gives no keyscript=. Then run the command again.";
+     (path:device) holds no .., and the line gives no keyscript=. Its options are ones NAILS \
+     reads, in the forms its decoy requirements list: tpm2-device= and fido2-device= are auto or \
+     an absolute path. Then run the command again.";
+
+/// What the operator does about the options, by their names, that make lines
+/// not plain: NAILS reads no other option, so the lines go without them.
+pub fn unread_options(options: &[String]) -> String {
+    let (s, them) = if options.len() == 1 {
+        ("", "it")
+    } else {
+        ("s", "them")
+    };
+    format!(
+        "NAILS does not read the option{s} {} as such a line gives {them}: write the line without \
+         {them} long before the next use, or remove the line. Then run the command again.",
+        listed(options)
+    )
+}
 
 /// Pre-flight check that no decoy fstab or crypttab entry opens or mounts the
 /// hidden volume.
@@ -295,7 +329,8 @@ fn entries_failure(
 ) -> CheckResult {
     let root = root.display();
     let mut message = Vec::new();
-    let mut fix = Vec::new();
+    let unread: String;
+    let mut fix: Vec<&str> = Vec::new();
     if !blocking.is_empty() {
         message.push(format!(
             "The decoy's configuration names the volume at {root}: {}.",
@@ -331,6 +366,16 @@ fn entries_failure(
             .any(|f| f.not_plain && f.file == separation::CRYPTTAB)
         {
             fix.push(UNPLAIN_CRYPTTAB);
+        }
+        let mut options: Vec<String> = Vec::new();
+        for option in untold.iter().flat_map(|f| &f.options) {
+            if !options.contains(option) {
+                options.push(option.clone());
+            }
+        }
+        if !options.is_empty() {
+            unread = unread_options(&options);
+            fix.push(&unread);
         }
     }
     message.push(

@@ -8,6 +8,7 @@ use super::options::{crypttab_noauto, fstab_noauto};
 use super::paths::{is_claimed, is_untold_device, names_a_file, opens_a_file, program_path};
 use super::placed::{Line, Named, place};
 use super::plain::source;
+use super::reads::{Reads, fstab_numbers, fstab_reads, judge_reads};
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
     LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, UnplainLine, Untraced,
@@ -521,14 +522,16 @@ fn claims(
 
     for (index, entry) in scene.fstab.iter().enumerate() {
         // The findings for this line, and whether one of them makes the
-        // root's own filesystem one the decoy's boot needs.
-        let mut found = Vec::new();
+        // root's own filesystem one the decoy's boot needs: first what any
+        // line names by its options, whose files and folders it claims.
+        let noauto = fstab_noauto(entry);
+        let (mut found, holders) = option_reads(scene, hidden, entry, entry_stack);
+        claims.extend(holders.into_iter().map(|h| mount_claim(scene, h, noauto)));
         let mut needs_own = false;
         'line: {
             if !is_claimed(entry) {
                 break 'line;
             }
-            let noauto = fstab_noauto(entry);
             // The program a FUSE line names by its path, which `mount.fuse`
             // runs from wherever it lies, the volume too: the filesystem
             // that holds it, read as written, with no link followed.
@@ -806,6 +809,7 @@ fn outer_warning(line: String) -> EntryFinding {
         boot_needs: false,
         system_folder: None,
         not_plain: false,
+        options: Vec::new(),
     }
 }
 
@@ -922,6 +926,29 @@ fn fstab_finding(
     }
 }
 
+/// The findings of what the fstab line `entry` names by its options (see the
+/// `reads` module), judged against `hidden` and the devices of its drive,
+/// `drive`, and the mounts that hold the files and folders among them, which
+/// the line claims. A device of the filesystem the line mounts itself, as
+/// btrfs's `device=` names one, makes none.
+fn option_reads<'a>(
+    scene: &Scene<'a>,
+    hidden: &MountEntry,
+    entry: &FstabEntry,
+    drive: &[String],
+) -> (Vec<EntryFinding>, Vec<&'a MountEntry>) {
+    let devices = scene.devices;
+    let mounted = source(entry).and_then(|spec| devices.node_of_spec(spec));
+    let own = |node: &str| mounted.is_some_and(|m| m == node || devices.same_btrfs(m, node));
+    let reads = Reads {
+        line: fstab_line(hidden, entry, Named::File),
+        specs: fstab_reads(entry),
+        numbers: fstab_numbers(entry),
+        own: &own,
+    };
+    judge_reads(scene, hidden, &reads, drive)
+}
+
 /// The fstab line `entry`, placed by a path it names as `named`: the decoy's
 /// own boot needs it when it mounts `/` or a system folder, outside the
 /// hidden root of `hidden`, at boot (no `noauto`).
@@ -947,6 +974,7 @@ fn not_plain_finding(file: &'static str, line: &UnplainLine) -> EntryFinding {
         boot_needs: false,
         system_folder: None,
         not_plain: true,
+        options: line.options(),
     }
 }
 
@@ -964,6 +992,7 @@ fn blocking(file: &'static str, line: String, why: String, boot_needs: bool) -> 
         boot_needs,
         system_folder: None,
         not_plain: false,
+        options: Vec::new(),
     }
 }
 

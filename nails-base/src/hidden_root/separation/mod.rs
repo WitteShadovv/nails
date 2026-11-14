@@ -27,6 +27,9 @@
 //!   file, say, through the mount that holds it, read as written, and so the
 //!   key file, the header and what the boot mounts for one of these, where
 //!   that is a file (see the `reads` module);
+//! - of every fstab and crypttab line, a path an option names, such as an
+//!   overlay's folders or a `tpm2-signature=` file, through the mount that
+//!   holds it, read as written (see the `reads` module);
 //! - the mounts at `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`,
 //!   `/boot/efi`, `/nix` and `/opt` that are not at or under the hidden root.
 //!
@@ -37,43 +40,48 @@
 //! for a device on the hidden drive or one that cannot be found, an fstab bind
 //! line whose source, as written, lies in the volume, at the root's folder or
 //! inside it as the mount that holds the source shows it, which mounts the
-//! volume or a folder of it, a swap or image file line whose file lies
-//! there, which the boot swaps on or mounts, a FUSE line whose program lies
-//! there, which the boot runs, and a crypttab line whose source is a file
-//! there, which the boot opens, or that reads its key file or its header
-//! from the volume or a device of its stack, or mounts one of them for it,
-//! or names a file there for it. Such an entry is an enabler
-//! stored on the decoy; the attach gate ignores the finding (writing to the
-//! root stays safe) and the `backend-entries` check reports it. A line placed
-//! by a path whose place cannot be told ([`UntoldPath`]) may mount or open the
-//! volume too, and is reported as an entry where that cannot be told
-//! ([`EntryKind::Untold`]), wherever its text places it: a path with a
-//! symbolic link in any part, which is not followed, one that is not absolute
-//! or is a device node, one that crosses the folder of a line, a `noauto` one
-//! too, while that line's mount is not there now, one that cannot be looked
-//! up, one whose lookup would mount an automount point, and a device's path in
-//! `/dev` that no block device answers to, by that path or by a tag, and on
-//! whose way a link leads out of `/dev`, which is not followed, so nothing
-//! past `/dev` is looked up. So is every fstab or crypttab line that is not
-//! plain ([`read_fstab`], [`read_crypttab`]): NAILS reads only plain lines,
-//! and that is the only finding such a line makes, while it claims what NAILS
-//! reads in it and makes no mount of the decoy's own ([`decoys_own_mount`]).
-//! The judge reads the options it reads, `noauto` and `auto` among them, by
-//! their names, as systemd does (see the `options` module): `noauto=1` is
-//! `noauto`, and of `noauto` and `auto` the last one given wins.
-//! A finding is no claim, except an fstab entry the
-//! boot mounts or swaps on, one for another device of the root's btrfs
-//! filesystem, which is the decoy's own storage too, and a line placed by its
-//! path: every bind line, a `noauto` one too, claims the filesystem its source
-//! lies on, every swap or image file line the one that holds its file, a FUSE
-//! line the one that holds its program, and a crypttab line that opens no
-//! device of the root's stack the one that holds its file, its key file or
-//! its header, as their text places them, also where their path cannot be
-//! told. A finding the decoy's own boot needs, an fstab entry that mounts
-//! another of its filesystems or its swap, or the whole filesystem a root bound
-//! from a folder of it or a subvolume of it lies on (the decoy's line for `/`
-//! below a bind of a folder of `/`), or one that mounts the root's own
-//! filesystem at `/` or at a system folder, whatever it mounts of it, or a
+//! volume or a folder of it, a swap or image file line whose file lies there,
+//! which the boot swaps on or mounts, a FUSE line whose program lies there,
+//! which the boot runs, and a crypttab line whose source is a file there, which
+//! the boot opens, or that reads its key file or its header from the volume or
+//! a device of its stack, or mounts one of them for it, or names a file there
+//! for it, and a line an option of which opens a device of that stack, as
+//! ext4's `journal_path=` and a crypttab line's `tpm2-device=` do, or names a
+//! path there. Such an entry is an enabler stored on the decoy; the attach gate
+//! ignores the finding (writing to the root stays safe) and the
+//! `backend-entries` check reports it. A line placed by a path whose place
+//! cannot be told ([`UntoldPath`]) may mount or open the volume too, and is
+//! reported as an entry where that cannot be told ([`EntryKind::Untold`]),
+//! wherever its text places it: a path with a symbolic link in any part, which
+//! is not followed, one that is not absolute or is a device node, one that
+//! crosses the folder of a line, a `noauto` one too, while that line's mount is
+//! not there now, one that cannot be looked up, one whose lookup would mount an
+//! automount point, and a device's path in `/dev` that no block device answers
+//! to, by that path or by a tag, and on whose way a link leads out of `/dev`,
+//! which is not followed, so nothing past `/dev` is looked up. So is every
+//! fstab or crypttab line that is not plain ([`read_fstab`],
+//! [`read_crypttab`]): NAILS reads only plain lines, and that is the only
+//! finding such a line makes, while it claims what NAILS reads in it and makes
+//! no mount of the decoy's own ([`decoys_own_mount`]). A plain line gives only
+//! options NAILS reads, each in a form it reads (see the `known` module, which
+//! holds their lists), and the claims count only such a line as one the boot
+//! does not mount or open. The judge reads the options it reads, `noauto` and
+//! `auto` among them, by their names, as systemd does (see the `options`
+//! module): `noauto=1` is `noauto`, of `noauto` and `auto` the last one given
+//! wins, and a line for `/` or `/usr` the boot mounts whatever `noauto` says. A
+//! finding is no claim, except an fstab entry the boot mounts or swaps on, one
+//! for another device of the root's btrfs filesystem, which is the decoy's own
+//! storage too, and a line placed by its path: every bind line, a `noauto` one
+//! too, claims the filesystem its source lies on, every swap or image file line
+//! the one that holds its file, a FUSE line the one that holds its program, and
+//! a crypttab line that opens no device of the root's stack the one that holds
+//! its file, its key file or its header, and every line the one that holds a
+//! path one of its options names, as their text places them, also where their
+//! path cannot be told. A finding the decoy's own boot needs, an fstab entry
+//! that mounts another of its filesystems or its swap, or the whole filesystem
+//! a root bound from a folder of it or a subvolume of it lies on (the decoy's
+//! line for `/` below a bind of a folder of `/`), or one that mounts the root's
+//! own filesystem at `/` or at a system folder, whatever it mounts of it, or a
 //! crypttab entry that opens a device below one of them or makes one the root's
 //! own filesystem lies on while the decoy uses that filesystem (at `/`, at a
 //! system folder or by a line its boot needs), is marked so: the hidden root
@@ -150,6 +158,7 @@
 mod collect;
 mod extra;
 mod judge;
+mod known;
 mod lines;
 mod options;
 mod paths;
@@ -805,6 +814,10 @@ pub struct EntryFinding {
     /// reads only plain lines, so its line has to be written plainly before
     /// NAILS can tell what it mounts or opens.
     pub not_plain: bool,
+    /// For a line that is not plain, the options, by their names, that NAILS
+    /// does not read as the line gives them ([`UnplainLine::options`]), which
+    /// the fix names. Empty for any other entry.
+    pub options: Vec<String>,
 }
 
 /// Whether the decoy mounts its own filesystems at `at`, with the hidden root

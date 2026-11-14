@@ -216,12 +216,11 @@ fn a_first_field_that_is_no_absolute_path_and_no_tag_is_not_plain() {
 
 #[test]
 fn a_bind_option_with_a_value_makes_a_bind_line() {
-    // libmount binds for `bind=x`, `rbind=` and `bind="a,b"` whatever the
-    // type: such a line's first field is the path of its source, so a
-    // relative one is not plain whatever the type.
+    // libmount binds for `bind=x` and `rbind=` whatever the type: such a
+    // line's first field is the path of its source, so a relative one is not
+    // plain whatever the type.
     for line in [
         "srv/x /mnt none bind=x 0 0",
-        "srv/x /mnt none bind=\"a,b\" 0 0",
         "srv/x /mnt zfs bind=x 0 0",
         "srv/x /mnt fuse bind=x 0 0",
         "srv/x /mnt tmpfs rbind=,nofail 0 0",
@@ -235,12 +234,26 @@ fn a_bind_option_with_a_value_makes_a_bind_line() {
         "/srv/x /mnt nfs bind=x 0 0",
         "/srv/x /mnt overlay rbind= 0 0",
         "/srv/x/sub /srv/sub 9p bind=1,nofail 0 0",
-        "/srv/x /mnt none bind=\"a,b\" 0 0",
         "/srv/x /mnt proc bind=x 0 0",
         "/srv/x /mnt tmpfs bind=x,noauto,x-systemd.automount 0 0",
     ] {
         assert_eq!(why(line), [], "{line}");
     }
+    // libmount reads `bind="a,b"` as one option, whose value keeps the comma
+    // inside the quotes, where NAILS's parser ends the option: a quote in the
+    // options is not plain.
+    assert_eq!(
+        why("srv/x /mnt none bind=\"a,b\" 0 0"),
+        [Unplain::OptionsQuote, Unplain::Relative]
+    );
+    assert_eq!(
+        why("/srv/x /mnt none bind=\"a,b\" 0 0"),
+        [Unplain::OptionsQuote]
+    );
+    assert_eq!(
+        why("/dev/sdb1 /srv ext4 X-mount.auto-fstypes=\"ext4,btrfs\" 0 0"),
+        [Unplain::OptionsQuote]
+    );
 }
 
 /// The source the one fstab line `line` names, as the judge reads it.

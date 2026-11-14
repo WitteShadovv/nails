@@ -5,27 +5,33 @@
 //! NAILS splits and decodes as `libmount` and systemd do, for the crypttab as
 //! systemd's crypttab generator does, and whose first field or source, where
 //! it names a device or a path, names it in a form NAILS reads. Where a path
-//! that a plain line names leads is told apart (see the `paths` module). Of a
-//! plain crypttab line the judge reads the name, the source, the key file and
-//! the header and what the boot mounts for one of these (see the `reads`
-//! module), and a few of the options, `noauto` and the TrueCrypt ones, as
-//! systemd reads them (see the `options` module). A line that is not plain is
-//! an entry where what it names cannot be told, and that is the only finding
-//! the judge makes of it, while it still claims what NAILS reads in it.
+//! that a plain line names leads is told apart (see the `paths` module). A
+//! plain line gives only options NAILS reads, each in a form it reads (see the
+//! `known` module), and what an option names that is a path or a device the
+//! judge reads as it reads a source (see the `reads` module). Of a plain
+//! crypttab line the judge reads the name, the source, the key file and the
+//! header and what the boot mounts for one of these, and of the options
+//! `noauto` and the TrueCrypt ones as systemd reads them (see the `options`
+//! module). A line that is not plain is an entry where what it names cannot
+//! be told, and that is the only finding the judge makes of it, while it
+//! still claims what NAILS reads in it.
 //!
 //! NAILS's parser splits a line at any white space and decodes the octal
 //! escapes (a backslash and three octal digits) of its first two fields in
 //! its own way, and of no other field, while `libmount` splits a line only at
 //! spaces and tabs and decodes such an escape in every field, so that
-//! `bin\144` is the option `bind` to it. A type list (`ext4,xfs`) is mounted
-//! as each of its types in turn, which NAILS does not read either. So an
-//! fstab line is not plain ([`Unplain`]) that holds a control character
-//! other than a tab, or white space other than a space or a tab; whose first
-//! field or mount point holds a backslash that begins none of the escapes
-//! `\040`, `\011`, `\012` and `\134` (a space, a tab, a newline and a
-//! backslash, which both read alike); whose type or options hold a
-//! backslash; whose type is a list; or that gives an option NAILS reads with no
-//! value where systemd or btrfs reads one (see the `options` module). Nor is a
+//! `bin\144` is the option `bind` to it, and it keeps a comma inside quotes in
+//! one option's value (`bind="a,b"`), where NAILS's parser ends the option. A
+//! type list (`ext4,xfs`) is mounted as each of its types in turn, which NAILS
+//! does not read either. So an fstab line is not plain ([`Unplain`]) that
+//! holds a control character other than a tab, or white space other than a
+//! space or a tab; whose first field or mount point holds a backslash that
+//! begins none of the escapes `\040`, `\011`, `\012` and `\134` (a space, a
+//! tab, a newline and a backslash, which both read alike); whose type or
+//! options hold a backslash, or whose options hold a quote; whose type is a
+//! list; or that gives an option NAILS does not read as the line gives it
+//! (see the `known` module), or names a path in `/dev` by one of its options
+//! otherwise than by that path. Nor is a
 //! line whose first field is neither an absolute path nor a tag NAILS resolves
 //! (`UUID=`, `LABEL=`, `PARTUUID=` or `PARTLABEL=`): `mount` and `swapon` look
 //! such a path up from the folder they run in, and `libmount` looks an `ID=`
@@ -54,25 +60,26 @@
 //! The judge reads an absolute program as a path, as it reads a bind line's
 //! source, and a program with a `/` that is not absolute is not plain.
 //!
-//! systemd's crypttab generator ends a line at a lone carriage return or a
-//! NUL as well as at a newline, splits it at ASCII white space but not at a
+//! systemd's crypttab generator ends a line at a lone carriage return or a NUL
+//! as well as at a newline, splits it at ASCII white space but not at a
 //! no-break space, and keeps the quotes and backslashes of a field, which it
-//! writes into the command that opens the volume, where they are read as
-//! quotes and escapes: the source `'/dev/sdb'` opens `/dev/sdb`, and that
-//! command reads `/dev/sd\x62` as `/dev/sdb`. So a crypttab line is not plain
-//! that holds a control character other than a tab, or white space other
-//! than a space or a tab, or a quote or a backslash in one of its four
-//! fields, or whose source is neither an absolute path nor a tag NAILS
-//! resolves: `systemd-cryptsetup` opens a relative path from the folder it
-//! runs in, `/`. Nor is a crypttab line plain whose source, key file or
-//! header leads into `/dev` as written but does not start with `/dev/` or
-//! holds a `..` ([`Unplain::DevOtherwise`]), whose key file or header on a
-//! device the boot mounts holds a `..`, or that gives `keyscript=` (see the
-//! `reads` module). Of a plain line, the judge resolves a source that is a
-//! tag or a device's path in `/dev` as a device's name, and reads any other
-//! source, which `systemd-cryptsetup` opens through the links in it, as the
-//! path of a file, with no link followed (see the `paths` module), and so
-//! what the line reads besides.
+//! writes into the command that opens the volume, where they are read as quotes
+//! and escapes: the source `'/dev/sdb'` opens `/dev/sdb`, and that command
+//! reads `/dev/sd\x62` as `/dev/sdb`. So a crypttab line is not plain that
+//! holds a control character other than a tab, or white space other than a
+//! space or a tab, or a quote or a backslash in one of its four fields, or
+//! whose source is neither an absolute path nor a tag NAILS resolves:
+//! `systemd-cryptsetup` opens a relative path from the folder it runs in, `/`.
+//! Nor is a crypttab line plain whose source, key file or header leads into
+//! `/dev` as written but does not start with `/dev/` or holds a `..`
+//! ([`Unplain::DevOtherwise`]), whose key file or header on a device the boot
+//! mounts holds a `..`, that gives `keyscript=` (see the `reads` module), or
+//! that gives an option NAILS does not read as the line gives it (see the
+//! `known` module). Of a plain line, the judge resolves a source that is a tag
+//! or a device's path in `/dev` as a device's name, and reads any other source,
+//! which `systemd-cryptsetup` opens through the links in it, as the path of a
+//! file, with no link followed (see the `paths` module), and so what the line
+//! reads besides.
 
 #[cfg(test)]
 #[path = "plain_tests.rs"]
@@ -104,6 +111,23 @@ pub struct UnplainLine {
 }
 
 impl UnplainLine {
+    /// The options, by their names, that make it not plain, each once: those
+    /// NAILS does not read as the line gives them.
+    pub fn options(&self) -> Vec<String> {
+        let mut options: Vec<String> = Vec::new();
+        for why in &self.why {
+            let option = match why {
+                Unplain::NoValue(option) => (*option).to_string(),
+                Unplain::Unknown(option) | Unplain::Unread(option) => option.clone(),
+                _ => continue,
+            };
+            if !options.contains(&option) {
+                options.push(option);
+            }
+        }
+        options
+    }
+
     /// Why, as a phrase that completes "NAILS reads only plain lines, and".
     pub fn reason(&self) -> String {
         let reasons: Vec<String> = self.why.iter().map(Unplain::reason).collect();
@@ -136,6 +160,9 @@ pub enum Unplain {
     TypeList,
     /// Its options hold a backslash.
     OptionsBackslash,
+    /// Its options hold a quote, inside which `libmount` keeps a comma in an
+    /// option's value, where NAILS's parser ends the option.
+    OptionsQuote,
     /// Its first field is neither an absolute path nor a tag NAILS
     /// resolves, and its type names a local path by it.
     Relative,
@@ -166,11 +193,19 @@ pub enum Unplain {
     /// The source of a crypttab line is neither an absolute path nor a tag
     /// NAILS resolves.
     RelativeSource,
-    /// It gives this option, which NAILS reads, with no value, or with an
-    /// empty one where systemd reads that otherwise (see the `options`
-    /// module): `x-systemd.wanted-by=` or `x-systemd.required-by=` with no
-    /// unit, and `subvol` or `subvolid` alone or with no value.
+    /// It gives this option, which NAILS reads with a value, alone or with an
+    /// empty one (see the `known` module): `subvol` or `subvolid` alone or
+    /// with no value, and `x-systemd.wanted-by=` or `x-systemd.required-by=`
+    /// with no unit, which systemd links to a unit named by nothing.
     NoValue(&'static str),
+    /// It gives this option, by its name, which no list of the options NAILS
+    /// reads holds (see the `known` module).
+    Unknown(String),
+    /// It gives this option, by its name, which NAILS reads, with a value it
+    /// does not read, or a flag with a value (see the `known` module): an
+    /// `x-systemd.wanted-by=` that names a unit other than `local-fs.target`,
+    /// say, or a `tpm2-device=` in a `driver:param` form.
+    Unread(String),
     /// A crypttab line gives `keyscript=`, a program that reads the line's
     /// key field in its own way.
     Keyscript,
@@ -198,6 +233,7 @@ impl Unplain {
             Unplain::TypeBackslash => "its type holds a backslash".to_string(),
             Unplain::TypeList => "its type is a list of types".to_string(),
             Unplain::OptionsBackslash => "its options hold a backslash".to_string(),
+            Unplain::OptionsQuote => "its options hold a quote".to_string(),
             Unplain::Relative => {
                 format!("its first field is neither an absolute path nor a {TAGS_SHOWN}")
             }
@@ -227,6 +263,12 @@ impl Unplain {
                 format!("its source is neither an absolute path nor a {TAGS_SHOWN}")
             }
             Unplain::NoValue(option) => format!("its option {option} gives no value"),
+            Unplain::Unknown(option) => {
+                format!("it gives {option}, an option whose effect NAILS does not read")
+            }
+            Unplain::Unread(option) => {
+                format!("it gives {option} with a value NAILS does not read")
+            }
             Unplain::Keyscript => {
                 "it gives keyscript=, a program that reads its key field in its own way".to_string()
             }
@@ -395,6 +437,12 @@ fn takes_a_remote_source(program: &str, source: Option<&str>) -> bool {
     REMOTE_FUSE.contains(&program)
 }
 
+/// Whether the fstab line `entry` is a FUSE line whose program takes its
+/// source as a remote one ([`takes_a_remote_source`]).
+pub(super) fn takes_a_remote_source_line(entry: &FstabEntry) -> bool {
+    fuse_line(entry).is_some_and(|fuse| takes_a_remote_source(fuse.program, fuse.source))
+}
+
 /// Whether `field`, the first field of an fstab line, the source of a
 /// crypttab line or a path it reads besides (see the `reads` module),
 /// decoded, is an absolute path or a tag NAILS resolves as a device's name.
@@ -466,6 +514,9 @@ pub fn unplain(entry: &FstabEntry, line: &str) -> Vec<Unplain> {
     if entry.options.iter().any(|option| option.contains('\\')) {
         why.push(Unplain::OptionsBackslash);
     }
+    if entry.options.iter().any(|option| option.contains('"')) {
+        why.push(Unplain::OptionsQuote);
+    }
     if !entry.is_bind()
         && entry.vfstype.starts_with("fuse")
         && entry.vfstype != "fuse"
@@ -486,13 +537,25 @@ pub fn unplain(entry: &FstabEntry, line: &str) -> Vec<Unplain> {
     {
         why.push(Unplain::FuseProgram);
     }
-    if !entry.is_bind()
+    let reads = super::reads::fstab_reads(entry);
+    if (!entry.is_bind()
         && !names_no_local_path(&entry.vfstype)
-        && source(entry).is_some_and(names_dev_otherwise)
+        && source(entry).is_some_and(names_dev_otherwise))
+        || reads.iter().any(|(_, spec)| names_dev_otherwise(spec))
     {
         why.push(Unplain::DevOtherwise);
     }
-    why.extend(super::options::unplain_fstab(entry));
+    // Options split otherwise, or of a type that is not read, tell nothing
+    // more.
+    let unread = [
+        Unplain::OptionsBackslash,
+        Unplain::OptionsQuote,
+        Unplain::TypeBackslash,
+        Unplain::TypeList,
+    ];
+    if !why.iter().any(|reason| unread.contains(reason)) {
+        why.extend(super::known::unread_fstab(entry));
+    }
     why
 }
 
@@ -519,6 +582,12 @@ pub fn unplain_crypttab(entry: &CrypttabEntry, line: &str) -> Vec<Unplain> {
         why.push(Unplain::DevOtherwise);
     }
     why.extend(super::reads::unplain(entry));
+    if !why
+        .iter()
+        .any(|reason| [Unplain::Quote, Unplain::Backslash].contains(reason))
+    {
+        why.extend(super::known::unread_crypttab(entry));
+    }
     why
 }
 

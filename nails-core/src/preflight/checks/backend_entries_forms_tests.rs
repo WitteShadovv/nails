@@ -22,11 +22,11 @@ fn names_the_volume(finding: &str) -> String {
 
 #[test]
 fn a_bind_option_with_a_value_fails_with_the_flag_too() {
-    // util-linux 2.42's mount binds for `bind=x`, `rbind=` and `bind="a,b"`
-    // whatever the type, and so does systemd's mount of such a line, which
-    // it requires or wants for local-fs.target. Each of these binds the
-    // root's folder, or a folder of it, at every boot: hidden-volume passes
-    // the root with the flag's warning, and backend-entries fails the line.
+    // util-linux 2.42's mount binds for `bind=x` and `rbind=` whatever the
+    // type, and so does systemd's mount of such a line, which it requires or
+    // wants for local-fs.target. Each of these binds the root's folder, or a
+    // folder of it, at every boot: hidden-volume passes the root with the
+    // flag's warning, and backend-entries fails the line.
     for (line, why) in [
         (
             "/srv/x /mnt none bind=x 0 0",
@@ -44,10 +44,6 @@ fn a_bind_option_with_a_value_fails_with_the_flag_too() {
         (
             "/srv/x/sub /srv/sub 9p bind=1,nofail 0 0",
             "it mounts a folder of the volume at /mnt",
-        ),
-        (
-            "/srv/x /mnt none bind=\"a,b\" 0 0",
-            "it mounts the volume at /mnt",
         ),
         (
             "/srv/x /mnt proc bind=x 0 0",
@@ -74,19 +70,25 @@ fn a_bind_option_with_a_value_fails_with_the_flag_too() {
         assert_eq!(result.remediation(), Some(REMEDIATION), "{line}");
         assert!(run_allowing(&fs, Allow::Nothing).is_fail(), "{line}");
     }
-    // A relative source of such a line is not plain, whatever its type.
-    for (line, shown) in [
-        ("srv/x /mnt none bind=x 0 0", "srv/x /mnt none"),
-        ("srv/x /mnt none bind=\"a,b\" 0 0", "srv/x /mnt none"),
-        ("srv/x /mnt zfs bind=x 0 0", "srv/x /mnt zfs"),
-        ("srv/x /mnt fuse bind=x 0 0", "srv/x /mnt fuse"),
+    // A relative source of such a line is not plain, whatever its type, and
+    // so are options with a quote, inside which libmount keeps a comma in
+    // one option (`bind="a,b"`) where NAILS's parser ends it.
+    for (line, shown, reason) in [
+        ("srv/x /mnt none bind=x 0 0", "srv/x /mnt none", RELATIVE),
+        ("srv/x /mnt zfs bind=x 0 0", "srv/x /mnt zfs", RELATIVE),
+        ("srv/x /mnt fuse bind=x 0 0", "srv/x /mnt fuse", RELATIVE),
+        (
+            "/srv/x /mnt none bind=\"a,b\" 0 0",
+            "/srv/x /mnt none",
+            "its options hold a quote",
+        ),
     ] {
         let fs = rendered(
             BIND_OF_ROOT,
             &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
         );
         assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{line}");
-        fails_as_not_plain(&fs, Allow::DecoyStorage, &not_plain(shown, RELATIVE));
+        fails_as_not_plain(&fs, Allow::DecoyStorage, &not_plain(shown, reason));
     }
     // Plain bind lines from beside the root's folder name no part of it,
     // with an option with a value too.
@@ -1082,10 +1084,19 @@ fn an_option_with_no_value_where_systemd_reads_one_fails_with_the_flag_too() {
             BESIDE_HOME,
             &format!("/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home btrfs {options} 0 0\n"),
         );
-        fails_as_not_plain(
-            &fs,
-            Allow::DecoyStorage,
-            &not_plain("/dev/vda2 /home btrfs", &Unplain::NoValue(option).reason()),
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert_eq!(
+            result.message(),
+            may_name_the_volume(&not_plain(
+                "/dev/vda2 /home btrfs",
+                &Unplain::NoValue(option).reason()
+            )),
+            "{options}"
+        );
+        assert_eq!(
+            result.remediation(),
+            Some(format!("{UNPLAIN}\n{}", unread_options(&[option.to_string()])).as_str()),
+            "{options}"
         );
     }
     let fs = rendered(
@@ -1295,9 +1306,10 @@ fn with_the_flag_a_key_file_or_header_in_the_roots_folder_or_on_its_device_fails
     // A folder of / bound at the root, and a key file in the key field: in
     // the root's folder, or on the root's own device, which the boot mounts
     // a second time for it, and a header there. A key file beside the root's
-    // folder and a key device of another filesystem name no part of it, and
-    // neither does a path in the options field after a key field `none`,
-    // which systemd-cryptsetup ignores as an option it does not know.
+    // folder and a key device of another filesystem name no part of it. A
+    // path in the options field after a key field `none`, which
+    // systemd-cryptsetup ignores as an option it does not know, is an option
+    // no list of NAILS's holds, so the line is not plain.
     for (crypttab, why) in [
         (
             "vault /dev/vdc /srv/x/key luks",
@@ -1338,8 +1350,6 @@ fn with_the_flag_a_key_file_or_header_in_the_roots_folder_or_on_its_device_fails
     for crypttab in [
         "vault /dev/vdc /srv/y/key luks",
         "vault /dev/vdc /key:/dev/vdc1 luks",
-        "vault /dev/vdc none /srv/x/key luks",
-        "vault /dev/vdc none /srv/x/key:/dev/vda1 luks",
     ] {
         let fs = rendered(BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n");
         fs.mock_set_file_content("/etc/crypttab", &format!("{crypttab}\n"));
@@ -1348,6 +1358,25 @@ fn with_the_flag_a_key_file_or_header_in_the_roots_folder_or_on_its_device_fails
         assert_eq!(
             result.message(),
             only_the_decoys_own_line("/"),
+            "{crypttab}"
+        );
+    }
+    for (crypttab, option) in [
+        ("vault /dev/vdc none /srv/x/key luks", "/srv/x/key"),
+        (
+            "vault /dev/vdc none /srv/x/key:/dev/vda1 luks",
+            "/srv/x/key:/dev/vda1",
+        ),
+    ] {
+        let fs = rendered(BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n");
+        fs.mock_set_file_content("/etc/crypttab", &format!("{crypttab}\n"));
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert_eq!(
+            result.message(),
+            may_name_the_volume(&format!(
+                "/etc/crypttab: 'vault /dev/vdc' (NAILS reads only plain lines, and it gives \
+                 {option}, an option whose effect NAILS does not read)"
+            )),
             "{crypttab}"
         );
     }

@@ -428,10 +428,6 @@ fn a_bind_option_with_a_value_makes_a_bind_line() {
             "it mounts the volume at /mnt",
         ),
         (
-            "/data/x /mnt none bind=\"a,b\" 0 0",
-            "it mounts the volume at /mnt",
-        ),
-        (
             "/data/x /mnt tmpfs bind=x,noauto,x-systemd.automount 0 0",
             "it mounts the volume at /mnt",
         ),
@@ -500,15 +496,20 @@ fn a_bind_option_with_a_value_makes_a_bind_line() {
             "{line}"
         );
     }
-    // A name in another case or in quotes makes no bind: the line is one of
-    // a RAM filesystem, which names no storage.
-    for line in [
-        "/data/x /mnt tmpfs Bind 0 0",
-        "/data/x /mnt tmpfs \"bind\" 0 0",
-    ] {
-        let judgement = bind_of_a_folder(&format!("{line}\n")).judge("/mnt");
-        assert_eq!(entry_needs(&judgement), [SLASH], "{line}");
-    }
+    // A name in another case makes no bind: the line is one of a RAM
+    // filesystem, which names no storage. One in quotes is not plain, as
+    // libmount keeps a comma inside quotes in one option.
+    let judgement = bind_of_a_folder("/data/x /mnt tmpfs Bind 0 0\n").judge("/mnt");
+    assert_eq!(entry_needs(&judgement), [SLASH]);
+    let judgement = bind_of_a_folder("/data/x /mnt tmpfs \"bind\" 0 0\n").judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [SLASH, (EntryKind::Untold, "/data/x /mnt tmpfs", false)]
+    );
+    assert_eq!(
+        judgement.entries[1].why,
+        "NAILS reads only plain lines, and its options hold a quote"
+    );
 }
 
 #[test]
