@@ -19,7 +19,7 @@ use super::command::{ALIAS_PARAMETERS, assigned, is_assignment};
 use super::hooks::hook_array;
 use super::patterns::may_match;
 use super::strings::{PROMPTS, brace_list};
-use super::{Event, HOOKS, Walker};
+use super::{Event, Frame, HOOKS, Walker};
 
 /// The parameters a rule of the check reads, by their value or by their
 /// being set, beside the prompts, the arrays of hook functions, the
@@ -55,8 +55,9 @@ const READ: &[&str] = &[
 ];
 
 /// The parameters whose value the check follows as a path or a list of them:
-/// an attribute that changes what zsh expands one to (`-l`, `-L 3`), what
-/// it holds (`-i`) or whether a later assignment sets it (`-r`) is a doubt.
+/// an attribute that changes what zsh expands one to (`-l`, `-L 3`, `-a`,
+/// which makes a scalar an empty array), what it holds (`-i`) or whether a
+/// later assignment sets it (`-r`) is a doubt.
 const FOLLOWED: &[&str] = &[
     "ZDOTDIR",
     "XDG_CONFIG_HOME",
@@ -66,7 +67,8 @@ const FOLLOWED: &[&str] = &[
 ];
 
 /// The letters of the options of the `typeset` family that give such an
-/// attribute ([`FOLLOWED`]).
+/// attribute ([`FOLLOWED`]), and `a`, which gives one to all but `fpath`,
+/// already an array.
 const ATTRIBUTES: &str = "AEFLRZilru";
 
 /// Whether the check reads the value of the parameter `name` where the files
@@ -277,8 +279,9 @@ impl Walker<'_> {
     /// 'HOM?=/x'`, `typeset -L 3 -m 'T?Y'`), a tie (`typeset -T TMOUT tmout`)
     /// of one whose value the check reads ([`tie_read`]), as zsh then sets it
     /// by the other name too (`tmout=(...)`), and an attribute
-    /// ([`ATTRIBUTES`], `readonly`, `integer` and `float` among them) of one
-    /// whose value it follows ([`FOLLOWED`]): `typeset -l ZDOTDIR`. `local`,
+    /// ([`ATTRIBUTES`], `readonly`, `integer` and `float` among them, and
+    /// `-a` but on `fpath`) of one whose value it follows ([`FOLLOWED`]):
+    /// `typeset -l ZDOTDIR`, `typeset -a XDG_CONFIG_HOME`. `local`,
     /// `readonly`, `export`, `integer` and `float` take no `-m`. Each other
     /// word is an assignment or a declaration.
     pub(super) fn declare(&mut self, command: &str, args: &[Word], unconditional: bool) {
@@ -303,6 +306,7 @@ impl Walker<'_> {
         }
         let attributes = matches!(command, "readonly" | "integer" | "float")
             || ATTRIBUTES.chars().any(|letter| options.on(letter));
+        let array = options.on('a');
         // The names, past the word the check stops reading the options at.
         let names = (options.names + usize::from(options.unread.is_some())).min(args.len());
         for arg in &args[names..] {
@@ -324,7 +328,7 @@ impl Walker<'_> {
                     words(),
                     self.place
                 )));
-            } else if attributes && FOLLOWED.contains(&name) {
+            } else if FOLLOWED.contains(&name) && (attributes || (array && name != "fpath")) {
                 self.events.push(Event::Doubt(format!(
                     "it cannot follow the value of `{name}` that `{command} {}` in {} gives an \
                      attribute, which may change what zsh expands it to or keep a later \
@@ -334,10 +338,12 @@ impl Walker<'_> {
                 )));
             }
         }
-        // In a function, without `-g`, a name declared as it is is the
-        // function's own and empty there, as `${XDG_CONFIG_HOME:-...}` then
-        // tells.
-        let local = self.function().is_some() && command != "export" && !options.has('g');
+        // In a function, an anonymous one among them, without `-g`, a name
+        // declared as it is is the function's own and empty there, as
+        // `${XDG_CONFIG_HOME:-...}` then tells.
+        let in_function = self.function().is_some()
+            || self.frames.iter().any(|open| open.frame == Frame::Function);
+        let local = in_function && command != "export" && !options.has('g');
         for arg in args {
             // A hook's array or a prompt declared as it is.
             if hook_array(&arg.text) {
@@ -357,6 +363,7 @@ impl Walker<'_> {
                     name,
                     value: Some(Word::default()),
                     unconditional: false,
+                    first: false,
                 });
             }
         }
@@ -406,6 +413,7 @@ impl Walker<'_> {
                     name: "XDG_CONFIG_HOME",
                     value: None,
                     unconditional,
+                    first: !self.ran,
                 });
             }
         }

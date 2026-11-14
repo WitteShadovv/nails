@@ -45,6 +45,27 @@ const PRECOMMANDS: &[&str] = &[
     "!",
 ];
 
+/// Whether zsh can expand `value`, an assignment's value as written, with
+/// no error that stops the file it is in: it names no parameter but `HOME`
+/// and those `${...:-...}` gives a default for (`${XDG_CONFIG_HOME:-...}`),
+/// which the check resolves, and runs no command.
+fn cannot_fail(value: &str) -> bool {
+    let mut rest = value.to_string();
+    for safe in [
+        "${XDG_CONFIG_HOME:-$HOME/.config}",
+        "${XDG_CONFIG_HOME:-${HOME}/.config}",
+        "${XDG_CONFIG_HOME:-~/.config}",
+        "${ZDOTDIR:-$HOME}",
+        "${ZDOTDIR:-${HOME}}",
+        "${ZDOTDIR:-~}",
+        "${HOME}",
+        "$HOME",
+    ] {
+        rest = rest.replace(safe, "");
+    }
+    !rest.contains(['$', '`'])
+}
+
 /// Whether `text` assigns a variable (`name=...`, `name+=...`,
 /// `name[key]=...`), not a word with an `=` in it (`${=c}`, `$=c`).
 pub(super) fn is_assignment(text: &str) -> bool {
@@ -185,8 +206,12 @@ impl Walker<'_> {
 
     /// The events of zsh code `text` that a command of the file runs as the
     /// function `outer` would, when in one ([`Walker::nested`]): a trap's
-    /// code runs as a `TRAP...` function does.
+    /// code runs as a `TRAP...` function does. What code that runs as a
+    /// function sets, which it may do later or in its own scope, is no
+    /// certain setting where it stands, and no setting comes first in the
+    /// file after a command that ran ([`Event::Assign`]).
     pub(super) fn nested_in(&mut self, text: &str, unconditional: bool, outer: Option<String>) {
+        let later = outer.is_some();
         let nested = walk_text_in(text, self.place, outer);
         self.sources += nested.sources;
         self.evals += nested.evals;
@@ -200,7 +225,7 @@ impl Walker<'_> {
         self.alias_params += nested.alias_params;
         self.function_params += nested.function_params;
         self.may_stop |= nested.may_stop;
-        let uncertain = !unconditional || nested.confused;
+        let uncertain = !unconditional || nested.confused || later;
         for mut event in nested.events {
             if uncertain
                 && let Event::Set { unconditional, .. }
@@ -209,8 +234,14 @@ impl Walker<'_> {
             {
                 *unconditional = false;
             }
+            if (self.ran || later)
+                && let Event::Assign { first, .. } = &mut event
+            {
+                *first = false;
+            }
             self.events.push(event);
         }
+        self.ran |= nested.ran;
     }
 
     /// The events of an `fc` or a `history` (`command`, which takes the
@@ -766,6 +797,7 @@ impl Walker<'_> {
         self.xdg_config_homes += xdg_config_home_writes(&word.text);
         self.mention_options(&word.text);
         let value = word.text[name.len() + 1..].to_string();
+        let first = !self.ran && cannot_fail(&value);
         self.events.push(Event::Assign {
             name,
             value: Some(Word {
@@ -775,6 +807,7 @@ impl Walker<'_> {
                 bare: word.bare,
             }),
             unconditional,
+            first,
         });
     }
 

@@ -163,6 +163,11 @@ impl Walker<'_> {
                     .map(|name| Event::Expanding(name.text.clone())),
             );
         }
-        self.events.extend(names.into_iter().map(Event::Autoload));
+        let in_function = self.function().is_some();
+        self.events.extend(
+            names
+                .into_iter()
+                .map(|name| Event::Autoload(name, in_function)),
+        );
     }
 }

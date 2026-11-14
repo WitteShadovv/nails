@@ -64,21 +64,30 @@ pub(in super::super) enum Event {
     /// Oh My Zsh is loaded.
     OhMyZsh,
     /// `ZDOTDIR`, `XDG_CONFIG_HOME` or `NIX_PROFILES` is set to `value`, or
-    /// unset (`None`).
+    /// unset (`None`); `first` when no command of the file runs before it,
+    /// and its value names no parameter but those whose expansion cannot
+    /// fail, so that zsh cannot stop the file at an error before it.
     Assign {
         name: &'static str,
         value: Option<Word>,
         unconditional: bool,
+        first: bool,
     },
     /// A directory is added to `fpath`, where zsh looks for the functions it
     /// autoloads: the element as written, or `None` for what a line may add
     /// that the walk did not read; `first` when zsh looks in it before the
     /// directories `fpath` held, as where it is put in front of them or
-    /// replaces them.
-    Fpath { dir: Option<Word>, first: bool },
+    /// replaces them; `in_function` when a function's body adds it, which
+    /// runs after the files define it.
+    Fpath {
+        dir: Option<Word>,
+        first: bool,
+        in_function: bool,
+    },
     /// A function is marked to be autoloaded: its name, or the path of its
-    /// file.
-    Autoload(Word),
+    /// file; and whether a function's body marks it, which runs after the
+    /// files define it.
+    Autoload(Word, bool),
     /// An `fc` that writes the history file, as written (`fc -AI`).
     Fc(String),
     /// A prompt that holds code zsh runs as it shows it when

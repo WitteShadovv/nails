@@ -50,6 +50,7 @@ pub(super) fn beyond(named: &Named, read: &[usize; 3], walked: &Walked, place: &
         events.push(Event::Fpath {
             dir: None,
             first: false,
+            in_function: false,
         });
     }
     if named.fcs > walked.fcs {
