@@ -3,6 +3,7 @@
 
 use super::super::{Filesystem, LoopRecord, MountEntry, MountSource};
 use super::MockFilesystem;
+use super::state::MockLookup;
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,10 @@ impl Filesystem for MockFilesystem {
 
     fn is_regular_file(&self, path: &Path) -> Result<bool> {
         self.looked_at(path);
+        // Here, not in the lookup the lock query makes of its own.
+        if let Some(error) = self.failure_only(path, MockLookup::IsRegularFile) {
+            return Err(error);
+        }
         self.is_regular_file_impl(path)
     }
 
@@ -65,6 +70,11 @@ impl Filesystem for MockFilesystem {
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {
         self.looked_at_itself(path);
+        // Here, not in the lookups mount_root and the lock query make of
+        // their own.
+        if let Some(error) = self.failure_only(path, MockLookup::IsSymlink) {
+            return Err(error);
+        }
         self.is_symlink_impl(path)
     }
 
