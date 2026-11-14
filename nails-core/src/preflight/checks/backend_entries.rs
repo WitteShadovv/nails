@@ -66,12 +66,13 @@
 //! source by it (`sshfs`, `s3fs`, an rclone remote and a few more); a `#` in
 //! the first field of a line of any other type that begins with `fuse` fails
 //! too, and so does a FUSE program named by a path with a `/` that is not
-//! absolute. The check reads only plain crypttab lines as well, whose fields
-//! NAILS reads as systemd does: a line that holds such a character, a quote
-//! or a backslash in one of its four fields, or a source that is neither an
-//! absolute path nor such a tag or that leads into `/dev` so, fails with or
-//! without the flag. The check names what it could not read, and says to
-//! write the line plainly.
+//! absolute. The check reads only plain crypttab lines as well: a line that
+//! holds such a character, a quote or a backslash in one of its four fields,
+//! or a source that is neither an absolute path nor such a tag or that leads
+//! into `/dev` so, fails with or without the flag. Of a plain crypttab line it
+//! reads the name, the source and a few of the options, and not the key file.
+//! The check names what it could not read, and says to write the line
+//! plainly.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
