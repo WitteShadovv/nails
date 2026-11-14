@@ -116,6 +116,10 @@ NEEDS_POSTURE = "the posture checks of tuned, firewalld and ABRT"
 NEEDS_LSM = "the lsm-status check"
 NEEDS_AUDITD_TEXT = "the corrected auditd text of decoy-persistence"
 TUNED_DROPIN = "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n"
+# What PID 1 logs when the policy of the root it starts in is not loaded, and
+# when a policy is.
+POLICY_KEPT = "Failed to load new SELinux policy. Continuing with old policy."
+POLICY_LOADED = "Successfully loaded SELinux policy"
 
 
 class Gate:
@@ -1185,6 +1189,19 @@ class Gate:
                     [f"{a['signature']} ({a['why']})" for a in new],
                     needs,
                 )
+                if label.split("-")[0] in ("enter", "leave", "control") and not (
+                    label.endswith("-end")
+                ):
+                    # Each switch keeps the decoy's loaded policy: PID 1's load
+                    # of the new root's policy fails, as at a plain
+                    # soft-reboot, and nothing else is loaded.
+                    loads = found["policy"]
+                    self.check(
+                        f"the switch from marker {label} keeps the decoy's policy",
+                        any(POLICY_KEPT in line for line in loads)
+                        and not any(POLICY_LOADED in line for line in loads),
+                        loads,
+                    )
 
     # --- the run ---------------------------------------------------------
 
