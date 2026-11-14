@@ -43,9 +43,15 @@ def quiet(call: Any, *args: Any) -> Any:
 
 class RowTest(unittest.TestCase):
     def test_a_row_is_judged_only_with_a_verdict(self) -> None:
-        rows = {"decoy-persistence": {"status": "warn"}, "x": {"status": "fail"}}
+        rows = {
+            "decoy-persistence": {"status": "warn"},
+            # Refused for another reason: still a row check printed.
+            "x": {"status": "fail"},
+            "y": {"message": "no verdict"},
+        }
         self.assertTrue(fg.judged_row(rows, "decoy-persistence"))
-        self.assertFalse(fg.judged_row(rows, "x"))
+        self.assertTrue(fg.judged_row(rows, "x"))
+        self.assertFalse(fg.judged_row(rows, "y"))
         # check printed no report: no row, nothing it could no longer name.
         self.assertFalse(fg.judged_row({}, "decoy-persistence"))
 
@@ -88,6 +94,31 @@ class DecoyDiskTest(unittest.TestCase):
         self.assertEqual(
             fg.changed_paths(listing),
             {"/var/lib/lastlogger", "/var/lib/systemd/random-seed"},
+        )
+
+    def test_a_unit_s_private_folder_is_named_by_its_unit(self) -> None:
+        boot = "ab" * 16  # a boot id: 32 hex digits
+        listing = "\n".join(
+            (
+                f"/var/tmp/systemd-private-{boot}-chronyd.service-WSgY0s",
+                f"/var/tmp/systemd-private-{boot}-chronyd.service-WSgY0s/tmp",
+                f"/var/tmp/systemd-private-{boot}-dbus-broker.service-nf0Nj1/tmp/x",
+            )
+        )
+        self.assertEqual(
+            fg.changed_paths(listing),
+            {
+                f"/var/tmp/systemd-private-{boot}-chronyd.service-*",
+                f"/var/tmp/systemd-private-{boot}-chronyd.service-*/tmp",
+                f"/var/tmp/systemd-private-{boot}-dbus-broker.service-*/tmp/x",
+            },
+        )
+
+    def test_another_filesystem_s_mount_point_is_left_out(self) -> None:
+        listing = "/\n/nix/.ro-store\n/nix/store\n/etc/x\n/run"
+        self.assertEqual(
+            fg.changed_paths(listing, ["/nix/.ro-store", "/nix/store", "/run"]),
+            {"/", "/etc/x"},
         )
 
     def test_a_way_back_may_change_what_a_control_changes(self) -> None:
@@ -202,14 +233,19 @@ class DenialsTest(unittest.TestCase):
         ("prep-drift", 70, 160.0),
     )
 
-    def boot(self, placed: dict[int, str], audit_text: str = "") -> dict[str, Any]:
+    def boot(
+        self, placed: dict[int, str], audit_text: str = "", started: bool = True
+    ) -> dict[str, Any]:
         """A reference boot whose kernel log runs from 1 to 80 without a gap:
-        the first audit record (serial 1), the markers, ``placed`` by their
-        sequence numbers, and filler."""
+        the first audit record (serial 1), the markers, the first audit record
+        after the first marker (serial 2) unless not ``started``, ``placed``
+        by their sequence numbers, and filler."""
         records = {}
         for seq in range(1, 81):
             records[seq] = kmsg(seq, "filler")
         records[1] = kmsg(1, "audit: type=2000 audit(0.100:1): state=initialized")
+        if started:
+            records[11] = kmsg(11, "audit: type=1130 audit(100.500:2): pid=1 res=1")
         for label, seq, _ in self.MARKERS:
             records[seq] = kmsg(seq, sg.marker(label, "n"))
         # Each switch keeps the decoy's policy, as at a plain soft-reboot.
@@ -241,7 +277,7 @@ class DenialsTest(unittest.TestCase):
         # nails check ran while auditd took every record: its denial is only
         # in auditd's log, dated inside the check's phase.
         audit = (
-            "type=AVC msg=audit(125.000:2): avc:  denied  { read } for  pid=9 "
+            "type=AVC msg=audit(125.000:3): avc:  denied  { read } for  pid=9 "
             'comm="nails" name="x" dev="vda4" ino=1 '
             "scontext=unconfined_u:unconfined_r:unconfined_t:s0 "
             "tcontext=system_u:object_r:etc_t:s0 tclass=file permissive=0"
@@ -251,15 +287,32 @@ class DenialsTest(unittest.TestCase):
         detail = next(c for c in self.run_checks if c["name"] == failed[0])
         self.assertIn("audit log", detail["detail"])
 
+    SERIALS = (
+        "every audit record of the boot from its first marker on is in the "
+        "kernel log or auditd's log"
+    )
+
     def test_an_audit_record_in_neither_log_fails_the_boot(self) -> None:
-        # Serial 1 is in the kernel log, 3 in auditd's: 2 reached neither.
-        audit = "type=DAEMON_START msg=audit(105.000:3): op=start res=1"
+        # From the first marker on, 3 is in auditd's log and 5 in the kernel
+        # log: 4 reached neither.
+        audit = "type=CONFIG_CHANGE msg=audit(105.000:3): op=set res=1"
+        late = {25: "audit: type=1130 audit(111.000:5): pid=1 msg='unit=x'"}
+        self.assertEqual(self.failed(self.boot(late, audit)), [self.SERIALS])
+        audit += "\ntype=CONFIG_CHANGE msg=audit(106.000:4): op=set res=1"
+        self.assertEqual(self.failed(self.boot(late, audit)), [])
+
+    def test_what_the_boot_s_start_lost_is_recorded_only(self) -> None:
+        # Before the gate lifted printk's rate limit the kernel dropped 2 to
+        # 38; auditd took 39 on.
+        audit = "type=CONFIG_CHANGE msg=audit(105.000:39): op=set res=1"
+        run = gate()
+        run.boots = [self.boot({}, audit, started=False)]
+        quiet(run.judge_denials)
+        self.assertEqual([c["name"] for c in run.checks if not c["passed"]], [])
         self.assertEqual(
-            self.failed(self.boot({}, audit)),
-            ["every audit record of the boot is in the kernel log or auditd's log"],
+            run.facts["audit-serials-reference"],
+            {"fromFirstMarker": 39, "highest": 39, "lostAtTheBootsStart": [(2, 38)]},
         )
-        audit += "\ntype=CONFIG_CHANGE msg=audit(104.000:2): op=set res=1"
-        self.assertEqual(self.failed(self.boot({}, audit)), [])
 
     def test_a_phase_that_lost_records_fails(self) -> None:
         lost = {65: "kauditd_printk_skb: 3 callbacks suppressed"}
@@ -275,14 +328,14 @@ class DenialsTest(unittest.TestCase):
         # A denial a phase after the first session logs is new unless the
         # decoy logged it before the first entry; one a check logged is no
         # baseline.
-        late = denial(161.0, 2, "rpm", "rpm_t")
+        late = denial(161.0, 3, "rpm", "rpm_t")
         self.assertEqual(
             self.failed(self.boot({75: late})),
             ["no new denial from marker prep-drift on"],
         )
-        early = denial(111.0, 3, "rpm", "rpm_t")
+        early = denial(111.0, 4, "rpm", "rpm_t")
         self.assertEqual(self.failed(self.boot({25: early, 75: late})), [])
-        in_check = denial(121.0, 3, "rpm", "rpm_t")
+        in_check = denial(121.0, 4, "rpm", "rpm_t")
         self.assertEqual(
             self.failed(self.boot({35: in_check, 75: late})),
             [
@@ -291,9 +344,26 @@ class DenialsTest(unittest.TestCase):
             ],
         )
 
+    def test_without_dontaudit_rules_only_nails_s_new_denials_fail(self) -> None:
+        # The policy's quiet denials of other programs show then: recorded.
+        late = {75: denial(161.0, 3, "systemd-hwdb", "systemd_hwdb_t")}
+        run = gate(dontaudit=False)
+        run.boots = [self.boot(late)]
+        quiet(run.judge_denials)
+        self.assertEqual([c["name"] for c in run.checks if not c["passed"]], [])
+        self.assertEqual(len(run.facts["noda-other-new"]["marker prep-drift"]), 1)
+        nails = {75: denial(161.0, 3, "control")}
+        run = gate(dontaudit=False)
+        run.boots = [self.boot(nails)]
+        quiet(run.judge_denials)
+        self.assertEqual(
+            [c["name"] for c in run.checks if not c["passed"]],
+            ["no new denial from marker prep-drift on"],
+        )
+
     def test_a_nails_denial_before_the_first_entry_still_counts(self) -> None:
         self.assertEqual(
-            self.failed(self.boot({25: denial(111.0, 2, "control")})),
+            self.failed(self.boot({25: denial(111.0, 3, "control")})),
             ["no new denial from marker prep-decoy on"],
         )
 
