@@ -4,6 +4,7 @@
 //! The judge: the decoy's claims, then the first verdict that matches.
 
 use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
+use super::options::{crypttab_noauto, fstab_noauto};
 use super::paths::{is_claimed, is_untold_device, names_a_file, opens_a_file, program_path};
 use super::placed::{Line, Named, place};
 use super::plain::source;
@@ -527,7 +528,7 @@ fn claims(
             if !is_claimed(entry) {
                 break 'line;
             }
-            let noauto = entry.is_noauto();
+            let noauto = fstab_noauto(entry);
             // The program a FUSE line names by its path, which `mount.fuse`
             // runs from wherever it lies, the volume too: the filesystem
             // that holds it, read as written, with no link followed.
@@ -550,7 +551,7 @@ fn claims(
                 // mere recipe for the hidden drive. One that names only
                 // another device of the root's btrfs filesystem claims it all
                 // the same.
-                if entry.is_noauto() && stack.iter().any(|s| s == node) {
+                if fstab_noauto(entry) && stack.iter().any(|s| s == node) {
                     break 'line;
                 }
             }
@@ -741,7 +742,7 @@ fn crypttab_claims(
                 // or at a system folder, is the decoy's own line for that
                 // place too. Never one that opens the hidden volume of a
                 // container, whatever it names.
-                let own = makes_own && !entry.has_option("noauto") && !entry.is_tcrypt_hidden();
+                let own = makes_own && !crypttab_noauto(entry) && !entry.is_tcrypt_hidden();
                 let system_folder = own_place.filter(|_| own).map(Path::to_path_buf);
                 found.push(EntryFinding {
                     system_folder,
@@ -766,7 +767,7 @@ fn crypttab_claims(
             None => entries.append(&mut found),
         }
         if claimed {
-            let noauto = entry.has_option("noauto");
+            let noauto = crypttab_noauto(entry);
             claims.extend(holder.map(|holder| mount_claim(scene, holder, noauto)));
             let tops: Vec<String> = source
                 .into_iter()
@@ -777,7 +778,7 @@ fn crypttab_claims(
                 scene,
                 Claimed::Encrypted(entry.name.clone()),
                 tops,
-                entry.has_option("noauto"),
+                crypttab_noauto(entry),
             ));
         }
     }
@@ -889,7 +890,7 @@ fn fstab_finding(
     // volume or for the filesystem the root is part of, mounts one of the
     // decoy's own filesystems or its swap, and so does one the boot mounts at
     // / or at a system folder.
-    let boot_needs = !entry.is_noauto()
+    let boot_needs = !fstab_noauto(entry)
         && if own {
             part_of || system
         } else {
@@ -901,7 +902,7 @@ fn fstab_finding(
     // told, and never one whose mount is not there now, since nothing then
     // shows that the decoy uses that filesystem there.
     let system_folder = (system
-        && !entry.is_noauto()
+        && !fstab_noauto(entry)
         && root_itself == Some(false)
         && line_is_mounted(scene, entry, hidden))
     .then(|| entry.file.clone());
@@ -919,7 +920,7 @@ fn fstab_line(hidden: &MountEntry, entry: &FstabEntry, named: Named) -> Line {
         file: FSTAB,
         shown: shown(entry),
         named,
-        boot_needs: !entry.is_noauto() && is_system_folder(&entry.file, &hidden.mount_point),
+        boot_needs: !fstab_noauto(entry) && is_system_folder(&entry.file, &hidden.mount_point),
     }
 }
 

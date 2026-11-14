@@ -54,7 +54,10 @@
 //! or crypttab line that is not plain ([`read_fstab`], [`read_crypttab`]):
 //! NAILS reads only plain lines, and that is the only finding such a line
 //! makes, while it claims what NAILS reads in it and makes no mount of the
-//! decoy's own ([`decoys_own_mount`]).
+//! decoy's own ([`decoys_own_mount`]). The judge reads the options it reads,
+//! `noauto` and `auto` among them, by their names, as systemd does (see the
+//! `options` module): `noauto=1` is `noauto`, and of `noauto` and `auto` the
+//! last one given wins.
 //! A finding is no claim, except an fstab entry the
 //! boot mounts or swaps on, one for another device of the root's btrfs
 //! filesystem, which is the decoy's own storage too, and a line placed by its
@@ -145,6 +148,7 @@ mod collect;
 mod extra;
 mod judge;
 mod lines;
+mod options;
 mod paths;
 mod placed;
 mod plain;

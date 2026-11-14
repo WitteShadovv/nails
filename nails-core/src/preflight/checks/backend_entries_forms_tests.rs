@@ -886,3 +886,151 @@ fn a_dev_link_out_of_dev_is_untold_at_that_link_and_nothing_past_it_is_read() {
     other.link("/dev/disk/by-uuid/abcd", "../../sdc");
     assert!(other.run().is_pass(), "{:?}", other.run());
 }
+
+// ------------------------------------------------------------------------
+// Options read by their names, as systemd reads them
+// ------------------------------------------------------------------------
+
+// Options read by their names, and what a crypttab line reads besides its
+// source
+// ------------------------------------------------------------------------
+
+#[test]
+fn with_the_flag_a_line_that_systemd_reads_as_noauto_still_fails() {
+    // Beside the btrfs subvolume at the root, the line for /home with
+    // `noauto=1` or `auto,noauto=`, which systemd 260.5's fstab generator
+    // read as noauto (`noauto=yes`) and pulled into no target, fails as the
+    // plain `noauto` does: it is a line the boot does not mount. So does the
+    // encrypted decoy's crypttab line with `noauto=1`, which the crypttab
+    // generator left out of cryptsetup.target, as with `noauto`.
+    for options in [
+        "subvol=/home,noauto=1",
+        "subvol=/home,auto,noauto=",
+        "subvol=/home,noauto",
+        "noauto=yes,subvol=/home",
+        "subvol=/home,auto,noauto=no",
+    ] {
+        let fs = rendered(
+            BESIDE_HOME,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home btrfs {options} 0 0\n"),
+        );
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{options}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert_eq!(
+            result.message(),
+            names_the_volume(
+                "/etc/fstab: '/dev/vda2 /home btrfs' (it mounts the filesystem the volume at \
+                 /mnt is part of)"
+            ),
+            "{options}"
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{options}");
+    }
+    for options in [
+        "luks,discard,noauto=1",
+        "luks,discard,noauto",
+        "luks,auto,noauto=no",
+    ] {
+        let decoy = encrypted_decoy_with("/srv/x", options);
+        let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+        assert_eq!(result.message(), names_the_volume(CRYPTROOT), "{options}");
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{options}");
+    }
+}
+
+#[test]
+fn a_line_that_systemd_mounts_by_a_later_auto_or_an_automount_is_the_decoys_own() {
+    // The fstab generator pulled `noauto,auto=0` into local-fs.target and
+    // made an automount for `x-systemd.automount=0`: such a line for /home
+    // is one the boot mounts, as one with `auto` or the automount alone, so
+    // the flag lets it be. So for a crypttab line with `noauto,auto=x`.
+    for options in [
+        "subvol=/home,noauto,auto=1",
+        "subvol=/home,noauto,x-systemd.automount=1",
+        "subvol=/home,noauto,comment=systemd.automount=x",
+    ] {
+        let fs = rendered(
+            BESIDE_HOME,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home btrfs {options} 0 0\n"),
+        );
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_pass(), "{options}: {result:?}");
+        assert_eq!(
+            result.message(),
+            only_the_decoys_own_line("/home"),
+            "{options}"
+        );
+    }
+    let decoy = encrypted_decoy_with("/srv/x", "luks,discard,noauto,auto=x");
+    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+    assert_eq!(
+        result.message(),
+        only_the_decoys_own_lines("line for /", "cryptroot /dev/nvme0n1p3")
+    );
+}
+
+#[test]
+fn the_gate_counts_a_line_that_systemd_mounts_by_a_later_auto_or_an_automount() {
+    // The volume is the mapping `data` on the whole of sdb, at /mnt. A line
+    // for it that the boot mounts, by a later `auto=1` or on demand by
+    // `x-systemd.automount=1`, makes the decoy use the volume's filesystem,
+    // and the attach gate refuses the root, as for a line with neither
+    // option. A plain `noauto` line is a mere recipe, which only
+    // backend-entries fails.
+    for (options, refused) in [
+        ("noauto,auto=1", true),
+        ("noauto,x-systemd.automount=1", true),
+        ("defaults", true),
+        ("noauto", false),
+    ] {
+        let decoy = decoy().encrypted().file(
+            "/etc/fstab",
+            &format!(
+                "/dev/nvme0n1p3 / ext4 defaults 0 1\n/dev/mapper/data /media/x ext4 {options} 0 0\n"
+            ),
+        );
+        assert!(decoy.run().is_fail(), "{options}");
+        let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+            .run(&decoy.fs)
+            .unwrap();
+        assert_eq!(gate.is_fail(), refused, "{options}: {gate:?}");
+        if refused {
+            assert!(gate.message().contains("/media/x"), "{options}: {gate:?}");
+        }
+    }
+}
+
+#[test]
+fn an_option_with_no_value_where_systemd_reads_one_fails_with_the_flag_too() {
+    // The fstab generator linked the line for /home with an empty
+    // `x-systemd.wanted-by=` into a unit named by nothing, and not into
+    // local-fs.target, so the boot no longer mounts it, and btrfs mounts no
+    // `subvol` given with no value: NAILS reads neither, so the line is not
+    // plain. `x-systemd.wanted-by` alone is no such option to systemd.
+    for (options, option) in [
+        ("subvol=/home,x-systemd.wanted-by=", "x-systemd.wanted-by"),
+        (
+            "subvol=/home,x-systemd.required-by=",
+            "x-systemd.required-by",
+        ),
+        ("subvol,noatime", "subvol"),
+        ("subvol=/home,subvolid=", "subvolid"),
+    ] {
+        let fs = rendered(
+            BESIDE_HOME,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n/dev/vda2 /home btrfs {options} 0 0\n"),
+        );
+        fails_as_not_plain(
+            &fs,
+            Allow::DecoyStorage,
+            &not_plain("/dev/vda2 /home btrfs", &Unplain::NoValue(option).reason()),
+        );
+    }
+    let fs = rendered(
+        BESIDE_HOME,
+        "/dev/vda1 / ext4 defaults 0 1\n\
+         /dev/vda2 /home btrfs subvol=/home,x-systemd.wanted-by 0 0\n",
+    );
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert_eq!(result.message(), only_the_decoys_own_line("/home"));
+}
