@@ -10,8 +10,10 @@
 //! One that is a link to `/dev/null`, or empty, masks the unit. The drop-ins
 //! are the `*.conf` files of `<unit>.d`, of the template's `foo@.service.d`,
 //! of the directories of its name's prefixes up to each dash
-//! (`plocate-.service.d` for `plocate-updatedb.service`), then the same for
-//! each of its aliases ([`aliases`]), and last of `service.d`, in every unit
+//! (`plocate-.service.d` for `plocate-updatedb.service`), for an instance
+//! those prefixes with its instance and their templates as well
+//! ([`dropin_dir_names`]), then the same for each of its aliases
+//! ([`aliases`]), and last of `service.d`, in every unit
 //! directory: sorted by file name, where a name found in a directory systemd
 //! looks at earlier shadows the same name further on, and applied after the
 //! unit file. The manager takes a unit's names in an order of its own, so a
@@ -68,30 +70,68 @@ pub(super) fn template(unit: &str) -> Option<String> {
     (!instance.is_empty()).then(|| format!("{prefix}@.{kind}"))
 }
 
-/// The drop-in directory names of `unit`, as systemd looks for them: the
-/// unit's own `<unit>.d`, its template's, then `<prefix>-.<type>.d` for each
-/// dash in the name before any `@`, from the last one back, and last
-/// `<type>.d`.
+/// The drop-in directory names of `unit`, as systemd's
+/// `unit_file_find_dirs()` looks for them, and last `<type>.d`. For a name,
+/// its own `<name>.d`; for an instance, then its template's names; then the
+/// names of its prefix up to the last dash in the name before any `@`
+/// (`plocate-.service` for `plocate-updatedb.service`), which an instance
+/// keeps its instance in (`systemd-@0.service` for
+/// `systemd-coredump@0.service`), and so on for that name. A dash that ends
+/// the prefix is dropped once to find the one before it, and one that starts
+/// it is no prefix.
 pub(in crate::preflight::checks) fn dropin_dir_names(unit: &str) -> Vec<String> {
-    let mut names = vec![format!("{unit}.d")];
-    let Some((stem, kind)) = unit.rsplit_once('.') else {
-        return names;
-    };
-    if let Some(template) = template(unit) {
-        names.push(format!("{template}.d"));
+    let mut names = Vec::new();
+    find_dirs(unit, &mut names);
+    if let Some((_, kind)) = unit.rsplit_once('.') {
+        names.push(format!("{kind}.d"));
     }
-    let prefix = stem.split_once('@').map_or(stem, |(prefix, _)| prefix);
-    // A dash that ends the name is no prefix of its own.
-    let mut rest = prefix.strip_suffix('-').unwrap_or(prefix);
-    while let Some((head, _)) = rest.rsplit_once('-') {
-        if head.is_empty() {
-            break;
-        }
-        names.push(format!("{head}-.{kind}.d"));
-        rest = head;
-    }
-    names.push(format!("{kind}.d"));
     names
+}
+
+/// The prefix of `prefix`, a name before any `@`, up to and with its last
+/// dash, as systemd builds it: a dash that ends `prefix` is dropped once to
+/// find the one before it, and a dash that starts it is no prefix.
+fn dash_prefix(prefix: &str) -> Option<&str> {
+    let mut rest = prefix;
+    let mut chopped = false;
+    loop {
+        let dash = rest.rfind('-')?;
+        if dash == 0 {
+            return None;
+        }
+        if dash + 1 < rest.len() || chopped {
+            return Some(&rest[..=dash]);
+        }
+        rest = &rest[..dash];
+        chopped = true;
+    }
+}
+
+/// Add the drop-in directory names of `name` to `names`, as
+/// [`dropin_dir_names`] says, each once.
+fn find_dirs(name: &str, names: &mut Vec<String>) {
+    let own = format!("{name}.d");
+    if !names.contains(&own) {
+        names.push(own);
+    }
+    let Some((stem, kind)) = name.rsplit_once('.') else {
+        return;
+    };
+    let (prefix, instance) = match stem.split_once('@') {
+        Some((prefix, instance)) => (prefix, Some(instance).filter(|i| !i.is_empty())),
+        None => (stem, None),
+    };
+    if let Some(template) = template(name) {
+        find_dirs(&template, names);
+    }
+    let Some(prefix) = dash_prefix(prefix) else {
+        return;
+    };
+    let built = match instance {
+        Some(instance) => format!("{prefix}@{instance}.{kind}"),
+        None => format!("{prefix}.{kind}"),
+    };
+    find_dirs(&built, names);
 }
 
 /// The unit file of `unit`: the path in the first of `dirs` that holds the

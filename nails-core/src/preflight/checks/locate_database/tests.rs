@@ -1184,13 +1184,42 @@ fn the_dropin_directories_go_from_the_unit_to_its_type() {
         ["a-b-c.timer.d", "a-b-.timer.d", "a-.timer.d", "timer.d"]
     );
     assert_eq!(dropin_dir_names("plain"), ["plain.d"]);
-    // An instance's template, and the prefixes of the name before its `@`.
+    // An instance's template, and the prefixes of the name before its `@`,
+    // also with its instance and their templates, as systemd's
+    // unit_file_find_dirs() builds them.
     assert_eq!(
         dropin_dir_names("a-b@c-d.service"),
         [
             "a-b@c-d.service.d",
             "a-b@.service.d",
             "a-.service.d",
+            "a-@c-d.service.d",
+            "a-@.service.d",
+            "service.d"
+        ]
+    );
+    assert_eq!(
+        dropin_dir_names("systemd-coredump@0.service"),
+        [
+            "systemd-coredump@0.service.d",
+            "systemd-coredump@.service.d",
+            "systemd-.service.d",
+            "systemd-@0.service.d",
+            "systemd-@.service.d",
+            "service.d"
+        ]
+    );
+    assert_eq!(
+        dropin_dir_names("a-b-c@i.service"),
+        [
+            "a-b-c@i.service.d",
+            "a-b-c@.service.d",
+            "a-b-.service.d",
+            "a-.service.d",
+            "a-b-@i.service.d",
+            "a-b-@.service.d",
+            "a-@i.service.d",
+            "a-@.service.d",
             "service.d"
         ]
     );

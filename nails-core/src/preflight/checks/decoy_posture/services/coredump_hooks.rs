@@ -30,7 +30,8 @@
 //! count, as the sockets the stock unit requires are no hooks. The links of
 //! the instance's dependency directories (`.wants`, `.requires`, `.upholds`)
 //! count as systemd reads them: those of its own name, its template's, the
-//! dashes' prefixes and its type's, in every unit directory, each link by its
+//! dashes' prefixes, with the instance and without, and its type's, in every
+//! unit directory ([`dropin_dir_names`]), each link by its
 //! name, but for one that leads to `/dev/null`. A section or a directory NAILS
 //! cannot read warns too, and so does a unit named with a specifier NAILS
 //! does not expand outside an instance, whose file NAILS cannot find.
