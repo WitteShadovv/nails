@@ -10,6 +10,7 @@ research build of NAILS appends. Nothing here imports Nix or the test driver.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -267,5 +268,125 @@ def phase(
             str(r["msg"])
             for r in inside
             if "SELinux policy" in str(r["msg"]) or "Relabel" in str(r["msg"])
+        ],
+    }
+
+
+_BANNER = re.compile(r"systemd\[1\]: systemd \d+")
+# The records PID 1 logs once the switch's last userspace step has ended.
+_STEP_END = (
+    "systemd-soft-reboot.service: Deactivated successfully",
+    "systemd-soft-reboot.service: Main process exited",
+    "Soft-rebooting.",
+)
+
+
+def journal_records(text: str) -> list[dict[str, Any]]:
+    """The records of ``journalctl -o json`` output: the kernel timestamp
+    (``_SOURCE_MONOTONIC_TIMESTAMP``, microseconds) and the message."""
+    found = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        stamp = entry.get("_SOURCE_MONOTONIC_TIMESTAMP")
+        message = entry.get("MESSAGE")
+        if isinstance(message, list):
+            message = bytes(b & 0xFF for b in message).decode("utf-8", "replace")
+        if stamp is None or not str(stamp).isdigit():
+            continue
+        found.append({"us": int(stamp), "msg": str(message or "")})
+    return found
+
+
+def first_after(
+    records: Iterable[Mapping[str, Any]],
+    after: int,
+    before: int | None,
+    match: Any,
+) -> int | None:
+    """The first record between ``after`` and ``before`` whose message
+    ``match`` accepts."""
+    for record in sorted(records, key=lambda r: int(r["seq"])):
+        seq = int(record["seq"])
+        if seq <= after or (before is not None and seq >= before):
+            continue
+        if match(str(record["msg"])):
+            return seq
+    return None
+
+
+def imported(
+    records: Iterable[Mapping[str, Any]], journal: Iterable[Mapping[str, Any]]
+) -> list[int]:
+    """The sequence numbers of the kernel records the journal holds, matched by
+    their kernel timestamp (and message where two records share one)."""
+    by_us: dict[int, list[Mapping[str, Any]]] = {}
+    for record in records:
+        by_us.setdefault(int(record["us"]), []).append(record)
+    seqs = set()
+    for entry in journal:
+        candidates = by_us.get(int(entry["us"]), [])
+        if len(candidates) > 1:
+            text = str(entry["msg"])[:40]
+            candidates = [c for c in candidates if text in str(c["msg"])] or candidates
+        for record in candidates[:1]:
+            seqs.add(int(record["seq"]))
+    return sorted(seqs)
+
+
+def cursor(
+    records: Sequence[Mapping[str, Any]],
+    journal_text: str,
+    enter: int | None,
+    leave: int | None,
+    back: int | None,
+) -> dict[str, Any]:
+    """Whether the decoy's runtime journal after a way back holds kernel records
+    of the session. The transition step writes the cursor as it ends, so every
+    record the journal imported from the session's entry (``enter``) up to the
+    end of that step (found after ``leave``, before ``back``) is a leak. The
+    records PID 1 logs after the step, up to the new userspace, cannot be
+    skipped by a cursor written before them: they are counted apart."""
+    journal = journal_records(journal_text)
+    seqs = imported(records, journal)
+    step_end = banner = None
+    if leave is not None:
+        step_end = first_after(
+            records, leave, back, lambda m: any(t in m for t in _STEP_END)
+        )
+        banner = first_after(
+            records,
+            leave,
+            back,
+            lambda m: bool(_BANNER.search(m)) or "SELinux policy" in m,
+        )
+    known = enter is not None and step_end is not None
+    session = [s for s in seqs if known and enter <= s < step_end]
+    after_step = [
+        s
+        for s in seqs
+        if step_end is not None and banner is not None and step_end <= s < banner
+    ]
+    before = [s for s in seqs if enter is not None and s < enter]
+    by_seq = {int(r["seq"]): str(r["msg"]) for r in records}
+    return {
+        "journalKernelRecords": len(journal),
+        "matched": len(seqs),
+        "firstImported": seqs[0] if seqs else None,
+        "stepEnd": step_end,
+        "newUserspace": banner,
+        "leakedFromSession": len(session),
+        "afterStep": len(after_step),
+        "leakedFromBefore": len(before),
+        "examples": [
+            f"{s} {by_seq.get(s, '')[:160]}" for s in (session or before)[:12]
+        ],
+        "afterStepExamples": [
+            f"{s} {by_seq.get(s, '')[:160]}" for s in after_step[:20]
         ],
     }

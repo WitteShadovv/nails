@@ -116,8 +116,10 @@ class Cell:
         self.calls += 1
         key = f"{self.calls:04}.b{self.boot}.{label}"
         try:
+            # The driver runs every command under set -euo pipefail; a fact
+            # is a plain script that goes on past a failed command.
             status, out = self.vm.execute(
-                f"( {cmd} ) 2>&1", check_return=False, timeout=timeout
+                f"( set +euo pipefail; {cmd} ) 2>&1", timeout=timeout
             )
         except Exception as error:  # noqa: BLE001 - a dead guest is a result
             status, out = -1, f"<{type(error).__name__}: {error}>"
@@ -136,9 +138,7 @@ class Cell:
     def read_kmsg(self, where: str) -> None:
         current = self.boots[self.boot]
         first = max(current["records"], default=0)
-        status, out = self.vm.execute(
-            sc.kmsg_command(first), check_return=False, timeout=180
-        )
+        status, out = self.vm.execute(sc.kmsg_command(first), timeout=180)
         records, dropped = sc.parse_kmsg(out)
         current["dropped"] += dropped
         sc.merge(current["records"], records)
@@ -181,6 +181,14 @@ class Cell:
         text = CONFIG_TEXT + (OPTIN_TEXT if self.settings["optin"] else "")
         vm.succeed(f"cat > {CONFIG} <<'EOF'\n{text}EOF")
         self.sh("limits", LIMITS)
+        # The harness's own shell starts through /usr/bin/env; from the next
+        # start on it does not, so an access of env on the decoy is NAILS's.
+        self.sh(
+            "backdoor-without-env",
+            "sed -i 's|exec /usr/bin/env bash|exec /usr/bin/bash|' "
+            "/usr/bin/backdoorScript; tail -1 /usr/bin/backdoorScript; "
+            "ls -Z /usr/bin/backdoorScript",
+        )
         self.sh("amnesic", self.scripts["amnesic"], 300)
         if self.settings["dontaudit"] == "off":
             self.fact("semodule-DB", "time semodule -DB && echo rebuilt", 900)
@@ -193,22 +201,44 @@ class Cell:
         self.sh("settle", "timeout 300 systemctl is-system-running --wait", 330)
         self.decoy_source = self.fact("decoy-source", "findmnt -rn -o SOURCE /")
 
+    def as_operator(self, cmd: str, how: str | None = None) -> str:
+        """``cmd`` as the operator runs it, in the way :meth:`operator` chose."""
+        how = self.op if how is None else how
+        if how == "runcon":
+            return f"runcon {OPERATOR} /bin/sh -c {shlex.quote(cmd)}"
+        if how == "pam-login":
+            # A login session: the login PAM stack's pam_selinux gives root
+            # its default context. systemd-run's --pipe cannot pass the
+            # descriptors across the context change, so the output goes
+            # through a file.
+            out = "/run/dsx/dsxrec/op.out"
+            inner = f"{cmd}; echo $? > {out}.rc"
+            return (
+                "systemd-run --quiet --wait --collect -p PAMName=login -p User=root "
+                f"/bin/sh -c {shlex.quote(f'( {inner} ) > {out} 2>&1')}; "
+                f"cat {out}; exit $(cat {out}.rc 2>/dev/null || echo 125)"
+            )
+        return cmd
+
     def operator(self) -> None:
-        """Decide how NAILS runs: from unconfined_t through runcon, checked
-        with id -Z first, else from the backdoor's own domain."""
+        """Decide how NAILS runs: from unconfined_t, through runcon if the
+        backdoor's domain may change to it, else as a transient service with
+        SELinuxContext=, each checked with id -Z first; else from the
+        backdoor's own domain."""
         self.fact("backdoor-id", "id -Z")
         self.fact("su-l-id", "su -l root -c 'id -Z'")
         self.op = ""
-        self.result["operator"] = "backdoor (no runcon gave unconfined_t)"
-        for label, prefix in (
-            ("runcon-id", f"runcon {OPERATOR} "),
-            ("runcon-type-id", "runcon -t unconfined_t "),
-        ):
-            out = self.fact(label, f"{prefix}id -Z")
-            if ":unconfined_t:" in out and "denied" not in out:
-                self.op = prefix
-                self.result["operator"] = f"{prefix.strip()} (id -Z: {out})"
+        self.result["operator"] = "backdoor (nothing gave unconfined_t)"
+        for how in ("runcon", "pam-login"):
+            out = self.fact(f"{how}-id", self.as_operator("id -Z; id -u", how))
+            if ":unconfined_t:" in out and "denied" not in out.lower():
+                self.op = how
+                self.result["operator"] = f"{how} (id -Z: {out})"
                 break
+        self.fact(
+            "operator-nails",
+            self.as_operator(f"{NAILS} --version; cat /proc/self/attr/current"),
+        )
 
     def switch(self, trigger: str, label: str) -> str:
         """Follow a soft-reboot; the place after it, or why there is none."""
@@ -229,7 +259,7 @@ class Cell:
             self.lost = True
             return "lost"
         self.after_switch()
-        fstype = self.vm.execute("findmnt -no FSTYPE /", check_return=False)[1]
+        fstype = self.vm.execute("findmnt -no FSTYPE /", timeout=60)[1]
         place = "hidden" if fstype.strip() == "overlay" else "decoy"
         self.result["flows"][label] = {"ok": True, "place": place}
         return place
@@ -238,9 +268,7 @@ class Cell:
         """Where the machine is: the hidden root, the decoy, or down."""
         if self.lost:
             return "down"
-        status, out = self.vm.execute(
-            "findmnt -no FSTYPE /", check_return=False, timeout=60
-        )
+        status, out = self.vm.execute("findmnt -no FSTYPE /", timeout=60)
         if status != 0:
             return "down"
         return "hidden" if out.strip() == "overlay" else "decoy"
@@ -292,8 +320,10 @@ class Cell:
         )
         self.fact(
             "round-trip",
-            f"{self.op}sh -c 'touch /mnt/data/.dsxrt && chcon -t etc_t /mnt/data/.dsxrt"
-            " && stat -c %C /mnt/data/.dsxrt; rm -f /mnt/data/.dsxrt'",
+            self.as_operator(
+                "touch /mnt/data/.dsxrt && chcon -t etc_t /mnt/data/.dsxrt"
+                " && stat -c %C /mnt/data/.dsxrt; rm -f /mnt/data/.dsxrt"
+            ),
         )
         self.fact("decoy-root", "findmnt -rn -o SOURCE,OPTIONS /")
         if self.settings["mechanism"] == "none" and self.settings["dontaudit"] == "on":
@@ -306,9 +336,7 @@ class Cell:
         if not name:
             return
         status, out = self.vm.execute(
-            f"base64 -w0 /etc/selinux/targeted/policy/{name[-1]}",
-            check_return=False,
-            timeout=600,
+            f"base64 -w0 /etc/selinux/targeted/policy/{name[-1]}", timeout=600
         )
         if status == 0:
             os.makedirs(self.out_dir, exist_ok=True)
@@ -347,21 +375,23 @@ class Cell:
             "systemctl list-units --failed --all --plain --no-legend --no-pager",
         )
         self.fact(f"{tag}.run-files", f"ls -Zd {RUN_FILES} 2>&1")
+        self.fact(f"{tag}.issue-d", "ls -laZ /etc/issue.d/ 2>&1")
 
     def hidden_facts(self, n: int) -> None:
         tag = f"hidden-{n}"
         self.place_facts(tag)
         self.fact(f"{tag}.labels", f"ls -Zd {LABEL_PATHS} 2>&1")
-        op = self.op
+        work = self.as_operator(
+            "echo '# x' >> /etc/protocols; echo n > /etc/dsx-new; "
+            "echo n > /root/dsx-new; echo n > /var/tmp/dsx-new; "
+            "mkdir -p /home/dsx-dir; echo n > /home/dsx-dir/f"
+        )
         self.fact(
             f"{tag}.new-files",
-            f"{op}sh -c 'printf x >> /etc/issue; echo n > /etc/dsx-new; "
-            "echo n > /root/dsx-new; echo n > /var/tmp/dsx-new; "
-            "mkdir -p /home/dsx-dir; echo n > /home/dsx-dir/f'; "
-            "ls -Z /etc/issue /etc/dsx-new /root/dsx-new /var/tmp/dsx-new "
-            "/home/dsx-dir /home/dsx-dir/f; "
-            "ls -Z /mnt/data/root/upper/etc/issue /mnt/data/root/upper/etc/dsx-new "
-            "/mnt/data/root/upper/root/dsx-new 2>&1",
+            f"{work}; ls -Z /etc/protocols /etc/dsx-new /root/dsx-new "
+            "/var/tmp/dsx-new /home/dsx-dir /home/dsx-dir/f; "
+            "ls -Z /mnt/data/root/upper/etc/protocols "
+            "/mnt/data/root/upper/etc/dsx-new /mnt/data/root/upper/root/dsx-new 2>&1",
         )
         source = self.decoy_source
         device = source.split("[", 1)[0]
@@ -379,6 +409,12 @@ class Cell:
         tag = f"decoy-{how}-{n}"
         self.place_facts(tag)
         marker = f"DSXIN-{self.nonce}-{n}"
+        self.fact(
+            f"{tag}.journal-k-json",
+            "journalctl -D /run/log/journal -k -b 0 -o json --output-fields="
+            "_SOURCE_MONOTONIC_TIMESTAMP,MESSAGE --no-pager",
+            300,
+        )
         self.fact(
             f"{tag}.kmsg-marker-in-journal-k",
             f"journalctl -k -b 0 -o cat --no-pager | grep -cF {marker} || true",
@@ -438,7 +474,6 @@ class Cell:
         self.run_labels("control.run-labels")
 
     def enter(self, n: int) -> bool:
-        op = self.op
         self.run_labels(f"pre-{n}.run-labels")
         self.fact(f"pre-{n}.run-files", f"ls -Zd {RUN_FILES} 2>&1")
         # The decoy's env as one nothing has run for a day: a later access
@@ -450,12 +485,16 @@ class Cell:
             f"touch /run/dsx/ref-{n}",
         )
         self.fact(
-            f"pre-{n}.check", f"{op}{NAILS} --config {CONFIG} check --overlay-only", 600
+            f"pre-{n}.check",
+            self.as_operator(f"{NAILS} --config {CONFIG} check --overlay-only"),
+            600,
         )
         self.mark(f"enter-{n}")
         place = self.switch(
-            f"{op}{NAILS} --config {CONFIG} activate -y "
-            f"> /mnt/data/activate-{n}.log 2>&1",
+            self.as_operator(
+                f"{NAILS} --config {CONFIG} activate -y "
+                f"> /mnt/data/activate-{n}.log 2>&1"
+            ),
             f"enter-{n}",
         )
         if place == "lost":
@@ -470,14 +509,18 @@ class Cell:
         return True
 
     def in_session(self, n: int) -> None:
-        op = self.op
         self.mark(f"session-{n}")
         self.fact(
             f"session-{n}.work",
-            f"{op}sh -c 'mkdir -p /root/work && echo hidden > /root/work/note && "
-            "cp /etc/hostname /root/work/ && ls -Z /root/work'",
+            self.as_operator(
+                "mkdir -p /root/work && echo hidden > /root/work/note && "
+                "cp /etc/os-release /root/work/ && ls -Z /root/work"
+            ),
         )
-        self.fact(f"session-{n}.status", f"{op}{NAILS} --config {CONFIG} status --json")
+        self.fact(
+            f"session-{n}.status",
+            self.as_operator(f"{NAILS} --config {CONFIG} status --json"),
+        )
         self.vm.execute(f"echo DSXIN-{self.nonce}-{n} > /dev/kmsg", check_return=False)
         time.sleep(25)
         self.fact(
@@ -490,12 +533,13 @@ class Cell:
         self.read_kmsg(f"session-{n}")
 
     def leave(self, n: int, how: str) -> None:
-        op = self.op
         self.mark(f"leave-{n}")
         if how == "deactivate":
-            trigger = f"{op}{NAILS} --config {CONFIG} deactivate -y"
+            trigger = self.as_operator(f"{NAILS} --config {CONFIG} deactivate -y")
         else:
-            trigger = f"{op}{RAM} --config {CONFIG} emergency --json > /dev/null"
+            trigger = self.as_operator(
+                f"{RAM} --config {CONFIG} emergency --json > /dev/null"
+            )
         place = self.switch(trigger, f"{how}-{n}")
         if place == "lost":
             self.restart(f"after {how}-{n} was lost")
@@ -530,8 +574,22 @@ class Cell:
                     summary = sc.phase(records.values(), first, last, control, pids)
                     summary["label"] = label
                 phases.append(summary)
+            labels_seq = {m["label"]: m["seq"] for m in markers}
+            cursors = {}
+            for key, value in boot["facts"].items():
+                if not key.endswith(".journal-k-json"):
+                    continue
+                n = key.split(".")[0].rsplit("-", 1)[-1]
+                cursors[key] = sc.cursor(
+                    list(records.values()),
+                    value,
+                    labels_seq.get(f"enter-{n}"),
+                    labels_seq.get(f"leave-{n}"),
+                    labels_seq.get(f"decoy-{n}"),
+                )
             self.result["boots"].append(
                 {
+                    "cursors": cursors,
                     "index": index,
                     "why": boot["why"],
                     "markers": boot["markers"],

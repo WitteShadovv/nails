@@ -11,7 +11,9 @@
 #   none     the start command names the copy, as the shipped units do;
 #   env      the copy starts through /usr/bin/env, which PID 1 makes a domain
 #            transition on;
-#   context  the unit sets SELinuxContext= to the unconfined service domain.
+#   context  the unit sets SELinuxContext= to the unconfined service domain;
+#   relabel  the start command names the copy, and every RAM copy is
+#            labelled as a program in /usr/bin when it is written.
 #
 # Each mechanism also runs with the policy's dontaudit rules removed
 # (semodule -DB, which rebuilds the policy store of the test VM only), so a
@@ -79,6 +81,7 @@ let
     "none"
     "env"
     "context"
+    "relabel"
   ];
 
   # How each mechanism runs: with the policy's dontaudit rules ("on") or
@@ -103,6 +106,10 @@ let
     }
   ];
 
+  # SELinuxContext= alone cannot start the copy (its label is no entrypoint
+  # of the unconfined service domain), so only the main cell runs it.
+  variantsOf = mechanism: if mechanism == "context" then lib.take 1 variants else variants;
+
   # Cell name -> { image, entry, mechanism, dontaudit, optin }.
   cells = lib.listToAttrs (
     lib.concatMap (
@@ -118,7 +125,7 @@ let
               enforcing = true;
             };
           }
-        ) variants
+        ) (variantsOf mechanism)
       ) mechanisms
     ) (builtins.attrNames fedoraImages)
   );

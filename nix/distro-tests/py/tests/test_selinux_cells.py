@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 import selinux_cells as sc
@@ -91,6 +92,38 @@ class ParseTests(unittest.TestCase):
             summary["bySource"], {"nails": 1, "pid1": 1, "instrumentation": 1}
         )
         self.assertEqual(summary["avcs"][0]["verb"], "transition")
+
+
+class CursorTests(unittest.TestCase):
+    def test_a_record_of_the_session_in_the_decoy_journal_is_a_leak(self) -> None:
+        records, _ = sc.parse_kmsg(
+            "\n".join(
+                (
+                    kmsg(1, "booted"),
+                    kmsg(2, sc.marker("enter-1", "n")),
+                    kmsg(3, "hidden kernel line"),
+                    kmsg(4, sc.marker("leave-1", "n")),
+                    kmsg(5, "systemd[1]: Soft-rebooting."),
+                    kmsg(6, "systemd[1]: systemd 259.5-1.fc44 running in system mode"),
+                    kmsg(7, sc.marker("decoy-1", "n")),
+                )
+            )
+        )
+        journal = "\n".join(
+            json.dumps({"_SOURCE_MONOTONIC_TIMESTAMP": str(seq * 1000), "MESSAGE": "x"})
+            for seq in (3, 5, 6, 7)
+        )
+        found = sc.cursor(records, journal, 2, 4, 7)
+        self.assertEqual(found["stepEnd"], 5)
+        self.assertEqual(found["newUserspace"], 6)
+        self.assertEqual(found["leakedFromSession"], 1)
+        self.assertEqual(found["afterStep"], 1)
+        self.assertEqual(found["leakedFromBefore"], 0)
+        clean = "\n".join(
+            json.dumps({"_SOURCE_MONOTONIC_TIMESTAMP": str(seq * 1000), "MESSAGE": "x"})
+            for seq in (5, 6, 7)
+        )
+        self.assertEqual(sc.cursor(records, clean, 2, 4, 7)["leakedFromSession"], 0)
 
 
 if __name__ == "__main__":
