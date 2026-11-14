@@ -19,6 +19,13 @@ controls show what each read of such a decoy sees, on the image itself:
   path, and its contents (``btrfs_scan``: ``btrfs-find-root``, then ``btrfs
   restore -t``).
 
+The read of the newest root must find (b) as well: that shows the history's
+reader decompresses what the decoy's kernel compressed, so a deleted file it
+does not find is not a file it could not read. Each compressed control fills
+whole blocks. For every root that holds a control, the run records what the
+restore wrote of it and what it said, and where the extents of (c) lay, with
+the first bytes the image holds there.
+
 Fedora mounts its btrfs with ``discard=async`` where the disk takes discards,
 as the VM's disk does: once a deleted file's blocks are free, the kernel
 discards them, and they read as zeros. So the file (c) is deleted with discard
@@ -55,6 +62,10 @@ CONTROLS = "/var/tmp/scan-controls"
 CONTROLS_MOUNT = "/var"
 # How many older roots the history reads, newest first.
 ROOTS = 64
+# The size of each compressed control: two extents of 128 KiB.
+POISON_BYTES = 256 * 1024
+# The size of a block of the decoy's btrfs.
+BLOCK = 4096
 
 
 def poison_unit(name: str) -> str:
@@ -67,6 +78,27 @@ def poison_token(name: str) -> str:
     of the unit as one copy and a back-reference, so the token is on the disk
     in plain bytes only where the file is stored plain."""
     return poison_unit(name) * 4
+
+
+def encoded_extents(filefrag: str) -> list[int]:
+    """The byte addresses in the filesystem of the extents ``filefrag -v``
+    lists, each a btrfs logical address."""
+    found = []
+    for line in filefrag.splitlines():
+        fields = line.replace("..", " ").replace(":", " ").split()
+        if len(fields) >= 5 and fields[0].isdigit() and fields[3].isdigit():
+            found.append(int(fields[3]) * BLOCK)
+    return found
+
+
+def restore_messages(done: subprocess.CompletedProcess[str]) -> list[str]:
+    """What btrfs restore said, without its prompts, at most twenty lines."""
+    lines = [
+        line.strip()
+        for line in (done.stdout + "\n" + done.stderr).splitlines()
+        if line.strip() and "do you want to keep going on" not in line
+    ]
+    return lines[:20]
 
 
 class Controls:
@@ -103,8 +135,8 @@ class Controls:
             f"{{ printf '%s\\n' {poison_token('A')}; head -c 65536 /dev/urandom; }} "
             f"> {CONTROLS}/plain/a"
         )
-        # (b), (c) and the discarded one: 17476 units, 262140 bytes, two
-        # compressed extents each.
+        # (b), (c) and the discarded one: 256 KiB each, two compressed
+        # extents of whole blocks.
         self.write_poison("B", "b")
         # Deleted with the image's own discard=async: recorded only.
         self.write_poison("D", "d")
@@ -130,6 +162,9 @@ class Controls:
         # (c): deleted with discard off.
         self.write_poison("C", "c")
         self.commits()
+        self.facts["c-extents"] = vm.succeed(
+            f"filefrag -v {CONTROLS}/compressed/c 2>&1 || true"
+        )
         vm.succeed(f"rm {CONTROLS}/compressed/c && sync")
         self.facts["listing"] = vm.succeed(
             f"ls -la {CONTROLS}/plain {CONTROLS}/compressed; "
@@ -137,9 +172,12 @@ class Controls:
         )
 
     def write_poison(self, name: str, file: str) -> None:
+        """256 KiB of the unit, which fill two compressed extents of whole
+        blocks."""
+        path = f"{CONTROLS}/compressed/{file}"
         self.vm.succeed(
-            f"printf '{poison_unit(name)}%.0s' $(seq 17476) > "
-            f"{CONTROLS}/compressed/{file}"
+            f"printf '{poison_unit(name)}%.0s' $(seq 17477) > {path} && "
+            f"truncate -s {POISON_BYTES} {path}"
         )
 
     def commits(self) -> None:
@@ -244,6 +282,40 @@ class Controls:
         subprocess.run([self.tools["cp"], "--sparse=always", full, target], check=True)
         os.remove(full)
 
+    def extent_heads(self, part: str) -> list[dict[str, Any]]:
+        """For each extent of (c) the guest listed, the first bytes the image
+        holds at its address: a zstd frame (28b52ffd) while the extent was
+        neither discarded nor reused."""
+        heads = []
+        for logical in encoded_extents(str(self.facts.get("c-extents", ""))):
+            with tempfile.NamedTemporaryFile() as out:
+                done = subprocess.run(
+                    [
+                        self.tools["btrfs-map-logical"],
+                        "-l",
+                        str(logical),
+                        "-b",
+                        str(BLOCK),
+                        "-o",
+                        out.name,
+                        part,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                data = out.read(BLOCK)
+            heads.append(
+                {
+                    "logical": logical,
+                    "exit": done.returncode,
+                    "head": data[:8].hex(),
+                    "zeros": bool(data) and not data.strip(b"\0"),
+                    "said": done.stdout.strip()[-300:] + done.stderr.strip()[-300:],
+                }
+            )
+        return heads
+
     # --- the run ---------------------------------------------------------
 
     def run(self) -> None:
@@ -307,26 +379,54 @@ class Controls:
             self.facts["generation"] = btrfs_scan.read_generation(part)
             roots = btrfs_scan.find_roots(self.tools["btrfs-find-root"], part)
             self.facts["roots"] = [root.generation for root in roots]
+            self.facts["c-extents-on-disk"] = self.extent_heads(part)
             regex = btrfs_scan.path_filter([os.path.dirname(in_fs)], below=True)
+            live_b = os.path.join(in_fs, "compressed", "b")
             deleted = os.path.join(in_fs, "compressed", "c")
             discarded = os.path.join(in_fs, "compressed", "d")
             older: set[str] = set()
             kept: set[str] = set()
-            for root in roots[:ROOTS]:
+            reads: list[dict[str, Any]] = []
+            newest: set[str] = set()
+            for index, root in enumerate(roots[:ROOTS]):
                 dest = tempfile.mkdtemp(prefix=f"root-{root.generation}-", dir=work)
                 done = btrfs_scan.restore(
                     self.tools["btrfs"], part, dest, root=root.bytenr, regex=regex
                 )
-                here = btrfs_scan.tokens_in_tree(dest, [c, d])
-                there = btrfs_scan.paths_in_tree(dest, [deleted, discarded])
+                here = btrfs_scan.tokens_in_tree(dest, [b, c, d])
+                there = btrfs_scan.paths_in_tree(dest, [live_b, deleted, discarded])
                 print(
                     f"gen {root.generation}: btrfs restore exited {done.returncode}, "
                     f"found {sorted(here) or 'nothing'}, paths {there or 'none'}"
                 )
-                older |= here
-                kept |= set(there)
+                if index == 0:
+                    newest = here
+                if index == 0 or set(there) - {live_b}:
+                    reads.append(
+                        {
+                            "generation": root.generation,
+                            "exit": done.returncode,
+                            "tokens": sorted(here),
+                            "sizes": {
+                                path: os.lstat(
+                                    os.path.join(dest, path.lstrip("/"))
+                                ).st_size
+                                for path in there
+                            },
+                            "messages": restore_messages(done),
+                        }
+                    )
+                older |= here - {b}
+                kept |= set(there) - {live_b}
                 shutil.rmtree(dest)
+            self.facts["reads"] = reads
             self.facts["history"] = {"tokens": sorted(older), "paths": sorted(kept)}
+            self.check(
+                "the read of the newest root finds the compressed control (b): the "
+                "history's reader decompresses what the decoy's kernel compressed",
+                b in newest,
+                sorted(newest),
+            )
             self.facts["discarded-file"] = {
                 "pathInAnOlderRoot": discarded in kept,
                 "contentsInAnOlderRoot": d in older,
