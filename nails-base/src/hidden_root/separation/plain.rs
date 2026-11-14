@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Whether NAILS reads the fields of a line of the decoy's fstab as
-//! `libmount` and systemd read them, or those of a line of its crypttab as
-//! systemd does: a plain line. Where a path that a plain line names leads is
-//! told apart (see the `paths` module). A line that is not plain is an entry
-//! where what it names cannot be told, and that is the only finding the judge
-//! makes of it, while it still claims what NAILS reads in it.
+//! Whether a line of the decoy's fstab or crypttab is plain: one whose fields
+//! NAILS splits and decodes as `libmount` and systemd do, for the crypttab as
+//! systemd's crypttab generator does, and whose first field or source, where
+//! it names a device or a path, names it in a form NAILS reads. Where a path
+//! that a plain line names leads is told apart (see the `paths` module). Of a
+//! plain crypttab line the judge reads the name, the source and a few of the
+//! options, and not the key file. A line that is not plain is an entry where
+//! what it names cannot be told, and that is the only finding the judge makes
+//! of it, while it still claims what NAILS reads in it.
 //!
 //! NAILS's parser splits a line at any white space and decodes the octal
 //! escapes (a backslash and three octal digits) of its first two fields in

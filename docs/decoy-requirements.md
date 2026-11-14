@@ -1891,27 +1891,27 @@ while one is mounted).
 
 A hidden root on a filesystem the decoy uses, accepted with
 `--allow-decoy-storage`, is judged as well, with two kinds of mounts left out.
-One is the decoy's own mounts of that filesystem: the one at `/`, and one that
-a line of `/etc/fstab` makes. That is a line for that mount point that names
-the mount's device (for a ZFS dataset, the dataset) and mounts what the mount
-shows: the filesystem's top, or the btrfs subvolume its `subvol=` or
-`subvolid=` names (with both, the one both name), as the mount table shows
-that subvolume's path and id, but never a folder bound there by hand. Or it is
-a bind line, whatever type it gives, whose source, read as it is written, lies
-on another of the decoy's own mounts of that filesystem, and the mount shows
-that source's folder; a source NAILS cannot tell, such as one with a symbolic
-link in it (see below), makes none, and neither does a line that is not plain
-(see below). `_netdev` makes no difference. A line whose
-`subvolid=` is no number makes no mount of the decoy's, and neither does a
-line with `subvolid=` for a mount whose id the mount table does not show, nor
-one that gives `subvol=` or `subvolid=` twice or a `subvol=` path with `..` in
-it. The other is a mount that shows none of the root's folder,
-such as NixOS's read-only bind of `/nix/store` beside a bind of a folder of
-`/`, or another btrfs subvolume. So the `hidden-volume` check passes a bind of
-a folder of `/`, or a subvolume of a filesystem the fstab mounts, with the
-flag's warning, while a separate drive also mounted at `/srv` by hand, where no
-line of the fstab mounts it, is refused with `sudo umount /srv`. One that a
-line of the fstab mounts at `/srv` passes it with the flag's warning.
+One is the decoy's own mounts of that filesystem: the one at `/`, and one that a
+line of `/etc/fstab` makes. That is a line for that mount point, no FUSE line,
+whose program makes a mount of its own, that names the mount's device (for a ZFS
+dataset, the dataset) and mounts what the mount shows: the filesystem's top, or
+the btrfs subvolume its `subvol=` or `subvolid=` names (with both, the one both
+name), as the mount table shows that subvolume's path and id, but never a folder
+bound there by hand. Or it is a bind line, whatever type it gives, whose source,
+read as it is written, lies on another of the decoy's own mounts of that
+filesystem, and the mount shows that source's folder; a source NAILS cannot
+tell, such as one with a symbolic link in it (see below), makes none, and
+neither does a line that is not plain (see below). `_netdev` makes no
+difference. A line whose `subvolid=` is no number makes no mount of the decoy's,
+and neither does a line with `subvolid=` for a mount whose id the mount table
+does not show, nor one that gives `subvol=` or `subvolid=` twice or a `subvol=`
+path with `..` in it. The other is a mount that shows none of the root's folder,
+such as NixOS's read-only bind of `/nix/store` beside a bind of a folder of `/`,
+or another btrfs subvolume. So the `hidden-volume` check passes a bind of a
+folder of `/`, or a subvolume of a filesystem the fstab mounts, with the flag's
+warning, while a separate drive also mounted at `/srv` by hand, where no line of
+the fstab mounts it, is refused with `sudo umount /srv`. One that a line of the
+fstab mounts at `/srv` passes it with the flag's warning.
 
 For a root that is a folder or a btrfs subvolume of such a filesystem, the
 `backend-entries` check lets be the decoy's own fstab lines that its boot
@@ -1974,38 +1974,120 @@ for an fstab line for another folder that mounts the volume itself, it says to
 remove the line.
 
 NAILS reads only plain lines of the decoy's fstab, the lines it reads as
-`libmount` and systemd do. A line is not plain that holds a control character
-other than a tab, or white space other than a space or a tab; whose first field
-or mount point holds a backslash that begins none of the escapes `\040`,
-`\011`, `\012` and `\134` (a space, a tab, a newline and a backslash), such as
-`/data/\170`; whose type or options hold a backslash, such as `bin\144`, which
-`libmount` reads as `bind`; whose type is a list, such as `ext4,xfs`; or whose
-first field is neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=`,
-`PARTLABEL=` or `ID=` tag, such as `dev/mapper/data`, which `mount` looks up
-from the folder it runs in. Such a first field is plain only for a line of a
-RAM, kernel, host-share, network, overlay, ZFS or FUSE filesystem that is no
-bind line, such as `tmpfs`, `server:/export` or `rpool/data`. Each line that is
-not plain fails `backend-entries`, with the flag or without it, as one that may
-mount the volume: the check names what it could not read and says to write the
-line plainly.
+`libmount` and systemd do. Like `libmount`, it skips only spaces and tabs
+before a `#`, so a line that starts with other white space before a `#`, such
+as a vertical tab or a no-break space, is no comment. A line is not plain that
+holds a control character other than a tab, or white space other than a space
+or a tab; whose first field or mount point holds a backslash that begins none
+of the escapes `\040`, `\011`, `\012` and `\134` (a space, a tab, a newline and
+a backslash), such as `/data/\170`; whose type or options hold a backslash,
+such as `bin\144`, which `libmount` reads as `bind`; whose type is a list, such
+as `ext4,xfs`; or whose first field is neither an absolute path nor a `UUID=`,
+`LABEL=`, `PARTUUID=` or `PARTLABEL=` tag, such as `dev/mapper/data`, which
+`mount` looks up from the folder it runs in, or an `ID=` tag, which `libmount`
+looks up in `/dev/disk/by-id` and NAILS does not. Such a first field is plain
+only for a line of a RAM, kernel, host-share, network, overlay or ZFS
+filesystem that is no bind line, such as `tmpfs`, `server:/export` or
+`rpool/data`. Nor is a line plain, other than a bind line or a line of such a
+filesystem, whose first field leads into `/dev` as it is written but does not
+start with `/dev/` or holds a `..`, such as `//dev/sdb` or `/dev/../dev/sdb`:
+`mount` opens `/dev/sdb` for both, and NAILS reads a device only by its own
+path in `/dev` or by a tag. A bind line is one with a `bind` or `rbind` option,
+with a value too: `libmount` reads `bind=x` as `bind`, whatever the type.
+
+A FUSE line that is no bind line is read as `mount.fuse` reads it. Of the type
+`fuse`, its first field names a program and, after the first `#`, the source
+that program gets, such as `sshfs#user@host:/` or `fuse2fs#/dev/sdb1`; of a type
+`fuse.<program>`, such as `fuse.bindfs`, its whole first field is that source.
+NAILS judges the source as it judges any line's first field: a device by its
+path or one of those tags, and a path, such as the folder `bindfs` mounts or
+the image file `fuse2fs` reads, as it is written. A source that is neither an
+absolute path nor such a tag, or a `fuse` line with no `#`, whose program gets
+no source, is not plain, unless the program is one that takes a remote source
+by it: `sshfs`, `s3fs`, `goofys`, `gcsfuse`, `ceph` and `vmhgfs-fuse`, and
+`rclone` for a remote's name, `remote:path`, as it reads `srv/x` and
+`:local:/srv/x` as folders of this computer. A `#` in the first field of a line
+of any other type that begins with `fuse` is not plain either: `mount.fuse3`
+splits a `fuse3` line's first field as it splits a `fuse` line's, and the
+program of a `fuse.<program>` line gets the `#` with the rest.
+
+`mount.fuse` runs the program through `/bin/sh`, from wherever its path leads:
+the part of a `fuse` line's first field before the `#`, such as
+`/srv/x/prog#/tmp/y`, or the `<program>` of a `fuse.<program>` type, such as
+`fuse./srv/x/prog`, and of a `fuseblk.<program>` type, which `mount.fuse` reads
+the same way. NAILS reads a program named by an absolute path as it reads a
+bind line's source, with no link followed (see below): one that lies in the
+volume, at the root's folder or inside it, makes the line fail, and so does one
+whose path NAILS cannot tell. A program named by a path that is not absolute,
+which `/bin/sh` runs from the folder `mount` runs in, is not plain, and neither
+is a type such as `fuse3./srv/x/prog`, which `mount.fuse3` runs as a path from
+that folder, as it is written. A program named alone, such as `sshfs` or
+`bindfs`, is the one `PATH` finds, as for every other program the boot runs. A
+line of the type `fuse3` or `fuseblk` names its program by its whole first
+field, which NAILS reads as any line's first field.
+
+Each fstab line that is not plain fails `backend-entries`, with the flag or
+without it, as one that may mount the volume: the check names what it could
+not read and says to write the line plainly.
+
+NAILS reads only plain lines of the decoy's crypttab as well. systemd's crypttab
+generator keeps the quotes and the backslashes of a field and writes the field
+into the command that opens the volume, which reads them as quotes and escapes,
+so that it opens `/dev/sdb` for the source `'/dev/sdb'`. It also ends a line at
+a lone carriage return or a NUL, and the command opens a relative source from
+`/`. So a crypttab line is not plain that holds a control character other than
+a tab, or white space other than a space or a tab, or a quote or a backslash in
+one of the four fields systemd reads, or whose source is neither an absolute
+path nor a `UUID=`, `LABEL=`, `PARTUUID=` or `PARTLABEL=` tag, or leads into
+`/dev` as it is written but does not start with `/dev/` or holds a `..`, such
+as `//dev/sdb`. Each such line fails `backend-entries`, with the flag or
+without it, as one that may open the volume, the line that unlocks the decoy's
+own root too, and the check says to write it plainly.
+
+Of a plain crypttab line, NAILS reads the name, the source and a few of the
+options, such as `noauto` and `tcrypt-hidden`, and not the key file. It reads a
+source that is a tag, or a path that starts with `/dev/` and holds no `..`, as
+the name of a device. `systemd-cryptsetup` opens any other source through the
+links in it, and a regular file, a container, through a loop device, so NAILS
+reads that source as the path of a file, as it reads the path of an image file
+in the fstab (see below): a container that lies in the volume, at the root's
+folder or inside it, makes the line fail, and so does a source whose path NAILS
+cannot tell, such as a link to the volume's drive or a device node outside
+`/dev`, with the flag or without it. A device's path in `/dev` that no block
+device answers to but that leads out of `/dev` through a link, as one that a
+`tmpfiles.d` line makes at boot can, cannot be told either, in the fstab as
+well, while one that leads nowhere, as for a drive that is not plugged in,
+names nothing here.
+
+Some lines name the volume in a way `backend-entries` does not read, and it
+lets them pass: an overlay line whose lower, upper or work folder lies in the
+volume, a FUSE program that takes its source in another form than one path or
+device (in an option, or as a list of folders, as mergerfs does), a network or
+remote source that this computer serves itself or that a program's own
+configuration leads to one of its folders, a program named alone, which `PATH`
+finds, a path of the volume in the options of a line, and a crypttab line's key
+file. Keep such lines away from the hidden root.
 
 Every bind line is judged by its source, whatever type it gives, since `mount`
-binds whatever the type says, and `_netdev`, which only has systemd mount a
-line after the network, lets no line go: a device or swap line for the
-volume's own mapping with `_netdev` fails as it does without it. Only a line of
-a RAM, kernel, host-share, network or overlay filesystem that is no bind line
-names no storage of this computer's. A swap file or an image file whose path,
-as it is written, lies at the root's folder or inside it, as the mount that
-holds it shows it, lies in the volume, and its line fails as a bind line from
-there does.
+binds whatever the type says, `bind=x` too, and `_netdev`, which only has
+systemd mount a line after the network, lets no line go: a device or swap line
+for the volume's own mapping with `_netdev` fails as it does without it. Only a
+line of a RAM, kernel, host-share, network or overlay filesystem that is no bind
+line names no storage of this computer's. A swap file or an image file whose
+path, as it is written, lies at the root's folder or inside it, as the mount
+that holds it shows it, lies in the volume, and its line fails as a bind line
+from there does.
 
-NAILS does not follow symbolic links in the paths of the decoy's fstab: a bind
-line's source, and the path of a swap file or an image file. It looks at each
+NAILS does not follow symbolic links in the paths of the decoy's fstab and
+crypttab: a bind line's source, the path of a swap file, an image file, what a
+FUSE program reads or that program itself, and a crypttab source that is no
+tag and no device's path in `/dev`. It looks at each
 part of such a path on its own, as the path is written, in the way `lstat`
-does, so it reads no link, mounts nothing and changes no access time. `mount`
-and `swapon` follow a link at boot, so a line whose path has a link in any part
-has to name its real path instead. So does a line whose path is a device node,
-outside `/dev` too, which a swap or image line uses as the device it is, a path
+does, so it reads no link, mounts nothing and changes no access time. `mount`,
+`swapon`, `mount.fuse` and `systemd-cryptsetup` follow a link at boot, so a
+line whose path has a link in any part has to name its real path instead. So
+does a line whose path is a device node, outside `/dev` too, which a swap or
+image line or a crypttab line uses as the device it is, a path
 with a part that cannot be looked up, and one that crosses an automount point
 that nothing is mounted on yet, which NAILS does not look past. A path that
 crosses the folder of an fstab line while the mount that line makes is not
@@ -2088,18 +2170,20 @@ examiner where to look. The decoy's own full-disk encryption legitimately has an
 entry; the hidden backend never should. Open it by hand each time.
 
 The `backend-entries` pre-flight check enforces this for the mounted hidden
-volume: `nails check` and activation fail while a crypttab line opens it or a
-device it is stored on, while a crypttab line with `tcrypt-hidden` opens a
-device on the hidden volume's drive or one that cannot be found, or while an
-fstab line mounts it, a folder of it or a device below it, `noauto` lines and
-bind lines of any type included, or swaps on a file in it or mounts an image
-file in it, or names a path that NAILS cannot tell, which may lead to it, or
-is not plain: NAILS reads only plain lines and follows no symbolic link in the
-path of a bind line's source, a swap file or an image file, so such a line has
-to be written plainly and name its real path (see
-[Attaching the drive](#attaching-the-drive)). Where the
-hidden volume is a btrfs filesystem of several devices, a line that names any
-of them, or a device below one, counts as such a line. A crypttab
+volume: `nails check` and activation fail while a crypttab line opens it, a
+device it is stored on or a container file in it, while a crypttab line with
+`tcrypt-hidden` opens a device on the hidden volume's drive or one that cannot
+be found, or while an fstab line mounts it, a folder of it or a device below
+it, `noauto` lines and bind lines of any type included, or swaps on a file in
+it, mounts an image file in it or names a FUSE program in it by its path, or
+while an fstab or crypttab line names a path that NAILS cannot tell, which may
+lead to it, or is not plain: NAILS reads only plain lines and follows no
+symbolic link in the path of a bind line's source, a swap file, an image file,
+the file a FUSE program reads or that program, or a crypttab source that is no
+tag and no device's path in `/dev`, so such a line has to be written plainly
+and name its real path (see [Attaching the drive](#attaching-the-drive)).
+Where the hidden volume is a btrfs filesystem of several devices, a line that
+names any of them, or a device below one, counts as such a line. A crypttab
 line that opens only another volume on the same drive (a VeraCrypt outer volume
 on another partition) warns. Remove such a line long before the next use, since
 the decoy's configuration history can keep it. A line the decoy's own boot needs
