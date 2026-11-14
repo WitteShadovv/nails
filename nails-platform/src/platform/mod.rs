@@ -44,7 +44,7 @@ mod detect;
 mod discover;
 mod family;
 mod fhs;
-mod host_facts;
+pub mod host_facts;
 mod nixos;
 mod unsupported;
 

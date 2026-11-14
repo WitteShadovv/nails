@@ -50,12 +50,6 @@ exclude_re = [
     # two distinct bits, so `^` in place of the `|` passes the same flags.
     'nails-session/src/session/kernel_modules/read\.rs:\d+:\d+: replace \| with \^ in same_mount$',
 
-    # parse_selinux_config skips an empty line or a comment before it looks
-    # for `=`. Under `&&` it skips neither, and both are passed over a step
-    # later all the same: an empty line has no `=`, and a comment's key starts
-    # with `#`, so it is neither SELINUX nor SELINUXTYPE.
-    'nails-platform/src/platform/host_facts\.rs:\d+:\d+: replace \|\| with && in parse_selinux_config$',
-
     # The locate-database check's unescape() joins the digits of a `\x`,
     # `\u` or `\U` escape four bits at a time and those of an octal escape
     # three at a time, each shifted clear of the next, so no two operands of
