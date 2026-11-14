@@ -588,14 +588,15 @@ fn a_function_a_hook_runs_counts_as_a_hook() {
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt(function, "$log")], "{rc}");
     }
-    // One that no hook runs is no hook.
+    // One that no hook runs is no hook (a shell that reads no file after
+    // it, which the write may make).
     let fs = MockFilesystem::new();
     seed(
         &fs,
         "/home/alice/.zshrc",
         "w() { print -r -- \"$1\" >> $log }\nf() { w x }\nf\n",
     );
-    assert_eq!(scan(&fs, UNKNOWN), Scan::default());
+    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
 }
 
 /// Whether a scan of `fs` for a zsh that may be a login shell finds what
@@ -745,11 +746,12 @@ fn what_a_hook_runs_from_its_own_file_or_one_it_sources_is_a_hook_s() {
         seed(&fs, "/home/alice/.zshrc", rc);
         seed(&fs, file, write);
         assert!(warns(&fs), "{rc}");
-        // The same file read outside a hook writes once, as zsh starts.
+        // The same file read outside a hook writes once, as zsh starts (a
+        // shell that reads no file after it, which the write may make).
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", "f=$HISTFILE\n. ~/hookbody\n");
         seed(&fs, "/home/alice/hookbody", write);
-        assert!(!warns(&fs), "{rc}");
+        assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{rc}");
     }
 }
 

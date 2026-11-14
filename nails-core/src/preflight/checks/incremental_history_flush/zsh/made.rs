@@ -481,15 +481,19 @@ impl<F: Filesystem> Reader<'_, F> {
                         // and one an expansion makes at the top or in a
                         // function the top runs, counts. One a hook makes is a
                         // doubt of its own ([`super::runs`]).
+                        // A file is read once the events before it are
+                        // applied, the one that writes it among them where
+                        // it is the last command of the file before (`at`
+                        // is its order then).
                         let before = if *at == IN_FUNCTION {
                             *plain
                                 || function
                                     .is_none_or(|function| first_calls.contains_key(function))
                         } else {
                             match function {
-                                None => order < at,
+                                None => order <= at,
                                 Some(function) => {
-                                    first_calls.get(function).is_some_and(|call| call < at)
+                                    first_calls.get(function).is_some_and(|call| call <= at)
                                 }
                             }
                         };

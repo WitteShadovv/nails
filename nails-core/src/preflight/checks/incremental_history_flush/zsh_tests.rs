@@ -53,6 +53,10 @@ mod ends;
 #[path = "zsh_outside_tests.rs"]
 mod outside;
 
+// A startup file zsh reads next, which the code before it may write.
+#[path = "zsh_made_tests.rs"]
+mod made_files;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
