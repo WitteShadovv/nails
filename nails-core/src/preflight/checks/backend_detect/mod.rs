@@ -281,9 +281,12 @@ impl Layer {
 ///
 /// Discards over the hidden volume fail closed (unless accepted for the run);
 /// the other findings are deniability trade-offs the operator may have
-/// accepted, so they only warn. Anything the check cannot read is treated as
-/// "no backend information" rather than an error, and detection is automatic
-/// and read-only.
+/// accepted, so they only warn. Without a readable mount table the check
+/// cannot find the device the hidden root is on, so it cannot tell whether
+/// discards reach the hidden volume: it refuses as for discards, and
+/// `--allow-discards` turns that into a warning too. Anything else the check
+/// cannot read is treated as "no backend information" rather than an error,
+/// and detection is automatic and read-only.
 ///
 /// # How it detects
 ///
@@ -373,10 +376,9 @@ fn assess_with_dev_dir<F: Filesystem>(
     dev_dir: &Path,
     allow_discards: bool,
 ) -> CheckResult {
-    let Ok(content) = fs.read_file_content(Path::new(MOUNTINFO)) else {
-        return CheckResult::Pass(format!(
-            "Backend detection skipped: cannot read {MOUNTINFO}"
-        ));
+    let content = match fs.read_file_content(Path::new(MOUNTINFO)) {
+        Ok(content) => content,
+        Err(error) => return no_mount_table(&error, allow_discards),
     };
     let entries = parse_mountinfo(&content);
 
@@ -467,6 +469,28 @@ fn assess_with_dev_dir<F: Filesystem>(
 /// What the check says of a root on a filesystem the decoy uses.
 const ON_DECOY_FILESYSTEM: &str = "Backend detection skipped: the hidden root is on a filesystem \
      the decoy uses, which the hidden-volume check reports";
+
+/// The result where the mount table cannot be read, for `error`: without
+/// it the check cannot find the device the hidden root is on, so it cannot
+/// tell whether discards reach the hidden volume, which it refuses as it
+/// refuses discards, and `--allow-discards` (`allow_discards`) turns into a
+/// warning, as it turns that refusal.
+fn no_mount_table(error: &crate::NailsError, allow_discards: bool) -> CheckResult {
+    let why = format!(
+        "NAILS cannot tell whether discards reach the hidden volume, or which storage backend \
+         the hidden root is on: it cannot read the mount table ({error}), which shows the device \
+         the hidden root is mounted from"
+    );
+    if allow_discards {
+        CheckResult::warn_with(
+            format!("{why}. Discards over the hidden volume are accepted for this run."),
+            super::upgrade_run::NO_MOUNT_TABLE,
+        )
+    } else {
+        CheckResult::fail_with(why, super::upgrade_run::NO_MOUNT_TABLE)
+            .accepted_by(Allowable::Discards)
+    }
+}
 
 /// The deniability concerns of discards over the hidden volume, as the refusal
 /// states them and `docs/backends.md` explains them. The refusal and its

@@ -161,13 +161,46 @@ fn trait_metadata_is_stable() {
     );
 }
 
+/// Without a mount table the check cannot find the device the hidden root
+/// is on, so it cannot tell whether discards reach the hidden volume: it
+/// refuses as it refuses discards, where it used to pass as skipped, and
+/// says how to let it read the table. `--allow-discards` turns that into a
+/// warning, as it turns the discard refusal.
 #[test]
-fn run_without_mountinfo_passes() {
-    // An empty mock has no mount table: detection is skipped, never failed.
+fn a_mount_table_that_cannot_be_read_refuses_as_discards_do() {
     let fs = MockFilesystem::new();
-    let result = BackendDetectCheck::default().run(&fs).unwrap();
-    assert!(result.is_pass());
-    assert!(result.message().contains("skipped"));
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::NotFound,
+    ] {
+        fs.mock_set_lookup_error(MOUNTINFO, kind);
+        let result = BackendDetectCheck::default().run(&fs).unwrap();
+        assert!(result.is_fail(), "{kind:?}: {result:?}");
+        assert!(
+            result.message().starts_with(
+                "NAILS cannot tell whether discards reach the hidden volume, or which storage \
+                 backend the hidden root is on: it cannot read the mount table ("
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            result.remediation(),
+            Some(super::super::upgrade_run::NO_MOUNT_TABLE)
+        );
+        assert_eq!(result.allowable(), Some(Allowable::Discards));
+
+        let accepted = BackendDetectCheck::default()
+            .allowing_discards(true)
+            .run(&fs)
+            .unwrap();
+        assert!(accepted.is_warn(), "{kind:?}: {accepted:?}");
+        assert!(
+            accepted
+                .message()
+                .contains("Discards over the hidden volume are accepted for this run."),
+            "{accepted:?}"
+        );
+    }
 }
 
 // ------------------------------------------------------------------------
