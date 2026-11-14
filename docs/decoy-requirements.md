@@ -323,15 +323,20 @@ volatile can count as persistent. Run them with sudo.
   Ubuntu's apport, which Ubuntu's images run, logs the path and the command
   line of each crashing program to `/var/log/apport.log`. Only the kernel
   default, `core`, which writes into the crashing program's working directory
-  as far as its core limit lets it, and an empty pattern pass without a
-  warning; stopping apport (`sudo systemctl disable --now apport.service`)
-  sets the pattern back to `core`. systemd-coredump writes every core it
+  as far as its core limit lets it, an empty pattern and a pipe to a program
+  that only discards the dumps, `/bin/false` or `/bin/true` (or the same in
+  `/usr/bin`), pass without a warning; stopping apport
+  (`sudo systemctl disable --now apport.service`) sets the pattern back to
+  `core`. `kernel.core_pattern=|/bin/false`, which Kicksecure sets, keeps no
+  core and no record of the crash: it keeps core dumps off the decoy disk
+  without systemd-coredump. systemd-coredump writes every core it
   processes to `/var/lib/systemd/coredump` first, so `Storage=none` alone
   still puts each one on the decoy disk for as long as it takes;
   `ProcessSizeMax=0` stops the processing, and with both set it only logs that
   a program crashed. Keep systemd-coredump running with those two settings
-  rather than turning it off: without it the kernel writes a `core` file into
-  the crashing program's working directory. A unit that systemd-coredump
+  rather than turning it off: without it, and without a pattern that discards
+  the dumps, the kernel writes a `core` file into the crashing program's
+  working directory. A unit that systemd-coredump
   starts for each crash warns too, whatever those settings say: it can read
   the crash from the journal. That is one `systemd-coredump@.service` names
   in `OnSuccess=` or `OnFailure=`, a service it names in `Wants=`,
@@ -1863,7 +1868,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
 | [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | `examiner-audit` |
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
-| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent: stop and disable a handler other than systemd-coredump, such as apport (systemctl disable --now apport.service), so that the kernel default, core, applies, and mask a unit systemd-coredump starts for each crash, such as apport-coredump-hook@.service. | `examiner-audit` |
+| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent: stop and disable a handler other than systemd-coredump, such as apport (systemctl disable --now apport.service), or discard the dumps with a kernel.core_pattern that pipes them to /bin/false, and mask a unit systemd-coredump starts for each crash, such as apport-coredump-hook@.service. | `examiner-audit` |
 | [Armed kdump](#fail-closed-activation-is-refused) (`kdump`) | `/var/crash` | all | `decoy-persistence` (refuses) | none: the crash-dumps row probes /var/crash, where kdump writes its dumps | Disable kdump on the decoy (Ubuntu: kdump-tools, Fedora: kdump). | none: a VM test would have to reserve crash kernel memory and panic the guest kernel; the refusal is unit tested |
 | [Locate database](#the-locate-database) (`locate-database`) | `/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`, `/var/cache/locatedb` | all | `locate-database` (refuses) | path probe (info) | Make updatedb skip the directory the volume is mounted in (PRUNEPATHS in /etc/updatedb.conf, services.locate.prunePaths on NixOS), or stop what schedules it, long before the volume is next used. Activation refuses while an updatedb that runs now, or that a timer, path unit, enabled service or cron job the check reads starts, does not skip it; the docs name what the check does not read. | `locate-database` |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
