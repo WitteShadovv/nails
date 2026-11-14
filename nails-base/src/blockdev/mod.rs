@@ -16,7 +16,9 @@
 //! - [`walk()`] does the same within a given number of devices, and says where
 //!   it stopped short of the bottom.
 //! - [`device_of_mount`] finds the device a mount sits on, and
-//!   [`device_numbered`] the one with a given number.
+//!   [`device_numbered`] the one with a given number;
+//!   [`device_of_mount_or_unread`] also says where a read that may have
+//!   found the device failed.
 //! - [`resolve_spec`] finds the device an fstab or crypttab spec names, and
 //!   [`follow_in_dev`] where a path in `/dev` leads, without leaving `/dev`.
 //! - [`btrfs_members`] lists every device of a btrfs filesystem, and
@@ -35,7 +37,9 @@ mod tests;
 pub use dev_path::{OutOfDev, follow_in_dev};
 pub use driver::{PROC_DEVICES, SHARED_RANGE, block_majors, major_of, parse_block_majors};
 pub use spec::{btrfs_filesystems, btrfs_members, resolve_spec};
-pub use walk::{classify_dm, device_numbered, device_of_mount, stack, walk};
+pub use walk::{
+    classify_dm, device_numbered, device_of_mount, device_of_mount_or_unread, stack, walk,
+};
 
 use std::path::{Path, PathBuf};
 
@@ -90,6 +94,11 @@ pub struct Layer {
     pub partition: Option<Partition>,
     /// Loop data, for a loop device that is bound to a backing file.
     pub loop_device: Option<LoopDevice>,
+    /// The attributes and listings of the device that are there but could
+    /// not be read, for another reason than that they are not there, each
+    /// by its path: what they would say is missing from the fields above,
+    /// which keep their defaults.
+    pub unread: Vec<PathBuf>,
 }
 
 /// A device-mapper device: its name, its uuid and what they describe.
