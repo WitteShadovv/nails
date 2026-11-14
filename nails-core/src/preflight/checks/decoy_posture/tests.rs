@@ -512,12 +512,12 @@ fn coredump_without_any_configuration_takes_the_defaults_and_warns() {
 fn coredump_settings_count_only_while_the_kernel_pipes_to_it() {
     // A coredump.conf left behind while the kernel pipes elsewhere, or the
     // pattern is the plain `core`, raises nothing about systemd-coredump.
-    // The other handler warns of its own.
+    // Another handler warns of its own.
     let fs = coredump_decoy("[Coredump]\nStorage=external\n");
     fs.mock_add_file(CORE_PATTERN, "core\n");
     let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
     assert!(result.is_pass(), "{result:?}");
-    fs.mock_add_file(CORE_PATTERN, "|/bin/false\n");
+    fs.mock_add_file(CORE_PATTERN, "|/usr/local/bin/crash-mailer %p\n");
     let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
     assert!(result.is_warn(), "{result:?}");
     let message = result.message();
@@ -525,9 +525,41 @@ fn coredump_settings_count_only_while_the_kernel_pipes_to_it() {
     assert!(
         message.contains(
             "kernel.core_pattern hands core dumps to a handler other than systemd-coredump \
-             (|/bin/false), which NAILS does not judge"
+             (|/usr/local/bin/crash-mailer %p), which NAILS does not judge"
         ),
         "{message}"
+    );
+}
+
+#[test]
+fn a_pipe_to_a_program_that_only_discards_core_dumps_passes() {
+    // Kicksecure's security-misc sets kernel.core_pattern=|/bin/false in
+    // /usr/lib/sysctl.d/990-security-misc.conf: the program exits without
+    // reading, and the kernel drops the dump.
+    for pattern in [
+        "|/bin/false",
+        "|/usr/bin/false",
+        "|/bin/true",
+        "|/usr/bin/true %p",
+        "| /bin/false",
+    ] {
+        let fs = coredump_decoy("[Coredump]\nStorage=external\n");
+        fs.mock_add_file(CORE_PATTERN, &format!("{pattern}\n"));
+        fs.mock_add_file(
+            "/usr/lib/sysctl.d/990-security-misc.conf",
+            &format!("kernel.core_pattern={pattern}\nfs.suid_dumpable=0\n"),
+        );
+        let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+        assert!(result.is_pass(), "{pattern}: {result:?}");
+    }
+    // Only those programs: one of another name is judged as a handler.
+    let fs = coredump_decoy("");
+    fs.mock_add_file(CORE_PATTERN, "|/usr/local/bin/false\n");
+    assert!(
+        DecoyPersistenceCheck::new(false, false)
+            .run(&fs)
+            .unwrap()
+            .is_warn()
     );
 }
 
@@ -547,7 +579,10 @@ fn a_core_pattern_to_another_handler_warns_and_names_the_way_back_to_core() {
         let message = result.message();
         assert!(message.contains(&format!("({pattern})")), "{message}");
         assert!(
-            message.contains("systemctl disable --now apport.service, which sets it back to core"),
+            message.contains(
+                "or discard them with kernel.core_pattern=|/bin/false (for Ubuntu's apport, first \
+                 systemctl disable --now apport.service, which sets the pattern back to core)"
+            ),
             "{message}"
         );
         assert!(!message.contains("/var/lib/systemd/coredump"), "{message}");

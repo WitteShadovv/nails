@@ -212,9 +212,25 @@ pub(super) fn pattern_targets_systemd_coredump(pattern: &str) -> bool {
     false
 }
 
+/// The programs a pipe pattern may hand core dumps to that only discard
+/// them: each exits without reading, so the kernel drops the dump.
+const DISCARDING_HELPERS: &[&str] = &["/bin/false", "/usr/bin/false", "/bin/true", "/usr/bin/true"];
+
+/// Whether `pattern` pipes core dumps to a program that only discards them
+/// ([`DISCARDING_HELPERS`]), as `|/bin/false`, which Kicksecure sets: no core
+/// and no record of the crash is kept.
+pub(super) fn pattern_discards(pattern: &str) -> bool {
+    pattern
+        .strip_prefix('|')
+        .and_then(|helper| helper.split_whitespace().next())
+        .is_some_and(|program| DISCARDING_HELPERS.contains(&program))
+}
+
 /// The warning for a `kernel.core_pattern` that hands core dumps to a
 /// handler other than systemd-coredump, by a pipe (`|program ...`) or the
-/// kernel coredump socket (`@socket`), or `None` for a pattern that does not.
+/// kernel coredump socket (`@socket`), or `None` for a pattern that does not,
+/// or that pipes them to a program that only discards them
+/// ([`pattern_discards`]).
 ///
 /// NAILS does not judge what such a handler keeps, and a crash on the decoy
 /// around a switch, of a NAILS program among others, reaches it. Ubuntu's
@@ -222,16 +238,19 @@ pub(super) fn pattern_targets_systemd_coredump(pattern: &str) -> bool {
 /// to `/var/log/apport.log`, and stopping `apport.service` sets the pattern
 /// back to the kernel default, `core`.
 pub(super) fn foreign_handler_finding(pattern: &str) -> Option<String> {
-    if !pattern.starts_with(['|', '@']) || pattern_targets_systemd_coredump(pattern) {
+    if !pattern.starts_with(['|', '@'])
+        || pattern_targets_systemd_coredump(pattern)
+        || pattern_discards(pattern)
+    {
         return None;
     }
     Some(format!(
         "kernel.core_pattern hands core dumps to a handler other than systemd-coredump \
          ({pattern}), which NAILS does not judge: it may keep them, or a record of each crash \
          with the program's path and command line, on the decoy disk; send core dumps to \
-         systemd-coredump with Storage=none and ProcessSizeMax=0, or stop that handler so that \
-         the kernel default, core, applies (Ubuntu's apport: systemctl disable --now \
-         apport.service, which sets it back to core)"
+         systemd-coredump with Storage=none and ProcessSizeMax=0, or discard them with \
+         kernel.core_pattern=|/bin/false (for Ubuntu's apport, first systemctl disable --now \
+         apport.service, which sets the pattern back to core)"
     ))
 }
 

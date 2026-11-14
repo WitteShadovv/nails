@@ -604,7 +604,8 @@ impl DecoyPersistenceCheck {
     /// it, by its pipe or its kernel coredump socket (see [`coredump`]): a
     /// `coredump.conf` left behind while another helper or a plain pattern takes
     /// the dumps decides nothing. Another helper NAILS does not judge, so it
-    /// warns; only the kernel default, `core`, which writes into the crashing
+    /// warns, but for one that only discards the dumps, as `|/bin/false`;
+    /// that, the kernel default, `core`, which writes into the crashing
     /// program's working directory, and an empty pattern pass. Nor does it
     /// judge a unit that systemd-coredump starts for each crash, as Ubuntu's
     /// apport adds one, so that warns too
@@ -671,7 +672,8 @@ impl DecoyPersistenceCheck {
     /// The warnings of the crash-dump pattern `pattern`: systemd-coredump's
     /// settings and the units it starts for each crash when it takes the
     /// dumps, another handler, or a plain path, where the kernel writes the
-    /// core straight to the decoy disk.
+    /// core straight to the decoy disk. A pipe to a program that only
+    /// discards the dumps, as `|/bin/false`, warns of nothing.
     fn pattern_findings<F: Filesystem>(
         fs: &F,
         root: &Path,
@@ -680,7 +682,9 @@ impl DecoyPersistenceCheck {
         pattern: &str,
     ) -> Vec<String> {
         let mut out = Vec::new();
-        if coredump::pattern_targets_systemd_coredump(pattern) {
+        if coredump::pattern_discards(pattern) {
+            // A program that only discards the dumps keeps nothing.
+        } else if coredump::pattern_targets_systemd_coredump(pattern) {
             out.extend(coredump::CoredumpSettings::read(fs, root).finding(is_nixos));
             out.extend(services::coredump_hook_finding(fs, root, hidden));
         } else if let Some(finding) = coredump::foreign_handler_finding(pattern) {

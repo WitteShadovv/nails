@@ -168,7 +168,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             paths: &["/var/lib/systemd/coredump", "/var/crash"],
             severity: ProbeSeverity::Warn,
         },
-        mitigation: "Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent: stop and disable a handler other than systemd-coredump, such as apport (systemctl disable --now apport.service), so that the kernel default, core, applies, and mask a unit systemd-coredump starts for each crash, such as apport-coredump-hook@.service.",
+        mitigation: "Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent: stop and disable a handler other than systemd-coredump, such as apport (systemctl disable --now apport.service), or discard the dumps with a kernel.core_pattern that pipes them to /bin/false, and mask a unit systemd-coredump starts for each crash, such as apport-coredump-hook@.service.",
         doc_anchor: "decoy-requirements.md#warn-surfaced-never-blocking",
         e2e: E2e::Test("examiner-audit"),
         residual: false,
