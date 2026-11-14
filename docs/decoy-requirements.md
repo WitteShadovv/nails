@@ -149,8 +149,8 @@ The decoy also has to be one the session can enter and leave:
   - `systemd-soft-reboot.service` must not set `SELinuxContext=`, or PID 1
     starts the step in that context: the activation is refused, and so is
     `deactivate`, whose refusal names `deactivate --poweroff` and
-    `emergency --poweroff`. A plain emergency does not ask, and returns with
-    the step in that context;
+    `emergency --poweroff`. A plain emergency does not ask; its step checks
+    its own domain (last item);
   - a copy that does not read its label back refuses the activation, which is
     undone. On the way back `deactivate` refuses a return where the copy does
     not read its label back or the policy would not start the step as above,
@@ -173,7 +173,17 @@ The decoy also has to be one the session can enter and leave:
     sleep guard power the machine off, the one-shot only removes NAILS's
     pieces from `/run`, and makes it `noexec` again where the activation had
     cleared it, leaving the records as they would be without that fix, and
-    the drop-in starts the wtmpdb writer as the decoy runs it.
+    the drop-in starts the wtmpdb writer as the decoy runs it;
+  - the last step of each switch checks its domain as well, once the switch
+    is armed: a relabel after the arm, or an `SELinuxContext=` of
+    `systemd-soft-reboot.service` that the emergency does not ask about,
+    would start it elsewhere. It starts itself again from its copy in the
+    same way, and the kernel applies the context an `SELinuxContext=` asks
+    for to the step's own start only. Where it still runs outside
+    `unconfined_service_t` it does nothing of the switch and refuses it, as
+    for an init that does not resolve; on the way back it first powers the
+    machine off, and only where neither PID 1 nor the kernel takes the
+    power-off does the hidden session go on.
 
   Elsewhere, as on a stock Debian, Ubuntu or NixOS host, no copy gets a label
   and no policy is asked anything: the units started from a copy only find
