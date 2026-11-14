@@ -361,9 +361,11 @@ class Cell:
         self.fact(f"{tag}.getenforce", "getenforce")
         self.fact(f"{tag}.root", "findmnt -no FSTYPE,SOURCE,OPTIONS /")
         self.fact(f"{tag}.trace", "cat /run/dsx/dsxrec/dsxtrace")
+        # ps takes -Z or a format with the label, not both.
         self.fact(
             f"{tag}.ps",
-            "ps -eZ -o label,pid,ppid,comm,args | grep -E 'control|overlay-runtime'"
+            "ps -eZ | grep -E ' control$|overlay-runtime' || true; "
+            "ps -e -o label,pid,ppid,comm,args | grep -E 'control|overlay-runtime'"
             " | grep -v grep || true",
         )
         for unit in UNITS:
