@@ -987,48 +987,78 @@ fetches the closure from, only when each file is the one the image's dnf saw;
 `check` keeps every committed lock to the image file `images.json` pins.
 
 `<image>-gate`, defined once the image has a lock, is the gate scenario
-(`py/fedora_gate.py`, its kernel-log reading in `py/selinux_gate.py`). It boots
-the image with SELinux enforcing, with a test-only build that admits Fedora
-(`lib/admitted.nix`) and the locked closure shared in, and runs every `nails`
-command in a login session of the operator's own, through the login PAM
-stack, whose pam_selinux gives the user `unconfined_t` (checked with `id -Z`):
-the harness's shell runs as a service, in `unconfined_service_t`, from which
-neither `runcon` nor `su -l` reaches that domain. In one QEMU process it runs a
-power cycle, the reference of the login records; the decoy's checks (the stock
-journal and the running auditd refused, then the journal volatile and auditd
-off by `systemctl disable`, `systemctl mask` and `auditctl --signal stop`;
-tuned, firewalld and ABRT installed from the closure with every repository
-disabled and started, then the documented fixes; the locate database;
-lsm-status, enforcing and after `setenforce 0`; check clean); a plain
-soft-reboot; a session ended with `deactivate`; a package the decoy removes
-after that session; a second session as a user through sudo with the
-fresh-home persona, ended with the emergency; and a last plain soft-reboot.
-Before each entry the operator logs in on the decoy's console (tty4), as an
-operator does before activating.
+(`py/fedora_gate.py`, its reading of the kernel log and of auditd's log in
+`py/selinux_gate.py`). It boots the image with SELinux enforcing, with a
+test-only build that admits Fedora (`lib/admitted.nix`) and the locked closure
+shared in, and runs every `nails` command in a login session of the
+operator's own, through the login PAM stack, whose pam_selinux gives the user
+`unconfined_t` (checked with `id -Z`); the harness's own shell runs as a
+service, in the domain the gate records (`unconfined_service_t`). In one QEMU
+process it runs a power cycle, the reference of the login records; the
+decoy's checks (the stock journal and the running auditd refused, then the
+journal volatile and auditd off by `systemctl disable`, `systemctl mask` and
+`auditctl --signal stop`; tuned, firewalld and ABRT installed from the closure
+with every repository disabled and started, then the documented fixes; the
+locate database; lsm-status, enforcing and after `setenforce 0`; check clean;
+a failed console login, which btmp must record); a plain soft-reboot; a
+session ended with `deactivate`; a package the decoy removes after that
+session; a second session as a user through sudo with the fresh-home persona,
+ended with the emergency; and a last plain soft-reboot. Before the first
+entry the decoy makes a bind mount with a userspace option, which libmount
+keeps in utab, and before each entry the operator logs in on the decoy's
+console (tty4), as an operator does before activating.
 In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
 `/var`, the type a copied-up and a new file take, NAILS's processes outside
-`init_t`, the overlay feature options, the canaries in their uppers, no unit
-the hidden root keeps off failed, a `security.selinux` round trip on the
-hidden volume, and a disk attached in the session read-only; after each way
-back, the session's kernel log marker absent from the decoy's journal, which
-holds no kernel record of the session, the kmsg cursor above it, nothing of
-the session in `/run`, `utab` given back, `/run/initramfs` unchanged, the
-attached disk writable again, and the login and boot records changed only by
-the boot a power cycle adds, with no record of a login made in the session:
-wtmp keeps the operator's console login, dated before the entry, and
-lastlog2, where the release keeps it (Fedora 45), the operator's last login
-before the entry, since pam_lastlog2 keeps one row a user and writes one at
-each of the operator's commands too, with no row dated inside the session.
-Every AVC denial is counted from the boot before NAILS ran: a denial is new
-when a NAILS process or path has it, or when neither that boot nor the first
-plain soft-reboot logged its signature, a race of the image's own aside. Each
-assertion is recorded with its outcome and the run goes on where it can; the
-driver writes `<image>-gate.json` and `<image>-gate.kmsg.txt` and fails at its
-end when one does not hold. Where an assertion depends on code that is not in
-the build yet, its record names what it needs.
+`init_t`, the overlay feature options, the canaries in their uppers, the
+failed units, a login and a failed login that the session's own wtmp and btmp
+record, a `security.selinux` round trip on the hidden volume, and a disk
+attached in the session read-only by the disk guard's udev rule, which
+records it: the watcher's sweep, the rule's fallback, runs once an hour in
+the gate's sessions, so it cannot set the disk read-only in the rule's place.
+The first session also plants the rehearsal, whose scan it must refuse. After
+each way back it asserts the session's kernel log marker absent from the
+decoy's journal, which holds no kernel record of the session, the kmsg cursor
+above it; nothing of the session in `/run`, counted from the wall clock right
+before the way back against `/run` right before the entry, the session's file
+there and NAILS's runtime folder gone; `utab` given back, the bind mount's
+line under its new mount ID; `/run/initramfs` unchanged; the attached disk
+writable again; none of the session's files on the decoy; the failed units:
+none of NAILS's, none the hidden root masks, and no other but one a switch is
+known to leave failed (the zram swap's, with the swap each root ran with
+recorded) or one the first plain soft-reboot left failed; and the login and
+boot records changed only
+by the boot a power cycle adds, with no record of a login or a failed login
+made in the session: wtmp keeps the operator's console login, dated before
+the entry, and lastlog2, where the release keeps it (Fedora 45), the
+operator's last login before the entry, since pam_lastlog2 keeps one row a
+user and writes one at each of the operator's commands too, with no row dated
+inside the session. After the first way back the rehearsal's scan must find
+nothing and name the btrfs root, which compresses, as not checked. Across
+each way back the decoy's disk mounts must change only where a plain
+soft-reboot changes them: every file and folder whose contents or inode, its
+labels among its extended attributes, changed since right before the entry,
+held against those that changed across either plain soft-reboot, the login
+record files aside. Every AVC denial and SELinux error is counted from the
+boot before NAILS ran, from the kernel log and, while auditd runs on the
+stock decoy, from auditd's log, by the wall clock of the markers: a denial is
+new when a NAILS process or path has it, or when the decoy did not log its
+signature before the first entry (each run of check aside) nor at the first
+plain soft-reboot, a race of the image's own aside. The audit serial numbers
+of the boot must leave no gap between the two logs, and no phase may hold the
+kernel's notice of a lost record. Each assertion is recorded with its outcome
+and the run goes on where it can; the driver writes `<image>-gate.json` and
+`<image>-gate.kmsg.txt` and fails at its end when one does not hold. Where an
+assertion depends on code that is not in the build yet, its record names what
+it needs.
+
+`<image>-gate-noda` runs the same scenario with the policy's dontaudit rules
+off (`semodule -DB` before the reference boot), so that the denials those
+rules keep out of the log are counted too, and writes
+`<image>-gate-noda.json` and `<image>-gate-noda.kmsg.txt`.
 
 `<image>-btrfs` plants the btrfs scan controls on the stock image, made
-amnesic first as NAILS requires (journal volatile, auditd off)
+amnesic first as NAILS requires (journal volatile, auditd off, the run
+stopped when auditd still runs)
 (`py/btrfs_controls.py`, with the reads of `py/btrfs_scan.py`): a file kept
 plain (its folder's compression property `none`), a compressed one (property
 `zstd`, a poison of one short unit repeated) and a compressed one written,
@@ -1038,14 +1068,15 @@ first two and not the third. The disk is then imaged whole with the guest
 paused right after the deletion, and on that image the raw scan must find the
 plain one and not the compressed one, which proves the file is stored
 compressed; the read of the newest root with `btrfs restore` must find the
-compressed one, which shows it decompresses what the decoy's kernel wrote;
-and a read of the older roots of the tree (`btrfs-find-root`, then
-`btrfs restore -t` of up to 64 of them) must find the deleted one at its
-path, with its contents. A fourth file, deleted with the image's own
-`discard=async`, is recorded only, and so is a second image, taken at the
-guest's power-off as the oracle images driver takes its images: which older
-roots keep each deleted file's path and contents, and the first bytes each
-image holds at their extents. It writes `<image>-btrfs.json` and fails when
+compressed one, which shows it decompresses what the decoy's kernel wrote,
+and not the deleted one, which shows the deletion reached the disk; and a
+read of the older roots of the tree (`btrfs-find-root`, then
+`btrfs restore -t` of up to 64 of them, the newest left out) must find the
+deleted one at its path, with its contents. A fourth file, deleted with the
+image's own `discard=async`, is recorded only, and so is a second image, taken
+at the guest's power-off as the oracle images driver takes its images: which
+older roots keep each deleted file's path and contents, and the first bytes
+each image holds at their extents. It writes `<image>-btrfs.json` and fails when
 one of the assertions does not hold. No NAILS runs in it.
 
 By hand on a KVM host, as the refusal's:
