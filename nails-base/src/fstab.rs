@@ -84,6 +84,18 @@ pub fn is_network_type(vfstype: &str) -> bool {
     NETWORK_TYPES.contains(&vfstype) || vfstype.starts_with("fuse.sshfs")
 }
 
+/// What the mount option `option` gives when its name is `name`, as systemd's
+/// `fstab_test_option()` and `libmount` match an option by its name, the
+/// part before a `=`: `Some(None)` for the name alone, `Some(Some(value))` for
+/// `name=value`, an empty value too, and `None` for an option of another
+/// name (`noauto=1` is named `noauto`, and neither `noautox` nor `auto` is).
+pub fn option_named<'a>(option: &'a str, name: &str) -> Option<Option<&'a str>> {
+    match option.strip_prefix(name)? {
+        "" => Some(None),
+        rest => rest.strip_prefix('=').map(Some),
+    }
+}
+
 /// Whether the mount option `option` makes a bind mount: its name, the part
 /// before a `=`, is `bind` or `rbind`. `libmount` and systemd's
 /// `fstab_test_option()` match an option by that name, so `bind=x` and
@@ -424,6 +436,34 @@ mod tests {
         }
         assert!(is_bind_option("rbind=x"));
         assert!(!is_bind_option("x-systemd.bind"));
+    }
+
+    /// An option is named by the part before its first `=`, as systemd's
+    /// `fstab_test_option()` names it.
+    #[test]
+    fn an_option_is_named_by_the_part_before_its_value() {
+        for (option, name, named) in [
+            ("noauto", "noauto", Some(None)),
+            ("noauto=1", "noauto", Some(Some("1"))),
+            ("noauto=", "noauto", Some(Some(""))),
+            (
+                "x-systemd.automount=0",
+                "x-systemd.automount",
+                Some(Some("0")),
+            ),
+            ("subvol=/a=b", "subvol", Some(Some("/a=b"))),
+            (
+                "comment=systemd.automount",
+                "comment=systemd.automount",
+                Some(None),
+            ),
+            ("noautox", "noauto", None),
+            ("noauto", "auto", None),
+            ("subvolid=5", "subvol", None),
+            ("Noauto", "noauto", None),
+        ] {
+            assert_eq!(option_named(option, name), named, "{option} {name}");
+        }
     }
 
     /// The lines are split as `libmount` splits them: only spaces and tabs

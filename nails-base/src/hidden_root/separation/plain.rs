@@ -22,15 +22,16 @@
 //! field or mount point holds a backslash that begins none of the escapes
 //! `\040`, `\011`, `\012` and `\134` (a space, a tab, a newline and a
 //! backslash, which both read alike); whose type or options hold a
-//! backslash; or whose type is a list. Nor is a line whose first field is
-//! neither an absolute path nor a tag NAILS resolves (`UUID=`, `LABEL=`,
-//! `PARTUUID=` or `PARTLABEL=`): `mount` and `swapon` look such a path up
-//! from the folder they run in, and `libmount` looks an `ID=` tag up in
-//! `/dev/disk/by-id`, which NAILS does not. That holds for every line but one
-//! whose type names no local path by its first field
+//! backslash; whose type is a list; or that gives an option NAILS reads with no
+//! value where systemd or btrfs reads one (see the `options` module). Nor is a
+//! line whose first field is neither an absolute path nor a tag NAILS resolves
+//! (`UUID=`, `LABEL=`, `PARTUUID=` or `PARTLABEL=`): `mount` and `swapon` look
+//! such a path up from the folder they run in, and `libmount` looks an `ID=`
+//! tag up in `/dev/disk/by-id`, which NAILS does not. That holds for every line
+//! but one whose type names no local path by its first field
 //! ([`names_no_local_path`]): a RAM, kernel, host-share, network, overlay or
-//! ZFS filesystem's, and never a bind line's, whose first field is the path
-//! of its source whatever its type, as `mount` binds whatever the type says.
+//! ZFS filesystem's, and never a bind line's, whose first field is the path of
+//! its source whatever its type, as `mount` binds whatever the type says.
 //!
 //! A FUSE line that is no bind line is read as `mount.fuse` reads it
 //! ([`fuse_line`]): of the type `fuse`, its first field is a program and,
@@ -158,6 +159,11 @@ pub enum Unplain {
     /// The source of a crypttab line is neither an absolute path nor a tag
     /// NAILS resolves.
     RelativeSource,
+    /// It gives this option, which NAILS reads, with no value, or with an
+    /// empty one where systemd reads that otherwise (see the `options`
+    /// module): `x-systemd.wanted-by=` or `x-systemd.required-by=` with no
+    /// unit, and `subvol` or `subvolid` alone or with no value.
+    NoValue(&'static str),
 }
 
 /// The tags NAILS resolves, as a tail completing "nor a".
@@ -206,6 +212,7 @@ impl Unplain {
             Unplain::RelativeSource => {
                 format!("its source is neither an absolute path nor a {TAGS_SHOWN}")
             }
+            Unplain::NoValue(option) => format!("its option {option} gives no value"),
         }
     }
 }
@@ -464,6 +471,7 @@ pub fn unplain(entry: &FstabEntry, line: &str) -> Vec<Unplain> {
     {
         why.push(Unplain::DevOtherwise);
     }
+    why.extend(super::options::unplain_fstab(entry));
     why
 }
 
