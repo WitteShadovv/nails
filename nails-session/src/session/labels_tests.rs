@@ -110,8 +110,9 @@ fn a_host_with_selinuxfs_mounted_requires_the_labels() {
 #[test]
 fn a_host_configured_for_selinux_without_selinuxfs_copies_labels_on_a_best_effort_basis() {
     // The configuration file of SELinux packages installed once, or an empty
-    // /sys/fs/selinux, while the mount table lists no selinuxfs: SELinux does
-    // not run, and no policy reads a label.
+    // /sys/fs/selinux, while the mount table lists no selinuxfs: no selinuxfs
+    // shows a policy. lsm-status refuses such a host where the kernel runs
+    // SELinux, an empty /sys/fs/selinux among them, before the entry.
     for selinux in [
         facts(Selinuxfs::NotMounted, None, Some("permissive")),
         facts(Selinuxfs::NotMounted, None, Some("enforcing")),

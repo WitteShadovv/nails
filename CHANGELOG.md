@@ -452,9 +452,10 @@ of this changelog for that version becomes the release notes word for word, and
   the rule NAILS installs there, so for now it refuses every host where SELinux runs. It judges
   the two apart, since what NAILS sets on systemd's side does not reach what udev runs. It warns, where nothing refuses, when SELinux is permissive or runs in another mode
   than `/etc/selinux/config` sets. Where the kernel's list cannot be read, a mounted selinuxfs or
-  an SELinux context of the process means SELinux runs, and `/sys/fs/selinux` or a configuration
-  that sets a mode or names a policy, without either, is refused as a host whose SELinux cannot be
-  judged.
+  an SELinux context of the process means SELinux runs, and without either, `/sys/fs/selinux` or a
+  configuration that sets a mode or names a policy is refused without deciding: a mount over
+  `/sys` can hide `/sys/fs/selinux`, so the check does not rule SELinux out because it is
+  missing.
 - `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
   tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
   the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists
@@ -907,7 +908,7 @@ of this changelog for that version becomes the release notes word for word, and
   in the shared-home persona. Elsewhere a label is copied only where the decoy has one, so a decoy
   without labels gets the hidden root it got before. That includes a host that keeps an
   `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
-  no selinuxfs is mounted: no policy reads a label there. The activation goes on there, and says so
+  no selinuxfs is mounted, so none shows a policy there. The activation goes on there, and says so
   in one line, only where the kernel does not run SELinux, as on a host that keeps the
   configuration of packages installed once: the kernel makes `/sys/fs/selinux` only where it
   started SELinux at boot, and `lsm-status` refuses a host where it runs, an empty

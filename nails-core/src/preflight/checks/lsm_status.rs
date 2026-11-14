@@ -29,9 +29,12 @@
 //! `selinux`, and does not run where it lists other modules only. A selinuxfs
 //! in the mount table means SELinux runs whatever the list says. Where the list
 //! cannot be read, SELinux runs if selinuxfs is mounted or this process carries
-//! an SELinux context, cannot be told apart from not running where only
-//! `/sys/fs/selinux` or `/etc/selinux/config` shows it (that fails), and does
-//! not run where nothing shows it.
+//! an SELinux context, and does not run where nothing shows it. Where only
+//! `/sys/fs/selinux` or `/etc/selinux/config` shows it, the check fails without
+//! deciding. A kernel makes `/sys/fs/selinux` only where it started SELinux at
+//! boot, so a missing one could rule SELinux out where only the configuration
+//! shows it, but a mount over `/sys` or `/sys/fs` hides it too, and the check
+//! does not take its absence for proof.
 //!
 //! Where SELinux runs by these rules and this process is labelled `kernel`,
 //! the kernel has loaded no policy: SELinux labels every process so until the

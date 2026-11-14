@@ -366,8 +366,10 @@ fn a_mode_that_differs_from_the_configuration_warns() {
             "permissive",
             "/etc/selinux/config sets SELINUX=permissive, but SELinux runs enforcing.",
         ),
-        // A kernel told to enforce on its command line while the configuration
-        // turns SELinux off.
+        // A policy loaded by hand, and set to enforce, after a boot with
+        // SELINUX=disabled. A kernel told to enforce on its command line while
+        // the configuration turns SELinux off loads no policy at all, and is
+        // refused as SELinux without a policy (tested below), not warned.
         (
             SelinuxMode::Enforcing,
             "disabled",
@@ -785,7 +787,7 @@ fn a_policy_that_did_not_load_is_named_without_the_disabled_cause() {
 fn a_kernel_label_where_nothing_shows_selinux_runs_is_not_taken_for_it() {
     // Without the kernel's list or a mounted selinuxfs, "kernel" is no
     // context: whether SELinux runs is not told by it, and the check fails
-    // as for any host whose SELinux cannot be judged.
+    // without deciding, as where only the configuration shows SELinux.
     let facts = Facts {
         lsms: Vec::new(),
         selinux: Some(SelinuxStatus {

@@ -10,14 +10,13 @@
 # on the decoy disk. Before the first entry, check refuses a noauto line of the
 # decoy's fstab below the hidden root (fstab-policy, exit 4), and its
 # lsm-status row passes, naming the security modules the kernel runs: SELinux
-# does not run on these images. The
-# decoy runs blk-availability.service as Debian's and Ubuntu's lvm2 ships it
-# (the image's own unit where lvm2 is installed, a copy where only dmsetup
-# is), and the second session, entered without /boot or the ESP mounted, keeps
-# its hidden volume through that unit's stop. local-fs.target requires those
-# boot filesystems, so the second session skips their units rather than
-# masking them: the target is reached, and their fsck never runs on the decoy
-# disk. A decoy service that keeps a PID
+# does not run on these images. The decoy runs blk-availability.service as
+# Debian's and Ubuntu's lvm2 ships it (the image's own unit where lvm2 is
+# installed, a copy where only dmsetup is), and the second session, entered
+# without /boot or the ESP mounted, keeps its hidden volume through that unit's
+# stop. local-fs.target requires those boot filesystems, so the second session
+# skips their units rather than masking them: the target is reached, and their
+# fsck never runs on the decoy disk. A decoy service that keeps a PID
 # file in /run starts again after an emergency killed its hidden copy, and a
 # Ctrl+C during the pre-flight checks cancels an activation, whose notice says
 # it wrote nothing to the decoy disk. The second
