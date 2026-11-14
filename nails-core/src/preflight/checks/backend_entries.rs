@@ -42,9 +42,10 @@
 //! node, one that crosses the folder of a line of the fstab, a `noauto` one
 //! too, while that line's mount is not there now, one with a part that cannot
 //! be looked up, one whose lookup would mount an automount point, and a
-//! device's path in `/dev` that no block device answers to but that leads out
-//! of `/dev` through a link. Such a line may mount the volume, so the check
-//! says why it cannot tell where the line leads, and to write it with its real
+//! device's path in `/dev` that no block device answers to and on whose way a
+//! link leads out of `/dev`, which the check does not follow, so it looks up
+//! nothing past `/dev`. Such a line may mount the volume, so the check says
+//! why it cannot tell where the line leads, and to write it with its real
 //! path.
 //!
 //! The check reads only plain fstab lines, which NAILS reads as `libmount`

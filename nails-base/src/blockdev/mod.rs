@@ -17,12 +17,14 @@
 //!   it stopped short of the bottom.
 //! - [`device_of_mount`] finds the device a mount sits on, and
 //!   [`device_numbered`] the one with a given number.
-//! - [`resolve_spec`] finds the device an fstab or crypttab spec names.
+//! - [`resolve_spec`] finds the device an fstab or crypttab spec names, and
+//!   [`follow_in_dev`] where a path in `/dev` leads, without leaving `/dev`.
 //! - [`btrfs_members`] lists every device of a btrfs filesystem, and
 //!   [`btrfs_filesystems`] those of all of them.
 //! - [`classify_dm`] says what a device-mapper uuid and name describe.
 //! - [`block_majors`] lists the drivers the kernel names by major number.
 
+mod dev_path;
 mod driver;
 mod spec;
 mod walk;
@@ -30,6 +32,7 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
+pub use dev_path::{OutOfDev, follow_in_dev};
 pub use driver::{PROC_DEVICES, SHARED_RANGE, block_majors, major_of, parse_block_majors};
 pub use spec::{btrfs_filesystems, btrfs_members, resolve_spec};
 pub use walk::{classify_dm, device_numbered, device_of_mount, stack, walk};

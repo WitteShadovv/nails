@@ -7,6 +7,9 @@
 //! itself where a line names it by an absolute path, and the source of a
 //! crypttab line that is no tag and no device's path in `/dev`, such as a
 //! container file, which `systemd-cryptsetup` opens through a loop device.
+//! A device's path in `/dev` that no block device answers to is followed
+//! through its links only while they stay in `/dev` ([`follow_in_dev`]): a
+//! link that leads out of it is not followed.
 //!
 //! Each part of such a path is looked at on its own through the
 //! [`Filesystem`] trait, from `/` down, with one `statx` that follows no link
@@ -38,6 +41,7 @@ use super::DeviceMap;
 use super::lines::unmounted_folders;
 use super::plain::{fuse_program, source};
 use crate::Filesystem;
+use crate::blockdev::{OutOfDev, follow_in_dev};
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::MountRoot;
 use crate::filesystem::mountinfo::MountEntry;
@@ -70,9 +74,10 @@ pub enum UntoldPath {
     Automount(PathBuf),
     /// This part of the path could not be looked up.
     Unreadable(PathBuf),
-    /// This device's path in `/dev`, which no block device here answers to,
-    /// leads out of `/dev` through a symbolic link, as one that a
-    /// `tmpfiles.d` line makes at boot can.
+    /// This symbolic link, on the way of a device's path in `/dev` that no
+    /// block device here answers to, leads out of `/dev`, as one that a
+    /// `tmpfiles.d` line makes at boot can: it is not followed, so nothing
+    /// past `/dev` is looked up.
     LeavesDev(PathBuf),
     /// The path was not looked up.
     NotLookedUp,
@@ -99,9 +104,9 @@ impl UntoldPath {
             UntoldPath::Unreadable(place) => {
                 format!("{} on its way could not be looked up", place.display())
             }
-            UntoldPath::LeavesDev(path) => format!(
-                "{} leads out of /dev through a symbolic link",
-                path.display()
+            UntoldPath::LeavesDev(link) => format!(
+                "{} is a symbolic link that leads out of /dev, which NAILS does not follow",
+                link.display()
             ),
             UntoldPath::NotLookedUp => "it was not looked up".to_string(),
         }
@@ -260,25 +265,19 @@ pub(super) fn read_all<F: Filesystem>(
 }
 
 /// Why where `spec`, a device's path in `/dev` that no block device here
-/// answers to, leads cannot be told: it leads out of `/dev` through a link,
-/// to a file, say, or its lookup fails for another reason than that it is
-/// not there. `None` for one that is not there, as for a drive that is not
-/// plugged in, and for one that stays in `/dev`.
+/// answers to, leads cannot be told, as [`follow_in_dev`] follows it: a link
+/// on its way leads out of `/dev`, to a file, say, which is not followed, so
+/// nothing past `/dev` is looked up, or a part of it cannot be looked up for
+/// another reason than that it is not there. `None` for one that is not
+/// there, as for a drive that is not plugged in, and for one that stays in
+/// `/dev`.
 fn leaving_dev<F: Filesystem>(fs: &F, spec: &str) -> Option<UntoldPath> {
-    let path = Path::new(spec);
-    match fs.canonicalize(path) {
-        Ok(target) => as_written(&target)
-            .is_none_or(|target| !target.starts_with("/dev"))
-            .then(|| UntoldPath::LeavesDev(path.into())),
-        Err(error)
-            if matches!(
-                error.io_kind(),
-                Some(std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
-            ) =>
-        {
-            None
-        }
-        Err(_) => Some(UntoldPath::Unreadable(path.into())),
+    match follow_in_dev(fs, Path::new(spec)) {
+        Ok(_) | Err(OutOfDev::Missing) => None,
+        Err(OutOfDev::Leaves(link)) => Some(UntoldPath::LeavesDev(link)),
+        Err(OutOfDev::NotInDev) => Some(UntoldPath::LeavesDev(spec.into())),
+        Err(OutOfDev::Automount(point)) => Some(UntoldPath::Automount(point)),
+        Err(OutOfDev::Unreadable(part)) => Some(UntoldPath::Unreadable(part)),
     }
 }
 

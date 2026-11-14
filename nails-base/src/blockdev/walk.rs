@@ -3,6 +3,7 @@
 
 //! Walking a device stack down through sysfs, one device at a time.
 
+use super::dev_path::follow_in_dev;
 use super::{
     DeviceMapper, DmKind, Layer, LoopBacking, LoopDevice, LoopFollow, MAX_STACK_DEVICES, Partition,
     SYS_BLOCK, SYS_CLASS_BLOCK, SYS_DEV_BLOCK, Walk,
@@ -147,14 +148,13 @@ fn digits(s: &str) -> bool {
 
 /// The sysfs directory of the block device a `/dev` path names: `/dev/sdb2`,
 /// or a link to a device such as `/dev/mapper/data` or a `/dev/disk/by-*`
-/// name. Only paths under `/dev` are resolved, so a file on another
-/// filesystem is never looked up through its symlinks.
+/// name. Only paths under `/dev` are resolved, and only through links that
+/// lead to a path in `/dev` ([`follow_in_dev`]), so a file on another
+/// filesystem is never looked up through its symlinks, and neither is a path
+/// that a link in `/dev` leads to outside it.
 pub(super) fn dev_node_dir<F: Filesystem>(fs: &F, path: &Path) -> Option<PathBuf> {
-    if !path.starts_with("/dev") {
-        return None;
-    }
-    let canonical = fs.canonicalize(path).ok()?;
-    let name = canonical.strip_prefix("/dev").ok()?;
+    let node = follow_in_dev(fs, path).ok()?;
+    let name = node.strip_prefix("/dev").ok()?;
     if name.components().count() != 1 {
         return None;
     }
