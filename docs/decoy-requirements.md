@@ -815,7 +815,9 @@ of the lock file, or of a daily run's unit, that fails for another reason than
 that nothing is there leaves NAILS unable to tell, and it refuses, and so does
 a lookup `check` does not make because it would mount an automount point that
 nothing is mounted on yet, as below a `/var` an automounter mounts: the
-refusal names the point and says to mount it.
+refusal names the point and says to mount it. Without the mount table, which
+shows where such a point is, `check` looks nothing up and refuses, and says to
+run it where `/proc` is mounted and readable.
 
 **An install at shutdown.** With `Unattended-Upgrade::InstallOnShutdown` on,
 the helper reads apt's configuration again on the signal and runs an install
