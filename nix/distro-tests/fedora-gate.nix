@@ -17,6 +17,12 @@
 #                 over 9p. It writes <image>-gate.json, every assertion with its
 #                 outcome, and <image>-gate.kmsg.txt, the whole kernel log of
 #                 each boot. It is defined once the image has a lock.
+#   <image>-btrfs the btrfs scan controls on the stock image
+#                 (py/btrfs_controls.py): a file kept plain, a compressed one
+#                 and a compressed one written and deleted, and what the raw
+#                 scan, the read of the live tree through the kernel and the
+#                 read of the older roots of the tree each find of them. It
+#                 writes <image>-btrfs.json.
 #
 # Like the probes they are host drivers: on a KVM-capable host by hand, or in
 # the gate suite of distro-e2e.yml, whose job builds the driver, runs it on a
@@ -38,6 +44,8 @@ let
   gatePy = lib.fileset.toSource {
     root = ./py;
     fileset = lib.fileset.unions [
+      ./py/btrfs_controls.py
+      ./py/btrfs_scan.py
       ./py/distro_checks.py
       ./py/fedora_gate.py
       ./py/fedora_rpms.py
@@ -224,7 +232,44 @@ let
     name: entry: lib.nameValuePair "${name}-gate" (gateFor name entry)
   ) lockedImages;
 
-  drivers = rpmsDrivers // gateDrivers;
+  # A boot, the controls planted and read through the kernel, the disk imaged
+  # whole and read raw, and up to 64 older roots of its tree restored.
+  btrfsTimeout = 2400;
+
+  # The host tools the controls run on the image, by their store paths.
+  btrfsTools = {
+    btrfs = "${pkgs.btrfs-progs}/bin/btrfs";
+    "btrfs-find-root" = "${pkgs.btrfs-progs}/bin/btrfs-find-root";
+    sfdisk = "${pkgs.util-linux}/bin/sfdisk";
+    cp = "${pkgs.coreutils}/bin/cp";
+  };
+
+  btrfsFor =
+    name: entry:
+    distroVm.buildVmTest {
+      inherit entry;
+      target = "driver";
+      memorySize = entry.memory;
+      testScript = ''
+        import json
+        import sys
+
+        sys.path.insert(0, "${gatePy}")
+        import btrfs_controls  # noqa: E402
+
+        btrfs_controls.run(
+            vm,
+            json.loads(${builtins.toJSON (builtins.toJSON { image = name; })}),
+            json.loads(${builtins.toJSON (builtins.toJSON btrfsTools)}),
+        )
+      '';
+    };
+
+  btrfsDrivers = lib.mapAttrs' (
+    name: entry: lib.nameValuePair "${name}-btrfs" (btrfsFor name entry)
+  ) fedoraImages;
+
+  drivers = rpmsDrivers // gateDrivers // btrfsDrivers;
 in
 {
   # Driver name -> its host driver.
@@ -233,5 +278,7 @@ in
   runnable = builtins.attrNames drivers;
   # Driver name -> the seconds it gets.
   timeouts =
-    lib.mapAttrs (_: _: rpmsTimeout) rpmsDrivers // lib.mapAttrs (_: _: gateTimeout) gateDrivers;
+    lib.mapAttrs (_: _: rpmsTimeout) rpmsDrivers
+    // lib.mapAttrs (_: _: gateTimeout) gateDrivers
+    // lib.mapAttrs (_: _: btrfsTimeout) btrfsDrivers;
 }

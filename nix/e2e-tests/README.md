@@ -1012,6 +1012,19 @@ driver writes `<image>-gate.json` and `<image>-gate.kmsg.txt` and fails at its
 end when one does not hold. Where an assertion depends on code that is not in
 the build yet, its record names what it needs.
 
+`<image>-btrfs` plants the btrfs scan controls on the stock image
+(`py/btrfs_controls.py`, with the reads of `py/btrfs_scan.py`): a file kept
+plain (its folder's compression property `none`), a compressed one (property
+`zstd`, a poison of one short unit repeated) and a compressed one written,
+kept through a few commits and deleted. The read of the live tree through the
+decoy's own kernel, from a read-only bind, must find the first two and not the
+third; the raw scan of the disk, imaged whole as the oracle images driver
+images it, must find the plain one and not the compressed one, which proves
+the file is stored compressed; and a read of the older roots of the tree
+(`btrfs-find-root`, then `btrfs restore -t` of up to 64 of them) must find the
+deleted one at its path. It writes `<image>-btrfs.json` and fails when one of
+them does not hold. No NAILS runs in it.
+
 By hand on a KVM host, as the refusal's:
 
 ```sh
