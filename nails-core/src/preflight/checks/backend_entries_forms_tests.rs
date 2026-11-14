@@ -889,6 +889,69 @@ fn a_dev_link_out_of_dev_is_untold_at_that_link_and_nothing_past_it_is_read() {
     assert!(other.run().is_pass(), "{:?}", other.run());
 }
 
+#[test]
+fn a_tag_whose_udev_link_leads_out_of_dev_is_untold_too() {
+    // A tag names the link udev makes for it. by-uuid/out leads to /tmp/back,
+    // a link on the decoy's disk back to the drive, which NAILS followed
+    // before and judged the line by; by-label/box leads to a container in the
+    // volume, which named nothing. Neither link is followed now, a lookup of
+    // /tmp fails here, and each line cannot be told, in the fstab as well.
+    let untold = |what: &str, link: &str| {
+        format!(
+            "where {what} lies cannot be told: {link} is a symbolic link that leads out of /dev, \
+             which NAILS does not follow"
+        )
+    };
+    for (crypttab, fstab, finding) in [
+        (
+            "vault UUID=out none luks,nofail\n",
+            "",
+            format!(
+                "/etc/crypttab: 'vault UUID=out' ({})",
+                untold("the file it opens", "/dev/disk/by-uuid/out")
+            ),
+        ),
+        (
+            "box LABEL=box none luks,nofail\n",
+            "",
+            format!(
+                "/etc/crypttab: 'box LABEL=box' ({})",
+                untold("the file it opens", "/dev/disk/by-label/box")
+            ),
+        ),
+        (
+            "vault /dev/sdc LABEL=box luks,nofail\n",
+            "",
+            format!(
+                "/etc/crypttab: 'vault /dev/sdc' ({})",
+                untold("its key file", "/dev/disk/by-label/box")
+            ),
+        ),
+        (
+            "",
+            "UUID=out /media/o ext4 nofail 0 0\n",
+            format!(
+                "/etc/fstab: 'UUID=out /media/o ext4' ({})",
+                untold("the file it names", "/dev/disk/by-uuid/out")
+            ),
+        ),
+    ] {
+        let decoy = decoy().encrypted().file("/etc/crypttab", crypttab).file(
+            "/etc/fstab",
+            &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{fstab}"),
+        );
+        decoy.link("/dev/disk/by-uuid/out", "/tmp/back");
+        decoy.link("/tmp/back", "/dev/sdb");
+        decoy.link("/dev/disk/by-label/box", "/mnt/box.img");
+        decoy
+            .fs
+            .mock_set_mount_root_error("/tmp", std::io::ErrorKind::PermissionDenied);
+        let result = decoy.run();
+        assert_eq!(result.message(), may_name_the_volume(&finding), "{finding}");
+        assert_eq!(result.remediation(), Some(UNTOLD), "{finding}");
+    }
+}
+
 // ------------------------------------------------------------------------
 // Options read by their names, and what a crypttab line reads besides its
 // source
