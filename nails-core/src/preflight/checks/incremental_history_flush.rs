@@ -5,7 +5,9 @@
 //!
 //! Warns, never fails. Activation SIGKILLs the decoy's interactive shells, so
 //! a shell that writes its history only when it ends never writes the decoy
-//! commands ([`nails_teardown::shells`]). A shell that writes each command
+//! commands ([`nails_teardown::shells`]), unless it ends before that: of zsh,
+//! a hook that may end it and a `TMOUT` above 0 are doubts too ([`zsh`]). A
+//! shell that writes each command
 //! line to its history file as it runs has written them before activation
 //! starts, and no kill takes that back: zsh with `INC_APPEND_HISTORY` or
 //! `SHARE_HISTORY` as each line is entered, with `INC_APPEND_HISTORY_TIME`
