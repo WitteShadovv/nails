@@ -219,7 +219,7 @@ impl Walker<'_> {
         }
         if !macros {
             for arg in args {
-                self.mention(&arg.text);
+                self.mention_word(arg);
             }
             if !keymaps && !letters.contains('l') {
                 match options.words {

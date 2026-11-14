@@ -19,6 +19,7 @@ mod autoload;
 mod command;
 mod declare;
 mod descriptors;
+mod ends;
 mod event;
 mod fpath;
 mod hooks;
@@ -166,6 +167,16 @@ struct Walker<'a> {
     /// A command of the file ran outside a function's body, at which zsh
     /// may have stopped the file with an error ([`Event::Assign`]).
     ran: bool,
+    /// The code runs where zsh is at its top level as it runs it, not as a
+    /// function's body: a trap's string, a `sched`'s, a line keys type
+    /// ([`ends`]).
+    top: bool,
+    /// How many assignments or declarations of `TMOUT` it read
+    /// ([`backstop::Named::tmouts`]).
+    tmouts: usize,
+    /// The word being read holds no expansion, so that a `$(...)` in it is
+    /// text ([`Walker::mention_word`]).
+    literal: bool,
     /// The structure did not close as zsh's would.
     confused: bool,
     /// How many `source` and `.` commands it read.
@@ -617,7 +628,7 @@ impl Walker<'_> {
     /// appends to it, when `name` ends with `+`.
     fn array(&mut self, name: String, items: Vec<Word>) {
         for item in &items {
-            self.mention(&item.text);
+            self.mention_word(item);
         }
         let (name, append) = match name.strip_suffix('+') {
             Some(name) => (name.to_string(), true),
@@ -704,7 +715,7 @@ impl Walker<'_> {
             Token::Word(word) if matches!(word.text.as_str(), "esac" | "}") => {
                 self.close(|frame| *frame == Frame::Case);
             }
-            Token::Word(word) => self.mention(&word.text),
+            Token::Word(word) => self.mention_word(&word),
             Token::Close => {
                 if let Some(open) = self.frames.last_mut() {
                     open.pattern = false;
@@ -717,7 +728,7 @@ impl Walker<'_> {
             Token::Text(text) | Token::Arithmetic(text) => self.mention_options(&text),
             Token::Array(_, items) => {
                 for item in items {
-                    self.mention(&item.text);
+                    self.mention_word(&item);
                 }
             }
             Token::Open | Token::End(_) | Token::Redirect { .. } => {}
@@ -877,6 +888,7 @@ struct Walked {
     may_stop: bool,
     /// A command of it ran outside a function's body ([`Walker::ran`]).
     ran: bool,
+    tmouts: usize,
     /// How many `((` and `$[` the texts of its tokens hold
     /// ([`arith::marks`]).
     marks: usize,
@@ -894,8 +906,9 @@ pub(super) struct Read {
 }
 
 /// Walk zsh code `text` from the file at `place` that runs in the function
-/// `outer`, when in one; what the lexer could not read is a doubt.
-fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
+/// `outer`, when in one, where zsh is at its top level as it runs it
+/// (`top`, [`Walker::top`]); what the lexer could not read is a doubt.
+fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Walked {
     let (tokens, flaws) = lex(text);
     let (arithmetic, marks) = arith::of_tokens(&tokens);
     let walker = Walker {
@@ -906,6 +919,9 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         events: Vec::new(),
         may_stop: false,
         ran: false,
+        top,
+        tmouts: 0,
+        literal: false,
         confused: false,
         sources: 0,
         evals: 0,
@@ -965,6 +981,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         function_params: walker.function_params,
         may_stop: walker.may_stop,
         ran: walker.ran,
+        tmouts: walker.tmouts,
         marks,
         unfinished: walker.pending.function_next,
     }
@@ -995,7 +1012,7 @@ pub(super) fn events(text: &str, place: &str, outer: Option<String>) -> Read {
             read[at] += 1;
         }
     }
-    let mut walked = walk_text_in(text, place, outer);
+    let mut walked = walk_text_in(text, place, outer, false);
     let mut events = std::mem::take(&mut walked.events);
     events.extend(unread::beyond(
         &backstop::named(text),

@@ -141,6 +141,15 @@ pub(in super::super) enum Event {
     /// it be a hook, as `doubt` says (a write to a descriptor above 2, which
     /// may be any file the shell has open).
     HookDoubt { function: String, doubt: String },
+    /// What the function `function` holds may end the shell should it be a
+    /// hook, as `doubt` says, which writes the history file as it ends
+    /// (`exit`); `signal` where it signals the shell's process, which it
+    /// does from a subshell too (`kill -HUP $$`).
+    Ends {
+        function: String,
+        doubt: String,
+        signal: bool,
+    },
     /// A global alias is defined, named `name` as written, by the word
     /// `text` (`G=| grep`). zsh puts its value in place of any token of code
     /// that is its name, a redirection's target (`/dev/tty`) or an operator

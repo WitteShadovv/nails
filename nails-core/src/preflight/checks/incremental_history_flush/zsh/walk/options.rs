@@ -120,7 +120,7 @@ impl Walker<'_> {
                             arg.text, name.text, self.place
                         )));
                     }
-                    self.mention(&name.text);
+                    self.mention_word(name);
                 }
                 continue;
             }
@@ -138,7 +138,7 @@ impl Walker<'_> {
                     self.set(&name.text, arg.text == "-o", unconditional);
                 }
             } else {
-                self.mention(&arg.text);
+                self.mention_word(arg);
             }
         }
     }
@@ -196,7 +196,7 @@ impl Walker<'_> {
                     Some(code) => self.nested(&code.text, unconditional),
                     None => {}
                 },
-                _ => self.mention(&arg.text),
+                _ => self.mention_word(arg),
             }
         }
         if reset && let Some(mode) = mode.filter(|mode| ksh(mode)) {
