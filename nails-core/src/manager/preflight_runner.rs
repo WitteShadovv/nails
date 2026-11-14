@@ -172,6 +172,7 @@ pub fn build_registry<F: Filesystem>(
     let mut registry = PreFlightRegistry::new();
     let hidden_root = config.hidden_volume_root.clone();
     let paths = crate::session::Paths::system();
+    let layered = config_layer.is_some();
 
     registry.add_check(Box::new(
         HiddenVolumeCheck::new(hidden_root.clone()).allowing(
@@ -212,7 +213,7 @@ pub fn build_registry<F: Filesystem>(
     )));
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),
-        config_layer.is_some(),
+        layered,
     )));
     // The switch goes through logind, which a program that blocks shutdown
     // outright stops; such a program is in the middle of something the switch
@@ -381,23 +382,25 @@ pub fn build_registry<F: Filesystem>(
 
     // Refuses a persistent decoy posture (a persistent journald journal or an
     // active rsyslog/syslog-ng/auditd, where hidden-session records logged before
-    // the overlays are mounted would survive on the decoy disk, an armed
+    // the overlays are mounted would survive on the decoy disk, an enabled
+    // auditd, which the decoy starts again after the way back, tuned or
+    // tuned-ppd logging to a file, which they do around each switch, an armed
     // kdump, whose crash kernel writes the memory of a session that crashed to
     // the decoy disk, or unattended-upgrades set to install at shutdown, which
     // activation is to it) unless the operator allows the risk for this run with
     // --allow-persistent-decoy. Lower-severity findings (atime, a disk
-    // core_pattern, a systemd-coredump that keeps cores, pstore records, sudo
-    // logging, sssd in use, maintenance timers, unattended-upgrades installing
-    // only in a hidden session) are always warnings. The check performs no
-    // writes, and its maintenance-timer sub-check applies only on a NixOS
-    // host. It reads what hidden sessions see through the root overlay's
-    // upper.
+    // core_pattern or one to a handler other than systemd-coredump, a
+    // systemd-coredump that keeps cores or starts a unit for each crash,
+    // pstore records, firewalld logging to a file, ABRT in use, sudo logging,
+    // sssd in use, maintenance timers, unattended-upgrades installing only in
+    // a hidden session) are always warnings. The check performs no writes,
+    // and its maintenance-timer sub-check applies only on a NixOS host. It
+    // reads what hidden sessions see through the root overlay's upper, and
+    // follows no link onto the hidden volume when it reads the decoy's units.
     registry.add_check(Box::new(
-        DecoyPersistenceCheck::new(
-            inputs.options.allow_persistent_decoy,
-            config_layer.is_some(),
-        )
-        .with_upper(layout.upper()),
+        DecoyPersistenceCheck::new(inputs.options.allow_persistent_decoy, layered)
+            .with_upper(layout.upper())
+            .with_hidden_root(hidden_root.clone()),
     ));
 
     // Refuses an updatedb (plocate, mlocate, NixOS's update-locatedb) that
@@ -408,7 +411,7 @@ pub fn build_registry<F: Filesystem>(
     // of, or one only a person starts, warns. Read-only.
     registry.add_check(Box::new(LocateDatabaseCheck::new(
         hidden_root.clone(),
-        config_layer.is_some(),
+        layered,
     )));
 
     // Warns (never fails) when a decoy that is not NixOS holds what a Nix
@@ -419,7 +422,7 @@ pub fn build_registry<F: Filesystem>(
     // Read-only.
     registry.add_check(Box::new(DecoyNixTraceCheck::new(
         hidden_root.clone(),
-        config_layer.is_some(),
+        layered,
     )));
 
     // Refuses a decoy with a pending offline (offline-update) system update

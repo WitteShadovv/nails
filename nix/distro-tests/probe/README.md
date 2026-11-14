@@ -94,8 +94,10 @@ Each file is an object:
     have, also where an older systemctl fails on its unit file instead of
     naming it, and any other answer, such as an error, is kept as printed.
   - `auditdRefuseManualStop` -- whether the auditd unit refuses a manual stop
-    (`systemctl show -p RefuseManualStop`), which a `systemctl stop` or
-    `systemctl mask --now` of it meets; `null` when the unit is not loaded.
+    (`systemctl show -p RefuseManualStop`), which a `systemctl stop` or a
+    `systemctl disable --now` of it meets (a `systemctl mask --now` does not:
+    the reload after the mask leaves a masked unit, which refuses nothing);
+    `null` when the unit is not loaded.
   - `packages` -- on Fedora, `audit`, `tuned`, `firewalld` and `abrt` mapped to
     the installed name-version-release (`rpm -q`), or `null` where rpm answers
     that it is not installed; a package rpm gives neither answer for holds what

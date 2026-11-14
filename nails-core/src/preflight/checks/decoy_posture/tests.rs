@@ -184,6 +184,201 @@ fn active_auditd_fails_closed() {
     assert!(result.message().contains("auditd"));
 }
 
+/// Fedora 44's `auditd.service` as its audit package ships it: it refuses a
+/// manual stop, which the Fedora 44 probe recorded too.
+const AUDITD_UNIT: &str = "[Unit]\nDescription=Security Audit Logging Service\n\
+                           DefaultDependencies=no\nRefuseManualStop=yes\n\n[Service]\n\
+                           Type=forking\nPIDFile=/run/audit/auditd.pid\n\
+                           ExecStart=/usr/bin/auditd\nRestart=on-failure\n\n[Install]\n\
+                           WantedBy=multi-user.target\n";
+
+#[test]
+fn the_auditd_fix_stops_the_daemon_without_systemctl_stop_or_a_reboot() {
+    // auditd.service refuses `systemctl stop` on Fedora and Arch, so a plain
+    // stop and `disable --now` leave it running there: the fix disables and
+    // masks the unit and has the daemon stop itself.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    set_unit_active(&fs, "auditd.service");
+    for (nixos, fix) in [
+        (
+            false,
+            "Turn auditd off for good, without a reboot (systemctl disable auditd.service and \
+             systemctl mask auditd.service, then auditctl --signal stop, which has the daemon \
+             stop itself: on Fedora and Arch its unit refuses a plain systemctl stop)",
+        ),
+        (
+            true,
+            "Turn auditd off for good (set security.auditd.enable = false in the decoy \
+             configuration, stop the running daemon with auditctl --signal stop, then run \
+             nixos-rebuild switch)",
+        ),
+    ] {
+        let result = DecoyPersistenceCheck::new(false, nixos).run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        let remediation = result.remediation().unwrap();
+        assert!(remediation.starts_with(fix), "{remediation}");
+        assert!(!remediation.contains("syslog daemon"), "{remediation}");
+        assert!(
+            !remediation.contains("disable --now auditd"),
+            "{remediation}"
+        );
+    }
+}
+
+#[test]
+fn an_enabled_auditd_that_does_not_run_is_refused_until_it_is_masked() {
+    // `auditctl --signal stop` alone stops the daemon and leaves its unit
+    // enabled: the decoy starts it again after the way back.
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    write(root, "usr/lib/systemd/system/auditd.service", AUDITD_UNIT);
+    let check = DecoyPersistenceCheck::new(false, false).with_root(root);
+    assert!(!check.run(&RealFilesystem).unwrap().is_fail());
+
+    link(
+        root,
+        "etc/systemd/system/multi-user.target.wants/auditd.service",
+        "/usr/lib/systemd/system/auditd.service",
+    );
+    let result = check.run(&RealFilesystem).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "auditd is enabled, though it does not run now: the service manager starts it again \
+             when the decoy starts after the way back, and it writes audit records to the decoy \
+             disk from then on"
+        ),
+        "{result:?}"
+    );
+    assert!(
+        result
+            .remediation()
+            .unwrap()
+            .contains("then auditctl --signal stop"),
+        "{result:?}"
+    );
+    // The window's launcher and status count only a running auditd.
+    assert!(DecoyPersistenceCheck::log_blockers(&RealFilesystem, root).is_empty());
+    // A running one is named once, as running.
+    mark_active(root, "auditd.service");
+    let result = check.run(&RealFilesystem).unwrap();
+    assert_eq!(result.message().matches("auditd").count(), 1, "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("auditd is active and writes audit records to the decoy disk"),
+        "{result:?}"
+    );
+    std::fs::remove_file(root.join("run/systemd/units/invocation:auditd.service")).unwrap();
+
+    // The mask outranks the link that `systemctl mask` leaves.
+    link(root, "etc/systemd/system/auditd.service", "/dev/null");
+    assert!(!check.run(&RealFilesystem).unwrap().is_fail());
+}
+
+/// The `[Unit]` section of Fedora 44's `auditd.service` (audit-4.1.4-1.fc44),
+/// comments left out, which Debian 13's and Ubuntu 24.04's share but for
+/// `RefuseManualStop=`.
+const AUDITD_UNIT_F44: &str = "[Unit]\nDescription=Security Audit Logging Service\n\
+                               ConditionKernelCommandLine=!audit=0\n\
+                               ConditionKernelCommandLine=!audit=off\n\
+                               DefaultDependencies=no\nWants=audit-rules.service\n\
+                               Conflicts=shutdown.target\nRefuseManualStop=yes\n\n\
+                               [Service]\nType=forking\nExecStart=/usr/bin/auditd\n\n\
+                               [Install]\nWantedBy=multi-user.target\n";
+
+#[test]
+fn an_enabled_auditd_counts_only_where_the_service_manager_can_start_it() {
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    write(
+        root,
+        "usr/lib/systemd/system/auditd.service",
+        AUDITD_UNIT_F44,
+    );
+    link(
+        root,
+        "etc/systemd/system/multi-user.target.wants/auditd.service",
+        "/usr/lib/systemd/system/auditd.service",
+    );
+    let check = DecoyPersistenceCheck::new(false, false).with_root(root);
+    let refused = |cmdline: &str| {
+        write(root, "proc/cmdline", cmdline);
+        check.run(&RealFilesystem).unwrap()
+    };
+    let enabled = "auditd is enabled, though it does not run now: the service manager starts it \
+                   again when the decoy starts after the way back";
+    let result = refused("BOOT_IMAGE=/vmlinuz-6.19.10-300.fc44.x86_64 root=UUID=x ro rhgb quiet\n");
+    assert!(result.message().contains(enabled), "{result:?}");
+    // A soft-reboot keeps the kernel's command line, where audit=0 or
+    // audit=off keeps auditd.service from starting.
+    for cmdline in ["root=UUID=x ro audit=0\n", "audit=off quiet\n"] {
+        assert!(!refused(cmdline).is_fail(), "{cmdline}");
+    }
+    assert!(refused("root=UUID=x audit=1\n").is_fail());
+    // What NAILS does not split as systemd does, or cannot read, counts.
+    let result = refused("root=UUID=x \"audit=0\"\n");
+    assert!(
+        result.message().contains(
+            "auditd is enabled, though it does not run now, and NAILS cannot tell whether the \
+             service manager starts it again when the decoy starts after the way back (NAILS \
+             does not split /proc/cmdline with a quote or a backslash as systemd does)"
+        ),
+        "{result:?}"
+    );
+    std::fs::remove_file(root.join("proc/cmdline")).unwrap();
+    let result = check.run(&RealFilesystem).unwrap();
+    assert!(
+        result
+            .message()
+            .contains("(NAILS cannot read /proc/cmdline"),
+        "{result:?}"
+    );
+    // A drop-in that empties the conditions drops them.
+    write(
+        root,
+        "etc/systemd/system/auditd.service.d/50-always.conf",
+        "[Unit]\nConditionKernelCommandLine=\n",
+    );
+    assert!(refused("audit=0\n").message().contains(enabled));
+    std::fs::remove_file(root.join("etc/systemd/system/auditd.service.d/50-always.conf")).unwrap();
+
+    // The override says what it lets happen: no record before the overlays
+    // are mounted, but auditd's start after the way back.
+    write(root, "proc/cmdline", "root=UUID=x ro\n");
+    let allowed = DecoyPersistenceCheck::new(true, false)
+        .with_root(root)
+        .run(&RealFilesystem)
+        .unwrap();
+    assert!(allowed.is_warn(), "{allowed:?}");
+    assert!(
+        allowed.message().contains(
+            "When the decoy starts after the way back, auditd starts with it and writes audit \
+             records to /var/log/audit on the decoy disk."
+        ),
+        "{allowed:?}"
+    );
+    assert!(
+        !allowed
+            .message()
+            .contains("before the overlays are mounted"),
+        "{allowed:?}"
+    );
+
+    // `systemctl mask --runtime` masks it in /run, which the way back keeps.
+    link(root, "run/systemd/system/auditd.service", "/dev/null");
+    assert!(!check.run(&RealFilesystem).unwrap().is_fail());
+    std::fs::remove_file(root.join("run/systemd/system/auditd.service")).unwrap();
+    // A link left behind by a removed package starts nothing.
+    std::fs::remove_file(root.join("usr/lib/systemd/system/auditd.service")).unwrap();
+    assert!(!check.run(&RealFilesystem).unwrap().is_fail());
+}
+
 #[test]
 fn override_turns_blocker_into_warning() {
     let fs = MockFilesystem::new();
@@ -317,11 +512,45 @@ fn coredump_without_any_configuration_takes_the_defaults_and_warns() {
 fn coredump_settings_count_only_while_the_kernel_pipes_to_it() {
     // A coredump.conf left behind while the kernel pipes elsewhere, or the
     // pattern is the plain `core`, raises nothing about systemd-coredump.
-    for pattern in ["|/bin/false\n", "core\n"] {
-        let fs = coredump_decoy("[Coredump]\nStorage=external\n");
-        fs.mock_add_file(CORE_PATTERN, pattern);
-        let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
-        assert!(result.is_pass(), "{pattern:?}: {result:?}");
+    // The other handler warns of its own.
+    let fs = coredump_decoy("[Coredump]\nStorage=external\n");
+    fs.mock_add_file(CORE_PATTERN, "core\n");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    fs.mock_add_file(CORE_PATTERN, "|/bin/false\n");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    assert!(!message.contains("Storage=external"), "{message}");
+    assert!(
+        message.contains(
+            "kernel.core_pattern hands core dumps to a handler other than systemd-coredump \
+             (|/bin/false), which NAILS does not judge"
+        ),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_core_pattern_to_another_handler_warns_and_names_the_way_back_to_core() {
+    // Ubuntu 24.04's and 26.04's apport, which their cloud images run, ABRT's
+    // old hook and another program's socket: none is systemd-coredump.
+    for pattern in [
+        "|/usr/share/apport/apport -p%p -s%s -c%c -d%d -P%P -u%u -g%g -F%F -- %E",
+        "|/usr/libexec/abrt-hook-ccpp %s %c %p %u %g %t %e %P %I %h",
+        "@/run/apport/apport.socket",
+    ] {
+        let fs = coredump_decoy("");
+        fs.mock_add_file(CORE_PATTERN, &format!("{pattern}\n"));
+        let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+        assert!(result.is_warn(), "{pattern}: {result:?}");
+        let message = result.message();
+        assert!(message.contains(&format!("({pattern})")), "{message}");
+        assert!(
+            message.contains("systemctl disable --now apport.service, which sets it back to core"),
+            "{message}"
+        );
+        assert!(!message.contains("/var/lib/systemd/coredump"), "{message}");
     }
 }
 
@@ -884,10 +1113,10 @@ fn the_syslog_alias_is_resolved_on_a_real_unit_directory() {
         root.join("etc/systemd/system/syslog.service"),
     )
     .unwrap();
-    assert!(loggers::active_logger_blockers(&RealFilesystem, root).is_empty());
+    assert!(loggers::active_syslog_blockers(&RealFilesystem, root).is_empty());
 
     mark_active(root, "nanolog.service");
-    let found = loggers::active_logger_blockers(&RealFilesystem, root);
+    let found = loggers::active_syslog_blockers(&RealFilesystem, root);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].sentence.contains("nanolog.service"), "{found:?}");
 }

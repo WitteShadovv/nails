@@ -47,7 +47,8 @@ pub mod judge;
 pub mod options;
 pub mod read;
 pub mod shell;
-mod unit;
+// The decoy-persistence check reads the decoy's units the same way.
+pub(in crate::preflight::checks) mod unit;
 mod units;
 
 use super::super::{CheckResult, PreFlightCheck};

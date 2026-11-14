@@ -35,10 +35,14 @@ The claims below hold only when all of these are true:
   deniable backend (for example a VeraCrypt hidden volume). Encryption is not
   provided by NAILS; see [backends.md](backends.md).
 - **Amnesic decoy.** The base system keeps no durable record of the hidden
-  session: volatile journald, no classic syslog or audit daemon, no persistent
-  crash dumps. NAILS enforces the load-bearing parts at pre-flight and fails
-  closed otherwise; [decoy-requirements.md](decoy-requirements.md) has the full
-  list and how to satisfy it per platform.
+  session: volatile journald, no classic syslog or audit daemon, no daemon
+  that logs its own stop and start to a file of its own, as tuned with its log
+  option does, no persistent crash dumps. NAILS enforces the load-bearing parts
+  at pre-flight and fails closed otherwise, and warns of what it judges
+  weaker, such as firewalld's log file and ABRT's crash reports;
+  [decoy-requirements.md](decoy-requirements.md) has the full list and how to
+  satisfy it per platform. A daemon NAILS does not know of can still write to
+  the decoy disk as it stops for a switch or starts again after the way back.
 - **No swap or hibernation.** Memory pages from the hidden session must never be
   written to a decoy disk.
 - **Volatile journald.** The journal lives in RAM only, so what the decoy logs

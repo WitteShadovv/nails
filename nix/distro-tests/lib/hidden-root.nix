@@ -98,9 +98,11 @@
   '';
 
   # Make the decoy amnesic so the decoy-persistence preflight passes: journald
-  # to volatile storage, and any active disk log sink (rsyslog on Ubuntu)
-  # stopped. A stock cloud image keeps a persistent journal, which the preflight
-  # refuses by design; the smoke test exercises both the refusal and this fix.
+  # to volatile storage, any active disk log sink (rsyslog on Ubuntu) stopped,
+  # and apport, which Ubuntu's images run and which decoy-persistence warns of,
+  # stopped too. A stock cloud image keeps a persistent journal, which the
+  # preflight refuses by design; the smoke test exercises both the refusal and
+  # this fix.
   #
   # NAILS reads `Storage=` from the main /etc/systemd/journald.conf only, so the
   # setting is appended there (the last assignment wins); the drop-in keeps
@@ -123,6 +125,13 @@
         systemctl mask --now "$unit"
       fi
     done
+
+    # apport takes the kernel's core dumps (kernel.core_pattern pipes to it)
+    # and logs each crashing program's path and command line on the decoy
+    # disk. Stopping it sets the pattern back to the kernel default, core.
+    if systemctl is-active --quiet apport.service; then
+      systemctl disable --now apport.service
+    fi
   '';
 
   # Stop apt's daily timers (Debian, Ubuntu), so that no daily run starts

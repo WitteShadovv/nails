@@ -24,14 +24,30 @@
 //!   systemd, one with no invocation marker.
 //!
 //! `klogd` is not one of them: it only hands the kernel's messages on to the
-//! syslog daemon, which is caught itself. Every probe reads; nothing here
-//! writes.
+//! syslog daemon, which is caught itself.
+//!
+//! The audit daemon counts when it is enabled as well, though it does not run
+//! now, where the service manager can start it: the manager starts it again
+//! when the decoy starts after the way back, and it writes audit records to
+//! the decoy disk from then on. It cannot where its unit is masked in any unit
+//! directory, as `systemctl mask --runtime` masks it in `/run`, which the way
+//! back keeps, where no unit file is left, or where a `ConditionKernelCommandLine=`
+//! of its unit fails on the kernel's command line, which a soft-reboot keeps:
+//! every audit package NAILS knows ships `!audit=0` and `!audit=off` there. Its
+//! unit refuses `systemctl stop` on Fedora and Arch (`RefuseManualStop=yes`, as
+//! upstream ships it), so there a plain `systemctl stop` or `systemctl disable
+//! --now` leaves it running; `auditctl --signal stop` has the daemon stop
+//! itself, and a daemon stopped that way stays enabled. Every probe reads;
+//! nothing here writes.
 
+use super::super::locate_database::files::DecoyFiles;
+use super::super::locate_database::unit::{SYSTEM_UNIT_PATH, UnitSection, unit_section};
+use super::super::systemd_conf::Assignment;
 use super::PersistenceFinding;
 use crate::Filesystem;
 use crate::filesystem::automount::describe;
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Directory systemd populates with an `invocation:<unit>` marker per *active*
 /// unit, relative to the root. Its presence is a write-free way to tell a
@@ -102,45 +118,221 @@ const SYSLOG_DAEMONS: &[Logger] = &[
     },
 ];
 
+/// The audit daemon's unit.
+const AUDITD_UNIT: &str = "auditd.service";
+
+/// The kernel's command line, relative to the root.
+const CMDLINE: &str = "proc/cmdline";
+
 /// The audit daemon.
 const AUDITD: Logger = Logger {
     message: "auditd is active and writes audit records to the decoy disk",
-    units: &["auditd.service"],
+    units: &[AUDITD_UNIT],
     processes: &["auditd"],
 };
 
-/// The fail-closed findings for active syslog/audit daemons on the decoy under
+/// What `running`, the decoy's process names, and the units of `logger` on
+/// the decoy under `root` show of it: it runs when one of its processes or
+/// units does, else NAILS cannot tell when it cannot tell whether one of its
+/// units runs.
+fn activity<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    running: &BTreeSet<String>,
+    logger: &Logger,
+) -> Activity {
+    if logger.processes.iter().any(|name| running.contains(*name)) {
+        return Activity::Active;
+    }
+    Activity::any(logger.units.iter().map(|unit| unit_active(fs, root, unit)))
+}
+
+/// The finding of `logger` for its `activity`: one that runs keeps its
+/// record, and one NAILS cannot tell runs counts as one that does.
+fn activity_finding(logger: &Logger, activity: Activity) -> Option<PersistenceFinding> {
+    match activity {
+        Activity::Active => Some(PersistenceFinding::kept(logger.message)),
+        Activity::Inactive => None,
+        Activity::Untold(why) => Some(PersistenceFinding::untold(why)),
+    }
+}
+
+/// The fail-closed findings for active syslog daemons on the decoy under
 /// `root`, one per daemon however it was detected, and one for each daemon
 /// whose unit NAILS cannot tell runs, which counts as one that does.
 ///
 /// The enabled syslog daemon is found under `syslog.service` as well; when no
 /// daemon of [`SYSLOG_DAEMONS`] is found by its own names, an active
 /// `syslog.service` is reported by the unit it resolves to.
-pub(super) fn active_logger_blockers<F: Filesystem>(
+pub(super) fn active_syslog_blockers<F: Filesystem>(
     fs: &F,
     root: &Path,
 ) -> Vec<PersistenceFinding> {
     let running = running_process_names(fs, root);
-    let activity = |logger: &Logger| {
-        if logger.processes.iter().any(|name| running.contains(*name)) {
-            return Activity::Active;
-        }
-        Activity::any(logger.units.iter().map(|unit| unit_active(fs, root, unit)))
-    };
-    let finding = |logger: &Logger| match activity(logger) {
-        Activity::Active => Some(PersistenceFinding::kept(logger.message)),
-        Activity::Inactive => None,
-        Activity::Untold(why) => Some(PersistenceFinding::untold(why)),
-    };
-
-    let mut out: Vec<PersistenceFinding> = SYSLOG_DAEMONS.iter().filter_map(finding).collect();
+    let mut out: Vec<PersistenceFinding> = SYSLOG_DAEMONS
+        .iter()
+        .filter_map(|logger| activity_finding(logger, activity(fs, root, &running, logger)))
+        .collect();
     if out.iter().all(|found| found.untold.is_some())
         && let Some(found) = enabled_syslog_finding(fs, root)
     {
         out.push(found);
     }
-    out.extend(finding(&AUDITD));
     out
+}
+
+/// What the audit daemon does on the decoy, when it writes to its disk or
+/// NAILS cannot tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Auditd {
+    /// It runs, as a unit or a process.
+    Active,
+    /// It does not run, but its unit is enabled and can start, so the decoy
+    /// starts it again after the way back.
+    Enabled,
+    /// It does not run, its unit is enabled, and NAILS cannot tell whether
+    /// the unit can start, for this reason.
+    MayStart(String),
+    /// It does not run, its unit is installed and not masked, and NAILS
+    /// cannot tell whether it is enabled, for this reason, which names the
+    /// link it could not look up.
+    MayBeEnabled(String),
+    /// NAILS cannot tell whether it runs, for this reason.
+    MayRun(String),
+}
+
+impl Auditd {
+    /// Its fail-closed finding.
+    pub(super) fn finding(&self) -> PersistenceFinding {
+        match self {
+            Auditd::Active => PersistenceFinding::kept(AUDITD.message),
+            Auditd::Enabled => PersistenceFinding::kept(
+                "auditd is enabled, though it does not run now: the service manager starts it \
+                 again when the decoy starts after the way back, and it writes audit records to \
+                 the decoy disk from then on",
+            ),
+            Auditd::MayStart(why) => PersistenceFinding::untold_as(
+                format!(
+                    "auditd is enabled, though it does not run now, and NAILS cannot tell whether \
+                     the service manager starts it again when the decoy starts after the way \
+                     back ({why}), so it counts as one that does: it would write audit records \
+                     to the decoy disk from then on"
+                ),
+                why.clone(),
+            ),
+            Auditd::MayBeEnabled(why) | Auditd::MayRun(why) => {
+                PersistenceFinding::untold(why.clone())
+            }
+        }
+    }
+}
+
+/// The finding of the audit daemon on the decoy under `root` when it runs,
+/// as a unit or a process, or NAILS cannot tell whether it runs, which
+/// counts as one that does. Status and the window's launcher count it; the
+/// pre-flight check counts an enabled one as well ([`auditd`]).
+pub(super) fn active_auditd_finding<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+) -> Option<PersistenceFinding> {
+    let running = running_process_names(fs, root);
+    activity_finding(&AUDITD, activity(fs, root, &running, &AUDITD))
+}
+
+/// What the audit daemon does on the decoy under `root`, or `None` when it
+/// neither runs nor is enabled ([`super::unit_linked`]) where the service
+/// manager can start it (see the [module docs](self)). A link NAILS cannot
+/// look up may enable it where its unit is installed and not masked, and so
+/// does a unit file or a kernel command line NAILS cannot read. `hidden` are
+/// the hidden volume's locations, resolved, which no read follows a link
+/// onto.
+pub(super) fn auditd<F: Filesystem>(fs: &F, root: &Path, hidden: &[PathBuf]) -> Option<Auditd> {
+    let running = running_process_names(fs, root);
+    match activity(fs, root, &running, &AUDITD) {
+        Activity::Active => return Some(Auditd::Active),
+        Activity::Untold(why) => return Some(Auditd::MayRun(why)),
+        Activity::Inactive => {}
+    }
+    let linked = super::unit_linked(fs, root, AUDITD_UNIT);
+    if linked == Ok(false) {
+        return None;
+    }
+    let files = DecoyFiles::new(fs, root, hidden);
+    let dirs: Vec<PathBuf> = SYSTEM_UNIT_PATH.iter().map(|dir| root.join(dir)).collect();
+    let assignments = match unit_section(&files, &dirs, AUDITD_UNIT, "Unit") {
+        UnitSection::Missing | UnitSection::Masked => return None,
+        UnitSection::Unknown(why) => return Some(Auditd::MayStart(why)),
+        UnitSection::Assignments(assignments) => assignments,
+    };
+    if let Err(why) = linked {
+        return Some(Auditd::MayBeEnabled(why));
+    }
+    match kernel_command_line_allows(fs, root, &assignments) {
+        Ok(true) => Some(Auditd::Enabled),
+        Ok(false) => None,
+        Err(why) => Some(Auditd::MayStart(why)),
+    }
+}
+
+/// Whether the `ConditionKernelCommandLine=` settings among a unit's
+/// `[Unit]` `assignments` hold on the kernel's command line under `root`, as
+/// systemd tests them: a word alone matches a word, or the name of a
+/// `name=value` word, and `name=value` matches that word only; `!` negates.
+/// An empty condition of any kind drops every condition before it. A
+/// triggering one (`|`), and one with a specifier, may hold: NAILS does not
+/// judge them, nor any other kind of condition.
+///
+/// # Errors
+///
+/// Why NAILS cannot read the command line as systemd splits it.
+fn kernel_command_line_allows<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    assignments: &[Assignment],
+) -> Result<bool, String> {
+    let mut conditions: Vec<&str> = Vec::new();
+    for assignment in assignments
+        .iter()
+        .filter(|assignment| assignment.key.starts_with("Condition"))
+    {
+        if assignment.value.is_empty() {
+            conditions.clear();
+        } else if assignment.key == "ConditionKernelCommandLine" {
+            conditions.push(&assignment.value);
+        }
+    }
+    let judged: Vec<(bool, &str)> = conditions
+        .into_iter()
+        .filter(|value| !value.starts_with('|'))
+        .map(|value| match value.strip_prefix('!') {
+            Some(rest) => (true, rest.trim_start()),
+            None => (false, value),
+        })
+        .filter(|(_, word)| !word.contains('%'))
+        .collect();
+    if judged.is_empty() {
+        return Ok(true);
+    }
+    let cmdline = fs
+        .read_file_content(&root.join(CMDLINE))
+        .map_err(|e| format!("NAILS cannot read /{CMDLINE} ({e})"))?;
+    if cmdline.contains(['"', '\'', '\\']) {
+        return Err(format!(
+            "NAILS does not split /{CMDLINE} with a quote or a backslash as systemd does"
+        ));
+    }
+    let words: Vec<&str> = cmdline.split_whitespace().collect();
+    Ok(judged.into_iter().all(|(negated, wanted)| {
+        let found = words.iter().any(|word| {
+            if wanted.contains('=') {
+                *word == wanted
+            } else {
+                word.strip_prefix(wanted)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
+            }
+        });
+        found != negated
+    }))
 }
 
 /// The finding for an active `syslog.service` whose daemon is not found by its

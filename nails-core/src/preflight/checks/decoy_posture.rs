@@ -17,7 +17,13 @@
 //! - an active syslog or audit daemon (`rsyslog`, `syslog-ng`, a `syslogd`,
 //!   `metalog`, `socklog`, `auditd`), each of which writes to the decoy disk
 //!   before the overlays are mounted, detected as a unit, a template instance,
-//!   the unit `syslog.service` names, or a process (see [`loggers`]),
+//!   the unit `syslog.service` names, or a process, and an enabled `auditd`
+//!   that does not run now, which the decoy starts again after the way back
+//!   unless its unit is masked or its kernel command line condition fails
+//!   (see [`loggers`]),
+//! - tuned or tuned-ppd started with a log file (`-l`, which Fedora's units
+//!   pass, or `-d`): they log to `/var/log/tuned` on the decoy disk when they
+//!   stop or start around a switch, with the time (see [`services`]),
 //! - an armed kdump (Ubuntu arms kdump-tools by default from 24.10): a crash
 //!   kernel loaded according to `/sys/kernel/kexec_crash_loaded`, or an enabled
 //!   or active `kdump-tools.service` or `kdump.service` (an enabled one starts
@@ -44,9 +50,18 @@
 //! - an atime policy that records read access on the decoy (`strictatime` /
 //!   missing `noatime`),
 //! - crash-dump channels that persist memory to the decoy disk: a disk
-//!   `kernel.core_pattern`, a systemd-coredump (reached by its pipe or its
-//!   kernel coredump socket) that is not set to `Storage=none` with
-//!   `ProcessSizeMax=0` (see [`coredump`]), or registered pstore records,
+//!   `kernel.core_pattern`, one that hands core dumps to a program other than
+//!   systemd-coredump (Ubuntu's apport, for one), a systemd-coredump (reached
+//!   by its pipe or its kernel coredump socket) that is not set to
+//!   `Storage=none` with `ProcessSizeMax=0` (see [`coredump`]), a unit that
+//!   systemd-coredump starts for each crash (apport's hook, for one), an
+//!   enabled `apport.service` while the pattern does not name apport, a
+//!   pattern that a `sysctl.d` file sets again when the decoy starts after
+//!   the way back, where it differs from the one in force (see [`sysctl`]),
+//!   or registered pstore records,
+//! - firewalld logging to a file, which its default log target does with its
+//!   warnings and errors, and ABRT in use, which keeps crash reports in
+//!   `/var/spool/abrt` (see [`services`]),
 //! - the NixOS `nixos-upgrade.timer` (which can rebuild and touch EFI NVRAM
 //!   from the decoy profile while the hidden session runs),
 //! - sudo logging in sudoers (`logfile=`, I/O logging with `log_input`,
@@ -89,17 +104,22 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::journald_storage::journald_persistence_at;
+use super::locate_database::files::DecoyFiles;
+use super::locate_database::hidden_locations;
 use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle, unnamed};
 use crate::filesystem::parse_mountinfo;
 use crate::{Filesystem, NailsError, Result};
+use loggers::Auditd;
 use nails_api::Allowable;
 use std::path::{Path, PathBuf};
 
 mod coredump;
 mod install_on_shutdown;
 mod loggers;
+mod services;
 mod sssd;
 mod sudo_logging;
+mod sysctl;
 // The locate-database check reads the decoy's units the same way.
 pub(in crate::preflight::checks) use loggers::{Activity, unit_active};
 pub use sudo_logging::{SudoLogging, scan_sudoers};
@@ -229,6 +249,9 @@ pub struct DecoyPersistenceCheck {
     /// sessions see the decoy: what unattended-upgrades does at the way back
     /// is read through it.
     upper: Option<PathBuf>,
+    /// The hidden root as configured: no read of the decoy's units follows a
+    /// link onto the volume mounted there.
+    hidden_root: Option<PathBuf>,
 }
 
 impl DecoyPersistenceCheck {
@@ -240,6 +263,7 @@ impl DecoyPersistenceCheck {
             is_nixos,
             root: PathBuf::from("/"),
             upper: None,
+            hidden_root: None,
         }
     }
 
@@ -250,6 +274,26 @@ impl DecoyPersistenceCheck {
         self
     }
 
+    /// The check whose reads of the decoy's units follow no link onto the
+    /// hidden volume mounted at `hidden_root`.
+    pub fn with_hidden_root(mut self, hidden_root: PathBuf) -> Self {
+        self.hidden_root = Some(hidden_root);
+        self
+    }
+
+    /// Where the hidden volume shows on the running system, resolved.
+    fn hidden<F: Filesystem>(&self, fs: &F) -> Vec<PathBuf> {
+        self.hidden_root
+            .as_deref()
+            .map(|hidden_root| {
+                hidden_locations(fs, hidden_root)
+                    .into_iter()
+                    .map(|location| location.path)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Inspect the system tree rooted at `root` instead of `/` (tests).
     #[cfg(test)]
     fn with_root(mut self, root: &Path) -> Self {
@@ -257,10 +301,22 @@ impl DecoyPersistenceCheck {
         self
     }
 
-    /// The fail-closed log findings: the persistent log sinks on the decoy
-    /// (journald, syslog, audit), and each one NAILS cannot tell about. The
-    /// other blocker is [`Self::kdump_finding`].
+    /// The fail-closed log findings that status and the window's launcher
+    /// count: the persistent log sinks on the decoy (journald, syslog, a
+    /// running audit daemon), and each one NAILS cannot tell about. The
+    /// pre-flight check counts an enabled audit daemon as well
+    /// ([`loggers::auditd`]), and its other blockers are
+    /// [`Self::kdump_finding`], tuned's ([`services::blockers`]) and
+    /// unattended-upgrades'.
     fn log_blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<PersistenceFinding> {
+        let mut out = Self::journal_syslog_blockers(fs, root);
+        out.extend(loggers::active_auditd_finding(fs, root));
+        out
+    }
+
+    /// The fail-closed findings of journald and the syslog daemons, and each
+    /// one NAILS cannot tell about.
+    fn journal_syslog_blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<PersistenceFinding> {
         let mut out = Vec::new();
         match journald_persistence_at(fs, root) {
             Ok(false) => {}
@@ -280,7 +336,7 @@ impl DecoyPersistenceCheck {
                 unread.to_string(),
             )),
         }
-        out.extend(loggers::active_logger_blockers(fs, root));
+        out.extend(loggers::active_syslog_blockers(fs, root));
         out
     }
 
@@ -492,8 +548,14 @@ impl DecoyPersistenceCheck {
     }
 
     /// Collect the warning-level findings (atime, crash channels, sudo logging,
-    /// sssd, timers).
-    fn warnings<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Vec<String> {
+    /// sssd, timers); `hidden` are the hidden volume's locations, resolved,
+    /// which no read of the decoy's units follows a link onto.
+    fn warnings<F: Filesystem>(
+        fs: &F,
+        root: &Path,
+        is_nixos: bool,
+        hidden: &[PathBuf],
+    ) -> Vec<String> {
         let mut out = Vec::new();
 
         if let Some(opts) = Self::root_mount_options(fs) {
@@ -511,7 +573,7 @@ impl DecoyPersistenceCheck {
             }
         }
 
-        out.extend(Self::crash_posture(fs, root, is_nixos));
+        out.extend(Self::crash_posture(fs, root, is_nixos, hidden));
         out.extend(sudo_logging::decoy_sudo_findings(fs, root));
         out.extend(sssd::sssd_finding(fs, root, is_nixos));
 
@@ -541,25 +603,54 @@ impl DecoyPersistenceCheck {
     /// systemd-coredump's settings are read only when the kernel hands dumps to
     /// it, by its pipe or its kernel coredump socket (see [`coredump`]): a
     /// `coredump.conf` left behind while another helper or a plain pattern takes
-    /// the dumps decides nothing.
-    fn crash_posture<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Vec<String> {
+    /// the dumps decides nothing. Another helper NAILS does not judge, so it
+    /// warns; only the kernel default, `core`, which writes into the crashing
+    /// program's working directory, and an empty pattern pass. Nor does it
+    /// judge a unit that systemd-coredump starts for each crash, as Ubuntu's
+    /// apport adds one, so that warns too
+    /// ([`services::coredump_hook_finding`]), and so does an enabled
+    /// `apport.service` while the pattern does not name apport, as it sets
+    /// its pipe again when the decoy starts after the way back
+    /// ([`services::apport_finding`]). The pattern the decoy's `sysctl.d`
+    /// files set, which systemd-sysctl applies again then, is judged as well
+    /// where it differs from the one in force ([`sysctl`]).
+    fn crash_posture<F: Filesystem>(
+        fs: &F,
+        root: &Path,
+        is_nixos: bool,
+        hidden: &[PathBuf],
+    ) -> Vec<String> {
         let mut out = Vec::new();
 
-        if let Ok(pattern) = fs.read_file_content(Path::new(CORE_PATTERN)) {
-            let pattern = pattern.trim();
-            if coredump::pattern_targets_systemd_coredump(pattern) {
-                out.extend(coredump::CoredumpSettings::read(fs, root).finding(is_nixos));
-            } else if !pattern.is_empty()
-                && pattern != "core"
-                && !pattern.starts_with('|')
-                && !pattern.starts_with('@')
-            {
-                // A plain path (not a pipe or a socket to another handler): the
-                // kernel writes the core straight to the decoy disk.
-                out.push(format!(
-                    "kernel.core_pattern writes core dumps to the decoy disk ({pattern})"
-                ));
+        let live = fs.read_file_content(Path::new(CORE_PATTERN)).ok();
+        let live = live.as_deref().map(str::trim);
+        if !live.is_some_and(|pattern| pattern.contains("/apport")) {
+            out.extend(services::apport_finding(fs, root, hidden));
+        }
+        if let Some(pattern) = live {
+            out.extend(Self::pattern_findings(fs, root, is_nixos, hidden, pattern));
+        }
+        // What systemd-sysctl sets again when the decoy starts after the way
+        // back, where it differs from the pattern in force now.
+        match sysctl::core_pattern(&DecoyFiles::new(fs, root, hidden)) {
+            Ok(Some((pattern, file))) if Some(pattern.as_str()) != live => {
+                let both_coredump = coredump::pattern_targets_systemd_coredump(&pattern)
+                    && live.is_some_and(coredump::pattern_targets_systemd_coredump);
+                let found = Self::pattern_findings(fs, root, is_nixos, hidden, &pattern);
+                if !both_coredump && !found.is_empty() {
+                    out.push(format!(
+                        "{file} sets kernel.core_pattern to {pattern} when the decoy starts again \
+                         after the way back, though another pattern is in force now: {}",
+                        found.join("; ")
+                    ));
+                }
             }
+            Ok(_) => {}
+            Err(why) => out.push(format!(
+                "NAILS cannot tell which kernel.core_pattern the decoy's sysctl.d files set when \
+                 it starts again after the way back ({why}), and such a pattern can put core \
+                 dumps, or a record of each crash, on the decoy disk"
+            )),
         }
 
         // A non-empty pstore means crash records are already persisted in
@@ -574,6 +665,31 @@ impl DecoyPersistenceCheck {
             );
         }
 
+        out
+    }
+
+    /// The warnings of the crash-dump pattern `pattern`: systemd-coredump's
+    /// settings and the units it starts for each crash when it takes the
+    /// dumps, another handler, or a plain path, where the kernel writes the
+    /// core straight to the decoy disk.
+    fn pattern_findings<F: Filesystem>(
+        fs: &F,
+        root: &Path,
+        is_nixos: bool,
+        hidden: &[PathBuf],
+        pattern: &str,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        if coredump::pattern_targets_systemd_coredump(pattern) {
+            out.extend(coredump::CoredumpSettings::read(fs, root).finding(is_nixos));
+            out.extend(services::coredump_hook_finding(fs, root, hidden));
+        } else if let Some(finding) = coredump::foreign_handler_finding(pattern) {
+            out.push(finding);
+        } else if !pattern.is_empty() && pattern != "core" {
+            out.push(format!(
+                "kernel.core_pattern writes core dumps to the decoy disk ({pattern})"
+            ));
+        }
         out
     }
 }
@@ -705,26 +821,44 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
         // is made, and the blockers cannot be ruled out.
         let snapshot = Snapshot::read(fs, &self.root);
         if let Some(error) = snapshot.unreadable() {
-            let unseen = PersistenceFinding::untold(no_mount_table(error));
-            return Ok(self.verdict(vec![unseen], None, None, Vec::new()));
+            let blockers = Blockers {
+                logs: vec![PersistenceFinding::untold(no_mount_table(error))],
+                ..Blockers::default()
+            };
+            return Ok(self.verdict(blockers, Vec::new()));
         }
         // The blockers and the warnings are read through views of their own,
         // so a lookup the guard did not make refuses for a blocker, which the
         // override lifts, and warns for a warning.
         let blocking = Guarded::new(fs.clone(), &snapshot);
         let warning = Guarded::new(fs.clone(), &snapshot);
-        let log_blockers = Self::log_blockers(&blocking, &self.root);
-        let kdump_blocker = Self::kdump_finding(&blocking, &self.root);
+        let hidden = self.hidden(&blocking);
+        let tuned = services::blockers(&blocking, &self.root, &hidden);
         // unattended-upgrades' install at shutdown reads what decides its
         // refusal through the blockers' view, and what only warns,
         // python3-gi's module and the hidden session's own copy, through the
         // warnings' view.
         let upgrades =
             install_on_shutdown::finding(&blocking, &warning, &self.root, self.upper.as_deref());
-        let mut warnings = Self::warnings(&warning, &self.root, self.is_nixos);
+        let blockers = Blockers {
+            logs: Self::journal_syslog_blockers(&blocking, &self.root),
+            auditd: loggers::auditd(&blocking, &self.root, &hidden),
+            kdump: Self::kdump_finding(&blocking, &self.root),
+            tuned: tuned.blockers,
+            tuned_units: tuned.units,
+            tuned_programs: tuned.programs,
+            upgrade: upgrades.blocker,
+        };
+        let mut warnings = Self::warnings(&warning, &self.root, self.is_nixos, &hidden);
+        warnings.extend(services::warnings(
+            &warning,
+            &self.root,
+            &hidden,
+            self.is_nixos,
+        ));
         warnings.extend(upgrades.warning);
         warnings.extend(upgrades.polling);
-        let result = self.verdict(log_blockers, kdump_blocker, upgrades.blocker, warnings);
+        let result = self.verdict(blockers, warnings);
         let on_blocker = if self.allow_persistent_decoy {
             OnSkip::Warn
         } else {
@@ -736,115 +870,29 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
 }
 
 impl DecoyPersistenceCheck {
-    /// The result for the blockers found, the log sinks, kdump and
-    /// unattended-upgrades' install at shutdown, and the warnings.
-    fn verdict(
-        &self,
-        log_blockers: Vec<PersistenceFinding>,
-        kdump_blocker: Option<PersistenceFinding>,
-        upgrade_blocker: Option<install_on_shutdown::Blocker>,
-        warnings: Vec<String>,
-    ) -> CheckResult {
-        use install_on_shutdown::AtTheSwitch;
-        let logs = !log_blockers.is_empty();
-        let kdump = kdump_blocker.is_some();
-        let upgrade = upgrade_blocker.is_some();
-        // What the override lets happen is said only where NAILS can tell:
-        // the install of a setting found on, or the ERROR lines of a file apt
-        // refuses.
-        let at_the_switch = upgrade_blocker
-            .as_ref()
-            .map(|blocker| blocker.at_the_switch);
-        let (upgrade_blocker, upgrade_fix) = upgrade_blocker
-            .map(|blocker| {
-                let finding = match blocker.at_the_switch {
-                    AtTheSwitch::Installs | AtTheSwitch::ErrorLines => {
-                        PersistenceFinding::kept(blocker.finding)
-                    }
-                    AtTheSwitch::Unknown | AtTheSwitch::NeedsRoot => {
-                        PersistenceFinding::untold(blocker.finding)
-                    }
-                };
-                (finding, blocker.fix)
-            })
-            .unzip();
-
-        if logs || kdump || upgrade {
-            let blockers: Vec<PersistenceFinding> = log_blockers
-                .into_iter()
-                .chain(kdump_blocker)
-                .chain(upgrade_blocker)
-                .collect();
+    /// The result for the `blockers` found and the `warnings`.
+    fn verdict(&self, blockers: Blockers, warnings: Vec<String>) -> CheckResult {
+        if !blockers.is_empty() {
+            if self.allow_persistent_decoy {
+                return CheckResult::Warn(blockers.allowed(&warnings));
+            }
+            let found = blockers.findings();
             // A blocker NAILS cannot tell about counts, and the decoy may keep
             // the record.
-            let keeps = if blockers.iter().any(|blocker| blocker.untold.is_some()) {
+            let keeps = if found.iter().any(|finding| finding.untold.is_some()) {
                 "keeps, or may keep,"
             } else {
                 "keeps"
             };
-            let findings = blockers
-                .iter()
-                .map(|blocker| blocker.sentence.as_str())
-                .collect::<Vec<_>>()
-                .join("; ");
-            if self.allow_persistent_decoy {
-                let mut msg = format!(
-                    "persistent decoy posture allowed via --allow-persistent-decoy: {findings}."
-                );
-                if logs {
-                    msg.push_str(
-                        " Records written before the overlays are mounted may survive on the \
-                         decoy disk.",
-                    );
-                }
-                if kdump {
-                    msg.push_str(
-                        " A kernel crash during the session can leave a dump of its memory in \
-                         /var/crash on the decoy disk.",
-                    );
-                }
-                match at_the_switch {
-                    Some(AtTheSwitch::Installs) => msg.push_str(
-                        " At the switch unattended-upgrades installs the pending updates on the \
-                         decoy disk and logs that run there.",
-                    ),
-                    Some(AtTheSwitch::ErrorLines) => {
-                        msg.push(' ');
-                        msg.push_str(install_on_shutdown::ERROR_LINES);
-                    }
-                    Some(AtTheSwitch::Unknown | AtTheSwitch::NeedsRoot) | None => {}
-                }
-                if !warnings.is_empty() {
-                    msg.push_str(&format!(" Also: {}.", warnings.join("; ")));
-                }
-                return CheckResult::Warn(msg);
-            }
-            let mut fixes = Vec::new();
-            if logs {
-                fixes.push(
-                    "make the decoy amnesic (Storage=volatile for journald, set in journald.conf \
-                     or a journald.conf.d/*.conf drop-in; no active syslog or audit daemon, such \
-                     as rsyslog, syslog-ng, a syslogd or auditd)"
-                        .to_string(),
-                );
-            }
-            if kdump {
-                fixes.push(
-                    "disarm kdump on the decoy (Ubuntu: systemctl disable --now kdump-tools; \
-                     Fedora: systemctl disable --now kdump)"
-                        .to_string(),
-                );
-            }
-            fixes.extend(upgrade_fix);
-            let mut remediation = fixes.join(", and ");
-            if let Some(first) = remediation.get_mut(..1) {
-                first.make_ascii_uppercase();
-            }
             return CheckResult::fail_with(
-                format!("decoy {keeps} a persistent record of the hidden session: {findings}."),
                 format!(
-                    "{remediation}, or pass --allow-persistent-decoy to allow the risk for this \
-                     run. See docs/decoy-requirements.md."
+                    "decoy {keeps} a persistent record of the hidden session: {}.",
+                    sentences(&found)
+                ),
+                format!(
+                    "{}, or pass --allow-persistent-decoy to allow the risk for this run. See \
+                     docs/decoy-requirements.md.",
+                    blockers.remediation(self.is_nixos)
                 ),
             )
             .accepted_by(Allowable::PersistentDecoy);
@@ -858,6 +906,182 @@ impl DecoyPersistenceCheck {
         }
 
         CheckResult::Pass("decoy keeps no durable trace of the hidden session".into())
+    }
+}
+
+/// The sentences of `findings`, joined.
+fn sentences(findings: &[PersistenceFinding]) -> String {
+    findings
+        .iter()
+        .map(|finding| finding.sentence.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// What makes the check refuse activation, by kind.
+#[derive(Default)]
+struct Blockers {
+    /// journald's and the syslog daemons' findings, and the one of a mount
+    /// table NAILS cannot read.
+    logs: Vec<PersistenceFinding>,
+    /// What the audit daemon does, when it writes to the decoy disk or NAILS
+    /// cannot tell.
+    auditd: Option<Auditd>,
+    /// kdump's finding.
+    kdump: Option<PersistenceFinding>,
+    /// tuned's and tuned-ppd's findings.
+    tuned: Vec<PersistenceFinding>,
+    /// The units of those findings, which their fix names.
+    tuned_units: Vec<&'static str>,
+    /// The programs of those findings that only a process shows.
+    tuned_programs: Vec<&'static str>,
+    /// unattended-upgrades' finding.
+    upgrade: Option<install_on_shutdown::Blocker>,
+}
+
+impl Blockers {
+    fn is_empty(&self) -> bool {
+        self.logs.is_empty()
+            && self.auditd.is_none()
+            && self.kdump.is_none()
+            && self.tuned.is_empty()
+            && self.upgrade.is_none()
+    }
+
+    /// Every finding, in order: one that NAILS cannot tell about is one the
+    /// decoy may keep.
+    fn findings(&self) -> Vec<PersistenceFinding> {
+        use install_on_shutdown::AtTheSwitch;
+        let upgrade = self
+            .upgrade
+            .as_ref()
+            .map(|blocker| match blocker.at_the_switch {
+                AtTheSwitch::Installs | AtTheSwitch::ErrorLines => {
+                    PersistenceFinding::kept(blocker.finding.clone())
+                }
+                AtTheSwitch::Unknown | AtTheSwitch::NeedsRoot => {
+                    PersistenceFinding::untold(blocker.finding.clone())
+                }
+            });
+        self.logs
+            .iter()
+            .cloned()
+            .chain(self.auditd.as_ref().map(Auditd::finding))
+            .chain(self.kdump.clone())
+            .chain(self.tuned.iter().cloned())
+            .chain(upgrade)
+            .collect()
+    }
+
+    /// The warning of a run that `--allow-persistent-decoy` lets go on,
+    /// with what the override lets happen, said only where NAILS can tell,
+    /// and the check's `warnings`.
+    fn allowed(&self, warnings: &[String]) -> String {
+        use install_on_shutdown::AtTheSwitch;
+        let mut msg = format!(
+            "persistent decoy posture allowed via --allow-persistent-decoy: {}.",
+            sentences(&self.findings())
+        );
+        let before_mount = matches!(self.auditd, Some(Auditd::Active | Auditd::MayRun(_)));
+        if !self.logs.is_empty() || before_mount {
+            msg.push_str(
+                " Records written before the overlays are mounted may survive on the decoy disk.",
+            );
+        }
+        match &self.auditd {
+            Some(Auditd::Enabled) => msg.push_str(
+                " When the decoy starts after the way back, auditd starts with it and writes \
+                 audit records to /var/log/audit on the decoy disk.",
+            ),
+            Some(Auditd::MayStart(_) | Auditd::MayBeEnabled(_) | Auditd::MayRun(_)) => msg
+                .push_str(
+                    " When the decoy starts after the way back, auditd may start with it and write \
+                 audit records to /var/log/audit on the decoy disk.",
+                ),
+            Some(Auditd::Active) | None => {}
+        }
+        if self.kdump.is_some() {
+            msg.push_str(
+                " A kernel crash during the session can leave a dump of its memory in /var/crash \
+                 on the decoy disk.",
+            );
+        }
+        if !self.tuned.is_empty() {
+            msg.push_str(
+                " What tuned or tuned-ppd logs around a switch stays in its log file on the decoy \
+                 disk, with the time.",
+            );
+        }
+        match self.upgrade.as_ref().map(|blocker| blocker.at_the_switch) {
+            Some(AtTheSwitch::Installs) => msg.push_str(
+                " At the switch unattended-upgrades installs the pending updates on the decoy \
+                 disk and logs that run there.",
+            ),
+            Some(AtTheSwitch::ErrorLines) => {
+                msg.push(' ');
+                msg.push_str(install_on_shutdown::ERROR_LINES);
+            }
+            Some(AtTheSwitch::Unknown | AtTheSwitch::NeedsRoot) | None => {}
+        }
+        if !warnings.is_empty() {
+            msg.push_str(&format!(" Also: {}.", warnings.join("; ")));
+        }
+        msg
+    }
+
+    /// The fix of every finding, for a NixOS decoy when `is_nixos`, as a
+    /// sentence that starts with a capital.
+    fn remediation(&self, is_nixos: bool) -> String {
+        let mut fixes = Vec::new();
+        if !self.logs.is_empty() {
+            fixes.push(
+                "make the decoy amnesic (Storage=volatile for journald, set in journald.conf or \
+                 a journald.conf.d/*.conf drop-in; no active syslog daemon, such as rsyslog, \
+                 syslog-ng or a syslogd)"
+                    .to_string(),
+            );
+        }
+        if self.auditd.is_some() {
+            fixes.push(auditd_fix(is_nixos).to_string());
+        }
+        if self.kdump.is_some() {
+            fixes.push(
+                "disarm kdump on the decoy (Ubuntu: systemctl disable --now kdump-tools; Fedora: \
+                 systemctl disable --now kdump)"
+                    .to_string(),
+            );
+        }
+        if !self.tuned.is_empty() {
+            fixes.push(services::tuned_fix(
+                &self.tuned_units,
+                &self.tuned_programs,
+                is_nixos,
+            ));
+        }
+        fixes.extend(self.upgrade.as_ref().map(|blocker| blocker.fix.clone()));
+        let mut remediation = fixes.join(", and ");
+        if let Some(first) = remediation.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        remediation
+    }
+}
+
+/// How to turn auditd off for good without a reboot, on a NixOS decoy when
+/// `is_nixos`. A plain `systemctl stop` would not do: the unit refuses a
+/// manual stop on Fedora and Arch, as upstream ships it, and `disable --now`
+/// stops it as `systemctl stop` does. (`mask --now` does stop it, since the
+/// reload after the mask leaves a masked unit that refuses nothing.)
+/// `auditctl --signal stop` asks the daemon itself to stop, on every family.
+fn auditd_fix(is_nixos: bool) -> &'static str {
+    if is_nixos {
+        "turn auditd off for good (set security.auditd.enable = false in the decoy \
+         configuration, stop the running daemon with auditctl --signal stop, then run \
+         nixos-rebuild switch)"
+    } else {
+        "turn auditd off for good, without a reboot (systemctl disable auditd.service and \
+         systemctl mask auditd.service, then auditctl --signal stop, which has the daemon stop \
+         itself: on Fedora and Arch its unit refuses a plain systemctl stop)"
     }
 }
 
