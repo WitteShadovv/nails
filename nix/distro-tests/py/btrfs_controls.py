@@ -16,7 +16,18 @@ controls show what each read of such a decoy sees, on the image itself:
 - (c) a compressed file written, kept through a few commits, then deleted: the
   read of the live tree must not find it, and a read of the older roots of the
   tree, which btrfs's copy-on-write leaves on the disk, must find it at its
-  path (``btrfs_scan``: ``btrfs-find-root``, then ``btrfs restore -t``).
+  path, and its contents (``btrfs_scan``: ``btrfs-find-root``, then ``btrfs
+  restore -t``).
+
+Fedora mounts its btrfs with ``discard=async`` where the disk takes discards,
+as the VM's disk does: once a deleted file's blocks are free, the kernel
+discards them, and they read as zeros. So the file (c) is deleted with discard
+turned off (a remount with ``nodiscard``, until the image), as on a disk that
+takes no discard, the case where the history keeps the most. A fourth file,
+written and deleted the same way before that remount, with the image's own
+``discard=async``, shows what such a deletion leaves: the run records which
+older roots keep its path and whether any keeps its contents, and asserts
+nothing of it.
 
 The decoy is the stock image; no NAILS runs here. The disk is imaged whole once
 the controls are synced, as the oracle images driver images it: QEMU pauses at
@@ -38,8 +49,10 @@ from typing import Any
 
 import btrfs_scan
 
-# The controls' folder on the decoy: /var/tmp, on the var subvolume.
+# The controls' folder on the decoy: /var/tmp, on the var subvolume, and the
+# mount it is on.
 CONTROLS = "/var/tmp/scan-controls"
+CONTROLS_MOUNT = "/var"
 # How many older roots the history reads, newest first.
 ROOTS = 64
 
@@ -90,19 +103,50 @@ class Controls:
             f"{{ printf '%s\\n' {poison_token('A')}; head -c 65536 /dev/urandom; }} "
             f"> {CONTROLS}/plain/a"
         )
-        # (b) and (c): 17476 units, 262140 bytes, two compressed extents.
-        for name, file in (("B", "b"), ("C", "c")):
-            vm.succeed(
-                f"printf '{poison_unit(name)}%.0s' $(seq 17476) > "
-                f"{CONTROLS}/compressed/{file}"
-            )
-        for tick in range(3):
-            vm.succeed(f"echo {tick} > {CONTROLS}/tick && sync")
+        # (b), (c) and the discarded one: 17476 units, 262140 bytes, two
+        # compressed extents each.
+        self.write_poison("B", "b")
+        # Deleted with the image's own discard=async: recorded only.
+        self.write_poison("D", "d")
+        self.commits()
+        vm.succeed(f"rm {CONTROLS}/compressed/d && sync")
+        self.commits()
+        # Async discard runs in the background: wait until the filesystem has
+        # no extent left to discard, or three minutes.
+        self.facts["discard-wait"] = vm.succeed(
+            f"uuid=$(findmnt -no UUID -T {CONTROLS}); "
+            "stats=/sys/fs/btrfs/$uuid/discard; "
+            "for i in $(seq 180); do "
+            '[ "$(cat $stats/discardable_extents 2>/dev/null || echo 0)" = 0 ] '
+            "&& break; sleep 1; done; "
+            'echo "after ${i}s: $(cat $stats/discardable_extents 2>/dev/null) '
+            'extents, $(cat $stats/discardable_bytes 2>/dev/null) bytes left"'
+        )
+        self.facts["discard"] = vm.succeed(
+            f"findmnt -no OPTIONS -T {CONTROLS}; "
+            f"mount -o remount,nodiscard {CONTROLS_MOUNT} && "
+            f"findmnt -no OPTIONS -T {CONTROLS}"
+        )
+        # (c): deleted with discard off.
+        self.write_poison("C", "c")
+        self.commits()
         vm.succeed(f"rm {CONTROLS}/compressed/c && sync")
         self.facts["listing"] = vm.succeed(
             f"ls -la {CONTROLS}/plain {CONTROLS}/compressed; "
             f"compsize {CONTROLS} 2>/dev/null || true"
         )
+
+    def write_poison(self, name: str, file: str) -> None:
+        self.vm.succeed(
+            f"printf '{poison_unit(name)}%.0s' $(seq 17476) > "
+            f"{CONTROLS}/compressed/{file}"
+        )
+
+    def commits(self) -> None:
+        """A few commits of the filesystem, so that older roots of the tree
+        hold what was written before them."""
+        for tick in range(3):
+            self.vm.succeed(f"echo {tick} > {CONTROLS}/tick && sync")
 
     def live_tokens(self, tokens: list[str]) -> set[str]:
         """Which of ``tokens`` the files of the controls' folder hold, read
@@ -206,6 +250,7 @@ class Controls:
         vm = self.vm
         vm.wait_for_unit("multi-user.target")
         a, b, c = poison_token("A"), poison_token("B"), poison_token("C")
+        d = poison_token("D")
         work = tempfile.mkdtemp(prefix="gate-btrfs-")
         try:
             self.facts["root"] = vm.succeed(
@@ -218,7 +263,7 @@ class Controls:
             device, in_fs = self.where_on_root()
             self.facts["controls"] = {"device": device, "path": in_fs}
             vm.succeed("sync")
-            live = self.live_tokens([a, b, c])
+            live = self.live_tokens([a, b, c, d])
             self.facts["live"] = sorted(live)
             self.check(
                 "the read through the kernel finds the plain control (a)", a in live
@@ -230,14 +275,14 @@ class Controls:
             )
             self.check(
                 "the read through the kernel does not find the deleted control (c)",
-                c not in live,
+                c not in live and d not in live,
                 sorted(live),
             )
             disk_dir = os.path.join(work, "disk")
             os.makedirs(disk_dir)
             raw = os.path.join(disk_dir, "disk.raw")
             self.image_disk(raw)
-            found = btrfs_scan.tokens_in_tree(disk_dir, [a, b, c])
+            found = btrfs_scan.tokens_in_tree(disk_dir, [a, b, c, d])
             self.facts["raw"] = sorted(found)
             self.check(
                 "the raw scan finds the plain control (a)", a in found, sorted(found)
@@ -264,6 +309,7 @@ class Controls:
             self.facts["roots"] = [root.generation for root in roots]
             regex = btrfs_scan.path_filter([os.path.dirname(in_fs)], below=True)
             deleted = os.path.join(in_fs, "compressed", "c")
+            discarded = os.path.join(in_fs, "compressed", "d")
             older: set[str] = set()
             kept: set[str] = set()
             for root in roots[:ROOTS]:
@@ -271,8 +317,8 @@ class Controls:
                 done = btrfs_scan.restore(
                     self.tools["btrfs"], part, dest, root=root.bytenr, regex=regex
                 )
-                here = btrfs_scan.tokens_in_tree(dest, [c])
-                there = btrfs_scan.paths_in_tree(dest, [deleted])
+                here = btrfs_scan.tokens_in_tree(dest, [c, d])
+                there = btrfs_scan.paths_in_tree(dest, [deleted, discarded])
                 print(
                     f"gen {root.generation}: btrfs restore exited {done.returncode}, "
                     f"found {sorted(here) or 'nothing'}, paths {there or 'none'}"
@@ -280,8 +326,14 @@ class Controls:
                 older |= here
                 kept |= set(there)
                 shutil.rmtree(dest)
+            self.facts["history"] = {"tokens": sorted(older), "paths": sorted(kept)}
+            self.facts["discarded-file"] = {
+                "pathInAnOlderRoot": discarded in kept,
+                "contentsInAnOlderRoot": d in older,
+            }
             self.check(
-                "an older root of the tree keeps the deleted control (c) at its path",
+                "an older root of the tree keeps the deleted control (c) at its "
+                "path, with its contents",
                 c in older and deleted in kept,
                 {"tokens": sorted(older), "paths": sorted(kept)},
             )
