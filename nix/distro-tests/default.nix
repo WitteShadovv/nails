@@ -97,7 +97,8 @@ let
   # which only a dispatch runs: never the nightly, a pull request or the
   # matrix of the admitted families. The commit that admits a family takes its
   # image out of this list, enables it in images.json, which puts its smoke in
-  # the smoke suite, and moves its records scenario to records.nix.
+  # the smoke suite and makes oracle-images.nix run the release binary on it,
+  # and moves its records scenario to records.nix.
   stagedImages = [ "arch-boxes" ];
   stagedScenarios = lib.listToAttrs (
     lib.concatMap (
