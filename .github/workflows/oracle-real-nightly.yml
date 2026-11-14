@@ -21,6 +21,10 @@ name: Oracle real-image nightly
 # second plain reboot (control2) and after a full hidden session and the way
 # back (after). run-scan.sh scans before, control and after, and, as a check
 # of the scan itself, before, control and control2, which no session ran on.
+# Before control2 is imaged, the driver also plants the restore channel's own
+# positive controls in the live tree (a file it writes, and on Arch a line it
+# adds to pacman's log), so both scans must find them; it lists them in
+# controls-live.json beside the raws, for run-scan.sh's ORACLE_EXTRA_CONTROLS.
 # Neither Fedora nor Arch is admitted yet, so the driver runs a test-only build
 # that admits the image's family and is never released. On btrfs the timeline
 # cannot run, so each of these scans, like scan-btrfs, passes only on the
@@ -363,16 +367,18 @@ jobs:
           for raw in before control control2 after; do
             test -f "$out/forensics/$raw.raw"
           done
+          test -s "$out/forensics/controls-live.json"
+          cat "$out/forensics/controls-live.json"
 
       # The driver replaces each raw by a sparse copy, so a raw keeps only
       # the blocks that hold data and tar keeps the holes. Most of the 40 GiB
-      # arch-boxes disk is never written.
+      # arch-boxes disk is never written. The live controls go with them.
       - name: Pack the raws
         env:
           IMAGE: ${{ matrix.image }}
         run: |
           tar -Sczf raws-btrfs.tar.gz -C "$RUNNER_TEMP/$IMAGE-oracle-images/forensics" \
-            before.raw control.raw control2.raw after.raw
+            before.raw control.raw control2.raw after.raw controls-live.json
           ls -la raws-btrfs.tar.gz
 
       - name: Upload the raws
@@ -387,10 +393,12 @@ jobs:
   # session). Each scan carves the btrfs root partition through a read-only
   # mount, diffs the records, runs bulk_extractor over each whole disk, plants
   # the positive controls in the unallocated btrfs device space of a copy of
-  # the image in the place of after, and runs no timeline. Each passes only on
-  # the partial verdict that names the timeline as the one channel left out,
-  # so the no-session scan proves that two plain reboots alone leave nothing
-  # the verdict calls residue.
+  # the image in the place of after, and runs no timeline. It must also find
+  # the live controls the driver planted before control2
+  # (ORACLE_EXTRA_CONTROLS). Each passes only on the partial verdict that
+  # names the timeline as the one channel left out, so the no-session scan
+  # proves that two plain reboots alone leave nothing but the live controls
+  # that the verdict calls residue.
   # A failed leg of produce-btrfs leaves its image's scans without raws, and
   # they fail at the download; the other image's scans still run.
   scan-btrfs-real:
@@ -446,7 +454,8 @@ jobs:
           set -euo pipefail
           images="$RUNNER_TEMP/images"
           mkdir -p "$images"
-          tar -Sxzf raws-btrfs.tar.gz -C "$images" before.raw control.raw "$RAW.raw"
+          tar -Sxzf raws-btrfs.tar.gz -C "$images" \
+            before.raw control.raw "$RAW.raw" controls-live.json
           rm raws-btrfs.tar.gz
           if [ "$RAW" != after ]; then mv "$images/$RAW.raw" "$images/after.raw"; fi
           ls -las "$images"
@@ -472,6 +481,7 @@ jobs:
           sudo env \
             "ORACLE_BIN=$PWD/target/release/nails-oracle" \
             "ORACLE_IMAGES_DIR=$RUNNER_TEMP/images" \
+            "ORACLE_EXTRA_CONTROLS=$RUNNER_TEMP/images/controls-live.json" \
             ci/oracle/run-scan.sh "$RUNNER_TEMP/oracle-btrfs-real"
 
       - name: Check the verdict is partial and names the timeline
