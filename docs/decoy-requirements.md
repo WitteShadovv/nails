@@ -120,7 +120,16 @@ The decoy also has to be one the session can enter and leave:
     prepares anything, and names `deactivate --poweroff`. The preparation of
     the way back looks again, in the hidden root and in the decoy root it
     mounts, and where it is missing a plain `emergency` powers off instead of
-    returning.
+    returning;
+  - activation is refused as well while `systemd-soft-reboot.service`, whose
+    start runs the last step before each switch, has `NoNewPrivileges=yes` or
+    an `SELinuxContext=` with every drop-in loaded. Under the first the kernel
+    changes the domain at the start of a program only where the policy allows
+    that for such a process, and the second makes PID 1 start the step in that
+    context. `deactivate` asks the hidden session's PID 1 the same before a
+    return; a plain `emergency` does not ask. Only that unit is asked: a
+    drop-in for every service (`service.d`) applies to it as well, but one
+    for another unit alone is not seen.
 
   The checks look the program up without reading it, which changes no access
   time but that of a link on the way to it. PID 1 starts it from the decoy

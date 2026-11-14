@@ -22,7 +22,24 @@
 //! makes `emergency` power off instead of returning. Where SELinux does not
 //! run, as on a stock Debian, Ubuntu or NixOS, the plan records no prefix and
 //! every unit starts the copy as before.
+//!
+//! Two settings of [`SWITCH_UNIT`], whose start command runs the transition
+//! step, would keep that step out of the domain the policy gives the program
+//! ([`domain_unheld`]): `NoNewPrivileges=yes`, with which the kernel changes
+//! the domain at the start of a program only where the policy allows that for
+//! such a process, and an `SELinuxContext=`, with which PID 1 starts the step
+//! in that context. So where PID 1 starts the steps through the program, the
+//! entry asks the decoy's PID 1 for both once the reload has loaded the
+//! drop-in, and refuses unless the unit has neither
+//! ([`ExecPrefix::require_domain`]); `deactivate` asks the hidden session's
+//! PID 1 before a return ([`check_way_back`]). A plain `emergency` asks
+//! nothing, as for the runtime guards ([`super::guards`]). They are asked of
+//! that unit only: a drop-in for every service (`service.d`) applies to it as
+//! well, but one for another unit alone is not seen, such as one for the
+//! wtmpdb writer's unit, whose start the way back replaces for the decoy's
+//! first start.
 
+use super::guards::GuardHost;
 use super::labels::{Labels, Reason};
 use crate::error::{NailsError, Result};
 use nails_base::next_step::{NextStep, sudo_line, sudo_line_for};
@@ -33,6 +50,11 @@ use std::path::Path;
 
 /// The name the refusals go by.
 pub const CHECK: &str = "exec-prefix";
+
+/// The unit whose start command runs the transition step, through the
+/// program where the plan records one
+/// ([`nails_teardown::whole_root::transition::DROPIN_DIR`]).
+pub const SWITCH_UNIT: &str = "systemd-soft-reboot.service";
 
 /// How PID 1 starts the binary copy on the host the activation runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,22 +139,87 @@ impl ExecPrefix {
             )
         })
     }
+
+    /// Refuse the entry where the decoy's PID 1, which `host` asks once the
+    /// reload has loaded the drop-in, would not start the transition step in
+    /// the domain the policy gives the program ([`domain_unheld`]). Where
+    /// PID 1 starts the copy itself there is nothing to ask. An answer PID 1
+    /// does not give, or that reads as neither `yes` nor `no`, refuses too.
+    pub fn require_domain(self, host: &(impl GuardHost + ?Sized)) -> Result<()> {
+        let Self::Trampoline(reason) = self else {
+            return Ok(());
+        };
+        let Some(why) = domain_unheld(host)? else {
+            return Ok(());
+        };
+        Err(refusal(
+            format!(
+                "{reason}, so PID 1 starts NAILS's own steps through {TRAMPOLINE}, but {why}: \
+                 the last step before each switch could run in a domain the policy confines"
+            ),
+            format!(
+                "Remove that setting from the drop-in of {SWITCH_UNIT} that sets it \
+                 (`systemctl cat {SWITCH_UNIT}` shows where it is) and activate again"
+            ),
+        ))
+    }
+}
+
+/// What keeps the PID 1 that `host` asks from starting the transition step
+/// through the program in the domain the policy gives the program, with every
+/// drop-in of [`SWITCH_UNIT`] loaded: `None` where nothing does. One is
+/// `NoNewPrivileges=yes`: under it the kernel changes the domain at the start
+/// of a program only where the policy allows that for such a process, and
+/// keeps PID 1's own otherwise. The other is an `SELinuxContext=`, with which
+/// PID 1 starts the step in that context. An answer that reads as neither
+/// `yes` nor `no` is an error, as is one PID 1 does not give.
+pub fn domain_unheld(host: &(impl GuardHost + ?Sized)) -> Result<Option<String>> {
+    let privileges = host.no_new_privileges(SWITCH_UNIT)?;
+    match privileges.trim() {
+        "no" => {}
+        "yes" => {
+            return Ok(Some(format!(
+                "{SWITCH_UNIT}, whose start runs the last step before the switch, has \
+                 NoNewPrivileges=yes with every drop-in loaded: then the kernel changes the \
+                 domain at the start of {TRAMPOLINE} only where the policy allows that for such \
+                 a process, and keeps PID 1's own otherwise"
+            )));
+        }
+        other => {
+            return Err(NailsError::InvalidState(format!(
+                "systemctl show printed NoNewPrivileges={other} for {SWITCH_UNIT}, neither yes \
+                 nor no"
+            )));
+        }
+    }
+    let context = host.selinux_context(SWITCH_UNIT)?;
+    let context = context.trim();
+    if context.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{SWITCH_UNIT}, whose start runs the last step before the switch, has \
+         SELinuxContext={context} with every drop-in loaded: PID 1 then starts the step in that \
+         context, not in the domain the policy gives {TRAMPOLINE}"
+    )))
 }
 
 /// Refuse a return to the decoy whose last step would not start in the hidden
 /// root at `root` (`/`, but in tests): `plan` records an exec prefix that does
 /// not start there ([`exec_prefix::check`]), as when a hidden session removed
 /// `/usr/bin/env`. The switch would go on without its last step, and the decoy
-/// would start with the hidden session's files in `/run`. Asked before
-/// anything is prepared, as the runtime guards are
-/// ([`super::guards::check_way_back`]); a power-off needs no such step and asks
-/// nothing.
-pub fn check_way_back(root: &Path, plan: &Plan) -> Result<()> {
+/// would start with the hidden session's files in `/run`. Then the hidden
+/// session's PID 1, which `host` asks, must start that step in the domain the
+/// policy gives the program ([`domain_unheld`]); a PID 1 that cannot be asked
+/// refuses the return too. Asked before anything is prepared, as the runtime
+/// guards are ([`super::guards::check_way_back`]); a power-off needs no such
+/// step and asks nothing.
+pub fn check_way_back(root: &Path, plan: &Plan, host: &(impl GuardHost + ?Sized)) -> Result<()> {
     let Some(program) = plan.exec_prefix.as_deref() else {
         return Ok(());
     };
+    let shown = program.display();
     exec_prefix::check(root, program).map_err(|unusable| {
-        let shown = program.display();
         refusal(
             format!(
                 "PID 1 starts the last step of the way back through {shown}, and in the hidden \
@@ -147,7 +234,37 @@ pub fn check_way_back(root: &Path, plan: &Plan) -> Result<()> {
                 sudo_line(NextStep::Emergency)
             ),
         )
-    })
+    })?;
+    let poweroff = sudo_line(NextStep::DeactivatePoweroff);
+    let (why, fix) = match domain_unheld(host) {
+        Ok(None) => return Ok(()),
+        Ok(Some(why)) => (
+            why,
+            format!(
+                "Remove that setting from the drop-in of {SWITCH_UNIT} that sets it in the hidden \
+                 session (`systemctl cat {SWITCH_UNIT}` shows where it is), run `sudo systemctl \
+                 daemon-reload` and deactivate again, or end the session with `{poweroff}`, \
+                 which powers off"
+            ),
+        ),
+        Err(error) => (
+            format!(
+                "the hidden session's PID 1 could not be asked how it starts {SWITCH_UNIT}: {}",
+                match error {
+                    NailsError::InvalidState(why) => why,
+                    other => other.to_string(),
+                }
+            ),
+            format!("End the session with `{poweroff}`, which powers off"),
+        ),
+    };
+    Err(refusal(
+        format!(
+            "PID 1 starts the last step of the way back through {shown}, but {why}: that step \
+             could run in a domain the policy confines"
+        ),
+        fix,
+    ))
 }
 
 /// The refusal of a switch, under [`CHECK`].

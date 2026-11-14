@@ -178,7 +178,9 @@ impl LockedDeactivation {
     /// and the switch's timeout guard
     /// ([`may_leave`](crate::session::leave::may_leave)), nor while the
     /// hidden root lacks the program the plan starts the way back's last step
-    /// through ([`check_way_back`](crate::session::exec_prefix::check_way_back)).
+    /// through, or the hidden session's PID 1 would not start that step in
+    /// the domain the policy gives the program
+    /// ([`check_way_back`](crate::session::exec_prefix::check_way_back)).
     /// It asks the host [`leave`](Self::leave) would leave with. `leave` asks
     /// again itself; a caller that shows a person what comes asks first, so
     /// that a refusal comes before it.
@@ -190,7 +192,7 @@ impl LockedDeactivation {
         });
         crate::session::leave::may_leave(to, &host)?;
         if to == LeaveTo::Decoy {
-            crate::session::exec_prefix::check_way_back(&self.ready.root, &self.ready.plan)?;
+            crate::session::exec_prefix::check_way_back(&self.ready.root, &self.ready.plan, &host)?;
         }
         Ok(())
     }
@@ -510,7 +512,8 @@ mod tests {
     /// `busctl` from the system directories, the first of which is below
     /// `/run`. Stand-ins there answer for a logind that lists no inhibitor and
     /// a PID 1 that holds the guards, but for service watchdogs, which a file
-    /// in that `/run` turns off and on. They only print: nothing is started.
+    /// in that `/run` turns off and on, as another does `NoNewPrivileges` of
+    /// the switch's unit. They only print: nothing is started.
     #[test]
     fn the_locked_handle_asks_pid_1_about_the_guards_of_a_return_only() {
         let _ = crate::test_support::Rerun::new(crate::test_path!(
@@ -529,6 +532,7 @@ mod tests {
             let bin = Path::new("/run/current-system/sw/bin");
             std::fs::create_dir_all(bin).unwrap();
             let watchdogs = Path::new("/run/watchdogs");
+            let privileges = Path::new("/run/no-new-privileges");
             crate::test_support::write_executable(
                 &bin.join("busctl"),
                 "#!/bin/sh\necho '{\"type\":\"a(ssssuu)\",\"data\":[[]]}'\n",
@@ -542,12 +546,18 @@ mod tests {
                      echo poweroff-force ;;\n\
                      'show --property=JobTimeoutUSec --value soft-reboot.target') echo 30min ;;\n\
                      'show --property=ServiceWatchdogs --value') cat {} ;;\n\
+                     'show --property=NoNewPrivileges --value systemd-soft-reboot.service') \
+                     cat {} ;;\n\
+                     'show --property=SELinuxContext --value systemd-soft-reboot.service') \
+                     echo ;;\n\
                      esac\nexit 0\n",
-                    watchdogs.display()
+                    watchdogs.display(),
+                    privileges.display()
                 ),
                 0o755,
             );
             std::fs::write(watchdogs, "no\n").unwrap();
+            std::fs::write(privileges, "no\n").unwrap();
             let dir = tempfile::tempdir().unwrap();
             let locked = locked(ready_at(dir.path()));
 
@@ -577,6 +587,20 @@ mod tests {
             locked.may_leave(LeaveTo::Poweroff).unwrap();
             std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
             crate::test_support::write_executable(&dir.path().join("usr/bin/env"), "", 0o755);
+            locked.may_leave(LeaveTo::Decoy).unwrap();
+
+            // With the program there, the hidden session's PID 1 must start
+            // the step through it in the domain the policy gives it: not with
+            // NoNewPrivileges=yes on the switch's unit.
+            std::fs::write(privileges, "yes\n").unwrap();
+            let error = locked.may_leave(LeaveTo::Decoy).unwrap_err();
+            let NailsError::PreFlightCheckFailed(failures) = &error else {
+                panic!("expected the exec-prefix refusal, got {error:?}")
+            };
+            assert_eq!(failures[0].0, crate::session::exec_prefix::CHECK, "{error}");
+            assert!(failures[0].1.contains("NoNewPrivileges=yes"), "{error}");
+            locked.may_leave(LeaveTo::Poweroff).unwrap();
+            std::fs::write(privileges, "no\n").unwrap();
             locked.may_leave(LeaveTo::Decoy).unwrap();
         });
     }

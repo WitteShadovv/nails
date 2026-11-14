@@ -38,6 +38,9 @@ struct FakeEntryHost {
     cancel_at_reload: bool,
     /// A soft-reboot still comes that cannot be dropped.
     switch_coming: bool,
+    /// What PID 1 says `systemd-soft-reboot.service` has for
+    /// `NoNewPrivileges`, when not `no`.
+    no_new_privileges: Option<&'static str>,
 }
 
 impl EntryHost for FakeEntryHost {
@@ -80,6 +83,14 @@ impl GuardHost for FakeEntryHost {
     }
     fn service_watchdogs(&self) -> Result<String> {
         Ok("yes".to_string())
+    }
+    fn no_new_privileges(&self, unit: &str) -> Result<String> {
+        assert_eq!(unit, crate::session::exec_prefix::SWITCH_UNIT);
+        Ok(self.no_new_privileges.unwrap_or("no").to_string())
+    }
+    fn selinux_context(&self, unit: &str) -> Result<String> {
+        assert_eq!(unit, crate::session::exec_prefix::SWITCH_UNIT);
+        Ok(String::new())
     }
 }
 
@@ -1666,6 +1677,64 @@ fn an_entry_on_a_host_that_runs_selinux_starts_every_step_through_env() {
             crate::session::units::session_units(m.config(), Some(env))
         );
         entry::rollback(&machine.paths);
+    });
+}
+
+/// Where SELinux runs, the decoy's PID 1 must start the transition step
+/// through `/usr/bin/env` in the domain the policy gives it. With
+/// `NoNewPrivileges=yes` on `systemd-soft-reboot.service` it may not, so the
+/// entry is refused once the drop-in is loaded, and undone.
+#[test]
+fn an_entry_whose_switch_unit_keeps_pid_1_s_domain_is_refused_and_undone() {
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_whose_switch_unit_keeps_pid_1_s_domain_is_refused_and_undone
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        m.set_host_profile(selinux_host());
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost {
+            no_new_privileges: Some("yes"),
+            ..FakeEntryHost::default()
+        };
+
+        let error = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap_err();
+
+        let NailsError::PreFlightCheckFailed(failures) = &error else {
+            panic!("expected the exec-prefix refusal, got {error:?}");
+        };
+        assert_eq!(failures[0].0, crate::session::exec_prefix::CHECK, "{error}");
+        assert!(
+            failures[0].1.contains(
+                "systemd-soft-reboot.service, whose start runs the last step before the \
+                 switch, has NoNewPrivileges=yes with every drop-in loaded"
+            ),
+            "{error}"
+        );
+        assert!(!machine.paths.runtime().exists());
+        assert!(
+            !run.path()
+                .join(nails_teardown::whole_root::transition::DROPIN_DIR)
+                .exists()
+        );
+        assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
+        assert!(!hidden.path().join("state.json").exists());
     });
 }
 

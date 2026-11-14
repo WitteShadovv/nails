@@ -46,6 +46,25 @@ pub trait GuardHost {
     fn unit_dropins(&self, _unit: &str) -> Result<String> {
         Ok(String::new())
     }
+    /// Whether `unit`'s processes start unable to gain privileges, with every
+    /// drop-in loaded (`NoNewPrivileges`): `yes` or `no`. Asked only where
+    /// PID 1 starts NAILS's steps through an exec prefix
+    /// ([`super::exec_prefix::domain_unheld`]). A host that does not ask PID 1
+    /// fails, by default, so that such a switch is refused.
+    fn no_new_privileges(&self, unit: &str) -> Result<String> {
+        Err(not_asked(unit, "NoNewPrivileges"))
+    }
+    /// The SELinux context PID 1 starts `unit`'s processes in, with every
+    /// drop-in loaded (`SELinuxContext`): empty where the policy picks it.
+    /// Asked and failing by default as [`no_new_privileges`](Self::no_new_privileges).
+    fn selinux_context(&self, unit: &str) -> Result<String> {
+        Err(not_asked(unit, "SELinuxContext"))
+    }
+}
+
+/// The error of a host that does not ask PID 1 for `property` of `unit`.
+fn not_asked(unit: &str, property: &str) -> NailsError {
+    NailsError::InvalidState(format!("PID 1 was not asked for {property} of {unit}"))
 }
 
 /// `property` of `unit`, or of PID 1 itself without one, as PID 1 has it

@@ -77,6 +77,14 @@ impl GuardHost for FakeHost {
     fn service_watchdogs(&self) -> nails_core::Result<String> {
         Ok(self.watchdogs.unwrap_or("yes").to_string())
     }
+    fn no_new_privileges(&self, unit: &str) -> nails_core::Result<String> {
+        assert_eq!(unit, nails_core::session::exec_prefix::SWITCH_UNIT);
+        Ok("no".to_string())
+    }
+    fn selinux_context(&self, unit: &str) -> nails_core::Result<String> {
+        assert_eq!(unit, nails_core::session::exec_prefix::SWITCH_UNIT);
+        Ok(String::new())
+    }
 }
 
 impl EntryHost for FakeHost {

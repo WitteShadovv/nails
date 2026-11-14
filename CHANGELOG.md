@@ -858,12 +858,16 @@ of this changelog for that version becomes the release notes word for word, and
   way, and nothing is installed into the decoy's policy. Activation is refused while
   `/usr/bin/env` does not resolve to an executable file in the decoy root, before it writes
   anything, or in the hidden root it builds; `deactivate` refuses to return while the hidden root
-  lacks it, and a plain `emergency` powers off instead of returning. On a decoy root mounted
-  without `noatime` its starts from the decoy root, at the switch into the hidden session and at
-  the decoy's first start after the way back, can update the program's access time, at most once
-  a day under `relatime`, as activation's own `systemctl` calls do. Elsewhere, as on a stock Debian,
-  Ubuntu or NixOS, nothing changes. No test of this repository runs these steps under a loaded
-  SELinux policy yet; see docs/decoy-requirements.md.
+  lacks it, and a plain `emergency` powers off instead of returning. Activation is also refused
+  while `systemd-soft-reboot.service`, whose start runs the last step before each switch, has
+  `NoNewPrivileges=yes` or an `SELinuxContext=` with every drop-in loaded, either of which can
+  keep the step out of that domain, and `deactivate` asks the hidden session's PID 1 the same
+  before a return. On a decoy root mounted without `noatime` its starts from the decoy root, at
+  the switch into the hidden session and at the decoy's first start after the way back, can
+  update the program's access time, at most once a day under `relatime`, as activation's own
+  `systemctl` calls do. Elsewhere, as on a stock Debian, Ubuntu or NixOS, nothing changes. No test
+  of this repository runs these steps under a loaded SELinux policy yet; see
+  docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new

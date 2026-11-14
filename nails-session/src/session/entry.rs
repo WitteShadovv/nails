@@ -187,6 +187,14 @@ impl GuardHost for RealEntryHost {
     fn unit_dropins(&self, unit: &str) -> Result<String> {
         show(Some(unit), "DropInPaths")
     }
+
+    fn no_new_privileges(&self, unit: &str) -> Result<String> {
+        show(Some(unit), "NoNewPrivileges")
+    }
+
+    fn selinux_context(&self, unit: &str) -> Result<String> {
+        show(Some(unit), "SELinuxContext")
+    }
 }
 
 /// `property` of `unit`, or of PID 1 itself, through the system's `systemctl`
@@ -607,6 +615,9 @@ fn build(
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
     install_transition(paths, &plan, host, dropin)?;
+    // Once the drop-in is loaded: PID 1 must start the step through the
+    // program in the domain the policy gives it.
+    inputs.exec_prefix.require_domain(host)?;
     crate::cancel::checkpoint()?;
 
     activation_step(ActivationPhase::Overlay, building);

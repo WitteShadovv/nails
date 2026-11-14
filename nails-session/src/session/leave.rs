@@ -21,7 +21,9 @@
 //! the hidden system's own configuration, or a change in the session, can
 //! undo one. Where the plan records an exec prefix, a return is refused as
 //! well while the hidden root lacks that program, through which PID 1 starts
-//! the way back's last step ([`super::exec_prefix::check_way_back`]).
+//! the way back's last step, or while the hidden session's PID 1 would not
+//! start that step in the domain the policy gives the program
+//! ([`super::exec_prefix::check_way_back`]).
 
 use super::guards::{self, GuardHost};
 use super::layout::Paths;
@@ -146,6 +148,14 @@ impl GuardHost for RealTargetHost {
 
     fn service_watchdogs(&self) -> Result<String> {
         guards::show_property(self.systemctl.as_deref(), None, "ServiceWatchdogs")
+    }
+
+    fn no_new_privileges(&self, unit: &str) -> Result<String> {
+        guards::show_property(self.systemctl.as_deref(), Some(unit), "NoNewPrivileges")
+    }
+
+    fn selinux_context(&self, unit: &str) -> Result<String> {
+        guards::show_property(self.systemctl.as_deref(), Some(unit), "SELinuxContext")
     }
 }
 
@@ -395,7 +405,7 @@ pub fn leave(
         host.start_target("poweroff.target")?;
         return Ok(LeaveReport::default());
     }
-    super::exec_prefix::check_way_back(&paths.root, plan)?;
+    super::exec_prefix::check_way_back(&paths.root, plan, host)?;
     let unmounted = unmount_session_disks(paths, plan);
     let nextroot = paths.nextroot();
     if let Err(e) = ret::mount_decoy_root(plan, &nextroot, &paths.run) {
