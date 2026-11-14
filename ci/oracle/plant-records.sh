@@ -43,7 +43,7 @@ img=$1
 out=$2
 seed=${ORACLE_RECORD_SEED:-oracle-record-control}
 
-loop=$(losetup --find --show --partscan --read-write "$img")
+loop=$(losetup --find --show --partscan "$img")
 mnt=$(mktemp -d)
 cleanup() {
   umount "$mnt" 2>/dev/null || true
