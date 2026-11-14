@@ -341,12 +341,15 @@ in
       MYPYPATH=nix/distro-tests/py mypy \
         nix/distro-tests/py/btrfs_scan.py \
         nix/distro-tests/py/distro_checks.py \
+        nix/distro-tests/py/fedora_gate.py \
         nix/distro-tests/py/fedora_rpms.py \
         nix/distro-tests/py/probe_facts.py \
+        nix/distro-tests/py/selinux_gate.py \
         nix/distro-tests/py/tests/test_btrfs_scan.py \
         nix/distro-tests/py/tests/test_distro_checks.py \
         nix/distro-tests/py/tests/test_fedora_rpms.py \
-        nix/distro-tests/py/tests/test_probe_facts.py
+        nix/distro-tests/py/tests/test_probe_facts.py \
+        nix/distro-tests/py/tests/test_selinux_gate.py
     '';
   };
 
