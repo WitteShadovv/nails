@@ -1,36 +1,50 @@
-"""Reads of the older roots of a btrfs filesystem in a disk image.
+"""Reads of a btrfs filesystem in a disk image: its zstd frames and its older roots.
 
 A raw scan of a disk image (``disk_forensics.run_strings_scan``) reads the
 bytes as they lie on the disk. On a btrfs that compresses file contents it
-cannot see what a compressed extent holds, and it never tells a deleted file
-from free space. The smoke scenario (``nix/distro-tests/tests/smoke.nix``)
-therefore reads the live tree's files through the decoy's own kernel, and the
-history of a btrfs decoy the way btrfs-progs does, offline and read-only, from
-a sparse copy of its partition: ``btrfs-find-root`` lists the older roots of
-the tree of tree roots that copy-on-write left on the disk, and ``btrfs
-restore -t`` restores from one of them, so a file written and deleted since is
-still found while its blocks have not been reused.
+cannot see what a compressed extent holds. The smoke scenario
+(``nix/distro-tests/tests/smoke.nix``) therefore reads the live tree's files
+through the decoy's own kernel, and, from a sparse copy of the root's
+partition, two things more:
+
+- every zstd frame on the partition, decompressed (``frame_tokens``). btrfs
+  writes each compressed extent as one zstd frame, at the start of its block
+  on the disk, or inside a metadata block for an inline extent, and its
+  metadata is never compressed. So the raw scan and this read together see
+  every byte the partition holds, of a live file or of one deleted whose
+  blocks were not reused, whatever tree still points at them. A root mounted
+  to compress with another algorithm (zlib, lzo) is outside what it reads,
+  and the scenario fails on one (``compression``);
+- the older roots of the tree of tree roots that copy-on-write left on the
+  disk, the way btrfs-progs reads them, offline and read-only:
+  ``btrfs-find-root`` lists them and ``btrfs restore -t`` restores from one
+  of them, so a file written and deleted since is still found at its path
+  while its blocks have not been reused. A restore that cannot read a file or
+  a folder it was asked for prints an ``ERROR:`` line (``restore_errors``) and
+  goes on with ``-i``, still exiting 0, so the scenario reads those lines.
 
 ``btrfs restore`` does not read the live tree for the scenario: btrfs-progs
 stops on an inline zstd extent whose frame holds a whole block of which the
 file uses less ("zstd frame incomplete"), which the kernel reads, and with
 ``-i`` it goes on past such a file without failing, so a read of the live tree
-with it would leave files unread unseen. Each file the scenario looks for in
-an older root was written by the decoy's kernel, which btrfs restore reads.
+with it would leave files unread unseen. The frames the carve decompresses are
+read whole, as the kernel reads them.
 
 Three planted controls show what each read sees on the image: a file btrfs
 keeps plain, which the raw scan finds; a compressed file, which the raw scan
-misses and the read through the kernel finds; and a compressed file written
-and deleted, which only the history finds.
+misses and the read through the kernel and the carve find; and a compressed
+file written and deleted, which the carve and an older root find.
 
-The pure parts (reading ``sfdisk --json``, ``btrfs-find-root`` and a
-superblock, building a path filter) are unit-tested without a VM by the
-``distro-checks`` flake check; the parts that run a tool take its path, as the
-scenario passes the store paths in.
+The pure parts (reading ``sfdisk --json``, ``btrfs-find-root``, a superblock
+and what btrfs restore printed, building a path filter, finding and
+decompressing frames) are unit-tested without a VM by the ``distro-checks``
+flake check; the parts that run a tool take its path, as the scenario passes
+the store paths in.
 """
 
 from __future__ import annotations
 
+import bisect
 import errno
 import json
 import os
@@ -38,6 +52,7 @@ import re
 import struct
 import subprocess
 from collections.abc import Iterable, Iterator, Sequence
+from compression import zstd
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +69,21 @@ _CHUNK = 8 * 1024 * 1024
 # The prompt btrfs restore shows for a file whose extents it walks many times;
 # "a" answers it for every file.
 _RESTORE_ANSWERS = "a\n" * 4096
+
+# The magic number that opens a zstd frame (RFC 8878), as it lies on the disk.
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+# btrfs compresses at most 128 KiB of a file into one extent and keeps it
+# compressed only when that takes less room: a frame btrfs wrote takes at most
+# this much of the disk and decompresses to at most this much.
+MAX_EXTENT = 128 * 1024
+
+# How much of a frame one decompression step takes, so that what decodes
+# before a damaged part of a frame still counts.
+_PIECE = 4096
+
+# How much decompressed output is gathered before it is searched.
+_BATCH = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -263,8 +293,9 @@ def restore(
 
     Subvolumes and snapshots are restored as directories (-s), errors in one
     file do not stop the rest (-i), and only the paths `regex` takes are
-    written when it is given. An older root's tree may be partly overwritten,
-    so a restore from it may end with an error: what it wrote still counts.
+    written when it is given. With -i it exits 0 after a file or a folder it
+    could not read, so what it wrote is all it read only when
+    ``restore_errors`` finds nothing in its output and it exited 0.
     """
     os.makedirs(dest, exist_ok=True)
     command = [btrfs, "restore", "-s", "-i"]
@@ -281,6 +312,149 @@ def restore(
         check=False,
         timeout=1800,
     )
+
+
+def restore_errors(output: str) -> list[str]:
+    """What btrfs restore could not read or write, from its output: every line
+    btrfs-progs' error() printed ("ERROR: copying data for ... failed",
+    "ERROR: searching directory ... failed", a decompression that failed).
+
+    Its notes on a block of another generation than the tree that points at it
+    ("parent transid verify failed ...", "Ignoring transid failure") are not
+    among them: btrfs restore prints them for the older root it was given, and
+    reads on.
+    """
+    return [
+        line.strip()
+        for line in output.splitlines()
+        if line.lstrip().startswith("ERROR:")
+    ]
+
+
+def compression(options: str) -> str | None:
+    """The algorithm a btrfs mount with `options` (as the mount table shows
+    them) compresses new data with: ``zstd``, ``zlib`` or ``lzo``, or None when
+    it does not compress.
+
+    ``compress=`` and ``compress-force=`` take the algorithm and an optional
+    level (``zstd:3``); a bare ``compress`` takes zlib, and ``no`` or
+    ``none`` turn it off. The last such option counts, as for the kernel.
+    """
+    algorithm: str | None = None
+    for option in options.split(","):
+        name, equals, value = option.partition("=")
+        if name not in ("compress", "compress-force"):
+            continue
+        kind = value.split(":", 1)[0] if equals else "zlib"
+        algorithm = None if kind in ("no", "none") else kind
+    return algorithm
+
+
+def decompress_frame(view: bytes | memoryview) -> bytes:
+    """What the zstd frame at the start of `view` decompresses to, at most
+    ``MAX_EXTENT`` bytes: all of it up to the first damage, or nothing when
+    `view` opens no frame.
+
+    The frame is fed in pieces, so what a frame holds before a part of it a
+    later write overwrote still counts. A frame of an inline extent holds a
+    whole block of which the file uses less, and is read whole, as the kernel
+    reads it.
+    """
+    decompressor = zstd.ZstdDecompressor()
+    parts: list[bytes] = []
+    total = 0
+    try:
+        for start in range(0, len(view), _PIECE):
+            part = decompressor.decompress(
+                view[start : start + _PIECE], max_length=MAX_EXTENT - total
+            )
+            parts.append(part)
+            total += len(part)
+            if decompressor.eof or total >= MAX_EXTENT:
+                break
+    except zstd.ZstdError:
+        pass
+    return b"".join(parts)
+
+
+def zstd_frames(image: str | os.PathLike[str]) -> Iterator[tuple[int, bytes]]:
+    """Each zstd frame in the sparse file `image`, wherever it starts: its
+    offset and what it decompresses to (``decompress_frame``). Four bytes that
+    happen to read as the magic and open nothing that decodes are left out.
+
+    A frame btrfs wrote lies whole in the ``MAX_EXTENT`` bytes after its magic,
+    so each read takes that much past the stretch it searches.
+    """
+    reach = MAX_EXTENT + _PIECE
+    with open(image, "rb") as handle:
+        fd = handle.fileno()
+        size = os.fstat(fd).st_size
+        for begin, finish in data_extents(fd, 0, size):
+            position = begin
+            while position < finish:
+                length = min(_CHUNK, finish - position)
+                window = os.pread(fd, length + reach, position)
+                view = memoryview(window)
+                # A frame that starts in this stretch: its magic may run past it.
+                end = min(len(window), length + len(ZSTD_MAGIC) - 1)
+                at = window.find(ZSTD_MAGIC, 0, end)
+                while at != -1:
+                    data = decompress_frame(view[at : at + reach])
+                    if data:
+                        yield position + at, data
+                    at = window.find(ZSTD_MAGIC, at + 1, end)
+                position += length
+
+
+def frame_tokens(
+    image: str | os.PathLike[str], tokens: Iterable[str]
+) -> tuple[dict[str, int], int]:
+    """Which of `tokens` the zstd frames in `image` hold once decompressed,
+    each with the offset of the first frame that holds it, and how many frames
+    decoded.
+
+    Each frame is searched apart from the others, so a token one frame ends
+    with and the next begins with is not found: the file of more than
+    ``MAX_EXTENT`` bytes it would take to cut one is not one the scenario
+    plants. A token with a NUL byte raises ``ValueError``, as the frames are
+    searched joined by one.
+    """
+    needles = {token: token.encode() for token in tokens if token}
+    if any(b"\0" in needle for needle in needles.values()):
+        raise ValueError(f"a token holds a NUL byte: {sorted(needles)!r}")
+    found: dict[str, int] = {}
+    frames = 0
+    batch: list[bytes] = []
+    offsets: list[int] = []
+    gathered = 0
+
+    def search() -> None:
+        joined = b"\0".join(batch)
+        starts = []
+        position = 0
+        for data in batch:
+            starts.append(position)
+            position += len(data) + 1
+        for token, needle in needles.items():
+            if token in found:
+                continue
+            at = joined.find(needle)
+            if at != -1:
+                found[token] = offsets[bisect.bisect_right(starts, at) - 1]
+        batch.clear()
+        offsets.clear()
+
+    for offset, data in zstd_frames(image):
+        frames += 1
+        batch.append(data)
+        offsets.append(offset)
+        gathered += len(data)
+        if gathered >= _BATCH:
+            search()
+            gathered = 0
+    if batch:
+        search()
+    return found, frames
 
 
 def paths_in_tree(tree: str | os.PathLike[str], paths: Iterable[str]) -> list[str]:

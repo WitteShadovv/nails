@@ -713,7 +713,8 @@ Layout:
   (`ci/tests/test_admit_row.py` runs the script on the family table).
 - `py/`: the scenarios' host-side helpers, unit-tested by the
   `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
-  smoke's read of the older roots of a btrfs decoy's image with btrfs-progs.
+  smoke's reads of a btrfs decoy's image: its zstd frames, decompressed, and
+  its older roots, with btrfs-progs.
 - `default.nix`: maps the scenarios over the table, builds the scenarios of
   the images staged for their family's admission (`stagedImages`), and
   exposes the metadata.
@@ -761,23 +762,33 @@ in each hidden session, with its automount masked there and back on the decoy
 after each way back (the first entry finds the ESP mounted, the second idle,
 with only its automount there), and the rehearsal's scan exiting 9 with the
 blind spot on a btrfs root's device, 0 on any other root. The disk-image check
-looks for the canaries of both sessions and for the token the rehearsal
-planted. Before each image it also reads the decoy root's files through the
-decoy's kernel, from a read-only bind of `/`: none of these may be in them, and
-the positive control's token must be. On a btrfs root it also reads the older
-roots of the image's tree as btrfs-progs does (`py/btrfs_scan.py`): none may
-keep a file at a canary's path or one of the rehearsal's files named after its
-token, nor a canary or the token. Three planted controls show what each read
-sees: a plain file the raw scan finds, a compressed file the raw scan misses
-and the read through the kernel finds, and a compressed file written and
-deleted that only an older root keeps. `btrfs restore` reads the older roots
-only, since it cannot read about 11,000 inline zstd extents of the arch-boxes
-image, which the kernel reads. It lists the failed units seven times, on the
-decoy before the first switch, right after each switch (in both hidden sessions
-and on the decoy after both ways back) and in both hidden sessions again just
-before the way back, compares each listing with the entry's `knownFailedUnits`,
-and checks that the `platform` row of `check` warns about every unit listed
-there ([Known failures](#known-failures)).
+looks for the canaries of both sessions, for the canary files' names and for
+the token the rehearsal planted, which its files carry in their names. Before
+each image it also reads the decoy root's files through the decoy's kernel,
+from a read-only bind of `/`: none of these may be in them, and the positive
+control's token must be. A btrfs root must compress with zstd or not at all.
+On one the check also decompresses every zstd frame on the root's partition
+(`py/btrfs_scan.py`): btrfs writes each compressed extent as one, so with the
+raw scan this reads every byte the partition holds, of a file live or
+deleted, whatever tree still points at it. None may hold a canary or the
+token, nor a registry token the baseline's frames and raw bytes did not hold.
+It also reads the older roots of the image's tree that `btrfs-find-root`
+lists, as btrfs-progs does, at the canary paths and the rehearsal's files:
+none may keep a file at a canary's path or one of the rehearsal's files named
+after its token, nor a canary or the token, and a restore that could not read
+a file or a folder it was asked for fails the check. Three planted controls
+show what each read sees: a plain file the raw scan finds, a compressed file
+the raw scan misses and the read through the kernel and the carve find, and a
+compressed file written and deleted that the raw scan and the read through the
+kernel miss and the carve and an older root find. `btrfs restore` reads the
+older roots only, since it cannot read about 11,000 inline zstd extents of the
+arch-boxes image, which the kernel and the carve read. It lists the failed
+units seven times, on the decoy before the first switch, right after each
+switch (in both hidden sessions and on the decoy after both ways back) and in
+both hidden sessions again just before the way back, compares each listing
+with the entry's `knownFailedUnits`, and checks that the `platform` row of
+`check` warns about every unit listed there
+([Known failures](#known-failures)).
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
 guest writes vanish when QEMU exits and there is no root qcow2 for the forensic
