@@ -50,8 +50,8 @@
 //! bash's files makes (zsh's it reads, or warns of), a change of bash's files
 //! after the bash it reads started (zsh's it warns of), or one in the files of a
 //! shell started with others (`--rcfile`, or a `ZDOTDIR` from the environment
-//! of a shell that does not run yet), nor a prompt the environment of such a
-//! shell may hold.
+//! of a shell that does not run yet), nor a prompt or a `TMOUT` the
+//! environment of such a shell may hold.
 //!
 //! It reads through the automount guard ([`crate::filesystem::automount`]): a
 //! lookup that would mount an automount point that nothing is mounted on yet,
