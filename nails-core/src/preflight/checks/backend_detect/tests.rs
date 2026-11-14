@@ -183,10 +183,7 @@ fn a_mount_table_that_cannot_be_read_refuses_as_discards_do() {
             ),
             "{result:?}"
         );
-        assert_eq!(
-            result.remediation(),
-            Some(super::super::upgrade_run::NO_MOUNT_TABLE)
-        );
+        assert_eq!(result.remediation(), Some(mountinfo::UNREADABLE_FIX));
         assert_eq!(result.allowable(), Some(Allowable::Discards));
 
         let accepted = BackendDetectCheck::default()

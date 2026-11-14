@@ -162,6 +162,39 @@ fn only_the_plain_decoy_may_activate() {
     );
 }
 
+/// Without the mount table NAILS cannot tell whether `/` is the hidden root
+/// or an interrupted entry left `/run/nextroot` mounted: session-state
+/// refuses, where it read an empty table and passed as the plain decoy, and
+/// says how to let it read the table.
+#[test]
+fn session_state_refuses_where_the_mount_table_cannot_be_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let check = SessionStateCheck::new(
+        Paths {
+            root: dir.path().join("root"),
+            run: dir.path().join("run"),
+        },
+        PathBuf::from("/mnt/data"),
+    );
+    let result = check.judge(Err(std::io::Error::from(
+        std::io::ErrorKind::PermissionDenied,
+    )));
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "NAILS cannot tell whether the hidden session is already active or an interrupted \
+             activation left a next root mounted: it cannot read the mount table ("
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(crate::filesystem::mountinfo::UNREADABLE_FIX)
+    );
+    let decoy = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    assert!(check.judge(Ok(decoy)).is_pass());
+}
+
 #[test]
 fn filesystems_kept_off_warn_and_a_refusal_fails() {
     let mounts = parse_mountinfo(

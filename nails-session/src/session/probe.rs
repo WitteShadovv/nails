@@ -7,7 +7,9 @@
 //! from the hidden root. The live mount table and the session plan in `/run`
 //! can: in the hidden root `/` is an overlay whose upper is the plan's; on the
 //! decoy a populated `/run/nextroot` or a plan without a hidden root means an
-//! entry is under way or was interrupted.
+//! entry is under way or was interrupted. A plan file that is there but
+//! cannot be read, or is no plan this build reads, counts as one that was
+//! left behind.
 
 use super::layout::Paths;
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, root_is_hidden_overlay};
@@ -54,7 +56,11 @@ fn owner_alive(plan: &Plan) -> bool {
     })
 }
 
-/// Probe the machine under `paths`, for the hidden volume at `hidden_root`.
+/// Probe the machine under `paths`, for the hidden volume at `hidden_root`,
+/// with a mount table that cannot be read taken for an empty one: for a
+/// caller that refuses outside a hidden session, which that table shows as
+/// none. The session-state check reads the table itself and refuses
+/// without it.
 pub fn probe(paths: &Paths, hidden_root: &Path) -> SessionView {
     let entries = read_mountinfo().unwrap_or_default();
     probe_with(paths, hidden_root, &entries)
@@ -81,7 +87,9 @@ pub fn probe_with(paths: &Paths, hidden_root: &Path, entries: &[MountEntry]) -> 
                 };
                 return SessionView::HiddenWithoutPlan(format!("{why} (upper {upper})"));
             }
-            if nextroot_mounted {
+            // A plan that is there, but cannot be read or is not one this
+            // build reads, is a leftover of an entry as a plan read is.
+            if nextroot_mounted || !matches!(why, PlanError::Missing) {
                 SessionView::Interrupted {
                     plan: None,
                     nextroot_mounted,
@@ -124,6 +132,41 @@ mod tests {
         let view = probe_with(&paths(dir.path()), Path::new("/mnt/data"), &hidden);
         assert!(view.is_hidden(), "{view:?}");
         assert!(matches!(view, SessionView::HiddenWithoutPlan(_)));
+    }
+
+    /// A plan file that is there but cannot be read, or is not a plan this
+    /// build reads, is a leftover of an entry, as a plan that can be read
+    /// is: an interrupted entry, which `recover` removes, where it read as no
+    /// plan and the decoy passed as plain.
+    #[test]
+    fn a_plan_that_cannot_be_read_is_an_interrupted_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        let decoy = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+        std::fs::create_dir_all(p.plan().parent().unwrap()).unwrap();
+        for text in ["not json", "{\"version\": 999}"] {
+            std::fs::write(p.plan(), text).unwrap();
+            assert_eq!(
+                probe_with(&p, Path::new("/mnt/data"), &decoy),
+                SessionView::Interrupted {
+                    plan: None,
+                    nextroot_mounted: false
+                },
+                "{text}"
+            );
+        }
+        std::fs::remove_file(p.plan()).unwrap();
+        // A directory where the plan would be cannot be read as one.
+        std::fs::create_dir(p.plan()).unwrap();
+        assert!(matches!(
+            probe_with(&p, Path::new("/mnt/data"), &decoy),
+            SessionView::Interrupted { plan: None, .. }
+        ));
+        std::fs::remove_dir(p.plan()).unwrap();
+        assert_eq!(
+            probe_with(&p, Path::new("/mnt/data"), &decoy),
+            SessionView::Decoy
+        );
     }
 
     #[test]
