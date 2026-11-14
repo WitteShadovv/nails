@@ -59,17 +59,22 @@ of this changelog for that version becomes the release notes word for word, and
   turns into a warning for one run: tuned logs its stop and its start around each switch, with
   the time, to `/var/log/tuned` on the decoy disk with `-l`, which Fedora's units pass, or `-d`,
   and to its standard error without them, which counts where the unit's `StandardError=`, or the
-  `StandardOutput=` it follows, or a running process sends it to a file; tuned-ppd logs the power
-  profiles it sets then. tuned counts while it is enabled or active, and also while tuned-ppd is
-  installed and not masked, since D-Bus starts tuned-ppd whenever a program asks for power
-  profiles and tuned-ppd needs tuned. firewalld logging to a file (its default log
-  target, `mixed`, appends its warnings and errors to `/var/log/firewalld`) and ABRT in use (crash
-  reports in `/var/spool/abrt`) warn. What NAILS cannot read of their units, their commands or
-  the standard streams of their processes counts against the decoy. The residue catalog has a row
-  for each (`tuned-log`, `firewalld-log`, `abrt-spool`), and `docs/decoy-requirements.md` says how
-  to fix each, NixOS's firewalld by `services.firewalld.extraArgs`. Fedora is not admitted yet, so
-  no VM test runs them; the unit tests read the units Fedora 44's packages install. The unit
-  reader that `locate-database` uses reads the drop-ins of a unit's aliases too.
+  `StandardOutput=` it follows, or a running process sends it to a file, or to a journal
+  namespace (`LogNamespace=`) whose journal the decoy keeps on its disk; tuned-ppd logs the power
+  profiles it sets then. tuned counts while it is enabled or active, or a timer, path or socket
+  unit that runs starts it, and also while tuned-ppd is installed and not masked, since D-Bus
+  starts tuned-ppd whenever a program asks for power profiles and tuned-ppd needs tuned. firewalld
+  logging to a file (its default log target, `mixed`, appends its warnings and errors to
+  `/var/log/firewalld`), or to a journal namespace the decoy keeps, and ABRT in use (crash reports
+  in `/var/spool/abrt`) warn. What NAILS cannot read of their unit files, their commands or their
+  processes, a program that runs the daemon in turn and a pipe on its standard error among it,
+  counts against the decoy, within the limits `docs/decoy-requirements.md` names. The residue
+  catalog has a row for each (`tuned-log`, `firewalld-log`, `abrt-spool`), and
+  `docs/decoy-requirements.md` says how to fix each, NixOS's firewalld by
+  `services.firewalld.extraArgs`. Fedora is not admitted yet, so no VM test runs them; the unit
+  tests read the units Fedora 44's packages install. The unit reader that `locate-database` uses
+  reads the drop-ins of a unit's aliases, and those systemd builds with an instance's prefixes,
+  too.
 - `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
   `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
   its order and every other key stay as they were, a value already set as asked is not rewritten
@@ -693,6 +698,8 @@ of this changelog for that version becomes the release notes word for word, and
   KDE's DrKonqi links its processor. The hook apport adds to it, `apport-coredump-hook@.service`,
   reads each crash from the journal, logs the program's path and command line to
   `/var/log/apport.log` and writes a report to `/var/crash` for a program a package installed.
+  A pipe to `/bin/false` or `/bin/true`, which keeps nothing, passes, and the warning names
+  `kernel.core_pattern=|/bin/false` as the way to discard the dumps.
 - `backend-detect` reads the start of the device below a LUKS mapping read-only and without
   changing its access time, as before only as root, and tells what it holds. A LUKS1 header is
   read as well as a LUKS2 one, and the mapping's own header is named in the pass line as showing
@@ -1015,11 +1022,12 @@ of this changelog for that version becomes the release notes word for word, and
 - `decoy-persistence` refuses an enabled auditd that does not run, as it refuses a running one:
   the service manager starts it again when the decoy starts after the way back, unless its unit is
   masked in any unit directory, no unit file is left, or its `ConditionKernelCommandLine=` fails,
-  as `!audit=0` does on a kernel booted with `audit=0`. Its fix is now the
-  same for every family, with no reboot: `systemctl disable` and `systemctl mask auditd.service`,
-  then `auditctl --signal stop`. auditd.service refuses `systemctl stop` on Fedora and Arch, so
-  turning it off the usual way, with `systemctl disable --now`, left it running there. On NixOS the
-  fix is `security.auditd.enable = false`, `auditctl --signal stop` and a rebuild.
+  as `!audit=0` does on a kernel booted with `audit=0`. One a timer, path or socket unit that runs
+  starts counts as enabled. Its fix is now the same on Debian, Ubuntu, Fedora and Arch, with no
+  reboot: `systemctl disable` and `systemctl mask auditd.service`, then `auditctl --signal stop`.
+  auditd.service refuses `systemctl stop` on Fedora and Arch, so turning it off the usual way,
+  with `systemctl disable --now`, left it running there. On NixOS the fix is
+  `security.auditd.enable = false`, `auditctl --signal stop` and a rebuild.
 - The check that the state file lies on the hidden volume follows every symlink and `..` on the
   way to the file as the kernel does, and refuses what it cannot settle so: a symlink that leads
   nowhere, a part of the path it may not look at, a `..` after a directory that does not exist yet,

@@ -13,11 +13,11 @@
 //! interpreter's own options as Python reads them, and not when Python runs
 //! a command (`-c`), a module (`-m`) or its standard input instead.
 //! `comm` and `cmdline` can be read by every user, unless `/proc` is
-//! mounted with `hidepid=1`, which lists other users' processes but lets no
-//! one else read them: a process NAILS cannot read may run any daemon, so it
-//! is named ([`Processes::unread`]). With `hidepid=2` other users' processes
-//! are not listed at all, and an unprivileged `nails check` does not see
-//! them.
+//! mounted with `hidepid=1`, which lists every process but lets a user other
+//! than root read only their own: a process NAILS cannot read may run any
+//! daemon, so it is named ([`Processes::unread`]). With `hidepid=2` other
+//! users' processes are not listed at all, and an unprivileged `nails check`
+//! does not see them.
 //!
 //! A command line runs a daemon only where its first word is the daemon's
 //! program, or a Python interpreter whose script is ([`own_args`]). Another

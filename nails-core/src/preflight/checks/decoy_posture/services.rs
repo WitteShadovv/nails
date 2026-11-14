@@ -14,7 +14,9 @@
 //!   `tuned.service` passes `-l`, and Fedora enables it by preset wherever it
 //!   is installed (its Cloud image has none). Without a log file it logs
 //!   every line to its standard error, which the journal takes unless its
-//!   unit sends it to a file ([`streams`]); such a file counts as a log file.
+//!   unit sends it to a file ([`streams`]); such a file counts as a log file,
+//!   and so does the journal of a namespace that keeps it on the disk
+//!   ([`namespace`]).
 //!   tuned-ppd, which translates the power profiles of desktops for tuned,
 //!   writes its log with `-l` to `/var/log/tuned/tuned-ppd.log`, and to its
 //!   standard error without it: not a line at each stop and start, but the
@@ -47,7 +49,9 @@
 //! their command line, so a daemon started by hand, or still running with
 //! options its unit no longer has, is seen too. A daemon that logs to its
 //! standard output or standard error is judged by where its unit sends that
-//! stream, or by where the stream of the process leads ([`streams`]).
+//! stream, or by where the stream of the process leads ([`streams`]), and one
+//! that logs to the journal by the journal namespace of its unit or process
+//! ([`namespace`]).
 //!
 //! What NAILS cannot read of a unit's files, of a command or of a process,
 //! its streams among it, counts against the decoy: for tuned it refuses, as
