@@ -8,7 +8,10 @@
 //! both are written to `/run/systemd/system` by the entry transition and start
 //! with the hidden userspace. They run the RAM copy of the binary, so they keep
 //! working when the hidden volume fails, and they carry neutral names. The
-//! return scrub removes them; the decoy never loads them.
+//! return scrub removes them; the decoy never loads them. Where SELinux runs
+//! with a policy loaded, each checks the domain it runs in before it does
+//! anything else
+//! ([`nails_teardown::whole_root::program_label::enter_domain`]).
 
 use crate::config::Config;
 use nails_teardown::whole_root::plan::{BINARY_NAME, RUNTIME_DIR};

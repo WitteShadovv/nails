@@ -5,8 +5,8 @@
 //! refuse or parse as something else.
 
 use super::{
-    EarlyArgs, ReconcileArgs, boot_writer, guarded_device, is_transition, recognise,
-    reconcile_records,
+    EarlyArgs, ReconcileArgs, again_command, boot_writer, fixup_copy, guarded_device,
+    is_transition, recognise, reconcile_records, session_copy, session_unit,
 };
 use crate::cli::args::{Cli, Commands};
 use nails_teardown::whole_root::emergency::Finish;
@@ -254,6 +254,77 @@ fn the_writer_start_is_recognised_exactly_as_its_drop_in_gives_it() {
         assert_eq!(boot_writer(&argv(&words)), None, "{words:?}");
     }
     assert_eq!(boot_writer(&[]), None, "an empty command line");
+}
+
+/// The command line of each of the hidden session's own units, as its unit
+/// file gives it: the copy, then the words.
+fn unit_command_lines() -> Vec<Vec<OsString>> {
+    let mut config = nails_core::Config::test_default();
+    config.backend_watch.enabled = true;
+    config.sleep_policy.mode = nails_core::config::SleepPolicyMode::Block;
+    let units = nails_core::session::units::session_units(&config);
+    assert_eq!(units.len(), 2, "the watcher and the sleep guard");
+    units
+        .iter()
+        .map(|unit| {
+            let line = unit
+                .content
+                .lines()
+                .find_map(|line| line.strip_prefix("ExecStart="))
+                .expect("a start command");
+            line.split(' ').map(OsString::from).collect()
+        })
+        .collect()
+}
+
+/// The domain check of the hidden session's own units knows them by exactly
+/// the command lines their unit files give, and nothing else: clap still
+/// parses each, once the check lets it go on.
+#[test]
+fn the_session_units_are_recognised_exactly_as_their_units_start_them() {
+    for line in unit_command_lines() {
+        assert_eq!(line[0], session_copy().into_os_string(), "{line:?}");
+        assert!(session_unit(&line), "{line:?}");
+        let cli = Cli::try_parse_checked_from(line.clone()).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Watch | Commands::SleepGuard),
+            "{line:?}"
+        );
+    }
+    for words in [
+        vec![],
+        vec!["watch", "-v"],
+        vec!["-v", "watch"],
+        vec!["sleep-guard", "x"],
+        vec!["watcher"],
+        vec!["transition"],
+    ] {
+        assert!(!session_unit(&argv(&words)), "{words:?}");
+    }
+}
+
+/// A unit starts itself again from its copy with the same arguments and the
+/// variable that keeps the start again from starting itself once more.
+#[test]
+fn the_start_again_takes_the_copy_the_same_arguments_and_the_variable() {
+    use nails_teardown::whole_root::program_label::STARTED_AGAIN;
+    let copy = session_copy();
+    let line = argv(&["watch"]);
+    let command = again_command(&copy, &line);
+    assert_eq!(command.get_program(), copy.as_os_str());
+    assert_eq!(command.get_args().collect::<Vec<_>>(), ["watch"]);
+    assert_eq!(
+        command.get_envs().collect::<Vec<_>>(),
+        [(
+            std::ffi::OsStr::new(STARTED_AGAIN),
+            Some(std::ffi::OsStr::new("1"))
+        )]
+    );
+    assert_eq!(
+        fixup_copy(),
+        std::path::Path::new(boot_records::FIXUP_DIR_PATH).join(boot_records::FIXUP_BINARY)
+    );
+    assert!(again_command(&copy, &[]).get_args().next().is_none());
 }
 
 #[test]

@@ -158,14 +158,18 @@ pub fn stage_pid_measure(root: &Path) -> crate::whole_root::fresh_pids::Record {
 /// a loaded targeted policy does: PID 1 runs in `init_t` and starts a program
 /// labelled [`PROGRAM_LABEL`](crate::whole_root::program_label::PROGRAM_LABEL)
 /// in `unconfined_service_t`, allowed every permission asked, with the
-/// capability `nnp_nosuid_transition` on. A test changes its fields for
-/// another answer.
+/// capability `nnp_nosuid_transition` on, and the process asking runs in
+/// `unconfined_service_t` too. A test changes its fields for another answer.
 #[derive(Debug, Default)]
 pub struct FakeSelinux {
     /// PID 1's context; `None` is a kernel with no policy loaded.
     pub pid1: Option<String>,
     /// That PID 1's context cannot be read: its error.
     pub pid1_error: Option<i32>,
+    /// The context of the process asking.
+    pub current: String,
+    /// That the context of the process asking cannot be read: its error.
+    pub current_error: Option<i32>,
     /// The context every start enters.
     pub entered: String,
     /// The permissions the policy denies, as (class, permission), whatever
@@ -175,13 +179,17 @@ pub struct FakeSelinux {
     pub policy_error: Option<i32>,
     /// Whether the policy turns `nnp_nosuid_transition` on.
     pub capability: bool,
-    /// The error every label written fails with.
+    /// The error every label written fails with, or with
+    /// [`FakeSelinux::write_error_from`] every one from that one on.
     pub write_error: Option<i32>,
+    /// The number of labels written before [`FakeSelinux::write_error`]
+    /// fails the rest, where not every one.
+    pub write_error_from: Option<usize>,
     /// What a label reads back as, where not the last one written.
     pub read_back: Option<Vec<u8>>,
     /// Every label written, in order.
     pub written: std::sync::Mutex<Vec<Vec<u8>>>,
-    /// Every question asked of the policy, in order: `pid1`,
+    /// Every question asked of the policy, in order: `pid1`, `current`,
     /// `create <source> <file>`, `access <source> <target> <class>`,
     /// `capability <name>`.
     pub asked: std::sync::Mutex<Vec<String>>,
@@ -192,6 +200,7 @@ impl FakeSelinux {
     pub fn targeted() -> Self {
         Self {
             pid1: Some("system_u:system_r:init_t:s0".to_string()),
+            current: "system_u:system_r:unconfined_service_t:s0".to_string(),
             entered: "system_u:system_r:unconfined_service_t:s0".to_string(),
             capability: true,
             ..Self::default()
@@ -243,6 +252,17 @@ impl crate::whole_root::selinux::Selinux for FakeSelinux {
         }
     }
 
+    fn current(&self) -> std::io::Result<String> {
+        self.asked
+            .lock()
+            .expect("the questions asked")
+            .push("current".to_string());
+        match self.current_error {
+            Some(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+            None => Ok(self.current.clone()),
+        }
+    }
+
     fn exec_context(&self, source: &str, file: &str) -> std::io::Result<String> {
         self.ask(format!("create {source} {file}"))?;
         Ok(self.entered.clone())
@@ -269,13 +289,15 @@ impl crate::whole_root::selinux::Selinux for FakeSelinux {
     }
 
     fn set_label(&self, _file: rustix::fd::BorrowedFd<'_>, value: &[u8]) -> std::io::Result<()> {
-        if let Some(errno) = self.write_error {
+        let mut written = self.written.lock().expect("the labels written");
+        if let Some(errno) = self.write_error
+            && self
+                .write_error_from
+                .is_none_or(|from| written.len() >= from)
+        {
             return Err(std::io::Error::from_raw_os_error(errno));
         }
-        self.written
-            .lock()
-            .expect("the labels written")
-            .push(value.to_vec());
+        written.push(value.to_vec());
         Ok(())
     }
 

@@ -423,23 +423,30 @@ fn remove_pieces(run: &Path) {
 }
 
 /// Run the reconcile step on the decoy's first start, then remove every piece
-/// of the fix from `/run`. `run` is the `/run` root, `root` the filesystem root
-/// the records sit under (`/` in use, a temporary tree in tests) and
-/// `switched_at` the boot clock at the switch. `restore_noexec` makes `/run`
-/// `noexec` again, last of all. Best effort: each part is attempted and a
-/// failure of one does not stop the others.
+/// of the fix from `/run` ([`clean_up`]). `run` is the `/run` root, `root` the
+/// filesystem root the records sit under (`/` in use, a temporary tree in
+/// tests) and `switched_at` the boot clock at the switch. `restore_noexec`
+/// makes `/run` `noexec` again, last of all. Best effort: each part is
+/// attempted and a failure of one does not stop the others.
 pub fn run(run: &Path, root: &Path, switched_at: Duration, restore_noexec: bool) {
-    // 1. Neutralise a backdated classic-wtmp boot record, stamping it with the
-    //    time of the switch (seconds and real microseconds): the start of the
-    //    boot it records, before anything that boot wrote.
+    // Neutralise a backdated classic-wtmp boot record, stamping it with the
+    // time of the switch (seconds and real microseconds): the start of the
+    // boot it records, before anything that boot wrote.
     let (sec, usec) = wall_clock_at(switched_at);
     let _ = reconcile_wtmp(&root.join(WTMP_PATH), sec, usec);
+    clean_up(run, restore_noexec);
+}
 
-    // 2. Remove the writer's drop-in (already gone once the writer has run),
-    //    the one-shot, its link and the binary copy.
+/// The rest of [`run`], and all of it for a step that does not run in the
+/// domain the copy's label gives it
+/// ([`crate::whole_root::program_label::enter_domain`]): the records stay as
+/// they would without the fix, as where the copy was left out, and nothing
+/// of the fix stays in `/run`. It removes the writer's drop-in (already gone
+/// once the writer has run), the one-shot, its link and the binary copy, then
+/// restores `/run`'s `noexec` flag where `restore_noexec` says, last, once
+/// the copy has run.
+pub fn clean_up(run: &Path, restore_noexec: bool) {
     remove_pieces(run);
-
-    // 3. Restore /run's noexec flag last, once the copy has run.
     if restore_noexec {
         let _ = nextroot::set_noexec(run, true);
     }

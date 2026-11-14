@@ -232,6 +232,45 @@ fn the_offsets_line_is_what_the_kernel_parses() {
 #[test]
 fn an_empty_writer_command_starts_nothing() {
     assert!(prepare(SWITCHED_AT, &[]).is_none());
+    assert!(as_decoy(&[]).is_none());
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        run_as_decoy(dir.path(), &[]).kind(),
+        io::ErrorKind::InvalidInput
+    );
+}
+
+/// The writer as the decoy runs it, which [`prepare`] starts from too: its
+/// own command, without the variable a step that started itself again sets,
+/// and nothing kept from it.
+#[test]
+fn the_writer_as_the_decoy_runs_it_takes_its_own_command() {
+    let writer: Vec<OsString> = vec!["/usr/bin/wtmpdb".into(), "boot".into()];
+    let command = as_decoy(&writer).unwrap();
+    assert_eq!(command.get_program(), "/usr/bin/wtmpdb");
+    assert_eq!(command.get_args().collect::<Vec<_>>(), ["boot"]);
+    let envs: Vec<_> = command.get_envs().collect();
+    assert_eq!(
+        envs,
+        [(
+            std::ffi::OsStr::new(crate::whole_root::program_label::STARTED_AGAIN),
+            None
+        )]
+    );
+}
+
+/// A step outside its domain removes the drop-in before it starts the
+/// writer, as the drop-in's own start does.
+#[test]
+fn the_writer_as_the_decoy_runs_it_removes_the_drop_in_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let dropin = dir.path().join(DROPIN_DIR).join(DROPIN_NAME);
+    std::fs::create_dir_all(dropin.parent().unwrap()).unwrap();
+    std::fs::write(&dropin, "[Service]\n").unwrap();
+    let missing: Vec<OsString> = vec![dir.path().join("no-writer").into(), "boot".into()];
+    let error = run_as_decoy(dir.path(), &missing);
+    assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+    assert!(!dropin.exists());
 }
 
 #[test]

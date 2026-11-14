@@ -5,7 +5,7 @@
 //! tracing exist: these paths must act even when the hidden volume has failed
 //! or the configuration cannot be read.
 //!
-//! `main` calls [`dispatch`] first. Two command lines are handled here:
+//! `main` calls [`dispatch`] first. These command lines are handled here:
 //!
 //! - **`emergency`**, run as root: the whole hot path of
 //!   `nails_teardown::whole_root::emergency` runs here (the countdown, the way
@@ -27,6 +27,19 @@
 //!   start: `nails_teardown::whole_root::boot_writer` starts the writer in
 //!   this process's place, so that it records the way back as a power cycle.
 //!
+//! Before the last two do their work, and before the hidden session's
+//! **`watch`** and **`sleep-guard`** go on to the normal path, a process PID 1
+//! started checks that it runs in the domain the SELinux label of its RAM
+//! copy gives it, where a policy is loaded
+//! (`nails_teardown::whole_root::program_label::enter_domain`): one that runs
+//! elsewhere gives its copy the label again and starts itself again from it,
+//! once. One that still runs elsewhere does not do its work there. The
+//! watcher and the sleep guard power the machine off through the emergency's
+//! hot path, as the emergency does where its way back's last step would not
+//! start right; the reconcile step only removes its pieces from `/run` and
+//! leaves the records as they are; the boot writer's drop-in starts the writer
+//! as the decoy runs it.
+//!
 //! In every other case `dispatch` does nothing and the normal path runs.
 //!
 //! The emergency recogniser is deliberately strict: it accepts only the global
@@ -39,6 +52,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use nails_teardown::whole_root::emergency::{self, Finish, HotReport};
+use nails_teardown::whole_root::program_label;
 
 /// The hot path's report, waiting for the emergency command.
 static EARLY_REPORT: Mutex<Option<HotReport>> = Mutex::new(None);
@@ -242,6 +256,59 @@ pub fn boot_writer(argv: &[OsString]) -> Option<(Duration, &[OsString])> {
     }
 }
 
+/// Whether `argv` is exactly the start command of one of the hidden session's
+/// own units, the watcher's or the sleep guard's
+/// (`nails_session::session::units`).
+pub fn session_unit(argv: &[OsString]) -> bool {
+    argv.len() == 2 && (argv[1] == "watch" || argv[1] == "sleep-guard")
+}
+
+/// Whether this process, which `argv` started from the RAM copy at `copy`,
+/// may do its work: where PID 1 started it and a policy is loaded, only in
+/// the domain the copy's SELinux label gives it
+/// ([`program_label::enter_domain`]). One that runs elsewhere gives the copy
+/// the label again and starts itself again from it, and does not come back
+/// unless that start fails.
+fn in_domain(argv: &[OsString], copy: &std::path::Path) -> bool {
+    use std::os::unix::process::CommandExt;
+    let by_pid1 = nix::unistd::getppid() == nix::unistd::Pid::from_raw(1);
+    let again = std::env::var_os(program_label::STARTED_AGAIN).is_some();
+    program_label::enter_domain(
+        &nails_teardown::whole_root::selinux::KERNEL,
+        copy,
+        by_pid1,
+        again,
+        || again_command(copy, argv).exec(),
+    )
+    .is_ok()
+}
+
+/// The start of this process again from `copy`: the same `argv`, and
+/// [`program_label::STARTED_AGAIN`] set, so that it does not start itself
+/// once more.
+fn again_command(copy: &std::path::Path, argv: &[OsString]) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(copy);
+    if let Some((first, rest)) = argv.split_first() {
+        command.arg0(first).args(rest);
+    }
+    command.env(program_label::STARTED_AGAIN, "1");
+    command
+}
+
+/// The RAM copy of the binary the hidden session's own units start from.
+fn session_copy() -> std::path::PathBuf {
+    use nails_teardown::whole_root::plan::{BINARY_NAME, RUNTIME_DIR};
+    std::path::Path::new(RUNTIME_DIR).join(BINARY_NAME)
+}
+
+/// The RAM copy of the binary the way back leaves for the decoy's first
+/// start.
+fn fixup_copy() -> std::path::PathBuf {
+    use nails_teardown::whole_root::boot_records::{FIXUP_BINARY, FIXUP_DIR_PATH};
+    std::path::Path::new(FIXUP_DIR_PATH).join(FIXUP_BINARY)
+}
+
 /// The device node of exactly the read-only guard udev runs.
 pub fn guarded_device(argv: &[OsString]) -> Option<&std::path::Path> {
     (argv.len() == 3
@@ -286,27 +353,46 @@ pub fn dispatch() -> bool {
         guard_device(node);
         crate::cli::chokepoint::exit_process(0);
     }
+    if session_unit(&argv) && may_run() && !in_domain(&argv, &session_copy()) {
+        // A watcher or a sleep guard that cannot run in its domain could not
+        // do its work: the session ends as an emergency ends one whose way
+        // back would not start right.
+        let plan = nails_teardown::whole_root::plan::Plan::load(
+            &nails_teardown::whole_root::plan::default_plan_path(),
+        )
+        .ok();
+        let _ = emergency::run(plan, &host(), Finish::Poweroff);
+        crate::cli::chokepoint::exit_process(0);
+    }
     if let Some(args) = reconcile_records(&argv)
         && may_run()
     {
-        nails_teardown::whole_root::boot_records::run(
-            std::path::Path::new("/run"),
-            std::path::Path::new("/"),
-            args.switched_at,
-            args.restore_noexec,
-        );
+        use nails_teardown::whole_root::boot_records;
+        let run = std::path::Path::new("/run");
+        if in_domain(&argv, &fixup_copy()) {
+            boot_records::run(
+                run,
+                std::path::Path::new("/"),
+                args.switched_at,
+                args.restore_noexec,
+            );
+        } else {
+            boot_records::clean_up(run, args.restore_noexec);
+        }
         crate::cli::chokepoint::exit_process(0);
     }
     if let Some((switched_at, writer)) = boot_writer(&argv)
         && may_run()
     {
+        use nails_teardown::whole_root::boot_writer;
+        let run = std::path::Path::new("/run");
         // Only a writer that could not be started comes back: the unit then
         // fails, as it would if its own command were missing.
-        let _ = nails_teardown::whole_root::boot_writer::run(
-            std::path::Path::new("/run"),
-            switched_at,
-            writer,
-        );
+        let _ = if in_domain(&argv, &fixup_copy()) {
+            boot_writer::run(run, switched_at, writer)
+        } else {
+            boot_writer::run_as_decoy(run, writer)
+        };
         crate::cli::chokepoint::exit_process(1);
     }
     let Some(args) = recognise(&argv) else {
