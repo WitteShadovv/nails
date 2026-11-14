@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What counts as a change since the decoy's helper started, where no file
-//! sets the setting: a link among apt's files that leads to no file now, and
-//! the directory that holds the file the helper's `APT_CONFIG` names.
+//! sets the setting: a link among apt's files that leads to no file now, the
+//! directory that holds the file the helper's `APT_CONFIG` names, and a
+//! lookup that fails of when the helper started or of what it read.
 
 use super::*;
 
@@ -217,4 +218,61 @@ fn a_directory_on_the_way_reached_through_a_link_counts_as_a_change() {
     // A false in a file apt reads wins, link or not.
     write(root, "real-etc/apt/apt.conf.d/99local", OFF.as_bytes());
     assert_eq!(find(root).blocker, None);
+}
+
+/// The marker of the helper's unit, whose link lookup fails, may have come
+/// to be before the helper's process started: NAILS cannot tell when the
+/// helper read apt's configuration, so a setting no file sets is unknown,
+/// refused as if on, where the marker was passed over and the process's
+/// start taken alone.
+#[test]
+fn a_marker_whose_lookup_fails_leaves_when_the_helper_started_unknown() {
+    let t = 2_000_000_000;
+    let fs = mock_times(t, t, t - 100, "/etc/apt", t - 100);
+    // Its unit's cgroup still shows the helper running.
+    fs.mock_add_file(&format!("/{CGROUP}/cgroup.events"), "populated 1\n");
+    assert_eq!(finding(&fs, &fs, Path::new("/"), None).blocker, None);
+    fs.mock_set_lookup_error(
+        "/run/systemd/units/invocation:unattended-upgrades.service",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let found = finding(&fs, &fs, Path::new("/"), None);
+    let refusal = found.blocker.as_ref().expect("a refusal");
+    assert_eq!(refusal.at_the_switch, AtTheSwitch::Unknown);
+    assert!(
+        refusal.finding.contains(
+            "when unattended-upgrades.service started cannot be read: \
+             /run/systemd/units/invocation:unattended-upgrades.service ("
+        ),
+        "{}",
+        refusal.finding
+    );
+}
+
+/// One of apt's directories, or a file the helper reads, whose link lookup
+/// fails may be reached through a link whose target changed after the
+/// helper started: a setting no file sets is unknown, refused as if on,
+/// where it read as no link.
+#[test]
+fn a_link_lookup_that_fails_of_what_the_helper_read_leaves_a_setting_no_file_sets_unknown() {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let t = 2_000_000_000;
+    for path in ["/etc/apt", "/etc/apt/apt.conf.d/50unattended-upgrades"] {
+        let fs = mock_times(t, t, t - 100, "/etc/apt", t - 100);
+        fs.mock_fail_only(
+            Path::new(path),
+            MockLookup::IsSymlink,
+            MockFailure::Io(std::io::ErrorKind::Other),
+        );
+        let found = finding(&fs, &fs, Path::new("/"), None);
+        let refusal = found.blocker.as_ref().expect("a refusal");
+        assert_eq!(refusal.at_the_switch, AtTheSwitch::Unknown, "{path}");
+        assert!(
+            refusal
+                .finding
+                .contains(&format!("{path} cannot be looked up (")),
+            "{path}: {}",
+            refusal.finding
+        );
+    }
 }

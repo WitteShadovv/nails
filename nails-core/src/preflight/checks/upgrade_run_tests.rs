@@ -428,6 +428,30 @@ fn a_lock_file_that_cannot_be_looked_up_refuses() {
     assert_eq!(upgrade_run(&fs, Path::new("/")), UpgradeRun::Idle);
 }
 
+/// A lock file that is there, and is no link, but whose kind cannot be told
+/// may be one the helper cannot open, which it takes for a held lock: NAILS
+/// cannot tell, and refuses, where it read as no plain file.
+#[test]
+fn a_lock_file_whose_kind_cannot_be_told_refuses() {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let fs = decoy_with_lock(None);
+    assert_eq!(upgrade_run(&fs, Path::new("/")), UpgradeRun::Idle);
+    fs.mock_fail_only(
+        Path::new(LOCK),
+        MockLookup::IsRegularFile,
+        MockFailure::Io(std::io::ErrorKind::Other),
+    );
+    let unknown = upgrade_run(&fs, Path::new("/"));
+    assert!(
+        matches!(&unknown, UpgradeRun::Unknown(why)
+            if why.starts_with(&format!("{LOCK} cannot be looked up: "))),
+        "{unknown:?}"
+    );
+    let result = check(&fs);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(result.remediation(), Some(UNREAD));
+}
+
 /// A daily run's unit whose marker cannot be looked up, and that no other
 /// route shows running, may run: NAILS cannot tell, and refuses, unless
 /// another sign shows a run.
