@@ -72,7 +72,11 @@ def archive_repository(release: str) -> str:
 # Where dnf reads the distribution's repository files: dnf5 of Fedora 45 ships
 # them under /usr/share, an older one in /etc.
 REPO_DIRS = ("/etc/yum.repos.d", "/usr/share/dnf5/repos.d", "/etc/distro.repos.d")
-KEY_DIRS = ("/etc/pki/rpm-gpg", "/usr/share/distribution-gpg-keys/fedora")
+KEY_DIRS = (
+    "/etc/pki/rpm-gpg",
+    "/usr/share/pki/rpm-gpg",
+    "/usr/share/distribution-gpg-keys/fedora",
+)
 
 
 def find_key(release: str) -> str:
@@ -84,10 +88,10 @@ def find_key(release: str) -> str:
     ``$basearch`` filled in, where the image holds that file, and otherwise
     the first key file of the release in the image's key folders. Every
     command in it succeeds under ``set -euo pipefail`` whatever the image
-    lacks. ``release`` may be a shell expansion."""
+    lacks. ``release`` may be a shell expansion, which runs once."""
     repos = " ".join(f"{folder}/fedora.repo" for folder in REPO_DIRS)
     keys = " ".join(
-        f"{folder}/RPM-GPG-KEY-fedora-{release}-{kind}"
+        f'"{folder}/RPM-GPG-KEY-fedora-$rel-{kind}"'
         for folder in KEY_DIRS
         for kind in ("x86_64", "primary")
     )
@@ -96,11 +100,11 @@ def find_key(release: str) -> str:
         '"$repo"'
     )
     return (
-        "key=; "
+        f"key=; rel={release}; "
         f"for repo in {repos}; do "
         '[ -f "$repo" ] || continue; '
         f"candidate=$({first_key} | "
-        f"sed 's/[$]releasever/{release}/g; s/[$]basearch/x86_64/g'); "
+        'sed -e "s/[\\$]releasever/$rel/g" -e \'s/[$]basearch/x86_64/g\'); '
         '[ -n "$candidate" ] && [ -e "$candidate" ] && { key=$candidate; break; }; '
         "done; "
         f"for candidate in {keys}; do "
@@ -110,7 +114,7 @@ def find_key(release: str) -> str:
         + " >&2 || true; ls -la "
         + " ".join(KEY_DIRS)
         + " >&2 || true; "
-        f'echo "no release key of Fedora {release}" >&2; exit 3; }}'
+        'echo "no release key of Fedora $rel" >&2; exit 3; }'
     )
 
 
