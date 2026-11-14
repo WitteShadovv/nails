@@ -14,10 +14,12 @@ controls show what each read of such a decoy sees, on the image itself:
   is stored compressed, and the read of the live tree through the decoy's own
   kernel must;
 - (c) a compressed file written, kept through a few commits, then deleted: the
-  read of the live tree must not find it, and a read of the older roots of the
-  tree, which btrfs's copy-on-write leaves on the disk, must find it at its
-  path, and its contents (``btrfs_scan``: ``btrfs-find-root``, then ``btrfs
-  restore -t``).
+  read of the live tree must not find it, nor the read of the newest root of
+  the tree on the disk, which shows the deletion reached the disk, and a read
+  of the older roots of the tree, which btrfs's copy-on-write leaves on the
+  disk, must find it at its path, and its contents (``btrfs_scan``:
+  ``btrfs-find-root``, then ``btrfs restore -t``). The newest root is the
+  current tree, so it counts in neither (:func:`history`).
 
 The read of the newest root must find (b) as well: that shows the history's
 reader decompresses what the decoy's kernel compressed, so a deleted file it
@@ -38,7 +40,8 @@ records which older roots keep its path and whether any keeps its contents,
 and asserts nothing of it.
 
 The decoy is the stock image made amnesic as NAILS requires it, before the
-controls are planted: its journal volatile and auditd off. No NAILS runs here.
+controls are planted: its journal volatile and auditd off, and the run stops
+when auditd still runs. No NAILS runs here.
 The disk is imaged whole twice, each image a QMP backup of the paused disk.
 The first is taken right after the deletion, the guest paused for the copy, as
 a machine that loses its power leaves its disk, and every assertion is judged
@@ -61,6 +64,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import btrfs_scan
@@ -91,6 +95,8 @@ AMNESIC = (
     "{ journalctl --header 2>/dev/null || true; } | grep -m1 '^File path' || true; "
     "pgrep -x auditd || echo auditd gone"
 )
+# What AMNESIC prints last when auditd stopped.
+AUDITD_GONE = "auditd gone"
 
 
 def poison_unit(name: str) -> str:
@@ -161,6 +167,34 @@ def physical_address(chunks: list[tuple[int, int, int]], logical: int) -> int | 
         if start <= logical < start + length:
             return offset + logical - start
     return None
+
+
+def history(
+    reads: Sequence[tuple[Iterable[str], Iterable[str]]], live: str, live_path: str
+) -> dict[str, list[str]]:
+    """What the reads of the roots of a tree hold, newest root first, each as
+    the tokens and the paths it found: the newest root's, which is the
+    current tree, and what the older roots hold beyond the control the
+    current tree keeps (``live`` at ``live_path``). Only the older roots are
+    the history."""
+    found: dict[str, list[str]] = {
+        "newest": [],
+        "newestPaths": [],
+        "older": [],
+        "kept": [],
+    }
+    older: set[str] = set()
+    kept: set[str] = set()
+    for index, (tokens, paths) in enumerate(reads):
+        if index == 0:
+            found["newest"] = sorted(tokens)
+            found["newestPaths"] = sorted(paths)
+            continue
+        older |= set(tokens) - {live}
+        kept |= set(paths) - {live_path}
+    found["older"] = sorted(older)
+    found["kept"] = sorted(kept)
+    return found
 
 
 class Controls:
@@ -390,13 +424,9 @@ class Controls:
             "extents": {
                 control: self.extent_heads(part, control) for control in ("c", "d")
             },
-            "newest": [],
-            "older": [],
-            "kept": [],
             "reads": [],
         }
-        older: set[str] = set()
-        kept: set[str] = set()
+        reads: list[tuple[set[str], list[str]]] = []
         for index, root in enumerate(roots[:ROOTS]):
             dest = tempfile.mkdtemp(prefix=f"{label}-{root.generation}-", dir=work)
             done = btrfs_scan.restore(
@@ -410,8 +440,7 @@ class Controls:
                 f"{done.returncode}, found {sorted(here) or 'nothing'}, paths "
                 f"{there or 'none'}"
             )
-            if index == 0:
-                result["newest"] = sorted(here)
+            reads.append((here, there))
             if index == 0 or set(there) - {paths["B"]}:
                 result["reads"].append(
                     {
@@ -425,12 +454,9 @@ class Controls:
                         "messages": restore_messages(done),
                     }
                 )
-            older |= here - {tokens["B"]}
-            kept |= set(there) - {paths["B"]}
             shutil.rmtree(dest)
         os.remove(part)
-        result["older"] = sorted(older)
-        result["kept"] = sorted(kept)
+        result.update(history(reads, tokens["B"], paths["B"]))
         self.facts[label] = result
         return result
 
@@ -477,6 +503,9 @@ class Controls:
         work = tempfile.mkdtemp(prefix="gate-btrfs-")
         try:
             self.facts["amnesic"] = vm.succeed(AMNESIC)
+            assert self.facts["amnesic"].strip().endswith(AUDITD_GONE), (
+                f"auditd still runs on the decoy: {self.facts['amnesic']}"
+            )
             self.facts["root"] = vm.succeed(
                 "findmnt -no SOURCE,FSTYPE,OPTIONS /"
             ).strip()
@@ -524,6 +553,12 @@ class Controls:
                 "history's reader decompresses what the decoy's kernel compressed",
                 b in paused["newest"],
                 paused["newest"],
+            )
+            self.check(
+                "the read of the newest root does not find the deleted control (c): "
+                "the deletion reached the disk",
+                c not in paused["newest"] and deleted not in paused["newestPaths"],
+                {"tokens": paused["newest"], "paths": paused["newestPaths"]},
             )
             self.check(
                 "an older root of the tree keeps the deleted control (c) at its "
