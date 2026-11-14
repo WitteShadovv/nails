@@ -326,7 +326,8 @@ makes the scan blind and fails it. They are planted before the session: a
 session that changed one would leave it with another digest, and the scan
 would fail instead of taking the change for the control.
 
-For each image `scan-btrfs-real` runs `run-scan.sh` twice: over before,
+For each image `scan-btrfs-real` runs `run-scan.sh` three times. The first
+two run over before,
 control and after,
 and over before, control and control2 in the place of after. No session ran
 on control2, so the second scan has nothing to find but the live controls:
@@ -367,6 +368,21 @@ Three things read differently from the ext4 images:
   bulk_extractor carves the getty, boot and shutdown records of that block
   from control2 and after, and none from before and control.
 
+The third, `records`, runs over before, control and a copy of after into
+which `plant-records.sh` has planted the record-level positive controls,
+before the scan's free-space controls: a row in
+`/var/lib/lastlog/lastlog2.db`, the table pam_lastlog2 keeps (the file made
+where the image has none), a login row in wtmpdb's database where the image
+has one, and a file in `/var/lib/dnf`, each with a plain value no image holds,
+no address, domain or URL. It mounts the copy's btrfs read-write from its top
+level for that, which rewrites the filesystem's own metadata, so the copy is
+this scan's alone. The verdict must fail, not blind, with residue of the
+restore channel at exactly the planted paths (a folder the planting had to
+make among them) and nothing else, which shows that the collector sees a row
+added to a login database and a change to the package manager's state, as
+the free-space controls do not. The planting says which databases it found
+absent, in `planted.json` beside the verdict.
+
 #### Login records the control holds
 
 A carved login record is therefore also compared with the control image's
@@ -400,9 +416,10 @@ first image the driver also makes the swap line of its fstab
 (`/swap/swapfile`) `noauto` and turns the swap off: the swap check refuses an
 active disk swap, and no boot of the run turns it on again. Its live controls
 hold the line added to pacman's log as well. `scan-btrfs-real` scans its
-images as it scans Fedora's. With the root mounted from the top level, the
-restore channel keys a file by its own path (`/etc/fstab`), and the disk's
-partitions are compared as on Fedora.
+images as it scans Fedora's, but for the records scan, which plants a Fedora
+decoy's record controls and runs on the Fedora images alone. With the root
+mounted from the top level, the restore channel keys a file by its own path
+(`/etc/fstab`), and the disk's partitions are compared as on Fedora.
 
 ### What it does not see
 
