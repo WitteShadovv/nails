@@ -9,7 +9,8 @@
 # 13 runs the Nix scenario among its smokes, and Debian 13 and both Ubuntu
 # images the unattended-upgrades scenario. Beside the smokes are the host
 # drivers: the records scenarios, the refusals of the families the family table
-# does not admit, the probes and the oracle images.
+# does not admit, the probes, the drivers of Fedora's admission gate and the
+# oracle images.
 {
   self,
   pkgs,
@@ -100,6 +101,11 @@ let
   refusalName = name: "${name}-refusal";
   refusals = lib.mapAttrs' (name: drv: lib.nameValuePair (refusalName name) drv) refusalSet.drivers;
 
+  # The drivers of Fedora's admission gate, keyed by their own names
+  # ("fedora-44-rpms"): host drivers too, run by the gate suite of
+  # distro-e2e.yml, which only a dispatch selects.
+  gateSet = import ./fedora-gate.nix { inherit pkgs nix-vm-test; };
+
   # The real btrfs decoy images of the forensic oracle, keyed
   # "<name>-oracle-images": a host driver too, run by the oracle real-image
   # nightly and kept out of the metadata.
@@ -134,13 +140,17 @@ let
       )
       // driverTimeouts probeSet probeName
       // driverTimeouts recordsSet recordsName
-      // driverTimeouts refusalSet refusalName;
+      // driverTimeouts refusalSet refusalName
+      // gateSet.timeouts;
     # Probe name -> its attribute, for every probe a run can boot.
     probes = lib.genAttrs probeSet.runnable probeName;
     # Distribution -> its records scenario's attribute.
     records = lib.genAttrs recordsSet.runnable recordsName;
     # Image name -> its refusal's attribute, for every refusal a run can boot.
     refusals = lib.genAttrs refusalSet.runnable refusalName;
+    # Gate driver name -> its attribute (the same name), for every gate driver
+    # a run can boot.
+    gates = lib.genAttrs gateSet.runnable lib.id;
   };
 
   # Every entry reduced to the derivation path of a minimal VM test, so the
@@ -170,6 +180,7 @@ tests
 // records
 // probes
 // refusals
+// gateSet.drivers
 // oracleImages
 // {
   _metadata = metadata;
