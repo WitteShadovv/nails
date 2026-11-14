@@ -59,7 +59,7 @@ What runs in this tier:
 | `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem; the mount queries answering for the mount a lookup reaches (a stacked one, none under a covering mount) |
 | `nails-core/tests/network_way_back_kernel.rs` | The way back's network restore in a throwaway network namespace: the real `ip` deleting the session's links (one made again under the name of a decoy link included) and its policy-routing rules, setting a decoy device's address back on a link that is up and on one that is down, the settings below `/proc/sys/net` written back to what entry found in that namespace, not to the kernel's defaults (the namespace starts with the host's IPv4 settings, so forwarding is on where the host forwards, and the decoy's own `arp_ignore` and `src_valid_mark` are not the defaults), and the real `nft` deleting the session's firewall tables while the decoy's keeps its handle. A host without the `dummy` link type, `ip`, `nft` or nf_tables skips the test that needs it, and `NAILS_REQUIRE_USERNS=1` fails it |
 | `nails-core/tests/filesystem_contract.rs` | One file contract and one mount-query contract, run against `MockFilesystem` and `RealFilesystem` (tier d) |
-| `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`, the `kernel-modules` check against what the kernel leaves in an upper, the whole upper-filesystem probe as `check` runs it, and the loop driver's record of the file behind a real loop device, on a tmpfs and on btrfs, which tells the session's own storage below the hidden root; all but the whiteout test, the kernel-modules test, the probe test and the two loop tests run rootless |
+| `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`, the `kernel-modules` check against what the kernel leaves in an upper, the whole upper-filesystem probe as `check` runs it, with the label copy the host asks for and with the SELinux label required, and the loop driver's record of the file behind a real loop device, on a tmpfs and on btrfs, which tells the session's own storage below the hidden root; all but the whiteout test, the kernel-modules test, the two probe tests and the two loop tests run rootless |
 | `nails-cli/tests/broken_pipe.rs` | The stderr helpers surviving a reader that has gone |
 | `kernel_tests` modules in the crates | Unit-level checks that need a real mount table or process |
 
@@ -69,18 +69,22 @@ whiteouts and opaque directories need real root: the test of both, and the
 test of the `kernel-modules` check, which reads the opaque directories the
 kernel makes in an upper. So does the upper-filesystem probe as a whole, whose
 first step sets a `trusted.*` xattr. A loop device can be bound by root of the
-initial namespace alone. Those five tests,
+initial namespace alone. Those six tests,
 `privileged_mounts::whiteout_and_opaque_hide_lower_entries_without_deleting_them`,
 `privileged_mounts::the_kernel_modules_check_reads_the_kernels_own_whiteouts_and_opaque_directories`,
 `privileged_mounts::the_upper_fs_probe_as_root_passes_and_leaves_nothing`,
+`privileged_mounts::the_upper_fs_probe_as_root_copies_the_decoy_roots_label_where_one_is_required`,
 `privileged_mounts::the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file`
 and `privileged_mounts::a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows`,
 stay `#[ignore]`d and run in CI's `privileged-mounts` job. The probe's steps
 after the xattr run rootless in the `kernel_tests` module of
-`nails-core/src/preflight/checks/upper_fs_probe/tests.rs`: its trial overlay
-works while the namespace's mount table neither lists it nor signals a change,
-and nothing holds its upper once its descriptor is closed, or once a process
-that holds it is killed with `SIGKILL`.
+`nails-core/src/preflight/checks/upper_fs_probe/tests.rs`: its trial upper
+takes the SELinux label of a labelled directory that stands in for the decoy's
+`/` and keeps it, a ramfs that stores no label and a decoy directory without
+one fail it where the label is required and pass where the copy is best
+effort, its trial overlay works while the namespace's mount table neither
+lists it nor signals a change, and nothing holds its upper once its descriptor
+is closed, or once a process that holds it is killed with `SIGKILL`.
 
 ### (b) Recorded real-world fixtures
 

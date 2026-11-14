@@ -137,8 +137,8 @@ RUSTC_BOOTSTRAP=1 cargo test --workspace -- -Z unstable-options --shuffle
 
 ## Running the root-only mount tests
 
-The five root-only tests mount real filesystems and need `CAP_SYS_ADMIN` in
-the initial user namespace: three set `trusted.*` xattrs, and two bind loop
+The six root-only tests mount real filesystems and need `CAP_SYS_ADMIN` in
+the initial user namespace: four set `trusted.*` xattrs, and two bind loop
 devices and need `mkfs.btrfs` on `PATH` and `/dev/fuse` (see
 [Test tiers](#test-tiers)). They run inside a
 private mount namespace, which keeps every mount invisible to

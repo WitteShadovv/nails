@@ -402,6 +402,115 @@ fn a_kernel_without_a_detached_mount_fails_closed_and_says_why() {
     assert!(!message.contains("ext4"), "{message}");
 }
 
+/// What the label copy says where SELinux runs and the hidden volume's
+/// filesystem stores no labels.
+const CANNOT_STORE: &str = "SELinux runs on this host (selinuxfs is mounted), so \
+     /mnt/data/.probe-1-2/upper must carry the SELinux label of /, but the filesystem of \
+     /mnt/data/.probe-1-2/upper cannot store labels";
+
+#[test]
+fn a_label_the_trial_upper_did_not_take_fails_as_the_entry_would_be_refused() {
+    let root = PathBuf::from("/mnt/data");
+    let fs = MockFilesystem::new();
+    fs.mock_set_filesystem_type(&root, "vfat");
+    let check = UpperFsCapabilityCheck::new(root);
+    let result = check.verdict(&fs, Err(ProbeError::Label(CANNOT_STORE.to_string())));
+    assert!(result.is_fail(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.starts_with(
+            "The hidden root cannot keep the SELinux labels activation gives the directories \
+             it creates there, so activation would be refused. The probe's trial upper did \
+             not take and keep the label of the decoy root: SELinux runs on this host"
+        ),
+        "{message}"
+    );
+    assert!(message.contains(CANNOT_STORE), "{message}");
+    assert!(
+        message.contains("The hidden root is on a vfat filesystem."),
+        "{message}"
+    );
+    assert!(message.contains("security.selinux attributes"), "{message}");
+
+    // Without a filesystem type in the mount table the message leaves it out.
+    let check = UpperFsCapabilityCheck::new(PathBuf::from("/mnt/data"));
+    let result = check.verdict(
+        &MockFilesystem::new(),
+        Err(ProbeError::Label(CANNOT_STORE.to_string())),
+    );
+    assert!(!result.message().contains("is on a"), "{result:?}");
+}
+
+#[test]
+fn the_label_is_required_until_the_registry_says_what_the_host_needs() {
+    // Without host facts the probe requires the label, as the entry does for
+    // a host it could not detect, and copies the label of the decoy root.
+    for check in [
+        UpperFsCapabilityCheck::new(PathBuf::from("/mnt/data")),
+        UpperFsCapabilityCheck::default(),
+    ] {
+        assert_eq!(check.labels, Labels::for_host(None));
+        assert_eq!(check.decoy_root, PathBuf::from("/"));
+    }
+    let check = UpperFsCapabilityCheck::new(PathBuf::from("/mnt/data"))
+        .labels(Labels::BestEffort)
+        .labelled_like(PathBuf::from("/srv/decoy"));
+    assert_eq!(check.labels, Labels::BestEffort);
+    assert_eq!(check.decoy_root, PathBuf::from("/srv/decoy"));
+}
+
+#[test]
+fn an_error_of_the_label_copy_keeps_only_its_reason() {
+    assert_eq!(
+        refusal_text(NailsError::InvalidState("the reason".to_string())),
+        "the reason"
+    );
+    let other = NailsError::UnsupportedPlatform {
+        reason: "elsewhere".to_string(),
+    };
+    let text = other.to_string();
+    assert_eq!(refusal_text(other), text);
+}
+
+#[test]
+fn the_round_trip_holds_only_for_the_same_label_read_back() {
+    let (decoy, upper) = (Path::new("/"), Path::new("/mnt/data/.probe-1-2/upper"));
+    let root = b"system_u:object_r:root_t:s0\0".to_vec();
+    assert!(round_trip(decoy, upper, Ok(root.clone()), Ok(root.clone())).is_ok());
+
+    let other = b"system_u:object_r:unlabeled_t:s0\0".to_vec();
+    match round_trip(decoy, upper, Ok(root.clone()), Ok(other)) {
+        Err(ProbeError::Label(why)) => assert_eq!(
+            why,
+            "/mnt/data/.probe-1-2/upper reads back the label \
+             \"system_u:object_r:unlabeled_t:s0\\0\", not the label \
+             \"system_u:object_r:root_t:s0\\0\" written onto it"
+        ),
+        other => panic!("expected a label refusal, got {other:?}"),
+    }
+    match round_trip(
+        decoy,
+        upper,
+        Ok(root.clone()),
+        Err(rustix::io::Errno::NODATA),
+    ) {
+        Err(ProbeError::Label(why)) => assert!(
+            why.starts_with(
+                "reading the label written onto /mnt/data/.probe-1-2/upper back failed"
+            ),
+            "{why}"
+        ),
+        other => panic!("expected a label refusal, got {other:?}"),
+    }
+    match round_trip(decoy, upper, Err(rustix::io::Errno::ACCESS), Ok(root)) {
+        Err(ProbeError::Label(why)) => assert!(
+            why.starts_with("reading the label of / again failed"),
+            "{why}"
+        ),
+        other => panic!("expected a label refusal, got {other:?}"),
+    }
+}
+
 #[test]
 fn without_a_detached_mount_the_probe_writes_nothing() {
     // The context comes first: when the kernel cannot give one, the probe
@@ -409,7 +518,7 @@ fn without_a_detached_mount_the_probe_writes_nothing() {
     // to try an overlay would be a mount the system can see.
     let dir = tempfile::tempdir().unwrap();
     let refused = Err(std::io::Error::from_raw_os_error(nix::libc::ENOSYS));
-    match probe_upper_capabilities(dir.path(), refused) {
+    match probe_upper_capabilities(dir.path(), refused, Path::new("/"), Labels::BestEffort) {
         Err(ProbeError::NoDetachedMount(e)) => {
             assert_eq!(e.raw_os_error(), Some(nix::libc::ENOSYS));
         }
@@ -429,7 +538,12 @@ fn unused_context(dir: &Path) -> std::io::Result<OwnedFd> {
 fn a_missing_hidden_root_is_a_scaffold_error_and_creates_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("absent");
-    match probe_upper_capabilities(&root, unused_context(dir.path())) {
+    match probe_upper_capabilities(
+        &root,
+        unused_context(dir.path()),
+        Path::new("/"),
+        Labels::BestEffort,
+    ) {
         Err(ProbeError::Scaffold(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
         other => panic!("expected a scaffold error, got {other:?}"),
     }
@@ -917,12 +1031,138 @@ mod kernel_tests {
             let hidden = ScratchTmpfs::new("");
             let watch = MountTableWatch::start();
             assert!(matches!(
-                probe_upper_capabilities(hidden.path(), overlay_context()),
+                probe_upper_capabilities(
+                    hidden.path(),
+                    overlay_context(),
+                    Path::new("/"),
+                    Labels::BestEffort
+                ),
                 Err(ProbeError::Missing(MissingCapability::TrustedXattr))
             ));
             let left: Vec<_> = std::fs::read_dir(hidden.path()).unwrap().collect();
             assert!(left.is_empty(), "the probe left {left:?}");
             watch.assert_unchanged("after the probe");
+        });
+    }
+
+    /// Where the host runs SELinux.
+    const REQUIRED: Labels = Labels::Required(crate::session::labels::Reason::SelinuxRunning);
+    /// The label Fedora's policy gives `/`, as it is stored: with its NUL.
+    const ROOT_LABEL: &[u8] = b"system_u:object_r:root_t:s0\0";
+
+    /// A fresh tmpfs whose root carries no label, on which the namespace's
+    /// root writes `security.selinux` as given. Skips on a host whose kernel
+    /// labels new files itself (SELinux active): there it checks each label
+    /// against the loaded policy, which needs a VM with that policy.
+    fn tmpfs_without_selinux() -> ScratchTmpfs {
+        let tmpfs = ScratchTmpfs::new("");
+        match label_of(tmpfs.path()) {
+            Err(rustix::io::Errno::NODATA) => tmpfs,
+            Ok(found) => crate::test_support::skip_host(&format!(
+                "the kernel labels new files on this host ({}): SELinux is active",
+                String::from_utf8_lossy(&found).trim_end_matches('\0')
+            )),
+            Err(errno) => panic!("the label of a fresh tmpfs: {errno}"),
+        }
+    }
+
+    /// A fresh ramfs, which stores no extended attributes, below `scratch`.
+    fn ramfs(scratch: &ScratchTmpfs) -> PathBuf {
+        let dir = scratch.mkdir("ramfs");
+        if let Err(errno) = nix::mount::mount(
+            Some("ramfs"),
+            &dir,
+            Some("ramfs"),
+            nix::mount::MsFlags::empty(),
+            None::<&str>,
+        ) {
+            crate::test_support::skip(&format!("cannot mount a ramfs in this namespace: {errno}"));
+        }
+        dir
+    }
+
+    /// The label of `decoy` set to `label`.
+    fn set_label(decoy: &Path, label: &[u8]) {
+        rustix::fs::lsetxattr(
+            decoy,
+            labels::LABEL_XATTR,
+            label,
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap_or_else(|e| panic!("label {}: {e}", decoy.display()));
+    }
+
+    #[test]
+    fn the_trial_upper_takes_the_decoy_roots_label_and_keeps_it() {
+        let _ = Rerun::new(crate::test_path!(
+            the_trial_upper_takes_the_decoy_roots_label_and_keeps_it
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let decoy = tmpfs_without_selinux();
+            set_label(decoy.path(), ROOT_LABEL);
+            let hidden = ScratchTmpfs::new("");
+            for labels in [REQUIRED, Labels::BestEffort] {
+                let upper = hidden.mkdir(&format!("{labels:?}"));
+                probe_label(decoy.path(), &upper, labels).expect("the label round trip");
+                assert_eq!(label_of(&upper).unwrap(), ROOT_LABEL, "{labels:?}");
+            }
+            // The decoy root was only read.
+            assert_eq!(label_of(decoy.path()).unwrap(), ROOT_LABEL);
+        });
+    }
+
+    #[test]
+    fn a_hidden_filesystem_without_labels_fails_where_they_are_required() {
+        let _ = Rerun::new(crate::test_path!(
+            a_hidden_filesystem_without_labels_fails_where_they_are_required
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let decoy = tmpfs_without_selinux();
+            set_label(decoy.path(), ROOT_LABEL);
+            let hidden = ScratchTmpfs::new("");
+            let upper = ramfs(&hidden);
+
+            match probe_label(decoy.path(), &upper, REQUIRED) {
+                Err(ProbeError::Label(why)) => assert_eq!(
+                    why,
+                    format!(
+                        "SELinux runs on this host (selinuxfs is mounted), so {0} must carry \
+                         the SELinux label of {1}, but the filesystem of {0} cannot store labels",
+                        upper.display(),
+                        decoy.path().display()
+                    )
+                ),
+                other => panic!("expected the label refusal, got {other:?}"),
+            }
+            // Where nothing reads a label, the copy is best effort, as at the
+            // entry.
+            probe_label(decoy.path(), &upper, Labels::BestEffort).expect("best effort");
+        });
+    }
+
+    #[test]
+    fn a_decoy_root_without_a_label_fails_where_labels_are_required() {
+        let _ = Rerun::new(crate::test_path!(
+            a_decoy_root_without_a_label_fails_where_labels_are_required
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let decoy = tmpfs_without_selinux();
+            let hidden = ScratchTmpfs::new("");
+            let upper = hidden.mkdir("upper");
+
+            match probe_label(decoy.path(), &upper, REQUIRED) {
+                Err(ProbeError::Label(why)) => assert!(
+                    why.ends_with(&format!("but {} has no label", decoy.path().display())),
+                    "{why}"
+                ),
+                other => panic!("expected the label refusal, got {other:?}"),
+            }
+            // Best effort leaves the upper as it was.
+            probe_label(decoy.path(), &upper, Labels::BestEffort).expect("best effort");
+            assert_eq!(label_of(&upper), Err(rustix::io::Errno::NODATA));
         });
     }
 }

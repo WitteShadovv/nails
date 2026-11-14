@@ -261,8 +261,16 @@ pub fn build_registry<F: Filesystem>(
 
     registry.add_check(Box::new(SymlinkSupportCheck::new(hidden_root.clone())));
 
-    // The hidden filesystem must host the root overlay's upper.
-    registry.add_check(Box::new(UpperFsCapabilityCheck::new(hidden_root.clone())));
+    // The hidden filesystem must host the root overlay's upper, and keep the
+    // SELinux label the entry copies onto it where the activation requires
+    // one: the same rule, from the same host facts.
+    registry.add_check(Box::new(
+        UpperFsCapabilityCheck::new(hidden_root.clone())
+            .labels(crate::session::labels::Labels::for_host(
+                inputs.host_profile.as_ref(),
+            ))
+            .labelled_like(paths.root.clone()),
+    ));
 
     // Refuses discards reaching the hidden volume (fail-closed); the other
     // deniability hazards of the detected backend only warn. The operator can
