@@ -1691,9 +1691,11 @@ afterwards:
   reads them without changing their access times; a link on the way, such as
   NixOS's `/etc/zshrc`, is followed, which can change the link's (see
   [What `check` touches](#what-check-touches)). bash's files it reads for
-  `history -a` or `history -w` in a file that names `PROMPT_COMMAND`, a line
-  ending in a backslash going on in the next. zsh's it reads as zsh does and
-  fails closed where it cannot follow them:
+  `history -a` or `history -w` in a file that names `PROMPT_COMMAND`, outside
+  comments as bash reads them (from a `#` that starts a word, after a space,
+  a tab or an operator, to the end of its line, a backslash at its end too),
+  a line whose code ends in a backslash going on in the next. zsh's it reads
+  as zsh does and fails closed where it cannot follow them:
 
   - in zsh's order, once for each home the shell can run with (for the
     shell you typed the command into, the one its environment names, and a
@@ -1844,7 +1846,51 @@ afterwards:
     string or in a line a key types, which runs where zsh is at its top
     level, and a signal that may reach the shell's process (`kill -HUP $$`,
     `kill 0`, a pid an expansion makes, `pkill`, `killall`), from a `$(...)`
-    too; `ERR_EXIT` ends the shell without writing the file and passes. A
+    too; `ERR_EXIT` ends the shell without writing the file and passes. So is
+    a job your files start, at their top or in any function, that may run on
+    after them and signal the shell later (zsh ends on `SIGHUP` or `SIGALRM`
+    and writes the file then): a list in the background (`&`, `&!`, `&|`,
+    after `&&` and `|` too), a process substitution (`<(...)`, `>(...)`), a
+    job a `$(...)` leaves running, what `nohup`, `setsid`, `daemonize`,
+    `start-stop-daemon`, `systemd-run`, `at` and `batch` start, and a job the
+    code a shell is given with `-c` starts
+    (`sh -c '(sleep 3; kill -HUP $PPID) &'`, code an expansion makes there a
+    doubt), where it may signal the shell's process (`kill -HUP $$`, `pkill`,
+    a pid an expansion makes), runs code the check does not read as the job's
+    (a `source`, an `eval` of an expansion, a command whose name an expansion
+    makes), or runs a command by a name that may be an outside program, which
+    may signal its parent, the shell: any but a builtin of zsh's (not one of a
+    module zsh does not load as its name is first run, nor one a file
+    disables, nor `zpty` or `clone`) and a function or an alias your files
+    define or autoload whose code, and that of each it runs, holds none of
+    that. So `{ sleep 3; kill -HUP $$ } &!` and
+    `( sleep 1; zcompile ~/.zcompdump ) &!` are doubts, and
+    `{ zcompile ~/.zcompdump } &!` is none. An `exit` in such a job ends the
+    job, in which zsh writes no line typed after it started. The line a widget
+    gives zsh to run is read too, as zsh runs what the line editor holds as a
+    widget accepts the line: a value a function gives `BUFFER` as written
+    (`BUFFER=exit` in a wrapper of `accept-line`, in `zle-line-init` or in
+    `zle-line-finish`) is read as a line typed, and is a doubt where zsh may
+    expand history in it (a `!`, a `^` that starts it); any other way a
+    function sets the line (`LBUFFER=exit`, `RBUFFER=`, `BUFFER=$c`,
+    `BUFFER+=x`, `local BUFFER=exit`, `read BUFFER`, `print -v BUFFER`) and a
+    widget of zsh's own that a function runs and that may put other text in
+    the line (`zle up-history`, `zle .yank`, `zle .kill-word`) are doubts
+    should a widget run that function; a line of your files that sets the line
+    where the check reads no such assignment (`: ${BUFFER:=exit}`,
+    `for BUFFER in ...`) is a doubt wherever it stands, and so is a `zle -A`
+    that makes the keys you type run such a widget
+    (`zle -A up-history self-insert`). A widget that accepts, redraws, lists,
+    beeps, drops the line, moves the cursor or switches how keys type is none,
+    and so is one the files make (`zle -N name`), whose code the check reads;
+    one that inserts the keys typed or completes or expands the word at the
+    cursor is none where no file sets the line as written (`BUFFER=exi`, which
+    `zle expand-or-complete` may make `exit`). The lines `zle -U`, `print -z`
+    and `bindkey -s` type are doubts too where zsh may expand history in them.
+    So a wrapper of `accept-line` that only accepts the line passes, and zsh's
+    own `up-line-or-beginning-search` made a widget
+    (`zle -N up-line-or-beginning-search`) is a doubt, as it fetches a line
+    from the history. A
     global alias is
     a doubt where a word of the code the check reads holds its name beyond its
     definition, as zsh puts its value in place of that word (`function X`,
@@ -1975,15 +2021,26 @@ afterwards:
     leaves the home's files out. One in `/etc` does not, as a zsh reads its
     stage's file in `/etc` or in `/etc/zsh`, as it was built, which the check
     does not know, nor one in `.zprofile` or `.zlogin` for a shell it cannot
-    tell is a login shell. The check takes such a `.zshenv` for one zsh reads
-    and its first command for one zsh runs, also where you cannot read the
-    file or a parse error later on that line stops zsh first, two cases it
-    does not see (see the limits below). A `~` a quote or a backslash keeps
-    (`ZDOTDIR="~/.zd"`, `\~/.zd`) is no home but a path below the working
-    directory, as zsh expands no `~` there, a doubt, and a word with a quote
-    or a backslash before its `=` (`"ZDOTDIR=$HOME/.zd"`) assigns nothing, as
-    zsh runs it as a command's name. An assignment, a declaration or an
-    `unset` holds only where its builtin runs as the check reads it: a
+    tell is a login shell, nor one in a file your files source. zsh opens a
+    user's file as the user it runs as and skips one it cannot open without a
+    word, so the check takes a file for one zsh reads only where that user
+    owns it, its owner may read it by its mode, and it is no link (the owner's
+    bits decide what the owner may do, whatever an access list says); a file
+    that is a link, another user's (root's, as `sudo $EDITOR ~/.zshenv` can
+    leave it) or one its owner may not read, and a shell whose user the check
+    cannot read, leave the home's files in. And zsh parses the whole line a
+    command stands on before it runs any of it, and runs nothing of a line it
+    cannot parse, so the assignment must stand alone on the file's first line
+    that holds code (a comment after it aside), or in an `export`, `typeset`,
+    `declare`, `readonly`, `local` or `unset` (after `builtin` or `noglob`
+    too) of such assignments and names, with no flag: `ZDOTDIR=~/.zd; then`,
+    `export -x ZDOTDIR=~/.zd`, which zsh 5.9 to 5.9.2 run nothing of, and
+    `ZDOTDIR=~/.zd; :` leave the home's files in. A `~` a quote or a backslash
+    keeps (`ZDOTDIR="~/.zd"`, `\~/.zd`) is no home but a path below the
+    working directory, as zsh expands no `~` there, a doubt, and a word with a
+    quote or a backslash before its `=` (`"ZDOTDIR=$HOME/.zd"`) assigns
+    nothing, as zsh runs it as a command's name. An assignment, a declaration
+    or an `unset` holds only where its builtin runs as the check reads it: a
     function or a regular alias your files define or autoload named like a
     builtin by which the check reads a setting (the `typeset` family,
     `unset`, `source`, `.`, `builtin`, `command` and the like, as
@@ -2131,7 +2188,14 @@ afterwards:
     know that program to write the files it names, it does not see;
   - an option counts as on wherever a file zsh reads names it, outside a line
     that is a comment (where a file sets `histchars`, whose third character
-    starts a comment in place of `#`, such a line may run, a doubt): a `setopt`,
+    starts a comment in place of `#`, such a line may run, a doubt; the check
+    parts words as zsh does, at a space or a tab alone, and keeps any other
+    white space in the word, a vertical tab, a form feed, a carriage return
+    (of a Windows line end), a no-break space and Unicode's other spaces, so
+    that a `#` after one starts no comment and a path that ends in one, as
+    `ZDOTDIR=~/.zd` with a Windows line end does, names another, and a file
+    that holds bytes that are no UTF-8, which zsh keeps as they are, is a
+    doubt): a `setopt`,
     an `unsetopt`, Home Manager's `set_opts=(... NO_SHARE_HISTORY ...)` array,
     an alias, a test or a comment
     at the end of a line, and in a word as brace expansion may make it
@@ -2246,20 +2310,16 @@ afterwards:
   named like another word you type (the value you give an option or a
   setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
   program named like the command you type that zsh finds first in `PATH` or
-  that `hash` names (a `sudo` script in `~/bin`), a program a hook runs that
-  ends the shell by itself (one that signals its parent), a job or a program
-  the startup files start that signals the shell later, which ends it
-  (`{ sleep 3; kill -HUP $$ } &!`, or one through `nohup sh -c`), a widget
-  that rewrites the line zsh runs (`BUFFER=exit` in a wrapper of
-  `accept-line`, in `zle-line-init` or in `zle-line-finish`), an assignment
-  of `ZDOTDIR` or `XDG_CONFIG_HOME` as the first command of a `.zshenv` that
-  zsh does not run (a file you cannot read, as `sudo $EDITOR ~/.zshenv` can
-  leave it under `umask 077`, or a first line with a parse error after the
-  assignment), a vertical tab, a form feed, a carriage return (a Windows
-  line end), a no-break space or another Unicode space outside quotes, which
-  it takes for a space where zsh keeps it in the word (so a `#` after it
-  starts no comment for zsh), a file a bash
-  startup file sources, or a shell started with other startup files
+  that `hash` names (a `sudo` script in `~/bin`), a program a hook or the
+  startup files run in the foreground that ends the shell by itself or leaves
+  a process of its own running that signals the shell later (one that signals
+  its parent, a script, `env setsid sh -c ...`: it reads the code a shell is
+  given with `-c` and what `nohup`, `setsid` and the like start, where they
+  run it themselves), a key you type a line with that a file binds to another
+  widget than `self-insert` (`bindkey o beginning-of-history`), which may
+  change the line you type, a security module (SELinux, AppArmor) that keeps
+  zsh from opening a startup file you own and may read by its mode, a file a
+  bash startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), a `TMOUT` the
   environment of such a shell holds, nor a history tool
@@ -2300,10 +2360,11 @@ afterwards:
   nothing it read changed after it started (with its history file in your
   home, only with `HIST_FCNTL_LOCK` on, see above): zsh's default, under which a zsh
   writes its history only as it ends, which the kill at activation keeps it
-  from doing, unless it ends before that. A hook that may end it and a
-  `TMOUT` above 0 make the check warn (see above), a job the startup files
-  start that signals it later and a widget that rewrites the line to `exit`
-  do not (see the limits above), and a shell you end
+  from doing, unless it ends before that. A hook that may end it, a job the
+  startup files start that may signal it later, a widget that may give it a
+  line that ends it and a `TMOUT` above 0 make the check warn (see above), a
+  program that leaves a process of its own that signals it does not (see the
+  limits above), and a shell you end
   yourself before activation (`exit`, Ctrl-D, closing its window, which sends
   it SIGHUP) writes its history then, so leave the shell you typed in open
   until activation.

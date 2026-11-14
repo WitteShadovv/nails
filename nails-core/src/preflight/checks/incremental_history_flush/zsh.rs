@@ -99,7 +99,12 @@
 //! history file as it ends, so a hook that may end it (`exit`, `exec zsh`, a
 //! `kill -HUP $$`, from a command substitution too) and a `TMOUT` above 0,
 //! with which zsh ends at a prompt left waiting, are doubts too
-//! ([`walk::ends`]), and so is what a command substitution in a hook writes.
+//! ([`walk::ends`]), and so is what a command substitution in a hook writes,
+//! a job the files start that may signal the shell later
+//! (`{ sleep 3; kill -HUP $$ } &!`, [`jobs`]), and a line a widget may give
+//! zsh to run that may end it or that the check cannot read exactly
+//! (`BUFFER=exit`, `LBUFFER=...`, `zle up-history`, [`edits`]). A file that
+//! holds bytes that are no UTF-8, which zsh keeps as they are, is a doubt.
 //! A builtin's name runs an outside program, which gets the words and the
 //! input a hook gives it, after `command` (unless `POSIX_BUILTINS` is on,
 //! which the check does not read), after a `disable` of it, and where the
@@ -118,7 +123,9 @@
 //! doubt. A path that names `ZDOTDIR` or `XDG_CONFIG_HOME` is read for each
 //! value either may hold ([`paths`]): `XDG_CONFIG_HOME` may also be empty, its
 //! default, and the one the shell's environment gives stays beside those the
-//! files set, unless a file sets it before anything that may stop the file.
+//! files set, unless a user's file that zsh certainly opens
+//! ([`Reader::opens`]) sets it before anything that may stop the file, alone
+//! on its first line that holds code, which zsh then certainly parses.
 //! An assignment before a command (`ZDOTDIR=/x cmd`), which zsh keeps for
 //! that command alone, may set it and need not.
 

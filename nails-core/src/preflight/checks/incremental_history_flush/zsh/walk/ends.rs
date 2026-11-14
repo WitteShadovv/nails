@@ -16,7 +16,9 @@
 //! subshell that exits, and a signal reaches the shell. And anywhere, a `TMOUT`
 //! above 0: zsh ends once a prompt has waited that many seconds
 //! (Src/signals.c), with a `TRAPALRM` too, which a later file or a hook may
-//! take away.
+//! take away. A job the files start that may signal the shell later is read
+//! in [`super::jobs`], and a line a widget may give zsh to run in
+//! [`super::widgets`].
 
 use super::super::lexer::Word;
 use super::{Event, Frame, Walker};

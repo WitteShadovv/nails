@@ -1648,9 +1648,14 @@ of this changelog for that version becomes the release notes word for word, and
   here-document that runs to the end of the file, an expansion that holds what it cannot read as
   zsh does (a `case` in a `$(...)`, a `${ command }`), a command whose name an expansion, brace
   expansion or a glob makes or may make (`$cmd`, `ali$s`), a startup file that is there but cannot
-  be read, which it passed over before, and a shell other than bash, zsh, fish and dash. The lexer
-  reads zsh's code as zsh does where that matters for what it can hide, white space aside (see
-  Known issues): a `<<` in `(( ... ))` is a shift and a quote there a character, a
+  be read, which it passed over before, a file that holds bytes that are no UTF-8, which zsh keeps
+  as they are (in a path too), and a shell other than bash, zsh, fish and dash. The lexer
+  reads zsh's code as zsh does where that matters for what it can hide: it parts words at a space or
+  a tab alone, as zsh does, and keeps any other white space in the word (a vertical tab, a form
+  feed, a carriage return of a Windows line end, a no-break space, Unicode's other spaces), so that
+  a `#` after one starts no comment and `ZDOTDIR=~/.zd` with a Windows line end names `~/.zd\r`, as
+  zsh 5.9 to 5.9.2 read them where the check took them for a space; a `<<` in `(( ... ))` is a shift
+  and a quote there a character, a
   `)` or `}` in quotes closes nothing, a `\'` does not end a `$'...'`, `$$` is a parameter, glob
   flags such as `(#i)` start a word, a command in an arm of a `case` starts after the pattern's `)`,
   the number of a descriptor before a redirection is no command, and zsh's short forms
@@ -1661,7 +1666,10 @@ of this changelog for that version becomes the release notes word for word, and
   was read as code the check follows counts as on, for an option, adds a directory the check cannot
   follow, for `fpath`, or makes the check warn that it cannot tell, so a `source` or `eval` in an
   `echo`, a string, an alias or a here-document, or an `eval` of what a command prints, warns too.
-  bash's files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a
+  bash's files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, outside comments
+  as bash reads them (from a `#` that starts a word after a space, a tab or an operator to the end
+  of its line, a backslash at its end too; bash 5.3 ran the `PROMPT_COMMAND` after `:\v#;` and on
+  the line after `# ... \`, which the check took for comments), a line whose code ends in a
   backslash going on in the next. It still only warns: such a shell has written the decoy commands
   before activation starts, so a refusal would take none of them back, and for a shell that writes a
   line once its command ends, a refused activation would add its own.
@@ -1747,7 +1755,27 @@ of this changelog for that version becomes the release notes word for word, and
   command, a `return` in a trap's string or a line a key types, and a signal that may reach the
   shell's process (`kill -HUP $$`, `kill 0`, a pid an expansion makes, `pkill`, `killall`), from a
   `$(...)` too; zsh 5.9 to 5.9.2 wrote the line with `preexec() { exit }`, `bye`, `kill -HUP $$`, a
-  `TRAPZERR` that exits and each of the others. A builtin's name runs an outside program, which gets
+  `TRAPZERR` that exits and each of the others. So is a job the files start that may run on after
+  them and signal the shell later, on which zsh ends and writes the file (a list in the background,
+  `&`, `&!` or `&|`, a process substitution, a job a `$(...)` leaves running, what `nohup`,
+  `setsid`, `daemonize`, `start-stop-daemon`, `systemd-run`, `at` and `batch` start, and a job the
+  code a shell is given with `-c` starts), where its code may signal the shell's process, runs code
+  the check does not read as the job's, or runs a command that may be an outside program, which may
+  signal its parent, the shell: any but a builtin of zsh's and a function or an alias whose code
+  holds none of that; zsh 5.9 to 5.9.2 wrote the lines with `{ sleep 3; kill -HUP $$ } &!`,
+  `( sleep 3; pkill -HUP -P $PPID zsh ) &!`, `exec {fd}< <(sleep 3; kill -HUP $$)`,
+  `nohup sh -c 'sleep 3; kill -HUP $PPID' &!`, `sh -c '(sleep 3; kill -HUP $PPID) &'`, in a sourced
+  file and in a function the files run, where the check passed. And the line a widget gives zsh to
+  run is read: a value a function gives `BUFFER` as written as a line typed, a doubt where zsh may
+  expand history in it (`!1`), and any other way a function sets the line (`LBUFFER=exit`,
+  `BUFFER=$c`, `local BUFFER=exit`, `print -v BUFFER`, a line that sets it where the walk reads no
+  such assignment) and a widget of zsh's own a function runs that may put other text in it
+  (`zle .up-history`, `zle .yank`, `zle .kill-word`, one that completes the word at the cursor where
+  a file sets the line as written) as a doubt should a widget run the function; zsh 5.9 to 5.9.2 ran
+  `exit` and wrote the lines typed before it with `BUFFER=exit` in a wrapper of `accept-line`, in
+  `zle-line-init` and in `zle-line-finish`, `LBUFFER=exit`, `BUFFER=$c` and the others, where the
+  check passed. The lines `zle -U`, `print -z` and `bindkey -s` type are doubts too where zsh may
+  expand history in them. A builtin's name runs an outside program, which gets
   its words, after `command` but where `POSIX_BUILTINS` is on (`command print -r -- "$1"`), after a
   `disable` of it (`disable print`, `disable -m 'p*'`) and for a builtin of a module zsh does not
   load as the name is first run (`stat`, `strftime`), so in a hook such a name counts as that
@@ -1899,11 +1927,19 @@ of this changelog for that version becomes the release notes word for word, and
   unset parameter under `NO_UNSET`, a read-only one, a bad subscript, a division by zero) that may
   come before the assignment, and then reads the home's files: zsh 5.9 to 5.9.2 did so with each,
   where the check read only `ZDOTDIR`'s. Only an assignment that is the first command of a user's
-  file zsh certainly reads, with a value whose expansion cannot fail, drops them (the check takes a
-  `.zshenv` you cannot read, and a first command a parse error later on its line stops, for ones
-  zsh reads and runs: see Known issues): not one in `/etc`,
+  file zsh certainly reads, with a value whose expansion cannot fail, drops them: not one in `/etc`,
   as a zsh reads its stage's file in `/etc` or in `/etc/zsh`, as it was built, nor one in
-  `.zprofile` or `.zlogin` for a shell the check cannot tell is a login shell. A `~` a quote or a
+  `.zprofile` or `.zlogin` for a shell the check cannot tell is a login shell, nor one in a file the
+  files source. As zsh opens a user's file as the user it runs as and skips one it cannot open
+  without a word, the check takes a file for one zsh reads only where that user (the shell's file
+  system uid, or yours for your login shell) owns it, its owner may read it by its mode and it is no
+  link; and as zsh parses the whole line a command stands on before it runs any of it, the
+  assignment must stand alone on the file's first line that holds code, or in an `export`,
+  `typeset`, `declare`, `readonly`, `local` or `unset` (after `builtin` or `noglob` too) of such
+  assignments and names alone, with no flag. With a `.zshenv` of mode 000 or 044, one behind a link
+  into a folder its user cannot search, and with `ZDOTDIR=~/.zd; then`, `ZDOTDIR=~/.zd;;`,
+  `ZDOTDIR=~/.zd; print >` or `export -x ZDOTDIR=~/.zd`, zsh 5.9 to 5.9.2 read `~/.zshrc` and wrote
+  each line where the check read only `~/.zd`'s. A `~` a quote or a
   backslash keeps (`ZDOTDIR="~/.zd"`, `\~/.zd`, `source "~/x.zsh"`) is a path below the working
   directory, a doubt, and a word with a quote or a backslash before its `=` assigns nothing, as zsh
   runs it as a command's name (`"ZDOTDIR=$HOME/.zd"`): with each, zsh 5.9 to 5.9.2 read another
@@ -2778,17 +2814,15 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Known issues
 
-- The history check (`incremental-history-flush`) still passes four kinds of zsh setup with which
-  zsh 5.9 to 5.9.2 wrote the typed lines to its history file in tests: a job or a program the
-  startup files start that signals the shell later (`{ sleep 3; kill -HUP $$ } &!`, or one
-  through `nohup sh -c`), which ends it; a widget that rewrites the line zsh runs (`BUFFER=exit`
-  in a wrapper of `accept-line`, in `zle-line-init` or in `zle-line-finish`); an assignment of
-  `ZDOTDIR` or `XDG_CONFIG_HOME` as the first command of a `.zshenv` that zsh does not run (a file
-  you cannot read, as `sudo $EDITOR ~/.zshenv` can leave it under `umask 077`, or a first line
-  with a parse error after the assignment); and a vertical tab, a form feed, a carriage return (a
-  Windows line end), a no-break space or another Unicode space outside quotes, which the check
-  takes for a space where zsh keeps it in the word, so that a `#` after it starts no comment for
-  zsh. With a zsh started as `zsh -f` only `/etc/zshenv` can hold one. See docs/operator-guide.md.
+- The history check (`incremental-history-flush`) does not see a program the startup files or a
+  hook run in the foreground that leaves a process of its own running that signals the shell later,
+  which ends it and makes it write its history (a script, or `env setsid sh -c ...`; it reads the
+  code a shell is given with `-c` and what `nohup`, `setsid` and the like start where they run it
+  themselves), a key you type a line with that a file binds to another widget than `self-insert`
+  (`bindkey o beginning-of-history`), which may change the line you type into one that ends the
+  shell, nor a security module (SELinux, AppArmor) that keeps zsh from opening a startup file you
+  own and may read by its mode. With a zsh started as `zsh -f` only `/etc/zshenv` can hold one. See
+  docs/operator-guide.md.
 - A switch into or out of a hidden session can stop halfway: the programs have closed, but the
   screen stays dark or still and no login screen comes. Once the old system's units have stopped,
   PID 1 can go to sleep with work still queued and wait until something wakes it. This matches a
