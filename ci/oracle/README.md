@@ -10,8 +10,9 @@ night it images real ext4 decoy roots in the `oracle-images` E2E test, runs
 `run-scan.sh` over them in `ORACLE_IMAGES_DIR` mode and renders the verdict,
 its `scan-btrfs` job runs `run-scan.sh` over the synthetic btrfs images
 `make-sample-images.sh` builds, and its `produce-btrfs` and `scan-btrfs-real`
-jobs image a real Fedora 44 btrfs decoy and scan it (see
-[Real btrfs images: a Fedora 44 decoy](#real-btrfs-images-a-fedora-44-decoy)).
+jobs image two real btrfs decoys, Fedora 44 and arch-boxes, and scan them (see
+[Real btrfs images: a Fedora 44 decoy](#real-btrfs-images-a-fedora-44-decoy)
+and [an arch-boxes decoy](#real-btrfs-images-an-arch-boxes-decoy)).
 plaso cannot open btrfs, so a btrfs scan runs no timeline and its verdict is
 `partial` at best, never `clean` (see [btrfs: no timeline](#btrfs-no-timeline)). `oracle-nightly.yml` in this
 directory is a template for the synthetic run alone; it is not installed under
@@ -346,6 +347,22 @@ carved and `after` lost is residue as before. A login record file found empty
 that the digest manifest recorded as holding data stops the scan, since its
 records would be lost. The same holds on ext4, where whether a record is
 carved also depends on where its blocks lie.
+
+### Real btrfs images: an arch-boxes decoy
+
+The `produce-btrfs` job runs `arch-boxes-oracle-images` as well, the same
+driver on the stock arch-boxes basic image. Its root is a btrfs filesystem
+compressed with zstd that keeps every file in its top level, next to a vfat
+ESP that systemd's GPT auto-generator mounts on demand at `/efi` and a BIOS
+boot partition. Arch is not admitted yet either, so the driver runs a
+test-only build of the release binary in which only the Arch row of the
+family table is admitted, never released. The decoy is prepared and imaged
+as the Fedora one is, and before the first image the driver also makes the
+swap line of its fstab (`/swap/swapfile`) `noauto` and turns the swap off:
+the swap check refuses an active disk swap, and no boot of the run turns it
+on again. `scan-btrfs-real` scans its images as it scans Fedora's. With every
+file in the top level, the restore channel keys a file by its own path
+(`/etc/fstab`), and the disk's partitions are compared as on Fedora.
 
 ### What it does not see
 
