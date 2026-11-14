@@ -34,6 +34,13 @@
 //! encryption is off), and the names tell such a device from a card in a slot
 //! or a docked one.
 //!
+//! A place that is not there says nothing: a host without an IOMMU or a
+//! Thunderbolt bus, a kernel that reports no group type. One that is there but
+//! cannot be read, the command line, an IOMMU directory or group type, the
+//! Thunderbolt devices or their attribute, may show DMA that is not remapped:
+//! where the check would pass, or skip, it warns that it could not confirm the
+//! host restricts DMA, naming each.
+//!
 //! It **warns, never fails**: real DMA protection lives in firmware (VT-d /
 //! AMD-Vi and "Kernel DMA Protection" in BIOS/UEFI setup, sometimes a kernel
 //! command-line flag and a reboot), NVRAM and boot-configuration changes NAILS
@@ -45,6 +52,7 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::kernel_cmdline::{self, BoolSpellings};
+use crate::filesystem::automount::describe;
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
@@ -491,9 +499,9 @@ impl DmaProtectionCheck {
     /// the others safe. A kernel too old to report a type falls back to
     /// presence, never downgrading an IOMMU it cannot inspect. The devices of
     /// the identity-mapped groups are collected for the warning to name.
-    fn sys_iommu<F: Filesystem>(&self, fs: &F) -> Option<SysIommu> {
-        let class = fs.list_directory(&self.iommu_class_dir).ok();
-        let groups = fs.list_directory(&self.iommu_groups_dir).ok();
+    fn sys_iommu<F: Filesystem>(&self, fs: &F, unread: &mut Unread) -> Option<SysIommu> {
+        let class = unread.listing(fs, &self.iommu_class_dir);
+        let groups = unread.listing(fs, &self.iommu_groups_dir);
         if class.is_none() && groups.is_none() {
             return None;
         }
@@ -502,7 +510,7 @@ impl DmaProtectionCheck {
         let (mut remapped, mut identity) = (0, 0);
         let mut devices = Vec::new();
         for group in &group_entries {
-            if let Ok(kind) = fs.read_file_content(&group.join(IOMMU_GROUP_TYPE)) {
+            if let Some(kind) = unread.text(fs, &group.join(IOMMU_GROUP_TYPE)) {
                 match kind.trim() {
                     "DMA" | "DMA-FQ" | "unmanaged" | "blocked" => remapped += 1,
                     "identity" => {
@@ -531,13 +539,13 @@ impl DmaProtectionCheck {
     /// The Thunderbolt/USB4 DMA-protection posture, from the
     /// `iommu_dma_protection` attribute of every controller. A single controller
     /// reporting `0` is decisive; an absent directory or attribute is tolerated.
-    fn thunderbolt_protection<F: Filesystem>(&self, fs: &F) -> TbProtection {
+    fn thunderbolt_protection<F: Filesystem>(&self, fs: &F, unread: &mut Unread) -> TbProtection {
         let mut saw_protected = false;
-        for entry in fs
-            .list_directory(&self.thunderbolt_devices_dir)
+        for entry in unread
+            .listing(fs, &self.thunderbolt_devices_dir)
             .unwrap_or_default()
         {
-            let Ok(value) = fs.read_file_content(&entry.join(TB_DMA_PROTECTION)) else {
+            let Some(value) = unread.text(fs, &entry.join(TB_DMA_PROTECTION)) else {
                 continue;
             };
             match value.trim() {
@@ -561,6 +569,58 @@ impl DmaProtectionCheck {
             Err(_) => Lockdown::Unavailable,
         }
     }
+}
+
+/// What the check could not read that may change its answer: a place that is
+/// there but cannot be read, where an absent one (no IOMMU, no Thunderbolt
+/// bus, a kernel that reports no group type) says nothing. Each is named as
+/// [`describe`] words it.
+#[derive(Debug, Default)]
+struct Unread(Vec<String>);
+
+impl Unread {
+    /// The entries of `dir`, `None` when it is not there or cannot be listed.
+    fn listing<F: Filesystem>(&mut self, fs: &F, dir: &Path) -> Option<Vec<PathBuf>> {
+        self.kept(dir, fs.list_directory(dir))
+    }
+
+    /// The text of `path`, `None` when it is not there or cannot be read.
+    fn text<F: Filesystem>(&mut self, fs: &F, path: &Path) -> Option<String> {
+        self.kept(path, fs.read_file_content(path))
+    }
+
+    /// The value of `read`, of `path`; where it failed for another reason
+    /// than that nothing is there, the place is kept.
+    fn kept<T>(&mut self, path: &Path, read: Result<T>) -> Option<T> {
+        match read {
+            Ok(value) => Some(value),
+            Err(error) if error.nothing_there() => None,
+            Err(error) => {
+                self.0
+                    .push(describe(&path.display().to_string(), &error).sentence);
+                None
+            }
+        }
+    }
+}
+
+/// `result`, unless it is a pass or a skip while NAILS could not read the
+/// places `unread`, any of which may show DMA that no IOMMU remaps or a
+/// Thunderbolt/USB4 controller without DMA protection: then the warning that
+/// it could not confirm the host restricts DMA, naming them.
+fn confirmed(result: CheckResult, unread: &Unread) -> CheckResult {
+    if unread.0.is_empty() || !(result.is_pass() || result.is_skipped()) {
+        return result;
+    }
+    CheckResult::warn_with(
+        format!(
+            "Could not confirm the host restricts DMA into RAM: {}. What NAILS could not read \
+             may show DMA that no IOMMU remaps, or a Thunderbolt/USB4 controller without DMA \
+             protection, which lets a DMA-capable device read all of RAM.",
+            unread.0.join("; ")
+        ),
+        firmware_advice(),
+    )
 }
 
 /// The devices of the IOMMU group `group`, by bus address, from its `devices`
@@ -590,16 +650,20 @@ impl<F: Filesystem> PreFlightCheck<F> for DmaProtectionCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let cmdline = fs.read_file_content(&self.cmdline_path).ok();
+        let mut unread = Unread::default();
+        let cmdline = unread.text(fs, &self.cmdline_path);
         let release = fs.read_file_content(&self.osrelease_path).ok();
         let spellings = BoolSpellings::of_release(release.as_deref());
         let intent = cmdline.as_deref().map_or(IommuCmdline::Unset, |cmdline| {
             parse_iommu_cmdline(cmdline, spellings)
         });
-        let iommu = iommu_state(intent, self.sys_iommu(fs));
-        let tb = self.thunderbolt_protection(fs);
+        let iommu = iommu_state(intent, self.sys_iommu(fs, &mut unread));
+        let tb = self.thunderbolt_protection(fs, &mut unread);
         let lockdown = self.lockdown(fs);
-        Ok(verdict(tb, iommu, lockdown, cmdline.is_some()))
+        Ok(confirmed(
+            verdict(tb, iommu, lockdown, cmdline.is_some()),
+            &unread,
+        ))
     }
 }
 

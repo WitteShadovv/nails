@@ -435,6 +435,65 @@ fn run_warns_when_a_thunderbolt_controller_is_unprotected() {
     assert!(result.message().contains("iommu_dma_protection=0"));
 }
 
+/// A place the verdict reads that is there but cannot be read may show DMA
+/// that is not remapped: the IOMMU groups, a group's type, the Thunderbolt
+/// devices or their attribute, the command line. Where the check passed it
+/// warns that it could not confirm, naming the place; one that is not there
+/// changes nothing.
+#[test]
+fn a_place_that_cannot_be_read_turns_a_pass_into_could_not_confirm() {
+    let hardened = || {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_CMDLINE, "intel_iommu=on\n");
+        with_active_iommu(&fs);
+        with_groups(&fs, &["DMA-FQ", "DMA-FQ"]);
+        fs
+    };
+    assert!(
+        DmaProtectionCheck::new()
+            .run(&hardened())
+            .unwrap()
+            .is_pass()
+    );
+    for path in [
+        IOMMU_GROUPS.to_string(),
+        format!("{IOMMU_GROUPS}/1/{IOMMU_GROUP_TYPE}"),
+        THUNDERBOLT_DEVICES.to_string(),
+        PROC_CMDLINE.to_string(),
+    ] {
+        let fs = hardened();
+        fs.mock_set_lookup_error(&path, std::io::ErrorKind::Other);
+        let result = DmaProtectionCheck::new().run(&fs).unwrap();
+        assert!(result.is_warn(), "{path}: {result:?}");
+        assert!(
+            result.message().starts_with(&format!(
+                "Could not confirm the host restricts DMA into RAM: NAILS cannot look up {path} ("
+            )),
+            "{path}: {result:?}"
+        );
+        assert!(result.message().contains(&power_off_line()), "{result:?}");
+
+        let fs = hardened();
+        fs.mock_set_lookup_error(&path, std::io::ErrorKind::NotFound);
+        let result = DmaProtectionCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{path}: {result:?}");
+    }
+    // A Thunderbolt controller whose attribute cannot be read.
+    let fs = hardened();
+    with_thunderbolt(&fs, "1");
+    let attribute = format!("{THUNDERBOLT_DEVICES}/domain0/{TB_DMA_PROTECTION}");
+    fs.mock_set_lookup_error(&attribute, std::io::ErrorKind::PermissionDenied);
+    let result = DmaProtectionCheck::new().run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().starts_with(&format!(
+            "Could not confirm the host restricts DMA into RAM: NAILS cannot look up \
+             {attribute}; run the command again with sudo"
+        )),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn run_passes_a_fully_dma_hardened_machine() {
     let fs = MockFilesystem::new();
