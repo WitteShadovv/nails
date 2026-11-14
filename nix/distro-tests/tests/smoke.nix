@@ -1213,6 +1213,9 @@ distroVm.buildVmTest {
         for unit, state in load_states(hidden_masked_units).items():
             if decoy_masked_units[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden root: {state}"
+            # A unit the decoy runs is masked by NAILS, at runtime; one the
+            # decoy masks itself stays masked as the decoy has it.
+            if decoy_masked_units[unit] == "loaded":
                 masked_here.append(unit)
         assert_runtime_masks("the first session", masked_here)
         assert_gpt_auto_masked("the first session", masked=True)
