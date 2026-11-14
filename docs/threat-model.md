@@ -270,6 +270,20 @@ upper changes.
   [decoy requirements](decoy-requirements.md)). For now `check` and activation
   refuse every host where SELinux runs before any of this: `lsm-status` fails
   there until NAILS chooses the SELinux domain of its units.
+- **The SELinux label of NAILS's program in RAM.** On a host whose kernel may
+  run SELinux, NAILS gives every copy of its binary that PID 1 starts its
+  steps from, in `/run`, the label of the system's programs, so that the
+  loaded policy starts those steps in its unconfined service domain rather
+  than in PID 1's confined one. It writes that label onto those copies alone,
+  in RAM, and installs nothing into the decoy's policy and writes nothing to
+  its disk for it; the copies go with the rest of the session's `/run`, the
+  last one at the decoy's first start after the way back. A way back whose
+  last step would run where the policy confines it could not take the kernel
+  log's cursor, and the decoy's journal would take in the hidden session's
+  kernel log: so `deactivate` refuses such a return, the emergency powers off
+  instead, and the activation is refused where the loaded policy would not
+  start the steps as they need (see the
+  [decoy requirements](decoy-requirements.md)).
 - **Remote state, never rolled back.** Deactivation leaves the upper on the
   hidden volume and changes nothing else. Anything the hidden session sent through a
   shared account, token or sync client lives on the remote, and a decoy sync

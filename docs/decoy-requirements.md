@@ -112,6 +112,60 @@ The decoy also has to be one the session can enter and leave:
   fail the check as they refuse the activation. The roots of the other decoy
   filesystems the session overlays and the way to your home are not tested
   before activation.
+- **The SELinux label of NAILS's own program in RAM**, where the kernel may
+  run SELinux: where the labels above must be copied, where the kernel lists
+  SELinux among its security modules (`/sys/kernel/security/lsm`) though no
+  selinuxfs is mounted, and where the host facts report SELinux while that
+  list cannot be read. PID 1 starts NAILS's own steps from a copy of its
+  binary in `/run`: the last step before each switch
+  (`systemd-soft-reboot.service`), the hidden session's watcher and sleep
+  guard, and after the way back the one-shot unit and the wtmpdb writer's
+  drop-in that make the decoy's login and boot records read as a power cycle.
+  Under SELinux a program PID 1 starts runs in the domain the loaded policy
+  gives the label of its file, and a file NAILS writes in `/run` carries the
+  label of the files there, which a targeted policy gives no domain of its
+  own: those steps would run in PID 1's domain, `init_t`, which such a policy
+  confines, and the way back's last step could not take the kernel log's
+  cursor, so the decoy's journal would take in the hidden session's kernel
+  log. So NAILS gives every such copy the label of the system's programs,
+  `system_u:object_r:bin_t:s0`, right after it writes it, reads it back, and
+  gives the session's copy that label again right before each switch. A
+  targeted policy starts a program of that label from PID 1 in
+  `unconfined_service_t`. The unit files and drop-ins name the copy as they do
+  on any other host, and NAILS installs nothing into the decoy's policy. The
+  udev rule of `[session_mounts] read_only` runs the copy too, but udevd
+  starts it, and a targeted policy gives udevd's start of a program of this
+  label no domain of its own: it runs in udevd's domain, `udev_t`. So on such
+  a host:
+  - the loaded policy must let PID 1 start a program labelled `bin_t`, give
+    that start the domain `unconfined_service_t` and let PID 1 change into it,
+    also from a `nosuid` mount, as `/run` is, and under `NoNewPrivileges=`
+    (the policy capability `nnp_nosuid_transition` on, `nnp_transition` and
+    `nosuid_transition` allowed), and NAILS must be able to ask it: selinuxfs
+    mounted, and `nails` run as root from an unconfined domain. Otherwise the
+    activation is refused before it writes anything to `/run`;
+  - `systemd-soft-reboot.service` must not set `SELinuxContext=`, or PID 1
+    starts the step in that context: the activation is refused, and so is
+    `deactivate` (a plain emergency does not ask);
+  - a copy that does not read its label back refuses the activation, which is
+    undone. On the way back `deactivate` refuses a return where the copy does
+    not read its label back or the policy would not start the step as above,
+    and names `deactivate --poweroff`; the emergency powers off instead of
+    returning in the same cases; and the copy for the decoy's first start is
+    left out with the units that would start it, so the decoy's records read
+    as they would without that fix, and `/run` is `noexec` again at once where
+    the activation had cleared it.
+
+  Elsewhere, as on a stock Debian, Ubuntu or NixOS host, no copy gets a label
+  and nothing is asked of the kernel. The tests check this against stand-ins
+  of the kernel's SELinux and on a kernel without SELinux. Of the tests in
+  this repository only Fedora's [admission
+  gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora) runs these
+  steps under an enforcing policy and checks their domains (only a dispatch of
+  the staged distribution tests runs it). The Fedora 44 and 45 images of the
+  [oracle](../ci/oracle/README.md) run a hidden session and the way back under a
+  permissive policy, without checking the domains. `nails check` does not test
+  any of this yet.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The

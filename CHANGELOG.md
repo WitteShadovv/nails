@@ -989,6 +989,32 @@ of this changelog for that version becomes the release notes word for word, and
   a label fail it as they refuse the activation. The roots of the other overlaid decoy filesystems
   and the way to the operator's home are not tested before activation; see
   docs/decoy-requirements.md.
+- Where the kernel may run SELinux, every copy of the binary in `/run` that PID 1 starts NAILS's
+  own steps from gets the label of the system's programs, `system_u:object_r:bin_t:s0`, right
+  after it is written: the copy the last step before each switch and the hidden session's watcher
+  and sleep guard start from, and the copy the way back leaves for the units that make the
+  decoy's login and boot records read as a power cycle. A copy written in `/run` carries the label
+  of the files there, from which a targeted policy starts a program in PID 1's own confined
+  domain, `init_t`; the way back's last step could then not take the kernel log's cursor, and the
+  decoy's journal would take in the hidden session's kernel log. A targeted policy starts a
+  program of the system's label from PID 1 in `unconfined_service_t`. NAILS reads each label back
+  and gives the session's copy its label again right before each switch. The activation is
+  refused, before it writes anything to `/run`, where the loaded policy would not start such a
+  program from PID 1 in `unconfined_service_t` (also from a `nosuid` mount and under
+  `NoNewPrivileges=`) or cannot be asked, and is refused and undone where the copy does not read
+  its label back or `systemd-soft-reboot.service` sets `SELinuxContext=`. `deactivate` refuses a
+  return in the same cases and names `deactivate --poweroff`, the emergency powers off instead of
+  returning where the copy does not take its label or the policy would not start the step, and
+  the way back leaves out the copy for the decoy's first start, with the units that would start
+  it, where that copy does not take its label. The unit files and drop-ins are the same on every host,
+  and nothing is installed into the decoy's policy. The kernel may run SELinux where the labels
+  of the uppers must be copied, where it lists SELinux among its security modules, and where the
+  host facts report SELinux while that list cannot be read. Elsewhere, as on a stock Debian,
+  Ubuntu or NixOS host, nothing changes. Of the tests in this repository only Fedora's admission
+  gate runs the steps under an enforcing policy and checks their domains, and only a dispatch of the
+  staged distribution tests runs it. The Fedora 44 and 45 images of the oracle run a hidden session
+  and the way back under a permissive policy, without checking the domains; see
+  docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new
