@@ -92,9 +92,11 @@ pub const TRANSITION_ARG: &str = "transition";
 /// The drop-in text that runs `binary transition` as the service's start.
 pub fn dropin_text(binary: &Path) -> String {
     format!(
-        "[Service]\nType=oneshot\nStandardInput=null\nStandardOutput=null\nStandardError=null\n\
-         ExecStart=-{} {TRANSITION_ARG}\n",
-        binary.display()
+        "[Service]\nType=oneshot\nStandardInput=null\nStandardOutput=null\nStandardError=null\n{}",
+        crate::whole_root::research_cell::service_lines(
+            "-",
+            &format!("{} {TRANSITION_ARG}", binary.display())
+        )
     )
 }
 

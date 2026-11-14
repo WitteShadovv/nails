@@ -381,13 +381,19 @@ fn unit_text(binary: &Path, switched_at: Duration, restore_noexec: bool) -> Stri
          StandardInput=null\n\
          StandardOutput=null\n\
          StandardError=null\n\
-         ExecStart=-{} {}\n\
+         {}\
          \n\
          [Install]\n\
          WantedBy={FIXUP_WANTED_BY}\n",
         boot_writer::WRITER_UNIT,
-        binary.display(),
-        reconcile_args(switched_at, restore_noexec).join(" ")
+        crate::whole_root::research_cell::service_lines(
+            "-",
+            &format!(
+                "{} {}",
+                binary.display(),
+                reconcile_args(switched_at, restore_noexec).join(" ")
+            )
+        )
     )
 }
 

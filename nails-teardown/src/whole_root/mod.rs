@@ -41,7 +41,9 @@
 //! - [`logind`]: the soft-reboot request of the entry and the way back, and
 //!   what logind holds of it;
 //! - [`emergency`]: the emergency hot path;
-//! - [`tools`]: the bounded `systemctl`, `dmsetup` and `ip` calls.
+//! - [`tools`]: the bounded `systemctl`, `dmsetup` and `ip` calls;
+//! - [`research_cell`]: research build only, how the units start the RAM copy
+//!   in an SELinux experiment.
 
 pub mod boot_records;
 pub mod boot_writer;
@@ -58,6 +60,7 @@ pub mod network_policy;
 pub mod network_run;
 pub mod nextroot;
 pub mod plan;
+pub mod research_cell;
 pub mod ret;
 pub mod run_records;
 pub mod run_scrub;

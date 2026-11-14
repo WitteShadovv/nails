@@ -23,9 +23,12 @@ fn unit(name: String, description: &str, argument: &str) -> RuntimeUnit {
     RuntimeUnit {
         name,
         content: format!(
-            "[Unit]\nDescription={description}\n\n[Service]\nExecStart={} {argument}\n\
+            "[Unit]\nDescription={description}\n\n[Service]\n{}\
              Restart=no\nStandardOutput=null\nStandardError=null\nLimitCORE=0\n",
-            binary.display()
+            nails_teardown::whole_root::research_cell::service_lines(
+                "",
+                &format!("{} {argument}", binary.display())
+            )
         ),
         wanted_by: vec!["multi-user.target".to_string()],
     }

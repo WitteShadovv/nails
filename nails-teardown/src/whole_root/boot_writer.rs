@@ -206,9 +206,15 @@ pub fn writer_args(switched_at: Duration, writer: &[String]) -> Vec<String> {
 /// copy at `binary`, which starts the writer through [`run`].
 fn dropin_text(binary: &Path, switched_at: Duration, writer: &[String]) -> String {
     format!(
-        "[Service]\nExecStart=\nExecStart={} {}\n",
-        binary.display(),
-        writer_args(switched_at, writer).join(" ")
+        "[Service]\nExecStart=\n{}",
+        crate::whole_root::research_cell::service_lines(
+            "",
+            &format!(
+                "{} {}",
+                binary.display(),
+                writer_args(switched_at, writer).join(" ")
+            )
+        )
     )
 }
 

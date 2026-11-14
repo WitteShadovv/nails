@@ -274,6 +274,8 @@ fn guard_device(node: &std::path::Path) {
 /// path ran; the transition and the device guard never return.
 pub fn dispatch() -> bool {
     let argv: Vec<OsString> = std::env::args_os().collect();
+    // Research build only: record the SELinux context of this start.
+    nails_teardown::whole_root::research_cell::trace(&argv);
     if is_transition(&argv) && nix::unistd::geteuid().is_root() {
         let _ = nails_teardown::whole_root::transition::run(
             &nails_teardown::whole_root::transition::Env::system(),
