@@ -306,7 +306,12 @@ fn hidden(plan: &mut Plan, host: &Host, report: &mut HotReport) {
             if !host.act {
                 return Ok(());
             }
-            ret::mount_decoy_root(plan, &host.nextroot, &host.run)
+            ret::mount_decoy_root(
+                plan,
+                &host.nextroot,
+                &host.run,
+                &crate::whole_root::selinux::Kernel,
+            )
         });
         if let Err(e) = prepared {
             report.fallback = Some(format!("{e}; powering off instead"));

@@ -23,9 +23,13 @@
 //! `deactivate` refuses a return from a hidden root that lacks it before it
 //! prepares anything ([`check_way_back`]), and the way back's own preparation
 //! asks again ([`nails_teardown::whole_root::ret::check_exec_prefix`]), which
-//! makes `emergency` power off instead of returning. Where SELinux does not
-//! run, as on a stock Debian, Ubuntu or NixOS, the plan records no prefix and
-//! every unit starts the copy as before.
+//! makes `emergency` power off instead of returning. Each of these checks asks
+//! the running kernel's SELinux too ([`GuardHost::selinux`]): where a policy is
+//! loaded, it refuses a program whose label the policy does not let PID 1
+//! start, or starts in PID 1's own domain
+//! ([`nails_teardown::whole_root::exec_prefix::domain`]). Where SELinux does
+//! not run, as on a stock Debian, Ubuntu or NixOS, the plan records no prefix
+//! and every unit starts the copy as before.
 //!
 //! Two settings of [`SWITCH_UNIT`], whose start command runs the transition
 //! step, would keep that step out of the domain the policy gives the program
@@ -48,7 +52,7 @@ use super::labels::{Labels, Reason};
 use crate::error::{NailsError, Result};
 use nails_base::next_step::{NextStep, sudo_line, sudo_line_for};
 use nails_platform::HostProfile;
-use nails_teardown::whole_root::exec_prefix::{self, TRAMPOLINE};
+use nails_teardown::whole_root::exec_prefix::{self, Effect, Remedy, TRAMPOLINE, Unusable};
 use nails_teardown::whole_root::plan::Plan;
 use std::path::Path;
 
@@ -151,42 +155,54 @@ impl ExecPrefix {
     }
 
     /// Refuse the entry unless the program starts in `root`, the `which` root
-    /// of the switch ([`exec_prefix::check`]): a step that PID 1 could not
-    /// start there would let the switch go on without it. Where PID 1 starts
-    /// the copy itself there is nothing to check. The refusal says why the
-    /// host needs the program and what to do.
-    pub fn require(self, root: &Path, which: Root) -> Result<()> {
+    /// of the switch, as PID 1 starts it under the SELinux `host` asks
+    /// ([`exec_prefix::check`]): a step that PID 1 could not start there would
+    /// let the switch go on without it, and one the policy starts in PID 1's
+    /// own domain would run confined. Where PID 1 starts the copy itself there
+    /// is nothing to check. The refusal says why the host needs the program
+    /// and what to do.
+    pub fn require(self, root: &Path, which: Root, host: &(impl GuardHost + ?Sized)) -> Result<()> {
         let Self::Trampoline(why) = self else {
             return Ok(());
         };
         let program = Path::new(TRAMPOLINE);
-        exec_prefix::check(root, program).map_err(|unusable| {
+        exec_prefix::check(root, program, host.selinux()).map_err(|unusable| {
             let shown = program.display();
-            let (place, lost, fix) = match which {
+            let (place, steps) = match which {
                 Root::Decoy => (
                     "the decoy root",
                     "the last step before the switch into the hidden session, which keeps the \
-                     hidden session's systemd off the decoy's disks, would not start",
-                    format!(
-                        "Install {shown} on the decoy (coreutils provides it on most \
-                         distributions) and activate again"
-                    ),
+                     hidden session's systemd off the decoy's disks,",
                 ),
                 Root::Next => (
                     "the hidden root",
-                    "the hidden session's own units and the last step of the way back would not \
-                     start",
-                    format!(
-                        "Run `{}`, which deletes the hidden sessions' copy of it so that the \
-                         decoy's shows through, and activate again",
-                        sudo_line_for(NextStep::Discard, &program.to_string_lossy())
-                    ),
+                    "the hidden session's own units and the last step of the way back",
+                ),
+            };
+            let fix = match (which, unusable.remedy()) {
+                (_, Remedy::Policy) => "Run nails where it can ask the loaded SELinux policy \
+                                        (selinuxfs mounted at /sys/fs/selinux, nails started \
+                                        as root from an unconfined domain) and activate again"
+                    .to_string(),
+                (Root::Decoy, Remedy::Program) => format!(
+                    "Install {shown} on the decoy (coreutils provides it on most distributions) \
+                     and activate again"
+                ),
+                (Root::Decoy, Remedy::Label) => format!(
+                    "Give {shown} on the decoy the label its policy gives it (`restorecon -v \
+                     {shown}` restores it) and activate again"
+                ),
+                (Root::Next, _) => format!(
+                    "Run `{}`, which deletes the hidden sessions' copy of it so that the decoy's \
+                     shows through, and activate again",
+                    sudo_line_for(NextStep::Discard, &program.to_string_lossy())
                 ),
             };
             refusal(
                 format!(
                     "{why}, so PID 1 starts NAILS's own steps through {shown}, and in {place} \
-                     {shown} {unusable}: {lost}"
+                     {shown} {unusable}: {steps} {}",
+                    effect(&unusable)
                 ),
                 fix,
             )
@@ -215,6 +231,16 @@ impl ExecPrefix {
                  (`systemctl cat {SWITCH_UNIT}` shows where it is) and activate again"
             ),
         ))
+    }
+}
+
+/// What a step started through an unusable program comes to, to end a
+/// sentence about the step.
+fn effect(unusable: &Unusable) -> &'static str {
+    match unusable.effect() {
+        Effect::NotStarted => "would not start",
+        Effect::OwnDomain => "would run in PID 1's own domain",
+        Effect::Unknown => "might not start, or might run in PID 1's own domain",
     }
 }
 
@@ -259,40 +285,59 @@ pub fn domain_unheld(host: &(impl GuardHost + ?Sized)) -> Result<Option<String>>
 
 /// Refuse a return to the decoy whose last step would not start in the hidden
 /// root at `root` (`/`, but in tests): `plan` records an exec prefix that does
-/// not start there ([`exec_prefix::check`]), as when a hidden session removed
-/// `/usr/bin/env`. The switch would go on without its last step, and the decoy
-/// would start with the hidden session's files in `/run`. Then the hidden
-/// session's PID 1, which `host` asks, must start that step in the domain the
-/// policy gives the program ([`domain_unheld`]); a PID 1 that cannot be asked
-/// refuses the return too. Asked before anything is prepared, as the runtime
-/// guards are ([`super::guards::check_way_back`]); a power-off needs no such
-/// step and asks nothing.
+/// not start there as the hidden session's PID 1 starts it under the SELinux
+/// `host` asks ([`exec_prefix::check`]), as when a hidden session removed
+/// `/usr/bin/env` or put a file of another label in its place. The switch
+/// would go on without its last step, and the decoy would start with the
+/// hidden session's files in `/run`, or the step would run in PID 1's own
+/// domain. Then the hidden session's PID 1, which `host` asks, must start that
+/// step in the domain the policy gives the program ([`domain_unheld`]); a
+/// PID 1 that cannot be asked refuses the return too. Asked before anything is
+/// prepared, as the runtime guards are ([`super::guards::check_way_back`]); a
+/// power-off needs no such step and asks nothing.
 pub fn check_way_back(root: &Path, plan: &Plan, host: &(impl GuardHost + ?Sized)) -> Result<()> {
     let Some(program) = plan.exec_prefix.as_deref() else {
         return Ok(());
     };
     let shown = program.display();
-    exec_prefix::check(root, program).map_err(|unusable| {
+    let poweroff = sudo_line(NextStep::DeactivatePoweroff);
+    let emergency = sudo_line(NextStep::Emergency);
+    exec_prefix::check(root, program, host.selinux()).map_err(|unusable| {
+        let lost = match unusable.effect() {
+            Effect::NotStarted => {
+                "the switch to the decoy could go on without that step, and the decoy would \
+                 start with the hidden session's files in /run"
+            }
+            Effect::OwnDomain => "that step would run in PID 1's own domain",
+            Effect::Unknown => "that step might not start, or might run in PID 1's own domain",
+        };
+        let fix = match unusable.remedy() {
+            Remedy::Program => format!(
+                "Install {shown} again in the hidden session (coreutils provides it on most \
+                 distributions) and deactivate again, or end the session with `{poweroff}`, \
+                 which powers off, as `{emergency}` does here"
+            ),
+            Remedy::Label => format!(
+                "Give {shown} in the hidden session the label the policy gives it (`sudo \
+                 restorecon -v {shown}` restores it) and deactivate again, or end the session \
+                 with `{poweroff}`, which powers off, as `{emergency}` does here"
+            ),
+            Remedy::Policy => format!(
+                "End the session with `{poweroff}`, which powers off, as `{emergency}` does here"
+            ),
+        };
         refusal(
             format!(
                 "PID 1 starts the last step of the way back through {shown}, and in the hidden \
-                 root {shown} {unusable}: the switch to the decoy could go on without that step, \
-                 and the decoy would start with the hidden session's files in /run"
+                 root {shown} {unusable}: {lost}"
             ),
-            format!(
-                "Install {shown} again in the hidden session (coreutils provides it on most \
-                 distributions) and deactivate again, or end the session with `{}`, which \
-                 powers off, as `{}` does here",
-                sudo_line(NextStep::DeactivatePoweroff),
-                sudo_line(NextStep::Emergency)
-            ),
+            fix,
         )
     })?;
-    let poweroff = sudo_line(NextStep::DeactivatePoweroff);
-    let (why, fix) = match domain_unheld(host) {
+    let (unheld, fix) = match domain_unheld(host) {
         Ok(None) => return Ok(()),
-        Ok(Some(why)) => (
-            why,
+        Ok(Some(unheld)) => (
+            unheld,
             format!(
                 "Remove that setting from the drop-in of {SWITCH_UNIT} that sets it in the hidden \
                  session (`systemctl cat {SWITCH_UNIT}` shows where it is), run `sudo systemctl \
@@ -313,7 +358,7 @@ pub fn check_way_back(root: &Path, plan: &Plan, host: &(impl GuardHost + ?Sized)
     };
     Err(refusal(
         format!(
-            "PID 1 starts the last step of the way back through {shown}, but {why}: that step \
+            "PID 1 starts the last step of the way back through {shown}, but {unheld}: that step \
              could run in a domain the policy confines"
         ),
         fix,

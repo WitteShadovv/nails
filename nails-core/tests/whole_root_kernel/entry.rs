@@ -47,6 +47,8 @@ pub(crate) struct FakeHost {
     watchdogs: Option<&'static str>,
     /// The switch's job timeout, when it is not the unit's own 30 minutes.
     timeout: Option<&'static str>,
+    /// The kernel's SELinux; none by default.
+    pub(crate) selinux: nails_teardown::test_support::FakeSelinux,
 }
 
 impl FakeHost {
@@ -84,6 +86,9 @@ impl GuardHost for FakeHost {
     fn selinux_context(&self, unit: &str) -> nails_core::Result<String> {
         assert_eq!(unit, nails_core::session::exec_prefix::SWITCH_UNIT);
         Ok(String::new())
+    }
+    fn selinux(&self) -> &dyn nails_teardown::whole_root::selinux::Selinux {
+        &self.selinux
     }
 }
 

@@ -81,8 +81,8 @@ impl GuardHost for Pid1 {
     }
 }
 
-/// A host that does not ask PID 1 about the switch's unit answers neither
-/// question of the exec prefix's checks, so that a switch through one is
+/// A host that asks neither PID 1 nor the kernel answers none of the
+/// questions of the exec prefix's checks, so that a switch through one is
 /// refused.
 #[test]
 fn a_host_that_does_not_ask_answers_none_of_the_exec_prefix_s_questions() {
@@ -99,6 +99,21 @@ fn a_host_that_does_not_ask_answers_none_of_the_exec_prefix_s_questions() {
             why,
             format!("PID 1 was not asked for {property} of systemd-soft-reboot.service")
         );
+    }
+    let selinux = host.selinux();
+    for error in [
+        selinux.pid1().unwrap_err(),
+        selinux
+            .label(Path::new("/"), Path::new("/usr/bin/env"))
+            .unwrap_err(),
+        selinux
+            .exec_context("system_u:system_r:init_t:s0", "system_u:object_r:bin_t:s0")
+            .unwrap_err(),
+        selinux
+            .denied("a:b:c", "d:e:f", "file", &["execute"])
+            .unwrap_err(),
+    ] {
+        assert_eq!(error.to_string(), "the kernel's SELinux was not asked");
     }
 }
 

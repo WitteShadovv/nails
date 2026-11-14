@@ -195,6 +195,10 @@ impl GuardHost for RealEntryHost {
     fn selinux_context(&self, unit: &str) -> Result<String> {
         show(Some(unit), "SELinuxContext")
     }
+
+    fn selinux(&self) -> &dyn nails_teardown::whole_root::selinux::Selinux {
+        &nails_teardown::whole_root::selinux::Kernel
+    }
 }
 
 /// `property` of `unit`, or of PID 1 itself, through the system's `systemctl`
@@ -589,7 +593,7 @@ fn build(
     }
     // The entry's own step starts in the decoy root: without its program
     // there, nothing is written.
-    inputs.exec_prefix.require(&paths.root, Root::Decoy)?;
+    inputs.exec_prefix.require(&paths.root, Root::Decoy, host)?;
     let building = inputs.builder.is_some();
     activation_step(ActivationPhase::Runtime, building);
     let snapshot = Snapshot::take(&paths.run);
@@ -743,7 +747,7 @@ fn build(
     nextroot::make_below_private(&nextroot).map_err(|e| io(&nextroot, e))?;
     nextroot::precheck(&nextroot, &ret::init_before_repoint(&plan.hidden))
         .map_err(|e| NailsError::InvalidState(e.to_string()))?;
-    inputs.exec_prefix.require(&nextroot, Root::Next)?;
+    inputs.exec_prefix.require(&nextroot, Root::Next, host)?;
     let missing = super::systemd::missing_soft_reboot_units(&nextroot);
     if !missing.is_empty() {
         return Err(NailsError::InvalidState(format!(

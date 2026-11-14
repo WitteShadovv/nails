@@ -27,6 +27,8 @@
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`exec_prefix`]: the program PID 1 starts the binary copy through on a
 //!   host that may run SELinux, and whether a root holds it;
+//! - [`selinux`]: what the running kernel's SELinux makes of a program PID 1
+//!   starts;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
 //!   back;
 //! - [`decoy_mounts`]: the decoy's mounts the way back makes again, in the
@@ -65,6 +67,7 @@ pub mod ret;
 pub mod run_records;
 pub mod run_scrub;
 pub mod runtime_units;
+pub mod selinux;
 pub mod skips;
 pub mod switch_refusal;
 pub mod tools;

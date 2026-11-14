@@ -157,6 +157,10 @@ impl GuardHost for RealTargetHost {
     fn selinux_context(&self, unit: &str) -> Result<String> {
         guards::show_property(self.systemctl.as_deref(), Some(unit), "SELinuxContext")
     }
+
+    fn selinux(&self) -> &dyn nails_teardown::whole_root::selinux::Selinux {
+        &nails_teardown::whole_root::selinux::Kernel
+    }
 }
 
 impl TargetHost for RealTargetHost {
@@ -408,7 +412,7 @@ pub fn leave(
     super::exec_prefix::check_way_back(&paths.root, plan, host)?;
     let unmounted = unmount_session_disks(paths, plan);
     let nextroot = paths.nextroot();
-    if let Err(e) = ret::mount_decoy_root(plan, &nextroot, &paths.run) {
+    if let Err(e) = ret::mount_decoy_root(plan, &nextroot, &paths.run, host.selinux()) {
         return Err(still_unmounted(
             NailsError::InvalidState(e.to_string()),
             &unmounted,

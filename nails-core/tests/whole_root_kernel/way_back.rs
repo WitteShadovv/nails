@@ -10,8 +10,9 @@
 //! root.
 
 use nails_core::test_path;
-use nails_core::test_support::{Rerun, ScratchTmpfs, write_executable};
+use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host, write_executable};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
+use nails_teardown::test_support::{BIN_T, FakeSelinux};
 use nails_teardown::whole_root::decoy_mounts::{self, Record, Why};
 use nails_teardown::whole_root::plan::{
     Arm, CarriedMount, DecoyMount, Direction, PLAN_NAME, Plan, UTAB_MOUNTS_NAME, UTAB_NAME,
@@ -43,6 +44,15 @@ fn remount(target: &Path, flags: MsFlags) {
     )
     .unwrap();
 }
+
+/// A kernel without SELinux: the way back's checks look at the files alone.
+const OFF: FakeSelinux = FakeSelinux {
+    pid1: None,
+    labels: Vec::new(),
+    starts: Vec::new(),
+    denials: Vec::new(),
+    unanswered: None,
+};
 
 /// A decoy root as NixOS boots one with its store on the root filesystem: the
 /// store a read-only `nosuid,nodev` bind of itself, and an ESP at `/boot` with
@@ -575,7 +585,7 @@ fn the_way_back_puts_the_recorded_mounts_or_the_carried_ones_and_run_in_place() 
         // With the record: the store bind and both ESP layers.
         let mut plan = decoy.plan(carried.clone(), record.mounts);
         nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
-        ret::complete_decoy_root(&mut plan, &nextroot, &run).expect("the way back");
+        ret::complete_decoy_root(&mut plan, &nextroot, &run, &OFF).expect("the way back");
         assert_eq!(
             points(&nextroot),
             ["/", "/nix/store", "/boot", "/boot"]
@@ -595,7 +605,7 @@ fn the_way_back_puts_the_recorded_mounts_or_the_carried_ones_and_run_in_place() 
         // A plan written before the record: the carried ESP alone, once.
         let mut plan = decoy.plan(carried, Vec::new());
         nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
-        ret::complete_decoy_root(&mut plan, &nextroot, &run).expect("the way back");
+        ret::complete_decoy_root(&mut plan, &nextroot, &run, &OFF).expect("the way back");
         assert_eq!(
             points(&nextroot),
             [PathBuf::from("/"), PathBuf::from("/boot"), run_point]
@@ -622,7 +632,7 @@ fn a_way_back_that_fails_leaves_nothing_at_the_next_root_and_no_new_id() {
         let mut plan = decoy.plan(carried.clone(), record.mounts.clone());
         plan.decoy.init = PathBuf::from("/usr/lib/systemd/no-such-init");
         nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
-        let error = ret::complete_decoy_root(&mut plan, &nextroot, &run).unwrap_err();
+        let error = ret::complete_decoy_root(&mut plan, &nextroot, &run, &OFF).unwrap_err();
         assert!(matches!(error, ReturnError::Precheck(_)), "{error}");
         assert!(points(&nextroot).is_empty(), "{:?}", points(&nextroot));
         assert!(plan.decoy_mounts.iter().all(|m| m.restored.is_none()));
@@ -635,7 +645,7 @@ fn a_way_back_that_fails_leaves_nothing_at_the_next_root_and_no_new_id() {
             nails_teardown::whole_root::exec_prefix::TRAMPOLINE,
         ));
         nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
-        let error = ret::complete_decoy_root(&mut plan, &nextroot, &run).unwrap_err();
+        let error = ret::complete_decoy_root(&mut plan, &nextroot, &run, &OFF).unwrap_err();
         assert!(matches!(error, ReturnError::ExecPrefix(_)), "{error}");
         assert!(
             error
@@ -649,14 +659,14 @@ fn a_way_back_that_fails_leaves_nothing_at_the_next_root_and_no_new_id() {
         std::fs::create_dir_all(env.parent().unwrap()).unwrap();
         write_executable(&env, "#!/bin/sh\n", 0o755);
         nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
-        ret::complete_decoy_root(&mut plan, &nextroot, &run).expect("the way back");
+        ret::complete_decoy_root(&mut plan, &nextroot, &run, &OFF).expect("the way back");
         assert!(nextroot::detach_tree(&nextroot).is_empty());
 
         // The hidden session unmounted the carried ESP.
         nix::mount::umount(&carried[0].at).unwrap();
         let mut plan = decoy.plan(carried, record.mounts);
         nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
-        let error = ret::complete_decoy_root(&mut plan, &nextroot, &run).unwrap_err();
+        let error = ret::complete_decoy_root(&mut plan, &nextroot, &run, &OFF).unwrap_err();
         assert!(matches!(error, ReturnError::DecoyMounts(_)), "{error}");
         assert!(
             error
@@ -666,5 +676,71 @@ fn a_way_back_that_fails_leaves_nothing_at_the_next_root_and_no_new_id() {
         );
         assert!(points(&nextroot).is_empty(), "{:?}", points(&nextroot));
         assert!(plan.decoy_mounts.iter().all(|m| m.restored.is_none()));
+    });
+}
+
+/// Where a policy is loaded, the way back looks at the label of the decoy
+/// root's program too, read through the decoy root mounted at the next root:
+/// one the policy starts in PID 1's own domain fails the way back, and one it
+/// starts in a service domain does not. The namespace's root writes the label
+/// on its own tmpfs, which a kernel without SELinux stores as given; a kernel
+/// that labels every file itself skips the test.
+#[test]
+fn a_way_back_needs_a_decoy_program_the_policy_starts_in_a_domain_of_its_own() {
+    let _ = Rerun::new(test_path!(
+        a_way_back_needs_a_decoy_program_the_policy_starts_in_a_domain_of_its_own
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = Decoy::new();
+        let carried = vec![decoy.carry_boot()];
+        let record = decoy.record(&carried);
+        let run = decoy.run();
+        let nextroot = decoy.nextroot();
+        let env = decoy.root().join("usr/bin/env");
+        std::fs::create_dir_all(env.parent().unwrap()).unwrap();
+        write_executable(&env, "#!/bin/sh\n", 0o755);
+        let mut value = vec![0; 4096];
+        match rustix::fs::lgetxattr(&env, "security.selinux", &mut value[..]) {
+            Err(rustix::io::Errno::NODATA) => {}
+            other => skip_host(&format!(
+                "the kernel labels new files on this host ({other:?}): the label of the decoy's \
+                 program under a loaded policy needs a VM"
+            )),
+        }
+        let set_label = |label: &str| {
+            rustix::fs::lsetxattr(
+                &env,
+                "security.selinux",
+                format!("{label}\0").as_bytes(),
+                rustix::fs::XattrFlags::empty(),
+            )
+            .expect("label the decoy's program");
+        };
+        let targeted = FakeSelinux::targeted();
+        let mut plan = decoy.plan(carried, record.mounts);
+        plan.exec_prefix = Some(PathBuf::from(
+            nails_teardown::whole_root::exec_prefix::TRAMPOLINE,
+        ));
+
+        set_label("system_u:object_r:etc_t:s0");
+        nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
+        let error = ret::complete_decoy_root(&mut plan, &nextroot, &run, &targeted).unwrap_err();
+        assert!(matches!(error, ReturnError::ExecPrefix(_)), "{error}");
+        assert!(
+            error.to_string().ends_with(
+                "in the decoy root /usr/bin/env is labelled system_u:object_r:etc_t:s0, which \
+                 the loaded SELinux policy gives no domain of its own when PID 1 \
+                 (system_u:system_r:init_t:s0) starts it"
+            ),
+            "{error}"
+        );
+        assert!(points(&nextroot).is_empty(), "{:?}", points(&nextroot));
+        assert!(plan.decoy_mounts.iter().all(|m| m.restored.is_none()));
+
+        set_label(BIN_T);
+        nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
+        ret::complete_decoy_root(&mut plan, &nextroot, &run, &targeted).expect("the way back");
+        assert!(nextroot::detach_tree(&nextroot).is_empty());
     });
 }

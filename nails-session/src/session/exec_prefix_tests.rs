@@ -6,6 +6,8 @@ use crate::session::guards::GuardHost;
 use nails_base::test_support::write_executable;
 use nails_platform::platform::FakePlatform;
 use nails_platform::{SelinuxMode, SelinuxStatus, Selinuxfs};
+use nails_teardown::test_support::{BIN_T, FakeSelinux, INIT_T};
+use nails_teardown::whole_root::selinux::Selinux;
 use std::path::PathBuf;
 
 /// A detected FHS host with these SELinux facts.
@@ -49,6 +51,15 @@ fn listing(mut profile: HostProfile, lsms: &[&str]) -> HostProfile {
 /// Where SELinux runs.
 const RUNNING: ExecPrefix = ExecPrefix::Trampoline(Why::Labels(Reason::SelinuxRunning));
 
+/// A kernel without SELinux: the file alone decides.
+const OFF: FakeSelinux = FakeSelinux {
+    pid1: None,
+    labels: Vec::new(),
+    starts: Vec::new(),
+    denials: Vec::new(),
+    unanswered: None,
+};
+
 /// A root whose `/usr/bin/env` is an executable file.
 fn root_with_env() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
@@ -58,17 +69,25 @@ fn root_with_env() -> tempfile::TempDir {
 }
 
 /// A PID 1 that answers for the switch's unit as given: `NoNewPrivileges`
-/// (or the error of a PID 1 that cannot be asked) and `SELinuxContext`.
+/// (or the error of a PID 1 that cannot be asked) and `SELinuxContext`, on a
+/// kernel whose SELinux answers as `selinux` does.
 struct Pid1 {
     no_new_privileges: std::result::Result<&'static str, &'static str>,
     selinux_context: &'static str,
+    selinux: FakeSelinux,
 }
 
-/// The PID 1 of a stock host: neither setting.
+/// The PID 1 of a stock host: neither setting, and a kernel without SELinux.
 const STOCK: Pid1 = Pid1 {
     no_new_privileges: Ok("no"),
     selinux_context: "",
+    selinux: OFF,
 };
+
+/// The PID 1 of a stock host whose kernel answers as `selinux` does.
+fn stock_under(selinux: FakeSelinux) -> Pid1 {
+    Pid1 { selinux, ..STOCK }
+}
 
 impl GuardHost for Pid1 {
     fn unit_stop_commands(&self, _: &str) -> Result<String> {
@@ -93,9 +112,13 @@ impl GuardHost for Pid1 {
         assert_eq!(unit, SWITCH_UNIT);
         Ok(self.selinux_context.to_string())
     }
+    fn selinux(&self) -> &dyn Selinux {
+        &self.selinux
+    }
 }
 
-/// A host that asks PID 1 for neither setting: the defaults answer.
+/// A host that asks PID 1 for neither setting, nor the kernel: the defaults
+/// answer.
 struct Unasked;
 
 impl GuardHost for Unasked {
@@ -186,21 +209,6 @@ fn a_kernel_that_lists_selinux_starts_the_copy_through_env_without_selinuxfs() {
         &FEDORA_LSMS,
     );
     assert_eq!(ExecPrefix::for_host(Some(&running)), RUNNING);
-    // A refusal starts with the reason.
-    let without = tempfile::tempdir().unwrap();
-    let (_, reason, _) = refusal_of(
-        ExecPrefix::Trampoline(Why::Kernel)
-            .require(without.path(), Root::Decoy)
-            .unwrap_err(),
-    );
-    assert!(
-        reason.starts_with(
-            "the kernel lists SELinux among its security modules (/sys/kernel/security/lsm), \
-             and may enforce a policy, though no selinuxfs is mounted here, so PID 1 starts \
-             NAILS's own steps through /usr/bin/env"
-        ),
-        "{reason}"
-    );
 }
 
 /// Where SELinux runs or may run, as the labels judge it, PID 1 starts the
@@ -236,7 +244,11 @@ fn a_host_that_may_run_selinux_starts_the_copy_through_env() {
 fn starting_the_copy_directly_needs_nothing_in_either_root() {
     let empty = tempfile::tempdir().unwrap();
     for which in [Root::Decoy, Root::Next] {
-        assert!(ExecPrefix::Direct.require(empty.path(), which).is_ok());
+        assert!(
+            ExecPrefix::Direct
+                .require(empty.path(), which, &Unasked)
+                .is_ok()
+        );
     }
 }
 
@@ -245,11 +257,15 @@ fn an_entry_through_env_needs_it_in_both_roots() {
     let prefix = RUNNING;
     let with = root_with_env();
     for which in [Root::Decoy, Root::Next] {
-        assert!(prefix.require(with.path(), which).is_ok());
+        assert!(prefix.require(with.path(), which, &STOCK).is_ok());
     }
 
     let without = tempfile::tempdir().unwrap();
-    let (name, reason, fix) = refusal_of(prefix.require(without.path(), Root::Decoy).unwrap_err());
+    let (name, reason, fix) = refusal_of(
+        prefix
+            .require(without.path(), Root::Decoy, &STOCK)
+            .unwrap_err(),
+    );
     assert_eq!(name, CHECK);
     assert_eq!(
         reason,
@@ -265,7 +281,7 @@ fn an_entry_through_env_needs_it_in_both_roots() {
 
     let (name, reason, fix) = refusal_of(
         ExecPrefix::Trampoline(Why::Labels(Reason::HostUndetected))
-            .require(without.path(), Root::Next)
+            .require(without.path(), Root::Next, &STOCK)
             .unwrap_err(),
     );
     assert_eq!(name, CHECK);
@@ -283,7 +299,11 @@ fn an_entry_through_env_needs_it_in_both_roots() {
 fn an_env_that_is_no_executable_file_refuses_the_entry_too() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("usr/bin/env")).unwrap();
-    let (_, reason, _) = refusal_of(RUNNING.require(root.path(), Root::Decoy).unwrap_err());
+    let (_, reason, _) = refusal_of(
+        RUNNING
+            .require(root.path(), Root::Decoy, &STOCK)
+            .unwrap_err(),
+    );
     assert!(
         reason.contains("in the decoy root /usr/bin/env is not an executable file:"),
         "{reason}"
@@ -337,6 +357,7 @@ fn the_switch_unit_must_leave_the_domain_to_the_policy() {
     let newline = Pid1 {
         no_new_privileges: Ok("no\n"),
         selinux_context: "\n",
+        ..STOCK
     };
     assert_eq!(domain_unheld(&newline).unwrap(), None);
 
@@ -496,12 +517,158 @@ fn a_way_back_through_env_needs_the_hidden_pid_1_to_leave_the_domain_to_the_poli
     assert!(reason.contains("/usr/bin/env does not exist"), "{reason}");
 }
 
+/// A policy-loaded host must start `/usr/bin/env` in a domain of its own: a
+/// label the policy gives none, or one PID 1 may not start, refuses the entry
+/// in either root, with the fix that root needs.
+#[test]
+fn an_entry_through_env_needs_a_label_the_policy_starts_in_a_domain_of_its_own() {
+    let root = root_with_env();
+    let root = root.path();
+    let targeted = stock_under(FakeSelinux::targeted().with_label(root, BIN_T));
+    for which in [Root::Decoy, Root::Next] {
+        assert!(RUNNING.require(root, which, &targeted).is_ok());
+    }
+
+    const ETC: &str = "system_u:object_r:etc_t:s0";
+    let etc = stock_under(FakeSelinux::targeted().with_label(root, ETC));
+    let (name, reason, fix) = refusal_of(RUNNING.require(root, Root::Decoy, &etc).unwrap_err());
+    assert_eq!(name, CHECK);
+    assert_eq!(
+        reason,
+        "SELinux runs on this host (selinuxfs is mounted), so PID 1 starts NAILS's own steps \
+         through /usr/bin/env, and in the decoy root /usr/bin/env is labelled \
+         system_u:object_r:etc_t:s0, which the loaded SELinux policy gives no domain of its own \
+         when PID 1 (system_u:system_r:init_t:s0) starts it: the last step before the switch \
+         into the hidden session, which keeps the hidden session's systemd off the decoy's \
+         disks, would run in PID 1's own domain"
+    );
+    assert_eq!(
+        fix,
+        "Give /usr/bin/env on the decoy the label its policy gives it (`restorecon -v \
+         /usr/bin/env` restores it) and activate again"
+    );
+
+    // A hidden session moved a file from root's home over it: PID 1 may not
+    // start it, and the discard brings back the decoy's.
+    const HOME: &str = "unconfined_u:object_r:admin_home_t:s0";
+    let home = stock_under(FakeSelinux {
+        denials: vec![(INIT_T, HOME, "file", "execute")],
+        ..FakeSelinux::targeted().with_label(root, HOME)
+    });
+    let (_, reason, fix) = refusal_of(RUNNING.require(root, Root::Next, &home).unwrap_err());
+    assert!(
+        reason.ends_with(
+            "in the hidden root /usr/bin/env is labelled unconfined_u:object_r:admin_home_t:s0, \
+             and the loaded SELinux policy does not let PID 1 (system_u:system_r:init_t:s0) \
+             execute it: the hidden session's own units and the last step of the way back would \
+             not start"
+        ),
+        "{reason}"
+    );
+    assert!(fix.starts_with("Run `sudo "), "{fix}");
+    assert!(fix.contains(" discard /usr/bin/env`"), "{fix}");
+
+    // A policy that cannot be asked refuses, in either root, with what lets
+    // it be asked.
+    let unanswered = stock_under(FakeSelinux {
+        unanswered: Some("/sys/fs/selinux/create: No such file or directory (os error 2)"),
+        ..FakeSelinux::targeted().with_label(root, BIN_T)
+    });
+    for which in [Root::Decoy, Root::Next] {
+        let (_, reason, fix) = refusal_of(RUNNING.require(root, which, &unanswered).unwrap_err());
+        assert!(
+            reason.ends_with(" might not start, or might run in PID 1's own domain"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains(
+                "/usr/bin/env cannot be judged against the loaded SELinux policy: the policy \
+                 cannot be asked: /sys/fs/selinux/create: No such file or directory (os error 2)"
+            ),
+            "{reason}"
+        );
+        assert!(
+            fix.starts_with("Run nails where it can ask the loaded SELinux policy"),
+            "{fix}"
+        );
+    }
+
+    // Where PID 1 starts the copy itself, the kernel is not asked.
+    assert!(
+        ExecPrefix::Direct
+            .require(root, Root::Decoy, &unanswered)
+            .is_ok()
+    );
+}
+
+/// The way back asks the hidden session's kernel the same: a label the policy
+/// starts in PID 1's own domain, or one PID 1 may not start, refuses a return.
+#[test]
+fn a_way_back_through_env_needs_a_label_the_policy_starts_in_a_domain_of_its_own() {
+    let mut plan = sample_plan();
+    plan.exec_prefix = Some(PathBuf::from(TRAMPOLINE));
+    let root = root_with_env();
+    let root = root.path();
+    assert!(
+        check_way_back(
+            root,
+            &plan,
+            &stock_under(FakeSelinux::targeted().with_label(root, BIN_T))
+        )
+        .is_ok()
+    );
+
+    let etc = stock_under(FakeSelinux::targeted().with_label(root, "system_u:object_r:etc_t:s0"));
+    let (name, reason, fix) = refusal_of(check_way_back(root, &plan, &etc).unwrap_err());
+    assert_eq!(name, CHECK);
+    assert!(
+        reason.ends_with("starts it: that step would run in PID 1's own domain"),
+        "{reason}"
+    );
+    assert!(
+        fix.starts_with(
+            "Give /usr/bin/env in the hidden session the label the policy gives it (`sudo \
+             restorecon -v /usr/bin/env` restores it) and deactivate again, or end the session \
+             with `sudo "
+        ),
+        "{fix}"
+    );
+    assert!(fix.ends_with(" emergency` does here"), "{fix}");
+
+    const TMP: &str = "unconfined_u:object_r:user_tmp_t:s0";
+    let tmp = stock_under(FakeSelinux {
+        denials: vec![(INIT_T, TMP, "file", "read")],
+        ..FakeSelinux::targeted().with_label(root, TMP)
+    });
+    let (_, reason, _) = refusal_of(check_way_back(root, &plan, &tmp).unwrap_err());
+    assert!(
+        reason.ends_with(
+            "read it: the switch to the decoy could go on without that step, and the decoy \
+             would start with the hidden session's files in /run"
+        ),
+        "{reason}"
+    );
+
+    let unanswered = stock_under(FakeSelinux {
+        unanswered: Some("no selinuxfs"),
+        ..FakeSelinux::targeted().with_label(root, BIN_T)
+    });
+    let (_, reason, fix) = refusal_of(check_way_back(root, &plan, &unanswered).unwrap_err());
+    assert!(
+        reason.ends_with(": that step might not start, or might run in PID 1's own domain"),
+        "{reason}"
+    );
+    assert!(fix.starts_with("End the session with `sudo "), "{fix}");
+    assert!(fix.ends_with(" emergency` does here"), "{fix}");
+}
+
 /// A host that asks PID 1 for `NoNewPrivileges` but leaves `SELinuxContext`
-/// to the default refuses both ways: the defaults fail closed.
+/// and the kernel's SELinux to the defaults refuses both ways: the defaults
+/// fail closed.
 #[test]
 fn the_questions_a_host_leaves_to_the_defaults_refuse_the_switch() {
     /// Asks for `NoNewPrivileges` alone.
-    struct PrivilegesOnly;
+    struct PrivilegesOnly(FakeSelinux);
     impl GuardHost for PrivilegesOnly {
         fn unit_stop_commands(&self, _: &str) -> Result<String> {
             unreachable!("not a guard test")
@@ -518,12 +685,15 @@ fn the_questions_a_host_leaves_to_the_defaults_refuse_the_switch() {
         fn no_new_privileges(&self, _: &str) -> Result<String> {
             Ok("no\n".to_string())
         }
+        fn selinux(&self) -> &dyn Selinux {
+            &self.0
+        }
     }
+    let host = PrivilegesOnly(OFF);
     // The entry stops at the error itself.
-    let prefix = RUNNING;
     for answer in [
-        prefix.require_domain(&PrivilegesOnly),
-        domain_unheld(&PrivilegesOnly).map(drop),
+        RUNNING.require_domain(&host),
+        domain_unheld(&host).map(drop),
     ] {
         let Err(NailsError::InvalidState(why)) = answer else {
             panic!("expected the default's error, got {answer:?}");
@@ -533,12 +703,11 @@ fn the_questions_a_host_leaves_to_the_defaults_refuse_the_switch() {
             "PID 1 was not asked for SELinuxContext of systemd-soft-reboot.service"
         );
     }
-    // The way back refuses, with the power-off as the fix.
+
     let mut plan = sample_plan();
     plan.exec_prefix = Some(PathBuf::from(TRAMPOLINE));
     let root = root_with_env();
-    let (_, reason, fix) =
-        refusal_of(check_way_back(root.path(), &plan, &PrivilegesOnly).unwrap_err());
+    let (_, reason, fix) = refusal_of(check_way_back(root.path(), &plan, &host).unwrap_err());
     assert!(
         reason.contains(
             "the hidden session's PID 1 could not be asked how it starts \
@@ -556,5 +725,26 @@ fn the_questions_a_host_leaves_to_the_defaults_refuse_the_switch() {
     assert_eq!(
         why,
         "PID 1 was not asked for NoNewPrivileges of systemd-soft-reboot.service"
+    );
+
+    // The kernel's SELinux left to the default answers nothing: the check
+    // of either root refuses once the program is there.
+    let (_, reason, fix) = refusal_of(
+        RUNNING
+            .require(root.path(), Root::Decoy, &Unasked)
+            .unwrap_err(),
+    );
+    assert!(
+        reason.contains(
+            "/usr/bin/env cannot be judged against the loaded SELinux policy: PID 1's context \
+             cannot be read: the kernel's SELinux was not asked"
+        ),
+        "{reason}"
+    );
+    assert!(fix.starts_with("Run nails where it can ask"), "{fix}");
+    let (_, reason, _) = refusal_of(check_way_back(root.path(), &plan, &Unasked).unwrap_err());
+    assert!(
+        reason.contains("PID 1's context cannot be read: the kernel's SELinux was not asked"),
+        "{reason}"
     );
 }

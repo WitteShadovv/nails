@@ -45,6 +45,8 @@ struct FakeEntryHost {
     /// What PID 1 says `systemd-soft-reboot.service` has for
     /// `NoNewPrivileges`, when not `no`.
     no_new_privileges: Option<&'static str>,
+    /// The kernel's SELinux; none by default.
+    selinux: nails_teardown::test_support::FakeSelinux,
 }
 
 impl EntryHost for FakeEntryHost {
@@ -95,6 +97,9 @@ impl GuardHost for FakeEntryHost {
     fn selinux_context(&self, unit: &str) -> Result<String> {
         assert_eq!(unit, crate::session::exec_prefix::SWITCH_UNIT);
         Ok(String::new())
+    }
+    fn selinux(&self) -> &dyn nails_teardown::whole_root::selinux::Selinux {
+        &self.selinux
     }
 }
 

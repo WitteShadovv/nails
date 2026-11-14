@@ -3,11 +3,13 @@
 
 //! The entries through the exec prefix, through the manager: where SELinux
 //! runs or may run, PID 1 starts NAILS's steps through `/usr/bin/env`, which
-//! the decoy root must hold, and the switch's unit must leave the domain to
-//! the policy. Kept apart from `session_flow_tests.rs` so each file stays
-//! within the line budget of a test file.
+//! the decoy root must hold, with a label the loaded policy starts in a
+//! domain of its own, and the switch's unit must leave the domain to the
+//! policy. Kept apart from `session_flow_tests.rs` so each file stays within
+//! the line budget of a test file.
 
 use super::*;
+use nails_teardown::test_support::FakeSelinux;
 
 /// A host whose mount table lists a selinuxfs, with the SELinux facts a
 /// targeted, enforcing host reports.
@@ -182,6 +184,47 @@ fn an_entry_whose_switch_unit_keeps_pid_1_s_domain_is_refused_and_undone() {
         assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
         assert!(!hidden.path().join("state.json").exists());
     });
+}
+
+/// Where a policy is loaded, the decoy's `/usr/bin/env` must carry a label
+/// the policy starts in a domain of its own: one it gives none, as a
+/// configuration file's, is refused before the entry writes anything, as the
+/// entry's own step would run in PID 1's domain.
+#[test]
+fn an_entry_whose_decoy_env_keeps_pid_1_s_domain_is_refused_before_anything_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    std::fs::create_dir_all(machine.paths.root.join("usr/bin")).unwrap();
+    write_executable(&machine.paths.root.join("usr/bin/env"), "", 0o755);
+    let mut m = manager(&hidden);
+    m.set_host_profile(selinux_host());
+    let host = FakeEntryHost {
+        selinux: FakeSelinux::targeted()
+            .with_label(&machine.paths.root, "system_u:object_r:etc_t:s0"),
+        ..FakeEntryHost::default()
+    };
+
+    let error = m
+        .enter_session_no_preflight_on(&machine, &EnterOptions::default(), &host)
+        .unwrap_err();
+
+    let NailsError::PreFlightCheckFailed(failures) = &error else {
+        panic!("expected the exec-prefix refusal, got {error:?}");
+    };
+    assert_eq!(failures[0].0, crate::session::exec_prefix::CHECK, "{error}");
+    assert!(
+        failures[0].1.contains(
+            "in the decoy root /usr/bin/env is labelled system_u:object_r:etc_t:s0, which the \
+             loaded SELinux policy gives no domain of its own when PID 1 \
+             (system_u:system_r:init_t:s0) starts it"
+        ),
+        "{error}"
+    );
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0, "no drop-in was written");
+    assert!(!hidden.join("state.json").exists());
 }
 
 /// A kernel that lists SELinux among its security modules enforces a policy

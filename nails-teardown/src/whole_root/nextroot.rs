@@ -686,6 +686,26 @@ pub fn executable_in_root(root: &Path, path: &Path) -> io::Result<bool> {
     Ok((stat.st_mode & libc::S_IFMT) == libc::S_IFREG && stat.st_mode & 0o111 != 0)
 }
 
+/// The `security.selinux` attribute of `path` as if `root` were `/`, its
+/// symlinks resolved inside `root` as [`exists_in_root`] resolves them: the
+/// label of the file the lookup ends at, as the kernel stores it, with its
+/// NUL. Where SELinux runs, the kernel answers from its own record of the
+/// file, as it labels it for every check. The lookup opens nothing it reads
+/// (`O_PATH`), and the attribute is read through the descriptor's
+/// `/proc/self/fd` link, which reads no content: no access time moves.
+pub fn label_in_root(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
+    let fd = open_in_root(root, path)?;
+    let mut value = vec![0; 64 * 1024];
+    let len = rustix::fs::getxattr(
+        format!("/proc/self/fd/{}", fd.as_raw_fd()),
+        "security.selinux",
+        &mut value[..],
+    )
+    .map_err(to_io)?;
+    value.truncate(len);
+    Ok(value)
+}
+
 /// How many symlinks [`resolve_in_root`] follows by their text before it
 /// gives a path up, as the kernel's own limit for one lookup.
 const MAX_LINK_HOPS: usize = 40;

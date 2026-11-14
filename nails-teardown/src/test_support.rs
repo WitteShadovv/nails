@@ -152,6 +152,108 @@ pub fn stage_pid_measure(root: &Path) -> crate::whole_root::fresh_pids::Record {
     }
 }
 
+/// PID 1's context under Fedora's targeted policy.
+pub const INIT_T: &str = "system_u:system_r:init_t:s0";
+/// The label of the system's programs under Fedora's targeted policy.
+pub const BIN_T: &str = "system_u:object_r:bin_t:s0";
+/// The domain Fedora's targeted policy gives PID 1's start of a program
+/// labelled [`BIN_T`].
+pub const UNCONFINED_SERVICE_T: &str = "system_u:system_r:unconfined_service_t:s0";
+
+/// A kernel's SELinux for tests ([`Selinux`]): none at all
+/// ([`FakeSelinux::off`]), or a policy that gives the starts and denies the
+/// permissions listed, such as Fedora's targeted policy as far as PID 1's
+/// start of a program labelled [`BIN_T`] goes ([`FakeSelinux::targeted`]).
+///
+/// [`Selinux`]: crate::whole_root::selinux::Selinux
+#[derive(Debug, Clone, Default)]
+pub struct FakeSelinux {
+    /// PID 1's context; `None` for a kernel on which no policy gives a domain.
+    pub pid1: Option<&'static str>,
+    /// The label of the file asked about in each root, by the root's path. A
+    /// root not listed reads the file's `security.selinux` attribute, as the
+    /// running kernel does.
+    pub labels: Vec<(std::path::PathBuf, &'static str)>,
+    /// The contexts the policy gives starts: by the context of the process
+    /// and the label of the file, the context the start enters. A start not
+    /// listed stays in the process's context.
+    pub starts: Vec<(&'static str, &'static str, &'static str)>,
+    /// What the policy denies: the source context, the target context, the
+    /// class and the permission.
+    pub denials: Vec<(&'static str, &'static str, &'static str, &'static str)>,
+    /// The error every question about the policy fails with, as where no
+    /// selinuxfs is mounted.
+    pub unanswered: Option<&'static str>,
+}
+
+impl FakeSelinux {
+    /// A kernel on which no policy gives a domain.
+    pub fn off() -> Self {
+        Self::default()
+    }
+
+    /// PID 1 in [`INIT_T`], and a start of a program labelled [`BIN_T`]
+    /// entering [`UNCONFINED_SERVICE_T`], with nothing denied.
+    pub fn targeted() -> Self {
+        Self {
+            pid1: Some(INIT_T),
+            starts: vec![(INIT_T, BIN_T, UNCONFINED_SERVICE_T)],
+            ..Self::default()
+        }
+    }
+
+    /// This one, with the file asked about in `root` labelled `label`.
+    pub fn with_label(mut self, root: &Path, label: &'static str) -> Self {
+        self.labels.push((root.to_path_buf(), label));
+        self
+    }
+
+    fn answer(&self) -> std::io::Result<()> {
+        match self.unanswered {
+            Some(why) => Err(std::io::Error::other(why)),
+            None => Ok(()),
+        }
+    }
+}
+
+impl crate::whole_root::selinux::Selinux for FakeSelinux {
+    fn pid1(&self) -> std::io::Result<Option<String>> {
+        Ok(self.pid1.map(str::to_string))
+    }
+
+    fn label(&self, root: &Path, path: &Path) -> std::io::Result<String> {
+        match self.labels.iter().find(|(at, _)| at == root) {
+            Some((_, label)) => Ok((*label).to_string()),
+            None => crate::whole_root::selinux::Kernel.label(root, path),
+        }
+    }
+
+    fn exec_context(&self, source: &str, file: &str) -> std::io::Result<String> {
+        self.answer()?;
+        Ok(self
+            .starts
+            .iter()
+            .find(|(from, label, _)| *from == source && *label == file)
+            .map_or(source, |(_, _, entered)| entered)
+            .to_string())
+    }
+
+    fn denied(
+        &self,
+        source: &str,
+        target: &str,
+        class: &str,
+        perms: &[&'static str],
+    ) -> std::io::Result<Vec<&'static str>> {
+        self.answer()?;
+        Ok(perms
+            .iter()
+            .copied()
+            .filter(|perm| self.denials.contains(&(source, target, class, *perm)))
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{copy_executable, write_executable};

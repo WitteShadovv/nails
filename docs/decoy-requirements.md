@@ -114,17 +114,31 @@ The decoy also has to be one the session can enter and leave:
   Nothing is installed into the decoy's SELinux policy. The activation
   records the program in the session plan, so the way back starts its steps
   the same way. A step that cannot start would let the switch go on without
-  it, so:
+  it, and one left in PID 1's own domain runs as confined as PID 1, so:
   - activation is refused while `/usr/bin/env` does not resolve, links
     followed, to an executable file in the decoy root, before it writes
     anything, or in the hidden root it builds, which a hidden session can
     change: there the refusal names the `discard` that brings the decoy's
     back;
-  - `deactivate` refuses to return while the hidden root lacks it, before it
-    prepares anything, and names `deactivate --poweroff`. The preparation of
-    the way back looks again, in the hidden root and in the decoy root it
-    mounts, and where it is missing a plain `emergency` powers off instead of
-    returning;
+  - where a policy is loaded, the file it resolves to must also carry a label
+    from which the policy lets PID 1 start it (`execute`, `read` and `open`),
+    gives that start a domain other than PID 1's, and lets PID 1 enter that
+    domain through it (`transition` and `entrypoint`). A file a hidden session
+    moves or copies over it with its attributes keeps the label of where it
+    came from, and the domain follows the label, so this is asked in the same
+    places, and the refusal names `restorecon` for the decoy root and for the
+    hidden session. NAILS asks the running kernel: it reads the label from the
+    file's `security.selinux` attribute, PID 1's context from
+    `/proc/1/attr/current`, and asks the loaded policy through selinuxfs at
+    `/sys/fs/selinux`. A policy it cannot ask, as where no selinuxfs is mounted
+    there, refuses too. It asks nothing on a kernel that runs no SELinux, nor
+    on one that runs it with no policy loaded. It does not ask what the domain
+    may do once entered, such as `env`'s start of the copy;
+  - `deactivate` refuses to return while the hidden root lacks it, or holds
+    one that fails the check above, before it prepares anything, and names
+    `deactivate --poweroff`. The preparation of the way back looks again, in
+    the hidden root and in the decoy root it mounts, and where it fails a
+    plain `emergency` powers off instead of returning;
   - activation is refused as well while `systemd-soft-reboot.service`, whose
     start runs the last step before each switch, has `NoNewPrivileges=yes` or
     an `SELinuxContext=` with every drop-in loaded. Under the first the kernel
@@ -135,17 +149,19 @@ The decoy also has to be one the session can enter and leave:
     drop-in for every service (`service.d`) applies to it as well, but one
     for another unit alone is not seen.
 
-  The checks look the program up without reading it, which changes no access
-  time but that of a link on the way to it. PID 1 starts it from the decoy
-  root, though, at the switch into the hidden session and at the decoy's first
-  start after the way back where those steps are left: on a decoy root
-  mounted without `noatime` that can update its access time, at most once a
-  day under the default `relatime`, as activation's own `systemctl` calls
-  do. The udev rule that keeps unused disks read-only
+  The checks look the program up and read its label without reading the
+  file, which changes no access time but that of a link on the way to it.
+  PID 1 starts it from the decoy root, though, at the switch into the hidden
+  session and at the decoy's first start after the way back where those
+  steps are left: on a decoy root mounted without `noatime` that can update
+  its access time, at most once a day under the default `relatime`, as
+  activation's own `systemctl` calls do. The udev rule that keeps unused
+  disks read-only
   (`[session_mounts] read_only`) still runs the copy directly, as udev
   starts it. Where SELinux does not run, PID 1 starts the copy itself, as
   before. No test of this repository runs these steps under a loaded SELinux
-  policy yet, and `nails check` does not test any of this.
+  policy or asks one yet: the tests give the checks the policy's answers, and
+  `nails check` does not test any of this.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The

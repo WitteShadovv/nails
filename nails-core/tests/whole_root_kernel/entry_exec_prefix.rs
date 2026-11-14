@@ -22,6 +22,7 @@ use nails_core::session::units::session_units;
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, write_executable};
 use nails_teardown::mountinfo::read_mountinfo;
+use nails_teardown::test_support::{BIN_T, FakeSelinux};
 use nails_teardown::whole_root::exec_prefix::TRAMPOLINE;
 use nails_teardown::whole_root::plan::{Plan, unix_now};
 use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
@@ -195,6 +196,92 @@ fn a_next_root_whose_upper_replaced_env_is_refused_and_undone() {
         assert!(!world.run.path().join(DROPIN_DIR).exists());
         assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
         assert_eq!(atime(&env), before, "/usr/bin/env was read");
+    });
+}
+
+/// Write `label` as the SELinux label of `path` itself, as stored: with its
+/// NUL. Skips the test where the kernel labels new files itself (SELinux
+/// active), which needs a VM with the policy instead.
+fn set_label(path: &Path, label: &str) {
+    let mut value = vec![0; 4096];
+    match rustix::fs::lgetxattr(path, "security.selinux", &mut value[..]) {
+        Err(rustix::io::Errno::NODATA) => {}
+        other => nails_core::test_support::skip_host(&format!(
+            "the kernel labels new files on this host ({other:?}): an entry under a loaded policy \
+             needs a VM"
+        )),
+    }
+    rustix::fs::lsetxattr(
+        path,
+        "security.selinux",
+        format!("{label}\0").as_bytes(),
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap_or_else(|e| panic!("label {}: {e}", path.display()));
+}
+
+/// Where a policy is loaded, the label decides as well, read through the next
+/// root's overlay: a hidden session moved a file of another label over the
+/// program, which the next root shows from the upper, and which the policy
+/// starts in PID 1's own domain. The entry is refused once the next root is
+/// built and undone, though the decoy's program carries the label of the
+/// system's programs; the checks read neither file.
+#[test]
+fn a_next_root_whose_upper_put_a_file_of_another_label_at_env_is_refused_and_undone() {
+    let _ = Rerun::new(test_path!(
+        a_next_root_whose_upper_put_a_file_of_another_label_at_env_is_refused_and_undone
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let env = decoy_env(&world);
+        set_label(&env, BIN_T);
+        let upper = Layout::new(world.hidden.path()).upper();
+        let replaced = upper.join("usr/bin/env");
+        std::fs::create_dir_all(replaced.parent().unwrap()).unwrap();
+        write_executable(&replaced, "#!/bin/sh\n", 0o755);
+        set_label(&replaced, "unconfined_u:object_r:etc_t:s0");
+        std::thread::sleep(Duration::from_millis(20));
+        let before = (atime(&env), atime(&replaced));
+        let paths = world.paths();
+        let host = FakeHost {
+            selinux: FakeSelinux::targeted(),
+            ..FakeHost::default()
+        };
+        let inputs = entry::EntryInputs {
+            exec_prefix: SELINUX,
+            ..world.inputs()
+        };
+
+        let error = entry::prepare(&paths, &inputs, &host).unwrap_err();
+
+        assert!(
+            refused(error).contains(
+                "in the hidden root /usr/bin/env is labelled unconfined_u:object_r:etc_t:s0, which \
+                 the loaded SELinux policy gives no domain of its own when PID 1 \
+                 (system_u:system_r:init_t:s0) starts it: the hidden session's own units and the \
+                 last step of the way back would run in PID 1's own domain"
+            ),
+            "the reason names the label in the hidden root"
+        );
+        assert!(!next_root_mounted(&paths), "the next root is detached");
+        assert!(!paths.runtime().exists());
+        assert!(!world.run.path().join(DROPIN_DIR).exists());
+        assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
+        assert_eq!(
+            (atime(&env), atime(&replaced)),
+            before,
+            "a program was read"
+        );
+
+        // With the upper's copy gone, the decoy's shows through and passes.
+        std::fs::remove_file(&replaced).unwrap();
+        let entry = entry::prepare(&paths, &inputs, &host).expect("the entry");
+        assert_eq!(
+            entry.plan.exec_prefix.as_deref(),
+            Some(Path::new(TRAMPOLINE))
+        );
+        entry::rollback(&paths);
     });
 }
 

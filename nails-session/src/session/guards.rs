@@ -21,6 +21,7 @@
 
 use crate::error::{NailsError, Result};
 use nails_teardown::whole_root::plan::Direction;
+use nails_teardown::whole_root::selinux::Selinux;
 use nails_teardown::whole_root::transition;
 use std::path::Path;
 
@@ -60,11 +61,50 @@ pub trait GuardHost {
     fn selinux_context(&self, unit: &str) -> Result<String> {
         Err(not_asked(unit, "SELinuxContext"))
     }
+    /// The running kernel's SELinux, which tells what the loaded policy makes
+    /// of PID 1's start of the exec prefix in a root
+    /// ([`nails_teardown::whole_root::exec_prefix::domain`]). Asked only where
+    /// PID 1 starts NAILS's steps through one. A host that does not ask the
+    /// kernel answers no question, by default, so that such a switch is
+    /// refused.
+    fn selinux(&self) -> &dyn Selinux {
+        &NotAsked
+    }
 }
 
 /// The error of a host that does not ask PID 1 for `property` of `unit`.
 fn not_asked(unit: &str, property: &str) -> NailsError {
     NailsError::InvalidState(format!("PID 1 was not asked for {property} of {unit}"))
+}
+
+/// The SELinux of a host that does not ask the kernel: every question fails.
+struct NotAsked;
+
+impl NotAsked {
+    fn error() -> std::io::Error {
+        std::io::Error::other("the kernel's SELinux was not asked")
+    }
+}
+
+impl Selinux for NotAsked {
+    fn pid1(&self) -> std::io::Result<Option<String>> {
+        Err(Self::error())
+    }
+    fn label(&self, _: &Path, _: &Path) -> std::io::Result<String> {
+        Err(Self::error())
+    }
+    fn exec_context(&self, _: &str, _: &str) -> std::io::Result<String> {
+        Err(Self::error())
+    }
+    fn denied(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &[&'static str],
+    ) -> std::io::Result<Vec<&'static str>> {
+        Err(Self::error())
+    }
 }
 
 /// `property` of `unit`, or of PID 1 itself without one, as PID 1 has it
