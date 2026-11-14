@@ -446,10 +446,11 @@ of this changelog for that version becomes the release notes word for word, and
   `kernel`, as `SELINUX=disabled` leaves Linux 6.4 and later where the kernel started SELinux at
   boot), which it says to start with `selinux=0`. It refuses a `nails` process in a domain other
   than `unconfined_t` or `unconfined_service_t`, and a fact it cannot read. NAILS does not yet
-  choose the SELinux domain of the processes systemd and udev start from its copy in `/run` (the
-  transition step at each switch, the watcher, the sleep guard and the disk guard of the hidden
-  session, and the boot-record steps after the way back), so for now it refuses every host where
-  SELinux runs. It warns, where nothing refuses, when SELinux is permissive or runs in another mode
+  choose the SELinux domain of the processes systemd starts from its copy in `/run` (the
+  transition step at each switch, the watcher and the sleep guard of the hidden session, and the
+  boot-record steps after the way back), nor that of the disk guard, which udev runs itself from
+  the rule NAILS installs there, so for now it refuses every host where SELinux runs. It judges
+  the two apart, since what NAILS sets on systemd's side does not reach what udev runs. It warns, where nothing refuses, when SELinux is permissive or runs in another mode
   than `/etc/selinux/config` sets. Where the kernel's list cannot be read, a mounted selinuxfs or
   an SELinux context of the process means SELinux runs, and `/sys/fs/selinux` or a configuration
   that sets a mode or names a policy, without either, is refused as a host whose SELinux cannot be

@@ -60,8 +60,8 @@
 //!
 //! # The domain NAILS runs in
 //!
-//! NAILS runs as two kinds of process, and both must run in an unconfined
-//! domain ([`UNCONFINED_DOMAINS`]):
+//! NAILS runs as three kinds of process, and each must run in a domain NAILS
+//! counts as unconfined ([`UNCONFINED_DOMAINS`]):
 //!
 //! - the `nails` process that runs this check, and the activation: its domain
 //!   is the type of its context in `/proc/self/attr/current`. A login whose
@@ -70,15 +70,22 @@
 //!   whose program has no policy of its own: the probe of the Fedora 44 cloud
 //!   image recorded it for the harness's backdoor unit, from which the VM tests
 //!   run `nails`.
-//! - the processes systemd and udev start from NAILS's copy in `/run`: the
-//!   transition step at each switch, the watcher, the sleep guard and the
-//!   disk guard of the hidden session, and the boot-record steps after the way
-//!   back. They run in whatever domain the decoy's policy gives that program
-//!   when systemd or udev executes it, which no fact read at check time shows.
-//!   The registry says what is known of it ([`UnitDomain`]): NAILS does not
-//!   choose it yet, so it is [`UnitDomain::Unknown`], and on a host where
-//!   SELinux runs this check fails until NAILS starts them in a domain a run
-//!   under the policy has shown to be unconfined.
+//! - the processes systemd starts from NAILS's copy in `/run`: the transition
+//!   step at each switch, the watcher and the sleep guard of the hidden
+//!   session, and the boot-record steps after the way back. They run in
+//!   whatever domain the decoy's policy gives that program when systemd
+//!   executes it.
+//! - the disk guard of the hidden session, which udev runs from the rule NAILS
+//!   installs in `/run`. systemd-udevd executes it itself, so it runs in
+//!   whatever domain the decoy's policy gives a program udev executes, and
+//!   nothing NAILS sets on systemd's side reaches it.
+//!
+//! No fact read at check time shows the domain of the last two. The registry
+//! says what is known of each ([`UnitDomains`]), and the check judges each by
+//! itself, so a domain shown for what systemd starts never stands for the
+//! disk guard. NAILS chooses neither yet, so both are [`UnitDomain::Unknown`],
+//! and on a host where SELinux runs this check fails until a run under the
+//! policy has shown the domain NAILS starts each in.
 //!
 //! Every SELinux fact is read through the host-fact readers detection uses,
 //! without libselinux; the change time of `/etc/selinux/config` and the boot
@@ -113,10 +120,9 @@ const UNLOADED: &str = "kernel";
 /// Where the kernel gives the time it booted (`btime`).
 const PROC_STAT: &str = "/proc/stat";
 
-/// The SELinux domain of the processes systemd and udev start from NAILS's
-/// copy in `/run`: the transition step at each switch, the watcher, the sleep
-/// guard and the disk guard of the hidden session, and the boot-record steps
-/// after the way back.
+/// The SELinux domain one kind of NAILS's processes from its copy in `/run`
+/// runs in: those systemd starts, or the disk guard udev starts
+/// ([`UnitDomains`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnitDomain {
     /// Not known: NAILS starts them without choosing a domain, so they run in
@@ -127,17 +133,40 @@ pub enum UnitDomain {
     Known(String),
 }
 
+/// The SELinux domains of the processes systemd and udev start from NAILS's
+/// copy in `/run`, by what starts them. What NAILS sets on systemd's side does
+/// not reach what udev starts, so the check judges each by itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitDomains {
+    /// The processes systemd starts: the transition step at each switch, the
+    /// watcher and the sleep guard of the hidden session, and the boot-record
+    /// steps after the way back.
+    pub systemd: UnitDomain,
+    /// The disk guard of the hidden session, which udev runs from the rule
+    /// NAILS installs in `/run`: systemd-udevd executes it itself.
+    pub udev: UnitDomain,
+}
+
+impl UnitDomains {
+    /// Neither domain known: what the registry gives while NAILS chooses
+    /// neither.
+    pub const UNKNOWN: Self = Self {
+        systemd: UnitDomain::Unknown,
+        udev: UnitDomain::Unknown,
+    };
+}
+
 /// `lsm-status`: the active LSMs, and where SELinux runs, that it enforces the
 /// targeted policy and NAILS runs unconfined.
 #[derive(Debug, Clone)]
 pub struct LsmStatusCheck {
-    units: UnitDomain,
+    units: UnitDomains,
 }
 
 impl LsmStatusCheck {
-    /// The check for a NAILS whose processes systemd and udev start in
+    /// The check for a NAILS whose processes systemd and udev start run in
     /// `units`.
-    pub fn new(units: UnitDomain) -> Self {
+    pub fn new(units: UnitDomains) -> Self {
         Self { units }
     }
 }
@@ -391,8 +420,9 @@ fn mode_word(mode: SelinuxMode) -> &'static str {
     }
 }
 
-/// The check's verdict on `facts`, for units that run in `units`.
-fn judge(facts: &Facts, units: &UnitDomain) -> CheckResult {
+/// The check's verdict on `facts`, for processes systemd and udev start that
+/// run in `units`.
+fn judge(facts: &Facts, units: &UnitDomains) -> CheckResult {
     let lsms = lsm_sentence(&facts.lsms);
     let context = facts.label.as_deref().and_then(Context::parse);
     match presence(facts, context.is_some()) {
@@ -450,7 +480,7 @@ fn unloaded(facts: &Facts, lsms: &str) -> CheckResult {
 fn running(
     facts: &Facts,
     context: Option<&Context<'_>>,
-    units: &UnitDomain,
+    units: &UnitDomains,
     lsms: &str,
 ) -> CheckResult {
     let status = facts.selinux.as_ref();
@@ -514,8 +544,8 @@ fn running(
             fails.extend(level_finding(context));
             if !unconfined(context.domain) {
                 fails.push(format!(
-                    "This nails process runs in the SELinux domain {}, not in an unconfined \
-                     one ({}).",
+                    "This nails process runs in the SELinux domain {}, not in one NAILS counts \
+                     as unconfined ({}).",
                     context.domain,
                     UNCONFINED_DOMAINS.join(", ")
                 ));
@@ -523,38 +553,33 @@ fn running(
             Some(context.domain)
         }
     };
-    let units = match units {
-        UnitDomain::Unknown => {
-            fails.push(
-                "NAILS does not choose the SELinux domain of the processes systemd and udev \
-                 start from its copy in /run (the transition step at each switch, the \
-                 watcher, the sleep guard and the disk guard of the hidden session, and the \
-                 boot-record steps after the way back), so nothing shows they run \
-                 unconfined."
-                    .to_string(),
-            );
-            None
-        }
-        UnitDomain::Known(domain) => {
-            if !unconfined(domain) {
-                fails.push(format!(
-                    "systemd and udev start NAILS's processes in the SELinux domain {domain}, \
-                     not in an unconfined one ({}).",
-                    UNCONFINED_DOMAINS.join(", ")
-                ));
-            }
-            Some(domain.as_str())
-        }
-    };
+    let systemd = unit_domain(
+        &units.systemd,
+        "NAILS does not choose the SELinux domain of the processes systemd starts from its \
+         copy in /run (the transition step at each switch, the watcher and the sleep guard of \
+         the hidden session, and the boot-record steps after the way back), so nothing shows \
+         they run unconfined.",
+        "systemd starts NAILS's processes in",
+        &mut fails,
+    );
+    let udev = unit_domain(
+        &units.udev,
+        "NAILS does not choose the SELinux domain of the hidden session's disk guard, which \
+         udev runs itself from the rule NAILS installs in /run, so nothing shows it runs \
+         unconfined.",
+        "udev starts NAILS's disk guard in",
+        &mut fails,
+    );
 
     if fails.is_empty()
-        && let (Some(process), Some(units)) = (process, units)
+        && let (Some(process), Some(systemd), Some(udev)) = (process, systemd, udev)
     {
         return if warns.is_empty() {
             CheckResult::Pass(format!(
                 "SELinux enforces, {SELINUX_CONFIG} names the targeted policy and has not \
                  changed since the boot, and NAILS runs unconfined: this process in {process}, \
-                 the processes systemd and udev start for it in {units}. {lsms}"
+                 the processes systemd starts for it in {systemd}, and the disk guard udev \
+                 starts in {udev}. {lsms}"
             ))
         } else {
             CheckResult::Warn(format!("{} {lsms}", warns.join(" ")))
@@ -562,6 +587,34 @@ fn running(
     }
     fails.append(&mut warns);
     CheckResult::fail(format!("{} {lsms}", fails.join(" ")))
+}
+
+/// The domain `units` gives one kind of NAILS's processes, where it is known.
+/// The finding that fails it goes to `fails`: `unknown` where nothing shows the
+/// domain, and where it is not unconfined, that `starts` (the start of a
+/// sentence that names what starts them) puts them in that domain.
+fn unit_domain<'a>(
+    units: &'a UnitDomain,
+    unknown: &str,
+    starts: &str,
+    fails: &mut Vec<String>,
+) -> Option<&'a str> {
+    match units {
+        UnitDomain::Unknown => {
+            fails.push(unknown.to_string());
+            None
+        }
+        UnitDomain::Known(domain) => {
+            if !unconfined(domain) {
+                fails.push(format!(
+                    "{starts} the SELinux domain {domain}, not in one NAILS counts as \
+                     unconfined ({}).",
+                    UNCONFINED_DOMAINS.join(", ")
+                ));
+            }
+            Some(domain)
+        }
+    }
 }
 
 /// The finding on when `/etc/selinux/config`, which names the targeted

@@ -160,7 +160,7 @@ pub fn build_registry<F: Filesystem>(
         InspectedShell, LocateDatabaseCheck, LsmStatusCheck, MemoryWipeCheck, MountNamespaceCheck,
         NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck, OuterVolumeCheck,
         PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
-        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UnitDomain, UpgradeRunCheck,
+        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UnitDomains, UpgradeRunCheck,
         UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
@@ -242,11 +242,13 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(MountNamespaceCheck::new()));
 
     // The active LSMs. Where SELinux runs, it must enforce the targeted policy
-    // and NAILS must run unconfined, this process and the processes systemd
-    // and udev start from its copy in /run alike; NAILS does not choose the
-    // domain of the latter yet, so a host where SELinux runs fails. Where it
-    // does not run, the row passes. Read-only.
-    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomain::Unknown)));
+    // and NAILS must run unconfined: this process, the processes systemd
+    // starts from its copy in /run, and the disk guard udev runs from its rule,
+    // each judged by itself, since what NAILS sets on systemd's side does not
+    // reach what udev runs. NAILS chooses neither of the last two domains yet,
+    // so a host where SELinux runs fails. Where it does not run, the row
+    // passes. Read-only.
+    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));
 
     // Resolves every host tool nails spawns from the detected platform's search
     // list before anything is built: the way back's `ip` among them, and its

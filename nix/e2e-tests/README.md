@@ -955,11 +955,12 @@ smoke scenario, it asserts that:
   leaves the hidden root holding what it held;
 - `check` names the security modules the kernel runs in its `lsm-status` row.
   On Arch, where SELinux does not run, the row passes. On Fedora, where it
-  runs, the row fails, and its first finding is the one every such host gets
-  for now, that NAILS does not choose the SELinux domain of its units: none of
-  the facts it reads there (the mode, `/etc/selinux/config`, the context of
-  the `nails` process) failed to read or failed its rule, and the row says
-  SELinux is permissive exactly when the kernel does;
+  runs, the row fails, and its first two findings are the ones every such
+  host gets for now, that NAILS does not choose the SELinux domain of the
+  processes systemd starts for it, nor that of the disk guard udev starts:
+  none of the facts it reads there (the mode, `/etc/selinux/config`, the
+  context of the `nails` process) failed to read or failed its rule, and the
+  row says SELinux is permissive exactly when the kernel does;
 - `activate` exits 8 before it writes a byte or a timestamp to the hidden root.
   It starts no session (no next root mounted, no `/run/overlay-runtime`, no
   soft-reboot drop-in or job, the same boot), and the top two levels of `/run`

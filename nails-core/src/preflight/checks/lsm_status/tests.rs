@@ -62,19 +62,24 @@ fn enforcing(label: &str) -> Facts {
     }
 }
 
-/// Units that run in the domain a backdoor-style unit gets.
-fn known_units() -> UnitDomain {
-    UnitDomain::Known(SERVICE.to_string())
+/// The processes systemd and udev start for NAILS, both in the domain a
+/// backdoor-style unit gets: unconfined, so the verdict turns on the other
+/// facts.
+fn known_units() -> UnitDomains {
+    UnitDomains {
+        systemd: UnitDomain::Known(SERVICE.to_string()),
+        udev: UnitDomain::Known(SERVICE.to_string()),
+    }
 }
 
 /// The check's verdict on what `fs` holds.
-fn run_on(fs: &MockFilesystem, units: UnitDomain) -> CheckResult {
+fn run_on(fs: &MockFilesystem, units: UnitDomains) -> CheckResult {
     PreFlightCheck::<MockFilesystem>::run(&LsmStatusCheck::new(units), fs).unwrap()
 }
 
 #[test]
 fn the_row_is_named_lsm_status() {
-    let check = LsmStatusCheck::new(UnitDomain::Unknown);
+    let check = LsmStatusCheck::new(UnitDomains::UNKNOWN);
     assert_eq!(PreFlightCheck::<MockFilesystem>::name(&check), "lsm-status");
     assert!(PreFlightCheck::<MockFilesystem>::description(&check).contains("targeted"));
 }
@@ -90,7 +95,7 @@ fn an_apparmor_host_passes_naming_its_lsms() {
     let fs = MockFilesystem::new();
     fs.mock_set_file_content(host_facts::LSM_LIST, &format!("{APPARMOR_LSMS}\n"));
     fs.mock_set_file_content(PROCESS_LABEL, "unconfined\n");
-    for units in [UnitDomain::Unknown, known_units()] {
+    for units in [UnitDomains::UNKNOWN, known_units()] {
         let result = run_on(&fs, units);
         assert!(result.is_pass(), "{result:?}");
         assert_eq!(
@@ -115,7 +120,7 @@ fn hosts_with_landlock_yama_or_no_labelling_module_pass() {
         let fs = MockFilesystem::new();
         fs.mock_set_file_content(host_facts::LSM_LIST, list);
         fs.mock_set_file_content(PROCESS_LABEL, "/usr/bin/sudo (complain)\n");
-        let result = run_on(&fs, UnitDomain::Unknown);
+        let result = run_on(&fs, UnitDomains::UNKNOWN);
         assert!(result.is_pass(), "{list}: {result:?}");
         assert_eq!(
             result.message(),
@@ -131,7 +136,7 @@ fn hosts_with_landlock_yama_or_no_labelling_module_pass() {
 fn a_host_without_any_sign_of_selinux_passes_without_the_lsm_list() {
     // A kernel that shows no LSM list, no selinuxfs, no /sys/fs/selinux, no
     // configuration and no label for this process: nothing shows SELinux.
-    let result = run_on(&MockFilesystem::new(), UnitDomain::Unknown);
+    let result = run_on(&MockFilesystem::new(), UnitDomains::UNKNOWN);
     assert!(result.is_pass(), "{result:?}");
     assert_eq!(
         result.message(),
@@ -160,7 +165,7 @@ fn a_configuration_selinux_does_not_run_with_is_named_but_passes() {
         fs.mock_set_file_content(host_facts::LSM_LIST, APPARMOR_LSMS);
         fs.mock_set_file_content("/proc/self/mounts", "proc /proc proc rw 0 0\n");
         fs.mock_set_file_content(SELINUX_CONFIG, config);
-        let result = run_on(&fs, UnitDomain::Unknown);
+        let result = run_on(&fs, UnitDomains::UNKNOWN);
         assert!(result.is_pass(), "{config:?}: {result:?}");
         let lsm_list = "Active LSMs: lockdown, capability, landlock, yama, apparmor, ima, evm.";
         assert_eq!(
@@ -204,8 +209,9 @@ fn enforcing_targeted_with_nails_unconfined_passes() {
         result.message(),
         "SELinux enforces, /etc/selinux/config names the targeted policy and has not changed \
          since the boot, and NAILS runs unconfined: this process in unconfined_t, the \
-         processes systemd and udev start for it in unconfined_service_t. Active LSMs: \
-         lockdown, capability, yama, selinux, bpf, landlock."
+         processes systemd starts for it in unconfined_service_t, and the disk guard udev \
+         starts in unconfined_service_t. Active LSMs: lockdown, capability, yama, selinux, \
+         bpf, landlock."
     );
 }
 
@@ -227,34 +233,97 @@ fn both_unconfined_domains_pass_for_this_process() {
 // The processes systemd and udev start for NAILS
 // ---------------------------------------------------------------------------
 
+/// The finding for processes systemd starts in a domain nothing shows.
+const SYSTEMD_UNKNOWN: &str = "NAILS does not choose the SELinux domain of the processes \
+     systemd starts from its copy in /run (the transition step at each switch, the watcher \
+     and the sleep guard of the hidden session, and the boot-record steps after the way \
+     back), so nothing shows they run unconfined.";
+
+/// The finding for a disk guard udev starts in a domain nothing shows.
+const UDEV_UNKNOWN: &str = "NAILS does not choose the SELinux domain of the hidden \
+     session's disk guard, which udev runs itself from the rule NAILS installs in /run, so \
+     nothing shows it runs unconfined.";
+
+/// What `units` makes of an enforcing targeted host where this process runs
+/// unconfined.
+fn units_verdict(systemd: UnitDomain, udev: UnitDomain) -> CheckResult {
+    judge(&enforcing(UNCONFINED_LOGIN), &UnitDomains { systemd, udev })
+}
+
 #[test]
 fn units_in_an_unknown_domain_fail_where_selinux_runs() {
-    // What the registry gives on every host today: NAILS starts its units
-    // without choosing a domain, so an enforcing targeted host fails too.
-    let result = judge(&enforcing(UNCONFINED_LOGIN), &UnitDomain::Unknown);
+    // What the registry gives on every host today: NAILS starts neither kind
+    // in a domain it chose, so an enforcing targeted host fails too.
+    let result = judge(&enforcing(UNCONFINED_LOGIN), &UnitDomains::UNKNOWN);
     assert!(result.is_fail(), "{result:?}");
     assert_eq!(
         result.message(),
-        "NAILS does not choose the SELinux domain of the processes systemd and udev start \
-         from its copy in /run (the transition step at each switch, the watcher, the sleep \
-         guard and the disk guard of the hidden session, and the boot-record steps after the \
-         way back), so nothing shows they run unconfined. Active LSMs: lockdown, capability, \
+        format!(
+            "{SYSTEMD_UNKNOWN} {UDEV_UNKNOWN} Active LSMs: lockdown, capability, yama, selinux, \
+             bpf, landlock."
+        )
+    );
+    // Either one unknown fails by itself.
+    let known = UnitDomain::Known(SERVICE.to_string());
+    let result = units_verdict(UnitDomain::Unknown, known.clone());
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "{SYSTEMD_UNKNOWN} Active LSMs: lockdown, capability, yama, selinux, bpf, landlock."
+        )
+    );
+    let result = units_verdict(known, UnitDomain::Unknown);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!("{UDEV_UNKNOWN} Active LSMs: lockdown, capability, yama, selinux, bpf, landlock.")
+    );
+}
+
+#[test]
+fn a_domain_shown_for_what_systemd_starts_does_not_stand_for_the_disk_guard() {
+    // A mechanism on systemd's side that puts the units in an unconfined
+    // domain does not reach the disk guard, which udev executes itself: the
+    // guard is judged by what is known of it alone.
+    let systemd = UnitDomain::Known(SERVICE.to_string());
+    let result = units_verdict(systemd.clone(), UnitDomain::Unknown);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(result.message().starts_with(UDEV_UNKNOWN), "{result:?}");
+    assert!(!result.message().contains("systemd starts"), "{result:?}");
+    // udev_t, the domain udev itself runs in, is not one NAILS counts as
+    // unconfined: whether the guard may run there is for a run under the
+    // policy to show, and until the check takes it, the guard fails there.
+    let result = units_verdict(systemd, UnitDomain::Known("udev_t".to_string()));
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "udev starts NAILS's disk guard in the SELinux domain udev_t, not in one NAILS counts as \
+         unconfined (unconfined_t, unconfined_service_t). Active LSMs: lockdown, capability, \
          yama, selinux, bpf, landlock."
     );
 }
 
 #[test]
 fn units_in_a_confined_domain_fail() {
-    for domain in ["init_t", "initrc_t", "unconfined"] {
-        let result = judge(
-            &enforcing(UNCONFINED_LOGIN),
-            &UnitDomain::Known(domain.to_string()),
-        );
+    let known = UnitDomain::Known(SERVICE.to_string());
+    for domain in ["init_t", "initrc_t", "udev_t", "unconfined"] {
+        let confined = UnitDomain::Known(domain.to_string());
+        let result = units_verdict(confined.clone(), known.clone());
         assert!(result.is_fail(), "{domain}: {result:?}");
         assert!(
             result.message().starts_with(&format!(
-                "systemd and udev start NAILS's processes in the SELinux domain {domain}, not \
-                 in an unconfined one (unconfined_t, unconfined_service_t)."
+                "systemd starts NAILS's processes in the SELinux domain {domain}, not in one \
+                 NAILS counts as unconfined (unconfined_t, unconfined_service_t)."
+            )),
+            "{result:?}"
+        );
+        let result = units_verdict(known.clone(), confined);
+        assert!(result.is_fail(), "{domain}: {result:?}");
+        assert!(
+            result.message().starts_with(&format!(
+                "udev starts NAILS's disk guard in the SELinux domain {domain}, not in one NAILS \
+                 counts as unconfined (unconfined_t, unconfined_service_t)."
             )),
             "{result:?}"
         );
@@ -395,9 +464,9 @@ fn nails_in_a_confined_domain_fails() {
         assert_eq!(
             result.message(),
             format!(
-                "This nails process runs in the SELinux domain {domain}, not in an unconfined \
-                 one (unconfined_t, unconfined_service_t). Active LSMs: lockdown, capability, \
-                 yama, selinux, bpf, landlock."
+                "This nails process runs in the SELinux domain {domain}, not in one NAILS counts \
+                 as unconfined (unconfined_t, unconfined_service_t). Active LSMs: lockdown, \
+                 capability, yama, selinux, bpf, landlock."
             )
         );
     }
@@ -512,7 +581,7 @@ fn a_selinux_context_runs_selinux_where_the_lsm_list_cannot_be_read() {
     // kernel labels its processes.
     let fs = MockFilesystem::new();
     fs.mock_set_file_content(PROCESS_LABEL, "system_u:system_r:container_t:s0:c1,c2\0");
-    let result = run_on(&fs, UnitDomain::Unknown);
+    let result = run_on(&fs, UnitDomains::UNKNOWN);
     assert!(result.is_fail(), "{result:?}");
     assert!(
         result.message().ends_with(
@@ -596,14 +665,15 @@ fn every_finding_is_listed_failures_first() {
         label: Some("staff_u:sysadm_r:sysadm_t:s0-s15:c0.c1023".to_string()),
         config_age: ConfigAge::Changed,
     };
-    let result = judge(&facts, &UnitDomain::Unknown);
+    let result = judge(&facts, &UnitDomains::UNKNOWN);
     assert!(result.is_fail(), "{result:?}");
     let message = result.message();
     let order = [
         "/etc/selinux/config names the \"mls\" policy",
         "runs at the sensitivity s15",
         "runs in the SELinux domain sysadm_t",
-        "NAILS does not choose the SELinux domain",
+        "NAILS does not choose the SELinux domain of the processes systemd starts",
+        "NAILS does not choose the SELinux domain of the hidden session's disk guard",
         "SELinux is permissive",
         "/etc/selinux/config sets SELINUX=enforcing, but SELinux runs permissive.",
         "Active LSMs:",
@@ -649,7 +719,7 @@ fn selinux_on_without_a_policy_fails_with_its_own_finding_and_the_remedy() {
     let fs = unloaded_host("SELINUX=disabled\nSELINUXTYPE=targeted\n");
     // The domain of NAILS's units means nothing without a policy: the
     // verdict is the same whatever the registry knows of it.
-    for units in [UnitDomain::Unknown, known_units()] {
+    for units in [UnitDomains::UNKNOWN, known_units()] {
         let result = run_on(&fs, units);
         assert!(result.is_fail(), "{result:?}");
         assert_eq!(
@@ -669,7 +739,7 @@ fn selinux_on_without_a_policy_fails_with_its_own_finding_and_the_remedy() {
     // Debian's policy, named where its packages set SELinux up: the same.
     let result = run_on(
         &unloaded_host("SELINUX=disabled\nSELINUXTYPE=default\n"),
-        UnitDomain::Unknown,
+        UnitDomains::UNKNOWN,
     );
     assert!(result.is_fail(), "{result:?}");
     assert!(
@@ -947,7 +1017,7 @@ proptest::proptest! {
             label,
             config_age: ConfigAge::Changed,
         };
-        proptest::prop_assert!(judge(&facts, &UnitDomain::Unknown).is_pass());
+        proptest::prop_assert!(judge(&facts, &UnitDomains::UNKNOWN).is_pass());
     }
 }
 
@@ -975,10 +1045,13 @@ fn probe_fixtures() -> Vec<(String, serde_json::Value)> {
 /// The probes record the mode SELinux ran in and the domain of the harness's
 /// backdoor unit, from whose shell the VM tests run `nails`: a unit systemd
 /// starts from a program that has no policy of its own. Those two facts are
-/// taken as recorded, for this process and for NAILS's units alike; what the
-/// probes do not record (the LSM list, the configuration file, the user, role
-/// and level of the context) is filled in as Fedora's cloud image has it.
-/// Enforcing passes and permissive warns; an image without SELinux passes.
+/// taken as recorded, the domain for this process and for the processes
+/// systemd starts for NAILS alike; what the probes do not record (the LSM
+/// list, the configuration file, the user, role and level of the context) is
+/// filled in as Fedora's cloud image has it. Nor do they record the domain
+/// udev runs a program in, so the disk guard's is given as unconfined, and
+/// only the recorded facts decide. Enforcing passes and permissive warns; an
+/// image without SELinux passes.
 #[test]
 fn the_probed_hosts_pass_enforcing_and_warn_permissive() {
     let mut judged = Vec::new();
@@ -1001,7 +1074,7 @@ fn the_probed_hosts_pass_enforcing_and_warn_permissive() {
                     label: None,
                     config_age: ConfigAge::Unknown("no such file".to_string()),
                 },
-                &UnitDomain::Unknown,
+                &UnitDomains::UNKNOWN,
             ),
             Some(mode) => {
                 let domain = facts["selinuxBackdoorDomain"]
@@ -1009,7 +1082,11 @@ fn the_probed_hosts_pass_enforcing_and_warn_permissive() {
                     .unwrap_or_else(|| panic!("{name}: SELinux runs, but no domain is recorded"));
                 let mut probed = enforcing(&format!("system_u:system_r:{domain}:s0"));
                 probed.selinux = Some(status(Some(mode), Some(mode_word(mode)), Some("targeted")));
-                judge(&probed, &UnitDomain::Known(domain.to_string()))
+                let units = UnitDomains {
+                    systemd: UnitDomain::Known(domain.to_string()),
+                    udev: known_units().udev,
+                };
+                judge(&probed, &units)
             }
         };
         match mode {

@@ -40,10 +40,9 @@
 # of the release binary in which the one Fedora row of the family table is
 # admitted and the lsm-status check, which refuses every host where SELinux
 # runs for now, is left out; nothing else changes. That build is never
-# shipped. The
-# oracle's verdict on the images says what its channels see of a session on a
-# Fedora 44 Cloud decoy's disk (ci/oracle/README.md lists what they do not),
-# not that NAILS supports Fedora.
+# shipped. The oracle's verdict on the images says what its channels see of a
+# session on a Fedora 44 Cloud decoy's disk (ci/oracle/README.md lists what
+# they do not), not that NAILS supports Fedora.
 #
 # The decoy is prepared before the before image, so all of them hold it alike:
 # its journal volatile and auditd masked (lib/hidden-root.nix's
@@ -73,7 +72,7 @@ let
   # The release binary with the Fedora base row admitted, for this driver
   # only. The build fails unless exactly that one row changes. It also leaves
   # out the lsm-status check, which refuses every host where SELinux runs,
-  # this permissive decoy among them, until NAILS chooses the SELinux domain
+  # this permissive decoy among them, until NAILS chooses the SELinux domains
   # of the processes systemd and udev start from its copy in /run. The check
   # only reads, so leaving it out changes nothing a session leaves on the
   # disk. The build fails unless exactly that one line changes too.
@@ -93,8 +92,8 @@ let
       mv "$table.new" "$table"
       registry=nails-core/src/manager/preflight_runner.rs
       awk '
-        $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomain::Unknown)));" {
-          print "    let _ = LsmStatusCheck::new(UnitDomain::Unknown);"; left++; next
+        $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));" {
+          print "    let _ = LsmStatusCheck::new(UnitDomains::UNKNOWN);"; left++; next
         }
         { print }
         END { if (left != 1) exit 1 }

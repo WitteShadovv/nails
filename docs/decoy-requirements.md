@@ -192,10 +192,13 @@ changed, and the SELinux context of the `nails` process from
   `unconfined_service_t`;
 - a fact among these that cannot be read;
 - for now, every host where SELinux runs: NAILS does not yet choose the
-  SELinux domain of the processes systemd and udev start from its copy in
-  `/run` (the transition step at each switch, the watcher, the sleep guard
-  and the disk guard of the hidden session, and the boot-record steps after
-  the way back), so nothing shows that they run unconfined.
+  SELinux domain of the processes systemd starts from its copy in `/run`
+  (the transition step at each switch, the watcher and the sleep guard of
+  the hidden session, and the boot-record steps after the way back), nor
+  that of the hidden session's disk guard, which udev runs itself from the
+  rule NAILS installs there, so nothing shows that they run unconfined. The
+  check judges the two apart: what NAILS sets on systemd's side does not
+  reach what udev runs.
 
 Where it refuses nothing, it warns when SELinux is permissive, or runs in
 another mode than `/etc/selinux/config` sets. Where the kernel's list of
