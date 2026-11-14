@@ -54,6 +54,22 @@ const WRITERS: &str = "\
     zcompile zdelattr zf_chgrp zf_chmod zf_chown zf_ln zf_mkdir zf_mv zf_rm \
     zf_rmdir zf_sync zftp zpty zsetattr zsystem ztie zuntie";
 
+/// The builtins of the modules that zsh 5.9 to 5.9.2 do not load as their
+/// names are first run (`load=no` in their `.mdd`): without a `zmodload`,
+/// each name runs the program of that name that PATH finds.
+const UNLOADED: &str = "\
+    zgetattr zsetattr zdelattr zlistattr cap getcap setcap clone zcurses strftime ztie \
+    zuntie zgdbmpath chgrp chmod chown ln mkdir mv rm rmdir sync zf_chgrp zf_chmod \
+    zf_chown zf_ln zf_mkdir zf_mv zf_rm zf_rmdir zf_sync pcre_compile pcre_study \
+    pcre_match stat zstat sysread syswrite sysopen sysseek syserror zsocket ztcp zftp \
+    zprof zpty zselect";
+
+/// Whether `name` is a builtin of a module zsh does not load as it is first
+/// run ([`UNLOADED`]), so that it may run an outside program of that name.
+pub(super) fn unloaded(name: &str) -> bool {
+    UNLOADED.split_whitespace().any(|builtin| builtin == name)
+}
+
 /// Whether `name` is one of the builtins of zsh 5.9 and of its modules
 /// ([`BUILTINS`]).
 pub(super) fn builtin(name: &str) -> bool {
@@ -107,11 +123,14 @@ pub(super) fn typed_word(name: &str) -> bool {
 }
 
 /// Whether `command` is a builtin that writes no file its words name and
-/// runs no code or command they give (`print`, `zstyle`, `[[`).
+/// runs no code or command they give (`print`, `zstyle`, `[[`), and one zsh
+/// has without a `zmodload` ([`unloaded`]).
 pub(super) fn quiet(command: &str) -> bool {
     command == "[["
         || command == "]]"
-        || (builtin(command) && !WRITERS.split_whitespace().any(|writer| writer == command))
+        || (builtin(command)
+            && !unloaded(command)
+            && !WRITERS.split_whitespace().any(|writer| writer == command))
 }
 
 /// The letters `fc` and `history` (`command`) take as options in zsh 5.9

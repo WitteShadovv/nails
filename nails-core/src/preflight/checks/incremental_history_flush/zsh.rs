@@ -100,7 +100,12 @@
 //! `kill -HUP $$`, from a command substitution too) and a `TMOUT` above 0,
 //! with which zsh ends at a prompt left waiting, are doubts too
 //! ([`walk::ends`]), and so is what a command substitution in a hook writes.
-//! A function
+//! A builtin's name runs an outside program, which gets the words and the
+//! input a hook gives it, after `command` (unless `POSIX_BUILTINS` is on,
+//! which the check does not read), after a `disable` of it, and where the
+//! builtin is of a module zsh does not load as the name is first run
+//! (`stat`, `strftime`), so a hook's builtin then counts as such a program
+//! ([`runs`]). A function
 //! or a regular alias named like the command a NAILS command is typed with
 //! (`sudo`, `nails`) runs with that line, so its code counts as a hook's, and
 //! a global alias named like a word of such a command counts as used
@@ -328,6 +333,9 @@ struct Reader<'a, F: Filesystem> {
     keys_splits: Vec<(String, String, String)>,
     /// What the files read may change of how zsh reads code ([`reading`]).
     reading: reading::Reading,
+    /// The builtins the files disable, as patterns of their names
+    /// ([`Reader::disable`]).
+    disabled: Vec<String>,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -611,6 +619,12 @@ impl<F: Filesystem> Reader<'_, F> {
                     self.defined.push(name);
                 }
             }
+            Event::Builtin {
+                name,
+                args,
+                function,
+                input,
+            } => self.run_in(function, &name, &args, input, place),
             Event::HookDoubt { function, doubt }
             | Event::Ends {
                 function, doubt, ..
@@ -722,9 +736,12 @@ impl<F: Filesystem> Reader<'_, F> {
         // one that writes nothing in them, a function the files define or
         // autoload, whose code the check reads, and a stock one whose work
         // it reads by its name (`prompt`), for a path as written.
+        if name == "disable" {
+            self.disable(&args);
+        }
         let creates = made::creates(&name);
         if creates
-            || (made::may_write(&name)
+            || (made::may_write(&name, self.outside(&name))
                 && !self.defined.contains(&name)
                 && !self.autoloads.contains(&name)
                 && !walk::STOCK_NAMES.contains(&name.as_str()))
@@ -743,24 +760,33 @@ impl<F: Filesystem> Reader<'_, F> {
             self.top_calls.push((name.clone(), self.order));
         }
         if let Some(function) = function {
-            let fed = if args.iter().any(|arg| arg.expands) {
-                Some(runs::Fed::Word)
-            } else {
-                match input {
-                    Input::None => None,
-                    Input::Computed => Some(runs::Fed::Input),
-                    Input::Piped(feeders) => Some(runs::Fed::Pipe(feeders)),
-                }
-            };
-            if let Some(fed) = fed {
-                self.computed_calls
-                    .push((function.clone(), name.clone(), place.to_string(), fed));
-            }
-            if !self.edges.contains(&(function.clone(), name.clone())) {
-                self.edges.push((function, name.clone()));
-            }
+            self.run_in(function, &name, &args, input, place);
         }
         self.calls.push((name, args, place.to_string()));
+    }
+
+    /// Note that the function `function` runs the command `name` with
+    /// `args`, reading `input`, in the file at `place`: what may feed it what
+    /// the shell's code makes, the command line among it ([`runs::Fed`]), and
+    /// that it may run a function of that name.
+    fn run_in(&mut self, function: String, name: &str, args: &[Word], input: Input, place: &str) {
+        let fed = if args.iter().any(|arg| arg.expands) {
+            Some(runs::Fed::Word)
+        } else {
+            match input {
+                Input::None => None,
+                Input::Computed => Some(runs::Fed::Input),
+                Input::Piped(feeders) => Some(runs::Fed::Pipe(feeders)),
+            }
+        };
+        if let Some(fed) = fed {
+            self.computed_calls
+                .push((function.clone(), name.to_string(), place.to_string(), fed));
+        }
+        let edge = (function, name.to_string());
+        if !self.edges.contains(&edge) {
+            self.edges.push(edge);
+        }
     }
 
     /// Note what the file at `place` defines, declares, tests or types that
@@ -1033,6 +1059,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         fpath_splits: Vec::new(),
         keys_splits: Vec::new(),
         reading: reading::Reading::default(),
+        disabled: Vec::new(),
     };
     // The prompts zsh takes from its environment, which it shows as they
     // are unless a file sets them: code where PROMPT_SUBST may be on.
