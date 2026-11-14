@@ -260,17 +260,22 @@ fn the_writer_as_the_decoy_runs_it_takes_its_own_command() {
 }
 
 /// A step outside its domain removes the drop-in before it starts the
-/// writer, as the drop-in's own start does.
+/// writer, as the drop-in's own start does. The test builds that start and
+/// does not run it: a start in place of this process that fails leaves the
+/// test process with the signal handling the start set up for the writer.
 #[test]
 fn the_writer_as_the_decoy_runs_it_removes_the_drop_in_first() {
     let dir = tempfile::tempdir().unwrap();
     let dropin = dir.path().join(DROPIN_DIR).join(DROPIN_NAME);
     std::fs::create_dir_all(dropin.parent().unwrap()).unwrap();
     std::fs::write(&dropin, "[Service]\n").unwrap();
-    let missing: Vec<OsString> = vec![dir.path().join("no-writer").into(), "boot".into()];
-    let error = run_as_decoy(dir.path(), &missing);
-    assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+    let writer: Vec<OsString> = vec!["/usr/bin/wtmpdb".into(), "boot".into()];
+    let command = start_as_decoy(dir.path(), &writer).unwrap();
     assert!(!dropin.exists());
+    assert!(!dir.path().join(DROPIN_DIR).exists());
+    assert_eq!(command.get_program(), "/usr/bin/wtmpdb");
+    assert_eq!(command.get_args().collect::<Vec<_>>(), ["boot"]);
+    assert!(start_as_decoy(dir.path(), &[]).is_none());
 }
 
 #[test]

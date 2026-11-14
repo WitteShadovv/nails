@@ -260,11 +260,17 @@ pub fn run(run: &Path, switched_at: Duration, writer: &[OsString]) -> io::Error 
 /// drop-in as well, and starts the writer as the decoy runs it, as where the
 /// copy was left out. It returns only where that start fails.
 pub fn run_as_decoy(run: &Path, writer: &[OsString]) -> io::Error {
-    remove_dropin(run);
-    match as_decoy(writer) {
+    match start_as_decoy(run, writer) {
         Some(mut command) => command.exec(),
         None => no_writer(),
     }
+}
+
+/// What [`run_as_decoy`] starts in place of this process, once it removed
+/// the drop-in: the writer as the decoy runs it ([`as_decoy`]).
+fn start_as_decoy(run: &Path, writer: &[OsString]) -> Option<Command> {
+    remove_dropin(run);
+    as_decoy(writer)
 }
 
 fn no_writer() -> io::Error {
