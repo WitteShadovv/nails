@@ -124,6 +124,11 @@
       "url": "https://geo.mirror.pkgbuild.com/images/v20261015.611680/Arch-Linux-x86_64-basic-20261015.611680.qcow2",
       "name": "Arch-Linux-x86_64-basic-20261015.611680.qcow2",
       "sha256": "sha256-u4iKCEVo9OaLEmD/phTr+AbHlmj6IPlGxpGXNTj00zw="
+    },
+    "knownFailedUnits": {
+      "hiddenSession": {},
+      "afterReturn": {},
+      "notInImage": []
     }
   },
   "arch-install": {
