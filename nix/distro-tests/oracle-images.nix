@@ -30,7 +30,9 @@
 # Each image is the whole disk, written as a raw into
 # $NAILS_ORACLE_OUT/forensics (the working directory when it is unset), as
 # before.raw, control.raw, control2.raw and after.raw: the first three and
-# the last are the names run-scan.sh's ORACLE_IMAGES_DIR mode reads.
+# the last are the names run-scan.sh's ORACLE_IMAGES_DIR mode reads. Each raw
+# is made sparse once written (fallocate --dig-holes), so its zeros take no
+# space on the runner and read the same.
 #
 # nix-vm-test boots the image under QEMU -snapshot, so the guest's writes live
 # only as long as the QEMU process, and a shutdown and start boots the pristine
@@ -101,6 +103,7 @@ let
         import json
         import os
         import shlex
+        import subprocess
         import sys
         import time
 
@@ -243,6 +246,14 @@ let
             assert "error" not in jobs[0], f"the backup of {device} failed: {jobs[0]}"
             qmp("job-dismiss", {"id": job})
             qmp("blockdev-del", {"node-name": job})
+            # The backup writes the disk's zeros as allocated blocks, so each
+            # raw would take the whole disk's size on the runner: four of
+            # arch-boxes's 40 GiB do not fit there. Dig the zeros out: a hole
+            # reads as the zeros it replaces, and the raw keeps the space of
+            # the blocks that hold data only.
+            subprocess.run(
+                ["${pkgs.util-linux}/bin/fallocate", "--dig-holes", target], check=True
+            )
             stat = os.stat(target)
             assert stat.st_size == size and stat.st_blocks > 0, f"{target}: {stat}"
             print(
