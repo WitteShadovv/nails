@@ -1281,9 +1281,11 @@ of this changelog for that version becomes the release notes word for word, and
   `/dev/urandom` and a key device of another filesystem pass.
 - NAILS now follows a device's path in `/dev` through its links only while they lead to a path in
   `/dev`, and stops at the first link that leads out of it, so it reads no link and makes no lookup
-  past `/dev`, on the decoy's disk say. It resolved such a path through every link, those on the
-  decoy's disk too, and judged the line by where they led. Such a line now fails `backend-entries`
-  as one whose path cannot be told, naming the link that leads out of `/dev`.
+  past `/dev`, on the decoy's disk say, for a tag too, by the link udev makes for it in
+  `/dev/disk`. It resolved such a path through every link, those on the decoy's disk too, and
+  judged the line by where they led, and a tag whose link led out of `/dev` named nothing. Such a
+  line now fails `backend-entries` as one whose path cannot be told, naming the link that leads
+  out of `/dev`.
 - `backend-entries` and the attach gate no longer let a device or swap line for the hidden volume's
   device go when it carries `_netdev`, which only has systemd mount it after the network: such a
   line fails `backend-entries` as it does without the option, and the gate counts what it mounts as

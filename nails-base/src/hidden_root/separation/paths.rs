@@ -9,7 +9,8 @@
 //! container file, which `systemd-cryptsetup` opens through a loop device,
 //! and so its key file, its header and what the boot mounts for one of these
 //! (see the `reads` module). A device's path in `/dev` that no block device
-//! answers to is followed through its links only while they stay in `/dev`
+//! answers to, written as that path or as a tag whose udev link it is, is
+//! followed through its links only while they stay in `/dev`
 //! ([`follow_in_dev`]): a link that leads out of it is not followed.
 //!
 //! Each part of such a path is looked at on its own through the
@@ -46,7 +47,7 @@ use crate::blockdev::{OutOfDev, follow_in_dev};
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::MountRoot;
 use crate::filesystem::mountinfo::MountEntry;
-use crate::fstab::{FstabEntry, is_network_type};
+use crate::fstab::{FstabEntry, is_network_type, spec_device};
 use crate::hidden_root::mount_holding;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -76,9 +77,10 @@ pub enum UntoldPath {
     /// This part of the path could not be looked up.
     Unreadable(PathBuf),
     /// This symbolic link, on the way of a device's path in `/dev` that no
-    /// block device here answers to, leads out of `/dev`, as one that a
-    /// `tmpfiles.d` line makes at boot can: it is not followed, so nothing
-    /// past `/dev` is looked up.
+    /// block device here answers to, written as that path or as a tag whose
+    /// udev link it is, leads out of `/dev`, as one that a `tmpfiles.d` line
+    /// makes at boot can: it is not followed, so nothing past `/dev` is
+    /// looked up.
     LeavesDev(PathBuf),
     /// The path was not looked up.
     NotLookedUp,
@@ -136,6 +138,15 @@ fn is_device_path(spec: &str) -> bool {
         && !Path::new(spec)
             .components()
             .any(|part| part == Component::ParentDir)
+}
+
+/// The device's path in `/dev` that `spec`, the first field of an fstab
+/// line or the source of a crypttab line or what it reads besides, names:
+/// the path itself, or for a tag the link udev makes for it
+/// ([`spec_device`]), where no `..` in it leads out of `/dev`
+/// ([`is_device_path`]).
+fn device_path(spec: &str) -> Option<PathBuf> {
+    spec_device(spec).filter(|path| path.to_str().is_some_and(is_device_path))
 }
 
 /// Whether `spec`, the first field of an fstab line or the source of a
@@ -217,9 +228,10 @@ pub(super) fn as_written(path: &Path) -> Option<PathBuf> {
 /// besides, its key file, its header or what the boot mounts for one of
 /// them ([`reads`](super::reads::reads)). A device's path in `/dev` that an
 /// fstab line other than a bind line or a crypttab line names, for what it
-/// opens or what it reads, and that no block device in `devices` answers to,
-/// is held as well where it leads out of `/dev` or cannot be looked up
-/// ([`leaving_dev`]).
+/// opens or what it reads, by that path or by a tag ([`device_path`]), and
+/// that no block device in `devices` answers to, is held as well, by the
+/// spec as it is written, where it leads out of `/dev` or cannot be looked
+/// up ([`leaving_dev`]).
 pub(super) fn read_all<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
@@ -252,18 +264,19 @@ pub(super) fn read_all<F: Filesystem>(
             .entry(path.to_string())
             .or_insert_with(|| read(fs, mounts, root, &unmounted, Path::new(path)));
     }
-    // A device's path in /dev that no block device here answers to, of a
-    // line that is no bind line, or of a crypttab line: the device names of
-    // the running system, as they are resolved.
+    // A device's path in /dev that no block device here answers to, by its
+    // path or by a tag, of a line that is no bind line, or of a crypttab
+    // line: the device names of the running system, as they are resolved.
     let unresolved = fstab
         .iter()
         .filter(|entry| is_claimed(entry) && !entry.is_bind())
         .filter_map(source)
         .chain(crypttab.iter().map(|entry| entry.source.as_str()))
         .chain(crypttab_reads(crypttab))
-        .filter(|spec| is_device_path(spec) && !devices.by_spec.contains_key(*spec));
-    for spec in unresolved {
-        if let Some(why) = leaving_dev(fs, spec) {
+        .filter(|spec| !devices.by_spec.contains_key(*spec))
+        .filter_map(|spec| Some((spec, device_path(spec)?)));
+    for (spec, path) in unresolved {
+        if let Some(why) = leaving_dev(fs, &path) {
             paths.entry(spec.to_string()).or_insert(Err(why));
         }
     }
@@ -278,28 +291,29 @@ pub(super) fn crypttab_reads(crypttab: &[CrypttabEntry]) -> impl Iterator<Item =
         .flat_map(|entry| super::reads::reads(entry).into_iter().map(|(_, spec)| spec))
 }
 
-/// Why where `spec`, a device's path in `/dev` that no block device here
+/// Why where `path`, a device's path in `/dev` that no block device here
 /// answers to, leads cannot be told, as [`follow_in_dev`] follows it: a link
 /// on its way leads out of `/dev`, to a file, say, which is not followed, so
 /// nothing past `/dev` is looked up, or a part of it cannot be looked up for
 /// another reason than that it is not there. `None` for one that is not
 /// there, as for a drive that is not plugged in, and for one that stays in
 /// `/dev`.
-fn leaving_dev<F: Filesystem>(fs: &F, spec: &str) -> Option<UntoldPath> {
-    match follow_in_dev(fs, Path::new(spec)) {
+fn leaving_dev<F: Filesystem>(fs: &F, path: &Path) -> Option<UntoldPath> {
+    match follow_in_dev(fs, path) {
         Ok(_) | Err(OutOfDev::Missing) => None,
         Err(OutOfDev::Leaves(link)) => Some(UntoldPath::LeavesDev(link)),
-        Err(OutOfDev::NotInDev) => Some(UntoldPath::LeavesDev(spec.into())),
+        Err(OutOfDev::NotInDev) => Some(UntoldPath::LeavesDev(path.into())),
         Err(OutOfDev::Automount(point)) => Some(UntoldPath::Automount(point)),
         Err(OutOfDev::Unreadable(part)) => Some(UntoldPath::Unreadable(part)),
     }
 }
 
-/// Whether `spec`, a device's path in `/dev` that no block device here
-/// answers to, cannot be told, as [`read_all`] found ([`leaving_dev`]): the
-/// line is then placed by that path, as a file's.
+/// Whether `spec`, a device's path in `/dev` or a tag that names one
+/// ([`device_path`]) that no block device here answers to, cannot be told,
+/// as [`read_all`] found ([`leaving_dev`]): the line is then placed by that
+/// spec, as by a file's path.
 pub(super) fn is_untold_device(paths: &NamedPaths, spec: &str) -> bool {
-    is_device_path(spec) && matches!(paths.get(spec), Some(Err(_)))
+    device_path(spec).is_some() && matches!(paths.get(spec), Some(Err(_)))
 }
 
 /// Whether a lookup that reaches `path` makes the mount that holds it, as

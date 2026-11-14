@@ -44,21 +44,20 @@
 //! mounts, the decoy's own crypttab line too.
 //!
 //! A bind line's source, the path of a swap or image file, of what a FUSE
-//! program reads and of a FUSE program named by its path, and a crypttab
-//! source that is no tag and no device's path in `/dev`, such as a container
-//! file, and so its key file, its header or a file its boot mounts for one of
-//! these, are read as they are written, one part at a time, and no link in
-//! them is followed: such a path in the volume fails as one that names it. A
-//! line whose path cannot be told fails as well, with or without the flag: a
-//! path with a symbolic link in any part, one that is not absolute, a device
-//! node, one that crosses the folder of a line of the fstab, a `noauto` one
-//! too, while that line's mount is not there now, one with a part that cannot
-//! be looked up, one whose lookup would mount an automount point, and a
-//! device's path in `/dev` that no block device answers to and on whose way a
-//! link leads out of `/dev`, which the check does not follow, so it looks up
-//! nothing past `/dev`. Such a line may mount the volume, so the check says
-//! why it cannot tell where the line leads, and to write it with its real
-//! path.
+//! program reads and of a FUSE program named by its path, and a crypttab source
+//! that is no tag and no device's path in `/dev`, such as a container file, and
+//! so its key file, its header or a file its boot mounts for one of these, are
+//! read as they are written, one part at a time, and no link in them is
+//! followed: such a path in the volume fails as one that names it. A line whose
+//! path cannot be told fails as well, with or without the flag: a path with a
+//! symbolic link in any part, one that is not absolute, a device node, one that
+//! crosses the folder of a line of the fstab, a `noauto` one too, while that
+//! line's mount is not there now, one with a part that cannot be looked up, one
+//! whose lookup would mount an automount point, and a device's path in `/dev`
+//! that no block device answers to, by that path or by a tag, and on whose way
+//! a link leads out of `/dev`, which the check does not follow, so it looks up
+//! nothing past `/dev`. Such a line may mount the volume, so the check says why
+//! it cannot tell where the line leads, and to write it with its real path.
 //!
 //! The check reads only plain fstab lines, whose fields NAILS splits and
 //! decodes as `libmount` and systemd do and of whose options it reads those it

@@ -2075,10 +2075,11 @@ container that lies in the volume, at the root's folder or inside it, makes the
 line fail, and so does a source whose path NAILS cannot tell, such as a link to
 the volume's drive or a device node outside `/dev`, with the flag or without
 it. NAILS follows a
-device's path in `/dev` that no block device answers to through its links only
-while they stay in `/dev`: a link that leads out of it, as one that a
-`tmpfiles.d` line makes at boot can, is not followed, so NAILS looks up nothing
-past `/dev`, and the line's path cannot be told, in the fstab as well. One that
+device's path in `/dev` that no block device answers to, written as that path
+or as a tag whose link udev makes in `/dev/disk`, through its links only while
+they stay in `/dev`: a link that leads out of it, as one that a `tmpfiles.d`
+line makes at boot can, is not followed, so NAILS looks up nothing past
+`/dev`, and the line's path cannot be told, in the fstab as well. One that
 leads nowhere, as for a drive that is not plugged in, names nothing here.
 
 `systemd-cryptsetup` reads a line's key file, its `header=` and its

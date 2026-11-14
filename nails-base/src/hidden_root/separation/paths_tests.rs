@@ -509,12 +509,62 @@ fn a_device_path_is_untold_at_the_first_link_out_of_dev_and_nothing_past_it_is_r
 }
 
 #[test]
+fn a_tag_whose_udev_link_leads_out_of_dev_cannot_be_told() {
+    // A tag names the link udev makes for it: by-uuid/out leads to /tmp/back,
+    // a link on the decoy's disk back to the drive, by-label/box to a
+    // container on the volume and by-partuuid/k1 to a key file there. None is
+    // followed past /dev, so the line is placed by the tag as written, which
+    // cannot be told. A tag whose link stays in /dev, or that leads nowhere,
+    // is no path to tell.
+    let fstab = parse_fstab(
+        "/dev/sda1 / ext4 defaults 0 1\nUUID=out /media/o ext4 nofail 0 0\n\
+         UUID=e1 /media/e ext4 nofail 0 0\nUUID=gone /media/g ext4 nofail 0 0\n",
+    );
+    let crypttab = parse_crypttab("box LABEL=box none luks\nkey /dev/sdc PARTUUID=k1 luks\n");
+    let fs = linked(&[
+        ("/dev/disk/by-uuid/out", "/tmp/back"),
+        ("/tmp/back", "/dev/sdb"),
+        ("/dev/disk/by-label/box", "/mnt/box.img"),
+        ("/dev/disk/by-partuuid/k1", "../../../mnt/key"),
+        ("/dev/disk/by-uuid/e1", "../../sdb1"),
+    ]);
+    fs.mock_set_mount_root_error("/dev/disk/by-uuid/gone", ErrorKind::NotFound);
+    for place in ["/mnt", "/tmp"] {
+        fs.mock_set_mount_root_error(place, ErrorKind::PermissionDenied);
+    }
+    let paths = read_all(
+        &fs,
+        &parse_mountinfo(PLAIN),
+        Path::new("/"),
+        &fstab,
+        &crypttab,
+        &DeviceMap::default(),
+    );
+    for (spec, link) in [
+        ("UUID=out", "/dev/disk/by-uuid/out"),
+        ("LABEL=box", "/dev/disk/by-label/box"),
+        ("PARTUUID=k1", "/dev/disk/by-partuuid/k1"),
+    ] {
+        assert_eq!(
+            paths[spec],
+            Err(UntoldPath::LeavesDev(PathBuf::from(link))),
+            "{spec}"
+        );
+        assert!(is_untold_device(&paths, spec), "{spec}");
+    }
+    for spec in ["UUID=e1", "UUID=gone"] {
+        assert!(!paths.contains_key(spec), "{spec}");
+        assert!(!is_untold_device(&paths, spec), "{spec}");
+    }
+}
+
+#[test]
 fn on_a_real_filesystem_a_device_path_that_stays_in_dev_or_is_not_there_is_none() {
     // /dev/null stays in /dev, a missing name is not there, and a name below
     // a device node is no folder: none of them leads out of /dev.
     let fs = crate::filesystem::RealFilesystem;
     for spec in ["/dev/null", "/dev/nails-no-such-device", "/dev/null/x"] {
-        assert_eq!(leaving_dev(&fs, spec), None, "{spec}");
+        assert_eq!(leaving_dev(&fs, Path::new(spec)), None, "{spec}");
     }
 }
 
