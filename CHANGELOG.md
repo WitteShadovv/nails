@@ -1010,18 +1010,18 @@ of this changelog for that version becomes the release notes word for word, and
   where that copy does not take its label. A switch at which PID 1 loads the policy anew, as on a
   host that runs SELinux permissive or has `domain_can_mmap_files` on, gives every file in `/run`
   the label of the files there again, and so does a `restorecon`: the watcher, the sleep guard and
-  the units of the decoy's first start check their domain when they start, give their copy the label
-  again and start themselves again from it. Where they still run outside `unconfined_service_t`, the
-  watcher and the sleep guard power off, the one-shot leaves the records as they are and only
-  removes its pieces from `/run`, and the wtmpdb writer runs as the decoy has it. The unit files and
-  drop-ins are the same on every host, and nothing is installed into the decoy's policy. The kernel
-  may run SELinux where the labels of the uppers must be copied, where it lists SELinux among its
-  security modules, and where the host facts report SELinux while that list cannot be read.
-  Elsewhere, as on a stock Debian, Ubuntu or NixOS host, nothing changes. Of the tests in this
-  repository only Fedora's admission gate runs the steps under an enforcing policy and checks their
-  domains, and only a dispatch of the staged distribution tests runs it. The Fedora 44 and 45 images
-  of the oracle run a hidden session and the way back under a permissive policy, without checking
-  the domains; see docs/decoy-requirements.md.
+  the units of the decoy's first start check their domain when they start, and one that runs outside
+  `unconfined_service_t` gives its copy the label again and starts itself again from it. Where one
+  still runs outside it, the watcher and the sleep guard power off, the one-shot leaves the records
+  as they are and only removes its pieces from `/run`, and the wtmpdb writer runs as the decoy has
+  it. The unit files and drop-ins are the same on every host, and nothing is installed into the
+  decoy's policy. The kernel may run SELinux where the labels of the uppers must be copied, where it
+  lists SELinux among its security modules, and where the host facts report SELinux while that list
+  cannot be read. Elsewhere, as on a stock Debian, Ubuntu or NixOS host, nothing changes. Of the
+  tests in this repository only Fedora's admission gate runs the steps under an enforcing policy and
+  checks their domains, and only a dispatch of the staged distribution tests runs it. The Fedora 44
+  and 45 images of the oracle run a hidden session and the way back under a permissive policy,
+  without checking the domains; see docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new

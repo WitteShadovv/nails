@@ -288,9 +288,9 @@ upper changes.
   gives `systemd-soft-reboot.service`, which `deactivate` refuses. A switch at
   which PID 1 loads the policy anew gives the copies in `/run` the label of
   the files there again, so the units PID 1 starts from a copy after a switch
-  check their own domain, give their copy the label again and start
-  themselves again from it; where they still run outside the unconfined
-  service domain, the watcher and the sleep guard power the machine off (see
+  check their own domain, and one outside the unconfined service domain gives
+  its copy the label again and starts itself again from it; where one still
+  runs outside it, the watcher and the sleep guard power the machine off (see
   the [decoy requirements](decoy-requirements.md)).
 - **Remote state, never rolled back.** Deactivation leaves the upper on the
   hidden volume and changes nothing else. Anything the hidden session sent through a
