@@ -34,10 +34,11 @@
 # away by is a record of the hidden session itself, so there a login runs in
 # the session (`login`): a console login through PAM's login stack, which
 # writes a row to lastlog2 (pam_lastlog2) and its records to utmp and wtmp.
-# Step 3 shows the login wrote its row in the session, step 4 that neither it
-# nor any record of it is on the decoy after the way back, and the same login
-# run on the decoy afterwards is the positive control: its row and records are
-# there.
+# Step 3 shows the login wrote its row and its wtmp records in the session,
+# step 4 that none of them is on the decoy after the way back (lastlog2 and btmp
+# as they were, wtmp with no record on the login's terminal), and the same
+# login run on the decoy afterwards is the positive control: its row and its
+# wtmp records are there.
 #
 # Records are read live in the guest and carried to the host-side readers in
 # nix/e2e-tests/lib/records.py (reading live keeps install, power cycle and
@@ -348,20 +349,18 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
         session.assert_hidden_root(vm)
-        hidden_wtmp_login = False
         if run_login:
-            # A login in the hidden session writes its records there.
+            # A login in the hidden session writes its records there: a
+            # lastlog2 row and its wtmp records, or their absence from the
+            # decoy afterwards would prove nothing.
             pam_login("hidden")
             hidden = capture("hidden-login")
             hidden_rows = records.sql_rows_added(reference.lastlog2, hidden.lastlog2)
             print(f"=== lastlog2 rows the hidden login wrote ===\n{hidden_rows}")
-            assert hidden_rows, (
-                "the login in the hidden session wrote no lastlog2 row, so its "
-                + "absence from the decoy would prove nothing"
-            )
+            assert hidden_rows, "the login in the hidden session wrote no lastlog2 row"
             hidden_wtmp = login_records(records.utmp_added(reference.wtmp, hidden.wtmp))
             print(f"=== wtmp records of the hidden login ===\n{hidden_wtmp}")
-            hidden_wtmp_login = bool(hidden_wtmp)
+            assert hidden_wtmp, "the login in the hidden session wrote no wtmp record"
         # Work in the session until the kernel has been up past wtmpdb's
         # threshold, as any real session does: below it, a writer kept from
         # the bus dates the boot to the cold boot instead.
@@ -467,11 +466,15 @@ distroVm.buildVmTest {
             assert rows, "a login on the decoy wrote no lastlog2 row the reader sees"
             logged = login_records(records.utmp_added(after.wtmp, decoy.wtmp))
             print(f"=== the decoy login's wtmp records ===\n{logged}")
-            if hidden_wtmp_login:
-                assert logged, "a login on the decoy wrote no wtmp record the reader sees"
+            assert logged, "a login on the decoy wrote no wtmp record the reader sees"
             after = decoy
 
-    with subtest("a plain soft-reboot still carries the trace (positive control)"):
+    control_title = (
+        "a plain soft-reboot's boot record reads as a power cycle's"
+        if assert_kind == "classic-wtmp-reset"
+        else "a plain soft-reboot still carries the trace (positive control)"
+    )
+    with subtest(control_title):
         before_control = guest_clock()
         follow("systemctl soft-reboot", "control-soft-reboot")
         control = capture("after-control-soft-reboot")
