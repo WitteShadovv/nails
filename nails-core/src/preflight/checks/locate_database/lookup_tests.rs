@@ -115,6 +115,50 @@ fn an_updatedb_nails_cannot_tell_is_findutils_has_lists_it_cannot_tell() {
     );
 }
 
+/// A bare `updatedb` whose link NAILS cannot resolve, for another reason
+/// than that it leads to nothing, may lead to findutils', which reads no
+/// updatedb.conf: the run's prune lists cannot be told, and a cron job that
+/// runs it warns, where the resolution that failed read as plocate's and the
+/// updatedb.conf that skips the volume let the decoy pass. One that leads
+/// to nothing is no findutils'.
+#[test]
+fn an_updatedb_link_nails_cannot_resolve_has_lists_it_cannot_tell() {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let decoy_failing = |kind: ErrorKind| {
+        let decoy = Decoy::new();
+        decoy
+            .file("/etc/updatedb.conf", &pruning_mnt(DEBIAN))
+            .file("/usr/sbin/updatedb.plocate", "")
+            .link("/usr/bin/updatedb", "/usr/sbin/updatedb.plocate")
+            .file("/etc/crontab", "0 3 * * * root updatedb\n");
+        decoy.fs.mock_fail_only(
+            Path::new("/usr/bin/updatedb"),
+            MockLookup::Canonicalize,
+            MockFailure::Io(kind),
+        );
+        decoy
+    };
+    let decoy = decoy_failing(ErrorKind::Other);
+    let result = decoy.check(false);
+    assert!(result.is_warn(), "{result:?}");
+    for part in [
+        "the cron job at line 1 of /etc/crontab runs updatedb, and NAILS cannot tell whether it \
+         skips the hidden volume: NAILS cannot tell whether /usr/bin/updatedb is findutils' \
+         updatedb, whose prune options NAILS does not read: NAILS cannot look up \
+         /usr/bin/updatedb (",
+        "NAILS cannot tell which updatedb /usr/bin/updatedb is: NAILS cannot look up \
+         /usr/bin/updatedb (",
+    ] {
+        assert!(message(&result).contains(part), "{part}: {result:?}");
+    }
+    let decoy = decoy_failing(ErrorKind::NotFound);
+    let result = decoy.check(false);
+    assert!(
+        !message(&result).contains("is findutils' updatedb"),
+        "{result:?}"
+    );
+}
+
 /// The message of `result`.
 fn message_of(result: &crate::preflight::CheckResult) -> String {
     message(result).to_string()
