@@ -78,7 +78,9 @@ The decoy also has to be one the session can enter and leave:
   A label it cannot copy refuses the activation, which is undone. So on such a
   host:
   - the hidden volume's filesystem must store `security.selinux` attributes,
-    as ext4, xfs and btrfs do, and the policy must let NAILS write them there;
+    as ext4, xfs and btrfs do, and the policy must let NAILS write them there.
+    A `context=` mount option lets NAILS write none, since it gives every file
+    of the mount one label, so mount the hidden volume without that option;
   - the decoy's `/` and the root of each decoy filesystem the session
     overlays must carry labels;
   - whatever the upper holds on the way to your home must be a directory,

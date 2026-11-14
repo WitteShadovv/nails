@@ -301,10 +301,9 @@ fn a_refusal_names_what_failed() {
         unopened.contains(&format!("opening {UPPER} failed: Permission denied")),
         "{unopened}"
     );
-    assert!(
-        why(Failure::Write(Errno::NOTSUP))
-            .ends_with(&format!("the filesystem of {UPPER} cannot store labels"))
-    );
+    assert!(why(Failure::Write(Errno::NOTSUP)).ends_with(&format!(
+        "{UPPER} cannot store labels: its filesystem stores none, or its mount lets none be set"
+    )));
     let unreadable = why(Failure::Read(Errno::IO));
     assert!(
         unreadable.contains("reading the label of /home failed"),

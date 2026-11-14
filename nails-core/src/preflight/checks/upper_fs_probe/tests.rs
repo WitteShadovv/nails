@@ -402,11 +402,12 @@ fn a_kernel_without_a_detached_mount_fails_closed_and_says_why() {
     assert!(!message.contains("ext4"), "{message}");
 }
 
-/// What the label copy says where SELinux runs and the hidden volume's
-/// filesystem stores no labels.
+/// What the label copy says where SELinux runs and the hidden volume stores no
+/// labels.
 const CANNOT_STORE: &str = "SELinux runs on this host (selinuxfs is mounted), so \
-     /mnt/data/.probe-1-2/upper must carry the SELinux label of /, but the filesystem of \
-     /mnt/data/.probe-1-2/upper cannot store labels";
+     /mnt/data/.probe-1-2/upper must carry the SELinux label of /, but \
+     /mnt/data/.probe-1-2/upper cannot store labels: its filesystem stores none, or its mount \
+     lets none be set";
 
 /// What the label copy says where SELinux runs and the decoy root has no
 /// label.
@@ -435,14 +436,38 @@ fn a_label_the_hidden_filesystem_cannot_store_fails_naming_that_filesystem() {
         format!(
             "The probe could not give its trial upper the SELinux label of the decoy root, \
              and activation is refused where it cannot copy a label: {CANNOT_STORE}. The \
-             hidden root is on a vfat filesystem. Where SELinux may run, the hidden volume's \
-             filesystem must store security.selinux attributes, as ext4, xfs and btrfs do."
+             hidden root's filesystem is vfat. Where SELinux may run, the hidden volume's \
+             filesystem must store security.selinux attributes, as ext4, xfs and btrfs do, and \
+             the volume must be mounted without the context= option, which gives every file of \
+             the mount one label and lets no other be set."
         )
     );
     // Without a filesystem type in the mount table the message leaves it out.
     let message = label_verdict(LabelFault::CannotStore, CANNOT_STORE, None);
-    assert!(!message.contains("is on a"), "{message}");
+    assert!(!message.contains("filesystem is"), "{message}");
     assert!(message.contains("security.selinux attributes"), "{message}");
+}
+
+#[test]
+fn a_label_a_filesystem_that_stores_labels_takes_none_of_fails_naming_its_mount() {
+    // ext4, xfs and btrfs store labels, so where one takes none, as SELinux
+    // refuses every label on a context= mount, the message does not tell the
+    // operator to use the filesystem the volume is already on.
+    for fs in ["ext4", "xfs", "btrfs"] {
+        let message = label_verdict(LabelFault::CannotStore, CANNOT_STORE, Some(fs));
+        assert_eq!(
+            message,
+            format!(
+                "The probe could not give its trial upper the SELinux label of the decoy root, \
+                 and activation is refused where it cannot copy a label: {CANNOT_STORE}. The \
+                 hidden root's filesystem is {fs}, which stores security.selinux attributes, so \
+                 its mount keeps the label off, as the context= mount option does: that option \
+                 gives every file of the mount one label and lets no other be set. Where SELinux \
+                 may run, mount the hidden volume without it."
+            )
+        );
+        assert!(!message.contains("as ext4, xfs and btrfs do"), "{message}");
+    }
 }
 
 #[test]
@@ -1193,7 +1218,8 @@ mod kernel_tests {
                     why,
                     format!(
                         "SELinux runs on this host (selinuxfs is mounted), so {0} must carry \
-                         the SELinux label of {1}, but the filesystem of {0} cannot store labels",
+                         the SELinux label of {1}, but {0} cannot store labels: its filesystem \
+                         stores none, or its mount lets none be set",
                         upper.display(),
                         decoy.path().display()
                     )
