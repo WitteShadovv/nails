@@ -123,6 +123,16 @@
         systemctl mask --now "$unit"
       fi
     done
+    # auditd's unit refuses a manual stop on Fedora (RefuseManualStop=yes, as
+    # the Fedora probes record), so the mask above leaves it running there;
+    # the daemon stops itself when asked to (audit 3.1.1 and newer).
+    if command -v auditctl >/dev/null 2>&1 && pgrep -x auditd >/dev/null; then
+      auditctl --signal stop
+      for _ in $(seq 30); do
+        pgrep -x auditd >/dev/null || break
+        sleep 1
+      done
+    fi
   '';
 
   # Stop apt's daily timers (Debian, Ubuntu), so that no daily run starts

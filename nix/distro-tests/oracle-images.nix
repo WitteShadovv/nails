@@ -44,7 +44,7 @@
 # not that NAILS supports Fedora.
 #
 # The decoy is prepared before the before image, so all of them hold it alike:
-# its journal volatile and auditd masked (lib/hidden-root.nix's
+# its journal volatile and auditd off (lib/hidden-root.nix's
 # makeDecoyAmnesic, the posture NAILS requires), /mnt/data created, and the
 # coverage canary written. The canary file has btrfs compression turned off,
 # and the driver checks its bytes are on the root partition in clear: on a

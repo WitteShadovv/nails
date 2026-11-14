@@ -283,8 +283,8 @@ oracle's channels see of a session on a Fedora 44 Cloud decoy, with what they
 do not see listed under [What it does not see](#what-it-does-not-see), not
 that NAILS supports Fedora.
 
-Before the first image the driver makes the decoy's journal volatile and masks
-auditd (the posture NAILS requires), creates `/mnt/data` and writes the
+Before the first image the driver makes the decoy's journal volatile and turns
+auditd off (the posture NAILS requires), creates `/mnt/data` and writes the
 coverage canary, with btrfs compression turned off for its file and its bytes
 checked on the partition in clear. The hidden root is a file on a tmpfs, and
 inside the session the driver writes, syncs and deletes a token whose bytes it
