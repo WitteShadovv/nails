@@ -409,9 +409,8 @@ impl<F: Filesystem> NailsManager<F> {
         let builder = self.hidden_builder(nixos, options);
         if labels::configured_but_not_running(self.host_profile()) {
             tracing::info!(
-                "SELinux is configured on this host but selinuxfs is not mounted, so no \
-                 policy reads labels: the hidden root takes the decoy's SELinux labels \
-                 where it has them, best effort"
+                "SELinux is configured on this host but selinuxfs is not mounted: the \
+                 hidden root takes the decoy's SELinux labels where it has them, best effort"
             );
         }
         // The risks that do not refuse the entry, read before the next root
