@@ -8,10 +8,15 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::config::get_default_hidden_volume_root;
-use crate::{Filesystem, Result};
+use crate::session::labels::{self, Labels};
+use crate::{Filesystem, NailsError, Result};
 use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::mount::{FsMountFlags, FsOpenFlags, MountAttrFlags};
 use std::path::{Path, PathBuf};
+
+/// The decoy directory whose SELinux label the probe copies onto its trial
+/// upper, as the entry copies it onto the root upper: the decoy root.
+const DECOY_ROOT: &str = "/";
 
 /// The overlay-upper capability a probe could not confirm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +44,9 @@ enum ProbeError {
     /// table would show it instead, so it stops before writing anything and
     /// the check fails closed.
     NoDetachedMount(std::io::Error),
+    /// The trial upper did not take or keep the SELinux label of the decoy
+    /// root, which the entry refuses the same way on this host: why.
+    Label(String),
 }
 
 /// Pre-flight check that the hidden root can back an overlayfs upper layer.
@@ -61,9 +69,25 @@ enum ProbeError {
 /// kernel's modprobe and udevd then read their settings on the decoy: the
 /// check makes no trial where those reads would mount an automount point that
 /// nothing is mounted on yet. The probe sets and removes a `trusted.*` xattr,
-/// confirms `readdir` reports a file type, and trial-mounts a self-contained
-/// overlay (lower/upper/work all inside the scratch dir) that it exercises with
-/// a new file and a whiteout.
+/// confirms `readdir` reports a file type, gives its trial upper the SELinux
+/// label of the decoy root and reads it back, and trial-mounts a
+/// self-contained overlay (lower/upper/work all inside the scratch dir) that
+/// it exercises with a new file and a whiteout.
+///
+/// # SELinux labels
+///
+/// The entry gives the root of every upper it creates the SELinux label of the
+/// decoy directory it stands for (see [`labels`]), and where the host may run
+/// SELinux ([`Labels::Required`]) a label it cannot copy refuses the entry. The
+/// probe copies the decoy root's label onto its trial upper with the same
+/// function under the same rule, which the registry takes from the same host
+/// facts as the activation ([`Labels::for_host`]), so a hidden filesystem that
+/// cannot store the label, a policy that denies the relabel or a decoy root
+/// without a label fails this check as it would refuse the entry. Where a label
+/// is required the probe also reads it back, and fails unless the trial upper
+/// keeps the decoy root's label. Elsewhere the copy is best effort, as at the
+/// entry, and the label is not read back. The decoy root is only read: reading
+/// an extended attribute changes no access time.
 ///
 /// The trial overlay is mounted detached, through the mount API
 /// (`fsopen`/`fsconfig`/`fsmount`): the kernel hands back a file descriptor for
@@ -83,21 +107,48 @@ enum ProbeError {
 #[derive(Debug, Clone)]
 pub struct UpperFsCapabilityCheck {
     hidden_volume_root: PathBuf,
+    /// The decoy directory whose label the trial upper takes.
+    decoy_root: PathBuf,
+    /// Whether the label copy must succeed.
+    labels: Labels,
 }
 
 impl UpperFsCapabilityCheck {
     /// Create a new `UpperFsCapabilityCheck` with a custom hidden-root path.
+    ///
+    /// It requires the SELinux label as a host that was not detected does
+    /// (`Labels::for_host(None)`) until [`labels`](Self::labels) says what the
+    /// host needs.
     pub fn new(hidden_volume_root: PathBuf) -> Self {
-        Self { hidden_volume_root }
+        Self {
+            hidden_volume_root,
+            decoy_root: PathBuf::from(DECOY_ROOT),
+            labels: Labels::for_host(None),
+        }
+    }
+
+    /// This check with the label copy `labels` asks for: what the activation
+    /// asks of this host, `Labels::for_host` of the same host facts.
+    #[must_use]
+    pub fn labels(mut self, labels: Labels) -> Self {
+        self.labels = labels;
+        self
+    }
+
+    /// This check copying the label of `decoy_root`, the decoy root whose
+    /// label the entry gives the root upper: `/`, unless a test stands a
+    /// directory in for it.
+    #[must_use]
+    pub fn labelled_like(mut self, decoy_root: PathBuf) -> Self {
+        self.decoy_root = decoy_root;
+        self
     }
 }
 
 impl Default for UpperFsCapabilityCheck {
     /// Create the check with the default hidden-volume path.
     fn default() -> Self {
-        Self {
-            hidden_volume_root: PathBuf::from(get_default_hidden_volume_root()),
-        }
+        Self::new(PathBuf::from(get_default_hidden_volume_root()))
     }
 }
 
@@ -133,13 +184,40 @@ fn classify(missing: MissingCapability, fstype: Option<&str>) -> CheckResult {
     ))
 }
 
+/// Pure seam: the `Fail` for a trial upper that did not take or keep the decoy
+/// root's SELinux label, for the reason `why`, on a hidden root on a `fstype`
+/// filesystem when the mount table knows it.
+fn label_refusal(why: &str, fstype: Option<&str>) -> CheckResult {
+    let detected = match fstype {
+        Some(fs) => format!(" The hidden root is on a {fs} filesystem."),
+        None => String::new(),
+    };
+    CheckResult::fail(format!(
+        "The hidden root cannot keep the SELinux labels activation gives the \
+         directories it creates there, so activation would be refused. The \
+         probe's trial upper did not take and keep the label of the decoy root: \
+         {why}.{detected} Where SELinux may run, the hidden volume's filesystem \
+         must store security.selinux attributes, as ext4, xfs and btrfs do, and \
+         the policy must let NAILS write them."
+    ))
+}
+
+/// The text of an error of the label copy, without the error's kind.
+fn refusal_text(error: NailsError) -> String {
+    match error {
+        NailsError::InvalidState(why) => why,
+        other => other.to_string(),
+    }
+}
+
 impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
     fn name(&self) -> &'static str {
         "upper-fs-capability"
     }
 
     fn description(&self) -> &'static str {
-        "Validates the hidden root can host an overlayfs upper layer (xattrs, d_type, whiteouts)"
+        "Validates the hidden root can host an overlayfs upper layer (xattrs, d_type, whiteouts) \
+         and keep the SELinux labels activation copies onto it"
     }
 
     fn requires_hidden_volume(&self) -> bool {
@@ -199,7 +277,12 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
 
         Ok(self.verdict(
             fs,
-            probe_upper_capabilities(&self.hidden_volume_root, overlay_context()),
+            probe_upper_capabilities(
+                &self.hidden_volume_root,
+                overlay_context(),
+                &self.decoy_root,
+                self.labels,
+            ),
         ))
     }
 }
@@ -250,19 +333,19 @@ impl UpperFsCapabilityCheck {
         fs: &F,
         outcome: std::result::Result<(), ProbeError>,
     ) -> CheckResult {
+        // Name the backend in a failure when the mount table knows it.
+        let fstype = || {
+            fs.get_filesystem_type(&self.hidden_volume_root)
+                .ok()
+                .flatten()
+        };
         match outcome {
             Ok(()) => CheckResult::Pass(format!(
                 "Hidden root at {} can host an overlayfs upper layer",
                 self.hidden_volume_root.display()
             )),
-            Err(ProbeError::Missing(missing)) => {
-                // Name the backend in the failure when the mount table knows it.
-                let fstype = fs
-                    .get_filesystem_type(&self.hidden_volume_root)
-                    .ok()
-                    .flatten();
-                classify(missing, fstype.as_deref())
-            }
+            Err(ProbeError::Missing(missing)) => classify(missing, fstype().as_deref()),
+            Err(ProbeError::Label(why)) => label_refusal(&why, fstype().as_deref()),
             Err(ProbeError::Scaffold(e)) => CheckResult::fail(format!(
                 "Could not verify the hidden root at {} can host an overlayfs upper layer ({e}). \
                  Ensure it is a mounted, writable, local Linux filesystem and retry.",
@@ -324,23 +407,26 @@ fn overlay_context() -> std::io::Result<OwnedFd> {
     rustix::mount::fsopen("overlay", FsOpenFlags::FSOPEN_CLOEXEC).map_err(std::io::Error::from)
 }
 
-/// Probe that the hidden root can back an overlay upper/work dir.
+/// Probe that the hidden root can back an overlay upper/work dir, whose upper
+/// takes the SELinux label of `decoy_root` under `labels`.
 ///
 /// `context` is the overlay context the trial mount is made from
 /// ([`overlay_context`]). Without one the probe stops before it writes
 /// anything, since it mounts the trial overlay detached or not at all. All I/O
 /// then happens inside a throwaway `.probe-<unique>` directory on the hidden
-/// root; nothing outside it is ever touched, and the scratch dir is removed on
-/// every path.
+/// root; nothing outside it is ever touched, `decoy_root` is only read, and
+/// the scratch dir is removed on every path.
 fn probe_upper_capabilities(
     hidden_root: &Path,
     context: std::io::Result<OwnedFd>,
+    decoy_root: &Path,
+    labels: Labels,
 ) -> std::result::Result<(), ProbeError> {
     let context = context.map_err(ProbeError::NoDetachedMount)?;
     let scratch = hidden_root.join(format!(".probe-{}", unique_suffix()));
     std::fs::create_dir(&scratch).map_err(ProbeError::Scaffold)?;
 
-    let outcome = probe_in_scratch(&scratch, context);
+    let outcome = probe_in_scratch(&scratch, context, decoy_root, labels);
 
     // Clean up on every path: a leftover probe dir would itself be a trace. A
     // failure to remove it is only surfaced when the probe otherwise passed, so
@@ -353,8 +439,13 @@ fn probe_upper_capabilities(
     }
 }
 
-/// Run the three capability probes inside an already-created scratch dir.
-fn probe_in_scratch(scratch: &Path, context: OwnedFd) -> std::result::Result<(), ProbeError> {
+/// Run the four capability probes inside an already-created scratch dir.
+fn probe_in_scratch(
+    scratch: &Path,
+    context: OwnedFd,
+    decoy_root: &Path,
+    labels: Labels,
+) -> std::result::Result<(), ProbeError> {
     // 1. Trusted xattrs on the upper directory.
     probe_trusted_xattr(scratch)?;
 
@@ -372,10 +463,74 @@ fn probe_in_scratch(scratch: &Path, context: OwnedFd) -> std::result::Result<(),
     // 2. readdir d_type: the scratch dir now holds real sub-entries to classify.
     probe_dir_entry_type(scratch)?;
 
-    // 3. Trial overlay, mounted detached, exercising a new file and a whiteout.
+    // 3. The decoy root's SELinux label on the upper, before any overlay is
+    // mounted over it, as the entry gives it to the root upper.
+    probe_label(decoy_root, &upper, labels)?;
+
+    // 4. Trial overlay, mounted detached, exercising a new file and a whiteout.
     // Dropping its descriptor at the end of this function dissolves it.
     let overlay = mount_trial_overlay(context, &lower, &upper, &work)?;
     exercise_mounted_overlay(overlay.as_fd())
+}
+
+/// Give `upper` the SELinux label of `decoy_root` with the entry's own copy,
+/// [`labels::copy_label`], under `labels`, and where the label is required
+/// read it back: the round trip fails unless `upper` then carries exactly the
+/// label `decoy_root` has.
+///
+/// A copy the entry would refuse is [`ProbeError::Label`] with the copy's own
+/// reason. A best-effort copy ([`Labels::BestEffort`]) is not read back: no
+/// policy reads a label there.
+fn probe_label(
+    decoy_root: &Path,
+    upper: &Path,
+    labels: Labels,
+) -> std::result::Result<(), ProbeError> {
+    labels::copy_label(decoy_root, upper, labels)
+        .map_err(|error| ProbeError::Label(refusal_text(error)))?;
+    match labels {
+        Labels::BestEffort => Ok(()),
+        // A required copy that returned wrote the label or found it in place.
+        Labels::Required(_) => round_trip(decoy_root, upper, label_of(decoy_root), label_of(upper)),
+    }
+}
+
+/// Pure seam: whether `upper` kept the label of `decoy_root`, from the label
+/// each reads back, `wanted` and `kept`.
+fn round_trip(
+    decoy_root: &Path,
+    upper: &Path,
+    wanted: rustix::io::Result<Vec<u8>>,
+    kept: rustix::io::Result<Vec<u8>>,
+) -> std::result::Result<(), ProbeError> {
+    match (wanted, kept) {
+        (Ok(wanted), Ok(kept)) if wanted == kept => Ok(()),
+        (Ok(wanted), Ok(kept)) => Err(ProbeError::Label(format!(
+            "{} reads back the label {:?}, not the label {:?} written onto it",
+            upper.display(),
+            String::from_utf8_lossy(&kept),
+            String::from_utf8_lossy(&wanted)
+        ))),
+        (Err(errno), _) => Err(ProbeError::Label(format!(
+            "reading the label of {} again failed: {}",
+            decoy_root.display(),
+            std::io::Error::from(errno)
+        ))),
+        (_, Err(errno)) => Err(ProbeError::Label(format!(
+            "reading the label written onto {} back failed: {}",
+            upper.display(),
+            std::io::Error::from(errno)
+        ))),
+    }
+}
+
+/// The SELinux label of `path` itself, not following a symlink.
+fn label_of(path: &Path) -> rustix::io::Result<Vec<u8>> {
+    // The largest value the kernel returns for an extended attribute.
+    let mut label = vec![0; 64 * 1024];
+    let len = rustix::fs::lgetxattr(path, labels::LABEL_XATTR, &mut label[..])?;
+    label.truncate(len);
+    Ok(label)
 }
 
 /// Set then remove a `trusted.*` probe xattr on `dir`.

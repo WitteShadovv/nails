@@ -95,8 +95,14 @@ The decoy also has to be one the session can enter and leave:
   that keeps an empty `/sys/fs/selinux`, or an `/etc/selinux/config` that
   sets `SELINUX=` or `SELINUXTYPE=` as SELinux packages installed once leave
   it, while its mount table lists no selinuxfs: SELinux does not run there,
-  and the activation says so in one line. `nails check` does not test any of
-  this yet.
+  and the activation says so in one line. `nails check` tests part of this
+  with the same rule (`upper-fs-capability`): it copies the label of the
+  decoy's `/` onto the upper of its trial overlay on the hidden volume and,
+  where the labels are required, reads it back, so a hidden filesystem that
+  cannot store the label, a policy that denies the relabel and a decoy `/`
+  without a label fail the check as they refuse the activation. The roots of
+  the other decoy filesystems the session overlays and the way to your home
+  are not tested before activation.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The

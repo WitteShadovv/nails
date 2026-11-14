@@ -193,7 +193,9 @@ Also refused by the pre-flight checks:
   boot unless the decoy masks the generator, as Ubuntu 24.04 and 26.04 do by
   default, and on any disk the partition table shows its type;
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
-  CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
+  CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS, or, where SELinux may
+  run, one that cannot keep the SELinux label activation copies onto it
+  (`upper-fs-capability`);
 - a host where SELinux runs with a policy other than `targeted`, where `nails`
   runs in a confined SELinux domain, or whose SELinux facts cannot be read.
   NAILS does not yet choose the SELinux domain of the processes systemd and

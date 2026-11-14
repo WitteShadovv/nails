@@ -900,8 +900,13 @@ of this changelog for that version becomes the release notes word for word, and
   in the shared-home persona. Elsewhere a label is copied only where the decoy has one, so a decoy
   without labels gets the hidden root it got before. That includes a host that keeps an
   `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
-  no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line. `nails check` does not test this yet; see
-  docs/decoy-requirements.md.
+  no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line.
+  `nails check` tests part of this with the same rule: `upper-fs-capability` copies the label of
+  the decoy's `/` onto the upper of its trial overlay on the hidden volume and, where a label is
+  required, reads it back, so a hidden filesystem that cannot store the label, a policy that denies
+  the relabel and a decoy `/` without a label fail it as they refuse the activation. The roots of
+  the other overlaid decoy filesystems and the way to the operator's home are not tested before
+  activation; see docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new

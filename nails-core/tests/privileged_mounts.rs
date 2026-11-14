@@ -4,7 +4,7 @@
 //! Real overlay and teardown behaviour against the kernel.
 //!
 //! These tests drive the overlay, bind and tmpfs mounts the session builds
-//! against a real overlayfs. All but five run in the normal test run, each as
+//! against a real overlayfs. All but six run in the normal test run, each as
 //! root of its own unprivileged user + mount namespace (`rootless`, built on
 //! `nails_core::test_support::Rerun`), so every mount is private to the child
 //! and vanishes with it, even after a panic. Each test still builds its own
@@ -12,13 +12,14 @@
 //! itself is exercised and asserted. `just kernel-tests` turns a host without
 //! user namespaces from a skip into a failure.
 //!
-//! Three tests need `trusted.*` xattrs, which a user namespace cannot set,
+//! Four tests need `trusted.*` xattrs, which a user namespace cannot set,
 //! and two bind loop devices, which only root of the initial namespace may,
 //! so they alone stay `#[ignore]`d and run as real root in the
 //! privileged-mounts CI job: the whiteout and opaque-directory test, the test
 //! of the `kernel-modules` check against the kernel's own whiteouts and opaque
-//! directories, the test of the whole upper-filesystem probe, and the two
-//! tests of the loop driver's record of the file behind a loop device, one on
+//! directories, the two tests of the whole upper-filesystem probe (with the
+//! label copy the host asks for, and with the SELinux label required), and the
+//! two tests of the loop driver's record of the file behind a loop device, one on
 //! a tmpfs and one on a btrfs filesystem it makes with `mkfs.btrfs`, which
 //! must be on `PATH` (btrfs-progs). Both also mount a FUSE filesystem through
 //! `/dev/fuse`, which no daemon serves:
@@ -726,7 +727,10 @@ fn the_upper_fs_probe_as_root_passes_and_leaves_nothing() {
     let table = std::fs::read_to_string("/proc/self/mountinfo").expect("read mountinfo");
     let watched = std::fs::File::open("/proc/self/mountinfo").expect("open mountinfo");
 
+    // The label copy this host asks for, as the registry gives it.
+    let host = nails_core::platform::detect(&nails_core::RealFilesystem).ok();
     let result = UpperFsCapabilityCheck::new(root.root.clone())
+        .labels(nails_core::session::labels::Labels::for_host(host.as_ref()))
         .run(&nails_core::RealFilesystem)
         .expect("the check runs");
     assert!(result.is_pass(), "{result:?}");
@@ -754,6 +758,72 @@ fn the_upper_fs_probe_as_root_passes_and_leaves_nothing() {
     assert!(left.is_empty(), "the probe left {left:?}");
 
     root.teardown();
+}
+
+/// The `upper-fs-capability` check against a real hidden root, as root, where
+/// the host requires the SELinux labels: the probe gives its trial upper the
+/// label of the decoy root and reads it back, and it fails, as the entry is
+/// refused, where the decoy root has no label. Either way it leaves nothing
+/// on the hidden root and the decoy root keeps its label. On a kernel that
+/// labels every file itself (SELinux active) the decoy root has a label from
+/// the start, so only the pass is checked there.
+#[test]
+#[ignore = "root only: the probe sets a trusted.* xattr"]
+fn the_upper_fs_probe_as_root_copies_the_decoy_roots_label_where_one_is_required() {
+    use nails_core::preflight::{PreFlightCheck, UpperFsCapabilityCheck};
+    use nails_core::session::labels::{LABEL_XATTR, Labels, Reason};
+
+    let label_of = |path: &Path| {
+        let mut value = vec![0; 4096];
+        rustix::fs::lgetxattr(path, LABEL_XATTR, &mut value[..]).map(|len| {
+            value.truncate(len);
+            value
+        })
+    };
+    let hidden = TmpfsRoot::new();
+    let decoy = TmpfsRoot::new();
+    let check = || {
+        UpperFsCapabilityCheck::new(hidden.root.clone())
+            .labels(Labels::Required(Reason::SelinuxRunning))
+            .labelled_like(decoy.root.clone())
+            .run(&nails_core::RealFilesystem)
+            .expect("the check runs")
+    };
+    let left = || -> Vec<_> {
+        std::fs::read_dir(&hidden.root)
+            .expect("read the hidden root")
+            .collect()
+    };
+
+    if label_of(&decoy.root) == Err(rustix::io::Errno::NODATA) {
+        // A decoy root without a label: the copy the entry would refuse.
+        let refused = check();
+        assert!(refused.is_fail(), "{refused:?}");
+        assert!(
+            refused.message().contains(&format!(
+                "must carry the SELinux label of {0}, but {0} has no label",
+                decoy.root.display()
+            )),
+            "{refused:?}"
+        );
+        assert!(left().is_empty(), "the probe left {:?}", left());
+        rustix::fs::lsetxattr(
+            &decoy.root,
+            LABEL_XATTR,
+            b"system_u:object_r:root_t:s0\0",
+            rustix::fs::XattrFlags::empty(),
+        )
+        .expect("label the decoy root");
+    }
+    let label = label_of(&decoy.root).expect("the decoy root's label");
+
+    let passed = check();
+    assert!(passed.is_pass(), "{passed:?}");
+    assert!(left().is_empty(), "the probe left {:?}", left());
+    assert_eq!(label_of(&decoy.root).expect("read again"), label);
+
+    hidden.teardown();
+    decoy.teardown();
 }
 
 // ===========================================================================

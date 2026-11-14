@@ -1112,13 +1112,14 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   `.nails_write_test` in the hidden root, and `symlink-support` the link
   `.nails_symlink_probe`. `upper-fs-capability` makes the directory
   `.probe-<pid>-<time>` in the hidden root, sets and removes a `trusted.*`
-  extended attribute on it, and tries a small overlay whose layers are inside
-  it. `storage-readiness` makes the file `.nails_write_test` in `root/upper`
-  and `root/work` when they exist. The hidden root, `root/upper` and
-  `root/work` keep new modification times, and so does the container file of a
-  hidden volume in a file container. A `check` killed in the middle of a probe
-  can leave that probe's file or directory on the hidden volume, never on the
-  decoy; remove it from inside a hidden session, not from the decoy shell.
+  extended attribute on it, gives the upper inside it the SELinux label of the
+  decoy's `/` where that has one, and tries a small overlay whose layers are
+  inside it. `storage-readiness` makes the file `.nails_write_test` in
+  `root/upper` and `root/work` when they exist. The hidden root, `root/upper`
+  and `root/work` keep new modification times, and so does the container file
+  of a hidden volume in a file container. A `check` killed in the middle of a
+  probe can leave that probe's file or directory on the hidden volume, never on
+  the decoy; remove it from inside a hidden session, not from the decoy shell.
 - **With `--allow-decoy-storage`, on the decoy's storage.** The flag accepts a
   hidden root on storage the attach gate takes for the decoy's, or on an `nbd`
   or `ublk` device you know is served from elsewhere. The write and
@@ -1159,8 +1160,9 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   runs some of the decoy's own tools to ask what they report, such as
   `systemctl` for the systemd version. On a decoy root mounted without
   `noatime`, a read or a program start can update an access time.
-  `lsm-status` reads `/etc/selinux/config`, as root without changing its
-  access time.
+  `upper-fs-capability` reads the SELinux label of the decoy's `/`, which
+  changes no access time, and `lsm-status` reads `/etc/selinux/config`, as
+  root without changing its access time.
 - **No lookup that would mount an automount point.** A lookup that passes an
   automount point that nothing is mounted on yet mounts it: a direct or
   offset one, such as the one systemd makes for an `x-systemd.automount` line
