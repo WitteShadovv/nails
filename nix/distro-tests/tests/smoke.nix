@@ -67,13 +67,18 @@
 # arch-boxes, is bound read-only at /efi in each hidden session, with its
 # automount masked there at runtime, and the decoy's automount is back after
 # each way back. The rehearsal's scan exits 9 with a blind spot on a btrfs
-# root's device and 0 on any other image. On a btrfs root the leak checks read
-# the image the way btrfs-progs does as well (py/btrfs_scan.py): the files of
-# the live tree, decompressed, hold no canary, and three planted controls show
-# what each read sees there: a file kept plain, which the raw scan finds; a
-# compressed one, which only the read of the live tree finds; and a compressed
-# one written and deleted, which only a read of an older root of the tree
-# finds. The positive control of the raw scan carries its token in the file's
+# root's device and 0 on any other image. Before each image the leak check
+# also reads the decoy root's files through the decoy's own kernel, from a
+# read-only bind of / that moves no access time: no canary may be in them, and
+# the positive control's token must be. On a btrfs root it also reads the
+# older roots of the image's tree the way btrfs-progs does (py/btrfs_scan.py):
+# none may keep a file at a canary's path, nor a canary. Three planted
+# controls show what each read sees there: a file kept plain, which the raw
+# scan finds; a compressed one, which the raw scan misses and the read through
+# the kernel finds; and a compressed one written and deleted, which only an
+# older root keeps. btrfs restore reads the older roots only: it cannot read
+# about 11,000 inline zstd extents of the arch-boxes image, which the kernel
+# reads. The positive control of the raw scan carries its token in the file's
 # contents only.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
@@ -455,8 +460,43 @@ distroVm.buildVmTest {
         )
 
 
-    # The logical scan of a btrfs decoy (py/btrfs_scan.py), on the driver, from
-    # a sparse copy of the root's partition in a whole-disk image.
+    def live_tokens(tokens):
+        # Which of `tokens` the files of the decoy root hold, read through the
+        # decoy's own kernel, which decompresses every extent the decoy reads,
+        # from a read-only bind of / in /run: a read through a read-only mount
+        # moves no access time, and the bind holds the root filesystem alone,
+        # with its btrfs subvolumes. A file grep cannot read fails the read,
+        # except one the running decoy deleted since grep listed it. Lines end
+        # at NUL bytes (-z), so a file of zeros, such as a swap file, is not
+        # held whole as one line.
+        view = "/run/live-view"
+        errors = "/run/live-view.err"
+        vm.succeed(
+            f"mkdir {view} && mount --bind / {view} && mount -o remount,bind,ro {view}"
+        )
+        patterns = " ".join(f"-e {shlex.quote(token)}" for token in tokens)
+        rc, out = vm.execute(
+            "bash -c "
+            + shlex.quote(
+                f"set -o pipefail; grep -rhoazF -D skip {patterns} {view} 2>{errors} "
+                + "| tr '\\0' '\\n' | sort -u"
+            )
+        )
+        failed = vm.succeed(f"cat {errors}; rm {errors}; umount {view} && rmdir {view}")
+        unread = [
+            line
+            for line in failed.splitlines()
+            if line.strip() and "No such file or directory" not in line
+        ]
+        assert rc in (0, 1) or (rc == 2 and not unread), (
+            f"grep could not read every file of the root ({rc}): {unread or failed}"
+        )
+        return {line for line in out.splitlines() if line in tokens}
+
+
+    # The read of the older roots of a btrfs decoy's tree (py/btrfs_scan.py),
+    # on the driver, from a sparse copy of the root's partition in a whole-disk
+    # image.
     btrfs_work = None
 
 
@@ -478,35 +518,28 @@ distroVm.buildVmTest {
         return part
 
 
-    def restored_tokens(part, label, tokens, *, root=None, regex=None):
-        # The tokens in the files btrfs restore writes out of the copy: the
-        # live tree, or the tree of an older root.
-        dest = tempfile.mkdtemp(prefix=f"{label}-", dir=btrfs_work)
-        started = time.monotonic()
-        done = btrfs_scan.restore(BTRFS, part, dest, root=root, regex=regex)
-        found = btrfs_scan.tokens_in_tree(dest, tokens)
-        shutil.rmtree(dest)
-        print(
-            f"{label}: btrfs restore exited {done.returncode} in "
-            + f"{time.monotonic() - started:.0f} s, found {sorted(found) or 'nothing'}"
-        )
-        if root is None:
-            assert done.returncode == 0, f"{label}: {done.stdout}\n{done.stderr}"
-        return found
-
-
-    def history_tokens(part, label, tokens, regex, limit=64):
-        # The tokens in the paths `regex` takes in the older roots of the
-        # tree, newest first: what copy-on-write keeps of a file since
-        # deleted or overwritten, while its blocks are not reused.
+    def history(part, label, tokens, regex, paths=(), limit=64):
+        # What the older roots of the tree, newest first, keep at the paths
+        # `regex` takes: copy-on-write keeps a file since deleted or
+        # overwritten while its blocks are not reused. Returns the tokens in
+        # the files btrfs restore writes out, and which of `paths` it writes:
+        # it writes a file it then cannot read as well.
         roots = btrfs_scan.find_roots(BTRFS_FIND_ROOT, part)
         print(f"{label}: {len(roots)} roots, generations {[r.generation for r in roots]}")
-        found = set()
+        found, present = set(), set()
         for root in roots[:limit]:
-            found |= restored_tokens(
-                part, f"{label}-gen-{root.generation}", tokens, root=root.bytenr, regex=regex
+            dest = tempfile.mkdtemp(prefix=f"{label}-{root.generation}-", dir=btrfs_work)
+            done = btrfs_scan.restore(BTRFS, part, dest, root=root.bytenr, regex=regex)
+            here = btrfs_scan.tokens_in_tree(dest, tokens)
+            there = btrfs_scan.paths_in_tree(dest, paths)
+            shutil.rmtree(dest)
+            print(
+                f"{label}-gen-{root.generation}: btrfs restore exited {done.returncode}, "
+                + f"found {sorted(here) or 'nothing'}, paths {sorted(there) or 'none'}"
             )
-        return found
+            found |= here
+            present |= set(there)
+        return found, present
 
 
     def fs_path_on_root(path):
@@ -1504,6 +1537,10 @@ distroVm.buildVmTest {
             for tree in canary_trees
         ]
 
+        # The files of the decoy root, read through its kernel, hold no canary.
+        live = live_tokens(canary_tokens)
+        assert not live, f"the decoy's files hold hidden canaries: {sorted(live)}"
+
         # Null control: image the decoy root after the whole lifecycle and prove
         # no canary leaked onto it, and no registry token appeared that the
         # baseline did not already carry.
@@ -1519,17 +1556,16 @@ distroVm.buildVmTest {
             f"{sorted(new_registry)}"
         )
         if rootfs == "btrfs":
-            # The raw scan cannot see what a compressed extent holds. The files
-            # of the live tree, decompressed, hold no canary either, nor does
-            # what an older root of the tree keeps at a canary's path.
+            # The raw scan cannot see what a compressed extent holds, and the
+            # read of the live tree no file deleted since. No older root of the
+            # tree keeps a file at a canary's path, nor a canary there.
             part = btrfs_root_copy(clean, "clean")
             os.remove(clean)
-            live = restored_tokens(part, "clean-live", canary_tokens)
-            assert not live, f"the decoy's files hold hidden canaries: {sorted(live)}"
             on_root = [path for path in canary_paths if path is not None]
-            older = history_tokens(
-                part, "clean", canary_tokens, btrfs_scan.path_filter(on_root)
+            older, kept = history(
+                part, "clean", canary_tokens, btrfs_scan.path_filter(on_root), on_root
             )
+            assert not kept, f"an older root keeps files at canary paths: {sorted(kept)}"
             assert not older, f"an older root keeps hidden canaries: {sorted(older)}"
             os.remove(part)
         else:
@@ -1603,6 +1639,19 @@ distroVm.buildVmTest {
             print(vm.succeed(f"ls -la {controls}/plain {controls}/compressed"))
         vm.succeed("sync")
         controls_path = fs_path_on_root(f"{controls}/plain") if rootfs == "btrfs" else None
+        # The read through the decoy's kernel finds what the live tree's files
+        # hold, decompressed, and nothing of a file deleted.
+        wanted = [poison]
+        if rootfs == "btrfs":
+            wanted += [poison_token("A"), poison_token("B"), poison_token("C")]
+        live = live_tokens(wanted)
+        print(f"the read through the kernel finds {sorted(live) or 'nothing'}")
+        assert poison in live, "the read through the kernel misses the positive control"
+        if rootfs == "btrfs":
+            assert {poison_token("A"), poison_token("B")} <= live, (
+                f"the read through the kernel misses controls: it found {sorted(live)}"
+            )
+            assert poison_token("C") not in live, "control (c): the deleted file is live"
         positive = image_decoy("positive")
         found = disk_forensics.run_strings_scan(positive, [poison])
         assert found == {poison}, (
@@ -1621,13 +1670,9 @@ distroVm.buildVmTest {
             os.remove(positive)
             assert controls_path is not None, "the controls are not on the decoy root"
             regex = btrfs_scan.path_filter([os.path.dirname(controls_path)], below=True)
-            live = restored_tokens(part, "positive-live", [poison, a, b, c], regex=regex)
-            assert {poison, a, b} <= live, (
-                f"the live tree's read misses controls: it found {sorted(live)}"
-            )
-            assert c not in live, "control (c): the deleted file is in the live tree"
-            older = history_tokens(part, "positive", [c], regex)
-            assert c in older, (
+            deleted = os.path.join(os.path.dirname(controls_path), "compressed", "c")
+            older, kept = history(part, "positive", [c], regex, [deleted])
+            assert c in older and deleted in kept, (
                 "control (c): no older root of the tree keeps the deleted file"
             )
             os.remove(part)
