@@ -32,16 +32,21 @@
 //! ([`Selinuxfs::Unknown`]) counts the same way, since nothing rules SELinux
 //! out there, and so does a host that was not detected at all. A host whose
 //! facts report SELinux while its mount table, read, lists no selinuxfs
-//! ([`Selinuxfs::NotMounted`]) does not run it: it keeps the configuration
-//! file of packages installed once, or boots with SELinux off, and no policy
-//! reads a label there. Such a host, and one whose facts report no SELinux,
-//! copies on a best effort basis: a label the decoy directory has is copied
-//! there too, but a decoy directory without a label (the usual case there) or
-//! none at all, a filesystem without extended attributes, or a link or a file
-//! in place of an upper directory leaves the upper as it was, so a decoy
-//! without labels gets the same hidden root there as before. Any other failure
-//! is an error either way. The activation says so in one line on a host that
-//! is configured for SELinux but does not run it
+//! ([`Selinuxfs::NotMounted`]) shows no policy: it keeps the configuration
+//! file of packages installed once, boots with SELinux off, or has SELinux
+//! on in the kernel without a policy, as `SELINUX=disabled` leaves a kernel
+//! that started SELinux at boot. No policy reads a label there, unless
+//! selinuxfs was unmounted after a policy was loaded. The `lsm-status`
+//! pre-flight check, which runs before the entry, refuses such a host
+//! wherever the kernel runs SELinux or may run it, so of these hosts only one
+//! whose kernel does not run SELinux reaches the entry. Such a host, and one
+//! whose facts report no SELinux, copies on a best effort basis: a label the
+//! decoy directory has is copied there too, but a decoy directory without a
+//! label (the usual case there) or none at all, a filesystem without extended
+//! attributes, or a link or a file in place of an upper directory leaves the
+//! upper as it was, so a decoy without labels gets the same hidden root there
+//! as before. Any other failure is an error either way. The activation says so
+//! in one line on a host that is configured for SELinux but shows no policy
 //! ([`configured_but_not_running`]).
 //!
 //! # Where the copies go
@@ -179,11 +184,11 @@ pub enum Labels {
     /// The hidden root may need every label, for the reason given: a copy that
     /// fails refuses the entry.
     Required(Reason),
-    /// SELinux does not run (the host facts report none, or report it with no
-    /// selinuxfs mounted), so nothing reads the labels: a decoy
-    /// directory that has none or does not exist, a filesystem that stores
-    /// none, or a link or a file in place of an upper directory leaves that
-    /// directory as it was.
+    /// The host facts show no policy that reads the labels: they report no
+    /// SELinux, or report it with no selinuxfs mounted (see the module docs).
+    /// A decoy directory that has none or does not exist, a filesystem that
+    /// stores none, or a link or a file in place of an upper directory leaves
+    /// that directory as it was.
     BestEffort,
 }
 
@@ -217,8 +222,9 @@ impl Labels {
 }
 
 /// Whether the host facts report SELinux while the mount table, read, lists no
-/// selinuxfs: a host configured for SELinux that does not run it, where
-/// [`Labels::for_host`] copies on a best effort basis.
+/// selinuxfs: a host configured for SELinux where no policy shows, and where
+/// [`Labels::for_host`] copies on a best effort basis. Past the `lsm-status`
+/// pre-flight check, only a host whose kernel does not run SELinux is one.
 pub fn configured_but_not_running(profile: Option<&HostProfile>) -> bool {
     profile
         .and_then(|profile| profile.selinux.as_ref())

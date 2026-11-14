@@ -61,8 +61,11 @@ pub enum SelinuxMode {
 pub enum Selinuxfs {
     /// The mount table lists a selinuxfs: SELinux runs in this kernel.
     Mounted,
-    /// The mount table could be read and lists none: SELinux does not run, so
-    /// nothing reads a label, whatever `/etc/selinux/config` says.
+    /// The mount table could be read and lists none: no policy shows, whatever
+    /// `/etc/selinux/config` says. The kernel may still have SELinux on,
+    /// without a policy, as `SELINUX=disabled` leaves a kernel that started
+    /// SELinux at boot, or with selinuxfs unmounted after a policy was
+    /// loaded: the kernel's list of LSMs tells.
     NotMounted,
     /// The mount table could not be read, so nothing rules SELinux out.
     Unknown,
