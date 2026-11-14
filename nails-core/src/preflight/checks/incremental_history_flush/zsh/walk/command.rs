@@ -564,6 +564,10 @@ impl Walker<'_> {
             return;
         };
         let args: Vec<Word> = words.collect();
+        // `command` runs an outside program unless POSIX_BUILTINS is on, which
+        // the check does not read, so what the builtin of the name sets
+        // (`command export ZDOTDIR=...`) it may set and need not.
+        let unconditional = unconditional && !run.outside;
         self.ends(&command.text, &args, run.exec);
         // A function named like the command a NAILS command is typed with
         // or one a widget runs with the line (`sudo`, `man`) that runs the

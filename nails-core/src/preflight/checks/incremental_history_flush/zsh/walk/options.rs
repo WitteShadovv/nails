@@ -158,7 +158,11 @@ impl Walker<'_> {
         };
         // `-R` resets every option to the mode's defaults, and ksh's turns
         // SHARE_HISTORY on (zsh 5.9.1: `emulate -R ksh`, not `emulate ksh`).
+        // `-L` in a function restores the mode as it returns, and `-c` runs
+        // only its code in the mode.
         let mut reset = false;
+        let mut local = false;
+        let mut code = false;
         let mut mode = None;
         let mut args = args.iter();
         while let Some(arg) = args.next() {
@@ -173,6 +177,7 @@ impl Walker<'_> {
                     && !matches!(flags, "o" | "c")
                 {
                     reset |= flags.contains('R');
+                    local |= flags.contains('L');
                     continue;
                 }
                 if !arg.text.starts_with(['-', '+']) {
@@ -188,16 +193,28 @@ impl Walker<'_> {
                     Some(name) => self.set(&name.text, arg.text == "-o", unconditional),
                     None => {}
                 },
-                "-c" => match args.next() {
-                    Some(code) if code.expands || code.bare => {
-                        let what = format!("-c {}", code.text);
-                        self.events.push(doubt(&what));
+                "-c" => {
+                    code = true;
+                    match args.next() {
+                        Some(code) if code.expands || code.bare => {
+                            let what = format!("-c {}", code.text);
+                            self.events.push(doubt(&what));
+                        }
+                        Some(code) => self.nested(&code.text, unconditional),
+                        None => {}
                     }
-                    Some(code) => self.nested(&code.text, unconditional),
-                    None => {}
-                },
+                }
                 _ => self.mention_word(arg),
             }
+        }
+        // In sh's or ksh's mode zsh reads the user's startup files in the
+        // home (`sh`, `bash`, `ksh`, by the first letter past one `r`).
+        let sh = |mode: &String| {
+            let mode = mode.strip_prefix('r').unwrap_or(mode);
+            mode.starts_with(['s', 'b', 'k'])
+        };
+        if mode.as_ref().is_some_and(sh) && !code && !(local && self.in_function_body()) {
+            self.events.push(Event::Emulates);
         }
         if reset && let Some(mode) = mode.filter(|mode| ksh(mode)) {
             self.events.push(Event::Turns {

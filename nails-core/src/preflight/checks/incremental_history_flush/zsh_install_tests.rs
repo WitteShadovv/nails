@@ -62,7 +62,7 @@ fn environment(vars: &[(&str, &str)]) -> Vec<(String, String)> {
 
 /// What the check knows of the zsh at `ZSH` started with `vars` in its
 /// environment.
-fn install(fs: &MockFilesystem, vars: &[(&str, &str)]) -> Install {
+pub(super) fn install(fs: &MockFilesystem, vars: &[(&str, &str)]) -> Install {
     Install::of(
         fs,
         Some(Path::new(&format!("{ZSH}/bin/zsh"))),
@@ -195,22 +195,27 @@ fn an_fc_alias_counts_as_used_in_a_stock_function_zsh_expands_aliases_in() {
     let known = install(&fs, &[]);
     let doubt = "it cannot tell what the alias `typeset=fc -l` in /home/alice/.zshrc runs where \
                  it is used, as zsh hands the fc it stands for the words after it";
+    // An alias named like a builtin by which the walk reads a setting runs
+    // in its place, which is a doubt of its own.
+    let shadow = "it cannot tell what the files set where they run `typeset`, as \
+                  /home/alice/.zshrc defines a function or an alias `typeset`, which zsh runs in \
+                  place of the builtin of that name";
     for (rc, doubts) in [
         (
             "alias typeset='fc -l'\nautoload promptinit && promptinit\n",
-            vec![doubt],
+            vec![shadow, doubt],
         ),
         (
             "alias typeset='fc -l'\nfunctions -u promptinit && promptinit\n",
-            vec![doubt],
+            vec![shadow, doubt],
         ),
         (
             "alias typeset='fc -l'\nautoload -Uz promptinit && promptinit\n",
-            vec![],
+            vec![shadow],
         ),
         (
             "alias typeset='fc -l'\nautoload -U +X promptinit && promptinit\n",
-            vec![],
+            vec![shadow],
         ),
     ] {
         seed(&fs, "/home/alice/.zshrc", rc);

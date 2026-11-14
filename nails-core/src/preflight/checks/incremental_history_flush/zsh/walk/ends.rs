@@ -75,7 +75,7 @@ fn no_timeout(value: &str) -> bool {
 impl Walker<'_> {
     /// Whether the walk is in the body of a function, an anonymous one
     /// among them, which `return` returns from.
-    fn in_function_body(&self) -> bool {
+    pub(super) fn in_function_body(&self) -> bool {
         self.frames.iter().any(|open| open.frame == Frame::Function)
     }
 
