@@ -234,6 +234,7 @@ let
   btrfsTools = {
     btrfs = "${pkgs.btrfs-progs}/bin/btrfs";
     "btrfs-find-root" = "${pkgs.btrfs-progs}/bin/btrfs-find-root";
+    "btrfs-map-logical" = "${pkgs.btrfs-progs}/bin/btrfs-map-logical";
     sfdisk = "${pkgs.util-linux}/bin/sfdisk";
     cp = "${pkgs.coreutils}/bin/cp";
   };
