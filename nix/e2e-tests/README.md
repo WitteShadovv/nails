@@ -771,11 +771,11 @@ a plain file the raw scan finds, a compressed file the raw scan misses and the
 read through the kernel finds, and a compressed file written and deleted that
 only an older root keeps. `btrfs restore` reads the older roots only, since it
 cannot read about 11,000 inline zstd extents of the arch-boxes image, which
-the kernel reads. It lists the failed units five
-times, on the decoy before the first switch and right after each switch (in
-both hidden sessions and on the decoy after both ways back), compares each
-listing with the entry's `knownFailedUnits`, and checks that the `platform` row
-of `check` warns about every unit listed there
+the kernel reads. It lists the failed units seven times, on the decoy before
+the first switch, right after each switch (in both hidden sessions and on the
+decoy after both ways back) and in both hidden sessions again just before the
+way back, compares each listing with the entry's `knownFailedUnits`, and checks
+that the `platform` row of `check` warns about every unit listed there
 ([Known failures](#known-failures)).
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
@@ -925,18 +925,22 @@ both ways back, to a line its failed start logs. `notInImage` lists the units
 the release's warning names that the image does not install, so the scenario
 cannot see them: the cloud image has no CUPS, and the printing half of the
 Ubuntu 26.04 warning rests on a check by hand. Ubuntu 24.04 lists nothing, so
-no unit may be failed there at any of the five listings. Debian 13 has no list
+no unit may be failed there at any of the seven listings. Debian 13 has no list
 yet: its failed units are printed, not checked.
 
 A listing sees only the units failed at that moment. It misses a unit that
-fails after the listing of its phase, and one that fails but starts again
-before the listing, which includes a unit that fails while a switch stops the
-old system and that the new system starts again.
+fails after the last listing of its phase, and one that fails but starts again
+before the next listing, which includes a unit that fails while a switch stops
+the old system and that the new system starts again. Each hidden session is
+listed twice, right after its entry and just before its way back, since the
+way back resets every unit that failed in the session, so no listing on the
+decoy can see one.
 
 The scenario fails when:
 
 - a listing holds a unit that the list does not name: on the decoy before the
-  first switch (where nothing may be failed) or right after a switch;
+  first switch (where nothing may be failed), right after a switch or in a
+  hidden session before its way back;
 - a listed unit failed, but what it logged since its latest start lacks its
   line, so it fails in another way;
 - a `notInImage` unit is in the image, which asks for it to move to the phases

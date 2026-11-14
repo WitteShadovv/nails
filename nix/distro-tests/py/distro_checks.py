@@ -584,10 +584,11 @@ def journal_traces(journal_json: str, tokens: Iterable[str]) -> list[str]:
 # both hidden sessions and on the decoy after both ways back, each with a line
 # its failed start logs, and the ones the release's warning names that the
 # image does not install. The smoke scenario lists the failed units on the
-# decoy before the first switch and right after each switch, and compares each
-# listing with that list: a listing sees only what is failed at that moment,
-# not a unit that failed while a switch stopped the old system and that the new
-# system started again. It checks that each listed failure is the known one,
+# decoy before the first switch, right after each switch, and in each hidden
+# session again just before its way back, and compares each listing with that
+# list: a listing sees only what is failed at that moment, not a unit that
+# failed while a switch stopped the old system and that the new system started
+# again. It checks that each listed failure is the known one,
 # and that the ``platform`` row of ``check`` warns about every unit listed. A
 # known failure that is gone asks for the list, and then the warning, to be
 # narrowed; the scenario never requires the warning to go away.
