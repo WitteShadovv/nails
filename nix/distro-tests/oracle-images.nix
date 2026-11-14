@@ -69,26 +69,8 @@ let
   hiddenRoot = import ./lib/hidden-root.nix;
 
   # The release binary with the Fedora base row admitted, for this driver
-  # only. The build fails unless exactly that one row changes.
-  nailsFedoraAdmitted = self.packages.x86_64-linux.nails.overrideAttrs (old: {
-    pname = "nails-test-fedora-admitted";
-    postPatch = (old.postPatch or "") + ''
-      table=nails-platform/src/platform/family.rs
-      awk '
-        /^        id: "fedora",$/ { row = 1 }
-        row && /^        admitted: false,$/ { sub(/false/, "true"); row = 0; flipped++ }
-        { print }
-        END { if (flipped != 1) exit 1 }
-      ' "$table" > "$table.new" || {
-        echo "the Fedora row of $table did not change exactly once" >&2
-        exit 1
-      }
-      mv "$table.new" "$table"
-    '';
-    meta = old.meta // {
-      description = "nails with the Fedora row admitted, for the btrfs oracle images only; never released";
-    };
-  });
+  # only (lib/admitted.nix).
+  nailsFedoraAdmitted = import ./lib/admitted.nix { inherit self; } "fedora";
 
   binShare = {
     tag = "tools";
