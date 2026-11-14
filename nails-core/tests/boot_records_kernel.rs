@@ -149,6 +149,7 @@ mod kernel_tests {
                     kernel: || false,
                 },
                 selinux: &nails_teardown::whole_root::selinux::KERNEL,
+                start: nails_teardown::whole_root::program_label::Started::by_hand(),
             };
             let before = boot_records::boot_clock();
             let outcome = transition::run(&env);
@@ -274,6 +275,7 @@ mod kernel_tests {
                 kernel: || false,
             },
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
+            start: nails_teardown::whole_root::program_label::Started::by_hand(),
         };
         let outcome = transition::run(&env);
         nextroot::detach_tree(&next);

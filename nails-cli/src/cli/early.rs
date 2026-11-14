@@ -14,7 +14,8 @@
 //!   once the CLI is initialised, if it is still alive by then;
 //! - **`transition`**, run by systemd as the last step before each soft-reboot
 //!   switch: `nails_teardown::whole_root::transition` runs and the process ends
-//!   at once, with no output and no log.
+//!   at once, with no output and no log. It is told how it was started
+//!   ([`started`]), for the check of its own domain before an armed switch.
 //! - **`guard-device <node>`**, run by the hidden session's udev rule for every
 //!   disk that appears (`[session_mounts] read_only`):
 //!   `nails_teardown::whole_root::disk_guard` makes it read-only unless the
@@ -477,7 +478,7 @@ pub fn dispatch() -> bool {
     let argv: Vec<OsString> = std::env::args_os().collect();
     if is_transition(&argv) && nix::unistd::geteuid().is_root() {
         let _ = nails_teardown::whole_root::transition::run(
-            &nails_teardown::whole_root::transition::Env::system(),
+            &nails_teardown::whole_root::transition::Env::system(started()),
         );
         crate::cli::chokepoint::exit_process(0);
     }

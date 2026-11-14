@@ -578,3 +578,77 @@ fn a_late_write_error_fails_only_the_labels_after_it() {
     ));
     assert_eq!(selinux.labels_written().len(), 1);
 }
+
+/// Each reason a unit runs outside the domain reads as a clause, as the
+/// transition step keeps it for the refusal of its switch.
+#[test]
+fn each_reason_a_unit_runs_outside_the_domain_reads_as_a_clause() {
+    for (outside, text) in [
+        (
+            Outside::Unread(io::Error::from_raw_os_error(libc::ENOENT)),
+            "whether a policy is loaded, or the context it runs in, could not be read: No such \
+             file or directory (os error 2)",
+        ),
+        (
+            Outside::Unlabelled(Unlabelled::NotAFile),
+            "its RAM copy is not a regular file",
+        ),
+        (
+            Outside::NotStarted(io::Error::from_raw_os_error(libc::EACCES)),
+            "it could not start itself again from its RAM copy: Permission denied (os error 13)",
+        ),
+        (
+            Outside::Still(INIT.to_string()),
+            "it runs in system_u:system_r:init_t:s0, though it started itself again from its \
+             RAM copy with the label",
+        ),
+    ] {
+        assert_eq!(outside.to_string(), text);
+    }
+}
+
+/// A unit run by hand is asked nothing and never starts itself again; one
+/// PID 1 started starts itself again from the copy it checks, as its start
+/// says.
+#[test]
+fn a_unit_run_by_hand_is_asked_nothing_and_one_pid_1_started_starts_from_its_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = copy_in(&dir);
+    let in_pid1 = || FakeSelinux {
+        current: INIT.to_string(),
+        ..FakeSelinux::targeted()
+    };
+    let selinux = in_pid1();
+    Started::by_hand().enter_domain(&selinux, &copy).unwrap();
+    assert!(selinux.questions().is_empty());
+    assert!(selinux.labels_written().is_empty());
+    assert_eq!(
+        (Started::by_hand().start_again)(&copy).kind(),
+        io::ErrorKind::Other
+    );
+
+    fn refused(copy: &Path) -> io::Error {
+        io::Error::other(format!("not started from {}", copy.display()))
+    }
+    let by_pid1 = Started {
+        by_pid1: true,
+        again: false,
+        start_again: refused,
+    };
+    let outside = by_pid1.enter_domain(&in_pid1(), &copy).unwrap_err();
+    assert_eq!(
+        outside.to_string(),
+        format!(
+            "it could not start itself again from its RAM copy: not started from {}",
+            copy.display()
+        )
+    );
+    let again = Started {
+        again: true,
+        ..by_pid1
+    };
+    assert!(matches!(
+        again.enter_domain(&in_pid1(), &copy),
+        Err(Outside::Still(_))
+    ));
+}
