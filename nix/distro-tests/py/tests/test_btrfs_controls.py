@@ -87,5 +87,46 @@ class PoisonTest(unittest.TestCase):
         self.assertGreaterEqual(17477 * len(bc.poison_unit("C")), bc.POISON_BYTES)
 
 
+class HistoryTest(unittest.TestCase):
+    LIVE = bc.poison_token("B")
+    DELETED = bc.poison_token("C")
+    LIVE_PATH = "/tmp/scan-controls/compressed/b"
+    DELETED_PATH = "/tmp/scan-controls/compressed/c"
+
+    def test_the_newest_root_is_no_history(self) -> None:
+        # A deletion that never reached the disk leaves the file in the
+        # current tree: that is no older root keeping it.
+        found = bc.history(
+            [({self.LIVE, self.DELETED}, [self.LIVE_PATH, self.DELETED_PATH])],
+            self.LIVE,
+            self.LIVE_PATH,
+        )
+        self.assertEqual(found["older"], [])
+        self.assertEqual(found["kept"], [])
+        self.assertEqual(found["newest"], sorted({self.LIVE, self.DELETED}))
+        self.assertEqual(found["newestPaths"], [self.LIVE_PATH, self.DELETED_PATH])
+
+    def test_an_older_root_keeps_the_deleted_control(self) -> None:
+        found = bc.history(
+            [
+                ({self.LIVE}, [self.LIVE_PATH]),
+                ({self.LIVE, self.DELETED}, [self.LIVE_PATH, self.DELETED_PATH]),
+                (set(), []),
+            ],
+            self.LIVE,
+            self.LIVE_PATH,
+        )
+        self.assertEqual(found["older"], [self.DELETED])
+        self.assertEqual(found["kept"], [self.DELETED_PATH])
+        self.assertEqual(found["newest"], [self.LIVE])
+        self.assertEqual(found["newestPaths"], [self.LIVE_PATH])
+
+    def test_no_root_holds_nothing(self) -> None:
+        self.assertEqual(
+            bc.history([], self.LIVE, self.LIVE_PATH),
+            {"newest": [], "newestPaths": [], "older": [], "kept": []},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
