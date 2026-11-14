@@ -159,13 +159,7 @@ fn what_nails_cannot_follow_of_a_unit_is_unknown() {
 #[test]
 fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
     let by = TUNED_BY;
-    for target in [
-        "socket:[24680]",
-        "pipe:[13579]",
-        "/dev/null",
-        "/dev/pts/1",
-        "/dev/kmsg",
-    ] {
+    for target in ["socket:[24680]", "/dev/null", "/dev/pts/1", "/dev/kmsg"] {
         assert_eq!(
             led_to(Ok(PathBuf::from(target)), Stream::Error, by),
             Log::NoFile,
@@ -195,6 +189,12 @@ fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
             by
         )),
         "it logs to its standard output, which leads to anon_inode:[eventfd]"
+    );
+    // A pipe leads to its reader, which may copy what it reads into a file.
+    assert_eq!(
+        unknown(led_to(Ok(PathBuf::from("pipe:[13579]")), Stream::Error, by)),
+        "it logs to its standard error, a pipe, which NAILS cannot follow past the process that \
+         reads it"
     );
     let error = |kind| {
         Err(NailsError::io(

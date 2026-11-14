@@ -22,9 +22,11 @@
 //! descriptor (`fd:`), leaves it unknown.
 //!
 //! By a running process, as the link of its descriptor in `/proc` leads: a
-//! device, a socket or a pipe is no file, and a descriptor that is closed
-//! takes nothing. Only root may follow the descriptors of another user's
-//! process, so an unprivileged `nails check` cannot tell where they lead.
+//! device or a socket is no file, and a descriptor that is closed takes
+//! nothing. A pipe leads to the process that reads it, which may copy what
+//! it reads into a file, as `tee` does, so NAILS cannot tell. Only root may
+//! follow the descriptors of another user's process, so an unprivileged
+//! `nails check` cannot tell where they lead.
 
 use super::super::super::systemd_conf::Assignment;
 use super::options::{FileLog, Log};
@@ -180,8 +182,13 @@ fn led_to(target: crate::Result<PathBuf>, stream: Stream, by: &str) -> Log {
         Ok(target) => {
             let target = target.to_string_lossy().into_owned();
             let device = target.starts_with("/dev/") && !target.starts_with("/dev/shm/");
-            if device || target.starts_with("socket:") || target.starts_with("pipe:") {
+            if device || target.starts_with("socket:") {
                 Log::NoFile
+            } else if target.starts_with("pipe:") {
+                Log::Unknown(format!(
+                    "it logs to its {name}, a pipe, which NAILS cannot follow past the process \
+                     that reads it"
+                ))
             } else if target.starts_with('/') {
                 Log::File(FileLog {
                     path: target,

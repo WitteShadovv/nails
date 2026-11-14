@@ -1379,3 +1379,101 @@ fn an_apport_nails_cannot_tell_is_enabled_warns() {
         "{result:?}"
     );
 }
+
+#[test]
+fn a_program_that_runs_tuned_or_firewalld_in_turn_counts_against_the_decoy() {
+    // e2fsprogs' logsave and util-linux's script copy what the command
+    // writes to its standard output and standard error into a file.
+    for (exec, program) in [
+        (
+            "/usr/sbin/logsave -a /var/log/tuned/tuned.log /usr/sbin/tuned -P",
+            "/usr/sbin/logsave",
+        ),
+        (
+            "/usr/bin/script -q -a /var/log/tuned/typescript -c /usr/sbin/tuned",
+            "/usr/bin/script",
+        ),
+    ] {
+        let decoy = Decoy::new();
+        decoy
+            .unit("tuned.service", TUNED_UNIT)
+            .enable("multi-user.target", "tuned.service")
+            .file(
+                "/etc/systemd/system/tuned.service.d/50-wrap.conf",
+                &format!("[Service]\nExecStart=\nExecStart={exec}\nStandardError=journal\n"),
+            );
+        assert_eq!(
+            decoy.findings().blockers,
+            [format!(
+                "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it \
+                 counts as one that does (tuned.service is enabled: its ExecStart= runs \
+                 {program}, which is no tuned)"
+            )],
+            "{exec}"
+        );
+    }
+
+    let decoy = Decoy::new();
+    decoy
+        .unit("firewalld.service", FIREWALLD_UNIT)
+        .file("/etc/sysconfig/firewalld", FIREWALLD_SYSCONFIG)
+        .enable("multi-user.target", "firewalld.service")
+        .file(
+            "/etc/systemd/system/firewalld.service.d/50-logsave.conf",
+            "[Service]\nExecStart=\nExecStart=/usr/sbin/logsave -a /var/log/firewalld.log \
+             /usr/bin/firewalld --nofork --nopid --log-target=console\n",
+        );
+    let warnings = decoy.findings().warnings;
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with(
+            "NAILS cannot tell whether firewalld writes a log file on the decoy disk \
+             (firewalld.service is enabled: its ExecStart= runs /usr/sbin/logsave, which is no \
+             firewalld)"
+        ),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_tuned_whose_standard_error_is_a_pipe_counts_against_the_decoy() {
+    // Started by hand as `tuned -P 2>&1 | tee -a /var/log/tuned-run.log`,
+    // its units set to log to the journal.
+    let decoy = Decoy::new();
+    decoy
+        .fedora_tuned()
+        .file(
+            "/etc/systemd/system/tuned.service.d/50-journal.conf",
+            TUNED_DROPIN,
+        )
+        .file(
+            "/etc/systemd/system/tuned-ppd.service.d/50-journal.conf",
+            PPD_DROPIN,
+        )
+        .process(
+            812,
+            "tuned",
+            &["/usr/bin/python3", "-Es", "/usr/sbin/tuned", "-P"],
+        )
+        .link("/proc/812/fd/2", "pipe:[4242]")
+        .process(813, "tee", &["tee", "-a", "/var/log/tuned-run.log"])
+        .link("/proc/813/fd/0", "pipe:[4242]")
+        .link("/proc/813/fd/3", "/var/log/tuned-run.log")
+        .process(
+            900,
+            "tuned-ppd",
+            &["/usr/bin/python3", "-Es", "/usr/sbin/tuned-ppd"],
+        )
+        .link("/proc/900/fd/2", "socket:[24681]");
+    let found = decoy.findings();
+    assert_eq!(
+        found.blockers,
+        [
+            "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it counts as \
+          one that does (process 812 runs: it logs to its standard error, a pipe, which NAILS \
+          cannot follow past the process that reads it)"
+        ]
+    );
+    assert_eq!(found.programs, ["tuned"]);
+    assert!(decoy.check(false).is_fail(), "{:?}", decoy.check(false));
+}

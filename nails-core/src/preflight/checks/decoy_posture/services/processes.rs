@@ -13,6 +13,12 @@
 //! interpreter's own options as Python reads them, and not when Python runs
 //! a command (`-c`), a module (`-m`) or its standard input instead.
 //! `comm` and `cmdline` can be read by every user.
+//!
+//! A command line runs a daemon only where its first word is the daemon's
+//! program, or a Python interpreter whose script is ([`own_args`]). Another
+//! program that runs the daemon in turn, as `logsave` and `script` do, can
+//! take what the daemon writes to its standard output and standard error
+//! into a file of its own, so its options are no daemon's.
 
 use crate::Filesystem;
 use std::path::Path;
@@ -42,25 +48,27 @@ fn program_of(programs: &[&'static str], name: &[u8]) -> Option<&'static str> {
     })
 }
 
-/// Whether `name` is the name of a Python interpreter, as `python3` and
-/// `python3.14` are.
+/// Whether `name` is the name of a Python interpreter, as `python3`,
+/// `python3.14` and RHEL's `platform-python` are.
 fn is_python(name: &str) -> bool {
-    name.strip_prefix("python").is_some_and(|rest| {
-        rest.bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    })
+    name == "platform-python"
+        || name.strip_prefix("python").is_some_and(|rest| {
+            rest.bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        })
 }
 
-/// The script a Python interpreter's command line `argv` runs, as Python
-/// reads its own options: `-W` and `-X` take a value, attached or in the next
-/// word, `--check-hash-based-pycs` the next word, `--` ends them. `None` when
-/// it runs a command, a module or its standard input, or nothing.
-fn python_script(argv: &[Vec<u8>]) -> Option<&[u8]> {
+/// Where the script is among the words of a Python interpreter's command
+/// line `argv`, as Python reads its own options: `-W` and `-X` take a value,
+/// attached or in the next word, `--check-hash-based-pycs` the next word,
+/// `--` ends them. `None` when it runs a command, a module or its standard
+/// input, or nothing.
+fn python_script_at(argv: &[Vec<u8>]) -> Option<usize> {
     let mut at = 1;
     while let Some(word) = argv.get(at) {
         at += 1;
         match word.as_slice() {
-            b"--" => return argv.get(at).map(Vec::as_slice),
+            b"--" => return (at < argv.len()).then_some(at),
             b"-" => return None,
             b"--check-hash-based-pycs" => at += 1,
             long if long.starts_with(b"--") => {}
@@ -78,10 +86,16 @@ fn python_script(argv: &[Vec<u8>]) -> Option<&[u8]> {
                     }
                 }
             }
-            script => return Some(script),
+            _ => return Some(at - 1),
         }
     }
     None
+}
+
+/// The script a Python interpreter's command line `argv` runs
+/// ([`python_script_at`]).
+fn python_script(argv: &[Vec<u8>]) -> Option<&[u8]> {
+    python_script_at(argv).map(|at| argv[at].as_slice())
 }
 
 /// The file name of `word`, the part after its last `/`.
@@ -89,17 +103,34 @@ fn file_name(word: &[u8]) -> &[u8] {
     word.rsplit(|&byte| byte == b'/').next().unwrap_or(word)
 }
 
-/// The words after the first of `words` whose file name is `program`, or
-/// the name NixOS's wrapper gives it: what the program reads as its own
-/// command line, after the interpreter that runs it and the interpreter's
-/// options. `None` when no word names it.
+/// Whether `name`, a file name, is `program`'s, or the name NixOS's wrapper
+/// gives it.
+fn names(program: &str, name: &[u8]) -> bool {
+    name == program.as_bytes() || name == format!(".{program}-wrapped").as_bytes()
+}
+
+/// What `program` reads as its own command line in the command `words`:
+/// the words after the first, where the first is the program (by its file
+/// name, or the name NixOS's wrapper gives it), or, where the first is a
+/// Python interpreter, the words after its script, where the script is the
+/// program. `None` where the command runs anything else first, a program
+/// that runs `program` in turn among it (see the [module docs](self)).
 pub(super) fn own_args(program: &'static str, words: &[Vec<u8>]) -> Option<Vec<Vec<u8>>> {
-    let wrapped = format!(".{program}-wrapped");
-    let at = words.iter().position(|word| {
-        let name = file_name(word);
-        name == program.as_bytes() || name == wrapped.as_bytes()
-    })?;
-    Some(words[at + 1..].to_vec())
+    let first = file_name(words.first()?);
+    if names(program, first) {
+        return Some(words[1..].to_vec());
+    }
+    if !std::str::from_utf8(first).is_ok_and(is_python) {
+        return None;
+    }
+    let at = python_script_at(words)?;
+    names(program, file_name(&words[at])).then(|| words[at + 1..].to_vec())
+}
+
+/// Whether a word of the command `words` names `program`, wherever it is:
+/// the command runs it, maybe through another program.
+pub(super) fn runs_anywhere(program: &'static str, words: &[Vec<u8>]) -> bool {
+    words.iter().any(|word| names(program, file_name(word)))
 }
 
 /// The processes under `<root>/proc` that run one of `programs` (see the
