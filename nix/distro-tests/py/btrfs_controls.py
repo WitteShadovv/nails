@@ -46,15 +46,16 @@ on it. The second is taken at the guest's power-off, as the oracle images
 driver takes the oracle's images, and is recorded only: earlier runs found
 the blocks of the deleted control taken again before such an image, by the
 stock image's persistent journal and, on the amnesic decoy, by small files
-whose first bytes read as NetworkManager's state and timestamps files. The driver writes ``<image>-btrfs.json``, every
-assertion with its outcome, into the directory ``NAILS_GATE_OUT`` names, and
-fails when one does not hold.
+whose first bytes read as NetworkManager's state and timestamps files. The
+driver writes ``<image>-btrfs.json``, every assertion with its outcome, into
+the directory ``NAILS_GATE_OUT`` names, and fails when one does not hold.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -123,6 +124,43 @@ def restore_messages(done: subprocess.CompletedProcess[str]) -> list[str]:
         if line.strip() and "do you want to keep going on" not in line
     ]
     return lines[:20]
+
+
+_CHUNK_ITEM = re.compile(r"CHUNK_ITEM (\d+)\)")
+_CHUNK_LENGTH = re.compile(r"^\s*length (\d+) ")
+_FIRST_STRIPE = re.compile(r"^\s*stripe 0 devid \d+ offset (\d+)")
+
+
+def chunk_map(dump: str) -> list[tuple[int, int, int]]:
+    """The chunks ``btrfs inspect-internal dump-tree -t chunk`` lists: each
+    one's logical start, its length and the device offset of its first
+    stripe."""
+    chunks = []
+    start: int | None = None
+    length: int | None = None
+    for line in dump.splitlines():
+        item = _CHUNK_ITEM.search(line)
+        if item:
+            start, length = int(item.group(1)), None
+            continue
+        size = _CHUNK_LENGTH.match(line)
+        if size and start is not None:
+            length = int(size.group(1))
+            continue
+        stripe = _FIRST_STRIPE.match(line)
+        if stripe and start is not None and length is not None:
+            chunks.append((start, length, int(stripe.group(1))))
+            start = length = None
+    return chunks
+
+
+def physical_address(chunks: list[tuple[int, int, int]], logical: int) -> int | None:
+    """Where the btrfs logical address ``logical`` lies on the device, in the
+    first stripe of its chunk, or None outside every chunk."""
+    for start, length, offset in chunks:
+        if start <= logical < start + length:
+            return offset + logical - start
+    return None
 
 
 class Controls:
@@ -398,36 +436,33 @@ class Controls:
 
     def extent_heads(self, part: str, control: str) -> list[dict[str, Any]]:
         """For each extent of the deleted ``control`` the guest listed, the
-        first bytes the image holds at its address: a zstd frame
-        (``ZSTD_MAGIC``) while the extent was neither discarded nor reused."""
+        first bytes the image holds at its address, mapped to the partition
+        through the chunk tree, which keeps the mapping of free space too: a
+        zstd frame (``ZSTD_MAGIC``) while the extent was neither discarded
+        nor reused, zeros where it was discarded."""
+        dump = subprocess.run(
+            [self.tools["btrfs"], "inspect-internal", "dump-tree", "-t", "chunk", part],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        chunks = chunk_map(dump)
         heads = []
         listing = str(self.facts.get(f"{control}-extents", ""))
         for logical in encoded_extents(listing):
-            with tempfile.NamedTemporaryFile() as out:
-                done = subprocess.run(
-                    [
-                        self.tools["btrfs-map-logical"],
-                        "-l",
-                        str(logical),
-                        "-b",
-                        str(BLOCK),
-                        "-o",
-                        out.name,
-                        part,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                data = out.read(BLOCK)
+            physical = physical_address(chunks, logical)
+            data = b""
+            if physical is not None:
+                with open(part, "rb") as handle:
+                    handle.seek(physical)
+                    data = handle.read(BLOCK)
             heads.append(
                 {
                     "logical": logical,
-                    "exit": done.returncode,
+                    "physical": physical,
                     "head": data[:8].hex(),
                     "zstd": data[:4].hex() == ZSTD_MAGIC,
                     "zeros": bool(data) and not data.strip(b"\0"),
-                    "said": done.stdout.strip()[-300:] + done.stderr.strip()[-300:],
                 }
             )
         return heads

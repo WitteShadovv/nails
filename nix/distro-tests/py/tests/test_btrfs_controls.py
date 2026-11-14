@@ -26,6 +26,36 @@ class EncodedExtentsTest(unittest.TestCase):
         self.assertEqual(bc.encoded_extents("sh: filefrag: command not found"), [])
 
 
+CHUNKS = """\
+chunk tree
+\titem 0 key (DEV_ITEMS DEV_ITEM 1) itemoff 16185 itemsize 98
+\t\tdevid 1 total_bytes 314572800 bytes_used 92274688
+\titem 1 key (FIRST_CHUNK_TREE CHUNK_ITEM 13631488) itemoff 16105 itemsize 80
+\t\tlength 8388608 owner 2 stripe_len 65536 type DATA|single
+\t\tnum_stripes 1 sub_stripes 1
+\t\t\tstripe 0 devid 1 offset 13631488
+\titem 3 key (FIRST_CHUNK_TREE CHUNK_ITEM 30408704) itemoff 15881 itemsize 112
+\t\tlength 33554432 owner 2 stripe_len 65536 type METADATA|DUP
+\t\tnum_stripes 2 sub_stripes 1
+\t\t\tstripe 0 devid 1 offset 38797312
+\t\t\tstripe 1 devid 1 offset 72351744
+"""
+
+
+class ChunkMapTest(unittest.TestCase):
+    def test_reads_each_chunk_and_its_first_stripe(self) -> None:
+        self.assertEqual(
+            bc.chunk_map(CHUNKS),
+            [(13631488, 8388608, 13631488), (30408704, 33554432, 38797312)],
+        )
+
+    def test_maps_an_address_into_its_chunk(self) -> None:
+        chunks = bc.chunk_map(CHUNKS)
+        self.assertEqual(bc.physical_address(chunks, 13631488 + 4096), 13635584)
+        self.assertEqual(bc.physical_address(chunks, 30408704 + 8192), 38805504)
+        self.assertIsNone(bc.physical_address(chunks, 4096))
+
+
 class RestoreMessagesTest(unittest.TestCase):
     def test_keeps_what_it_said_without_its_prompts(self) -> None:
         done = subprocess.CompletedProcess(
