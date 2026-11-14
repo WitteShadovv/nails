@@ -363,8 +363,8 @@ jobs:
             test -f "$out/forensics/$raw.raw"
           done
 
-      # The driver digs the zeros out of each raw, so a raw keeps only the
-      # blocks that hold data and tar keeps the holes. Most of the 40 GiB
+      # The driver replaces each raw by a sparse copy, so a raw keeps only
+      # the blocks that hold data and tar keeps the holes. Most of the 40 GiB
       # arch-boxes disk is never written.
       - name: Pack the raws
         env:
