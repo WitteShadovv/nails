@@ -407,3 +407,66 @@ fn a_way_back_through_env_needs_the_hidden_pid_1_to_leave_the_domain_to_the_poli
     let (_, reason, _) = refusal_of(check_way_back(without.path(), &plan, &Unasked).unwrap_err());
     assert!(reason.contains("/usr/bin/env does not exist"), "{reason}");
 }
+
+/// A host that asks PID 1 for `NoNewPrivileges` but leaves `SELinuxContext`
+/// to the default refuses both ways: the defaults fail closed.
+#[test]
+fn the_questions_a_host_leaves_to_the_defaults_refuse_the_switch() {
+    /// Asks for `NoNewPrivileges` alone.
+    struct PrivilegesOnly;
+    impl GuardHost for PrivilegesOnly {
+        fn unit_stop_commands(&self, _: &str) -> Result<String> {
+            unreachable!("not a guard test")
+        }
+        fn job_timeout_action(&self, _: &str) -> Result<String> {
+            unreachable!("not a guard test")
+        }
+        fn job_timeout(&self, _: &str) -> Result<String> {
+            unreachable!("not a guard test")
+        }
+        fn service_watchdogs(&self) -> Result<String> {
+            unreachable!("not a guard test")
+        }
+        fn no_new_privileges(&self, _: &str) -> Result<String> {
+            Ok("no\n".to_string())
+        }
+    }
+    // The entry stops at the error itself.
+    let prefix = ExecPrefix::Trampoline(Reason::SelinuxRunning);
+    for answer in [
+        prefix.require_domain(&PrivilegesOnly),
+        domain_unheld(&PrivilegesOnly).map(drop),
+    ] {
+        let Err(NailsError::InvalidState(why)) = answer else {
+            panic!("expected the default's error, got {answer:?}");
+        };
+        assert_eq!(
+            why,
+            "PID 1 was not asked for SELinuxContext of systemd-soft-reboot.service"
+        );
+    }
+    // The way back refuses, with the power-off as the fix.
+    let mut plan = sample_plan();
+    plan.exec_prefix = Some(PathBuf::from(TRAMPOLINE));
+    let root = root_with_env();
+    let (_, reason, fix) =
+        refusal_of(check_way_back(root.path(), &plan, &PrivilegesOnly).unwrap_err());
+    assert!(
+        reason.contains(
+            "the hidden session's PID 1 could not be asked how it starts \
+             systemd-soft-reboot.service: PID 1 was not asked for SELinuxContext of \
+             systemd-soft-reboot.service"
+        ),
+        "{reason}"
+    );
+    assert!(fix.starts_with("End the session with `sudo "), "{fix}");
+
+    // The default of `NoNewPrivileges` names it.
+    let NailsError::InvalidState(why) = domain_unheld(&Unasked).unwrap_err() else {
+        panic!("expected the default's error");
+    };
+    assert_eq!(
+        why,
+        "PID 1 was not asked for NoNewPrivileges of systemd-soft-reboot.service"
+    );
+}

@@ -81,6 +81,27 @@ impl GuardHost for Pid1 {
     }
 }
 
+/// A host that does not ask PID 1 about the switch's unit answers neither
+/// question of the exec prefix's checks, so that a switch through one is
+/// refused.
+#[test]
+fn a_host_that_does_not_ask_answers_none_of_the_exec_prefix_s_questions() {
+    let host = Pid1::default();
+    let unit = "systemd-soft-reboot.service";
+    for (answer, property) in [
+        (host.no_new_privileges(unit), "NoNewPrivileges"),
+        (host.selinux_context(unit), "SELinuxContext"),
+    ] {
+        let Err(NailsError::InvalidState(why)) = answer else {
+            panic!("{property}: {answer:?}");
+        };
+        assert_eq!(
+            why,
+            format!("PID 1 was not asked for {property} of systemd-soft-reboot.service")
+        );
+    }
+}
+
 /// The one refusal `error` carries: its check, its reason and its fix.
 fn refusal(error: &NailsError) -> (String, String, String) {
     let NailsError::PreFlightCheckFailed(failures) = error else {
