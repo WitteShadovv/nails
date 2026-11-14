@@ -343,8 +343,11 @@ impl DecoyPersistenceCheck {
     /// unattended-upgrades do at its shutdown helper's signal, by the cause
     /// for which the pre-flight check refuses it, or `None` where it does
     /// not, read through the automount guard as the pre-flight check reads
-    /// it: without the mount table, or where the guard did not make a lookup,
-    /// NAILS cannot tell. Shared with `status`. Independent of the operator
+    /// it: without the mount table, or where the guard did not make a lookup
+    /// that decides the refusal, NAILS cannot tell. A lookup it did not make
+    /// for what only warns, python3-gi's module or the hidden session's own
+    /// copy, leaves the answer as the rest gives it, as it leaves the
+    /// check's refusal. Shared with `status`. Independent of the operator
     /// override, and performs no writes.
     pub fn decoy_install_at_shutdown<F: Filesystem>(fs: &F) -> Option<InstallAtShutdown> {
         let root = Path::new("/");
@@ -352,19 +355,26 @@ impl DecoyPersistenceCheck {
         if snapshot.unreadable().is_some() {
             return Some(InstallAtShutdown::Unknown);
         }
-        let view = Guarded::new(fs.clone(), &snapshot);
-        let found = Self::install_at_shutdown_on(&view, root);
-        // A lookup the guard did not make may hide a setting that is on.
-        if found.is_none() && !view.skipped().is_empty() {
+        let blocking = Guarded::new(fs.clone(), &snapshot);
+        let warning = Guarded::new(fs.clone(), &snapshot);
+        let found = Self::install_at_shutdown_on(&blocking, &warning, root);
+        // A lookup the guard did not make there may hide a setting that is
+        // on.
+        if found.is_none() && !blocking.skipped().is_empty() {
             return Some(InstallAtShutdown::Unknown);
         }
         found
     }
 
-    /// [`Self::decoy_install_at_shutdown`] of the system tree under `root`.
-    fn install_at_shutdown_on<F: Filesystem>(fs: &F, root: &Path) -> Option<InstallAtShutdown> {
+    /// [`Self::decoy_install_at_shutdown`] of the system tree under `root`,
+    /// read through the views of [`install_on_shutdown::finding`].
+    fn install_at_shutdown_on<F: Filesystem>(
+        blocking: &F,
+        warning: &F,
+        root: &Path,
+    ) -> Option<InstallAtShutdown> {
         use install_on_shutdown::AtTheSwitch;
-        let blocker = install_on_shutdown::finding(fs, root, None).blocker?;
+        let blocker = install_on_shutdown::finding(blocking, warning, root, None).blocker?;
         Some(match blocker.at_the_switch {
             AtTheSwitch::Installs => InstallAtShutdown::On,
             AtTheSwitch::ErrorLines => InstallAtShutdown::RefusedFile,
@@ -705,10 +715,12 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
         let warning = Guarded::new(fs.clone(), &snapshot);
         let log_blockers = Self::log_blockers(&blocking, &self.root);
         let kdump_blocker = Self::kdump_finding(&blocking, &self.root);
-        // unattended-upgrades' install at shutdown is read through the
-        // blockers' view, its warnings with it, as they come from the same
-        // reads: a lookup the guard did not make there refuses.
-        let upgrades = install_on_shutdown::finding(&blocking, &self.root, self.upper.as_deref());
+        // unattended-upgrades' install at shutdown reads what decides its
+        // refusal through the blockers' view, and what only warns,
+        // python3-gi's module and the hidden session's own copy, through the
+        // warnings' view.
+        let upgrades =
+            install_on_shutdown::finding(&blocking, &warning, &self.root, self.upper.as_deref());
         let mut warnings = Self::warnings(&warning, &self.root, self.is_nixos);
         warnings.extend(upgrades.warning);
         warnings.extend(upgrades.polling);

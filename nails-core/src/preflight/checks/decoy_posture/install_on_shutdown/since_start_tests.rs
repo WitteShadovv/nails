@@ -38,7 +38,7 @@ fn a_link_among_the_parts_that_leads_to_no_file_counts_as_a_change() {
         Path::new("/etc/apt/apt.conf.d/99linked"),
     )
     .unwrap();
-    let dangling = finding(&fs, Path::new("/"), None);
+    let dangling = finding(&fs, &fs, Path::new("/"), None);
     assert!(
         blocker(&dangling).contains(&format!("but /etc/apt/apt.conf.d/99linked {LINKED}")),
         "{dangling:?}"
@@ -46,7 +46,7 @@ fn a_link_among_the_parts_that_leads_to_no_file_counts_as_a_change() {
     // As is the same link with its target there.
     fs.mock_add_file("/srv/99linked", "");
     fs.mock_set_file_bytes("/etc/apt/apt.conf.d/99linked", b"// nothing set here\n");
-    let resolved = finding(&fs, Path::new("/"), None);
+    let resolved = finding(&fs, &fs, Path::new("/"), None);
     assert!(
         blocker(&resolved).contains(&format!("but /etc/apt/apt.conf.d/99linked {LINKED}")),
         "{resolved:?}"
@@ -56,10 +56,10 @@ fn a_link_among_the_parts_that_leads_to_no_file_counts_as_a_change() {
 #[test]
 fn a_main_file_that_links_to_no_file_counts_as_a_change() {
     let fs = mock_times(2_000_000_000, 2_000_000_000, 1_000, "/etc/apt", 1_000);
-    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+    assert_eq!(finding(&fs, &fs, Path::new("/"), None).blocker, None);
     fs.create_symlink(Path::new("/srv/apt.conf"), Path::new("/etc/apt/apt.conf"))
         .unwrap();
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     assert!(
         blocker(&found).contains(&format!("but /etc/apt/apt.conf {LINKED}")),
         "{found:?}"
@@ -127,26 +127,26 @@ fn the_directory_that_holds_the_apt_config_file_is_compared() {
     let t = 2_000_000_000;
     // Nothing changed after the start.
     let fs = mock_with_apt_config("/etc/nails/apt.conf", "/etc/nails", t - 100);
-    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+    assert_eq!(finding(&fs, &fs, Path::new("/"), None).blocker, None);
     // The directory, as one swapped into place shows.
     let fs = mock_with_apt_config("/etc/nails/apt.conf", "/etc/nails", t + 1);
     assert!(
-        blocker(&finding(&fs, Path::new("/"), None))
+        blocker(&finding(&fs, &fs, Path::new("/"), None))
             .contains("but /etc/nails changed after the helper started"),
         "{:?}",
-        finding(&fs, Path::new("/"), None)
+        finding(&fs, &fs, Path::new("/"), None)
     );
     // The file itself.
     let fs = mock_with_apt_config("/etc/nails/apt.conf", "/etc/nails/apt.conf", t + 1);
     assert!(
-        blocker(&finding(&fs, Path::new("/"), None))
+        blocker(&finding(&fs, &fs, Path::new("/"), None))
             .contains("but /etc/nails/apt.conf changed after the helper started"),
         "{:?}",
-        finding(&fs, Path::new("/"), None)
+        finding(&fs, &fs, Path::new("/"), None)
     );
     // A file in the root: the root is not compared, as it cannot be swapped.
     let fs = mock_with_apt_config("/apt.conf", "/", t + 1);
-    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+    assert_eq!(finding(&fs, &fs, Path::new("/"), None).blocker, None);
 }
 
 #[test]
