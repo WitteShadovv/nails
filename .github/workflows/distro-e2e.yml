@@ -9,6 +9,8 @@ name: Distro E2E
 #   refusal  the refusal of each pinned image of a family the family table
 #            does not admit (Fedora, Arch)
 #   probe    the fact probes of the images not admitted yet
+#   cells    research only: the SELinux cells of an enforcing Fedora image
+#            (nix/distro-tests/cells.nix), each uploading its results
 #
 # A smoke scenario is a derivation that nix build runs in the Nix build
 # sandbox. A records scenario, a refusal and a probe are host drivers: the job
@@ -63,7 +65,7 @@ on:
           probes, such as fedora-44-enforcing)
         type: choice
         default: all
-        options: [all, smoke, records, refusal, probe]
+        options: [all, smoke, records, refusal, probe, cells]
       runner:
         description: >-
           runs-on for the VM jobs, as JSON: "ubuntu-26.04" or a label list such
@@ -137,6 +139,7 @@ jobs:
       distro-jobs: ${{ steps.matrix.outputs.distro-jobs }}
       gating: ${{ steps.matrix.outputs.gating }}
       gating-jobs: ${{ steps.matrix.outputs.gating-jobs }}
+      max-jobs: ${{ steps.select.outputs.max-jobs }}
 
     steps:
       - name: Checkout repository
@@ -186,9 +189,9 @@ jobs:
           read -ra selected <<< "$suites"
           for suite in "${selected[@]}"; do
             case "$suite" in
-              all | smoke | records | refusal | probe) ;;
+              all | smoke | records | refusal | probe | cells) ;;
               *)
-                echo "::error::suite must be all, smoke, records, refusal or probe, got '$suite'"
+                echo "::error::suite must be all, smoke, records, refusal, probe or cells, got '$suite'"
                 exit 1
                 ;;
             esac
@@ -241,6 +244,12 @@ jobs:
         if: steps.select.outputs.suites != '' && steps.select.outputs.suites != 'probe'
         run: nix build -L --no-link .#nails
 
+      # The cells share one research build with Fedora admitted: built once
+      # here, so each cell job substitutes it.
+      - name: Build the cells' nails
+        if: steps.select.outputs.suites == 'cells'
+        run: nix build -L --no-link .#legacyPackages.x86_64-linux.e2e-distro._cellsNails
+
       # The records and refusal jobs run as the gating job, apart from the
       # others, so that distro-result can tell their failure from a smoke
       # scenario's or a probe's; the planner marks which jobs gate.
@@ -282,9 +291,9 @@ jobs:
             echo "gating=$gating"
             echo "gating-jobs=$(jq '.include | length' <<< "$gating")"
           } >> "$GITHUB_OUTPUT"
-          if [ "$SUITES" = probe ]; then
+          if [ "$SUITES" = probe ] || [ "$SUITES" = cells ]; then
             {
-              echo "## Distro E2E probe plan"
+              echo "## Distro E2E $SUITES plan"
               echo
               echo "| Probe | Shard | Driver | Timeout (min) |"
               echo "|---|---|---|---:|"
@@ -308,6 +317,9 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
+      # At most max-jobs VM jobs at once, so a run of many drivers leaves
+      # runners for the other workflows.
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max-jobs) }}
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
@@ -385,6 +397,45 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # Research only: each cell runs its driver as a probe does and writes
+      # <cell>.json, <cell>.raw.json and <cell>.kmsg.txt; the step adds the
+      # log. A cell records what failed and goes on, so the driver's own exit
+      # status is kept but does not stop the upload.
+      - name: Run the cells
+        if: matrix.suite == 'cells'
+        env:
+          TESTS: ${{ join(matrix.tests, ' ') }}
+          CELL_SECONDS: ${{ matrix.seconds }}
+        run: |
+          set -euo pipefail
+          read -ra tests <<< "$TESTS"
+          out="$RUNNER_TEMP/cell"
+          scratch="$RUNNER_TEMP/vm"
+          mkdir -p "$out" "$scratch"
+          status=0
+          for test in "${tests[@]}"; do
+            name=${test%-cell}
+            driver="$RUNNER_TEMP/$test"
+            nix build --print-build-logs --out-link "$driver" \
+              ".#legacyPackages.x86_64-linux.e2e-distro.\"$test\""
+            (
+              cd "$scratch"
+              TMPDIR="$scratch" XDG_RUNTIME_DIR="$scratch" NAILS_CELL_OUT="$out" \
+                timeout "$CELL_SECONDS" "$driver/bin/test-driver" </dev/null
+            ) 2>&1 | tee "$out/$name.log" || status=$?
+            gzip -9 "$out/$name.log"
+          done
+          exit "$status"
+
+      - name: Upload the cell results
+        if: matrix.suite == 'cells' && !cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cell-${{ matrix.distro }}
+          path: ${{ runner.temp }}/cell/
+          if-no-files-found: warn
+          retention-days: 30
 
       # The artifact holds the record, the raw output of every query and the
       # driver's log; a probe that failed before its record still leaves the

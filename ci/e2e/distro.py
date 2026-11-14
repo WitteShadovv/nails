@@ -52,8 +52,10 @@ SMOKE = "smoke"
 RECORDS = "records"
 REFUSAL = "refusal"
 PROBE = "probe"
+# Research only: the SELinux cells of an enforcing Fedora image.
+CELLS = "cells"
 # Every suite, in the order a plan lists their jobs.
-SUITES = (SMOKE, RECORDS, REFUSAL, PROBE)
+SUITES = (SMOKE, RECORDS, REFUSAL, PROBE, CELLS)
 # The name that selects ALL_SUITES.
 ALL = "all"
 # What ``all`` plans: every suite that runs NAILS.
@@ -66,6 +68,7 @@ _DRIVER_NOUNS = {
     RECORDS: "records scenario",
     REFUSAL: "refusal",
     PROBE: "probe",
+    CELLS: "cell",
 }
 # Why a suite can have nothing to run.
 _NOTHING_TO_RUN = {
@@ -75,6 +78,7 @@ _NOTHING_TO_RUN = {
         "no refusal can run: no image of a family the family table refuses is pinned"
     ),
     PROBE: "no probe can run: no image of the probe table is pinned",
+    CELLS: "no cell can run: no Fedora image is pinned",
 }
 
 
@@ -101,10 +105,16 @@ class DistroMetadata:
     probes: dict[str, str] = field(default_factory=dict)
     records: dict[str, str] = field(default_factory=dict)
     refusals: dict[str, str] = field(default_factory=dict)
+    cells: dict[str, str] = field(default_factory=dict)
 
     def drivers(self, suite: str) -> dict[str, str]:
         """The drivers of a driver suite: each name to its attribute."""
-        tables = {PROBE: self.probes, RECORDS: self.records, REFUSAL: self.refusals}
+        tables = {
+            PROBE: self.probes,
+            RECORDS: self.records,
+            REFUSAL: self.refusals,
+            CELLS: self.cells,
+        }
         if suite not in tables:
             raise DistroError(f"{suite} is not a suite of host drivers")
         return tables[suite]
@@ -187,7 +197,8 @@ def parse_distro_metadata(payload: object) -> DistroMetadata:
             if scenario not in timeouts:
                 raise DistroError(f"distro metadata has no timeout for {scenario}")
     tables = {
-        key: _driver_table(payload, key) for key in ("probes", "records", "refusals")
+        key: _driver_table(payload, key)
+        for key in ("probes", "records", "refusals", "cells")
     }
     for table in tables.values():
         for attr in table.values():
@@ -200,6 +211,7 @@ def parse_distro_metadata(payload: object) -> DistroMetadata:
         probes=tables["probes"],
         records=tables["records"],
         refusals=tables["refusals"],
+        cells=tables["cells"],
     )
 
 

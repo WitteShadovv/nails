@@ -100,6 +100,13 @@ let
   refusalName = name: "${name}-refusal";
   refusals = lib.mapAttrs' (name: drv: lib.nameValuePair (refusalName name) drv) refusalSet.drivers;
 
+  # Research only: the SELinux cells of an enforcing Fedora image, keyed
+  # "<cell>-cell" (cells.nix). Host drivers, listed in the metadata for the
+  # cells suite of distro-e2e.yml.
+  cellSet = import ./cells.nix { inherit self pkgs nix-vm-test; };
+  cellName = name: "${name}-cell";
+  cells = lib.mapAttrs' (name: drv: lib.nameValuePair (cellName name) drv) cellSet.drivers;
+
   # The real btrfs decoy images of the forensic oracle, keyed
   # "<name>-oracle-images": a host driver too, run by the oracle real-image
   # nightly and kept out of the metadata.
@@ -133,10 +140,13 @@ let
         map (name: lib.nameValuePair (aptShutdownName name) aptShutdownTimeout) aptShutdownDistros
       )
       // driverTimeouts probeSet probeName
+      // driverTimeouts cellSet cellName
       // driverTimeouts recordsSet recordsName
       // driverTimeouts refusalSet refusalName;
     # Probe name -> its attribute, for every probe a run can boot.
     probes = lib.genAttrs probeSet.runnable probeName;
+    # Cell name -> its attribute (research only).
+    cells = lib.genAttrs cellSet.runnable cellName;
     # Distribution -> its records scenario's attribute.
     records = lib.genAttrs recordsSet.runnable recordsName;
     # Image name -> its refusal's attribute, for every refusal a run can boot.
@@ -169,10 +179,13 @@ tests
 // aptShutdowns
 // records
 // probes
+// cells
 // refusals
 // oracleImages
 // {
   _metadata = metadata;
+  # Research only: the binary the SELinux cells share.
+  _cellsNails = cellSet.nails;
   # Plain data the `distro-images` check serialises to force evaluation of the
   # whole table and of every entry's image seam. Not read by the CI planner.
   _images = {
