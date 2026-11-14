@@ -99,6 +99,13 @@ pub(super) fn beyond(named: &Named, read: &[usize; 3], walked: &Walked, place: &
              parameter by a name the check cannot read"
         )));
     }
+    if named.tmouts > walked.tmouts {
+        events.push(Event::Doubt(format!(
+            "it cannot tell whether zsh writes the history file as it ends by itself, as a line \
+             of {place} may set TMOUT above 0, after which zsh ends once a prompt has waited \
+             that many seconds, and writes the file as it ends"
+        )));
+    }
     if named.function_params > walked.function_params {
         events.push(Event::Doubt(format!(
             "it cannot tell what code a line of {place} may give a function by `functions`"

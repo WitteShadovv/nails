@@ -60,7 +60,7 @@ impl Walker<'_> {
         match marks(command, args) {
             Marks::Names(at, flags) => {
                 for arg in &args[..at] {
-                    self.mention(&arg.text);
+                    self.mention_word(arg);
                 }
                 self.load(command, args, &flags, args[at..].to_vec());
                 true
@@ -85,7 +85,7 @@ impl Walker<'_> {
         let mut caller = false;
         for arg in args {
             if options && !arg.expands && arg.text.len() > 1 && arg.text.starts_with(['-', '+']) {
-                self.mention(&arg.text);
+                self.mention_word(arg);
                 if arg.text == "--" {
                     options = false;
                 } else if arg.text.starts_with('-') {
@@ -102,7 +102,7 @@ impl Walker<'_> {
         }
         if caller {
             for name in &names {
-                self.mention(&name.text);
+                self.mention_word(name);
             }
             let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
             self.events.push(Event::Doubt(format!(
@@ -123,7 +123,7 @@ impl Walker<'_> {
     /// (compiled files).
     fn load(&mut self, command: &str, args: &[Word], flags: &str, mut names: Vec<Word>) {
         for name in &names {
-            self.mention(&name.text);
+            self.mention_word(name);
         }
         if flags.contains(['m', 'w']) {
             let words: Vec<&str> = std::iter::once(command)

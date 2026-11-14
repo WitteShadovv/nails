@@ -68,6 +68,8 @@ pub(super) struct Named {
     pub(super) function_params: usize,
     /// `((` and `$[`, which start arithmetic.
     pub(super) arith: usize,
+    /// `TMOUT` where it is not read ([`writes`]).
+    pub(super) tmouts: usize,
 }
 
 impl Named {
@@ -94,6 +96,7 @@ impl Named {
             alias_params: self.alias_params.max(other.alias_params),
             function_params: self.function_params.max(other.function_params),
             arith: self.arith.max(other.arith),
+            tmouts: self.tmouts.max(other.tmouts),
         }
     }
 
@@ -117,6 +120,7 @@ impl Named {
         self.prompts += prompt_writes(piece);
         self.numbers += number_writes(piece);
         self.arith += piece.matches("((").count() + piece.matches("$[").count();
+        self.tmouts += writes(piece, "TMOUT");
         let alone = matches!(
             piece,
             "functions"
