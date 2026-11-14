@@ -70,6 +70,10 @@ mod blanks;
 #[path = "zsh_jobs_tests.rs"]
 mod jobs_started;
 
+// The line a widget gives zsh to run.
+#[path = "zsh_widgets_tests.rs"]
+mod widget_lines;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.

@@ -5,14 +5,17 @@
 //! reads them: the string a `bindkey -s` key types, which zsh reads as keys
 //! typed, is read as a hook's code where it holds printable characters and
 //! line ends alone, and so is what `print -z` puts in the line (`zle -U` is
-//! read in [`super::hooks`]); what they type counts for the names the files
-//! use too ([`Event::Typed`]). A key a line is typed with bound to another
+//! read in [`super::hooks`]), but where zsh may expand history in it, which
+//! may put another line's text in its place (`!!`, `^a^b`,
+//! [`super::widgets::expands_history`]); what they type counts for the names
+//! the files use too ([`Event::Typed`]). A key a line is typed with bound to another
 //! widget, alone or in a range (`bindkey -R`), may change what such a line
 //! types ([`Event::Rebind`]), and past a word an expansion makes that zsh may
 //! drop or make several of, the check cannot tell keys from widgets.
 
 use super::super::lexer::Word;
 use super::strings::computed;
+use super::widgets::expands_history;
 use super::{Event, Walker};
 
 /// The line that the keys `text` types, a `bindkey -s` string as written,
@@ -283,7 +286,7 @@ impl Walker<'_> {
                 self.events.push(doubt(&typed.text));
                 continue;
             }
-            match typed_line(&typed.text) {
+            match typed_line(&typed.text).filter(|code| !expands_history(code)) {
                 Some(code) => {
                     let hook = format!("bindkey -s {} {}", keys.text, typed.text);
                     self.events.push(Event::Typed {
@@ -379,6 +382,7 @@ impl Walker<'_> {
             || flags.contains(['f', 'u', 'v', 'C'])
             || (!flags.contains(['r', 'R']) && text.contains('\\'))
             || text.chars().any(|c| c.is_control() && c != '\n')
+            || expands_history(&text)
         {
             self.events.push(Event::Doubt(format!(
                 "it cannot tell what the line `print -z {text}` in {} types runs",
