@@ -183,3 +183,65 @@ fn an_entry_whose_switch_unit_keeps_pid_1_s_domain_is_refused_and_undone() {
         assert!(!hidden.path().join("state.json").exists());
     });
 }
+
+/// A kernel that lists SELinux among its security modules enforces a policy
+/// it has loaded, though no selinuxfs is mounted where the activation runs:
+/// the entry starts its steps through `/usr/bin/env` there, and the labels
+/// stay best effort, so this decoy without labels is entered.
+#[test]
+fn an_entry_on_a_kernel_that_lists_selinux_starts_its_steps_through_env() {
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_on_a_kernel_that_lists_selinux_starts_its_steps_through_env
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        let mut profile = selinux_host();
+        if let Some(selinux) = profile.selinux.as_mut() {
+            selinux.selinuxfs = Selinuxfs::NotMounted;
+        }
+        profile.lsms = [
+            "lockdown",
+            "capability",
+            "landlock",
+            "yama",
+            "selinux",
+            "bpf",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        m.set_host_profile(profile);
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
+
+        let EnterOutcome::Prepared { entry, .. } = outcome else {
+            panic!("expected a prepared entry, got {outcome:?}");
+        };
+        assert_eq!(
+            entry.plan.exec_prefix.as_deref(),
+            Some(Path::new(
+                nails_teardown::whole_root::exec_prefix::TRAMPOLINE
+            ))
+        );
+        let upper = crate::session::Layout::new(hidden.path()).upper();
+        assert_eq!(selinux_label(&upper), Err(rustix::io::Errno::NODATA));
+        entry::rollback(&machine.paths);
+    });
+}

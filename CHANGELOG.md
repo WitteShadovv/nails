@@ -847,7 +847,8 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
   no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line. `nails check` does not test this yet; see
   docs/decoy-requirements.md.
-- On the same hosts, where SELinux runs or may run, PID 1 starts NAILS's own steps through
+- On the same hosts, where SELinux runs or may run, and on a host whose kernel lists SELinux among
+  its security modules while no selinuxfs is mounted, PID 1 starts NAILS's own steps through
   `/usr/bin/env` instead of starting the copy of NAILS in `/run` itself: the last step before each
   switch, the hidden session's watcher and sleep guard, and the steps the way back leaves for the
   decoy's first start. Under SELinux a program PID 1 starts runs in the domain the policy gives the

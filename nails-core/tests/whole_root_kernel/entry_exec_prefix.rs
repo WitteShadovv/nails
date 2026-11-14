@@ -15,7 +15,7 @@ use super::{FakeHost, World};
 use nails_core::Config;
 use nails_core::NailsError;
 use nails_core::session::entry;
-use nails_core::session::exec_prefix::{CHECK, ExecPrefix};
+use nails_core::session::exec_prefix::{CHECK, ExecPrefix, Why};
 use nails_core::session::labels::Reason;
 use nails_core::session::layout::{Layout, Paths};
 use nails_core::session::units::session_units;
@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Where SELinux runs.
-const SELINUX: ExecPrefix = ExecPrefix::Trampoline(Reason::SelinuxRunning);
+const SELINUX: ExecPrefix = ExecPrefix::Trampoline(Why::Labels(Reason::SelinuxRunning));
 
 /// Give the decoy root of `world` a `/usr/bin/env`, and wait long enough
 /// that a read of it would move its access time.

@@ -1596,6 +1596,17 @@ fn an_entry_on_a_host_configured_for_selinux_without_selinuxfs_goes_on_and_says_
             config_mode: Some("permissive".to_string()),
             config_policy: Some("default".to_string()),
         });
+        // The kernel lists its security modules, SELinux not among them.
+        profile.lsms = [
+            "lockdown",
+            "capability",
+            "landlock",
+            "yama",
+            "apparmor",
+            "bpf",
+        ]
+        .map(str::to_string)
+        .to_vec();
         m.set_host_profile(profile);
         let options = EnterOptions {
             binary: PathBuf::from("/proc/self/exe"),

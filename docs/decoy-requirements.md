@@ -97,20 +97,24 @@ The decoy also has to be one the session can enter and leave:
   it, while its mount table lists no selinuxfs: SELinux does not run there,
   and the activation says so in one line. `nails check` does not test any of
   this yet.
-- **`/usr/bin/env`, where the host may run SELinux** (the same hosts as for
-  the labels above). There PID 1 starts NAILS's own steps through
-  `/usr/bin/env` instead of starting the copy of NAILS in `/run` itself: the
-  last step before each switch, the hidden session's watcher and sleep
-  guard, and the steps the way back leaves for the decoy's first start that
-  fix its login and boot records. Under SELinux a program PID 1 starts runs
-  in the domain the policy gives the type of its file. The copy in `/run`
-  has the type of the files there, which keeps the step in PID 1's own
-  domain; `/usr/bin/env` has the type of the system's programs, which a
-  targeted policy starts in a service domain of its own, and `env` then runs
-  the copy in its place. Nothing is installed into the decoy's SELinux
-  policy. The activation records the program in the session plan, so the
-  way back starts its steps the same way. A step that cannot start would let
-  the switch go on without it, so:
+- **`/usr/bin/env`, where the host may run SELinux**: the same hosts as for
+  the labels above, and also a host whose kernel lists SELinux among its
+  security modules (`/sys/kernel/security/lsm`) while the mount table lists
+  no selinuxfs, since the kernel enforces a policy it has loaded all the
+  same, or one whose facts report SELinux while that list cannot be read.
+  There PID 1 starts NAILS's own steps through `/usr/bin/env` instead of
+  starting the copy of NAILS in `/run` itself: the last step before each
+  switch, the hidden session's watcher and sleep guard, and the steps the
+  way back leaves for the decoy's first start that fix its login and boot
+  records. Under SELinux a program PID 1 starts runs in the domain the
+  policy gives the type of its file. The copy in `/run` has the type of the
+  files there, which keeps the step in PID 1's own domain; `/usr/bin/env`
+  has the type of the system's programs, which a targeted policy starts in a
+  service domain of its own, and `env` then runs the copy in its place.
+  Nothing is installed into the decoy's SELinux policy. The activation
+  records the program in the session plan, so the way back starts its steps
+  the same way. A step that cannot start would let the switch go on without
+  it, so:
   - activation is refused while `/usr/bin/env` does not resolve, links
     followed, to an executable file in the decoy root, before it writes
     anything, or in the hidden root it builds, which a hidden session can

@@ -4,12 +4,16 @@
 //! Whether PID 1 starts NAILS's own steps through an exec prefix on this
 //! host, and the refusals of a switch whose roots lack it.
 //!
-//! On a host that may run SELinux, as [`Labels::for_host`] judges it from the
-//! host facts (never from a flag or a setting), PID 1 starts the binary copy
-//! through [`TRAMPOLINE`] instead of starting the copy itself:
-//! [`nails_teardown::whole_root::exec_prefix`] says why, and which units and
-//! drop-ins do. The activation decides it once ([`ExecPrefix::for_host`]): the
-//! hidden session's units take it into their text
+//! On a host that may run SELinux, as the host facts tell it (never a flag or
+//! a setting), PID 1 starts the binary copy through [`TRAMPOLINE`] instead of
+//! starting the copy itself: [`nails_teardown::whole_root::exec_prefix`] says
+//! why, and which units and drop-ins do. That is a host where the labels are
+//! required ([`Labels::for_host`]), and also one whose kernel lists SELinux
+//! among its security modules though no selinuxfs is mounted where the
+//! activation runs, since the kernel enforces a loaded policy all the same,
+//! and one that reports SELinux without a list of security modules to rule it
+//! out ([`Why`]). The activation decides it once ([`ExecPrefix::for_host`]):
+//! the hidden session's units take it into their text
 //! ([`super::units::session_units`]), and the entry records it in the plan,
 //! which the transition step's drop-in and the way back take it from. A step
 //! that does not start at all is worse than one that runs confined, so the
@@ -56,6 +60,10 @@ pub const CHECK: &str = "exec-prefix";
 /// ([`nails_teardown::whole_root::transition::DROPIN_DIR`]).
 pub const SWITCH_UNIT: &str = "systemd-soft-reboot.service";
 
+/// The name the kernel lists SELinux by among its security modules
+/// ([`HostProfile::lsms`]).
+const SELINUX_MODULE: &str = "selinux";
+
 /// How PID 1 starts the binary copy on the host the activation runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecPrefix {
@@ -63,7 +71,41 @@ pub enum ExecPrefix {
     Direct,
     /// PID 1 starts the copy through [`TRAMPOLINE`]: SELinux runs or may run,
     /// for the reason given.
-    Trampoline(Reason),
+    Trampoline(Why),
+}
+
+/// Why PID 1 starts the copy through [`TRAMPOLINE`] on a host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+    /// The labels are required, for this reason ([`Labels::for_host`]).
+    Labels(Reason),
+    /// The kernel lists SELinux among its security modules, though the mount
+    /// table lists no selinuxfs: the kernel enforces a policy it has loaded
+    /// whether or not selinuxfs is mounted, and there has been no way to turn
+    /// SELinux off at run time since Linux 6.4.
+    Kernel,
+    /// The host facts report SELinux, the mount table lists no selinuxfs, and
+    /// the kernel's list of security modules, which would rule SELinux out,
+    /// could not be read.
+    ModulesUnread,
+}
+
+/// Why SELinux runs or may run, as the start of a sentence a refusal goes on
+/// with: "SELinux runs on this host (selinuxfs is mounted), so ...".
+impl std::fmt::Display for Why {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Why::Labels(reason) => write!(f, "{reason}"),
+            Why::Kernel => f.write_str(
+                "the kernel lists SELinux among its security modules (/sys/kernel/security/lsm), \
+                 and may enforce a policy, though no selinuxfs is mounted here",
+            ),
+            Why::ModulesUnread => f.write_str(
+                "the host facts report SELinux, no selinuxfs is mounted here, and \
+                 /sys/kernel/security/lsm could not be read to rule it out",
+            ),
+        }
+    }
 }
 
 /// A root PID 1 starts NAILS's steps in, as the entry checks it.
@@ -80,11 +122,22 @@ impl ExecPrefix {
     /// How PID 1 starts the copy on the host `profile` describes (`None`
     /// where the detection failed): through [`TRAMPOLINE`] where
     /// [`Labels::for_host`] requires the SELinux labels, for its reason, and
-    /// directly elsewhere.
+    /// where the kernel lists SELinux among its security modules, or the facts
+    /// report SELinux and the list could not be read ([`Why`]); directly
+    /// elsewhere.
     pub fn for_host(profile: Option<&HostProfile>) -> Self {
-        match Labels::for_host(profile) {
-            Labels::Required(reason) => Self::Trampoline(reason),
-            Labels::BestEffort => Self::Direct,
+        if let Labels::Required(reason) = Labels::for_host(profile) {
+            return Self::Trampoline(Why::Labels(reason));
+        }
+        let Some(profile) = profile else {
+            return Self::Trampoline(Why::Labels(Reason::HostUndetected));
+        };
+        if profile.lsms.iter().any(|lsm| lsm == SELINUX_MODULE) {
+            Self::Trampoline(Why::Kernel)
+        } else if profile.lsms.is_empty() && profile.selinux.is_some() {
+            Self::Trampoline(Why::ModulesUnread)
+        } else {
+            Self::Direct
         }
     }
 
@@ -103,7 +156,7 @@ impl ExecPrefix {
     /// the copy itself there is nothing to check. The refusal says why the
     /// host needs the program and what to do.
     pub fn require(self, root: &Path, which: Root) -> Result<()> {
-        let Self::Trampoline(reason) = self else {
+        let Self::Trampoline(why) = self else {
             return Ok(());
         };
         let program = Path::new(TRAMPOLINE);
@@ -132,7 +185,7 @@ impl ExecPrefix {
             };
             refusal(
                 format!(
-                    "{reason}, so PID 1 starts NAILS's own steps through {shown}, and in {place} \
+                    "{why}, so PID 1 starts NAILS's own steps through {shown}, and in {place} \
                      {shown} {unusable}: {lost}"
                 ),
                 fix,
@@ -146,15 +199,15 @@ impl ExecPrefix {
     /// PID 1 starts the copy itself there is nothing to ask. An answer PID 1
     /// does not give, or that reads as neither `yes` nor `no`, refuses too.
     pub fn require_domain(self, host: &(impl GuardHost + ?Sized)) -> Result<()> {
-        let Self::Trampoline(reason) = self else {
+        let Self::Trampoline(why) = self else {
             return Ok(());
         };
-        let Some(why) = domain_unheld(host)? else {
+        let Some(unheld) = domain_unheld(host)? else {
             return Ok(());
         };
         Err(refusal(
             format!(
-                "{reason}, so PID 1 starts NAILS's own steps through {TRAMPOLINE}, but {why}: \
+                "{why}, so PID 1 starts NAILS's own steps through {TRAMPOLINE}, but {unheld}: \
                  the last step before each switch could run in a domain the policy confines"
             ),
             format!(

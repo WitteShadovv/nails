@@ -20,6 +20,35 @@ fn host_with(selinuxfs: Selinuxfs, enforce: Option<SelinuxMode>) -> HostProfile 
     profile
 }
 
+/// The security modules a stock Debian kernel lists, without SELinux.
+const DEBIAN_LSMS: [&str; 7] = [
+    "lockdown",
+    "capability",
+    "landlock",
+    "yama",
+    "apparmor",
+    "tomoyo",
+    "bpf",
+];
+/// The security modules Fedora's kernel lists, SELinux among them.
+const FEDORA_LSMS: [&str; 6] = [
+    "lockdown",
+    "capability",
+    "landlock",
+    "yama",
+    "selinux",
+    "bpf",
+];
+
+/// `profile` with the kernel's list of security modules `lsms`.
+fn listing(mut profile: HostProfile, lsms: &[&str]) -> HostProfile {
+    profile.lsms = lsms.iter().map(|lsm| lsm.to_string()).collect();
+    profile
+}
+
+/// Where SELinux runs.
+const RUNNING: ExecPrefix = ExecPrefix::Trampoline(Why::Labels(Reason::SelinuxRunning));
+
 /// A root whose `/usr/bin/env` is an executable file.
 fn root_with_env() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
@@ -101,14 +130,77 @@ fn a_host_without_selinux_starts_the_copy_directly() {
     for profile in [
         FakePlatform::fhs().host_profile(),
         FakePlatform::nixos().host_profile(),
+        listing(FakePlatform::fhs().host_profile(), &DEBIAN_LSMS),
+        listing(
+            FakePlatform::nixos().host_profile(),
+            &["capability", "landlock", "yama", "bpf", "ima"],
+        ),
     ] {
         assert_eq!(profile.selinux, None);
         assert_eq!(ExecPrefix::for_host(Some(&profile)), ExecPrefix::Direct);
     }
-    // Configured once but not running: no policy reads a domain there.
-    let configured = host_with(Selinuxfs::NotMounted, None);
+    // Configured once but not running, on a kernel that lists other modules
+    // and no SELinux: no policy gives a domain there.
+    let configured = listing(host_with(Selinuxfs::NotMounted, None), &DEBIAN_LSMS);
     assert_eq!(ExecPrefix::for_host(Some(&configured)), ExecPrefix::Direct);
     assert_eq!(ExecPrefix::Direct.program(), None);
+}
+
+/// A kernel that lists SELinux among its security modules enforces a policy
+/// it has loaded whether or not selinuxfs is mounted where the activation
+/// runs: PID 1 starts the copy through `/usr/bin/env` there, though the labels
+/// stay best effort, and also where the facts report SELinux and the list
+/// could not be read to rule it out.
+#[test]
+fn a_kernel_that_lists_selinux_starts_the_copy_through_env_without_selinuxfs() {
+    for (profile, why) in [
+        (
+            listing(host_with(Selinuxfs::NotMounted, None), &FEDORA_LSMS),
+            Why::Kernel,
+        ),
+        (
+            listing(FakePlatform::fhs().host_profile(), &FEDORA_LSMS),
+            Why::Kernel,
+        ),
+        (host_with(Selinuxfs::NotMounted, None), Why::ModulesUnread),
+    ] {
+        assert_eq!(
+            ExecPrefix::for_host(Some(&profile)),
+            ExecPrefix::Trampoline(why)
+        );
+        assert_eq!(Labels::for_host(Some(&profile)), Labels::BestEffort);
+    }
+    assert_eq!(
+        Why::Kernel.to_string(),
+        "the kernel lists SELinux among its security modules (/sys/kernel/security/lsm), and \
+         may enforce a policy, though no selinuxfs is mounted here"
+    );
+    assert_eq!(
+        Why::ModulesUnread.to_string(),
+        "the host facts report SELinux, no selinuxfs is mounted here, and \
+         /sys/kernel/security/lsm could not be read to rule it out"
+    );
+    // Where the labels are required, they give the reason.
+    let running = listing(
+        host_with(Selinuxfs::Mounted, Some(SelinuxMode::Enforcing)),
+        &FEDORA_LSMS,
+    );
+    assert_eq!(ExecPrefix::for_host(Some(&running)), RUNNING);
+    // A refusal starts with the reason.
+    let without = tempfile::tempdir().unwrap();
+    let (_, reason, _) = refusal_of(
+        ExecPrefix::Trampoline(Why::Kernel)
+            .require(without.path(), Root::Decoy)
+            .unwrap_err(),
+    );
+    assert!(
+        reason.starts_with(
+            "the kernel lists SELinux among its security modules (/sys/kernel/security/lsm), \
+             and may enforce a policy, though no selinuxfs is mounted here, so PID 1 starts \
+             NAILS's own steps through /usr/bin/env"
+        ),
+        "{reason}"
+    );
 }
 
 /// Where SELinux runs or may run, as the labels judge it, PID 1 starts the
@@ -133,7 +225,7 @@ fn a_host_that_may_run_selinux_starts_the_copy_through_env() {
         (None, Reason::HostUndetected),
     ] {
         let prefix = ExecPrefix::for_host(profile.as_ref());
-        assert_eq!(prefix, ExecPrefix::Trampoline(reason));
+        assert_eq!(prefix, ExecPrefix::Trampoline(Why::Labels(reason)));
         assert_eq!(prefix.program(), Some(Path::new("/usr/bin/env")));
         // The same facts require the labels, for the same reason.
         assert_eq!(Labels::for_host(profile.as_ref()), Labels::Required(reason));
@@ -150,7 +242,7 @@ fn starting_the_copy_directly_needs_nothing_in_either_root() {
 
 #[test]
 fn an_entry_through_env_needs_it_in_both_roots() {
-    let prefix = ExecPrefix::Trampoline(Reason::SelinuxRunning);
+    let prefix = RUNNING;
     let with = root_with_env();
     for which in [Root::Decoy, Root::Next] {
         assert!(prefix.require(with.path(), which).is_ok());
@@ -172,7 +264,7 @@ fn an_entry_through_env_needs_it_in_both_roots() {
     );
 
     let (name, reason, fix) = refusal_of(
-        ExecPrefix::Trampoline(Reason::HostUndetected)
+        ExecPrefix::Trampoline(Why::Labels(Reason::HostUndetected))
             .require(without.path(), Root::Next)
             .unwrap_err(),
     );
@@ -191,11 +283,7 @@ fn an_entry_through_env_needs_it_in_both_roots() {
 fn an_env_that_is_no_executable_file_refuses_the_entry_too() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("usr/bin/env")).unwrap();
-    let (_, reason, _) = refusal_of(
-        ExecPrefix::Trampoline(Reason::SelinuxRunning)
-            .require(root.path(), Root::Decoy)
-            .unwrap_err(),
-    );
+    let (_, reason, _) = refusal_of(RUNNING.require(root.path(), Root::Decoy).unwrap_err());
     assert!(
         reason.contains("in the decoy root /usr/bin/env is not an executable file:"),
         "{reason}"
@@ -302,7 +390,7 @@ fn an_entry_through_env_needs_the_switch_unit_to_leave_the_domain_to_the_policy(
     // PID 1 starts the copy itself: nothing to ask.
     assert!(ExecPrefix::Direct.require_domain(&Unasked).is_ok());
 
-    let prefix = ExecPrefix::Trampoline(Reason::SelinuxRunning);
+    let prefix = RUNNING;
     assert!(prefix.require_domain(&STOCK).is_ok());
     let (name, reason, fix) = refusal_of(
         prefix
@@ -432,7 +520,7 @@ fn the_questions_a_host_leaves_to_the_defaults_refuse_the_switch() {
         }
     }
     // The entry stops at the error itself.
-    let prefix = ExecPrefix::Trampoline(Reason::SelinuxRunning);
+    let prefix = RUNNING;
     for answer in [
         prefix.require_domain(&PrivilegesOnly),
         domain_unheld(&PrivilegesOnly).map(drop),
