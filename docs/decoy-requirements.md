@@ -164,13 +164,22 @@ The `lsm-status` check names the Linux Security Modules the kernel runs, from
 refusals. A host where SELinux does not run passes: AppArmor, Landlock and
 Yama change nothing it judges. Where SELinux runs, the check reads the mode
 from `/sys/fs/selinux/enforce`, `SELINUX=` and `SELINUXTYPE=` from
-`/etc/selinux/config` the way libselinux reads them, and the SELinux context
-of the `nails` process from `/proc/self/attr/current`, and it refuses:
+`/etc/selinux/config` the way libselinux reads them, when that file last
+changed, and the SELinux context of the `nails` process from
+`/proc/self/attr/current`, and it refuses:
 
-- a policy other than `targeted`, as untested. The name is compared in its
-  case, since it names the directory the policy is loaded from;
-- a context whose level has a sensitivity other than `s0`, which only a
-  multi-level (MLS) policy gives, whatever the file names;
+- an `/etc/selinux/config` that names a policy other than `targeted`, as
+  untested. The name is compared in its case, since it names the directory
+  the policy is loaded from. The kernel does not know that name, so a file
+  that names `targeted` but changed after the boot (its change time, to the
+  second, is not before the boot time in `/proc/stat`) is refused too, as is
+  one that is a symbolic link or whose change time or the boot time cannot
+  be read: SELinux may run another policy than the one it names. A reboot
+  loads the one it names;
+- a context without a level, or whose level has a sensitivity other than
+  `s0`, whatever the file names: every context of Fedora's targeted policy
+  has a level, and `s0` is its one sensitivity. A multi-level (MLS) policy
+  gives others;
 - a host whose kernel runs SELinux without a policy: the `nails` process is
   labelled `kernel`, as every process is until a policy is loaded.
   `SELINUX=disabled` leaves such a host where the kernel started SELinux at
