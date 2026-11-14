@@ -358,13 +358,13 @@ impl<'a, F: Filesystem> RunReader<'a, F> {
 }
 
 /// Whether the program at `path`, a path under the root of `files`, leads to
-/// findutils' updatedb. A path that cannot be resolved for another reason
-/// leads to none NAILS can tell of.
+/// findutils' updatedb. A path that leads to nothing, or below a file, leads
+/// to none.
 ///
 /// # Errors
 ///
-/// Why NAILS cannot tell: the automount guard did not let it resolve the
-/// path.
+/// Why NAILS cannot tell: the resolution of the path failed for another
+/// reason, or the automount guard did not let it be made.
 fn findutils_at<F: Filesystem>(
     fs: &F,
     files: &DecoyFiles<'_, F>,
@@ -372,13 +372,13 @@ fn findutils_at<F: Filesystem>(
 ) -> Result<bool, String> {
     match fs.canonicalize(path) {
         Ok(resolved) => Ok(resolved.as_os_str().as_bytes().ends_with(b"findutils")),
-        Err(error) if error.not_looked_up().is_some() => Err(format!(
+        Err(error) if error.nothing_there() => Ok(false),
+        Err(error) => Err(format!(
             "NAILS cannot tell whether {} is findutils' updatedb, whose prune options NAILS does \
              not read: {}",
             files.shown(path),
             describe(&files.shown(path), &error).sentence
         )),
-        Err(_) => Ok(false),
     }
 }
 
@@ -639,8 +639,9 @@ fn cron<F: Filesystem>(
 }
 
 /// The runs a person starts with an updatedb program. A program NAILS cannot
-/// tell is there may be an updatedb, which may start a run it cannot tell
-/// about.
+/// tell is there, or cannot resolve to the file it is, may be an updatedb
+/// whose prune options NAILS cannot tell, which may start a run it cannot
+/// tell about.
 fn programs<F: Filesystem>(fs: &F, root: &Path, reader: &RunReader<'_, F>, found: &mut Found) {
     let mut seen: Vec<PathBuf> = Vec::new();
     for program in PROGRAMS {
@@ -659,13 +660,30 @@ fn programs<F: Filesystem>(fs: &F, root: &Path, reader: &RunReader<'_, F>, found
                 continue;
             }
         }
-        let resolved = fs.canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let shown = format!("/{program}");
+        let resolved = match fs.canonicalize(&path) {
+            Ok(resolved) => resolved,
+            // Gone since it was looked up.
+            Err(error) if error.nothing_there() => continue,
+            // Which updatedb it is decides which prune options it reads.
+            Err(error) => {
+                found.installed = true;
+                found.runs.push(Run {
+                    lists: Err(format!(
+                        "NAILS cannot tell which updatedb {shown} is: {}",
+                        describe(&shown, &error).sentence
+                    )),
+                    start: Start::ByHand(shown),
+                    database: None,
+                });
+                continue;
+            }
+        };
         if seen.contains(&resolved) {
             continue;
         }
         seen.push(resolved.clone());
         found.installed = true;
-        let shown = format!("/{program}");
         let name = resolved
             .file_name()
             .map(|name| name.as_bytes().to_vec())
