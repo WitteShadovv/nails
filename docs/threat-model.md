@@ -258,14 +258,15 @@ upper changes.
   load a policy module or create `/.autorelabel` in a hidden session: a policy
   loaded there would still be the kernel's after the way back, and no test
   covers either. With auditd off, as the decoy requirements ask, the kernel
-  writes each SELinux denial to its log, and each audit record a program
-  sends, such as the record rpm sends of every package it installs; that log
-  outlives both switches, in RAM, until power-off. The way back moves the
-  decoy journal's kmsg cursor past the hidden session's records (see
-  [Residual channels](#residual-channels)). On Fedora 44 and 45 with SELinux
-  enforcing the distribution tests find none of those records in the decoy's
-  journal after either way back, and no new denial of a NAILS process or path
-  in either root.
+  writes to its log the SELinux denials the policy does not keep quiet with a
+  dontaudit rule, and the audit records programs send, such as the record rpm
+  sends of every package it installs; printk's rate limit can drop some of a
+  burst. That log outlives both switches, in RAM, until power-off. The way
+  back moves the decoy journal's kmsg cursor past the hidden session's
+  records (see [Residual channels](#residual-channels)). On Fedora 44 and 45
+  with SELinux enforcing the distribution tests find none of those records in
+  the decoy's journal after either way back, and no new denial or SELinux
+  error of a NAILS process or path in either root.
 - **SELinux labels.** On a host that runs SELinux, activation gives two kinds
   of directory on the hidden volume the label of the decoy directory they
   stand for: the root of each upper, which becomes the hidden `/` or the root

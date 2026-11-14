@@ -542,9 +542,11 @@ logind.
   [Fedora's admission gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora)
   on the Cloud images of Fedora 44 and 45, with SELinux enforcing.
 - **SELinux enforcing, with the targeted policy**, as Fedora installs it: the
-  gate runs its sessions so, and in them NAILS's own steps run in
-  `unconfined_service_t` and neither root logs a denial of a NAILS process or
-  path. Do not update `selinux-policy`, load a policy module or create
+  gate runs its sessions so. In them the watcher NAILS starts runs in
+  `unconfined_service_t`, and neither root logs a denial or an SELinux error
+  of a NAILS process or path, those the policy's dontaudit rules keep out of
+  the log included, which a run of the gate with those rules off counts. Do
+  not update `selinux-policy`, load a policy module or create
   `/.autorelabel` in a hidden session (see
   [The SELinux policy and the kernel log](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
 - **Volatile journald.** Fedora's journald keeps a persistent journal, which
@@ -588,6 +590,17 @@ logind.
   [Suspend and the lid switch](#suspend-and-the-lid-switch)).
 - `noatime`; no swap on a disk (the swap of the Cloud images, on zram, is in
   RAM, and no check warns of it); no hibernation.
+- **The zram swap after a way back.** At a switch the stop of the zram swap
+  can fail to reset its device (`systemd-zram-setup@zram0.service: Control
+  process exited, code=exited, status=1/FAILURE` in the kernel log), and the
+  root that starts next cannot set it up again (`zram: Cannot change disksize
+  for initialized device`). The decoy then lists that unit as failed and runs
+  without the zram swap until power-off, which hints that a soft-reboot
+  happened. The gate saw it after a way back, records where it does, and
+  fails on any other unit failed there that a plain soft-reboot did not leave
+  failed. End a session with
+  `deactivate --poweroff` or `emergency --poweroff` where that hint must not
+  reach the decoy.
 - With plocate installed (the Cloud images have none), the directory the
   hidden volume is mounted in in `PRUNEPATHS` of `/etc/updatedb.conf`, or
   `plocate-updatedb.timer` masked and stopped (`locate-database`; see
@@ -595,8 +608,8 @@ logind.
 - **btrfs.** Fedora keeps its root on btrfs mounted `compress=zstd:1`, and a
   raw scan of the disk cannot read what a compressed file holds: on both Cloud
   images the gate's btrfs controls find a compressed file's contents through
-  the kernel and not on the raw disk, so `nails rehearse` reports such a decoy
-  as not checked rather than clean (see
+  the kernel and not on the raw disk, and the gate's rehearsal, after a clean
+  session, reports the root as not checked rather than clean (see
   [Residue catalog](#residue-catalog), copy-on-write and compressed storage
   history). A file deleted on the decoy can still be read back: btrfs's
   copy-on-write leaves older roots of its tree on the disk, and the controls
@@ -613,8 +626,10 @@ logind.
   in its rpm database, and so does the key that checked it, imported with
   `rpm --import`, as a `gpg-pubkey` package named after the key, so whoever
   lists the decoy's packages sees both: after the gate imports the release
-  key of Fedora 45, `rpm -q gpg-pubkey` lists `Fedora (45)
-  <fedora-45-primary@fedoraproject.org> public key`. cryptsetup
+  key of Fedora 45,
+  `rpm -q gpg-pubkey --qf '%{NAME}-%{VERSION}-%{RELEASE} %{SUMMARY}\n'` lists
+  it as `Fedora (45) <fedora-45-primary@fedoraproject.org> public key`.
+  cryptsetup
   opens VeraCrypt volumes as well (see [backends](backends.md)), but the Cloud
   images do not install it, and no test opens a VeraCrypt or LUKS volume on
   Fedora. The Cloud images run with FIPS mode off
