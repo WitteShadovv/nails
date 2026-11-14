@@ -48,30 +48,33 @@
 # job timeout powers off), and after each way back the decoy's PID 1 has its
 # own unit again.
 #
-# The decoy's disk swap stays off from before the first hidden root exists to
-# the power-off before the last image, as the swap check asks: the hidden root
-# lives in RAM, where a disk swap could take it onto the decoy disk. With its
-# fstab line kept, as most users keep it, the decoy turns the swap on again at
-# every boot, the way back's included, and the scenario turns it off right
-# after; the first session sees that line skipped and swap.target reached. The
-# second session runs with the line made noauto, which no boot turns on, and
-# sees its unit masked. Every unit NAILS masks in the hidden root is masked at
-# runtime only (masked-runtime), never as a file of the root. The residue
+# The decoy's disk swap is turned off before the first hidden root exists, as
+# the swap check asks: the hidden root lives in RAM, where a disk swap could
+# take it onto the decoy disk. It is off in both sessions, before each entry and
+# before each image. With its fstab line kept, as most users keep it, the decoy
+# turns the swap on again at every boot, the way back's included: the first
+# session sees that line's unit skipped and swap.target reached, and after its
+# way back the scenario asserts the swap came on and turns it off at once,
+# while the first session's file container is still in RAM (encrypted where
+# the image has cryptsetup). The second session runs with the line made
+# noauto, which no boot turns on: it sees the unit masked, and the swap stays
+# off through its way back. Every unit NAILS masks in the hidden root is masked
+# at runtime only (masked-runtime), never as a file of the root. The residue
 # report each activation writes before the switch holds no warning: the loop
 # device under the hidden root's LUKS mapping counts as the hidden volume's,
 # and the first session's loop device is detached before the second entry. An
 # ESP that systemd's GPT auto-generator mounts on demand at /efi, as on
-# arch-boxes, is read-only wherever it is mounted in the hidden root, its
+# arch-boxes, is bound read-only at /efi in each hidden session, with its
 # automount masked there at runtime, and the decoy's automount is back after
-# each way back. The rehearsal's scan exits 9 with a
-# blind spot on a btrfs root's device and 0 on any other image. On a btrfs root
-# the leak checks read the image the way btrfs-progs does as well
-# (py/btrfs_scan.py): the files of the live tree, decompressed, hold no canary,
-# and three planted controls show what each read sees there: a file kept
-# plain, which the raw scan finds; a compressed one, which only the read of
-# the live tree finds; and a compressed one written and deleted, which only a
-# read of an older root of the tree finds. The positive control of the raw scan
-# carries its token in the file's contents only.
+# each way back. The rehearsal's scan exits 9 with a blind spot on a btrfs
+# root's device and 0 on any other image. On a btrfs root the leak checks read
+# the image the way btrfs-progs does as well (py/btrfs_scan.py): the files of
+# the live tree, decompressed, hold no canary, and three planted controls show
+# what each read sees there: a file kept plain, which the raw scan finds; a
+# compressed one, which only the read of the live tree finds; and a compressed
+# one written and deleted, which only a read of an older root of the tree
+# finds. The positive control of the raw scan carries its token in the file's
+# contents only.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -352,18 +355,24 @@ distroVm.buildVmTest {
 
     def assert_generated_boot_mounts_read_only(where):
         # A boot filesystem the GPT auto-generator mounts on demand on the
-        # decoy is read-only to the hidden session: the decoy's automount is
-        # masked there at runtime (the hidden root masks the generator too),
-        # and every mount of its device is read-only and refuses a write.
-        for unit, (point, device, _) in boot_automounts.items():
+        # decoy is bound read-only at its point in the hidden root: the
+        # decoy's automount is masked there at runtime (the hidden root masks
+        # the generator too), the filesystem is at its point, and every mount
+        # of its device is read-only and refuses a write.
+        for unit, (point, device, fstype) in boot_automounts.items():
             props = unit_props(unit, "LoadState", "ActiveState", "UnitFileState")
-            assert props["LoadState"] in ("masked", "not-found"), f"{where}: {unit}: {props}"
+            assert props["LoadState"] == "masked", f"{where}: {unit}: {props}"
+            assert props["UnitFileState"] == "masked-runtime", f"{where}: {unit}: {props}"
             assert props["ActiveState"] == "inactive", f"{where}: {unit}: {props}"
-            if props["LoadState"] == "masked":
-                assert props["UnitFileState"] == "masked-runtime", f"{where}: {unit}: {props}"
+            _, at_point = vm.execute(f"findmnt -rn -o SOURCE,FSTYPE -M {shlex.quote(point)}")
+            mounted = distro_checks.mounted_at(at_point)
+            assert mounted == (device, fstype), (
+                f"{where}: {point} holds {mounted}, not {device} ({fstype})"
+            )
             _, out = vm.execute(f"findmnt -rn -o TARGET,OPTIONS -S {shlex.quote(device)}")
             mounts = distro_checks.parse_findmnt_pairs(out)
-            print(f"{where}: {unit} {props}; {device} mounted at {mounts or 'nothing'}")
+            print(f"{where}: {unit} {props}; {device} mounted at {mounts}")
+            assert mounts, f"{where}: {device} is mounted nowhere: {out!r}"
             for target, options in mounts:
                 assert "ro" in options.split(","), f"{where}: {device} at {target}: {options}"
                 err = vm.fail(f"touch {shlex.quote(target)}/nails-should-fail 2>&1")
@@ -1255,24 +1264,17 @@ distroVm.buildVmTest {
         boot_mounts = distro_checks.boot_mounts(
             distro_checks.parse_mount_targets(vm.succeed("findmnt -rn -o TARGET"))
         )
-        if boot_mounts:
-            for target in boot_mounts:
-                probe = f"{target}/nails-should-fail"
-                err = vm.fail(f"touch {shlex.quote(probe)} 2>&1")
-                assert "read-only" in err.lower(), (
-                    f"{target} took a hidden write: {err}"
-                )
-            print(f"boot filesystems read-only in the hidden root: {boot_mounts}")
-        else:
-            # Then the image's boot filesystem is one systemd mounts on demand
-            # and was not mounted at the entry: the first session asserted it
-            # is read-only wherever it is mounted here.
-            assert boot_automounts, (
-                "this image mounts no boot filesystem, neither from its fstab nor on "
-                + "demand: nothing here would test that the hidden session cannot "
-                + "write to one"
+        # Every image of the table has one, from its fstab or mounted on
+        # demand (bound here all the same): without one, nothing here would
+        # test that the hidden session cannot write to a boot filesystem.
+        assert boot_mounts, "the hidden root mounts no boot filesystem"
+        for target in boot_mounts:
+            probe = f"{target}/nails-should-fail"
+            err = vm.fail(f"touch {shlex.quote(probe)} 2>&1")
+            assert "read-only" in err.lower(), (
+                f"{target} took a hidden write: {err}"
             )
-            print(f"no boot filesystem mounted in the hidden root: {sorted(boot_automounts)}")
+        print(f"boot filesystems read-only in the hidden root: {boot_mounts}")
 
     with subtest("the hidden overlays pin the forensic feature options"):
         # NAILS pins index=off,metacopy=off,redirect_dir=nofollow on every
