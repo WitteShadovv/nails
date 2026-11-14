@@ -578,6 +578,97 @@ mod tests {
         });
     }
 
+    /// Where the plan records a label for the RAM copy of the binary, the
+    /// locked handle also asks the hidden session's PID 1 how it starts
+    /// `systemd-soft-reboot.service`, and refuses a return whose start has an
+    /// `SELinuxContext=` of its own; a power-off, and a plan without a label,
+    /// ask nothing about it. The namespaces and the stand-ins are those of the
+    /// test above; this `systemctl` also notes each question about the
+    /// context, and answers it from a file in that `/run` with shell builtins
+    /// alone.
+    #[test]
+    fn the_locked_handle_asks_pid_1_about_the_switch_s_context_where_the_copy_is_labelled() {
+        let _ = crate::test_support::Rerun::new(crate::test_path!(
+            the_locked_handle_asks_pid_1_about_the_switch_s_context_where_the_copy_is_labelled
+        ))
+        .in_pid_ns()
+        .run(|| {
+            nix::mount::mount(
+                Some("tmpfs"),
+                "/run",
+                Some("tmpfs"),
+                nix::mount::MsFlags::empty(),
+                Some("mode=0755"),
+            )
+            .expect("a fresh /run");
+            let bin = Path::new("/run/current-system/sw/bin");
+            std::fs::create_dir_all(bin).unwrap();
+            let context = Path::new("/run/context");
+            let asked = Path::new("/run/asked");
+            crate::test_support::write_executable(
+                &bin.join("busctl"),
+                "#!/bin/sh\necho '{\"type\":\"a(ssssuu)\",\"data\":[[]]}'\n",
+                0o755,
+            );
+            crate::test_support::write_executable(
+                &bin.join("systemctl"),
+                format!(
+                    "#!/bin/sh\ncase \"$*\" in\n\
+                     'show --property=JobTimeoutAction --value soft-reboot.target') \
+                     echo poweroff-force ;;\n\
+                     'show --property=JobTimeoutUSec --value soft-reboot.target') echo 30min ;;\n\
+                     'show --property=ServiceWatchdogs --value') echo yes ;;\n\
+                     'show --property=SELinuxContext --value systemd-soft-reboot.service') \
+                     echo x >> {} ; IFS= read -r line < {} ; echo \"$line\" ;;\n\
+                     esac\nexit 0\n",
+                    asked.display(),
+                    context.display()
+                ),
+                0o755,
+            );
+            std::fs::write(context, "system_u:system_r:init_t:s0\n").unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let mut ready = ready_at(dir.path());
+            ready.plan.program_label =
+                Some(nails_teardown::whole_root::program_label::PROGRAM_LABEL.to_string());
+            let handle = locked(ready);
+            let times_asked = || {
+                std::fs::read_to_string(asked)
+                    .map(|text| text.lines().count())
+                    .unwrap_or(0)
+            };
+
+            handle.may_leave(LeaveTo::Poweroff).unwrap();
+            assert_eq!(times_asked(), 0, "a power-off asks nothing about it");
+            let error = handle.may_leave(LeaveTo::Decoy).unwrap_err();
+            let NailsError::PreFlightCheckFailed(failures) = &error else {
+                panic!("expected the program label's refusal, got {error:?}")
+            };
+            assert_eq!(failures[0].0, "program-label", "{error}");
+            assert!(
+                failures[0]
+                    .1
+                    .contains("SELinuxContext=system_u:system_r:init_t:s0"),
+                "{error}"
+            );
+            assert_eq!(times_asked(), 1);
+
+            std::fs::write(context, "\n").unwrap();
+            handle.may_leave(LeaveTo::Decoy).unwrap();
+            assert_eq!(times_asked(), 2);
+            drop(handle);
+
+            let unlabelled = locked(ready_at(dir.path()));
+            std::fs::write(context, "system_u:system_r:init_t:s0\n").unwrap();
+            unlabelled.may_leave(LeaveTo::Decoy).unwrap();
+            assert_eq!(
+                times_asked(),
+                2,
+                "a plan without a label asks nothing about it"
+            );
+        });
+    }
+
     /// The handle that leaves holds the state lock for as long as it lives,
     /// and the real lock step runs the attach gate first.
     #[test]

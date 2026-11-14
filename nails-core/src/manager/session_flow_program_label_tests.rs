@@ -179,3 +179,204 @@ fn an_entry_whose_policy_keeps_the_steps_confined_is_refused_before_anything_is_
         }
     });
 }
+
+/// Whether a mount stands at or below the next root of `machine`.
+fn next_root_mounted(machine: &Machine) -> bool {
+    read_mountinfo()
+        .unwrap()
+        .iter()
+        .any(|e| e.mount_point.starts_with(machine.paths.nextroot()))
+}
+
+/// A labelled entry is refused, and undone, where the decoy's PID 1, once the
+/// reload has loaded the drop-in, starts `systemd-soft-reboot.service` in an
+/// `SELinuxContext=` of its own, and where the copy, which took its label
+/// when it was written, does not take it again right before the entry is
+/// armed: no runtime directory, no drop-in and no next root are left, and
+/// nothing is recorded.
+#[test]
+fn a_labelled_entry_is_refused_and_undone_after_the_reload_and_at_the_arm() {
+    let _ = Rerun::new(crate::test_path!(
+        a_labelled_entry_is_refused_and_undone_after_the_reload_and_at_the_arm
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        for (host, what) in [
+            (
+                FakeEntryHost {
+                    selinux: Some(FakeSelinux::targeted()),
+                    unit_context: "system_u:system_r:init_t:s0",
+                    ..FakeEntryHost::default()
+                },
+                "has SELinuxContext=system_u:system_r:init_t:s0 with every drop-in loaded",
+            ),
+            (
+                FakeEntryHost {
+                    selinux: Some(FakeSelinux {
+                        write_error: Some(rustix::io::Errno::OPNOTSUPP.raw_os_error()),
+                        write_error_from: Some(1),
+                        ..FakeSelinux::targeted()
+                    }),
+                    ..FakeEntryHost::default()
+                },
+                "must carry the SELinux label system_u:object_r:bin_t:s0, but it could not take \
+                 the label",
+            ),
+        ] {
+            let hidden = ScratchTmpfs::new("");
+            let run = ScratchTmpfs::new("");
+            let machine = Machine {
+                paths: Paths {
+                    root: decoy.path().to_path_buf(),
+                    run: run.path().to_path_buf(),
+                },
+                mounts: Some(parse_mountinfo(DECOY_TABLE)),
+            };
+            let mut m = manager(hidden.path());
+            m.set_host_profile(selinux_kernel());
+
+            let error = m
+                .enter_session_no_preflight_on(&machine, &options, &host)
+                .unwrap_err();
+
+            let NailsError::PreFlightCheckFailed(failures) = &error else {
+                panic!("expected the program label's refusal, got {error:?}");
+            };
+            assert_eq!(failures[0].0, CHECK, "{error}");
+            assert!(failures[0].1.contains(what), "{error}");
+            // Written once, with the copy, before the refusal: the context is
+            // asked once the drop-in is loaded, and the second label comes
+            // right before the arm.
+            let selinux = host.selinux.as_ref().unwrap();
+            assert_eq!(selinux.labels_written().len(), 1, "{error}");
+            assert!(
+                host.reloads.get() >= 1,
+                "refused once the drop-in was loaded"
+            );
+            assert!(!next_root_mounted(&machine), "the next root is detached");
+            assert!(!machine.paths.runtime().exists(), "no runtime directory");
+            assert!(!machine.paths.run.join(DROPIN_DIR).exists(), "no drop-in");
+            assert!(
+                !hidden.path().join("state.json").exists(),
+                "nothing recorded"
+            );
+        }
+    });
+}
+
+/// A plan of a session whose way back mounts `decoy` as its decoy root, a
+/// read-only overlay of `decoy` over the empty directory `empty` (overlayfs
+/// needs two layers where it has no upper), whose RAM copy takes the
+/// program's label, and whose backend `dmsetup` marks for deferred removal.
+fn labelled_session(hidden: &Path, decoy: &Path, empty: &Path, dmsetup: &Path) -> Plan {
+    let mut session = super::plan(hidden);
+    session.decoy_root = DecoyRoot {
+        source: PathBuf::from("overlay"),
+        fstype: "overlay".into(),
+        data: Some(format!("lowerdir={}:{}", decoy.display(), empty.display())),
+    };
+    session.program_label = Some(PROGRAM_LABEL.to_string());
+    session.backend = vec!["hidden-crypt".to_string()];
+    session.tools.dmsetup = Some(dmsetup.to_path_buf());
+    session
+}
+
+/// `deactivate`'s way back gives the copy its label again, through the
+/// running kernel, after it mounted the decoy root and before it marks the
+/// backend for deferred removal and arms the switch. Where the copy cannot
+/// take the label (its `/run` is a ramfs, which stores none), the return is
+/// refused with the backend left as it was, the plan unarmed, the next root
+/// detached and nothing enqueued; where it can (a tmpfs), the backend is
+/// marked, the plan armed and the soft-reboot enqueued.
+#[test]
+fn the_way_back_labels_the_copy_again_before_it_marks_the_backend_and_arms() {
+    let _ = Rerun::new(crate::test_path!(
+        the_way_back_labels_the_copy_again_before_it_marks_the_backend_and_arms
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let tools = ScratchTmpfs::new("");
+        let empty = tools.mkdir("empty");
+        let marked = tools.path().join("marked");
+        let dmsetup = tools.path().join("dmsetup");
+        write_executable(
+            &dmsetup,
+            format!("#!/bin/sh\necho \"$*\" >> {}\n", marked.display()),
+            0o755,
+        );
+        for ramfs in [true, false] {
+            let scratch = ScratchTmpfs::new("");
+            let run = scratch.mkdir("run");
+            if ramfs
+                && let Err(errno) = nix::mount::mount(
+                    Some("ramfs"),
+                    &run,
+                    Some("ramfs"),
+                    nix::mount::MsFlags::empty(),
+                    None::<&str>,
+                )
+            {
+                crate::test_support::skip(&format!(
+                    "cannot mount a ramfs in this namespace: {errno}"
+                ));
+            }
+            // The decoy root has the mount point the way back binds /run on.
+            std::fs::create_dir_all(decoy.path().join(run.strip_prefix("/").unwrap())).unwrap();
+            let machine = Machine {
+                paths: Paths {
+                    root: hidden.path().join("root/upper"),
+                    run: run.clone(),
+                },
+                mounts: None,
+            };
+            let mut session = labelled_session(hidden.path(), decoy.path(), &empty, &dmsetup);
+            write_plan(&machine, &session);
+            std::fs::write(machine.paths.binary_copy(), b"\x7fELF").unwrap();
+            let _ = std::fs::remove_file(&marked);
+            let target = FakeTarget::default();
+
+            let left = crate::session::leave(&machine.paths, &mut session, LeaveTo::Decoy, &target);
+
+            let on_disk = Plan::load(&machine.paths.plan()).unwrap();
+            if ramfs {
+                let error = left.unwrap_err();
+                let NailsError::PreFlightCheckFailed(failures) = &error else {
+                    panic!("expected the program label's refusal, got {error:?}");
+                };
+                assert_eq!(failures[0].0, CHECK, "{error}");
+                assert!(
+                    failures[0].1.contains("could not take the label"),
+                    "{error}"
+                );
+                assert!(!marked.exists(), "the backend is left as it was");
+                assert!(session.armed.is_none() && on_disk.armed.is_none());
+                assert!(!next_root_mounted(&machine), "the next root is detached");
+                assert!(target.started.borrow().is_empty(), "nothing enqueued");
+            } else {
+                let report = left.unwrap();
+                assert_eq!(report.deferred, [("hidden-crypt".to_string(), true)]);
+                assert_eq!(
+                    std::fs::read_to_string(&marked).unwrap(),
+                    "remove --deferred --noudevsync -- hidden-crypt\n"
+                );
+                assert_eq!(
+                    selinux_label(&machine.paths.binary_copy()).unwrap(),
+                    format!("{PROGRAM_LABEL}\0").into_bytes()
+                );
+                assert_eq!(
+                    on_disk.armed.map(|arm| arm.direction),
+                    Some(Direction::Leave)
+                );
+                assert_eq!(*target.started.borrow(), ["soft-reboot.target"]);
+                nails_teardown::whole_root::nextroot::detach_tree(&machine.paths.nextroot());
+            }
+        }
+    });
+}
