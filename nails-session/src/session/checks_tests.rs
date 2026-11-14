@@ -139,6 +139,29 @@ fn an_impermanent_root_is_refused() {
     assert!(judge_decoy_root(&disk, Path::new("/")).is_pass());
 }
 
+/// Without the mount table NAILS cannot tell what the decoy root is mounted
+/// from: decoy-root refuses, saying it cannot read the table, where it read
+/// an empty table and refused for a root that is no mount point.
+#[test]
+fn decoy_root_refuses_where_the_mount_table_cannot_be_read() {
+    let check = DecoyRootCheck::new(PathBuf::from("/"));
+    let result = check.judge(Err(std::io::Error::from(std::io::ErrorKind::Other)));
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "NAILS cannot tell whether the decoy root can be mounted again for the way back: it \
+             cannot read the mount table ("
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(crate::filesystem::mountinfo::UNREADABLE_FIX)
+    );
+    let disk = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    assert!(check.judge(Ok(disk)).is_pass());
+}
+
 #[test]
 fn a_btrfs_subvolume_root_passes_but_a_bind_of_a_folder_is_refused() {
     let subvol = parse_mountinfo("1 0 0:30 /@ / rw - btrfs /dev/nvme0n1p2 rw,subvol=/@\n");
@@ -519,6 +542,50 @@ fn an_fstab_whose_way_cannot_be_read_fails_the_policy_check() {
             .is_some_and(|fix| fix.contains("make the decoy's fstab readable by root")),
         "{result:?}"
     );
+}
+
+/// A decision depends on what is mounted now: a host share mounted now is
+/// overlaid, one that is not is left to the hidden systemd. Where the check
+/// can read the table it asks of the guard, but not the decoy's mount table
+/// it decides by, NAILS cannot tell whether every decision is safe: it
+/// refuses, where it read an empty table and left such a share to be
+/// mounted read-write in the hidden session.
+#[test]
+fn the_policy_check_refuses_where_it_cannot_read_the_mount_table_it_decides_by() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(
+        root.join("etc/fstab"),
+        "share /srv/share virtiofs defaults 0 0\n",
+    )
+    .unwrap();
+    let check = FstabPolicyCheck::new(root.clone(), PathBuf::from("/mnt/data"));
+    let fs = crate::filesystem::RealFilesystem;
+    let snapshot = automounts_below(&root, &[]);
+    let result = check.judge_read(
+        &fs,
+        &snapshot,
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+    );
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "NAILS cannot tell whether every decoy filesystem has a safe decision: it cannot \
+             read the mount table ("
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        result.remediation(),
+        Some(crate::filesystem::mountinfo::UNREADABLE_FIX)
+    );
+    // With the table, the share mounted now is overlaid.
+    let table =
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n2 1 0:50 / /srv/share rw - virtiofs share rw\n";
+    let mounted = check.judge_read(&fs, &snapshot, Ok(parse_mountinfo(table)));
+    assert!(!mounted.is_fail(), "{mounted:?}");
+    assert!(mounted.message().contains("/srv/share: "), "{mounted:?}");
 }
 
 /// Without the mount table nothing is looked up, and the check refuses.
