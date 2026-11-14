@@ -402,12 +402,14 @@ jobs:
       fail-fast: false
       matrix:
         image: ${{ fromJSON((inputs.images == 'fedora-44' || inputs.images == 'fedora-45') && format('["{0}"]', inputs.images) || '["fedora-44", "fedora-45"]') }}
-        scan: [session, no-session]
+        scan: [session, no-session, records]
         include:
           - scan: session
             raw: after
           - scan: no-session
             raw: control2
+          - scan: records
+            raw: after
 
     steps:
       - name: Checkout code
@@ -463,14 +465,59 @@ jobs:
             libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
             libabsl-dev libgcrypt20-dev libgpg-error-dev
 
-      - name: Scan the real btrfs images and render the verdict
+      # The records scan plants a row in the decoy's login databases and a
+      # file in dnf's state folder into its copy of after.raw
+      # (plant-records.sh), and must fail on exactly those: the collector's
+      # record-level positive controls.
+      - name: Plant the record controls
+        if: matrix.scan == 'records'
         run: |
+          sudo ci/oracle/plant-records.sh "$RUNNER_TEMP/images/after.raw" \
+            "$RUNNER_TEMP/planted.json"
+
+      - name: Scan the real btrfs images and render the verdict
+        env:
+          SCAN: ${{ matrix.scan }}
+        run: |
+          set -euo pipefail
+          status=0
           sudo env \
             "ORACLE_BIN=$PWD/target/release/nails-oracle" \
             "ORACLE_IMAGES_DIR=$RUNNER_TEMP/images" \
-            ci/oracle/run-scan.sh "$RUNNER_TEMP/oracle-btrfs-real"
+            ci/oracle/run-scan.sh "$RUNNER_TEMP/oracle-btrfs-real" || status=$?
+          # A records scan fails its verdict by design; the next step judges it.
+          if [ "$SCAN" != records ] && [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+
+      # Every planted path is residue the verdict names, the scan saw the
+      # images (no channel missing, controls and canary found), and nothing
+      # but the planted paths is residue.
+      - name: Check the verdict names every planted record and nothing else
+        if: matrix.scan == 'records'
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          verdict="$RUNNER_TEMP/oracle-btrfs-real/verdict.json"
+          planted="$RUNNER_TEMP/planted.json"
+          cat "$planted"
+          jq -e --slurpfile planted "$planted" '
+            ($planted[0].planted | map(.path) | sort) as $want
+            | .status == "fail" and .blind == false
+            and ([.failures[] | select(.kind != "unexplained_residue")] == [])
+            and ([.failures[] | .path] | unique) == $want
+            and ([.failures[] | select(.tool == "restore") | .path] | unique) == $want' "$verdict"
+          {
+            echo "### Real btrfs ($IMAGE) oracle verdict, planted records: residue at each"
+            echo
+            echo '```'
+            jq -r '.failures[] | "\(.change) \(.tool) \(.path)"' "$verdict"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Check the verdict is partial and names the timeline
+        if: matrix.scan != 'records'
         env:
           SCAN: ${{ matrix.scan }}
           IMAGE: ${{ matrix.image }}

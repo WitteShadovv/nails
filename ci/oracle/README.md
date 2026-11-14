@@ -293,7 +293,8 @@ checked on the partition in clear. The hidden root is a file on a tmpfs, and
 inside the session the driver writes, syncs and deletes a token whose bytes it
 then finds on the hidden root's device.
 
-For each image `scan-btrfs-real` runs `run-scan.sh` twice: over before,
+For each image `scan-btrfs-real` runs `run-scan.sh` three times. The first
+two run over before,
 control and after,
 and over before, control and control2 in the place of after. No session ran
 on control2, so the second scan has nothing to find: whatever it calls
@@ -332,6 +333,21 @@ Three things read differently from the ext4 images:
   grows past 4 KiB a write of a single block of it is stored plain, so
   bulk_extractor carves the getty, boot and shutdown records of that block
   from control2 and after, and none from before and control.
+
+The third, `records`, runs over before, control and a copy of after into
+which `plant-records.sh` has planted the record-level positive controls,
+before the scan's free-space controls: a row in
+`/var/lib/lastlog/lastlog2.db`, the table pam_lastlog2 keeps (the file made
+where the image has none), a login row in wtmpdb's database where the image
+has one, and a file in `/var/lib/dnf`, each with a plain value no image holds,
+no address, domain or URL. It mounts the copy's btrfs read-write from its top
+level for that, which rewrites the filesystem's own metadata, so the copy is
+this scan's alone. The verdict must fail, not blind, with residue of the
+restore channel at exactly the planted paths (a folder the planting had to
+make among them) and nothing else, which shows that the collector sees a row
+added to a login database and a change to the package manager's state, as
+the free-space controls do not. The planting says which databases it found
+absent, in `planted.json` beside the verdict.
 
 #### Login records the control holds
 
