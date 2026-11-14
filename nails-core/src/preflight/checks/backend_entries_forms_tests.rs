@@ -550,7 +550,7 @@ fn a_device_path_written_otherwise_or_leading_out_of_dev_fails_without_the_flag(
         &untold(
             "/dev/img.link /media/i ext4",
             "the file it names",
-            "/dev/img.link leads out of /dev through a symbolic link",
+            "/dev/img.link is a symbolic link that leads out of /dev, which NAILS does not follow",
         ),
     );
     // A drive that is not plugged in names nothing here.
@@ -725,7 +725,7 @@ fn a_crypttab_source_outside_dev_fails_by_the_file_it_opens() {
         linked.run().message(),
         may_name_the_volume(
             "/etc/crypttab: 'box /dev/box.link' (where the file it opens lies cannot be told: \
-             /dev/box.link leads out of /dev through a symbolic link)"
+             /dev/box.link is a symbolic link that leads out of /dev, which NAILS does not follow)"
         )
     );
     // The drive by its own path names it, as before.
@@ -825,4 +825,64 @@ fn a_crypttab_line_that_is_not_plain_fails_with_the_flag_too() {
         result.remediation(),
         Some(format!("{UNPLAIN}\n{UNPLAIN_CRYPTTAB}").as_str())
     );
+}
+
+#[test]
+fn a_dev_link_out_of_dev_is_untold_at_that_link_and_nothing_past_it_is_read() {
+    // Links in /dev, as tmpfiles.d lines can make at boot, to a container in
+    // the volume. /dev/out.link leads to /tmp/back, a link on the decoy's
+    // disk back to the drive: NAILS stops at the first link that leaves
+    // /dev, where a lookup of /tmp fails here, so it reads no link and makes
+    // no lookup past /dev. It followed /tmp/back before, and judged the line
+    // by the drive. udev's by-uuid link to the drive, relative as udev makes
+    // it, stays in /dev and names it.
+    for (crypttab, shown) in [
+        ("box /dev/box.link none luks,nofail", "box /dev/box.link"),
+        (
+            "box /dev/shm/box.link none luks,nofail",
+            "box /dev/shm/box.link",
+        ),
+        ("box /dev/out.link none luks,nofail", "box /dev/out.link"),
+    ] {
+        let decoy = decoy()
+            .encrypted()
+            .file("/etc/crypttab", &format!("{crypttab}\n"));
+        decoy.link("/dev/box.link", "/mnt/box.img");
+        decoy.link("/dev/shm/box.link", "../../mnt/box.img");
+        decoy.link("/dev/out.link", "/tmp/back");
+        decoy.link("/tmp/back", "/dev/sdb");
+        for place in ["/mnt", "/tmp"] {
+            decoy
+                .fs
+                .mock_set_mount_root_error(place, std::io::ErrorKind::PermissionDenied);
+        }
+        let link = shown.split_once(' ').unwrap().1;
+        assert_eq!(
+            decoy.run().message(),
+            may_name_the_volume(&format!(
+                "/etc/crypttab: '{shown}' (where the file it opens lies cannot be told: {link} \
+                 is a symbolic link that leads out of /dev, which NAILS does not follow)"
+            )),
+            "{crypttab}"
+        );
+    }
+    let drive = decoy().encrypted().file(
+        "/etc/crypttab",
+        "vault /dev/disk/by-uuid/abcd none luks,nofail\n",
+    );
+    drive.link("/dev/disk/by-uuid/abcd", "../../sdb");
+    assert_eq!(
+        drive.run().message(),
+        names_the_volume(
+            "/etc/crypttab: 'vault /dev/disk/by-uuid/abcd' (it opens the volume at /mnt or a \
+             device it is stored on)"
+        )
+    );
+    // The same link to the other drive names no part of the volume.
+    let other = decoy().encrypted().file(
+        "/etc/crypttab",
+        "vault /dev/disk/by-uuid/abcd none luks,nofail\n",
+    );
+    other.link("/dev/disk/by-uuid/abcd", "../../sdc");
+    assert!(other.run().is_pass(), "{:?}", other.run());
 }

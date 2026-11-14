@@ -48,8 +48,9 @@
 //! or is a device node, one that crosses the folder of a line, a `noauto` one
 //! too, while that line's mount is not there now, one that cannot be looked
 //! up, one whose lookup would mount an automount point, and a device's path in
-//! `/dev` that no block device answers to but that leads out of `/dev`
-//! through a link. So is every fstab
+//! `/dev` that no block device answers to and on whose way a link leads out
+//! of `/dev`, which is not followed, so nothing past `/dev` is looked up. So
+//! is every fstab
 //! or crypttab line that is not plain ([`read_fstab`], [`read_crypttab`]):
 //! NAILS reads only plain lines, and that is the only finding such a line
 //! makes, while it claims what NAILS reads in it and makes no mount of the

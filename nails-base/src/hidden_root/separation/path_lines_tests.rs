@@ -763,13 +763,13 @@ fn a_device_path_that_leads_out_of_dev_cannot_be_told() {
     );
     assert_eq!(
         judgement.entries[0].why,
-        "where the file it names lies cannot be told: /dev/img.link leads out of /dev through a \
-         symbolic link"
+        "where the file it names lies cannot be told: /dev/img.link is a symbolic link that leads \
+         out of /dev, which NAILS does not follow"
     );
     assert_eq!(
         judgement.entries[1].why,
-        "where the file it opens lies cannot be told: /dev/box.link leads out of /dev through a \
-         symbolic link"
+        "where the file it opens lies cannot be told: /dev/box.link is a symbolic link that leads \
+         out of /dev, which NAILS does not follow"
     );
     // A device that is not plugged in names nothing here, as before.
     let judgement = external_veracrypt()

@@ -443,6 +443,53 @@ fn a_device_path_that_leads_out_of_dev_cannot_be_told() {
 }
 
 #[test]
+fn a_device_path_is_untold_at_the_first_link_out_of_dev_and_nothing_past_it_is_read() {
+    // Links in /dev to a container on the volume (/dev/box.link, and
+    // /dev/shm/box.link by a relative target), and /dev/out.link to
+    // /tmp/back, a link on the decoy's disk back to the drive. NAILS stops at
+    // the first link that leaves /dev: a lookup of /mnt or /tmp fails here,
+    // and none is made.
+    // udev's relative by-uuid link stays in /dev and is no path to tell.
+    let fstab = parse_fstab(
+        "/dev/sda1 / ext4 defaults 0 1\n/dev/out.link /media/o ext4 nofail 0 0\n\
+         /dev/disk/by-uuid/e1 /media/e ext4 nofail 0 0\n",
+    );
+    let crypttab = parse_crypttab("box /dev/box.link none luks\nshm /dev/shm/box.link none luks\n");
+    let fs = linked(&[
+        ("/dev/box.link", "/mnt/box.img"),
+        ("/dev/shm/box.link", "../../mnt/box.img"),
+        ("/dev/out.link", "/tmp/back"),
+        ("/tmp/back", "/dev/sdb"),
+        ("/dev/disk/by-uuid/e1", "../../sdb1"),
+    ]);
+    for place in ["/mnt", "/tmp"] {
+        fs.mock_set_mount_root_error(place, ErrorKind::PermissionDenied);
+    }
+    let paths = read_all(
+        &fs,
+        &parse_mountinfo(PLAIN),
+        Path::new("/"),
+        &fstab,
+        &crypttab,
+        &DeviceMap::default(),
+    );
+    for link in ["/dev/box.link", "/dev/shm/box.link", "/dev/out.link"] {
+        assert_eq!(
+            paths[link],
+            Err(UntoldPath::LeavesDev(PathBuf::from(link))),
+            "{link}"
+        );
+    }
+    for spec in ["/dev/sda1", "/dev/disk/by-uuid/e1"] {
+        assert!(!paths.contains_key(spec), "{spec}");
+    }
+    assert_eq!(
+        UntoldPath::LeavesDev(PathBuf::from("/dev/box.link")).reason(),
+        "/dev/box.link is a symbolic link that leads out of /dev, which NAILS does not follow"
+    );
+}
+
+#[test]
 fn on_a_real_filesystem_a_device_path_that_stays_in_dev_or_is_not_there_is_none() {
     // /dev/null stays in /dev, a missing name is not there, and a name below
     // a device node is no folder: none of them leads out of /dev.

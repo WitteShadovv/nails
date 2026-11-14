@@ -22,6 +22,8 @@
 //! block device answers to. The path of a swap or image file or of a
 //! crypttab line's file is never resolved as the name of a device, and
 //! neither is a bind line's source that is an absolute path outside `/dev`.
+//! A device's path in `/dev` is resolved only through links that stay in
+//! `/dev` (see [`follow_in_dev`](crate::blockdev::follow_in_dev)).
 //! A FUSE line names a device by the source it gives its program, the part
 //! after the `#` of a `fuse` line's first field.
 //!
