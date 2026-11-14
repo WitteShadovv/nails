@@ -146,12 +146,18 @@ class Cell:
 
     def mark(self, label: str) -> int | None:
         text = sc.marker(label, self.nonce)
-        self.vm.execute(
-            f"echo {shlex.quote(text)} > /dev/kmsg", check_return=False, timeout=60
+        # The guest's wall clock as the marker is written, so that a time a
+        # file on the decoy carries can be placed between two steps.
+        _, wall = self.vm.execute(
+            f"date +%s.%N; echo {shlex.quote(text)} > /dev/kmsg",
+            check_return=False,
+            timeout=60,
         )
         self.read_kmsg(label)
         seq = sc.marker_seq(self.boots[self.boot]["records"].values(), text)
-        self.boots[self.boot]["markers"].append({"label": label, "seq": seq})
+        self.boots[self.boot]["markers"].append(
+            {"label": label, "seq": seq, "wall": wall.strip()}
+        )
         return seq
 
     # --- boots and switches ----------------------------------------------
