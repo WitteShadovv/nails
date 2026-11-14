@@ -59,7 +59,7 @@ pub use inherited_autostart::InheritedAutostartCheck;
 pub use journald_storage::{JournaldStorage, parse_journald_storage};
 pub use kernel_cmdline::BoolSpellings;
 pub use locate_database::LocateDatabaseCheck;
-pub use lsm_status::{LsmStatusCheck, UnitDomain};
+pub use lsm_status::{LsmStatusCheck, UnitDomain, UnitDomains};
 pub use memory_wipe::{InitOnFree, MemoryWipeCheck, parse_init_on_free};
 pub use mount_namespace::MountNamespaceCheck;
 pub use nixos_build_target::NixOSBuildTargetCheck;

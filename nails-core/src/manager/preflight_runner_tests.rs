@@ -1173,7 +1173,7 @@ fn lsm_status_row(fs: &MockFilesystem) -> CheckResult {
 /// The registry's lsm-status row passes a host where SELinux does not run and
 /// names its modules, and fails one where SELinux enforces the targeted policy
 /// with `nails` unconfined: NAILS does not choose the domain of the processes
-/// systemd and udev start for it yet.
+/// systemd starts for it yet, nor that of the disk guard udev starts.
 #[test]
 fn the_lsm_status_row_fails_every_host_where_selinux_runs_for_now() {
     let fs = MockFilesystem::new();
@@ -1213,8 +1213,15 @@ fn the_lsm_status_row_fails_every_host_where_selinux_runs_for_now() {
     let row = lsm_status_row(&fs);
     assert!(row.is_fail(), "{row:?}");
     assert!(
-        row.message()
-            .starts_with("NAILS does not choose the SELinux domain of the processes systemd and"),
+        row.message().starts_with(
+            "NAILS does not choose the SELinux domain of the processes systemd starts"
+        ),
+        "{row:?}"
+    );
+    assert!(
+        row.message().contains(
+            "NAILS does not choose the SELinux domain of the hidden session's disk guard"
+        ),
         "{row:?}"
     );
 }

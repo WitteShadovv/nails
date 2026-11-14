@@ -385,14 +385,20 @@ let
             print(f"active LSMs: {lsms}; lsm-status row: {row}")
             named = f"Active LSMs: {', '.join(lsms)}."
             if "selinux" in lsms:
-                # The row lists its failures in a fixed order, the domain of
-                # the units last: one that starts with it failed for nothing
-                # else.
+                # The row lists its failures in a fixed order, the domains of
+                # what systemd and udev start for NAILS last: one that starts
+                # with those two failed for nothing else.
                 assert row["status"] == "fail", row
-                assert row["message"].startswith(
+                units = (
                     "NAILS does not choose the SELinux domain of the processes systemd "
-                    "and udev start from its copy in /run"
-                ), row
+                    "starts from its copy in /run (the transition step at each switch, the "
+                    "watcher and the sleep guard of the hidden session, and the boot-record "
+                    "steps after the way back), so nothing shows they run unconfined. "
+                    "NAILS does not choose the SELinux domain of the hidden session's disk "
+                    "guard, which udev runs itself from the rule NAILS installs in /run, so "
+                    "nothing shows it runs unconfined."
+                )
+                assert row["message"].startswith(units), row
                 permissive = vm.succeed("cat /sys/fs/selinux/enforce").strip() == "0"
                 assert ("SELinux is permissive:" in row["message"]) == permissive, row
                 assert row["message"].endswith(named), (lsms, row)
