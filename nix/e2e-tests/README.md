@@ -994,6 +994,8 @@ lsm-status, enforcing and after `setenforce 0`; check clean); a plain
 soft-reboot; a session ended with `deactivate`; a package the decoy removes
 after that session; a second session as a user through sudo with the
 fresh-home persona, ended with the emergency; and a last plain soft-reboot.
+Before each entry the operator logs in on the decoy's console (tty4), as an
+operator does before activating.
 In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
 `/var`, the type a copied-up and a new file take, NAILS's processes outside
 `init_t`, the overlay feature options, the canaries in their uppers, no unit
@@ -1003,7 +1005,11 @@ back, the session's kernel log marker absent from the decoy's journal, which
 holds no kernel record of the session, the kmsg cursor above it, nothing of
 the session in `/run`, `utab` given back, `/run/initramfs` unchanged, the
 attached disk writable again, and the login and boot records changed only by
-the boot a power cycle adds, with no record of a login made in the session.
+the boot a power cycle adds, with no record of a login made in the session:
+wtmp keeps the operator's console login, dated before the entry, and
+lastlog2, where the release keeps it (Fedora 45), the operator's last login
+before the entry, since pam_lastlog2 keeps one row a user and writes one at
+each of the operator's commands too, with no row dated inside the session.
 Every AVC denial is counted from the boot before NAILS ran: a denial is new
 when a NAILS process or path has it, or when neither that boot nor the first
 plain soft-reboot logged its signature, a race of the image's own aside. Each
@@ -1012,18 +1018,25 @@ driver writes `<image>-gate.json` and `<image>-gate.kmsg.txt` and fails at its
 end when one does not hold. Where an assertion depends on code that is not in
 the build yet, its record names what it needs.
 
-`<image>-btrfs` plants the btrfs scan controls on the stock image
+`<image>-btrfs` plants the btrfs scan controls on the stock image, made
+amnesic first as NAILS requires (journal volatile, auditd off)
 (`py/btrfs_controls.py`, with the reads of `py/btrfs_scan.py`): a file kept
 plain (its folder's compression property `none`), a compressed one (property
 `zstd`, a poison of one short unit repeated) and a compressed one written,
-kept through a few commits and deleted. The read of the live tree through the
-decoy's own kernel, from a read-only bind, must find the first two and not the
-third; the raw scan of the disk, imaged whole as the oracle images driver
-images it, must find the plain one and not the compressed one, which proves
-the file is stored compressed; and a read of the older roots of the tree
-(`btrfs-find-root`, then `btrfs restore -t` of up to 64 of them) must find the
-deleted one at its path. It writes `<image>-btrfs.json` and fails when one of
-them does not hold. No NAILS runs in it.
+kept through a few commits and deleted with discard off. The read of the live
+tree through the decoy's own kernel, from a read-only bind, must find the
+first two and not the third; the raw scan of the disk, imaged whole as the
+oracle images driver images it, must find the plain one and not the
+compressed one, which proves the file is stored compressed; the read of the
+newest root with `btrfs restore` must find the compressed one, which shows it
+decompresses what the decoy's kernel wrote; and a read of the older roots of
+the tree (`btrfs-find-root`, then `btrfs restore -t` of up to 64 of them)
+must find the deleted one at its path, with its contents. A fourth file,
+deleted with the image's own `discard=async`, is recorded only: which older
+roots keep its path, and whether any keeps its contents. For both deleted
+files the run records the first bytes the image holds at each of their
+extents. It writes `<image>-btrfs.json` and fails when one of them does not
+hold. No NAILS runs in it.
 
 By hand on a KVM host, as the refusal's:
 
