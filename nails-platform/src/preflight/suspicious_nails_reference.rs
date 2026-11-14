@@ -126,9 +126,18 @@ fn unseen(path: &Path, error: NailsError) -> Option<(PathBuf, NailsError)> {
 }
 
 /// The check result for a scan: the first reference with its file, line,
-/// text, reason and remedy, or what was read.
+/// text, reason and remedy, else, where a place that names the hidden
+/// volume's storage could not be read, the refusal that NAILS cannot tell,
+/// or what was read.
 fn scan_result(scan: &BaseConfigScan) -> CheckResult {
     let Some(first) = scan.references.first() else {
+        if scan.files_read > 0 && !scan.unread.is_empty() {
+            return cannot_tell(&format!(
+                "NAILS cannot read {}, which may give a name of the hidden volume's storage that \
+                 a file there could use",
+                scan.unread.join(", ")
+            ));
+        }
         return CheckResult::Pass(match scan.files_read {
             0 => "No .nix file under /etc/nixos, so nothing was inspected; a configuration \
                   kept elsewhere is not checked"
@@ -308,6 +317,32 @@ mod tests {
         let fs = decoy();
         fs.mock_set_lookup_error("/etc/nixos/hosts", std::io::ErrorKind::NotFound);
         assert!(check.run(&fs).unwrap().is_pass());
+    }
+
+    /// A place that gives a name of the hidden volume's storage, which the
+    /// scan could not read, leaves NAILS unable to tell whether a file names
+    /// the storage by it: the check refuses, where it passed on the names it
+    /// could read. Without a file to read it passes as before.
+    #[test]
+    fn a_name_of_the_storage_the_scan_cannot_read_refuses() {
+        let scan = BaseConfigScan {
+            files_read: 1,
+            references: Vec::new(),
+            unread: vec!["/run/udev/data/b8:18".to_string()],
+        };
+        assert_eq!(
+            scan_result(&scan),
+            CheckResult::fail(
+                "NAILS cannot tell whether the decoy's /etc/nixos names the hidden environment: \
+                 NAILS cannot read /run/udev/data/b8:18, which may give a name of the hidden \
+                 volume's storage that a file there could use"
+            )
+        );
+        let nothing_read = BaseConfigScan {
+            files_read: 0,
+            ..scan
+        };
+        assert!(scan_result(&nothing_read).is_pass());
     }
 
     /// The mount table, read to name the hidden volume's devices, that cannot

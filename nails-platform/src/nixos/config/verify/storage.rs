@@ -50,6 +50,12 @@ pub(super) struct Storage {
     /// The kernel's name of every layer, top first (`dm-0`, `sdb2`): a udev
     /// rule matches a device by it (`KERNEL=="sdb2"`).
     pub(super) kernel_names: Vec<String>,
+    /// The places that are there but could not be read, for another reason
+    /// than that they are not there, each of which may give a name above:
+    /// the device the volume is mounted from, an attribute or listing of a
+    /// layer in sysfs, a layer's udev record, a `/dev/disk` directory or a
+    /// link in it.
+    pub(super) unread: Vec<String>,
 }
 
 /// The storage below the top mount at `root` in `mounts`. A device below the
@@ -62,10 +68,24 @@ pub(super) fn below<F: Filesystem>(fs: &F, mounts: &[MountEntry], root: &Path) -
     let Some(mount) = mounts.iter().rev().find(|m| m.mount_point == root) else {
         return storage;
     };
-    let Some(top) = blockdev::device_of_mount(fs, mount) else {
-        return storage;
+    let top = match blockdev::device_of_mount_or_unread(fs, mount) {
+        Ok(Some(top)) => top,
+        Ok(None) => return storage,
+        Err(place) => {
+            storage.keep_unread(&place);
+            return storage;
+        }
     };
-    let layers = blockdev::stack(fs, &top, LoopFollow::BlockDevices);
+    let layers = blockdev::walk(
+        fs,
+        &top,
+        LoopFollow::BlockDevices,
+        blockdev::MAX_STACK_DEVICES,
+    )
+    .layers;
+    for path in layers.iter().flat_map(|layer| &layer.unread) {
+        storage.keep_unread(path);
+    }
     let mut own: Vec<&str> = Vec::new();
     for (index, layer) in layers.iter().enumerate() {
         let alone = index == 0
@@ -85,6 +105,31 @@ pub(super) fn below<F: Filesystem>(fs: &F, mounts: &[MountEntry], root: &Path) -
 }
 
 impl Storage {
+    /// The entries of `dir`, sorted; none when it is not there or cannot be
+    /// listed, which keeps it in [`Self::unread`].
+    fn listing<F: Filesystem>(&mut self, fs: &F, dir: &Path) -> Vec<PathBuf> {
+        match fs.list_directory(dir) {
+            Ok(mut entries) => {
+                entries.sort();
+                entries
+            }
+            Err(error) => {
+                if !error.nothing_there() {
+                    self.keep_unread(dir);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// Keep `place`, which could not be read, once.
+    fn keep_unread(&mut self, place: &Path) {
+        let shown = place.display().to_string();
+        if !self.unread.contains(&shown) {
+            self.unread.push(shown);
+        }
+    }
+
     fn push(&mut self, pattern: Pattern) {
         if !self.markers.contains(&pattern) {
             self.markers.push(pattern);
@@ -168,9 +213,15 @@ impl Storage {
     /// identifiers its database records.
     fn add_udev_names<F: Filesystem>(&mut self, fs: &F, layer: &Layer) {
         if let Some(dev) = &layer.dev {
-            let record = fs
-                .read_file_content(&Path::new(UDEV_DATA).join(format!("b{dev}")))
-                .unwrap_or_default();
+            let path = Path::new(UDEV_DATA).join(format!("b{dev}"));
+            let record = match fs.read_file_content(&path) {
+                Ok(record) => record,
+                Err(error) if error.nothing_there() => String::new(),
+                Err(_) => {
+                    self.keep_unread(&path);
+                    String::new()
+                }
+            };
             let property = |key: &str| {
                 record.lines().find_map(|line| {
                     line.strip_prefix("E:")?
@@ -199,15 +250,24 @@ impl Storage {
             return;
         }
         let node = Path::new("/dev").join(&layer.name);
-        for dir in listing(fs, Path::new(DEV_DISK)) {
+        for dir in self.listing(fs, Path::new(DEV_DISK)) {
             let kind = match dir.file_name().and_then(|name| name.to_str()) {
                 Some("by-uuid" | "by-partuuid") => Some(Identifier::Uuid),
                 Some("by-label") => Some(Identifier::Label),
                 Some("by-partlabel") => Some(Identifier::PartLabel),
                 _ => None,
             };
-            for link in listing(fs, &dir) {
-                if fs.canonicalize(&link).ok().map(lexical) != Some(node.clone()) {
+            for link in self.listing(fs, &dir) {
+                let target = match fs.canonicalize(&link) {
+                    Ok(target) => lexical(target),
+                    // A link that leads to nothing names no device.
+                    Err(error) if error.nothing_there() => continue,
+                    Err(_) => {
+                        self.keep_unread(&link);
+                        continue;
+                    }
+                };
+                if target != node {
                     continue;
                 }
                 self.path(&link.to_string_lossy());
@@ -244,13 +304,6 @@ fn lexical(path: PathBuf) -> PathBuf {
         }
     }
     out
-}
-
-/// The entries of `dir`; none when it cannot be listed.
-fn listing<F: Filesystem>(fs: &F, dir: &Path) -> Vec<PathBuf> {
-    let mut entries = fs.list_directory(dir).unwrap_or_default();
-    entries.sort();
-    entries
 }
 
 /// `text` with udev's `\xNN` escapes decoded (`My\x20Data` is `My Data`).

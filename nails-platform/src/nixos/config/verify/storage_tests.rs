@@ -662,3 +662,43 @@ fn udev_escapes_are_decoded() {
     assert_eq!(unescape("a\\x2fb\\xzz"), "a/b\\xzz");
     assert_eq!(unescape("plain"), "plain");
 }
+
+/// A place that may give a name of the hidden volume's storage, there but
+/// unreadable for another reason than that it is not there, is kept: a
+/// layer's udev record, a sysfs attribute of a layer, a `/dev/disk`
+/// directory, a link in one. The scan keeps them, and a file that names the
+/// storage by one of those names would not be found. Where nothing is
+/// there, nothing is kept.
+#[test]
+fn a_place_of_the_storages_names_that_cannot_be_read_is_kept() {
+    for path in [
+        "/run/udev/data/b8:18",
+        "/sys/devices/virtual/block/dm-0/dm/uuid",
+        "/dev/disk/by-label",
+    ] {
+        let sysfs = with_udev(luks_on_a_partition());
+        sysfs.dev_disk(&[("/dev/disk/by-label/vault", "/dev/sdb2")]);
+        sysfs
+            .0
+            .mock_set_lookup_error(path, std::io::ErrorKind::Other);
+        let storage = sysfs.below(DATA_MOUNT);
+        assert_eq!(storage.unread, vec![path.to_string()], "{path}");
+
+        let file = "/etc/nixos/configuration.nix";
+        sysfs
+            .0
+            .mock_set_file_content("/proc/self/mountinfo", DATA_MOUNT);
+        sysfs
+            .0
+            .mock_set_files_with_pattern("/etc/nixos", ".nix", &[Path::new(file)]);
+        sysfs.0.mock_set_file_content(file, "{ }");
+        let scan =
+            super::super::verify_base_config_clean(&sysfs.0, Path::new("/mnt/data")).unwrap();
+        assert_eq!(scan.unread, vec![path.to_string()], "{path}");
+    }
+    let sysfs = with_udev(luks_on_a_partition());
+    sysfs
+        .0
+        .mock_set_lookup_error("/run/udev/data/b8:18", std::io::ErrorKind::NotFound);
+    assert!(sysfs.below(DATA_MOUNT).unread.is_empty());
+}
