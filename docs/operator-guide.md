@@ -1827,7 +1827,8 @@ afterwards:
   named like another word you type (the value you give an option or a
   setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
   program named like the command you type that zsh finds first in `PATH` or
-  that `hash` names (a `sudo` script in `~/bin`), a file a bash
+  that `hash` names (a `sudo` script in `~/bin`), a program a hook runs that
+  ends the shell by itself (one that signals its parent), a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), nor a history tool

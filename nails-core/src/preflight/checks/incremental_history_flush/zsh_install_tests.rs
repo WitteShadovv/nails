@@ -1123,6 +1123,29 @@ fn an_xdg_config_home_a_write_the_walk_does_not_follow_may_empty_is_read_empty_t
 }
 
 #[test]
+fn a_tilde_an_xdg_config_home_of_the_environment_holds_names_no_home() {
+    // zsh expands no `~` that a parameter's value gives: with
+    // XDG_CONFIG_HOME=~/.cfg in its environment, ZDOTDIR names `~/.cfg/zsh`
+    // below the working directory, which the check cannot follow.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "export ZDOTDIR=$XDG_CONFIG_HOME/zsh\n",
+    );
+    seed(&fs, "/home/alice/.cfg/zsh/.zshrc", "true\n");
+    let found = scan_with(
+        &fs,
+        NOT_LOGIN,
+        &install(&fs, &[("XDG_CONFIG_HOME", "~/.cfg")]),
+    );
+    assert_eq!(
+        found.doubts,
+        ["it cannot follow the ZDOTDIR that /home/alice/.zshenv sets (`$XDG_CONFIG_HOME/zsh`)"]
+    );
+}
+
+#[test]
 fn a_zdotdir_or_an_xdg_config_home_set_after_what_may_stop_the_file_keeps_the_one_before() {
     // zsh 5.9.2 stops reading ~/.zshenv at the error, so ZDOTDIR stays unset
     // and it reads ~/.zshrc, which turns SHARE_HISTORY on.
