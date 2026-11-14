@@ -22,27 +22,31 @@ controls show what each read of such a decoy sees, on the image itself:
 The read of the newest root must find (b) as well: that shows the history's
 reader decompresses what the decoy's kernel compressed, so a deleted file it
 does not find is not a file it could not read. Each compressed control fills
-whole blocks. For every root that holds a control, the run records what the
-restore wrote of it and what it said, and where the extents of (c) lay, with
-the first bytes the image holds there.
+whole blocks, and all of them are written before one is deleted, so that no
+control takes the blocks another freed. For every root that holds a control,
+the run records what the restore wrote of it and what it said, and where the
+extents of each deleted control lay, with the first bytes the image holds
+there.
 
 Fedora mounts its btrfs with ``discard=async`` where the disk takes discards,
 as the VM's disk does: once a deleted file's blocks are free, the kernel
-discards them, and they read as zeros. So the file (c) is deleted with discard
-turned off (a remount with ``nodiscard``, until the image), as on a disk that
-takes no discard, the case where the history keeps the most. A fourth file,
-written and deleted the same way before that remount, with the image's own
-``discard=async``, shows what such a deletion leaves: the run records which
-older roots keep its path and whether any keeps its contents, and asserts
-nothing of it.
+discards them. So the file (c) is deleted with discard turned off (a remount
+with ``nodiscard``), as on a disk that takes no discard, the case where the
+history keeps the most. A fourth file, deleted before that remount with the
+image's own ``discard=async``, shows what such a deletion leaves: the run
+records which older roots keep its path and whether any keeps its contents,
+and asserts nothing of it.
 
 The decoy is the stock image made amnesic as NAILS requires it, before the
-controls are planted: its journal volatile and auditd off. The stock image
-keeps a persistent journal, and a first run on it found the blocks of the
-deleted control taken by a journal file within the run. No NAILS runs here.
-The disk is imaged whole once the controls are synced, as the oracle images
-driver images it: QEMU pauses at the guest's power-off, and the image is a QMP
-backup of the paused disk. The driver writes ``<image>-btrfs.json``, every
+controls are planted: its journal volatile and auditd off. No NAILS runs here.
+The disk is imaged whole twice, each image a QMP backup of the paused disk.
+The first is taken right after the deletion, the guest paused for the copy, as
+a machine that loses its power leaves its disk, and every assertion is judged
+on it. The second is taken at the guest's power-off, as the oracle images
+driver takes the oracle's images, and is recorded only: earlier runs found
+the blocks of the deleted control taken again before such an image, by the
+stock image's persistent journal and, on the amnesic decoy, by small files
+whose first bytes read as NetworkManager's state and timestamps files. The driver writes ``<image>-btrfs.json``, every
 assertion with its outcome, into the directory ``NAILS_GATE_OUT`` names, and
 fails when one does not hold.
 """
@@ -156,14 +160,17 @@ class Controls:
             f"> {CONTROLS}/plain/a"
         )
         # (b), (c) and the discarded one: 256 KiB each, two compressed
-        # extents of whole blocks.
+        # extents of whole blocks, all written before either is deleted, so
+        # that neither deleted file's blocks are taken by another control.
         self.write_poison("B", "b")
-        # Deleted with the image's own discard=async: recorded only.
         self.write_poison("D", "d")
+        self.write_poison("C", "c")
         self.commits()
-        self.facts["d-extents"] = vm.succeed(
-            f"filefrag -v {CONTROLS}/compressed/d 2>&1 || true"
-        )
+        for control in ("c", "d"):
+            self.facts[f"{control}-extents"] = vm.succeed(
+                f"filefrag -v {CONTROLS}/compressed/{control} 2>&1 || true"
+            )
+        # Deleted with the image's own discard=async: recorded only.
         vm.succeed(f"rm {CONTROLS}/compressed/d && sync")
         self.commits()
         # Async discard runs in the background: wait until the filesystem has
@@ -183,11 +190,6 @@ class Controls:
             f"findmnt -no OPTIONS -T {CONTROLS}"
         )
         # (c): deleted with discard off.
-        self.write_poison("C", "c")
-        self.commits()
-        self.facts["c-extents"] = vm.succeed(
-            f"filefrag -v {CONTROLS}/compressed/c 2>&1 || true"
-        )
         vm.succeed(f"rm {CONTROLS}/compressed/c && sync")
         self.facts["listing"] = vm.succeed(
             f"ls -la {CONTROLS}/plain {CONTROLS}/compressed; "
@@ -251,9 +253,12 @@ class Controls:
         assert "return" in reply, f"QMP {command} failed: {reply}"
         return reply["return"]
 
-    def image_disk(self, target: str) -> None:
-        """Power the guest off, QEMU paused instead of exiting, and copy the
-        paused disk whole into ``target``, sparse."""
+    def image_disk(self, target: str, power_off: bool) -> None:
+        """Copy the guest's disk whole into ``target``, sparse: with
+        ``power_off``, once the guest has powered off, QEMU paused instead of
+        exiting, as the oracle images are taken; otherwise from the running
+        guest paused for the copy, as a machine that loses its power leaves
+        its disk, and the guest goes on after it."""
         roots = [
             block
             for block in self.qmp("query-block")
@@ -262,13 +267,18 @@ class Controls:
         assert len(roots) == 1, f"cannot identify the root drive: {roots}"
         device = roots[0]["device"]
         size = roots[0]["inserted"]["image"]["virtual-size"]
-        self.qmp("set-action", {"shutdown": "pause"})
-        assert self.vm.shell is not None
-        self.vm.shell.send(b"poweroff\n")
-        self.vm.connected = False
+        if power_off:
+            self.qmp("set-action", {"shutdown": "pause"})
+            assert self.vm.shell is not None
+            self.vm.shell.send(b"poweroff\n")
+            self.vm.connected = False
+            wanted = "shutdown"
+        else:
+            self.qmp("stop")
+            wanted = "paused"
         deadline = time.monotonic() + 600
-        while self.qmp("query-status")["status"] != "shutdown":
-            assert time.monotonic() < deadline, "the guest did not power off"
+        while self.qmp("query-status")["status"] != wanted:
+            assert time.monotonic() < deadline, f"the guest is not {wanted}"
             time.sleep(1)
         full = target + ".full"
         with open(full, "wb") as handle:
@@ -302,8 +312,89 @@ class Controls:
         assert "error" not in jobs[0], f"the backup failed: {jobs[0]}"
         self.qmp("job-dismiss", {"id": "controls"})
         self.qmp("blockdev-del", {"node-name": "controls"})
+        if not power_off:
+            self.qmp("cont")
         subprocess.run([self.tools["cp"], "--sparse=always", full, target], check=True)
         os.remove(full)
+
+    def read_image(
+        self, work: str, label: str, device: str, in_fs: str, power_off: bool
+    ) -> dict[str, Any]:
+        """Image the disk (``image_disk``), scan it raw for every token, and
+        read up to ``ROOTS`` roots of its tree with btrfs restore, newest
+        first: what each found, kept under ``label`` in the facts too."""
+        tokens = {name: poison_token(name) for name in "ABCD"}
+        disk_dir = os.path.join(work, label)
+        os.makedirs(disk_dir)
+        raw = os.path.join(disk_dir, "disk.raw")
+        self.image_disk(raw, power_off)
+        found = btrfs_scan.tokens_in_tree(disk_dir, list(tokens.values()))
+        table = subprocess.run(
+            [self.tools["sfdisk"], "--json", raw],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        number = btrfs_scan.partition_number(device)
+        start, size = btrfs_scan.partition_extent(table, number)
+        part = os.path.join(work, f"{label}.btrfs")
+        btrfs_scan.extract_partition(raw, start, size, part)
+        os.remove(raw)
+        roots = btrfs_scan.find_roots(self.tools["btrfs-find-root"], part)
+        regex = btrfs_scan.path_filter([os.path.dirname(in_fs)], below=True)
+        paths = {
+            name: os.path.join(in_fs, "compressed", name.lower()) for name in "BCD"
+        }
+        result: dict[str, Any] = {
+            "raw": sorted(found),
+            "generation": btrfs_scan.read_generation(part),
+            "roots": [root.generation for root in roots],
+            "extents": {
+                control: self.extent_heads(part, control) for control in ("c", "d")
+            },
+            "newest": [],
+            "older": [],
+            "kept": [],
+            "reads": [],
+        }
+        older: set[str] = set()
+        kept: set[str] = set()
+        for index, root in enumerate(roots[:ROOTS]):
+            dest = tempfile.mkdtemp(prefix=f"{label}-{root.generation}-", dir=work)
+            done = btrfs_scan.restore(
+                self.tools["btrfs"], part, dest, root=root.bytenr, regex=regex
+            )
+            wanted = [tokens["B"], tokens["C"], tokens["D"]]
+            here = btrfs_scan.tokens_in_tree(dest, wanted)
+            there = btrfs_scan.paths_in_tree(dest, list(paths.values()))
+            print(
+                f"{label} gen {root.generation}: btrfs restore exited "
+                f"{done.returncode}, found {sorted(here) or 'nothing'}, paths "
+                f"{there or 'none'}"
+            )
+            if index == 0:
+                result["newest"] = sorted(here)
+            if index == 0 or set(there) - {paths["B"]}:
+                result["reads"].append(
+                    {
+                        "generation": root.generation,
+                        "exit": done.returncode,
+                        "tokens": sorted(here),
+                        "sizes": {
+                            path: os.lstat(os.path.join(dest, path.lstrip("/"))).st_size
+                            for path in there
+                        },
+                        "messages": restore_messages(done),
+                    }
+                )
+            older |= here - {tokens["B"]}
+            kept |= set(there) - {paths["B"]}
+            shutil.rmtree(dest)
+        os.remove(part)
+        result["older"] = sorted(older)
+        result["kept"] = sorted(kept)
+        self.facts[label] = result
+        return result
 
     def extent_heads(self, part: str, control: str) -> list[dict[str, Any]]:
         """For each extent of the deleted ``control`` the guest listed, the
@@ -376,94 +467,50 @@ class Controls:
                 c not in live and d not in live,
                 sorted(live),
             )
-            disk_dir = os.path.join(work, "disk")
-            os.makedirs(disk_dir)
-            raw = os.path.join(disk_dir, "disk.raw")
-            self.image_disk(raw)
-            found = btrfs_scan.tokens_in_tree(disk_dir, [a, b, c, d])
-            self.facts["raw"] = sorted(found)
+            deleted = os.path.join(in_fs, "compressed", "c")
+            discarded = os.path.join(in_fs, "compressed", "d")
+            # The disk as the guest left it right after the deletion, the
+            # guest paused for the copy: what the history keeps before
+            # anything else is written.
+            paused = self.read_image(work, "paused", device, in_fs, False)
             self.check(
-                "the raw scan finds the plain control (a)", a in found, sorted(found)
+                "the raw scan finds the plain control (a)",
+                a in paused["raw"],
+                paused["raw"],
             )
             self.check(
                 "the raw scan does not find the compressed control (b): btrfs "
                 "stored it compressed",
-                b not in found,
-                sorted(found),
+                b not in paused["raw"],
+                paused["raw"],
             )
-            table = subprocess.run(
-                [self.tools["sfdisk"], "--json", raw],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout
-            number = btrfs_scan.partition_number(device)
-            start, size = btrfs_scan.partition_extent(table, number)
-            part = os.path.join(work, "root.btrfs")
-            btrfs_scan.extract_partition(raw, start, size, part)
-            os.remove(raw)
-            self.facts["generation"] = btrfs_scan.read_generation(part)
-            roots = btrfs_scan.find_roots(self.tools["btrfs-find-root"], part)
-            self.facts["roots"] = [root.generation for root in roots]
-            self.facts["c-extents-on-disk"] = self.extent_heads(part, "c")
-            self.facts["d-extents-on-disk"] = self.extent_heads(part, "d")
-            regex = btrfs_scan.path_filter([os.path.dirname(in_fs)], below=True)
-            live_b = os.path.join(in_fs, "compressed", "b")
-            deleted = os.path.join(in_fs, "compressed", "c")
-            discarded = os.path.join(in_fs, "compressed", "d")
-            older: set[str] = set()
-            kept: set[str] = set()
-            reads: list[dict[str, Any]] = []
-            newest: set[str] = set()
-            for index, root in enumerate(roots[:ROOTS]):
-                dest = tempfile.mkdtemp(prefix=f"root-{root.generation}-", dir=work)
-                done = btrfs_scan.restore(
-                    self.tools["btrfs"], part, dest, root=root.bytenr, regex=regex
-                )
-                here = btrfs_scan.tokens_in_tree(dest, [b, c, d])
-                there = btrfs_scan.paths_in_tree(dest, [live_b, deleted, discarded])
-                print(
-                    f"gen {root.generation}: btrfs restore exited {done.returncode}, "
-                    f"found {sorted(here) or 'nothing'}, paths {there or 'none'}"
-                )
-                if index == 0:
-                    newest = here
-                if index == 0 or set(there) - {live_b}:
-                    reads.append(
-                        {
-                            "generation": root.generation,
-                            "exit": done.returncode,
-                            "tokens": sorted(here),
-                            "sizes": {
-                                path: os.lstat(
-                                    os.path.join(dest, path.lstrip("/"))
-                                ).st_size
-                                for path in there
-                            },
-                            "messages": restore_messages(done),
-                        }
-                    )
-                older |= here - {b}
-                kept |= set(there) - {live_b}
-                shutil.rmtree(dest)
-            self.facts["reads"] = reads
-            self.facts["history"] = {"tokens": sorted(older), "paths": sorted(kept)}
             self.check(
                 "the read of the newest root finds the compressed control (b): the "
                 "history's reader decompresses what the decoy's kernel compressed",
-                b in newest,
-                sorted(newest),
+                b in paused["newest"],
+                paused["newest"],
             )
-            self.facts["discarded-file"] = {
-                "pathInAnOlderRoot": discarded in kept,
-                "contentsInAnOlderRoot": d in older,
-            }
             self.check(
                 "an older root of the tree keeps the deleted control (c) at its "
                 "path, with its contents",
-                c in older and deleted in kept,
-                {"tokens": sorted(older), "paths": sorted(kept)},
+                c in paused["older"] and deleted in paused["kept"],
+                {"tokens": paused["older"], "paths": paused["kept"]},
             )
+            # The disk at the guest's power-off, as the oracle images are
+            # taken: recorded only, with what the shutdown wrote.
+            off = self.read_image(work, "powered-off", device, in_fs, True)
+            self.facts["after-power-off"] = {
+                "rawFindsPlain": a in off["raw"],
+                "rawFindsCompressed": b in off["raw"],
+                "deletedPathInAnOlderRoot": deleted in off["kept"],
+                "deletedContentsInAnOlderRoot": c in off["older"],
+            }
+            self.facts["discarded-file"] = {
+                "pathInAnOlderRoot": discarded in paused["kept"],
+                "contentsInAnOlderRoot": d in paused["older"],
+                "pathAfterPowerOff": discarded in off["kept"],
+                "contentsAfterPowerOff": d in off["older"],
+            }
         except Exception as error:  # noqa: BLE001 - recorded, then the run fails
             self.check("the run reaches its end", False, repr(error))
         finally:

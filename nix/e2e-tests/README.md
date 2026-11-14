@@ -1025,18 +1025,19 @@ plain (its folder's compression property `none`), a compressed one (property
 `zstd`, a poison of one short unit repeated) and a compressed one written,
 kept through a few commits and deleted with discard off. The read of the live
 tree through the decoy's own kernel, from a read-only bind, must find the
-first two and not the third; the raw scan of the disk, imaged whole as the
-oracle images driver images it, must find the plain one and not the
-compressed one, which proves the file is stored compressed; the read of the
-newest root with `btrfs restore` must find the compressed one, which shows it
-decompresses what the decoy's kernel wrote; and a read of the older roots of
-the tree (`btrfs-find-root`, then `btrfs restore -t` of up to 64 of them)
-must find the deleted one at its path, with its contents. A fourth file,
-deleted with the image's own `discard=async`, is recorded only: which older
-roots keep its path, and whether any keeps its contents. For both deleted
-files the run records the first bytes the image holds at each of their
-extents. It writes `<image>-btrfs.json` and fails when one of them does not
-hold. No NAILS runs in it.
+first two and not the third. The disk is then imaged whole with the guest
+paused right after the deletion, and on that image the raw scan must find the
+plain one and not the compressed one, which proves the file is stored
+compressed; the read of the newest root with `btrfs restore` must find the
+compressed one, which shows it decompresses what the decoy's kernel wrote;
+and a read of the older roots of the tree (`btrfs-find-root`, then
+`btrfs restore -t` of up to 64 of them) must find the deleted one at its
+path, with its contents. A fourth file, deleted with the image's own
+`discard=async`, is recorded only, and so is a second image, taken at the
+guest's power-off as the oracle images driver takes its images: which older
+roots keep each deleted file's path and contents, and the first bytes each
+image holds at their extents. It writes `<image>-btrfs.json` and fails when
+one of the assertions does not hold. No NAILS runs in it.
 
 By hand on a KVM host, as the refusal's:
 
