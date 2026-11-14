@@ -69,10 +69,24 @@ def archive_repository(release: str) -> str:
     return f"{ARCHIVE}/{release}/Everything/x86_64/os/"
 
 
-def repo_file(release: str) -> str:
+def find_key(release: str) -> str:
+    """The guest command that sets ``key`` to the release key file the image
+    ships, or fails naming the ones it has: Fedora 44 ships it as
+    ``RPM-GPG-KEY-fedora-44-x86_64`` and ``-primary``, Fedora 45 only as
+    ``-primary``. ``release`` may be a shell expansion."""
+    base = "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora"
+    return (
+        "key=; "
+        f"for candidate in {base}-{release}-x86_64 {base}-{release}-primary; do "
+        '[ -e "$candidate" ] && { key=$candidate; break; }; done; '
+        '[ -n "$key" ] || { ls /etc/pki/rpm-gpg >&2; '
+        f'echo "no release key of Fedora {release}" >&2; exit 3; }}'
+    )
+
+
+def repo_file(release: str, key: str) -> str:
     """The dnf repository file of the release repository alone: its packages
-    checked against the release's own key, which the image ships."""
-    key = f"file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-{release}-x86_64"
+    checked against the release key file ``key``, which the image ships."""
     return "\n".join(
         (
             f"[{REPO_ID}]",
@@ -81,7 +95,7 @@ def repo_file(release: str) -> str:
             "enabled=1",
             "gpgcheck=1",
             "repo_gpgcheck=0",
-            f"gpgkey={key}",
+            f"gpgkey=file://{key}",
             "",
         )
     )
@@ -98,7 +112,7 @@ def resolve_command(release: str, requested: Sequence[str] = REQUESTED) -> str:
     name, NEVRA, SHA-256 and size (``package``), what ``rpm -K`` says of it
     once the release key is imported (``checksig``), and the URL dnf has for
     it (``location``). The guest is the driver's own, which keeps every write
-    in a temporary layer.
+    in a temporary layer. What dnf prints goes to the standard error.
     """
     names = " ".join(shlex.quote(name) for name in requested)
     dnf = (
@@ -108,6 +122,12 @@ def resolve_command(release: str, requested: Sequence[str] = REQUESTED) -> str:
         "--setopt=keepcache=True "
         f"--setopt=user_agent={shlex.quote(USER_AGENT)}"
     )
+    # Every line of the repository file as one word of printf, the key's
+    # path from the shell's own variable.
+    repo_lines = " ".join(
+        '"gpgkey=file://$key"' if line.startswith("gpgkey=") else shlex.quote(line)
+        for line in repo_file(release, "").splitlines()
+    )
     return "\n".join(
         (
             "set -eu",
@@ -116,11 +136,10 @@ def resolve_command(release: str, requested: Sequence[str] = REQUESTED) -> str:
             f"for name in {names}; do",
             '  printf "in-image %s %s\\n" "$name" "$(rpm -q "$name" 2>&1 || true)"',
             "done",
-            f"cat > /etc/yum.repos.d/{REPO_ID}.repo <<'EOF'",
-            repo_file(release).rstrip("\n"),
-            "EOF",
+            find_key(release),
+            f"printf '%s\\n' {repo_lines} > /etc/yum.repos.d/{REPO_ID}.repo",
             f"{dnf} install --downloadonly {names} >&2",
-            f"rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-{release}-x86_64",
+            'rpm --import "$key"',
             'find "$dest" -name "*.rpm" | sort > "$dest.list"',
             "while read -r file; do",
             '  nevra=$(rpm -qp --qf "%{NEVRA}" "$file")',
@@ -200,9 +219,12 @@ def parse_resolution(text: str, release: str) -> dict[str, Any]:
 
 def install_command(share: str, requested: Sequence[str] = REQUESTED) -> str:
     """The guest command that installs the shared closure with every
-    repository disabled, and then says what is installed of ``requested``."""
+    repository disabled, the release key imported as dnf imports it on a
+    first install, and then says what is installed of ``requested``."""
     names = " ".join(shlex.quote(name) for name in requested)
     return (
+        f"{find_key('$(rpm -E %fedora)')}; "
+        'rpm --import "$key" && '
         "dnf --assumeyes --disablerepo='*' --setopt=install_weak_deps=False "
         f"install {shlex.quote(share)}/*.rpm && rpm -q {names}"
     )

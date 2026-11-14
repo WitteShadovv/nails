@@ -63,8 +63,10 @@ let
         print(vm.succeed("cat /etc/os-release; uname -r; rpm -q dnf5 rpm"))
 
         with subtest("resolve the closure on the image, from the release repository"):
+            # What dnf prints goes to a file of its own, so that only the
+            # records reach the reading below.
             status, out = vm.execute(
-                fedora_rpms.resolve_command(release) + " 2>/run/rpm-closure.err",
+                "( " + fedora_rpms.resolve_command(release) + "\n) 2>/run/rpm-closure.err",
                 timeout=1500,
             )
             print(out)
