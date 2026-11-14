@@ -54,11 +54,16 @@ class RepositoryTest(unittest.TestCase):
             repos = Path(work, "repos")
             keys.mkdir()
             repos.mkdir()
+            vendor = Path(work, "vendor")
+            vendor.mkdir()
             script = (
                 fr.find_key("45")
                 .replace("/etc/pki/rpm-gpg", str(keys))
                 .replace("/etc/yum.repos.d", str(repos))
+                .replace("/usr/share/dnf5/repos.d", str(vendor))
             )
+            # The driver runs every command so.
+            script = "set -euo pipefail; " + script
             run = ["bash", "-c", script + '; echo "$key"']
             missing = subprocess.run(run, capture_output=True, text=True, check=False)
             self.assertEqual(missing.returncode, 3, missing)
@@ -83,6 +88,18 @@ class RepositoryTest(unittest.TestCase):
             named.unlink()
             found = subprocess.run(run, capture_output=True, text=True, check=True)
             self.assertTrue(found.stdout.strip().endswith("-45-x86_64"))
+            # dnf5 of Fedora 45 keeps the distribution's repository files
+            # under /usr/share, with keys named as the image ships them.
+            (repos / "fedora.repo").unlink()
+            shipped = Path(work, "shipped-45.key")
+            shipped.write_text("key\n")
+            (vendor / "fedora.repo").write_text(
+                "[fedora]\n"
+                f"gpgkey=file://{work}/shipped-$releasever.key file:///elsewhere\n"
+                "[fedora-debuginfo]\ngpgkey=file:///no/such/key\n"
+            )
+            found = subprocess.run(run, capture_output=True, text=True, check=True)
+            self.assertEqual(found.stdout.strip(), str(shipped))
 
 
 class ResolveCommandTest(unittest.TestCase):
