@@ -1279,6 +1279,41 @@ of this changelog for that version becomes the release notes word for word, and
   that leads into `/dev` but does not start with `/dev/` or holds a `..`, and a `keyscript=`, whose
   program reads the key field in its own way, make the line not plain. A key file elsewhere, `none`,
   `/dev/urandom` and a key device of another filesystem pass.
+- `backend-entries` now reads only the options it lists, each in the forms it lists. The lists, in
+  `nails-base/src/hidden_root/separation/known.rs` with why each entry is harmless, hold the generic
+  mount flags and the atime family, `nofail`, `_netdev`, `user` and its kin, `loop`, `comment=` and
+  `x-gvfs-*`, the `x-systemd.device-timeout=`, `mount-timeout=` and `idle-timeout=` timeouts,
+  `x-systemd.automount`, `x-systemd.makefs`, `x-systemd.growfs`, `x-initrd.mount` and
+  `X-mount.mkdir`, the btrfs, ext2 to ext4, XFS, F2FS, FAT, exFAT, NTFS, swap, FUSE and ZFS options
+  that stock lines carry, each on a line of its own filesystem, and for the crypttab the options of
+  the decoy's own root lines on stock installs. Of a line of local storage, a bind line of any type,
+  a swap line, and any line but a RAM, kernel, host-share, network or overlay filesystem's or a
+  remote FUSE program's, every option has to be on the lists: any other option, a flag with a value,
+  such as `nofail=1`, and an `x-systemd.wanted-by=` or `x-systemd.required-by=` that names a unit
+  other than `local-fs.target` make the line not plain, with `--allow-decoy-storage` or without it,
+  and the check names those options and says to write the line without them. Before, NAILS read only
+  the options it needed: with the flag, the decoy's own line for `/home` that names a unit by
+  `x-systemd.wanted-by=` or `x-systemd.required-by=`, which systemd 260.5 links into that unit in
+  place of `local-fs.target`, so the boot mounts it only if that unit starts, passed the check, and
+  so did one with `X-mount.subdir=`, which has `libmount` mount a folder of the filesystem, the
+  root's own too, in place of what the line names. Such a line now also makes no mount of the
+  decoy's own, and the attach gate counts it as one the boot mounts. A line for `/` or `/usr`, which
+  systemd mounts whatever `noauto` says, NAILS now reads as one the boot mounts too, and options in
+  quotes, inside which `libmount` keeps a comma in one option, are not plain.
+- `backend-entries` now reads the devices and paths that options name, on every line, as it reads a
+  line's source, with no link followed: ext4's `journal_path=` and `journal_dev=` (a device by its
+  number), XFS's `logdev=` and `rtdev=`, btrfs's `device=`, `x-systemd.requires-mounts-for=` and
+  `x-systemd.wants-mounts-for=`, cifs's `credentials=`, an overlay's `lowerdir=`, `upperdir=` and
+  `workdir=`, and a crypttab line's `tpm2-device=`, `fido2-device=`, `tpm2-signature=` and
+  `tpm2-pcrlock=`. A device of the hidden drive, or a path that lies in the volume or in the root's
+  folder, fails the line, with `--allow-decoy-storage` too, and a path in the volume makes the
+  attach gate refuse a volume of its own. All of these passed both checks, though ext4 and XFS write
+  to their journal and log devices and `systemd-cryptsetup` writes TPM commands to what a
+  `tpm2-device=` names (systemd 260.5 wrote them to the first bytes of a file named so).
+  `tpm2-device=auto`, `fido2-device=auto` and the TPM's own node, such as `/dev/tpmrm0`, pass. A
+  value in another form, such as a relative path or a `driver:param` form of `tpm2-device=`
+  (`cmd:…`), and an option NAILS does not know whose value may name a path or a device, absolute, a
+  tag, or with a `/` or a `:` in it, make the line not plain, on any line.
 - NAILS now follows a device's path in `/dev` through its links only while they lead to a path in
   `/dev`, and stops at the first link that leads out of it, so it reads no link and makes no lookup
   past `/dev`, on the decoy's disk say, for a tag too, by the link udev makes for it in
