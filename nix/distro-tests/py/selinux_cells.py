@@ -48,6 +48,11 @@ MARK = "DSXMARK"
 _RECORD = re.compile(r"^(\d+),(\d+),(\d+),([^;]*);(.*)$")
 _FIELD = re.compile(r"(\w+)=(\"[^\"]*\"|'[^']*'|\S+)")
 _PERMS = re.compile(r"\{ ([^}]*) \}")
+# A relabel line of the research build; an error's text has spaces in it.
+_RELABEL = re.compile(
+    r"^relabel uptime=(?P<uptime>\S*) pid=(?P<pid>\S*) current=(?P<current>\S*) "
+    r"path=(?P<path>\S*) set=(?P<set>.*) now=(?P<now>.*)$"
+)
 
 
 def kmsg_command(first: int) -> str:
@@ -168,6 +173,34 @@ def trace_lines(text: str) -> list[dict[str, str]]:
         entry["args"] = args
         lines.append(entry)
     return lines
+
+
+def relabel_lines(text: str) -> list[dict[str, str]]:
+    """The lines the research build appends after each relabel of a RAM copy
+    (``relabel uptime=... path=... set=... now=...``): what the write did and
+    the label read back after it."""
+    lines = []
+    for line in text.splitlines():
+        match = _RELABEL.match(line)
+        if match is not None:
+            lines.append(match.groupdict())
+    return lines
+
+
+_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def monitor_answer(out: str, command: str) -> str:
+    """What the QEMU monitor answered to ``command``: the text after its echo,
+    which redraws the line with terminal escapes, without the next prompt."""
+    text = _ESCAPE.sub("", out).replace("\r", "")
+    at = text.rfind(command)
+    if at >= 0:
+        text = text[at + len(command) :]
+    text = text.strip()
+    if text.endswith("(qemu)"):
+        text = text[: -len("(qemu)")]
+    return text.strip()
 
 
 def nails_pids(trace: Iterable[Mapping[str, str]]) -> dict[str, str]:

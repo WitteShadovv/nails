@@ -20,13 +20,19 @@
 # denial a dontaudit rule hides is counted too, and with the opt-in units that
 # run the RAM copy as well (the sleep guard, the disk guard's udev rule):
 # "<image>-enforcing-<mechanism>" keeps the rules and the default
-# configuration, "...-noda" removes the rules, "...-optin" adds the units.
+# configuration, "...-noda" removes the rules, "...-optin" adds the units and
+# "...-optin-noda" does both. "...-restorecon" (relabel only) has the
+# operator run restorecon on the RAM copy in each session before it ends.
 #
 # py/cells_driver.py runs the flows (a plain soft-reboot as the control, an
-# entry with a command in the session and deactivate, an entry ended by the
-# emergency), marks every step in the kernel log, reads it whole after each,
+# entry with a disk attached, formatted and mounted in the session, a command
+# in it and deactivate, an entry ended by the operator's emergency, for env
+# and relabel an entry the watcher's automatic emergency ends, a last plain
+# soft-reboot), marks every step in the kernel log, reads it whole after each,
 # and writes <cell>.json, <cell>.raw.json and <cell>.kmsg.txt into the
-# directory NAILS_CELL_OUT names.
+# directory NAILS_CELL_OUT names. The hidden root is plain dm-crypt on a loop
+# device where the image has dmsetup, so the way back's deferred removal of a
+# device-mapper backend runs as well.
 #
 # Fedora is not admitted: like the oracle images, the cells run a test-only
 # build of the binary with the one Fedora row of the family table admitted.
@@ -104,13 +110,46 @@ let
       dontaudit = "on";
       optin = true;
     }
+    {
+      suffix = "-optin-noda";
+      dontaudit = "off";
+      optin = true;
+    }
   ];
+
+  # The copy relabelled during each session: what the relabel mechanism, which
+  # gives the copy its label again right before each switch, does about it.
+  restorecon = {
+    suffix = "-restorecon";
+    dontaudit = "on";
+    optin = false;
+    restorecon = true;
+  };
 
   # SELinuxContext= alone cannot start the copy (its label is no entrypoint
   # of the unconfined service domain), so only the main cell runs it.
-  variantsOf = mechanism: if mechanism == "context" then lib.take 1 variants else variants;
+  variantsOf =
+    mechanism:
+    if mechanism == "context" then
+      lib.take 1 variants
+    else if mechanism == "relabel" then
+      variants ++ [ restorecon ]
+    else
+      variants;
 
-  # Cell name -> { image, entry, mechanism, dontaudit, optin }.
+  # The watcher's automatic emergency ends a third session where the watcher
+  # runs in a domain of its own: the copy started through env or relabelled.
+  # Without a mechanism its write probe is denied from the start, and with
+  # SELinuxContext= it never starts.
+  autoEmergencyOf =
+    mechanism:
+    builtins.elem mechanism [
+      "env"
+      "relabel"
+    ];
+
+  # Cell name -> { image, entry, mechanism, dontaudit, optin, restorecon,
+  # autoEmergency, hotplug }.
   cells = lib.listToAttrs (
     lib.concatMap (
       image:
@@ -121,6 +160,10 @@ let
           lib.nameValuePair "${image}-enforcing-${mechanism}${variant.suffix}" {
             inherit image mechanism;
             inherit (variant) dontaudit optin;
+            restorecon = variant.restorecon or false;
+            autoEmergency = autoEmergencyOf mechanism;
+            # A disk attached in the first session, where a watcher can see it.
+            hotplug = mechanism != "context";
             entry = fedoraImages.${image} // {
               enforcing = true;
             };
@@ -130,9 +173,10 @@ let
     ) (builtins.attrNames fedoraImages)
   );
 
-  # A run: three switches and two sessions, a policy rebuild in the -noda
-  # cells, the kernel log read whole at every step.
-  timeout = 3000;
+  # A run: up to eight switches and three sessions, a policy rebuild in the
+  # -noda cells, the kernel log read whole at every step, and room for a
+  # switch whose new userspace never reconnects (420 s, then a fresh boot).
+  timeout = 4200;
 
   cellFor =
     name: cell:
@@ -144,8 +188,12 @@ let
           mechanism
           dontaudit
           optin
+          restorecon
+          autoEmergency
+          hotplug
           ;
         inherit (cell.entry) osId release;
+        backend = "dm-crypt";
       };
       scripts = {
         amnesic = hiddenRoot.makeDecoyAmnesic;

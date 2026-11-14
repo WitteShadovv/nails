@@ -94,6 +94,39 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(summary["avcs"][0]["verb"], "transition")
 
 
+class TraceTests(unittest.TestCase):
+    def test_relabel_lines_are_apart_from_the_start_lines(self) -> None:
+        text = "\n".join(
+            (
+                "uptime=21.5 pid=7 ppid=1 current=a prev=b args=transition",
+                "relabel uptime=22.0 pid=9 current=unconfined_u:unconfined_r:"
+                "unconfined_t:s0 path=/run/overlay-runtime/control set=ok "
+                "now=system_u:object_r:bin_t:s0",
+                "relabel uptime=23.0 pid=9 current=x path=/run/c "
+                "set=<Operation not permitted (os error 1)> now=<No data>",
+            )
+        )
+        self.assertEqual([e["args"] for e in sc.trace_lines(text)], ["transition"])
+        relabels = sc.relabel_lines(text)
+        self.assertEqual(len(relabels), 2)
+        self.assertEqual(relabels[0]["path"], "/run/overlay-runtime/control")
+        self.assertEqual(relabels[0]["set"], "ok")
+        self.assertEqual(relabels[0]["now"], "system_u:object_r:bin_t:s0")
+        self.assertEqual(relabels[1]["now"], "<No data>")
+        self.assertEqual(relabels[1]["set"], "<Operation not permitted (os error 1)>")
+        self.assertEqual(relabels[0]["pid"], "9")
+
+    def test_the_monitor_answer_follows_its_echo(self) -> None:
+        command = "drive_add 0 if=none,id=hp1"
+        echo = "".join(
+            command[: i + 1] + "\x1b[K" + "\x1b[D" * (i + 1)
+            for i in range(len(command))
+        )
+        out = f"{echo}{command}\x1b[K\r\nOK\r\n(qemu) "
+        self.assertEqual(sc.monitor_answer(out, command), "OK")
+        self.assertEqual(sc.monitor_answer(f"{command}\r\n(qemu) ", command), "")
+
+
 class CursorTests(unittest.TestCase):
     def test_a_record_of_the_session_in_the_decoy_journal_is_a_leak(self) -> None:
         records, _ = sc.parse_kmsg(

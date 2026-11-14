@@ -2,27 +2,39 @@
 
 ``nix/distro-tests/cells.nix`` builds one host driver per cell and calls
 :func:`run` with the driver's machine. A cell is an image, a way of starting
-the RAM copy of the binary (``none``, ``env`` or ``context``, see the research
-build's ``research_cell`` module) and whether the policy's dontaudit rules are
-on. The run:
+the RAM copy of the binary (``none``, ``env``, ``context`` or ``relabel``, see
+the research build's ``research_cell`` module), whether the policy's dontaudit
+rules are on, whether the opt-in units run, and whether the operator relabels
+the RAM copy in each session. The operator's commands run in a login session
+of their own: a transient unit with the login PAM stack, whose pam_selinux
+gives root its default context (``unconfined_t``), checked with ``id -Z``
+first. ``runcon`` from the harness's shell is tried before it, and that shell
+itself is the last resort; the cell records which one ran. The run:
 
 1. boots the image, makes the decoy amnesic (volatile journal, auditd
    masked), lifts the kernel log's rate limits, optionally rebuilds the policy
    without its dontaudit rules (``semodule -DB``: the test VM's policy store
-   only), names the cell's mechanism in ``/run/dsx/dsxcell`` and records the
-   decoy's facts;
+   only), names the cell's mechanism in ``/run/dsx/dsxcell``, backs the hidden
+   root with plain dm-crypt on a loop device where the image has ``dmsetup``
+   and records the decoy's facts;
 2. soft-reboots once with no NAILS involved, the control whose denials are
    not counted as new;
-3. enters a hidden session from an unconfined operator shell (``runcon``),
-   runs a command in it and deactivates;
-4. enters again and ends that session with the emergency.
+3. enters a hidden session, attaches a disk to the machine and lets the
+   operator format and mount it read-write, runs a command in the session and
+   deactivates;
+4. enters again and ends that session with the operator's emergency;
+5. where the cell names it, enters a third time with the watcher's automatic
+   emergency on, makes the hidden volume's mount read-only and lets the
+   watcher end the session on its own;
+6. soft-reboots once more with no NAILS involved.
 
 It writes a marker to ``/dev/kmsg`` at every step, reads the whole kernel log
 after every step, and keeps every command's output. A step that fails is
-recorded and the run goes on where it can: after a power-off the next flow
-starts on a fresh boot of the image. The result is ``<cell>.json`` (facts,
-flows and denials per phase), ``<cell>.raw.json`` (every command's output) and
-``<cell>.kmsg.txt`` in the output directory.
+recorded and the run goes on where it can: after a power-off, or a switch whose
+new userspace never reconnects, the next flow starts on a fresh boot of the
+image, after a plain soft-reboot of its own. The result is ``<cell>.json``
+(facts, flows and denials per phase), ``<cell>.raw.json`` (every command's
+output) and ``<cell>.kmsg.txt`` in the output directory.
 """
 
 from __future__ import annotations
@@ -44,6 +56,54 @@ CONFIG = "/run/nails-cell.toml"
 CONFIG_TEXT = 'hidden_volume_root = "/mnt/data"\nminimum_space_mb = 100\n'
 # The opt-in units that run the RAM copy: the sleep guard and the disk guard.
 OPTIN_TEXT = '\n[sleep_policy]\nmode = "block"\n\n[session_mounts]\nread_only = true\n'
+# The third entry's configuration: the watcher ends the session on its own
+# once the hidden volume has failed its probe for the debounce window.
+AUTO_CONFIG = "/run/nails-cell-auto.toml"
+AUTO_TEXT = "\n[backend_watch]\nauto_emergency = true\n"
+# The disk the session attaches: a sparse file on the host, attached through
+# the QEMU monitor, which the guest names by its serial.
+HOTPLUG_BYTES = 64 << 20
+
+# The hidden root of a cell with ``backend = "dm-crypt"``: the suite's layout
+# (hidden-root.nix: a sparse file on a tmpfs below /run, which a soft-reboot
+# does not carry, on a loop device without autoclear, mounted at /mnt/data),
+# with a plain dm-crypt mapping between the loop device and ext4, made with
+# the image's own dmsetup and a random key, so that the way back marks a
+# device-mapper backend for deferred removal as it does for a LUKS volume.
+# Each fresh hidden root gets a mapping of its own name ($1), so one the last
+# way back left behind shows instead of being reused. Without dmsetup it
+# exits 3 and the cell uses the suite's plain loop device.
+DM_HIDDEN_ROOT = r"""
+set -eu
+name=$1
+mountpoint=/mnt/data
+store=/run/blk
+backing="$store/data.img"
+if mountpoint -q "$mountpoint"; then
+  echo "Hidden root already mounted at $mountpoint"
+else
+  command -v dmsetup >/dev/null 2>&1 || { echo 'dmsetup absent'; exit 3; }
+  mkdir -p "$store"
+  if ! mountpoint -q "$store"; then
+    mount -t tmpfs -o size=1200m,mode=0700 tmpfs "$store"
+  fi
+  truncate -s 1G "$backing"
+  loop=$(losetup --show -f "$backing")
+  printf '%s\n' "$loop" > /run/blk.dev
+  key=$(od -An -N64 -tx1 /dev/urandom | tr -d ' \n')
+  sectors=$(blockdev --getsz "$loop")
+  printf '0 %s crypt aes-xts-plain64 %s 0 %s 0\n' "$sectors" "$key" "$loop" |
+    dmsetup create "$name"
+  mkfs.ext4 -q "/dev/mapper/$name"
+  mkdir -p "$mountpoint"
+  mount "/dev/mapper/$name" "$mountpoint"
+  echo "backing the hidden root with plain dm-crypt mapping $name on $loop"
+fi
+mkdir -p "$mountpoint"/root/work "$mountpoint"/config
+echo "Hidden root ready at $mountpoint"
+"""
+# The device-mapper devices there are, with their open counts.
+DM_STATE = "dmsetup info -c --noheadings -o name,open,attr 2>&1 || true"
 
 TOOLS_MOUNT = (
     "mkdir -p /run/tools && { mountpoint -q /run/tools || mount -t 9p -o "
@@ -73,6 +133,9 @@ RUN_FILES = (
     "/run/overlay-runtime-boot /run/overlay-runtime-boot/*"
 )
 DECOY_MOUNTS = "/ /home /var /boot /boot/efi"
+# The markers that start a plain soft-reboot: the first, the last, and the one
+# after a restart.
+CONTROL_STARTS = ("control-start", "control2-start", "controlr-start")
 
 
 class Cell:
@@ -98,6 +161,8 @@ class Cell:
         self.calls = 0
         self.decoy_source = ""
         self.lost = False
+        self.restarted = False
+        self.mappings = 0
         self.boot = -1
         self.boots: list[dict[str, Any]] = []
         self.result: dict[str, Any] = {
@@ -132,6 +197,20 @@ class Cell:
         _, out = self.sh(label, cmd, timeout)
         self.boots[self.boot]["facts"][label] = out.strip()
         return out.strip()
+
+    def monitor(self, label: str, command: str) -> str:
+        """Send ``command`` to the QEMU monitor; its answer is kept as a fact."""
+        self.calls += 1
+        key = f"{self.calls:04}.b{self.boot}.{label}"
+        try:
+            out = self.vm.send_monitor_command(command)
+        except Exception as error:  # noqa: BLE001 - recorded, the run goes on
+            out = f"<{type(error).__name__}: {error}>"
+        answer = sc.monitor_answer(out, command)
+        self.raw[key] = {"cmd": f"(monitor) {command}", "status": 0, "out": out}
+        self.boots[self.boot]["facts"][label] = answer
+        print(f"=== {key} (monitor) ===\n{answer}")
+        return answer
 
     # --- the kernel log --------------------------------------------------
 
@@ -186,6 +265,7 @@ class Cell:
         vm.succeed(TOOLS_MOUNT)
         text = CONFIG_TEXT + (OPTIN_TEXT if self.settings["optin"] else "")
         vm.succeed(f"cat > {CONFIG} <<'EOF'\n{text}EOF")
+        vm.succeed(f"cat > {AUTO_CONFIG} <<'EOF'\n{text}{AUTO_TEXT}EOF")
         self.sh("limits", LIMITS)
         # The harness's own shell starts through /usr/bin/env; from the next
         # start on it does not, so an access of env on the decoy is NAILS's.
@@ -228,8 +308,9 @@ class Cell:
 
     def operator(self) -> None:
         """Decide how NAILS runs: from unconfined_t, through runcon if the
-        backdoor's domain may change to it, else as a transient service with
-        SELinuxContext=, each checked with id -Z first; else from the
+        backdoor's domain may change to it, else in a login session of its own
+        (a transient unit with the login PAM stack, ``systemd-run -p
+        PAMName=login``), each checked with id -Z first; else from the
         backdoor's own domain."""
         self.fact("backdoor-id", "id -Z")
         self.fact("su-l-id", "su -l root -c 'id -Z'")
@@ -267,7 +348,11 @@ class Cell:
         self.after_switch()
         fstype = self.vm.execute("findmnt -no FSTYPE /", timeout=60)[1]
         place = "hidden" if fstype.strip() == "overlay" else "decoy"
-        self.result["flows"][label] = {"ok": True, "place": place}
+        self.result["flows"][label] = {
+            "ok": True,
+            "place": place,
+            "afterRestart": self.restarted,
+        }
         return place
 
     def where(self) -> str:
@@ -279,8 +364,14 @@ class Cell:
             return "down"
         return "hidden" if out.strip() == "overlay" else "decoy"
 
-    def restart(self, why: str) -> None:
-        """A fresh boot of the image after the machine went down."""
+    def restart(self, why: str, settle: bool = True) -> None:
+        """A fresh boot of the image after the machine went down.
+
+        The fresh boot starts from the image's own disk, so its first switch
+        runs (and stamps the access time of) what the decoy's userspace runs
+        to stop: a plain soft-reboot first, as at the start of a cell, keeps
+        that out of the next flow's lists. The flows after a restart are
+        marked ``afterRestart``."""
         process = getattr(self.vm, "process", None)
         try:
             if process is not None and process.poll() is None:
@@ -291,10 +382,32 @@ class Cell:
             print(f"stopping the machine: {error}")
         self.vm.start(allow_reboot=False)
         self.lost = False
+        self.restarted = True
         self.new_boot(why)
         self.prepare()
         self.operator()
         self.mark("boot-ready")
+        if settle:
+            self.step("controlr", self.control_after_restart)
+
+    def hidden_root(self, label: str) -> None:
+        """A hidden root at /mnt/data, unless one is mounted there: plain
+        dm-crypt on a loop device for a ``dm-crypt`` cell whose image has
+        dmsetup, else the suite's plain loop device."""
+        if self.settings.get("backend") == "dm-crypt":
+            self.fact(f"{label}.dm-before", DM_STATE)
+            name = f"data{self.mappings + 1}"
+            status, _ = self.sh(
+                label,
+                f"sh -s {shlex.quote(name)} <<'DSXEOF'\n{DM_HIDDEN_ROOT}\nDSXEOF",
+                300,
+            )
+            if status == 0:
+                self.mappings += 1
+                self.fact(f"{label}.dm", DM_STATE)
+                return
+            print(f"{label}: no dm-crypt hidden root (exit {status}); a plain loop")
+        self.sh(label, self.scripts["setup_hidden_root"], 300)
 
     # --- facts -----------------------------------------------------------
 
@@ -450,6 +563,8 @@ class Cell:
             "systemctl status --no-pager overlay-runtime-boot.service 2>&1 | head -20",
         )
         self.fact(f"{tag}.env", "stat -c '%x|%y|%z' /usr/bin/env")
+        self.fact(f"{tag}.dm", DM_STATE)
+        self.fact(f"{tag}.disks", "lsblk -rno NAME,RO,TYPE,MOUNTPOINTS")
         self.disk_changes(f"{tag}.disk", f"/run/dsx/ref-{n}")
         self.run_labels(f"{tag}.run-labels")
 
@@ -492,6 +607,16 @@ class Cell:
         self.disk_changes("control.disk", "/run/dsx/ref-0")
         self.run_labels("control.run-labels")
 
+    def control_after_restart(self) -> None:
+        """The plain soft-reboot after a restart (:meth:`restart`)."""
+        self.age_env("controlr.env-age")
+        self.mark("controlr-start")
+        place = self.switch("systemctl soft-reboot", f"controlr-{self.boot}")
+        if place == "lost":
+            self.restart("after the control of a restart was lost", settle=False)
+            return
+        self.mark("controlr-end")
+
     def control2(self) -> None:
         """A second plain soft-reboot, once the sessions are over: what the
         decoy's own services are denied at a switch then is no denial of
@@ -508,20 +633,22 @@ class Cell:
         self.fact("control2.issue-d", "ls -laZ /etc/issue.d/ 2>&1")
         self.disk_changes("control2.disk", "/run/dsx/ref-9")
 
-    def enter(self, n: int) -> bool:
+    def enter(self, n: int, how: str) -> bool:
+        config = AUTO_CONFIG if how == "autoemerg" else CONFIG
         self.run_labels(f"pre-{n}.run-labels")
         self.fact(f"pre-{n}.run-files", f"ls -Zd {RUN_FILES} 2>&1")
+        self.fact(f"pre-{n}.disks", "lsblk -rno NAME,RO,TYPE,MOUNTPOINTS")
         self.age_env(f"pre-{n}.env-age")
         self.sh(f"pre-{n}.ref", f"touch /run/dsx/ref-{n}")
         self.fact(
             f"pre-{n}.check",
-            self.as_operator(f"{NAILS} --config {CONFIG} check --overlay-only"),
+            self.as_operator(f"{NAILS} --config {config} check --overlay-only"),
             600,
         )
         self.mark(f"enter-{n}")
         place = self.switch(
             self.as_operator(
-                f"{NAILS} --config {CONFIG} activate -y "
+                f"{NAILS} --config {config} activate -y "
                 f"> /mnt/data/activate-{n}.log 2>&1"
             ),
             f"enter-{n}",
@@ -569,14 +696,91 @@ class Cell:
         time.sleep(5)
         self.read_kmsg(f"session-{n}")
 
+    def hotplug(self, n: int) -> None:
+        """A disk attached to the machine during the session, as a USB disk
+        would be, formatted and mounted read-write by the operator, written
+        to and unmounted; it stays attached for the rest of the run. The disk
+        guard's udev rule (opt-in) runs the RAM copy for it as it appears, and
+        the watcher raises its mount alert (on by default) and, opted in, sets
+        the disk read-only again under the mount."""
+        self.mark(f"hotplug-{n}")
+        image = os.path.abspath(f"hotplug-{self.nonce}-{n}.img")
+        with open(image, "wb") as handle:
+            handle.truncate(HOTPLUG_BYTES)
+        drive = f"hp{n}"
+        self.monitor(
+            f"hotplug-{n}.drive-add",
+            f"drive_add 0 if=none,id={drive},file={image},format=raw",
+        )
+        self.monitor(
+            f"hotplug-{n}.device-add",
+            f"device_add virtio-blk-pci,drive={drive},id={drive}d,serial={drive}",
+        )
+        disk = f"/dev/disk/by-id/virtio-{drive}"
+        node = f"$(readlink -f {disk})"
+        state = (
+            f'echo "disk={node} ro=$(blockdev --getro {disk} 2>&1)"; '
+            "echo --record; cat /run/overlay-runtime/read-only-devices 2>&1; "
+            "echo --trace; grep -E 'guard-device|watch' /run/dsx/dsxrec/dsxtrace"
+        )
+        self.fact(
+            f"hotplug-{n}.attached",
+            f"for i in $(seq 30); do [ -b {disk} ] && break; sleep 1; done; "
+            f"udevadm settle -t 30; {state}; echo --rules; "
+            "ls -Z /run/udev/rules.d/ 2>&1",
+        )
+        self.mark(f"hpmount-{n}")
+        # The format's last close makes udev see the disk change, which runs
+        # the rule again: settled, the disk is set writable once more first.
+        self.fact(
+            f"hotplug-{n}.mount",
+            self.as_operator(
+                f"blockdev --setrw {disk} && mkfs.ext4 -q -F {disk} && "
+                f"udevadm settle -t 30; blockdev --setrw {disk}; mkdir -p /mnt/hp && "
+                f"mount {disk} /mnt/hp && echo hidden > /mnt/hp/f && sync; "
+                f'echo "mount=$? ro=$(blockdev --getro {disk})"; '
+                "findmnt -no SOURCE,OPTIONS /mnt/hp"
+            ),
+        )
+        # Two polls of the watcher: its read-only sweep and its mount alert.
+        time.sleep(12)
+        self.fact(
+            f"hotplug-{n}.watched",
+            f"{state}; echo --mount; findmnt -no SOURCE,OPTIONS /mnt/hp",
+        )
+        self.fact(
+            f"hotplug-{n}.umount",
+            self.as_operator('umount /mnt/hp; echo "umount=$?"'),
+        )
+        self.read_kmsg(f"hotplug-{n}")
+
+    def relabel_in_session(self, n: int) -> None:
+        """What a relabel of /run during the session does to the RAM copy:
+        restorecon gives it the type the policy names for its path."""
+        self.fact(
+            f"restorecon-{n}",
+            self.as_operator(f"ls -Z {RAM}; restorecon -v {RAM}; ls -Z {RAM}"),
+        )
+
     def leave(self, n: int, how: str) -> None:
         self.mark(f"leave-{n}")
         if how == "deactivate":
             trigger = self.as_operator(f"{NAILS} --config {CONFIG} deactivate -y")
-        else:
+        elif how == "emergency":
             trigger = self.as_operator(
                 f"{RAM} --config {CONFIG} emergency --json > /dev/null"
             )
+        else:
+            # The watcher's automatic emergency: the hidden volume's mount
+            # turns read-only, the watcher's write probe fails, and after the
+            # debounce window the watcher runs the emergency in its own
+            # process. Nothing else is triggered.
+            self.fact(
+                f"{how}-{n}.remount",
+                "mount -o remount,bind,ro /mnt/data; echo remount=$?; "
+                "findmnt -no SOURCE,OPTIONS /mnt/data",
+            )
+            trigger = "true"
         place = self.switch(trigger, f"{how}-{n}")
         if place == "lost":
             self.restart(f"after {how}-{n} was lost")
@@ -593,7 +797,7 @@ class Cell:
         for boot in self.boots:
             markers = [m for m in boot["markers"] if m["seq"] is not None]
             for start, end in zip(markers, markers[1:], strict=False):
-                if start["label"] in ("control-start", "control2-start"):
+                if start["label"] in CONTROL_STARTS:
                     found.update(
                         sc.phase(boot["records"].values(), start["seq"], end["seq"])[
                             "signatures"
@@ -613,6 +817,11 @@ class Cell:
                 )
             )
             pids = sc.nails_pids(trace)
+            relabels = sc.relabel_lines(
+                "\n".join(
+                    value for key, value in boot["facts"].items() if "trace" in key
+                )
+            )
             markers = [m for m in boot["markers"] if m["seq"] is not None]
             phases = []
             bounds = [None, *[m["seq"] for m in markers], None]
@@ -649,6 +858,7 @@ class Cell:
                     "facts": boot["facts"],
                     "console": boot["console"],
                     "trace": trace,
+                    "relabels": relabels,
                 }
             )
         self.result["controlSignatures"] = control
@@ -678,25 +888,36 @@ class Cell:
             print(f"step {label} raised: {error}")
             return None
 
+    def flows(self) -> list[tuple[int, str]]:
+        """The cell's flows: each number with how its session ends."""
+        flows = [(1, "deactivate"), (2, "emergency")]
+        if self.settings.get("autoEmergency"):
+            flows.append((3, "autoemerg"))
+        return flows
+
     def run(self) -> None:
         self.new_boot("first boot")
         try:
             self.prepare()
             self.operator()
-            self.sh("hidden-root", self.scripts["setup_hidden_root"], 300)
+            self.hidden_root("hidden-root")
             self.mark("boot-ready")
             self.decoy_facts()
             self.run_labels("boot.run-labels")
             self.step("control", self.control)
-            for n, how in ((1, "deactivate"), (2, "emergency")):
-                self.sh(f"hidden-root-{n}", self.scripts["setup_hidden_root"], 300)
-                self.step(f"enter-{n}", self.enter, n)
+            for n, how in self.flows():
+                self.hidden_root(f"hidden-root-{n}")
+                self.step(f"enter-{n}", self.enter, n, how)
                 place = self.where()
                 if place == "hidden":
                     if n == 1:
+                        if self.settings.get("hotplug"):
+                            self.step(f"hotplug-{n}", self.hotplug, n)
                         self.step(f"session-{n}", self.in_session, n)
                     else:
                         self.step(f"session-{n}", self.in_session_marker, n)
+                    if self.settings.get("restorecon"):
+                        self.step(f"restorecon-{n}", self.relabel_in_session, n)
                     self.step(f"{how}-{n}", self.leave, n, how)
                 elif place == "down":
                     self.restart(f"after enter-{n} was lost")
