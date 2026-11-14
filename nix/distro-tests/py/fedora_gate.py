@@ -1044,10 +1044,13 @@ class Gate:
         pieces = [
             p for p in WAY_BACK_PIECES if vm.execute(f"test -e {p} -o -L {p}")[0] == 0
         ]
+        # Without the RAM copy's label, the decoy's policy keeps the reconcile
+        # unit from running the copy, and the unit's pieces stay.
         self.check(
             f"way back {n}: the reconcile step left none of its pieces",
             not pieces,
             pieces,
+            NEEDS_LABEL,
         )
         noexec = "noexec" in vm.succeed("findmnt -no OPTIONS /run")
         self.check(
