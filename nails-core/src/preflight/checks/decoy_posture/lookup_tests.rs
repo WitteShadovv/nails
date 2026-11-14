@@ -582,3 +582,28 @@ fn an_auditd_nails_cannot_tell_runs_refuses_once() {
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(findings[0].untold.is_some(), "{findings:?}");
 }
+
+/// An auditd unit file NAILS cannot read counts only where a link or a
+/// trigger may start it: with neither it starts by nothing, and with an
+/// enabling link NAILS cannot tell whether its conditions hold, so it is
+/// refused, with the override.
+#[test]
+fn an_auditd_unit_nails_cannot_read_counts_where_it_is_enabled() {
+    let unit = "/usr/lib/systemd/system/auditd.service";
+    let fs = decoy("volatile");
+    fs.mock_add_file(unit, AUDITD_UNIT);
+    fs.mock_set_lookup_error(unit, ErrorKind::PermissionDenied);
+    assert!(run(&fs, false).is_pass(), "{:?}", run(&fs, false));
+
+    let wants = wants_dir(&fs);
+    fs.create_symlink(Path::new(unit), &Path::new(wants).join("auditd.service"))
+        .unwrap();
+    let result = run(&fs, false);
+    refused_as_untold(
+        &fs,
+        &result,
+        "auditd is enabled, though it does not run now, and NAILS cannot tell whether the \
+         service manager starts it again when the decoy starts after the way back (NAILS cannot \
+         look up /usr/lib/systemd/system/auditd.service; run the command again with sudo)",
+    );
+}

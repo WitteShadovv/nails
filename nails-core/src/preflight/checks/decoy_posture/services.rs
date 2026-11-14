@@ -34,7 +34,8 @@
 //!
 //! Each is read two ways. Its unit counts when the service manager can start
 //! it: it is enabled or active ([`unit_enabled`], [`loggers::unit_active`]),
-//! and for tuned also when tuned-ppd is installed, which needs it and which
+//! a timer, path or socket unit that runs starts it ([`triggers`]), and for
+//! tuned also when tuned-ppd is installed, which needs it and which
 //! D-Bus starts whenever a program asks for power profiles; a masked unit
 //! starts by none of these. Its `[Service]` section is read from the unit
 //! file and every drop-in, as the service manager loads them
@@ -75,6 +76,7 @@ use super::super::locate_database::unit::{
     SYSTEM_UNIT_PATH, UnitSection, list_values, unit_section,
 };
 use super::loggers::{self, Activity};
+use super::triggers::{self, Triggers};
 use super::{Enabled, PersistenceFinding, unit_enabled};
 use crate::Filesystem;
 use options::Log;
@@ -260,6 +262,12 @@ struct Decoy<'a, F: Filesystem> {
     /// The system manager's unit directories, highest priority first.
     dirs: Vec<PathBuf>,
     processes: Processes,
+    /// The hidden volume's locations, resolved, which no read follows a link
+    /// onto.
+    hidden: &'a [PathBuf],
+    /// What the decoy's timers, paths and sockets start, read once it is
+    /// asked.
+    triggers: std::cell::OnceCell<Triggers>,
 }
 
 impl<'a, F: Filesystem> Decoy<'a, F> {
@@ -270,6 +278,8 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
             files: DecoyFiles::new(fs, root, hidden),
             dirs: SYSTEM_UNIT_PATH.iter().map(|dir| root.join(dir)).collect(),
             processes: processes::processes(fs, root, PROCESS_NAMES, PYTHON_SCRIPTS),
+            hidden,
+            triggers: std::cell::OnceCell::new(),
         }
     }
 
@@ -279,8 +289,9 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
     }
 
     /// How the service manager starts `unit` on its own: it is enabled,
-    /// active or both, or NAILS cannot tell whether it is either, which
-    /// counts as one that is. `None` when it is neither.
+    /// active or both, or a trigger that runs starts it ([`triggers`]), or
+    /// NAILS cannot tell whether one of these is so, which counts as one
+    /// that is. `None` when none is.
     fn started(&self, unit: &str) -> Option<Start> {
         let enabled = unit_enabled(self.fs, self.root, unit);
         let active = loggers::unit_active(self.fs, self.root, unit);
@@ -290,7 +301,15 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
             (Enabled::No | Enabled::Untold(_), Activity::Active) => "is active",
             (Enabled::Untold(why), Activity::Inactive | Activity::Untold(_))
             | (Enabled::No, Activity::Untold(why)) => return Some(Start::Untold(why)),
-            (Enabled::No, Activity::Inactive) => return None,
+            (Enabled::No, Activity::Inactive) => {
+                let triggers = self
+                    .triggers
+                    .get_or_init(|| triggers::read(self.fs, self.root, self.hidden));
+                return match triggers.of(unit)? {
+                    Ok(how) => Some(Start::Sure(how)),
+                    Err(why) => Some(Start::Untold(why)),
+                };
+            }
         };
         Some(Start::Sure(format!("{unit} {state}")))
     }
