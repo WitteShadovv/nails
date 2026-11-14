@@ -1036,6 +1036,26 @@ a wrong password for root that an unprivileged user gives `su`, its btmp
 record, none of which may be on the decoy after the way back (its lastlog2 and
 btmp as they were, its wtmp without a record on the login's terminal), with
 the same logins on the decoy as the positive control.
+### The access-time scenarios
+
+`access-times.nix` runs `tests/access-times.nix` on Debian 13, with the release
+binary, and on Fedora 44, with the test-only build that admits Fedora's row of
+the family table (`lib/admitted.nix`), as one host driver per image
+(`<image>-access-times`). It finds every read of the decoy disk that NAILS makes
+and a plain soft-reboot does not, on a root mounted `relatime`: before each
+phase it sets the access time of every entry of the decoy disk's filesystems two
+days back, so that each read in the phase updates one, and after it lists the
+entries read and not changed since. Two plain soft-reboots of the decoy into
+itself, one before and one after the sessions, are the controls: what the
+decoy's own stop and start read. Every read in the window of `nails check` is
+a finding. In two sessions, one left by `deactivate` and one by the emergency, a
+read before the way back started must be one a control's stop made, and a read
+after it one a control's stop or start made. Every command of the scenario that
+reads the decoy runs through `lib/noatime-run.c`, a static helper that runs it
+in a mount namespace whose every mount is noatime, so the scenario's own reads
+never count. The run prints its whole report, every phase's reads with their
+times, between `=== ACCESS-TIME REPORT ===` lines. CI runs it in the records
+suite of `distro-e2e.yml`.
 
 ### The refusal of Fedora and Arch
 

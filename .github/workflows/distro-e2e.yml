@@ -6,6 +6,7 @@ name: Distro E2E
 #
 #   smoke    one smoke scenario per admitted distribution, built with nix build
 #   records  the login- and boot-record scenarios (Debian 13, Ubuntu 24.04)
+#            and the access-time scenarios (Debian 13, Fedora 44)
 #   refusal  the refusal of each pinned image of a family the family table
 #            does not admit (Fedora, Arch)
 #   probe    the fact probes of the images not admitted yet
