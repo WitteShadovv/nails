@@ -2,14 +2,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Real btrfs decoy images for the forensic oracle: before / control /
-# control2 / after of a Fedora 44 Cloud decoy, keyed "<name>-oracle-images".
+# control2 / after of a Fedora 44 Cloud decoy and of an arch-boxes decoy,
+# keyed "<name>-oracle-images".
 #
 # The NixOS oracle-images test (nix/e2e-tests/tests/forensic/13-oracle-images.nix)
 # retains an ext4 decoy root. Fedora and Arch keep their root on btrfs, which
 # plaso cannot read, and the oracle scans such images without the timeline
 # (ci/oracle/run-scan.sh). This driver produces the real images that scan
 # needs, on the stock Fedora 44 Cloud image (btrfs, zstd compressed, with the
-# root, /boot, /home and /var subvolumes next to a vfat ESP):
+# root, /boot, /home and /var subvolumes next to a vfat ESP) and on the stock
+# arch-boxes basic image (btrfs, zstd compressed, every file in the top level,
+# next to a vfat ESP that systemd mounts on demand at /efi, and a BIOS boot
+# partition):
 #
 #   before    the decoy as prepared, powered off;
 #   control   the same disk after one plain reboot, powered off;
@@ -35,18 +39,21 @@
 # power-off instead of exiting, each image is a QMP blockdev-backup of the
 # paused disk, and system_reset then boots the same disk again.
 #
-# Fedora is not admitted yet: the release `nails` refuses it (the refusal
-# scenario, refusal.nix, proves that). So this driver runs a test-only build
-# of the release binary in which the one Fedora row of the family table is
-# admitted and the lsm-status check, which refuses every host where SELinux
-# runs for now, is left out; nothing else changes. That build is never
-# shipped. The oracle's verdict on the images says what its channels see of a
-# session on a Fedora 44 Cloud decoy's disk (ci/oracle/README.md lists what
-# they do not), not that NAILS supports Fedora.
+# Neither Fedora nor Arch is admitted yet: the release `nails` refuses both
+# (the refusal scenario, refusal.nix, proves that). So this driver runs a
+# test-only build of the release binary in which the one row of the image's
+# family in the family table is admitted (lib/admitted.nix), and on Fedora the
+# lsm-status check, which refuses every host where SELinux runs for now, is
+# left out; nothing else changes. That build is never shipped. The oracle's
+# verdict on the images says what its channels see of a session on that
+# decoy's disk (ci/oracle/README.md lists what they do not), not that NAILS
+# supports the family.
 #
 # The decoy is prepared before the before image, so all of them hold it alike:
 # its journal volatile and auditd masked (lib/hidden-root.nix's
-# makeDecoyAmnesic, the posture NAILS requires), /mnt/data created, and the
+# makeDecoyAmnesic, the posture NAILS requires), every swap line of its fstab
+# made noauto and the swap off (arch-boxes swaps to a file on its root, and the
+# swap check refuses an active disk swap), /mnt/data created, and the
 # coverage canary written. The canary file has btrfs compression turned off,
 # and the driver checks its bytes are on the root partition in clear: on a
 # compressed extent bulk_extractor could not see it, and the oracle would
@@ -69,33 +76,41 @@ let
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   hiddenRoot = import ./lib/hidden-root.nix;
 
-  # The release binary with the Fedora base row admitted, for this driver
-  # only (lib/admitted.nix). It also leaves out the lsm-status check, which
-  # refuses every host where SELinux runs, this permissive decoy among them,
-  # until NAILS chooses the SELinux domains of the processes systemd and udev
-  # start from its copy in /run. The check only reads, so leaving it out
-  # changes nothing a session leaves on the disk. The build fails unless
-  # exactly that one line changes.
-  nailsFedoraAdmitted = (import ./lib/admitted.nix { inherit self; } "fedora").overrideAttrs (old: {
-    pname = "nails-test-fedora-admitted";
-    postPatch = (old.postPatch or "") + ''
-      registry=nails-core/src/manager/preflight_runner.rs
-      awk '
-        $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));" {
-          print "    let _ = LsmStatusCheck::new(UnitDomains::UNKNOWN);"; left++; next
-        }
-        { print }
-        END { if (left != 1) exit 1 }
-      ' "$registry" > "$registry.new" || {
-        echo "the lsm-status check of $registry was not left out exactly once" >&2
-        exit 1
-      }
-      mv "$registry.new" "$registry"
-    '';
-    meta = old.meta // {
-      description = "nails with the Fedora row admitted and lsm-status left out, for the btrfs oracle images only; never released";
-    };
-  });
+  # The release binary with the base row of the image's family admitted, for
+  # this driver only (lib/admitted.nix). For Fedora it also leaves out the
+  # lsm-status check, which refuses every host where SELinux runs, this
+  # permissive decoy among them, until NAILS chooses the SELinux domains of the
+  # processes systemd and udev start from its copy in /run. The check only
+  # reads, so leaving it out changes nothing a session leaves on the disk. The
+  # build fails unless exactly that one line changes.
+  admitted =
+    family:
+    let
+      base = import ./lib/admitted.nix { inherit self; } family;
+    in
+    if family != "fedora" then
+      base
+    else
+      base.overrideAttrs (old: {
+        pname = "nails-test-fedora-admitted";
+        postPatch = (old.postPatch or "") + ''
+          registry=nails-core/src/manager/preflight_runner.rs
+          awk '
+            $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));" {
+              print "    let _ = LsmStatusCheck::new(UnitDomains::UNKNOWN);"; left++; next
+            }
+            { print }
+            END { if (left != 1) exit 1 }
+          ' "$registry" > "$registry.new" || {
+            echo "the lsm-status check of $registry was not left out exactly once" >&2
+            exit 1
+          }
+          mv "$registry.new" "$registry"
+        '';
+        meta = old.meta // {
+          description = "nails with the Fedora row admitted and lsm-status left out, for the btrfs oracle images only; never released";
+        };
+      });
 
   binShare = {
     tag = "tools";
@@ -109,7 +124,7 @@ let
       target = "driver";
 
       sharedDirs.${binShare.tag} = {
-        source = "${nailsFedoraAdmitted}/bin";
+        source = "${admitted entry.osId}/bin";
         inherit (binShare) target;
       };
 
@@ -124,6 +139,10 @@ let
 
         sys.path.insert(0, "${../e2e-tests/py}")
         from nails_e2e import session  # noqa: E402
+
+        # The distribution scenarios' helpers, for the decoy's disk swap.
+        sys.path.insert(0, "${./py}")
+        import distro_checks  # noqa: E402
 
         nails = "${binShare.target}/nails"
         config = "/run/nails-oracle.toml"
@@ -185,14 +204,21 @@ let
 
         def settle():
             # A boot is imaged once it is up: every unit started, the network
-            # configured, and its writes on the disk.
+            # configured (NetworkManager's wait on Fedora, networkd's on
+            # Arch), and its writes on the disk. No boot turns a disk swap on.
             vm.wait_until_succeeds(
                 "state=$(systemctl is-system-running || true); "
                 + "[ \"$state\" = running ] || [ \"$state\" = degraded ]",
                 timeout=600,
             )
-            vm.execute("nm-online -s -q -t 60", check_return=False)
+            vm.execute(
+                "nm-online -s -q -t 60 "
+                + "|| /usr/lib/systemd/systemd-networkd-wait-online --timeout=60",
+                check_return=False,
+            )
             print(vm.execute("systemctl --failed --no-pager", check_return=False)[1])
+            swaps = distro_checks.disk_swaps(vm.succeed("cat /proc/swaps"))
+            assert not swaps, f"a disk swap is on: {swaps}"
             vm.succeed("sync")
 
 
@@ -290,6 +316,15 @@ let
 
         with subtest("prepare the decoy and image it: before"):
             vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
+            # No boot of the run turns a disk swap on, and none is on now.
+            fstab = vm.succeed("cat /etc/fstab")
+            if distro_checks.fstab_swaps(fstab):
+                noauto = distro_checks.with_swaps_noauto(fstab)
+                vm.succeed(
+                    f"printf %s {shlex.quote(noauto)} > /etc/fstab && systemctl daemon-reload"
+                )
+            for name in distro_checks.disk_swaps(vm.succeed("cat /proc/swaps")):
+                vm.succeed(f"swapoff {shlex.quote(name)}")
             vm.succeed("mkdir -p /mnt/data /var/lib/nails-oracle")
             # Compression off before the first byte is written, so the
             # canary's bytes are on the partition as they are.
@@ -364,4 +399,5 @@ let
 in
 {
   "fedora-44-oracle-images" = oracleImagesFor images."fedora-44";
+  "arch-boxes-oracle-images" = oracleImagesFor images."arch-boxes";
 }
