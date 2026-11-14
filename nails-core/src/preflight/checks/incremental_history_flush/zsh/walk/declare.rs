@@ -416,7 +416,7 @@ impl Walker<'_> {
                     name: "XDG_CONFIG_HOME",
                     value: None,
                     unconditional,
-                    first: !self.ran,
+                    first: !self.ran && self.lone_first,
                 });
             }
         }

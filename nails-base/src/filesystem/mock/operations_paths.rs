@@ -550,6 +550,34 @@ impl MockFilesystem {
             .unwrap_or(0o755))
     }
 
+    /// The user id `mock_set_owner` or `write_user_file` recorded for
+    /// `path`, 0 (root's) for another path that is there, as a file a test
+    /// seeds has no other owner; an error for one that is not.
+    pub(super) fn owner_impl(&self, path: &Path) -> Result<u32> {
+        if let Some(error) = self.lookup_error(path) {
+            return Err(error);
+        }
+        if let Some((uid, _)) = self
+            .owners
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+        {
+            return Ok(*uid);
+        }
+        let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+        match paths.get(path) {
+            Some(info) if info.exists => Ok(0),
+            _ => Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Path does not exist: {}", path.display()),
+                ),
+            )),
+        }
+    }
+
     pub(super) fn is_readable_impl(&self, path: &Path) -> Result<bool> {
         // The real call answers no when the path cannot be opened at all.
         if self.lookup_error_kind(path).is_some() {

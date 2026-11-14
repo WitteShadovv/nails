@@ -199,6 +199,10 @@ impl Filesystem for RealFilesystem {
         file_ops::get_permissions(path)
     }
 
+    fn owner(&self, path: &Path) -> Result<u32> {
+        file_ops::owner(path)
+    }
+
     fn is_readable(&self, path: &Path) -> Result<bool> {
         file_ops::is_readable(path)
     }

@@ -298,6 +298,12 @@ pub(super) fn get_permissions(path: &Path) -> Result<u32> {
     Ok(mode & 0o7777)
 }
 
+/// The user id that owns `path` itself, as `lstat(2)` reads it.
+pub(super) fn owner(path: &Path) -> Result<u32> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(std::fs::symlink_metadata(path).at_path(path)?.uid())
+}
+
 pub(super) fn is_readable(path: &Path) -> Result<bool> {
     Ok(std::fs::File::open(path).is_ok())
 }

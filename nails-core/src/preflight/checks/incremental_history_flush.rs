@@ -188,6 +188,10 @@ pub struct InspectedShell {
     /// file; `None` for a login shell, which may not run now, and an error
     /// that says why when the check cannot read it.
     pub started: Option<std::result::Result<SystemTime, String>>,
+    /// The user it opens its startup files as: its process's file system
+    /// uid, the operator's for a login shell; `None` when the check cannot
+    /// read it.
+    pub uid: Option<u32>,
 }
 
 impl InspectedShell {
@@ -202,6 +206,7 @@ impl InspectedShell {
             exe: None,
             environment: None,
             started: None,
+            uid: Some(operator.uid),
         }
     }
 
@@ -250,6 +255,7 @@ impl InspectedShell {
             exe,
             environment,
             started: Some(start_time(pid)),
+            uid: proc::fs_uid(pid),
         })
     }
 }
@@ -436,10 +442,12 @@ struct Judged<'a> {
     zsh: zsh::Start,
     part: &'a str,
     /// The file its process runs, the variables of its environment the
-    /// check reads and when it started, when it runs now.
+    /// check reads and when it started, when it runs now, and the user it
+    /// opens its files as.
     exe: Option<&'a Path>,
     environment: Option<&'a [(String, String)]>,
     started: Option<&'a std::result::Result<SystemTime, String>>,
+    uid: Option<u32>,
 }
 
 /// The result for one shell, whose startup files `fs` holds.
@@ -450,6 +458,7 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
         Kind::Zsh => {
             let mut install = zsh::Install::of(fs, shell.exe, shell.environment);
             install.started = shell.started.cloned();
+            install.uid = shell.uid;
             let mut scan = zsh::zsh(fs, shell.homes, shell.zsh, &install);
             let line = zsh::CommandLine::of(shell.argv);
             let writes = line.writes();
@@ -586,6 +595,7 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                 exe: shell.exe.as_deref(),
                 environment: shell.environment.as_deref(),
                 started: shell.started.as_ref(),
+                uid: shell.uid,
             },
         ),
         ShellOrigin::Likely => {
@@ -600,6 +610,7 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                     &shell.program,
                     &shell.homes,
                     "the shell this command was likely typed into",
+                    shell.uid,
                 )
             }];
             first.extend(
@@ -607,7 +618,9 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                     .login
                     .as_deref()
                     .filter(|login| !same_shell(login, &shell.program))
-                    .map(|login| unsure(login, &shell.homes, "the operator's login shell")),
+                    .map(|login| {
+                        unsure(login, &shell.homes, "the operator's login shell", shell.uid)
+                    }),
             );
             let program = nails_teardown::shells::unwrapped(&shell.program);
             every_shell(
@@ -625,6 +638,7 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                 &shell.program,
                 &shell.homes,
                 "the operator's login shell",
+                shell.uid,
             )],
             "This command was not typed into a shell the check can see, so it read the startup \
              files of every shell it knows",
@@ -633,9 +647,15 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
 }
 
 /// `program`, which the decoy commands may have been typed into, read as any
-/// shell the operator may use: no command line tells how it started, so zsh
-/// is taken to read every startup file it may read.
-fn unsure<'a>(program: &'a str, homes: &'a [PathBuf], part: &'a str) -> Judged<'a> {
+/// shell the operator may use, as the user `uid` when the check knows it: no
+/// command line tells how it started, so zsh is taken to read every startup
+/// file it may read.
+fn unsure<'a>(
+    program: &'a str,
+    homes: &'a [PathBuf],
+    part: &'a str,
+    uid: Option<u32>,
+) -> Judged<'a> {
     Judged {
         program,
         homes,
@@ -649,6 +669,7 @@ fn unsure<'a>(program: &'a str, homes: &'a [PathBuf], part: &'a str) -> Judged<'
         exe: None,
         environment: None,
         started: None,
+        uid,
     }
 }
 
@@ -666,6 +687,7 @@ fn same_shell(a: &str, b: &str) -> bool {
 /// whether fish writes each command line as it runs.
 fn every_shell<F: Filesystem>(fs: &F, first: Vec<Judged>, preface: &str) -> CheckResult {
     let homes = first.first().map_or(&[][..], |shell| shell.homes);
+    let uid = first.first().and_then(|shell| shell.uid);
     let mut has_fish = false;
     let mut fish_untold: Vec<String> = Vec::new();
     for home in homes {
@@ -687,7 +709,7 @@ fn every_shell<F: Filesystem>(fs: &F, first: Vec<Judged>, preface: &str) -> Chec
     for other in ["bash", "zsh", "fish"] {
         let known = shells.iter().any(|shell| same_shell(shell.program, other));
         if !known && (other != "fish" || has_fish) {
-            shells.push(unsure(other, homes, "a shell the operator may use"));
+            shells.push(unsure(other, homes, "a shell the operator may use", uid));
         }
     }
     let results: Vec<CheckResult> = shells.iter().map(|shell| judge_one(fs, shell)).collect();

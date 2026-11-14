@@ -84,7 +84,7 @@ fn a_builtin_a_function_an_alias_or_a_disable_runs_something_else_in_place_of_is
         let fs = moved_home();
         seed(&fs, "/etc/zshenv", zshenv);
         seed(&fs, "/home/alice/.zshenv", "export ZDOTDIR=~/.zd\n");
-        let found = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &Install::default());
+        let found = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &as_alice());
         assert!(
             found.doubts.contains(&shadowed(name, "/etc/zshenv")),
             "{zshenv}: {found:?}"
@@ -99,7 +99,7 @@ fn a_builtin_a_function_an_alias_or_a_disable_runs_something_else_in_place_of_is
     ] {
         let fs = moved_home();
         seed(&fs, "/etc/zshenv", &format!("{disable}\n"));
-        let found = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &Install::default());
+        let found = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &as_alice());
         assert!(
             found.doubts.iter().any(|doubt| doubt.contains(
                 "as a `disable` in /etc/zshenv may take that builtin away, after which zsh runs \
@@ -121,7 +121,7 @@ fn a_builtin_a_function_an_alias_or_a_disable_runs_something_else_in_place_of_is
         seed(&fs, "/etc/zshenv", zshenv);
         seed(&fs, "/home/alice/.zshenv", "export ZDOTDIR=~/.zd\n");
         assert_eq!(
-            zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &Install::default()),
+            zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &as_alice()),
             Scan::default(),
             "{zshenv}"
         );
@@ -217,7 +217,7 @@ fn a_tilde_a_quote_or_a_backslash_keeps_is_no_home() {
     ] {
         let fs = moved_home();
         seed(&fs, "/home/alice/.zshenv", zshenv);
-        let found = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &Install::default());
+        let found = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &as_alice());
         assert!(
             found
                 .doubts
@@ -253,4 +253,93 @@ fn a_word_quoted_before_its_equals_sign_assigns_nothing() {
     let fs = moved_home();
     seed(&fs, "/home/alice/.zshenv", "ZDOTDIR=\"$HOME/.zd\"\n");
     assert!(writes(&fs, NOT_LOGIN).is_empty());
+}
+
+/// What the check names as written for `fs`, for a zsh that `install` tells
+/// of.
+fn writes_with(fs: &MockFilesystem, install: &Install) -> Vec<String> {
+    zsh(fs, &[PathBuf::from(HOME)], NOT_LOGIN, install)
+        .writes
+        .into_iter()
+        .map(|write| write.what)
+        .collect()
+}
+
+#[test]
+fn a_zdotdir_set_first_in_a_file_zsh_may_not_open_or_run_keeps_the_one_before() {
+    // zsh 5.9 to 5.9.2 skip a .zshenv they cannot open as the user they run
+    // as, without a word, read ~/.zshrc then and write each line: one that
+    // is root's, as `sudo $EDITOR ~/.zshenv` may leave it, one whose owner
+    // may not read it, one through a link, and one the check does not know
+    // the user of.
+    for zshenv in ["ZDOTDIR=~/.zd\n", "export ZDOTDIR=\"$HOME/.zd\"\n"] {
+        let fs = moved_home();
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        fs.mock_set_owner(Path::new("/home/alice/.zshenv"), 0, 0);
+        assert_eq!(writes(&fs, NOT_LOGIN), [HOME_RC], "{zshenv}");
+        let fs = moved_home();
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        fs.set_permissions(Path::new("/home/alice/.zshenv"), 0o044)
+            .unwrap();
+        assert_eq!(writes(&fs, NOT_LOGIN), [HOME_RC], "{zshenv}");
+        let fs = moved_home();
+        seed(&fs, "/home/alice/.locked/zshenv", zshenv);
+        fs.create_symlink(
+            Path::new(".locked/zshenv"),
+            Path::new("/home/alice/.zshenv"),
+        )
+        .unwrap();
+        assert_eq!(writes(&fs, NOT_LOGIN), [HOME_RC], "{zshenv}");
+        let fs = moved_home();
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        assert_eq!(writes_with(&fs, &Install::default()), [HOME_RC], "{zshenv}");
+        // Hers, which she may read: the one value.
+        let fs = moved_home();
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        fs.set_permissions(Path::new("/home/alice/.zshenv"), 0o400)
+            .unwrap();
+        assert!(writes(&fs, NOT_LOGIN).is_empty(), "{zshenv}");
+    }
+    // An XDG_CONFIG_HOME of the environment stays beside the one such a file
+    // sets.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "export XDG_CONFIG_HOME=~/.third\n",
+    );
+    fs.mock_set_owner(Path::new("/home/alice/.zshenv"), 0, 0);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "source \"${XDG_CONFIG_HOME:-$HOME/.config}/zsh/hist.zsh\"\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.cfg/zsh/hist.zsh",
+        "setopt share_history\n",
+    );
+    seed(&fs, "/home/alice/.third/zsh/hist.zsh", "true\n");
+    let install = Install {
+        uid: Some(ALICE),
+        ..super::installed::install(&fs, &[("XDG_CONFIG_HOME", "/home/alice/.cfg")])
+    };
+    assert_eq!(
+        writes_with(&fs, &install),
+        ["/home/alice/.cfg/zsh/hist.zsh names SHARE_HISTORY"]
+    );
+    // zsh parses the whole line before it runs any of it, and runs nothing
+    // of one it cannot parse.
+    for zshenv in [
+        "ZDOTDIR=~/.zd; then\n",
+        "ZDOTDIR=~/.zd;;\n",
+        "ZDOTDIR=~/.zd; print >\n",
+        "ZDOTDIR=~/.zd; f() \n",
+        "ZDOTDIR=~/.zd }\n",
+        "export -x ZDOTDIR=~/.zd\n",
+    ] {
+        let fs = moved_home();
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        assert_eq!(writes(&fs, NOT_LOGIN), [HOME_RC], "{zshenv}");
+    }
 }
