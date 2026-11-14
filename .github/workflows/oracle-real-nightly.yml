@@ -180,13 +180,14 @@ jobs:
       # The tools of the ci/oracle/oracle-nightly.yml template. sleuthkit (mmls)
       # and e2fsprogs (debugfs) carve the ext4 restore channel from the real decoy
       # roots, sqlite3 reads the rows of their Nix store database, and jq reads
-      # the verdict; the rest is the pinned bulk_extractor build chain. Docker is
+      # the verdict; run-scan.sh requires btrfs-progs and rsync on every run, and
+      # the rest is the pinned bulk_extractor build chain. Docker is
       # preinstalled for the pinned plaso container.
       - name: Install analysis tools
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            btrfs-progs sleuthkit e2fsprogs jq sqlite3 \
+            btrfs-progs rsync sleuthkit e2fsprogs jq sqlite3 \
             git autoconf automake build-essential libtool pkg-config flex \
             libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
             libabsl-dev libgcrypt20-dev libgpg-error-dev
@@ -240,7 +241,7 @@ jobs:
           path: ${{ runner.temp }}/oracle-artifact/
 
   # The btrfs path: the synthetic btrfs images, built here one at a time, then
-  # the restore carve (btrfs restore) and bulk_extractor over each, and no
+  # the restore carve (a read-only mount) and bulk_extractor over each, and no
   # plaso timeline, since plaso cannot read btrfs. run-scan.sh
   # passes only a partial verdict that names the timeline as not run; the step
   # below checks the verdict says exactly that, so the job fails if the btrfs
@@ -271,14 +272,14 @@ jobs:
       - name: Build the verdict tool
         run: cargo build --release --locked -p nails-oracle
 
-      # btrfs-progs builds and carves the images, jq reads the verdict, and the
-      # rest is the pinned bulk_extractor build chain. No docker: no timeline
-      # runs on btrfs.
+      # btrfs-progs builds the images, rsync copies their files from a
+      # read-only mount, jq reads the verdict, and the rest is the pinned
+      # bulk_extractor build chain. No docker: no timeline runs on btrfs.
       - name: Install analysis tools
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            btrfs-progs jq \
+            btrfs-progs rsync jq \
             git autoconf automake build-essential libtool pkg-config flex \
             libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
             libabsl-dev libgcrypt20-dev libgpg-error-dev
@@ -381,10 +382,10 @@ jobs:
 
   # run-scan.sh over each image's disks, twice: before, control and after (the
   # session), and before, control and control2 in the place of after (no
-  # session). Each scan carves the btrfs root partition with btrfs restore,
-  # diffs the records, runs bulk_extractor over each whole disk, plants the
-  # positive controls in the unallocated btrfs device space of a copy of the
-  # image in the place of after, and runs no timeline. Each passes only on
+  # session). Each scan carves the btrfs root partition through a read-only
+  # mount, diffs the records, runs bulk_extractor over each whole disk, plants
+  # the positive controls in the unallocated btrfs device space of a copy of
+  # the image in the place of after, and runs no timeline. Each passes only on
   # the partial verdict that names the timeline as the one channel left out,
   # so the no-session scan proves that two plain reboots alone leave nothing
   # the verdict calls residue. A failed leg of produce-btrfs leaves its
@@ -451,8 +452,9 @@ jobs:
           ls -las "$images"
           df -h "$images"
 
-      # btrfs-progs carves the root partition and plants the controls,
-      # sleuthkit (mmls) and util-linux (blkid) find it on the whole disk,
+      # btrfs-progs reads the root partition's superblock and plants the
+      # controls, rsync copies its files from a read-only mount, sleuthkit
+      # (mmls) and util-linux (blkid) find it on the whole disk,
       # e2fsprogs is a tool the real-image mode requires, sqlite3 reads a store
       # database (Fedora has none) and jq the verdict; the rest is the pinned
       # bulk_extractor build chain. No docker: no timeline runs on btrfs.
@@ -460,7 +462,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            btrfs-progs sleuthkit e2fsprogs jq sqlite3 \
+            btrfs-progs rsync sleuthkit e2fsprogs jq sqlite3 \
             git autoconf automake build-essential libtool pkg-config flex \
             libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
             libabsl-dev libgcrypt20-dev libgpg-error-dev

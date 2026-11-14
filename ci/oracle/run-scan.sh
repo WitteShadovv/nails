@@ -39,8 +39,8 @@
 # built here, one at a time (the proven path). Setting ORACLE_IMAGES_DIR to a
 # directory holding before.raw / control.raw / after.raw scans those real decoy
 # images instead -- e.g. the raws the e2e disk-forensics harness retains -- and
-# the restore channel is carved per detected filesystem (btrfs restore for the
-# synthetic btrfs images, debugfs rdump for the ext4 decoy roots). A raw is a
+# the restore channel is carved per detected filesystem (a read-only mount for
+# btrfs, debugfs rdump for the ext4 decoy roots). A raw is a
 # bare filesystem image, or a whole-disk image with exactly one btrfs or
 # ext{2,3,4} partition, the root. The rest of a whole disk is carved too: a
 # vfat partition (an EFI system partition) through a read-only mount of a
@@ -61,6 +61,7 @@
 #   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
 #
 # Needs root (loop mounts, and reading the decoy's root-only files), btrfs-progs,
+# rsync (to copy a btrfs carve),
 # git + the bulk_extractor build chain, jq (to read the verdict), and docker
 # (for the pinned plaso container; without it the verdict fails on the missing
 # plaso channel; btrfs images need none); pre-built-image mode also needs sleuthkit (mmls) and
@@ -97,7 +98,7 @@ build="$work/build"
 mkdir -p "$images" "$outputs/restore" "$outputs/nix_db" "$outputs/bulk_extractor" "$outputs/plaso" "$build"
 
 [ "$(id -u)" -eq 0 ] || { echo "run-scan: must run as root (loop mounts)" >&2; exit 1; }
-for t in git make btrfs mkfs.btrfs truncate find sort xargs sha256sum jq; do
+for t in git make btrfs mkfs.btrfs rsync truncate find sort xargs sha256sum jq; do
   command -v "$t" >/dev/null || { echo "run-scan: missing required tool: $t" >&2; exit 1; }
 done
 have_docker=1
@@ -228,21 +229,29 @@ plaso_label() {
 # shellcheck source=ci/oracle/partitions.sh
 . "$here/partitions.sh"
 
-# The read-only loop device a btrfs partition is carved through, detached by
-# the EXIT trap if the carve stops the run.
+# The read-only loop device and the mount point a btrfs filesystem is carved
+# through, undone by the EXIT trap if the carve stops the run.
 carve_loop=""
+carve_mnt=""
 
 # carve_restore <image> <dest> <fstype> <byte-offset> <byte-size>: recover the
 # file tree into the empty <dest>, so <dest>/var/log/x stands for an on-image
-# /var/log/x. btrfs uses `btrfs restore` with snapshots (-s) and symlinks (-S),
-# through a read-only loop device for a partition; ext{2,3,4} uses `debugfs
-# rdump /`, reading a partition through e2fsprogs' "<image>?offset=<bytes>"
-# device form (debugfs has no offset option). Neither may pass over what it
-# cannot read: btrfs restore runs without -i, so a file it cannot recover fails
-# it, and since debugfs exits 0 even when it cannot open the image or a dump
-# fails, any line on its stderr but its version banner fails the run. A
+# /var/log/x. btrfs is mounted read-only from a read-only loop device, its top
+# level (subvolid=5) with every subvolume and snapshot below it as a folder,
+# without replaying a log tree, and its files, folders and symlinks are copied;
+# ext{2,3,4} uses `debugfs rdump /`, reading a partition through e2fsprogs'
+# "<image>?offset=<bytes>" device form (debugfs has no offset option). Neither
+# may pass over what it cannot read: an error of the mount or the copy fails
+# the run, and since debugfs exits 0 even when it cannot open the image or a
+# dump fails, any line on its stderr but its version banner fails it too. A
 # filesystem with no carver here fails the run closed rather than leaving the
 # channel empty: see the `*)` arm.
+#
+# btrfs is not carved with `btrfs restore`: btrfs-progs (7.1, and its devel
+# branch as of 2026-11) stops on an inline zstd extent whose frame holds a
+# whole block of which the file uses less ("zstd frame incomplete"), which the
+# kernel reads, and on the arch-boxes image it stops so on about 11,000
+# files. The kernel's btrfs reads every extent the decoy itself reads.
 carve_restore() {
   local img=$1 dest=$2 fstype=$3 off=$4 size=$5 src=$1 log rc=0
   case "$fstype" in
@@ -255,13 +264,23 @@ carve_restore() {
     btrfs)
       if [ "$off" -gt 0 ]; then
         carve_loop=$(losetup -r -o "$off" --sizelimit "$size" --show -f "$img")
-        src=$carve_loop
+      else
+        carve_loop=$(losetup -r --show -f "$img")
       fi
-      btrfs restore -s -S "$src" "$dest" </dev/null >/dev/null
-      if [ -n "$carve_loop" ]; then
-        losetup -d "$carve_loop"
-        carve_loop=""
-      fi
+      carve_mnt=$(mktemp -d)
+      # Read-only on a read-only device: the kernel cannot write to the image.
+      # fs_settled refused a log tree above, and rescue=nologreplay keeps one
+      # from being replayed all the same.
+      mount -t btrfs -o ro,subvolid=5,rescue=nologreplay,nodev,nosuid,noexec \
+        "$carve_loop" "$carve_mnt"
+      # Files, folders and symlinks, each hard link as a file of its own: a
+      # device node, FIFO or socket holds nothing the channel compares.
+      rsync -rlpgo --no-specials --no-devices "$carve_mnt/" "$dest/"
+      umount "$carve_mnt"
+      rmdir "$carve_mnt"
+      carve_mnt=""
+      losetup -d "$carve_loop"
+      carve_loop=""
       ;;
     ext2 | ext3 | ext4)
       if [ "$off" -gt 0 ]; then src="$img?offset=$off"; fi
@@ -439,6 +458,10 @@ dump_nix_db() {
 # carve; no global `losetup -D` is ever run.
 # shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below
 cleanup() {
+  if [ -n "$carve_mnt" ]; then
+    umount "$carve_mnt" 2>/dev/null || true
+    rmdir "$carve_mnt" 2>/dev/null || true
+  fi
   if [ -n "$carve_loop" ]; then losetup -d "$carve_loop" 2>/dev/null || true; fi
   if [ -n "$vfat_mnt" ]; then
     umount "$vfat_mnt" 2>/dev/null || true
@@ -519,8 +542,7 @@ for label in "${LABELS[@]}"; do
   echo "==> label $label" >&2
 
   # Image source: a caller-supplied pre-built raw, or a freshly built synthetic
-  # btrfs image. In synthetic mode the filesystem is always our bare btrfs, so
-  # the restore below is byte-for-byte the proven synthetic `btrfs restore`.
+  # btrfs image. In synthetic mode the filesystem is always our bare btrfs.
   if [ -n "$images_src" ]; then
     img="$images_src/$label.raw"
     # detect_fs prints why when it fails.

@@ -409,7 +409,7 @@ class PartitionPlanTest(unittest.TestCase):
         self.assertIn("needs_recovery", error)
 
     def test_a_btrfs_log_tree_stops_the_carve(self) -> None:
-        # A log tree btrfs restore would not replay: log_root set to the root
+        # A log tree the carve would not replay: log_root set to the root
         # tree's block, a block that exists, with the superblock checksum kept
         # valid so btrfs-progs reads it.
         clean = self.btrfs()

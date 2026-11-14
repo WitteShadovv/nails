@@ -202,8 +202,9 @@ vfat_structures_size() {
 # fs_settled <image> <fstype> <byte-offset>: succeed when the filesystem at
 # <byte-offset> holds no writes that wait in a journal or log tree, and fail
 # with the reason when it does or that cannot be read. Neither carver replays
-# one (debugfs rdump and btrfs restore read the filesystem as it lies), so the
-# files they recover would be older than the ones the decoy would mount:
+# one (debugfs rdump reads the filesystem as it lies, and the btrfs carve
+# mounts it without replaying its log tree), so the files they recover would
+# be older than the ones the decoy would mount:
 # ext{2,3,4} with needs_recovery set, and btrfs with a log tree (log_root
 # not 0).
 fs_settled() {
@@ -231,7 +232,7 @@ fs_settled() {
         return 1
       fi
       if [ "$log" -ne 0 ]; then
-        echo "run-scan: the btrfs filesystem at byte $off of $img holds a log tree (log_root $log) that btrfs restore does not replay, which the carve would miss; failing closed" >&2
+        echo "run-scan: the btrfs filesystem at byte $off of $img holds a log tree (log_root $log) that the carve does not replay, which it would miss; failing closed" >&2
         return 1
       fi
       ;;
