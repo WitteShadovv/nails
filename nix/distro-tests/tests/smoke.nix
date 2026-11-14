@@ -54,8 +54,10 @@
 #
 # The decoy's disk swap is turned off before the first hidden root exists, as
 # the swap check asks: the hidden root lives in RAM, where a disk swap could
-# take it onto the decoy disk. It is off in both sessions, before each entry and
-# before each image. With its fstab line kept, as most users keep it, the decoy
+# take it onto the decoy disk. It is off in both sessions, before each entry,
+# before the rehearsal's scan and before the clean image; the baseline and
+# positive-control images are taken in boots of the pristine image, which turn
+# it on, with no hidden root there. With its fstab line kept, as most users keep it, the decoy
 # turns the swap on again at every boot, the way back's included: the first
 # session sees that line's unit skipped and swap.target reached, and after its
 # way back the scenario asserts the swap came on and turns it off at once,
@@ -1112,8 +1114,8 @@ distroVm.buildVmTest {
             + "check's carve of zstd frames does not read"
         )
         # The hidden root is backed by a file in RAM, which a disk swap could
-        # take onto the decoy disk: the swap is off before it exists, and
-        # stays off until the power-off before the last image.
+        # take onto the decoy disk: the swap is off before it exists, and is
+        # turned off again after each way back that turns it on (below).
         decoy_swaps = distro_checks.fstab_swaps(vm.succeed("cat /etc/fstab"))
         print(f"swap lines of the decoy's fstab: {decoy_swaps or 'none'}")
         quiesce_disk_swap("the decoy before the first hidden root")

@@ -752,13 +752,16 @@ Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
 host-side decoy disk-image check (`lib/disk_forensics.py`, shared with the
 NixOS suite) with null and positive controls, the positive control's token in
 the file's contents only. It turns the decoy's disk swap off before the first
-hidden root exists, and the swap is off in both sessions, before each entry and
-before each image. With the swap line of the fstab kept, the first session sees
+hidden root exists, and the swap is off in both sessions, before each entry,
+before the rehearsal's scan and before the clean image (the baseline and
+positive-control images are taken in boots of the pristine image, with no
+hidden root). With the swap line of the fstab kept, the first session sees
 its unit skipped and `swap.target` reached, and its way back turns the swap on
 again, which the scenario asserts and turns off at once; the second session
 runs with the line made `noauto`, which masks its unit in the session and
-keeps the swap off through the way back. It asserts every unit NAILS masks in
-the hidden root masked at runtime, the residue report of each activation free
+keeps the swap off through the way back. It asserts masked at runtime the units
+NAILS masks in the hidden root that the decoy has loaded, the fstab swap units
+in the second session and the ESP's automount, the residue report of each activation free
 of warnings (the first session's loop device is detached before the second
 entry), an ESP that systemd mounts on demand bound read-only at its mount point
 in each hidden session, with its automount masked there and back on the decoy
