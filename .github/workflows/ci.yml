@@ -61,6 +61,18 @@ jobs:
           fetch-depth: 2 # the merge commit and both of its parents
           persist-credentials: false
 
+      # Research only: a tree with the SELinux research build in it never
+      # merges. Its switch (nails-teardown/src/whole_root/research_cell.rs)
+      # changes how every unit starts the RAM copy, and the copy's label,
+      # wherever its harness's file names a mechanism. A pull request or a
+      # push that brings it to main or next fails here, and the gate with it.
+      - name: Refuse the SELinux research build
+        run: |
+          if [ -e nails-teardown/src/whole_root/research_cell.rs ]; then
+            echo "::error::this tree carries the SELinux research build (nails-teardown/src/whole_root/research_cell.rs), which never merges"
+            exit 1
+          fi
+
       - name: Select the jobs this change needs
         id: filter
         env:
