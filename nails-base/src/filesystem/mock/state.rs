@@ -169,6 +169,9 @@ pub struct MockFilesystem {
     /// return. Lets tests exercise the status command's handling of an
     /// unreadable mount table without a bespoke fake filesystem.
     pub(super) is_mounted_errors: Arc<Mutex<HashMap<PathBuf, String>>>,
+    /// Mount points whose [`mount_source`](crate::Filesystem::mount_source)
+    /// fails, mapped to the error message to return.
+    pub(super) mount_source_errors: Arc<Mutex<HashMap<PathBuf, String>>>,
     /// Explicit classified process matches returned by
     /// [`Filesystem::nails_process_matches`](crate::Filesystem::nails_process_matches).
     /// Empty when unset.
@@ -266,6 +269,7 @@ impl MockFilesystem {
             lookups: Arc::new(Mutex::new(Vec::new())),
             failures_only: Arc::new(Mutex::new(HashMap::new())),
             is_mounted_errors: Arc::new(Mutex::new(HashMap::new())),
+            mount_source_errors: Arc::new(Mutex::new(HashMap::new())),
             nails_process_matches: Arc::new(Mutex::new(None)),
             unreadable_dirs: Arc::new(Mutex::new(HashSet::new())),
             file_contents: Arc::new(Mutex::new(HashMap::new())),
@@ -349,6 +353,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.is_mounted_errors
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.mount_source_errors
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

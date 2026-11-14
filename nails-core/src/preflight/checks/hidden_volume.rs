@@ -207,13 +207,20 @@ impl HiddenVolumeCheck {
         // Step 4: Audit names for words that betray hidden storage. This never
         // blocks activation — the volume is usable — it only warns so the
         // operator can rename before the name leaks off the box. A source
-        // that cannot be read contributes no hints rather than failing the
-        // check.
-        let source = fs
-            .mount_source(&self.hidden_volume_root)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        // that cannot be read may carry such a name: it warns that NAILS
+        // cannot tell, and the mount path is audited alone.
+        let source = match fs.mount_source(&self.hidden_volume_root) {
+            Ok(source) => source.unwrap_or_default(),
+            Err(error) => {
+                warnings.push(format!(
+                    "NAILS cannot tell whether the device-mapper name or the label of the \
+                     filesystem at {} hints at hidden storage: it cannot read where the \
+                     filesystem is mounted from ({error}).",
+                    self.hidden_volume_root.display()
+                ));
+                MountSource::default()
+            }
+        };
         let hints = self.naming_hints(&source);
         if !hints.is_empty() {
             warnings.push(format!(
