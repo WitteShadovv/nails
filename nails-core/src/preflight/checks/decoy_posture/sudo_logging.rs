@@ -18,6 +18,7 @@
 //! that applies to anyone may apply to the operator.
 
 use crate::Filesystem;
+use crate::filesystem::automount::describe;
 use std::path::{Path, PathBuf};
 
 /// The main sudoers file, relative to the inspected root.
@@ -51,6 +52,9 @@ pub struct SudoLogging {
     pub io_logging: Vec<String>,
     /// `Defaults iolog_dir=` target, when set.
     pub iolog_dir: Option<String>,
+    /// Why NAILS cannot tell all the files set: a sudoers file or include
+    /// directory that is there but could not be read, one each.
+    pub unread: Vec<String>,
 }
 
 impl SudoLogging {
@@ -78,6 +82,13 @@ impl SudoLogging {
             out.push(format!(
                 "sudoers sets logfile={file}; sudo writes every command line it runs to that \
                  file on the decoy disk"
+            ));
+        }
+        if !self.unread.is_empty() {
+            out.push(format!(
+                "NAILS cannot tell whether sudoers sets a log file or I/O logging, which record \
+                 sudo's commands or whole terminal sessions on the decoy disk: {}",
+                self.unread.join("; ")
             ));
         }
         out
@@ -119,8 +130,11 @@ fn active_sudo_is_sudo_rs<F: Filesystem>(fs: &F, root: &Path) -> bool {
 }
 
 /// Read the sudoers configuration rooted at `main` and collect its logging
-/// settings. Unreadable files (sudoers is mode 0440, so an unprivileged `nails
-/// check` cannot read it) contribute nothing.
+/// settings. A file or include directory that is not there contributes
+/// nothing, and one the automount guard did not read is left to its
+/// ledger; one that is there but cannot be read (sudoers is mode 0440, so an
+/// unprivileged `nails check` cannot read it) is named in
+/// [`SudoLogging::unread`], since it may set either.
 pub fn scan_sudoers<F: Filesystem>(fs: &F, main: &Path) -> SudoLogging {
     let mut logging = SudoLogging::default();
     let mut flags: Vec<(String, bool)> = Vec::new();
@@ -149,15 +163,20 @@ fn scan_file<F: Filesystem>(
     if depth > MAX_INCLUDE_DEPTH {
         return;
     }
-    let Ok(content) = fs.read_file_content(path) else {
-        return;
+    let content = match fs.read_file_content(path) {
+        Ok(content) => content,
+        Err(error) if passed_over(&error) => return,
+        Err(error) => {
+            logging.unread.push(unread(path, &error));
+            return;
+        }
     };
     let base = path.parent().unwrap_or(Path::new("/"));
     for line in logical_lines(&content) {
         match parse_line(&line) {
             Line::Include(target) => scan_file(fs, &base.join(target), depth + 1, logging, flags),
             Line::IncludeDir(dir) => {
-                for file in include_dir_files(fs, &base.join(dir)) {
+                for file in include_dir_files(fs, &base.join(dir), logging) {
                     scan_file(fs, &file, depth + 1, logging, flags);
                 }
             }
@@ -176,11 +195,30 @@ fn scan_file<F: Filesystem>(
     }
 }
 
+/// Whether a read or listing that failed with `error` adds nothing: nothing
+/// is there, or the automount guard did not make it, which its ledger keeps
+/// and the check names as it settles.
+fn passed_over(error: &crate::NailsError) -> bool {
+    error.nothing_there() || error.not_looked_up().is_some()
+}
+
+/// Why NAILS cannot tell what the sudoers file or include directory `path`
+/// sets: its read or listing failed with `error`.
+fn unread(path: &Path, error: &crate::NailsError) -> String {
+    describe(&path.display().to_string(), error).sentence
+}
+
 /// The files sudo reads from an include directory: regular names that neither
-/// end in `~` nor contain a `.`, in lexical order.
-fn include_dir_files<F: Filesystem>(fs: &F, dir: &Path) -> Vec<PathBuf> {
-    let Ok(mut entries) = fs.list_directory(dir) else {
-        return Vec::new();
+/// end in `~` nor contain a `.`, in lexical order. One that cannot be listed
+/// for another reason than that it is not there is named in `logging`.
+fn include_dir_files<F: Filesystem>(fs: &F, dir: &Path, logging: &mut SudoLogging) -> Vec<PathBuf> {
+    let mut entries = match fs.list_directory(dir) {
+        Ok(entries) => entries,
+        Err(error) if passed_over(&error) => return Vec::new(),
+        Err(error) => {
+            logging.unread.push(unread(dir, &error));
+            return Vec::new();
+        }
     };
     entries.retain(|path| {
         path.file_name()
