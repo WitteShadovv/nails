@@ -399,7 +399,8 @@ class Cell:
             name = f"data{self.mappings + 1}"
             status, _ = self.sh(
                 label,
-                f"sh -s {shlex.quote(name)} <<'DSXEOF'\n{DM_HIDDEN_ROOT}\nDSXEOF",
+                # The delimiter ends its line: sh() wraps the command.
+                f"sh -s {shlex.quote(name)} <<'DSXEOF'\n{DM_HIDDEN_ROOT}\nDSXEOF\n",
                 300,
             )
             if status == 0:
