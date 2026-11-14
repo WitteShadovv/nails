@@ -4,9 +4,9 @@
 //! Suspicious NAILS/base-config reference pre-flight check.
 
 use super::{CheckResult, PreFlightCheck};
-use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, settle};
+use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle};
 use crate::nixos::config::BaseConfigScan;
-use crate::{Filesystem, Result, verify_base_config_clean};
+use crate::{Filesystem, NailsError, Result, verify_base_config_clean};
 use std::path::{Path, PathBuf};
 
 /// The decoy's own configuration directory, which the check reads.
@@ -50,7 +50,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SuspiciousNailsReferenceCheck {
         // each place on the way once: a `result` link in /etc/nixos leads
         // the walk through a whole system closure in the store.
         let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
-        ask_the_walk(&guarded.remembering(), Path::new(DECOY_NIXOS_DIR));
+        let unseen = ask_the_walk(&guarded.remembering(), Path::new(DECOY_NIXOS_DIR));
         let skipped = guarded.skipped();
         if let Some(first) = skipped.first() {
             let refusal = CheckResult::fail(format!(
@@ -59,35 +59,70 @@ impl<F: Filesystem> PreFlightCheck<F> for SuspiciousNailsReferenceCheck {
             ));
             return Ok(settle(refusal, &skipped, OnSkip::Refuse(None)));
         }
-        let scan = verify_base_config_clean(fs, &self.hidden_volume_root)?;
-        Ok(scan_result(&scan))
+        if let Some((path, error)) = unseen {
+            return Ok(cannot_tell(
+                &describe(&path.display().to_string(), &error).sentence,
+            ));
+        }
+        match verify_base_config_clean(fs, &self.hidden_volume_root) {
+            Ok(scan) => Ok(scan_result(&scan)),
+            Err(error) => Ok(cannot_tell(&error.to_string())),
+        }
     }
+}
+
+/// The refusal where NAILS cannot tell whether the decoy's `/etc/nixos`
+/// names the hidden environment, for `why`.
+fn cannot_tell(why: &str) -> CheckResult {
+    CheckResult::fail(format!(
+        "NAILS cannot tell whether the decoy's /etc/nixos names the hidden environment: {why}"
+    ))
 }
 
 /// Ask `guarded` about each lookup the scan's walk of `dir` makes
 /// ([`Filesystem::find_files_with_pattern`]): whether `dir` is a directory,
 /// its listing, and for each entry whether it is a directory to walk, its
-/// links followed. A lookup the guard does not make is kept in its ledger;
-/// one that fails for another reason is left to the walk, which reads it as
-/// before.
-fn ask_the_walk<F: Filesystem>(guarded: &Guarded<F>, dir: &Path) {
-    if matches!(guarded.is_directory(dir), Ok(true)) {
-        ask_the_listing(guarded, dir);
+/// links followed. A lookup the guard does not make is kept in its ledger.
+/// The first that fails for another reason than that nothing is there comes
+/// back with its error: the walk takes such a place for one without a
+/// `.nix` file, while it may hold one.
+fn ask_the_walk<F: Filesystem>(guarded: &Guarded<F>, dir: &Path) -> Option<(PathBuf, NailsError)> {
+    match guarded.is_directory(dir) {
+        Ok(true) => ask_the_listing(guarded, dir),
+        Ok(false) => None,
+        Err(error) => unseen(dir, error),
     }
 }
 
 /// [`ask_the_walk`] of `dir`, a directory: its listing, and each entry.
-fn ask_the_listing<F: Filesystem>(guarded: &Guarded<F>, dir: &Path) {
-    let Ok(entries) = guarded.list_directory(dir) else {
-        return;
+fn ask_the_listing<F: Filesystem>(
+    guarded: &Guarded<F>,
+    dir: &Path,
+) -> Option<(PathBuf, NailsError)> {
+    let entries = match guarded.list_directory(dir) {
+        Ok(entries) => entries,
+        Err(error) => return unseen(dir, error),
     };
     for entry in entries {
         // Whether an entry is a file is the same lookup as whether it is a
         // directory, so asking that once asks both.
-        if matches!(guarded.is_directory(&entry), Ok(true)) {
-            ask_the_listing(guarded, &entry);
+        let found = match guarded.is_directory(&entry) {
+            Ok(true) => ask_the_listing(guarded, &entry),
+            Ok(false) => None,
+            Err(error) => unseen(&entry, error),
+        };
+        if found.is_some() {
+            return found;
         }
     }
+    None
+}
+
+/// `path` with `error`, the failure of its lookup, when it leaves NAILS
+/// unable to tell what is there: not where nothing is there, and not for a
+/// lookup the guard did not make, which its ledger keeps.
+fn unseen(path: &Path, error: NailsError) -> Option<(PathBuf, NailsError)> {
+    (!error.nothing_there() && error.not_looked_up().is_none()).then(|| (path.to_path_buf(), error))
 }
 
 /// The check result for a scan: the first reference with its file, line,
@@ -218,6 +253,82 @@ mod tests {
         )]);
         assert!(
             result.message().ends_with(" One more line does too."),
+            "{result:?}"
+        );
+    }
+
+    /// A place of /etc/nixos that cannot be looked up for another reason
+    /// than that nothing is there may hold a `.nix` file that names the
+    /// hidden environment: the walk took it for one without, and the check
+    /// passed. It now refuses, naming the place. An entry that leads to
+    /// nothing holds none.
+    #[test]
+    fn a_place_of_etc_nixos_that_cannot_be_looked_up_refuses() {
+        use crate::filesystem::{MockFailure, MockLookup, PathKind};
+        let decoy = || {
+            let fs = MockFilesystem::new();
+            fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
+            let file = Path::new("/etc/nixos/configuration.nix");
+            fs.mock_set_file_content(file.to_str().unwrap(), "{ }");
+            fs.mock_set_directory_contents(
+                Path::new("/etc/nixos"),
+                vec![file.to_path_buf(), PathBuf::from("/etc/nixos/hosts")],
+            );
+            fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
+            fs
+        };
+        let check = SuspiciousNailsReferenceCheck::new(PathBuf::from("/mnt/hidden"));
+
+        let fs = decoy();
+        fs.mock_set_lookup_error("/etc/nixos", std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            check.run(&fs).unwrap(),
+            CheckResult::fail(
+                "NAILS cannot tell whether the decoy's /etc/nixos names the hidden environment: \
+                 NAILS cannot look up /etc/nixos; run the command again with sudo"
+            )
+        );
+
+        let fs = decoy();
+        fs.mock_fail_only(
+            Path::new("/etc/nixos/hosts"),
+            MockLookup::IsDirectory,
+            MockFailure::Io(std::io::ErrorKind::Other),
+        );
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert!(
+            result.message().starts_with(
+                "NAILS cannot tell whether the decoy's /etc/nixos names the hidden environment: \
+                 NAILS cannot look up /etc/nixos/hosts ("
+            ),
+            "{result:?}"
+        );
+
+        let fs = decoy();
+        fs.mock_set_lookup_error("/etc/nixos/hosts", std::io::ErrorKind::NotFound);
+        assert!(check.run(&fs).unwrap().is_pass());
+    }
+
+    /// The mount table, read to name the hidden volume's devices, that cannot
+    /// be read leaves NAILS unable to tell whether a file names one of them:
+    /// the check refuses, where it read no device and passed.
+    #[test]
+    fn a_mount_table_the_scan_cannot_read_refuses() {
+        let fs = MockFilesystem::new();
+        let file = Path::new("/etc/nixos/configuration.nix");
+        fs.mock_set_file_content(file.to_str().unwrap(), "{ }");
+        fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
+        fs.mock_set_lookup_error("/proc/self/mountinfo", std::io::ErrorKind::Other);
+        let result = SuspiciousNailsReferenceCheck::new(PathBuf::from("/mnt/hidden"))
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert!(
+            result.message().starts_with(
+                "NAILS cannot tell whether the decoy's /etc/nixos names the hidden environment: \
+                 /proc/self/mountinfo"
+            ),
             "{result:?}"
         );
     }
@@ -399,16 +510,23 @@ mod tests {
         assert_eq!(times(&fs, "/etc/nixos/hosts"), 3, "{:?}", fs.mock_lookups());
     }
 
-    /// A directory of /etc/nixos the walk cannot list is left to the scan,
-    /// which reads it as before: the walk asks about nothing below it.
+    /// A directory of /etc/nixos the walk cannot list may hold a `.nix`
+    /// file: the check refuses, naming it, where the walk left it to the
+    /// scan and the scan's mock passed. The walk asks about nothing below it.
     #[test]
-    fn a_directory_of_etc_nixos_the_walk_cannot_list_is_left_to_the_scan() {
+    fn a_directory_of_etc_nixos_the_walk_cannot_list_refuses() {
         let fs = a_host_linked_into_an_unmounted_home();
         fs.mock_set_unreadable_dir("/etc/nixos/hosts");
         let result = SuspiciousNailsReferenceCheck::new(PathBuf::from("/mnt/hidden"))
             .run(&fs)
             .unwrap();
-        assert!(result.is_pass(), "{result:?}");
+        assert_eq!(
+            result,
+            CheckResult::fail(
+                "NAILS cannot tell whether the decoy's /etc/nixos names the hidden environment: \
+                 NAILS cannot look up /etc/nixos/hosts; run the command again with sudo"
+            )
+        );
         assert!(
             fs.mock_lookups()
                 .iter()
