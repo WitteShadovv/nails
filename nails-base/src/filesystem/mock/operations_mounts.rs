@@ -152,6 +152,17 @@ impl MockFilesystem {
     }
 
     pub(super) fn mount_source_impl(&self, mount_point: &Path) -> Result<Option<MountSource>> {
+        if let Some(message) = self
+            .mount_source_errors
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(mount_point)
+        {
+            return Err(NailsError::io(
+                mount_point,
+                std::io::Error::other(message.clone()),
+            ));
+        }
         let set = self
             .mount_sources
             .lock()

@@ -402,6 +402,16 @@ impl MockFilesystem {
             .insert(path.to_path_buf(), message.to_string());
     }
 
+    /// Configure [`mount_source`](crate::Filesystem::mount_source) to fail
+    /// for `mount_point` with `message`, as the real one fails where the
+    /// mount table cannot be read, while the other mount queries answer.
+    pub fn mock_set_mount_source_error(&self, mount_point: &Path, message: &str) {
+        self.mount_source_errors
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(mount_point.to_path_buf(), message.to_string());
+    }
+
     /// Set the classified process matches returned by
     /// [`Filesystem::nails_process_matches`](crate::Filesystem::nails_process_matches).
     ///

@@ -568,6 +568,29 @@ fn passes_when_every_name_is_neutral_and_there_is_no_label() {
     assert_eq!(result.message(), "Hidden volume mounted at /mnt/data");
 }
 
+/// Where NAILS cannot read the source the volume is mounted from, its
+/// device-mapper name and label may hint at hidden storage: a warning that it
+/// cannot tell, where the read that failed showed no name and the check
+/// passed. The mount path is audited alone.
+#[test]
+fn a_mount_source_that_cannot_be_read_warns() {
+    let fs = MockFilesystem::new();
+    let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+    mount_with_label(&fs, None);
+    fs.mock_set_mount_source_error(Path::new(NEUTRAL_ROOT), "mount table unreadable");
+
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_warn(), "got {result:?}");
+    assert!(
+        result.message().starts_with(
+            "NAILS cannot tell whether the device-mapper name or the label of the filesystem at \
+             /mnt/data hints at hidden storage: it cannot read where the filesystem is mounted \
+             from ("
+        ),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn a_neutral_label_warns_too_and_says_how_to_remove_it() {
     let fs = MockFilesystem::new();

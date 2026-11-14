@@ -218,6 +218,18 @@ fn a_set_is_mounted_error_still_wins() {
 }
 
 #[test]
+fn a_set_mount_source_error_fails_that_query_alone() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table(STACKED);
+    fs.mock_set_mount_source_error(Path::new("/mnt/data"), "mount table unreadable");
+    assert!(fs.mount_source(Path::new("/mnt/data")).is_err());
+    assert!(fs.is_mounted(Path::new("/mnt/data")).unwrap());
+    assert!(fs.mount_source(Path::new("/")).is_ok());
+    fs.reset();
+    assert!(fs.mount_source(Path::new("/mnt/data")).is_ok());
+}
+
+#[test]
 fn reset_forgets_the_explicit_table() {
     let fs = MockFilesystem::new();
     fs.mock_set_mount_table(STACKED);
