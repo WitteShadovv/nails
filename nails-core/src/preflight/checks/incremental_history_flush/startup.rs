@@ -7,9 +7,11 @@
 //! bash's files are read as a login shell and an interactive one read them,
 //! together: `/etc/profile`, `/etc/bash.bashrc`, `/etc/bashrc`, then
 //! `~/.bash_profile`, `~/.bash_login`, `~/.profile` and `~/.bashrc` in each
-//! home the shell may run with. A line ending in a backslash goes on in the
-//! next one, and a line is read for the words a shell would run, its comment
-//! dropped and its quotes taken off.
+//! home the shell may run with. A line is read for the words a shell would
+//! run, its comment dropped and its quotes taken off, and goes on in the next
+//! one where what is left of it ends in a backslash. A comment starts at a
+//! `#` that starts a word, after a space or a tab (bash's blanks) or an
+//! operator, and ends with its line, a backslash at its end too, as in bash.
 
 use std::path::{Path, PathBuf};
 
@@ -87,13 +89,15 @@ pub(super) fn read<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>,
         .map_err(failed)
 }
 
-/// `line` without its comment: from a `#` that starts a word on.
+/// `line` without its comment: from a `#` that starts a word on, at the
+/// line's start or after a space, a tab or an operator. bash keeps any other
+/// white space in the word (a vertical tab, a no-break space), so a `#` after
+/// one starts no comment.
 fn code(line: &str) -> &str {
     let mut previous: Option<char> = None;
     for (at, c) in line.char_indices() {
         if c == '#'
-            && previous
-                .is_none_or(|p| p.is_whitespace() || matches!(p, ';' | '&' | '|' | '(' | ')'))
+            && previous.is_none_or(|p| matches!(p, ' ' | '\t' | ';' | '&' | '|' | '(' | ')'))
         {
             return &line[..at];
         }
@@ -129,15 +133,34 @@ fn words(line: &str) -> Vec<String> {
     words
 }
 
+/// The lines of bash code `text`, each with the lines it goes on in: one
+/// whose code, its comment dropped ([`code`]), ends in a backslash goes on
+/// in the next, as bash joins them; a comment ends with its line, as a
+/// backslash in it escapes nothing.
+fn joined_lines(text: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut open: Option<String> = None;
+    for line in text.split('\n') {
+        let mut joined = open.take().unwrap_or_default();
+        joined.push_str(line);
+        match code(&joined).strip_suffix('\\') {
+            Some(rest) if rest.len() + 1 == joined.len() => open = Some(rest.to_string()),
+            _ => lines.push(joined),
+        }
+    }
+    lines.extend(open);
+    lines
+}
+
 /// The history command a bash startup file's `text` runs from
 /// `PROMPT_COMMAND`: `history -a` or `history -w`, when the file names
-/// `PROMPT_COMMAND` and runs one of them anywhere. A line ending in a
-/// backslash goes on in the next one.
+/// `PROMPT_COMMAND` and runs one of them anywhere, its lines joined as bash
+/// joins them ([`joined_lines`]).
 fn prompt_command_writes(text: &str) -> Option<&'static str> {
-    let text = text.replace("\\\r\n", "").replace("\\\n", "");
     let mut prompt_command = false;
     let mut found = None;
-    for line in text.lines() {
+    for line in joined_lines(text) {
+        let line = line.as_str();
         prompt_command |= code(line).contains("PROMPT_COMMAND");
         let words = words(line);
         for pair in words.windows(2) {

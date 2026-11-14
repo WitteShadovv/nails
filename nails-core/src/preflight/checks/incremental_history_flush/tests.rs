@@ -419,6 +419,39 @@ fn warns_on_bash_history_append_in_prompt_command() {
 }
 
 #[test]
+fn a_bash_comment_starts_after_a_blank_and_ends_with_its_line() {
+    // bash 5.3 runs the PROMPT_COMMAND of each: a `#` after a vertical tab or
+    // a no-break space starts no comment, and a comment ends with its line,
+    // a backslash at its end too; a backslash before a carriage return
+    // escapes it and joins no line.
+    for text in [
+        ":\u{b}#; PROMPT_COMMAND='history -a'\n",
+        ":\u{a0}#; PROMPT_COMMAND='history -a'\n",
+        "# a comment \\\nPROMPT_COMMAND='history -a'\n",
+        "# a comment \\\r\nPROMPT_COMMAND='history -a'\r\n",
+        "x=1 \\\r\nPROMPT_COMMAND='history -a'\r\n",
+        "PROMPT_COMMAND=\\\n'history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(
+            warning(bash(&fs)).contains("/home/alice/.bashrc runs `history -a`"),
+            "{text:?}"
+        );
+    }
+    // A `#` after a space or a tab, or at a line's start, does.
+    for text in [
+        ": #; PROMPT_COMMAND='history -a'\n",
+        ":\t#; PROMPT_COMMAND='history -a'\n",
+        "#\u{b}PROMPT_COMMAND='history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(matches!(bash(&fs), CheckResult::Pass(_)), "{text:?}");
+    }
+}
+
+#[test]
 fn bash_reads_the_system_files_too() {
     for path in ["/etc/profile", "/etc/bash.bashrc", "/etc/bashrc"] {
         let fs = MockFilesystem::new();

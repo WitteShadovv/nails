@@ -24,7 +24,7 @@
 
 use super::arith::READ_AS_NUMBER;
 use super::builtins::fc_letters;
-use super::lexer::{Token, lex};
+use super::lexer::{Token, blank, lex};
 use super::walk::{HOOKS, PROMPTS, option};
 
 /// What the lines of a file name, outside the lines that are a comment.
@@ -161,8 +161,15 @@ pub(super) fn named(text: &str) -> Named {
 /// The lines of `text` that are no comment: whose first character that is
 /// not a blank is not `#`.
 pub(super) fn code_lines(text: &str) -> impl Iterator<Item = &str> {
-    text.lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
+    text.lines().filter(|line| !comment_line(line))
+}
+
+/// Whether `line` is a comment: its first character that is no blank, a
+/// space or a tab as zsh parts words ([`super::lexer::blank`]), is `#`. One
+/// that starts with any other white space (a vertical tab, a no-break space)
+/// is code, as zsh keeps that in the word before the `#`.
+fn comment_line(line: &str) -> bool {
+    line.trim_start_matches(blank).starts_with('#')
 }
 
 /// The forms of a file's text in which the check looks for the names its
@@ -395,9 +402,7 @@ fn without_comments(text: &str) -> String {
             let mut previous: Option<char> = None;
             for (at, c) in line.char_indices() {
                 if c == '#'
-                    && previous.is_none_or(|p| {
-                        p.is_whitespace() || matches!(p, ';' | '&' | '|' | '(' | ')')
-                    })
+                    && previous.is_none_or(|p| blank(p) || matches!(p, ';' | '&' | '|' | '(' | ')'))
                 {
                     let end = if line.ends_with('\n') { "\n" } else { "" };
                     return format!("{}{end}", &line[..at]);
@@ -607,32 +612,26 @@ pub(super) fn options(text: &str) -> Vec<(usize, bool)> {
 /// that is a comment is left out.
 pub(super) fn names_rcs(text: &str) -> bool {
     names_any(text, &["rcs", "globalrcs"])
-        || text
-            .lines()
-            .filter(|line| !line.trim_start().starts_with('#'))
-            .any(|line| {
-                let flags = ["set", "setopt", "unsetopt"]
-                    .iter()
-                    .any(|command| whole_words(line, command) > 0)
-                    && line.split_whitespace().any(|word| {
-                        let word = word.trim_matches(['\'', '"', '\\']);
-                        word.len() > 1
-                            && word.starts_with(['-', '+'])
-                            && word[1..].starts_with(|c: char| c.is_ascii_alphabetic())
-                            && word.contains(['f', 'd'])
-                    });
-                // A computed flag or name (`set +$x`), and an `exec`, which
-                // may start another zsh without `-f`.
-                let computed = ["set", "setopt", "unsetopt"].iter().any(|command| {
-                    line.match_indices(command).any(|(at, _)| {
-                        whole_words(&line[at..], command) > 0 && line[at..].contains(['$', '`'])
-                    })
+        || text.lines().filter(|line| !comment_line(line)).any(|line| {
+            let flags = ["set", "setopt", "unsetopt"]
+                .iter()
+                .any(|command| whole_words(line, command) > 0)
+                && line.split_whitespace().any(|word| {
+                    let word = word.trim_matches(['\'', '"', '\\']);
+                    word.len() > 1
+                        && word.starts_with(['-', '+'])
+                        && word[1..].starts_with(|c: char| c.is_ascii_alphabetic())
+                        && word.contains(['f', 'd'])
                 });
-                flags
-                    || computed
-                    || whole_words(line, "emulate") > 0
-                    || whole_words(line, "exec") > 0
-            })
+            // A computed flag or name (`set +$x`), and an `exec`, which
+            // may start another zsh without `-f`.
+            let computed = ["set", "setopt", "unsetopt"].iter().any(|command| {
+                line.match_indices(command).any(|(at, _)| {
+                    whole_words(&line[at..], command) > 0 && line[at..].contains(['$', '`'])
+                })
+            });
+            flags || computed || whole_words(line, "emulate") > 0 || whole_words(line, "exec") > 0
+        })
 }
 
 /// Whether `text`, a word of zsh code, names a history file: `$HISTFILE` or
@@ -658,18 +657,16 @@ pub(super) fn names_any(text: &str, wanted: &[&str]) -> bool {
         let name = name.strip_prefix("no").unwrap_or(&name);
         wanted.contains(&name).then_some(())
     };
-    text.lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .any(|line| {
-            line.split_whitespace().any(|chunk| match braces(chunk) {
-                Some(words) => words.iter().any(|word| {
-                    let mut found = Vec::new();
-                    named_in(word, &named, &mut found);
-                    !found.is_empty()
-                }),
-                None => true,
-            })
+    text.lines().filter(|line| !comment_line(line)).any(|line| {
+        line.split_whitespace().any(|chunk| match braces(chunk) {
+            Some(words) => words.iter().any(|word| {
+                let mut found = Vec::new();
+                named_in(word, &named, &mut found);
+                !found.is_empty()
+            }),
+            None => true,
         })
+    })
 }
 
 /// Whether `text`, zsh code, may turn `PROMPT_SUBST` on, which makes zsh run
@@ -680,7 +677,7 @@ pub(super) fn names_prompt_subst(text: &str) -> bool {
     names_any(text, &["promptsubst", "promptvars"])
         || text
             .lines()
-            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter(|line| !comment_line(line))
             .any(|line| whole_words(line, "emulate") > 0)
 }
 
