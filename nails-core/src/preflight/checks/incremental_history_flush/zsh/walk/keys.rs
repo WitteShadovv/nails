@@ -121,6 +121,7 @@ fn options(args: &[Word]) -> Options<'_> {
                         expands: computed(arg),
                         quoted: arg.quoted,
                         bare: arg.bare,
+                        quoted_at: None,
                     })
                 };
             }

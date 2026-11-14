@@ -234,6 +234,7 @@ impl Walker<'_> {
                     expands: false,
                     quoted: arg.quoted,
                     bare: false,
+                    quoted_at: None,
                 })),
                 None => words.push(arg.clone()),
             }
