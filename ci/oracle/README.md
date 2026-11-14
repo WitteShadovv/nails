@@ -270,8 +270,10 @@ channel; it then prints `PARTIAL verdict, not a full run` (a warning
 annotation in GitHub Actions). Anything that asks for `"status": "clean"`
 does not take a partial run for one.
 
-On a real btrfs `after` image the positive controls go into device space no
-btrfs chunk is allocated in (see [controls.json](#controlsjson--the-scan-self-checks)).
+On a real btrfs `after` image the positive controls `run-scan.sh` plants go
+into device space no btrfs chunk is allocated in (see
+[controls.json](#controlsjson--the-scan-self-checks)). The live controls of
+the real btrfs decoys are files the decoy wrote itself (see below).
 
 ### Real btrfs images: a Fedora 44 decoy
 

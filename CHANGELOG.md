@@ -600,9 +600,14 @@ of this changelog for that version becomes the release notes word for word, and
   read btrfs, so on btrfs images no timeline runs, and the verdict says `partial` (exit 3), never
   `clean`, and names `timeline: not run, plaso cannot read btrfs`. The restore carve and
   bulk_extractor stay required on every image, and the journal files plaso would compare are
-  compared as files instead. The positive controls of a real btrfs image go into device space
-  no btrfs chunk uses, with no mount. A nightly job scans synthetic btrfs images and passes only on
-  that partial verdict (ci/oracle/README.md). Of a whole-disk image the restore channel now compares
+  compared as files instead. A btrfs root is carved through a read-only mount of a read-only loop
+  device, of its top level, and copied with rsync: btrfs restore cannot read an inline zstd extent
+  whose frame holds a whole block, which the kernel reads. The positive controls of a real btrfs
+  image go into device space no btrfs chunk uses, with no mount, and the scans of the nightly's real
+  btrfs decoys also take the restore channel's live controls: a file the decoy writes and, on Arch,
+  a line it adds to pacman's log, before the second plain reboot is imaged, each found at its path
+  with the digest the decoy read back. A nightly job scans synthetic btrfs images and passes only
+  on that partial verdict (ci/oracle/README.md). Of a whole-disk image the restore channel now compares
   every byte outside the root filesystem as well: an EFI system partition's files, carved through a
   read-only mount, and its boot sector and allocation tables by their bytes, a small partition with
   no filesystem whole by its bytes, and the partition table and every gap no partition covers by
@@ -610,11 +615,12 @@ of this changelog for that version becomes the release notes word for word, and
   list the root, an image with a filesystem at byte 0 beside a partition table, and an ext4 journal
   or btrfs log tree the carve would not replay each stop the run. Before, only plaso's limit to one
   partition stopped a disk of several, and only where a timeline runs.
-- The oracle real-image nightly also images a real btrfs decoy: a stock Fedora 44 Cloud disk, kept
-  whole before, after a plain reboot, after a second plain reboot and after a hidden session and the
-  way back, then scanned without the timeline, once with the session and once with the second plain
-  reboot in its place, which must leave nothing. Fedora is not admitted yet, so these images come
-  from a test-only build that admits its row and is never released (ci/oracle/README.md).
+- The oracle real-image nightly also images two real btrfs decoys, a stock Fedora 44 Cloud disk and
+  a stock arch-boxes disk, each kept whole before, after a plain reboot, after a second plain reboot
+  and after a hidden session and the way back, then scanned without the timeline, once with the
+  session and once with the second plain reboot in its place, which must leave nothing but the live
+  controls. Neither Fedora nor Arch is admitted yet, so these images come from a test-only build
+  that admits the family's row and is never released (ci/oracle/README.md).
 - Two kinds of line bulk_extractor writes no longer stop an oracle scan before its verdict, on ext4
   as on btrfs: a zip member's description is passed over beside its saved file, whose hash keys the
   member, a member found in decompressed data included, and a login record it names `<CACHED>` is
