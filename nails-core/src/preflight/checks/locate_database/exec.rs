@@ -27,6 +27,20 @@
 //! - `$$` in an argument is a `$`. Another `$` names an environment variable,
 //!   whose value NAILS does not know, so a command with one is
 //!   [`ExecError::Unknown`] too, unless `:` keeps it.
+//!
+//! [`exec_commands_with`] knows the values of some variables, those the unit
+//! sets itself, and expands them as the service manager's
+//! `replace_env_argv()` does when the command starts: an argument that is
+//! `$NAME` alone becomes the value split at blanks, zero or more arguments,
+//! and `${NAME}` within an argument becomes the value as it is. A variable it
+//! was not given, a value with a quote or a backslash, which the split would
+//! read, and any other `$` stay [`ExecError::Unknown`].
+
+use std::collections::BTreeMap;
+
+/// The values of environment variables, by name, that
+/// [`exec_commands_with`] expands.
+pub type Variables = BTreeMap<String, String>;
 
 /// One command of an `ExecStart=` value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +252,107 @@ fn environment(word: Vec<u8>) -> Result<Vec<u8>, ExecError> {
     Ok(out)
 }
 
+/// Whether `name` is a name systemd takes for an environment variable: a
+/// letter or `_`, then letters, digits and `_`.
+pub fn is_variable_name(name: &[u8]) -> bool {
+    name.first()
+        .is_some_and(|&first| first.is_ascii_alphabetic() || first == b'_')
+        && name
+            .iter()
+            .all(|&byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// The arguments an argument `word` becomes once the variables it names
+/// are replaced (see the [module docs](self)).
+fn expand(word: Vec<u8>, variables: &Variables) -> Result<Vec<Vec<u8>>, ExecError> {
+    if !word.contains(&b'$') {
+        return Ok(vec![word]);
+    }
+    let value_of = |name: &[u8]| {
+        if !is_variable_name(name) {
+            return Err(ExecError::Unknown(
+                "it names an environment variable in a way NAILS does not follow".to_string(),
+            ));
+        }
+        let name = String::from_utf8_lossy(name);
+        variables.get(name.as_ref()).ok_or_else(|| {
+            ExecError::Unknown(format!(
+                "it takes an argument from ${name}, which the unit itself does not set"
+            ))
+        })
+    };
+    // `$NAME` alone: the value, split at blanks.
+    if word.first() == Some(&b'$') && !matches!(word.get(1), Some(b'{' | b'$')) {
+        let value = value_of(&word[1..])?;
+        if value.contains(['\'', '"', '\\']) {
+            return Err(ExecError::Unknown(format!(
+                "it takes arguments from the value of {}, which holds a quote or a backslash",
+                String::from_utf8_lossy(&word)
+            )));
+        }
+        return Ok(value
+            .split([' ', '\t', '\n', '\r'])
+            .filter(|part| !part.is_empty())
+            .map(|part| part.as_bytes().to_vec())
+            .collect());
+    }
+    // `${NAME}` and `$$` within the argument.
+    let mut out = Vec::with_capacity(word.len());
+    let mut rest = word.as_slice();
+    while let Some(at) = rest.iter().position(|&byte| byte == b'$') {
+        out.extend_from_slice(&rest[..at]);
+        let after = &rest[at + 1..];
+        match after.first() {
+            Some(b'$') => {
+                out.push(b'$');
+                rest = &after[1..];
+            }
+            Some(b'{') => {
+                let Some(close) = after.iter().position(|&byte| byte == b'}') else {
+                    return Err(ExecError::Unknown(
+                        "it names an environment variable in a way NAILS does not follow"
+                            .to_string(),
+                    ));
+                };
+                out.extend_from_slice(value_of(&after[1..close])?.as_bytes());
+                rest = &after[close + 1..];
+            }
+            _ => {
+                return Err(ExecError::Unknown(
+                    "it names an environment variable in a way NAILS does not follow".to_string(),
+                ));
+            }
+        }
+    }
+    out.extend_from_slice(rest);
+    Ok(vec![out])
+}
+
+/// The words of an `Environment=` value, each an assignment `NAME=value` or
+/// not: unquoted as systemd's `config_parse_environ()` reads them, `%%` read
+/// as `%`.
+///
+/// # Errors
+///
+/// [`ExecError::Unknown`] for a value with a backslash, whose escapes
+/// systemd reads otherwise than an `ExecStart=`, or with another specifier;
+/// [`ExecError::Refused`] for one systemd ignores, such as a quote without
+/// its partner.
+pub fn environment_words(value: &str) -> Result<Vec<Vec<u8>>, ExecError> {
+    if value.contains('\\') {
+        return Err(ExecError::Unknown(
+            "it holds a backslash, whose escape NAILS does not read".to_string(),
+        ));
+    }
+    let value = value.as_bytes();
+    let mut at = 0;
+    let mut words = Vec::new();
+    while let Some(word) = next_word(value, &mut at)? {
+        words.push(specifiers(word)?);
+    }
+    Ok(words)
+}
+
 /// The commands an `ExecStart=` value runs (see the [module docs](self)).
 ///
 /// # Errors
@@ -246,6 +361,26 @@ fn environment(word: Vec<u8>) -> Result<Vec<u8>, ExecError> {
 /// [`ExecError::Unknown`] for one whose words depend on what NAILS does not
 /// read.
 pub fn exec_commands(value: &str) -> Result<Vec<ExecCommand>, ExecError> {
+    commands(value, None)
+}
+
+/// [`exec_commands`] of a unit that sets the environment variables
+/// `variables`, which its arguments may name (see the [module docs](self)).
+///
+/// # Errors
+///
+/// As [`exec_commands`], and [`ExecError::Unknown`] for an argument that
+/// names a variable `variables` does not hold.
+pub fn exec_commands_with(
+    value: &str,
+    variables: &Variables,
+) -> Result<Vec<ExecCommand>, ExecError> {
+    commands(value, Some(variables))
+}
+
+/// [`exec_commands`], with the arguments' variables expanded from
+/// `variables` when given.
+fn commands(value: &str, variables: Option<&Variables>) -> Result<Vec<ExecCommand>, ExecError> {
     let value = value.as_bytes();
     let mut at = 0;
     let mut commands = Vec::new();
@@ -285,15 +420,21 @@ pub fn exec_commands(value: &str) -> Result<Vec<ExecCommand>, ExecError> {
                 }
             };
             let word = specifiers(word)?;
-            let word = if keep_dollars {
-                word
-            } else {
-                environment(word)?
+            let words = match variables {
+                _ if keep_dollars => vec![word],
+                // argv[0] stays one word, whatever its variables hold.
+                Some(_) if argv0_pending && word.contains(&b'$') => {
+                    return Err(ExecError::Unknown(
+                        "it takes argv[0] from an environment variable".to_string(),
+                    ));
+                }
+                Some(variables) => expand(word, variables)?,
+                None => vec![environment(word)?],
             };
             if std::mem::take(&mut argv0_pending) {
                 continue;
             }
-            args.push(word);
+            args.extend(words);
         }
         if argv0_pending {
             return Err(ExecError::Refused(
