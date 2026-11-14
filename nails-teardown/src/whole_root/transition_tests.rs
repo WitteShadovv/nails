@@ -15,6 +15,10 @@ use crate::whole_root::runtime_units::RuntimeUnit;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
+// The step's check of its own domain, where the plan records a label.
+#[path = "transition_domain_tests.rs"]
+mod domain;
+
 struct World {
     dir: tempfile::TempDir,
 }
@@ -81,6 +85,7 @@ impl World {
                 kernel: refused_power_off,
             },
             selinux: &crate::whole_root::selinux::KERNEL,
+            start: crate::whole_root::program_label::Started::by_hand(),
         }
     }
     /// Where the way back reads and writes the network state: a fake

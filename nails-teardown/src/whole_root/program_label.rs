@@ -50,14 +50,20 @@
 //! label of the files there, after the switch's last step started from the
 //! copy and before it starts the units of the root it switched to; a
 //! `restorecon` over `/run` does the same at any time. So each unit PID 1
-//! starts from a copy after a switch checks its own domain first
-//! ([`enter_domain`]): the hidden session's watcher and sleep guard, and the
-//! decoy's reconcile one-shot and the wtmpdb writer's drop-in. One that runs
-//! anywhere but in [`DOMAIN`] gives its copy the label again and starts
-//! itself again from it, once; the policy gives that start from PID 1's own
-//! domain what it gives a start by PID 1. One that then still runs elsewhere,
-//! or whose copy does not take the label, does not do its work there: the
-//! caller ends it as its fail-closed end has it.
+//! starts from a copy checks its own domain first ([`enter_domain`]): after a
+//! switch, the hidden session's watcher and sleep guard, and the decoy's
+//! reconcile one-shot and the wtmpdb writer's drop-in; and, where the plan
+//! records a label, the transition step of each switch that is armed, which
+//! a relabel after the arm, or an `SELinuxContext=` of
+//! `systemd-soft-reboot.service` that only the entry and `deactivate` ask
+//! PID 1 about, would start elsewhere. One that runs anywhere but in
+//! [`DOMAIN`] gives its copy the label again and starts itself again from
+//! it, once: the policy gives that start from PID 1's own domain what it
+//! gives a start by PID 1, and the kernel applies the context an
+//! `SELinuxContext=` asks for to the unit's own start only, not to the start
+//! again. One that then still runs elsewhere, or whose copy does not take
+//! the label, does not do its work there: the caller ends it as its
+//! fail-closed end has it.
 //!
 //! The udev rule that keeps unused disks read-only
 //! ([`crate::whole_root::disk_guard`]) runs the copy too, but udevd starts
@@ -400,8 +406,10 @@ pub fn ready(selinux: &dyn Selinux, path: &Path, label: &str) -> Result<(), NotR
 /// start again does not start itself once more.
 pub const STARTED_AGAIN: &str = "OVERLAY_RUNTIME_STARTED_AGAIN";
 
-/// Why a unit PID 1 started from a RAM copy does not run in [`DOMAIN`]. It
-/// is not shown: such a unit runs with no output and no log.
+/// Why a unit PID 1 started from a RAM copy does not run in [`DOMAIN`]. Such
+/// a unit runs with no output and no log; only the transition step keeps it,
+/// as the reason it refused the switch
+/// ([`crate::whole_root::switch_refusal`]).
 #[derive(Debug)]
 pub enum Outside {
     /// Whether a policy is loaded, or the context it runs in, could not be
@@ -414,6 +422,28 @@ pub enum Outside {
     /// It runs in this context, though it is the start again from its copy
     /// with the label.
     Still(String),
+}
+
+/// Why a unit runs outside [`DOMAIN`], to follow "does not run in
+/// unconfined_service_t: " in a sentence.
+impl std::fmt::Display for Outside {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outside::Unread(e) => write!(
+                f,
+                "whether a policy is loaded, or the context it runs in, could not be read: {e}"
+            ),
+            Outside::Unlabelled(unlabelled) => write!(f, "its RAM copy {unlabelled}"),
+            Outside::NotStarted(e) => {
+                write!(f, "it could not start itself again from its RAM copy: {e}")
+            }
+            Outside::Still(context) => write!(
+                f,
+                "it runs in {context}, though it started itself again from its RAM copy with \
+                 the label"
+            ),
+        }
+    }
 }
 
 /// How a unit that runs from a RAM copy was started, as the check of its
@@ -430,6 +460,16 @@ pub struct Started {
 }
 
 impl Started {
+    /// A unit PID 1 did not start, as a person or a test runs one: its domain
+    /// is not checked, and it never starts itself again.
+    pub fn by_hand() -> Self {
+        Self {
+            by_pid1: false,
+            again: false,
+            start_again: |_| io::Error::other("a unit run by hand does not start itself again"),
+        }
+    }
+
     /// [`enter_domain`] for the unit started so from the copy at `copy`.
     pub fn enter_domain(&self, selinux: &dyn Selinux, copy: &Path) -> Result<(), Outside> {
         enter_domain(selinux, copy, self.by_pid1, self.again, || {
