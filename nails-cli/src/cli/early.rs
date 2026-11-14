@@ -33,7 +33,8 @@
 //! copy gives it, where a policy is loaded
 //! (`nails_teardown::whole_root::program_label::enter_domain`): one that runs
 //! elsewhere gives its copy the label again and starts itself again from it,
-//! once. One that still runs elsewhere does not do its work there. The
+//! once. One that still runs elsewhere does not do its work there. [`end_of`]
+//! decides which end each takes ([`UnitEnd`]), and `dispatch` acts on it: the
 //! watcher and the sleep guard power the machine off through the emergency's
 //! hot path, as the emergency does where its way back's last step would not
 //! start right; the reconcile step leaves the records as they are and only
@@ -49,11 +50,13 @@
 //! line clap would refuse. A test checks the two agree.
 
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use nails_teardown::whole_root::emergency::{self, Finish, HotReport};
-use nails_teardown::whole_root::program_label;
+use nails_teardown::whole_root::program_label::{self, Started};
+use nails_teardown::whole_root::selinux::Selinux;
 
 /// The hot path's report, waiting for the emergency command.
 static EARLY_REPORT: Mutex<Option<HotReport>> = Mutex::new(None);
@@ -264,30 +267,126 @@ pub fn session_unit(argv: &[OsString]) -> bool {
     argv.len() == 2 && (argv[1] == "watch" || argv[1] == "sleep-guard")
 }
 
-/// Whether this process, which `argv` started from the RAM copy at `copy`,
-/// may do its work: where PID 1 started it and a policy is loaded, only in
-/// the domain the copy's SELinux label gives it
-/// ([`program_label::enter_domain`]). One that runs elsewhere gives the copy
-/// the label again and starts itself again from it, and does not come back
-/// unless that start fails.
-fn in_domain(argv: &[OsString], copy: &std::path::Path) -> bool {
+/// A unit PID 1 starts from a RAM copy of the binary after a switch, which
+/// checks the domain it runs in before its work (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyUnit<'a> {
+    /// The hidden session's watcher or sleep guard ([`session_unit`]).
+    Session,
+    /// The reconcile step of the decoy's first start after the way back
+    /// ([`reconcile_records`]).
+    Reconcile(ReconcileArgs),
+    /// The decoy's wtmpdb boot writer on that start, by its drop-in: the boot
+    /// clock at the switch and the writer's command ([`boot_writer`]).
+    Writer(Duration, &'a [OsString]),
+}
+
+impl<'a> CopyUnit<'a> {
+    /// The unit `argv` is the command line of, as its unit file or drop-in
+    /// gives it.
+    pub fn of(argv: &'a [OsString]) -> Option<Self> {
+        if session_unit(argv) {
+            return Some(Self::Session);
+        }
+        if let Some(args) = reconcile_records(argv) {
+            return Some(Self::Reconcile(args));
+        }
+        boot_writer(argv).map(|(switched_at, writer)| Self::Writer(switched_at, writer))
+    }
+
+    /// The RAM copy the unit starts from: the session's for the hidden
+    /// session's own units, the one the way back leaves for the decoy's
+    /// first start for the others.
+    pub fn copy(&self) -> PathBuf {
+        match self {
+            Self::Session => session_copy(),
+            Self::Reconcile(_) | Self::Writer(..) => fixup_copy(),
+        }
+    }
+}
+
+/// What a unit PID 1 started from a RAM copy does once it checked its domain
+/// ([`end_of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitEnd<'a> {
+    /// Its work: the watcher and the sleep guard go on to the normal path,
+    /// the reconcile step makes the records read as a power cycle, and the
+    /// drop-in starts the writer with the boot clock of the switch.
+    Work(CopyUnit<'a>),
+    /// The watcher or the sleep guard ends the session through the
+    /// emergency's hot path, as this finish has it.
+    Emergency(Finish),
+    /// The reconcile step leaves the records as they are and only removes
+    /// its pieces from `/run`, which it makes `noexec` again where its flag
+    /// says (`nails_teardown::whole_root::boot_records::clean_up`).
+    CleanUp {
+        /// Its `--restore-noexec` flag.
+        restore_noexec: bool,
+    },
+    /// The drop-in starts this writer command as the decoy runs it
+    /// (`nails_teardown::whole_root::boot_writer::run_as_decoy`).
+    AsDecoy(&'a [OsString]),
+}
+
+/// The end of `unit`, started from the RAM copy at `copy` as `started` says:
+/// its work where it runs in the domain the copy's label gives it, as
+/// `selinux` tells it, where no policy is loaded, and where PID 1 did not
+/// start it ([`program_label::enter_domain`]). One that runs elsewhere gives
+/// the copy the label again and starts itself again from it, and does not
+/// come back unless that start fails. One that cannot run in the domain takes
+/// its fail-closed end: the watcher and the sleep guard power off, the
+/// reconcile step only cleans up after itself with its own `noexec` flag, and
+/// the drop-in starts the writer as the decoy runs it.
+pub fn end_of<'a>(
+    unit: CopyUnit<'a>,
+    copy: &Path,
+    selinux: &dyn Selinux,
+    started: &Started,
+) -> UnitEnd<'a> {
+    if started.enter_domain(selinux, copy).is_ok() {
+        return UnitEnd::Work(unit);
+    }
+    match unit {
+        CopyUnit::Session => UnitEnd::Emergency(Finish::Poweroff),
+        CopyUnit::Reconcile(args) => UnitEnd::CleanUp {
+            restore_noexec: args.restore_noexec,
+        },
+        CopyUnit::Writer(_, writer) => UnitEnd::AsDecoy(writer),
+    }
+}
+
+/// How PID 1 or a person started this process, for the check of its domain:
+/// whether by PID 1 ([`by_pid1`]), whether as its own start again from its
+/// copy ([`program_label::STARTED_AGAIN`]), and how it starts itself again
+/// ([`start_again_from`]).
+fn started() -> Started {
+    Started {
+        by_pid1: by_pid1(),
+        again: std::env::var_os(program_label::STARTED_AGAIN).is_some(),
+        start_again: start_again_from,
+    }
+}
+
+/// Whether PID 1 started this process, as it starts every unit's command:
+/// in a process of its own that runs the command in its place. Whatever a
+/// person starts by hand has another parent.
+fn by_pid1() -> bool {
+    nix::unistd::getppid() == nix::unistd::Pid::from_raw(1)
+}
+
+/// Start this process again from `copy`, with the command line it was
+/// started with ([`again_command`]): this returns only where that start
+/// fails.
+fn start_again_from(copy: &Path) -> std::io::Error {
     use std::os::unix::process::CommandExt;
-    let by_pid1 = nix::unistd::getppid() == nix::unistd::Pid::from_raw(1);
-    let again = std::env::var_os(program_label::STARTED_AGAIN).is_some();
-    program_label::enter_domain(
-        &nails_teardown::whole_root::selinux::KERNEL,
-        copy,
-        by_pid1,
-        again,
-        || again_command(copy, argv).exec(),
-    )
-    .is_ok()
+    let argv: Vec<OsString> = std::env::args_os().collect();
+    again_command(copy, &argv).exec()
 }
 
 /// The start of this process again from `copy`: the same `argv`, and
 /// [`program_label::STARTED_AGAIN`] set, so that it does not start itself
 /// once more.
-fn again_command(copy: &std::path::Path, argv: &[OsString]) -> std::process::Command {
+fn again_command(copy: &Path, argv: &[OsString]) -> std::process::Command {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(copy);
     if let Some((first, rest)) = argv.split_first() {
@@ -298,16 +397,50 @@ fn again_command(copy: &std::path::Path, argv: &[OsString]) -> std::process::Com
 }
 
 /// The RAM copy of the binary the hidden session's own units start from.
-fn session_copy() -> std::path::PathBuf {
+fn session_copy() -> PathBuf {
     use nails_teardown::whole_root::plan::{BINARY_NAME, RUNTIME_DIR};
-    std::path::Path::new(RUNTIME_DIR).join(BINARY_NAME)
+    Path::new(RUNTIME_DIR).join(BINARY_NAME)
 }
 
 /// The RAM copy of the binary the way back leaves for the decoy's first
 /// start.
-fn fixup_copy() -> std::path::PathBuf {
+fn fixup_copy() -> PathBuf {
     use nails_teardown::whole_root::boot_records::{FIXUP_BINARY, FIXUP_DIR_PATH};
-    std::path::Path::new(FIXUP_DIR_PATH).join(FIXUP_BINARY)
+    Path::new(FIXUP_DIR_PATH).join(FIXUP_BINARY)
+}
+
+/// Act on the end of a unit started from a RAM copy ([`end_of`]): each but
+/// the work of the hidden session's own units ends the process here.
+fn finish_unit(end: UnitEnd<'_>) {
+    use nails_teardown::whole_root::{boot_records, boot_writer, plan};
+    let run = Path::new("/run");
+    let code = match end {
+        UnitEnd::Work(CopyUnit::Session) => return,
+        UnitEnd::Emergency(finish) => {
+            let plan = plan::Plan::load(&plan::default_plan_path()).ok();
+            let _ = emergency::run(plan, &host(), finish);
+            0
+        }
+        UnitEnd::Work(CopyUnit::Reconcile(args)) => {
+            boot_records::run(run, Path::new("/"), args.switched_at, args.restore_noexec);
+            0
+        }
+        UnitEnd::CleanUp { restore_noexec } => {
+            boot_records::clean_up(run, restore_noexec);
+            0
+        }
+        // Only a writer that could not be started comes back: the unit then
+        // fails, as it would if its own command were missing.
+        UnitEnd::Work(CopyUnit::Writer(switched_at, writer)) => {
+            let _ = boot_writer::run(run, switched_at, writer);
+            1
+        }
+        UnitEnd::AsDecoy(writer) => {
+            let _ = boot_writer::run_as_decoy(run, writer);
+            1
+        }
+    };
+    crate::cli::chokepoint::exit_process(code);
 }
 
 /// The device node of exactly the read-only guard udev runs.
@@ -354,47 +487,16 @@ pub fn dispatch() -> bool {
         guard_device(node);
         crate::cli::chokepoint::exit_process(0);
     }
-    if session_unit(&argv) && may_run() && !in_domain(&argv, &session_copy()) {
-        // A watcher or a sleep guard that cannot run in its domain could not
-        // do its work: the session ends as an emergency ends one whose way
-        // back would not start right.
-        let plan = nails_teardown::whole_root::plan::Plan::load(
-            &nails_teardown::whole_root::plan::default_plan_path(),
-        )
-        .ok();
-        let _ = emergency::run(plan, &host(), Finish::Poweroff);
-        crate::cli::chokepoint::exit_process(0);
-    }
-    if let Some(args) = reconcile_records(&argv)
+    if let Some(unit) = CopyUnit::of(&argv)
         && may_run()
     {
-        use nails_teardown::whole_root::boot_records;
-        let run = std::path::Path::new("/run");
-        if in_domain(&argv, &fixup_copy()) {
-            boot_records::run(
-                run,
-                std::path::Path::new("/"),
-                args.switched_at,
-                args.restore_noexec,
-            );
-        } else {
-            boot_records::clean_up(run, args.restore_noexec);
-        }
-        crate::cli::chokepoint::exit_process(0);
-    }
-    if let Some((switched_at, writer)) = boot_writer(&argv)
-        && may_run()
-    {
-        use nails_teardown::whole_root::boot_writer;
-        let run = std::path::Path::new("/run");
-        // Only a writer that could not be started comes back: the unit then
-        // fails, as it would if its own command were missing.
-        let _ = if in_domain(&argv, &fixup_copy()) {
-            boot_writer::run(run, switched_at, writer)
-        } else {
-            boot_writer::run_as_decoy(run, writer)
-        };
-        crate::cli::chokepoint::exit_process(1);
+        let copy = unit.copy();
+        finish_unit(end_of(
+            unit,
+            &copy,
+            &nails_teardown::whole_root::selinux::KERNEL,
+            &started(),
+        ));
     }
     let Some(args) = recognise(&argv) else {
         return false;
