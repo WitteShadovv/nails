@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 import fedora_rpms as fr
 
@@ -38,13 +41,41 @@ class RepositoryTest(unittest.TestCase):
                     fr.repository(release)
 
     def test_the_repo_file_enables_the_release_alone_with_its_key(self) -> None:
-        text = fr.repo_file("45")
+        text = fr.repo_file("45", "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-45-primary")
         self.assertIn("baseurl=" + fr.repository("45"), text)
         self.assertIn("gpgcheck=1", text)
-        self.assertIn("RPM-GPG-KEY-fedora-45-x86_64", text)
+        self.assertIn(
+            "gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-45-primary", text
+        )
+
+    def test_the_key_is_the_file_the_image_ships(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            keys = Path(work)
+            script = fr.find_key("45").replace("/etc/pki/rpm-gpg", str(keys))
+            run = ["bash", "-c", script + '; echo "$key"']
+            missing = subprocess.run(run, capture_output=True, text=True, check=False)
+            self.assertEqual(missing.returncode, 3, missing)
+            self.assertIn("no release key of Fedora 45", missing.stderr)
+            (keys / "RPM-GPG-KEY-fedora-45-primary").write_text("key\n")
+            found = subprocess.run(run, capture_output=True, text=True, check=True)
+            self.assertEqual(
+                found.stdout.strip(), str(keys / "RPM-GPG-KEY-fedora-45-primary")
+            )
+            (keys / "RPM-GPG-KEY-fedora-45-x86_64").write_text("key\n")
+            found = subprocess.run(run, capture_output=True, text=True, check=True)
+            self.assertTrue(found.stdout.strip().endswith("-45-x86_64"))
 
 
 class ResolveCommandTest(unittest.TestCase):
+    def test_it_is_a_shell_script(self) -> None:
+        subprocess.run(["bash", "-n", "-c", fr.resolve_command("45")], check=True)
+        subprocess.run(
+            ["bash", "-n", "-c", fr.install_command("/run/rpms")], check=True
+        )
+
+    def test_the_repo_file_takes_the_key_the_script_found(self) -> None:
+        self.assertIn('"gpgkey=file://$key"', fr.resolve_command("45"))
+
     def test_it_downloads_one_install_from_the_release_alone(self) -> None:
         command = fr.resolve_command("44")
         self.assertIn("--repo=release", command)
@@ -116,6 +147,7 @@ class InstallCommandTest(unittest.TestCase):
     def test_it_installs_the_share_with_every_repository_off(self) -> None:
         command = fr.install_command("/run/rpms")
         self.assertIn("--disablerepo='*'", command)
+        self.assertIn('rpm --import "$key"', command)
         self.assertIn("/run/rpms/*.rpm", command)
         self.assertTrue(command.endswith("rpm -q tuned firewalld abrt"))
 
