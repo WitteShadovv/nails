@@ -17,6 +17,11 @@
 #                 over 9p. It writes <image>-gate.json, every assertion with its
 #                 outcome, and <image>-gate.kmsg.txt, the whole kernel log of
 #                 each boot. It is defined once the image has a lock.
+#   <image>-gate-noda
+#                 the same scenario with the policy's dontaudit rules off
+#                 (semodule -DB before the reference boot), so that a denial
+#                 those rules keep out of the log is counted too. It writes
+#                 <image>-gate-noda.json and <image>-gate-noda.kmsg.txt.
 #   <image>-btrfs the btrfs scan controls on the stock image
 #                 (py/btrfs_controls.py): a file kept plain, a compressed one
 #                 and a compressed one written and deleted, and what the raw
@@ -148,8 +153,8 @@ let
   # table validates the release (Fedora 45 warns as untested until the
   # commit that admits Fedora validates it), whether the image's PAM stack
   # records a login in lastlog2 (Fedora 44's pam_lastlog2 fails to load, as
-  # the D-SEL-EXP cells saw), and the packages the drift steps remove: one in
-  # the first hidden session, one on the decoy after it.
+  # the gate's runs on it show), and the packages the drift steps remove: one
+  # in the first hidden session, one on the decoy after it.
   expectations = {
     "44" = {
       validated = true;
@@ -171,7 +176,7 @@ let
   gateTimeout = 5400;
 
   gateFor =
-    name: entry:
+    variant: name: entry:
     let
       enforcing = entry // {
         enforcing = true;
@@ -185,7 +190,8 @@ let
         lastlog2 = false;
       }
       )
-      // driftPackages;
+      // driftPackages
+      // variant;
     in
     distroVm.buildVmTest {
       entry = enforcing;
@@ -222,9 +228,22 @@ let
       '';
     };
 
-  gateDrivers = lib.mapAttrs' (
-    name: entry: lib.nameValuePair "${name}-gate" (gateFor name entry)
-  ) lockedImages;
+  # The variants of the scenario: as the image ships its policy, and with the
+  # policy's dontaudit rules off.
+  gateVariants = {
+    gate = { };
+    gate-noda = {
+      variant = "noda";
+      dontaudit = false;
+    };
+  };
+
+  gateDrivers = lib.concatMapAttrs (
+    suffix: variant:
+    lib.mapAttrs' (
+      name: entry: lib.nameValuePair "${name}-${suffix}" (gateFor variant name entry)
+    ) lockedImages
+  ) gateVariants;
 
   # A boot, the controls planted and read through the kernel, the disk imaged
   # whole and read raw, and up to 64 older roots of its tree restored.
