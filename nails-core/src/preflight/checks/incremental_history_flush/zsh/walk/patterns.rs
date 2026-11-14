@@ -4,7 +4,9 @@
 //! Whether a pattern that zsh matches against the names of the parameters
 //! (`unset -m`) may match a name, as zsh compiles it (Src/pattern.c), or
 //! more: `*` and `?` match any characters and any one, a `[...]` any one, a
-//! `\` keeps the character after it as it is, and a group `(...)` and the
+//! `\` keeps the character after it as it is, in a `[...]` too, where it
+//! keeps a `]` in the class as zsh's tokenizer does (`[\]Z]`), and a group
+//! `(...)` and the
 //! alternatives `|` parts are followed; `x~y`, which matches what `x` does
 //! but `y` with `EXTENDED_GLOB`, counts as `x`. Any other operator zsh may
 //! read in a pattern (`#`, `^`, `<1-9>`, a group's flags `(#i)`, ksh's
@@ -50,7 +52,10 @@ fn alternatives(chars: &[char], at: &mut usize, nested: bool) -> Option<Vec<Vec<
                     end += 1;
                 }
                 while chars.get(end).is_some_and(|&c| c != ']') {
-                    if chars[end] == '[' && chars.get(end + 1) == Some(&':') {
+                    if chars[end] == '\\' {
+                        // It keeps the character after it in the class.
+                        end += 2;
+                    } else if chars[end] == '[' && chars.get(end + 1) == Some(&':') {
                         // `[:alpha:]`.
                         let close = chars[end..]
                             .windows(2)
@@ -159,6 +164,14 @@ mod tests {
             ("(x", "ZDOTDIR"),
             ("x)", "ZDOTDIR"),
             ("[x", "ZDOTDIR"),
+            // zsh 5.9 to 5.9.2 keep a `]` a backslash quotes in the class.
+            ("[\\]Z]DOTDIR", "ZDOTDIR"),
+            ("ZDOTDI[\\]R]", "ZDOTDIR"),
+            ("Z[\\]D]OTDIR", "ZDOTDIR"),
+            ("(x|ZDOTDI[\\]R])", "ZDOTDIR"),
+            ("ZDOT*[\\]R]", "ZDOTDIR"),
+            ("[\\]X]DG_CONFIG_HOME", "XDG_CONFIG_HOME"),
+            ("[Z\\]]DOTDIR", "ZDOTDIR"),
         ] {
             assert!(may_match(pattern, name), "{pattern} {name}");
         }
