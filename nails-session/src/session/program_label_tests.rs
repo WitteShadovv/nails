@@ -364,9 +364,9 @@ fn a_return_needs_the_policy_and_the_switch_unit_to_start_the_step_unconfined() 
         "{fix}"
     );
 
-    // The emergency asks PID 1 nothing: it would return through a start in
-    // that context, so the fixes of the switch's unit name only the
-    // power-offs besides deactivating again.
+    // The emergency asks PID 1 nothing, and its last step, started in that
+    // context, starts itself again or powers off: the fixes of the switch's
+    // unit name only the power-offs besides deactivating again.
     let error = check_way_back(&labelled, &pid1(Some("system_u:system_r:init_t:s0"))).unwrap_err();
     let (reason, fix) = refused(&error);
     assert!(
@@ -387,6 +387,7 @@ fn a_return_needs_the_policy_and_the_switch_unit_to_start_the_step_unconfined() 
         !fix.contains(&format!("`{}`", sudo_line(NextStep::Emergency))),
         "{fix}"
     );
+    assert!(fix.ends_with(", which power off"), "{fix}");
 
     let error = check_way_back(&labelled, &unasked).unwrap_err();
     let (reason, fix) = refused(&error);

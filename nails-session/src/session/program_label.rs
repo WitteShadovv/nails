@@ -276,9 +276,12 @@ fn way_back_fix() -> String {
 }
 
 /// The fix of a way back refused for how the hidden session's PID 1 starts
-/// [`SWITCH_UNIT`], or because it could not be asked (`asked` false): a plain
-/// emergency asks PID 1 nothing, and would return through that start, so
-/// only the power-offs are named besides deactivating again.
+/// [`SWITCH_UNIT`], or because it could not be asked (`asked` false). A plain
+/// emergency asks PID 1 nothing: its last step starts in that context, then
+/// starts itself again in the domain the copy's label gives it or powers off
+/// ([`nails_teardown::whole_root::transition`]). So only the power-offs,
+/// whose end that context does not decide, are named besides deactivating
+/// again.
 fn switch_unit_fix(asked: bool) -> String {
     let first = if asked {
         format!(
@@ -289,8 +292,7 @@ fn switch_unit_fix(asked: bool) -> String {
         "Deactivate again once PID 1 answers".to_string()
     };
     format!(
-        "{first}, or end the session with `{}` or `{}`, which power off: a plain emergency \
-         asks PID 1 nothing and would return through that start",
+        "{first}, or end the session with `{}` or `{}`, which power off",
         sudo_line(NextStep::DeactivatePoweroff),
         sudo_line(NextStep::EmergencyPoweroff)
     )
