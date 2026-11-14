@@ -33,12 +33,14 @@
 # cycle's, and step 5 shows that instead. What such a decoy can still be given
 # away by is a record of the hidden session itself, so there a login runs in
 # the session (`login`): a console login through PAM's login stack, which
-# writes a row to lastlog2 (pam_lastlog2) and its records to utmp and wtmp.
-# Step 3 shows the login wrote its row and its wtmp records in the session,
-# step 4 that none of them is on the decoy after the way back (lastlog2 and btmp
-# as they were, wtmp with no record on the login's terminal), and the same
-# login run on the decoy afterwards is the positive control: its row and its
-# wtmp records are there.
+# writes a row to lastlog2 (pam_lastlog2) and its records to utmp and wtmp,
+# and a login that fails, as a mistyped password does, which writes its
+# record to btmp: an unprivileged user gives su a wrong password for root.
+# Step 3 shows the logins wrote their row and their wtmp and btmp records in
+# the session, step 4 that none of them is on the decoy after the way back
+# (lastlog2 and btmp as they were, wtmp with no record on the login's
+# terminal), and the same logins run on the decoy afterwards are the positive
+# control: their row and their wtmp and btmp records are there.
 #
 # Records are read live in the guest and carried to the host-side readers in
 # nix/e2e-tests/lib/records.py (reading live keeps install, power cycle and
@@ -74,8 +76,9 @@ in
 #               "classic-wtmp" (the boot record's time can be backdated) or
 #               "classic-wtmp-reset" (classic wtmp on a service manager that
 #               resets the start time across a soft-reboot);
-#   login       whether a login runs in the hidden session and, as the
-#               positive control, on the decoy after it (default false);
+#   login       whether a login and a failed login run in the hidden
+#               session and, as the positive control, on the decoy after it
+#               (default false);
 #   nails       the binary (default: the release binary), a test-only build
 #               that admits the family for an image not admitted yet;
 #   target      nix-vm-test's output (default "driver": the Debian scenario
@@ -284,6 +287,24 @@ distroVm.buildVmTest {
         )
 
 
+    # The password su is given for root: never root's own, which the
+    # scenario sets to another before the reference.
+    WRONG_PASSWORD = "not-the-password"
+
+
+    def failed_login(label: str) -> None:
+        # A login that fails, as a mistyped password does: util-linux su,
+        # asked by an unprivileged user for root's password and given a wrong
+        # one, writes the attempt to btmp (for root, whom pam_rootok lets
+        # through, it asks nothing and writes none).
+        rc, out = vm.execute(
+            f"printf '%s\\n' {shlex.quote(WRONG_PASSWORD)} "
+            + "| runuser -u nobody -- su -c true root 2>&1"
+        )
+        print(f"=== the failed login ({label}): su exited {rc} ===\n{out.rstrip()}")
+        assert rc != 0, f"su took a wrong password for root ({label}): {out}"
+
+
     def login_records(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         # The utmp or wtmp records of a session on the login's terminal.
         return [
@@ -322,6 +343,15 @@ distroVm.buildVmTest {
             vm.succeed(f"swapoff {shlex.quote(name)}")
         print(vm.succeed("cat /proc/swaps"))
 
+    if run_login:
+        with subtest("root has a password, and the decoy keeps btmp"):
+            # So that su refuses the wrong one whatever the image ships for
+            # root (a locked or an empty password), and has a btmp to write
+            # its record to: it never makes one.
+            vm.succeed(f"printf 'root:%s\\n' {shlex.quote(WRONG_PASSWORD + '-not')} | chpasswd")
+            vm.succeed("test -f /var/log/btmp")
+            print(vm.succeed("ls -l /var/log/btmp; passwd -S root"))
+
     if install_script:
         with subtest("install the distribution's record package"):
             print(vm.succeed(install_script))
@@ -354,6 +384,7 @@ distroVm.buildVmTest {
             # lastlog2 row and its wtmp records, or their absence from the
             # decoy afterwards would prove nothing.
             pam_login("hidden")
+            failed_login("hidden")
             hidden = capture("hidden-login")
             hidden_rows = records.sql_rows_added(reference.lastlog2, hidden.lastlog2)
             print(f"=== lastlog2 rows the hidden login wrote ===\n{hidden_rows}")
@@ -361,6 +392,11 @@ distroVm.buildVmTest {
             hidden_wtmp = login_records(records.utmp_added(reference.wtmp, hidden.wtmp))
             print(f"=== wtmp records of the hidden login ===\n{hidden_wtmp}")
             assert hidden_wtmp, "the login in the hidden session wrote no wtmp record"
+            hidden_btmp = records.utmp_added(reference.btmp, hidden.btmp)
+            print(f"=== btmp records of the hidden failed login ===\n{hidden_btmp}")
+            assert any(row.get("user") == "root" for row in hidden_btmp), (
+                f"the failed login in the hidden session wrote no btmp record: {hidden_btmp}"
+            )
         # Work in the session until the kernel has been up past wtmpdb's
         # threshold, as any real session does: below it, a writer kept from
         # the bus dates the boot to the cold boot instead.
@@ -456,17 +492,26 @@ distroVm.buildVmTest {
             )
             failed = records.utmp_added(reference.btmp, after.btmp)
             assert not failed, f"the decoy's btmp gained records: {failed}"
+            assert after.btmp == reference.btmp, (
+                f"the decoy's btmp changed: {reference.btmp} -> {after.btmp}"
+            )
             leaked = login_records(records.utmp_added(reference.wtmp, after.wtmp))
             assert not leaked, f"the decoy's wtmp holds the hidden login: {leaked}"
 
-        with subtest("the same login on the decoy is recorded there (positive control)"):
+        with subtest("the same logins on the decoy are recorded there (positive control)"):
             pam_login("decoy")
+            failed_login("decoy")
             decoy = capture("decoy-login")
             rows = records.sql_rows_added(after.lastlog2, decoy.lastlog2)
             assert rows, "a login on the decoy wrote no lastlog2 row the reader sees"
             logged = login_records(records.utmp_added(after.wtmp, decoy.wtmp))
             print(f"=== the decoy login's wtmp records ===\n{logged}")
             assert logged, "a login on the decoy wrote no wtmp record the reader sees"
+            failed = records.utmp_added(after.btmp, decoy.btmp)
+            print(f"=== the decoy's failed login's btmp records ===\n{failed}")
+            assert any(row.get("user") == "root" for row in failed), (
+                f"a failed login on the decoy wrote no btmp record the reader sees: {failed}"
+            )
             after = decoy
 
     control_title = (
