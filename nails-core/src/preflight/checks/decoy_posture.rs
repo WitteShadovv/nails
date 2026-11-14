@@ -745,6 +745,10 @@ fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> Enabled {
 /// directory under `root`, or the kernel's command line has the service
 /// manager start it, a mask aside (see [`unit_enabled`]).
 ///
+/// A unit directory that is not there holds no link. One whose listing
+/// fails for another reason, or that the automount guard did not list, may
+/// hold one.
+///
 /// # Errors
 ///
 /// Why NAILS cannot tell, where no link was found and the lookup of a place
@@ -757,28 +761,35 @@ fn unit_linked<F: Filesystem>(
 ) -> std::result::Result<bool, String> {
     let mut untold = None;
     let linked = SYSTEM_UNIT_PATH.iter().any(|dir| {
-        fs.list_directory(&root.join(dir)).is_ok_and(|entries| {
-            entries.iter().any(|entry| {
-                let dependency_dir = entry
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        DEPENDENCY_DIR_SUFFIXES
-                            .iter()
-                            .any(|suffix| name.ends_with(suffix))
-                    });
-                if !dependency_dir {
-                    return false;
+        let dir = root.join(dir);
+        let entries = match fs.list_directory(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.nothing_there() => return false,
+            Err(error) => {
+                untold.get_or_insert_with(|| unseen_link(unit, &dir, &error));
+                return false;
+            }
+        };
+        entries.iter().any(|entry| {
+            let dependency_dir = entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    DEPENDENCY_DIR_SUFFIXES
+                        .iter()
+                        .any(|suffix| name.ends_with(suffix))
+                });
+            if !dependency_dir {
+                return false;
+            }
+            let link = entry.join(unit);
+            match fs.is_symlink(&link) {
+                Ok(linked) => linked,
+                Err(error) => {
+                    untold.get_or_insert_with(|| unseen_link(unit, &link, &error));
+                    false
                 }
-                let link = entry.join(unit);
-                match fs.is_symlink(&link) {
-                    Ok(linked) => linked,
-                    Err(error) => {
-                        untold.get_or_insert_with(|| unseen_link(unit, &link, &error));
-                        false
-                    }
-                }
-            })
+            }
         })
     });
     if linked {
@@ -791,12 +802,13 @@ fn unit_linked<F: Filesystem>(
     }
 }
 
-/// Why NAILS cannot tell whether `unit` is enabled, where the lookup of the
-/// enabling link `link` of `unit` failed with `error` or was not made.
-fn unseen_link(unit: &str, link: &Path, error: &NailsError) -> String {
+/// Why NAILS cannot tell whether `unit` is enabled, where the lookup of
+/// `place`, an enabling link of `unit` or a unit directory that may hold
+/// one, failed with `error` or was not made.
+fn unseen_link(unit: &str, place: &Path, error: &NailsError) -> String {
     format!(
         "NAILS cannot tell whether {unit} is enabled: {}",
-        describe(&link.display().to_string(), error).sentence
+        describe(&place.display().to_string(), error).sentence
     )
 }
 

@@ -616,10 +616,9 @@ systemd 255 to 257, booted by UEFI without Secure Boot, the way back reads the
 variable again and starts that unit. A unit whose link or marker NAILS cannot
 look up, as an unprivileged `nails check` cannot in a directory only root may
 look into, counts as one that starts, wherever its commands would make the
-daemon log to a file or NAILS cannot tell whether they would; a unit directory
-NAILS cannot list at all hides the links in it. A socket on a running daemon's
-standard output or standard error counts as one to the decoy's own journal,
-which the journal's own check judges, where PID 1's socket table,
+daemon log to a file or NAILS cannot tell whether they would. A socket on a
+running daemon's standard output or standard error counts as one to the decoy's
+own journal, which the journal's own check judges, where PID 1's socket table,
 `/proc/1/net/unix`, lists it as a connected local stream socket bound to no
 path, as the service manager connects one to the journal, and lists no socket
 of a journal namespace that persists, or whose configuration NAILS cannot read.

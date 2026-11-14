@@ -176,6 +176,28 @@ fn a_mask_that_cannot_be_looked_up_leaves_the_sessions_copy_unknown() {
     );
 }
 
+/// A unit directory that cannot be listed may hold the link that enables
+/// the helper: NAILS cannot tell whether the hidden session starts its own
+/// copy, where the listing that failed read as a directory without the
+/// link and left the setting unread. Only the listing fails here.
+#[test]
+fn a_unit_directory_that_cannot_be_listed_leaves_the_sessions_copy_unknown() {
+    let fs = mock_decoy(false, &[("99local", Some(ON))]);
+    fs.mock_set_unreadable_dir("/usr/lib/systemd/system");
+    let found = finding(&fs, &fs, Path::new("/"), None);
+    assert_eq!(found.blocker, None);
+    let warning = found.warning.expect("a warning");
+    assert!(
+        warning.starts_with(
+            "NAILS cannot tell whether the hidden session starts its own copy of \
+             unattended-upgrades' shutdown helper (NAILS cannot tell whether \
+             unattended-upgrades.service is enabled: NAILS cannot look up \
+             /usr/lib/systemd/system; run the command again with sudo)"
+        ),
+        "{warning}"
+    );
+}
+
 /// decoy-persistence reads apt's files through the automount guard: where
 /// `/etc/apt/apt.conf.d` is an automount point that nothing is mounted on
 /// yet, it is not looked up, and for a helper that runs, the check refuses
