@@ -129,6 +129,7 @@ mod command_line;
 mod completion;
 mod functions;
 mod install;
+mod jobs;
 mod lexer;
 mod made;
 mod paths;
@@ -210,8 +211,14 @@ struct Reader<'a, F: Filesystem> {
     /// The functions the files make hooks ([`Event::Hook`]).
     hooks: Vec<String>,
     /// What writes the history file or may, should the function it is in be
-    /// a hook: the function, and the write or the doubt it is then.
+    /// a hook: the function, and the write or the doubt it is then; and the
+    /// functions whose code may end the shell ([`Event::Ends`]).
     in_functions: Vec<(String, Result<String, String>)>,
+    ends_in: Vec<String>,
+    /// The jobs the files start that may run on after them ([`jobs`]):
+    /// each as the warning names it, the commands it runs and what in it may
+    /// signal the shell.
+    jobs: Vec<jobs::Job>,
     /// What the check could not follow.
     doubts: Vec<String>,
     /// Whether a file read may turn `RCS` or `GLOBAL_RCS` on again
@@ -630,16 +637,16 @@ impl<F: Filesystem> Reader<'_, F> {
                 function,
                 input,
             } => self.run_in(function, &name, &args, input, place),
-            Event::HookDoubt { function, doubt }
-            | Event::Ends {
-                function, doubt, ..
-            } => {
+            Event::HookDoubt { function, doubt } => {
                 self.in_functions.push((function, Err(doubt)));
             }
             event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
                 self.reading_event(event, place);
             }
             event @ (Event::GlobalAlias { .. }
+            | Event::Ends { .. }
+            | Event::Runs { .. }
+            | Event::Job { .. }
             | Event::FpathSplits(_)
             | Event::KeysSplit { .. }
             | Event::Typed { .. }
@@ -815,7 +822,8 @@ impl<F: Filesystem> Reader<'_, F> {
     /// the check counts once the files are read: a global alias, an element
     /// given `fpath` that may split, a line keys type, a key bound, an
     /// arithmetic expression, a parameter declared, unset or set in a
-    /// function, a file a test asks about.
+    /// function, a file a test asks about, what in a function may end the
+    /// shell, and a job that may run on after the files ([`jobs`]).
     fn note(&mut self, event: Event, place: &str) {
         match event {
             Event::GlobalAlias { name, text } => {
@@ -866,6 +874,15 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
             }
             Event::Tested(word) => self.known_files.push(word),
+            Event::Ends {
+                function, doubt, ..
+            } => {
+                if !self.ends_in.contains(&function) {
+                    self.ends_in.push(function.clone());
+                }
+                self.in_functions.push((function, Err(doubt)));
+            }
+            Event::Job { what, calls, stops } => self.jobs.push((what, calls, stops)),
             Event::Computed {
                 function,
                 name,
@@ -1035,6 +1052,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         fc: Vec::new(),
         hooks: Vec::new(),
         in_functions: Vec::new(),
+        ends_in: Vec::new(),
+        jobs: Vec::new(),
         doubts,
         rcs: false,
         sh_mode: false,
@@ -1138,6 +1157,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
     reader.startup_changers = reader.changers.len();
     reader.autoloaded();
     reader.runs();
+    reader.jobs();
     reader.reading_doubts();
     reader.arithmetic();
     reader.since_start();

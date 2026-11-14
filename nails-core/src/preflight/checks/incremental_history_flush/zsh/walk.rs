@@ -24,6 +24,7 @@ mod event;
 mod first;
 mod fpath;
 mod hooks;
+mod jobs;
 mod keys;
 mod loops;
 mod names;
@@ -128,6 +129,8 @@ struct Open {
     commands: usize,
     /// Whether a frame was opened inside it.
     nested: bool,
+    /// Where the list it is in started ([`Walker::sublist`]).
+    sublist: usize,
 }
 
 /// What the walk keeps of the command it is reading.
@@ -217,6 +220,10 @@ struct Walker<'a> {
     /// function runs from a string (`eval`, a trap's).
     outer: Option<String>,
     pending: Pending,
+    /// Where the events of the list being read start, the commands up to a
+    /// `;`, an `&` or a line end past `&&`, `||` and `|`, which an `&` runs in
+    /// the background as one job ([`jobs`]).
+    sublist: usize,
     /// Where the events of the commands of the line being read start, and
     /// of the line before it, whose here-documents' bodies come next.
     line_start: usize,
@@ -267,7 +274,16 @@ impl Walker<'_> {
             pattern,
             commands: 0,
             nested: false,
+            sublist: self.sublist,
         });
+        self.sublist = self.events.len();
+    }
+
+    /// Pop the innermost frame, back in the list it started in.
+    fn pop(&mut self) -> Option<Open> {
+        let open = self.frames.pop()?;
+        self.sublist = open.sublist;
+        Some(open)
     }
 
     /// Whether the frame that just closed may run elsewhere than in this
@@ -345,7 +361,7 @@ impl Walker<'_> {
             self.confused = true;
             return;
         }
-        let open = self.frames.pop().expect("the frame closed");
+        let open = self.pop().expect("the frame closed");
         self.profiles_closed(&open);
         if self.runs_elsewhere() {
             self.arrays = open.arrays;
@@ -383,7 +399,7 @@ impl Walker<'_> {
     /// Close the frames whose short body just ended.
     fn end_short(&mut self) {
         while self.frames.last().is_some_and(|open| open.short) {
-            self.frames.pop();
+            self.pop();
         }
     }
 
@@ -590,7 +606,7 @@ impl Walker<'_> {
                     )
                 }) =>
             {
-                self.frames.pop();
+                self.pop();
             }
             "{" => {
                 let frame = if self.pending.function_next {
@@ -762,6 +778,12 @@ impl Walker<'_> {
             }
             End::Condition | End::Pipe => {}
         }
+        if end == End::Background {
+            self.background(self.sublist);
+        }
+        if matches!(end, End::Line | End::Background | End::Arm) {
+            self.sublist = self.events.len();
+        }
         self.pending.after_condition = end == End::Condition;
         self.pending.piped = end == End::Pipe;
     }
@@ -803,6 +825,11 @@ impl Walker<'_> {
                     {
                         self.mention_options(&target.text);
                         self.qualifier(&target.text);
+                        // What a substitution in it runs, a process
+                        // substitution's job among it.
+                        let was = std::mem::replace(&mut self.literal, !target.expands);
+                        self.substituted(&target.text);
+                        self.literal = was;
                         let computed = target.expands || target.text.contains(['$', '`']);
                         // `>&2`, `2>&1`, `>&-`: a descriptor, no file.
                         let descriptor = dup
@@ -947,6 +974,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Wa
             feeders: Some(Vec::new()),
             ..Pending::default()
         },
+        sublist: 0,
         line_start: 0,
         bodies_start: 0,
         alias_params: 0,

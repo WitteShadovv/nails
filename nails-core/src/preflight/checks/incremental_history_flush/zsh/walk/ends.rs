@@ -23,7 +23,7 @@ use super::{Event, Frame, Walker};
 
 /// The programs that signal processes by their name, user or terminal,
 /// which may be the shell's own.
-const SIGNALLERS: &[&str] = &["pkill", "killall", "killall5", "skill"];
+pub(super) const SIGNALLERS: &[&str] = &["pkill", "killall", "killall5", "skill"];
 
 /// Whether `kill` of `args`, as zsh's `kill` reads them (Src/jobs.c,
 /// `bin_kill`), may signal the shell's own process: past `-q` and its value,
@@ -31,7 +31,7 @@ const SIGNALLERS: &[&str] = &["pkill", "killall", "killall5", "skill"];
 /// a number above 0 as written (`$$`, `0`, `-1`, a process group), or any
 /// word an expansion makes. `-l` and `-L` only list signals; a job (`%1`) is
 /// a child of the shell.
-fn may_signal_shell(args: &[Word]) -> bool {
+pub(super) fn may_signal_shell(args: &[Word]) -> bool {
     let computed = |word: &Word| word.expands || word.bare || word.text.contains(['$', '`']);
     let mut at = 0;
     let mut signal = false;

@@ -227,4 +227,26 @@ pub(in super::super) enum Event {
         name: String,
         local: bool,
     },
+    /// A simple command runs by the name `name`, as written, past its
+    /// precommands, with the words `args`; `outside` where `command` runs it
+    /// as an outside program. A job's code is read by these
+    /// ([`super::jobs`]); nothing else reads them.
+    Runs {
+        name: String,
+        args: Vec<Word>,
+        outside: bool,
+    },
+    /// A job that may run on after the startup files ([`super::jobs`]): one
+    /// in the background, a process substitution, or what a program that
+    /// detaches what it runs starts (`nohup`); `what` names it, as the
+    /// warning does. `calls` are the commands it runs by name, each with its
+    /// words and whether it runs as an outside program, which may signal the
+    /// shell, unless it is a builtin or a function whose code holds none;
+    /// `stops`, what in it may signal or end the shell or that the check
+    /// cannot read, each as a doubt says it.
+    Job {
+        what: String,
+        calls: Vec<(String, Vec<Word>, bool)>,
+        stops: Vec<String>,
+    },
 }

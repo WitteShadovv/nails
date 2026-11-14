@@ -66,6 +66,10 @@ mod candidates;
 #[path = "zsh_blanks_tests.rs"]
 mod blanks;
 
+// The jobs the startup files start that may signal the shell later.
+#[path = "zsh_jobs_tests.rs"]
+mod jobs_started;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
@@ -561,7 +565,16 @@ fn a_zdotdir_or_a_source_the_check_cannot_read_is_a_doubt() {
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
-        assert_eq!(scan(&fs, NOT_LOGIN).doubts, [doubt], "{line}");
+        let mut doubts = scan(&fs, NOT_LOGIN).doubts;
+        // A process substitution is a job of its own, whose program may
+        // signal the shell later.
+        if line.contains("<(") {
+            assert!(doubts.pop().is_some_and(|job| job.contains(
+                "as the process substitution of `mytool init zsh` in /home/alice/.zshrc may run \
+                 on after the startup files"
+            )));
+        }
+        assert_eq!(doubts, [doubt], "{line}");
     }
 }
 
@@ -1292,9 +1305,17 @@ fn a_construct_that_runs_to_the_end_of_the_file_is_a_doubt() {
             "/home/alice/.zsh/history.zsh",
             "setopt share_history\n",
         );
-        // The source it hides is a doubt too, as a line of the file names it.
+        // The source it hides is a doubt too, as a line of the file names it,
+        // and a process substitution is a job of its own.
+        let mut doubts = scan(&fs, NOT_LOGIN).doubts;
+        if line.contains("<(") {
+            assert!(doubts.pop().is_some_and(|job| job.contains(
+                "as the process substitution of `a source ~/.zsh/history.zsh` in \
+                 /home/alice/.zshrc may run on after the startup files"
+            )));
+        }
         assert_eq!(
-            scan(&fs, NOT_LOGIN).doubts,
+            doubts,
             [
                 format!("it cannot tell where the {opener} that /home/alice/.zshrc opens ends"),
                 "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run"

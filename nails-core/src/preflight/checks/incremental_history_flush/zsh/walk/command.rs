@@ -109,11 +109,12 @@ fn computed_options(text: &str) -> bool {
 /// The code of each command substitution in `text` as written, a word of
 /// zsh code: what `$(...)`, a backquote pair or a process substitution
 /// (`<(...)`, `>(...)`, `=(...)`) holds, past the quotes and parentheses in
-/// it, to the end of `text` when it does not close. Arithmetic (`$((`) holds
-/// none of its own, and neither do single quotes or `$'...'` in a `${...}`,
-/// which the lexer keeps as written (`${PS1::='$(x)'}`); elsewhere it took
-/// the quotes off.
-fn substitutions(text: &str) -> Vec<String> {
+/// it, to the end of `text` when it does not close; and whether it is a
+/// process substitution that runs beside the command (`<(...)`, `>(...)`),
+/// not one zsh waits for. Arithmetic (`$((`) holds none of its own, and
+/// neither do single quotes or `$'...'` in a `${...}`, which the lexer keeps
+/// as written (`${PS1::='$(x)'}`); elsewhere it took the quotes off.
+fn substitutions(text: &str) -> Vec<(String, bool)> {
     let chars: Vec<char> = text.chars().collect();
     let mut found = Vec::new();
     let mut at = 0;
@@ -189,7 +190,8 @@ fn substitutions(text: &str) -> Vec<String> {
             end += 1;
         }
         let end = end.min(chars.len());
-        found.push(chars[start..end].iter().collect());
+        let process = matches!(chars[at], '<' | '>');
+        found.push((chars[start..end].iter().collect(), process));
         at = end + 1;
     }
     found
@@ -392,13 +394,18 @@ impl Walker<'_> {
     /// `fc`, a redirection, one to a descriptor the shell has open, a word
     /// that names the history file in a function), a function they run there
     /// can write the history file, and an `exit` there writes it too, as a
-    /// signal reaches the shell's process ([`Event::Ends`]). In a word zsh
-    /// expands nothing in (`'$(x)'`,
-    /// [`Walker::mention_word`]), only the commands, as before: it is text.
+    /// signal reaches the shell's process ([`Event::Ends`]); a job one leaves
+    /// in the background, or that a process substitution is, may signal the
+    /// shell later ([`super::jobs`]). In a word zsh expands nothing in
+    /// (`'$(x)'`, [`Walker::mention_word`]), only the commands, as before: it
+    /// is text.
     pub(super) fn substituted(&mut self, text: &str) {
-        for code in substitutions(text) {
+        for (code, process) in substitutions(text) {
             let nested = walk_text_in(&code, self.place, self.function(), false);
             let literal = self.literal;
+            if process && !literal {
+                self.process_substitution(&code, &nested.events);
+            }
             self.events
                 .extend(nested.events.into_iter().filter(|event| match event {
                     Event::Call { .. } => true,
@@ -406,7 +413,9 @@ impl Walker<'_> {
                     | Event::Fc(_)
                     | Event::HookDoubt { .. }
                     | Event::Names { .. }
-                    | Event::Ends { forked: true, .. } => !literal,
+                    | Event::Ends { forked: true, .. }
+                    | Event::Runs { .. }
+                    | Event::Job { .. } => !literal,
                     _ => false,
                 }));
         }
@@ -575,6 +584,12 @@ impl Walker<'_> {
         // (`command export ZDOTDIR=...`) it may set and need not.
         let unconditional = unconditional && !run.outside;
         self.ends(&command.text, &args, run.exec);
+        self.events.push(Event::Runs {
+            name: command.text.clone(),
+            args: args.clone(),
+            outside: run.outside,
+        });
+        self.detaches(&command.text, &args);
         // A function named like the command a NAILS command is typed with
         // or one a widget runs with the line (`sudo`, `man`) that runs the
         // program of its name with its own words and nothing else hands it
