@@ -104,7 +104,7 @@ let
   # The drivers of Fedora's admission gate, keyed by their own names
   # ("fedora-44-rpms"): host drivers too, run by the gate suite of
   # distro-e2e.yml, which only a dispatch selects.
-  gateSet = import ./fedora-gate.nix { inherit pkgs nix-vm-test; };
+  gateSet = import ./fedora-gate.nix { inherit self pkgs nix-vm-test; };
 
   # The real btrfs decoy images of the forensic oracle, keyed
   # "<name>-oracle-images": a host driver too, run by the oracle real-image

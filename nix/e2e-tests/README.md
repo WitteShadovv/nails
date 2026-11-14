@@ -972,6 +972,46 @@ every package dnf chose (`py/fedora_rpms.py`). It fails when a package's
 signature does not check out or its location is not in the release
 repository.
 
+`python3 -m ci.e2e.rpm_closure lock <image>-rpms.json`, on a networked host,
+fetches every package again and writes `rpms/<image>.json`, the lock the gate
+fetches the closure from, only when each file is the one the image's dnf saw;
+`check` keeps every committed lock to the image file `images.json` pins.
+
+`<image>-gate`, defined once the image has a lock, is the gate scenario
+(`py/fedora_gate.py`, its kernel-log reading in `py/selinux_gate.py`). It boots
+the image with SELinux enforcing, with a test-only build that admits Fedora
+(`lib/admitted.nix`) and the locked closure shared in, and runs every `nails`
+command in a login session of the operator's own, through the login PAM
+stack, whose pam_selinux gives the user `unconfined_t` (checked with `id -Z`):
+the harness's shell runs as a service, in `unconfined_service_t`, from which
+neither `runcon` nor `su -l` reaches that domain. In one QEMU process it runs a
+power cycle, the reference of the login records; the decoy's checks (the stock
+journal and the running auditd refused, then the journal volatile and auditd
+off by `systemctl disable`, `systemctl mask` and `auditctl --signal stop`;
+tuned, firewalld and ABRT installed from the closure with every repository
+disabled and started, then the documented fixes; the locate database;
+lsm-status, enforcing and after `setenforce 0`; check clean); a plain
+soft-reboot; a session ended with `deactivate`; a package the decoy removes
+after that session; a second session as a user through sudo with the
+fresh-home persona, ended with the emergency; and a last plain soft-reboot.
+In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
+`/var`, the type a copied-up and a new file take, NAILS's processes outside
+`init_t`, the overlay feature options, the canaries in their uppers, no unit
+the hidden root keeps off failed, a `security.selinux` round trip on the
+hidden volume, and a disk attached in the session read-only; after each way
+back, the session's kernel log marker absent from the decoy's journal, which
+holds no kernel record of the session, the kmsg cursor above it, nothing of
+the session in `/run`, `utab` given back, `/run/initramfs` unchanged, the
+attached disk writable again, and the login and boot records changed only by
+the boot a power cycle adds, with no record of a login made in the session.
+Every AVC denial is counted from the boot before NAILS ran: a denial is new
+when a NAILS process or path has it, or when neither that boot nor the first
+plain soft-reboot logged its signature, a race of the image's own aside. Each
+assertion is recorded with its outcome and the run goes on where it can; the
+driver writes `<image>-gate.json` and `<image>-gate.kmsg.txt` and fails at its
+end when one does not hold. Where an assertion depends on code that is not in
+the build yet, its record names what it needs.
+
 By hand on a KVM host, as the refusal's:
 
 ```sh

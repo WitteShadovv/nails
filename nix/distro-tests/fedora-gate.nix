@@ -11,11 +11,18 @@
 #                 directory NAILS_GATE_OUT names (the working directory when it
 #                 is unset), which ci/e2e/rpm_closure.py turns into the lock
 #                 rpms/<image>.json that the gate installs from.
+#   <image>-gate  the gate scenario (py/fedora_gate.py) on the image booted with
+#                 SELinux enforcing, with a test-only build of nails that admits
+#                 Fedora (lib/admitted.nix) and the locked closure shared in
+#                 over 9p. It writes <image>-gate.json, every assertion with its
+#                 outcome, and <image>-gate.kmsg.txt, the whole kernel log of
+#                 each boot. It is defined once the image has a lock.
 #
 # Like the probes they are host drivers: on a KVM-capable host by hand, or in
 # the gate suite of distro-e2e.yml, whose job builds the driver, runs it on a
 # hosted KVM runner and uploads what it wrote.
 {
+  self,
   pkgs,
   nix-vm-test,
 }:
@@ -24,12 +31,23 @@ let
 
   images = import ./images.nix { inherit pkgs; };
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
+  hiddenRoot = import ./lib/hidden-root.nix;
+  admitted = import ./lib/admitted.nix { inherit self; };
 
   # The helpers alone, so a change elsewhere in py/ does not rebuild a driver.
   gatePy = lib.fileset.toSource {
     root = ./py;
-    fileset = lib.fileset.unions [ ./py/fedora_rpms.py ];
+    fileset = lib.fileset.unions [
+      ./py/distro_checks.py
+      ./py/fedora_gate.py
+      ./py/fedora_rpms.py
+      ./py/selinux_gate.py
+    ];
   };
+
+  # The login- and boot-record readers, shared verbatim with the fast-lane
+  # unit tests.
+  recordsModule = pkgs.writeTextDir "records.py" (builtins.readFile ../e2e-tests/lib/records.py);
 
   # The pinned Fedora images.
   fedoraImages = lib.filterAttrs (
@@ -90,7 +108,123 @@ let
     name: entry: lib.nameValuePair "${name}-rpms" (rpmsFor name entry)
   ) fedoraImages;
 
-  drivers = rpmsDrivers;
+  # The lock of each image's closure, where one is committed.
+  lockOf = name: ./rpms + "/${name}.json";
+  lockedImages = lib.filterAttrs (name: _: builtins.pathExists (lockOf name)) fedoraImages;
+
+  # The closure a lock pins, as one directory of RPM files the gate shares
+  # into its VM. Each file is fetched by its hash from the release repository,
+  # or from its archive once the release is past its end of life.
+  closureOf =
+    name:
+    let
+      lock = lib.importJSON (lockOf name);
+      fetched = map (package: {
+        inherit (package) file;
+        path = pkgs.fetchurl {
+          urls = [
+            (lock.repository + package.path)
+            (lock.archive + package.path)
+          ];
+          hash = package.sha256;
+          # A store name takes no tilde or caret, which RPM versions may hold.
+          name = lib.replaceStrings [ "~" "^" ] [ "_" "_" ] package.file;
+        };
+      }) lock.packages;
+    in
+    pkgs.runCommand "${name}-closure" { } (
+      "mkdir $out\n"
+      + lib.concatMapStrings (f: "cp ${f.path} $out/${lib.escapeShellArg f.file}\n") fetched
+    );
+
+  # What a release's gate expects of it beyond the image: whether the family
+  # table validates the release (Fedora 45 warns as untested until the
+  # commit that admits Fedora validates it), whether the image's PAM stack
+  # records a login in lastlog2 (Fedora 44's pam_lastlog2 fails to load, as
+  # the D-SEL-EXP cells saw), and the packages the drift steps remove: one in
+  # the first hidden session, one on the decoy after it.
+  expectations = {
+    "44" = {
+      validated = true;
+      lastlog2 = false;
+    };
+    "45" = {
+      validated = false;
+      lastlog2 = true;
+    };
+  };
+  driftPackages = {
+    hiddenRemoves = "firewalld";
+    decoyRemoves = "abrt";
+  };
+
+  # A run: a power cycle, the decoy's checks with an offline install, a plain
+  # soft-reboot, two sessions and their ways back, a last plain soft-reboot,
+  # and the kernel log read whole at every step.
+  gateTimeout = 5400;
+
+  gateFor =
+    name: entry:
+    let
+      enforcing = entry // {
+        enforcing = true;
+      };
+      settings = {
+        image = name;
+        inherit (entry) osId release;
+      }
+      // (expectations.${entry.release} or {
+        validated = false;
+        lastlog2 = false;
+      }
+      )
+      // driftPackages;
+      scripts = {
+        setup_hidden_root = hiddenRoot.setupHiddenRoot;
+        reopen_hidden_root = hiddenRoot.reopenHiddenRoot;
+      };
+    in
+    distroVm.buildVmTest {
+      entry = enforcing;
+      target = "driver";
+      sharedDirs = {
+        tools = {
+          source = "${admitted entry.osId}/bin";
+          target = "/run/tools";
+        };
+        rpms = {
+          source = "${closureOf name}";
+          target = "/run/rpms";
+        };
+      };
+      memorySize = 3072;
+      testScript = ''
+        import json
+        import sys
+
+        sys.path.insert(0, "${../e2e-tests/py}")
+        sys.path.insert(0, "${gatePy}")
+        sys.path.insert(0, "${recordsModule}")
+        from nails_e2e import session, utab  # noqa: E402
+        import fedora_gate  # noqa: E402
+        import records  # noqa: E402
+
+        fedora_gate.run(
+            vm,
+            session,
+            utab,
+            records,
+            json.loads(${builtins.toJSON (builtins.toJSON settings)}),
+            json.loads(${builtins.toJSON (builtins.toJSON scripts)}),
+        )
+      '';
+    };
+
+  gateDrivers = lib.mapAttrs' (
+    name: entry: lib.nameValuePair "${name}-gate" (gateFor name entry)
+  ) lockedImages;
+
+  drivers = rpmsDrivers // gateDrivers;
 in
 {
   # Driver name -> its host driver.
@@ -98,5 +232,6 @@ in
   # Every driver can boot: only pinned images make drivers.
   runnable = builtins.attrNames drivers;
   # Driver name -> the seconds it gets.
-  timeouts = lib.mapAttrs (_: _: rpmsTimeout) rpmsDrivers;
+  timeouts =
+    lib.mapAttrs (_: _: rpmsTimeout) rpmsDrivers // lib.mapAttrs (_: _: gateTimeout) gateDrivers;
 }
