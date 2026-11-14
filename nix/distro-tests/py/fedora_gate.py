@@ -598,6 +598,13 @@ class Gate:
             installed,
             out[-1500:],
         )
+        # What the install leaves in the decoy's package database besides
+        # the packages: the key it was checked with, recorded as a package.
+        self.fact(
+            "rpm-keys",
+            "rpm -q gpg-pubkey "
+            "--qf '%{NAME}-%{VERSION}-%{RELEASE} %{SUMMARY}\\n'; true",
+        )
         if not installed:
             return
         self.sh(
@@ -1358,11 +1365,12 @@ class Gate:
         self.sh("hidden-root-2", HIDDEN_ROOT)
         _, rows = self.check_rows("check-drift")
         row = rows.get("package-drift", {})
+        # The row's message names each drifted package and what to run in a
+        # hidden session to bring the copy back in line.
+        text = str(row.get("message", "")) + str(row.get("remediation", ""))
         self.check(
             "package-drift warns of the package the decoy removed, with its fix",
-            row.get("status") == "warn"
-            and removed in str(row.get("message", ""))
-            and bool(row.get("remediation")),
+            row.get("status") == "warn" and removed in text and "sudo dnf" in text,
             row,
         )
         state = self.before_entry(2)
