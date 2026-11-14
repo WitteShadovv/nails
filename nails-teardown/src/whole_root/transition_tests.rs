@@ -198,7 +198,12 @@ fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
 #[test]
 fn an_entry_whose_init_does_not_resolve_is_disarmed_instead_of_freezing_pid1() {
     let world = World::new();
-    install_dropin(&world.run(), Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(
+        &world.run(),
+        Path::new("/run/overlay-runtime/control"),
+        None,
+    )
+    .unwrap();
     world.write_plan(&armed(Direction::Enter));
 
     assert!(matches!(
@@ -368,7 +373,7 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     repoint_current_system(&r, Path::new("/nix/store/bbb-nixos-system")).unwrap();
     fs::write(r.join("hidden-probe"), "x").unwrap();
     fs::write(r.join("mount/utab"), "ID=1 decoy\nID=77 /mnt/hidden-only\n").unwrap();
-    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control"), None).unwrap();
     fs::write(world.kmsg(), "6,500,1,-;hidden record\n6,501,2,-;later\n").unwrap();
     let mut plan = armed(Direction::Leave);
     plan.entered_at = Some(900);
@@ -453,6 +458,46 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     );
 }
 
+/// On an FHS decoy whose records need the fix, the way back gives the pieces
+/// it leaves for the decoy's first start the exec prefix the plan records,
+/// as the entry gave it to the step's drop-in.
+#[test]
+fn the_way_back_starts_the_decoy_s_first_start_pieces_through_the_plan_s_prefix() {
+    let world = World::new();
+    let r = world.run();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    plan.decoy = crate::whole_root::plan::RootSide {
+        init: PathBuf::from("/usr/lib/systemd/systemd"),
+        system: None,
+    };
+    plan.exec_prefix = Some(PathBuf::from(exec_prefix::TRAMPOLINE));
+    world.init_in_nextroot(&plan.decoy.init);
+    fs::create_dir_all(world.nextroot().join("var/log")).unwrap();
+    fs::write(world.nextroot().join("var/log/wtmp"), [0u8; 384]).unwrap();
+    write_executable(&world.runtime().join(BINARY_NAME), "#!/bin/sh\n", 0o700);
+    world.write_plan(&plan);
+    install_dropin(
+        &r,
+        Path::new("/run/overlay-runtime/control"),
+        plan.exec_prefix.as_deref(),
+    )
+    .unwrap();
+
+    let outcome = run(&world.env(true, 1_000));
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+    let unit = fs::read_to_string(r.join("systemd/system").join(boot_records::FIXUP_UNIT)).unwrap();
+    let copy = r
+        .join(boot_records::FIXUP_DIR)
+        .join(boot_records::FIXUP_BINARY);
+    assert!(
+        unit.contains(&format!("ExecStart=-/usr/bin/env {} ", copy.display())),
+        "{unit}"
+    );
+    assert!(copy.is_file());
+    assert!(!r.join(DROPIN_DIR).exists(), "the step's own drop-in goes");
+}
+
 #[test]
 fn leaving_gives_the_decoys_utab_lines_back_to_its_restored_mounts() {
     // The decoy's initrd lines name its root and store by the IDs they had at
@@ -500,7 +545,7 @@ fn leaving_gives_the_decoys_utab_lines_back_to_its_restored_mounts() {
 
 #[test]
 fn the_dropin_runs_the_ram_copy_with_its_output_discarded() {
-    let text = dropin_text(Path::new("/run/overlay-runtime/control"));
+    let text = dropin_text(Path::new("/run/overlay-runtime/control"), None);
     assert!(text.contains("ExecStart=-/run/overlay-runtime/control transition\n"));
     assert!(text.contains("StandardOutput=null"));
     assert!(text.contains("StandardError=null"));
@@ -509,11 +554,36 @@ fn the_dropin_runs_the_ram_copy_with_its_output_discarded() {
     assert!(!DROPIN_NAME.contains("nails"));
 }
 
+/// Where the plan records an exec prefix, the step starts through it, with
+/// the same words after it, and the drop-in is otherwise the same: nothing
+/// in it keeps PID 1 from starting `env` in a domain of its own
+/// (`NoNewPrivileges=`, `SELinuxContext=`).
+#[test]
+fn the_dropin_starts_the_ram_copy_through_the_plan_s_prefix() {
+    let binary = Path::new("/run/overlay-runtime/control");
+    let env = Path::new(crate::whole_root::exec_prefix::TRAMPOLINE);
+    let text = dropin_text(binary, Some(env));
+    assert_eq!(
+        text,
+        dropin_text(binary, None).replace(
+            "ExecStart=-/run/overlay-runtime/control transition\n",
+            "ExecStart=-/usr/bin/env /run/overlay-runtime/control transition\n"
+        )
+    );
+    assert_ne!(text, dropin_text(binary, None));
+    for setting in ["NoNewPrivileges", "SELinuxContext"] {
+        assert!(!text.contains(setting), "{text}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_dropin(dir.path(), binary, Some(env)).unwrap();
+    assert_eq!(fs::read_to_string(path).unwrap(), text);
+}
+
 #[test]
 fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin() {
     let dir = tempfile::tempdir().unwrap();
     let run = dir.path();
-    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(run, Path::new("/run/overlay-runtime/control"), None).unwrap();
     // blkdeactivate -u would unmount the hidden volume below /run/nextroot on
     // the way in, and a LUKS or LVM decoy root below it on the way back.
     // Debian's and Ubuntu's copy of the unit has its stop as its only
@@ -584,7 +654,7 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
 fn the_timeout_guard_powers_off_a_switch_that_hangs_and_goes_with_the_dropin() {
     let dir = tempfile::tempdir().unwrap();
     let run = dir.path();
-    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(run, Path::new("/run/overlay-runtime/control"), None).unwrap();
     let guard = run.join("systemd/system/soft-reboot.target.d/zz-overlay-runtime.conf");
     assert_eq!(
         fs::read_to_string(&guard).unwrap(),
@@ -624,7 +694,7 @@ fn the_timeout_guard_covers_both_switches_and_goes_with_the_way_back() {
         Snapshot::take(&r).to_text(),
     )
     .unwrap();
-    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control"), None).unwrap();
     let plan = armed(Direction::Enter);
     world.init_in_nextroot(&plan.hidden.init);
     world.write_plan(&plan);
@@ -653,7 +723,7 @@ fn the_timeout_guard_covers_both_switches_and_goes_with_the_way_back() {
     // On the decoy, a reboot that meets an entry nobody armed.
     let world = World::new();
     let r = world.run();
-    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control"), None).unwrap();
     let mut plan = armed(Direction::Enter);
     plan.armed = None;
     world.write_plan(&plan);
@@ -668,7 +738,7 @@ fn the_dropins_are_readable_by_all_so_pid1_never_names_them_in_the_kernel_log() 
     // the other root no journald runs yet, so the warning reaches dmesg.
     let dir = tempfile::tempdir().unwrap();
     let run = dir.path();
-    let dropin = install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    let dropin = install_dropin(run, Path::new("/run/overlay-runtime/control"), None).unwrap();
     let guards =
         runtime_guards().map(|(unit, _)| run.join(stop_guard_dir(unit)).join(STOP_GUARD_NAME));
     for file in guards.chain(std::iter::once(dropin)) {
@@ -693,7 +763,7 @@ fn a_dropin_directory_the_decoy_had_keeps_its_own_files_and_loses_the_guard() {
         Snapshot::take(&r).to_text(),
     )
     .unwrap();
-    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control"), None).unwrap();
     let plan = armed(Direction::Enter);
     world.init_in_nextroot(&plan.hidden.init);
     world.write_plan(&plan);
@@ -731,7 +801,7 @@ fn a_rollback_removes_the_guards_and_only_the_directories_it_made() {
     let decoy_dir = run.join(stop_guard_dir("dbus.service"));
     fs::create_dir_all(&decoy_dir).unwrap();
     let kept = Snapshot::take(run);
-    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(run, Path::new("/run/overlay-runtime/control"), None).unwrap();
     remove_dropin(run, &kept);
     assert!(decoy_dir.is_dir());
     assert!(!decoy_dir.join(STOP_GUARD_NAME).exists());
@@ -784,7 +854,7 @@ fn the_quieting_dropin_goes_with_the_other_dropins() {
     let decoy_dir = run.join(stop_guard_dir("srv-x-.mount"));
     fs::create_dir_all(&decoy_dir).unwrap();
     let kept = Snapshot::take(run);
-    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_dropin(run, Path::new("/run/overlay-runtime/control"), None).unwrap();
     install_quiet_mounts(run, "mnt-data-root-decoy-.mount").unwrap();
     install_quiet_mounts(run, "srv-x-.mount").unwrap();
     let theirs = run.join(stop_guard_dir("home-.mount"));

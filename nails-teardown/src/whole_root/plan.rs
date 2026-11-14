@@ -367,6 +367,17 @@ pub struct Plan {
     /// Runtime units installed in `/run` at entry, for the hidden session.
     #[serde(default)]
     pub session_units: Vec<RuntimeUnit>,
+    /// The program PID 1 starts the binary copy through
+    /// ([`crate::whole_root::exec_prefix`]): `/usr/bin/env` where the host may
+    /// run SELinux, as the entry judged it from the host facts. The entry
+    /// writes the transition step's drop-in and the session units with it and
+    /// checks it in the roots they start in; the way back reads it here, so
+    /// that it checks the same program in the roots it starts in and gives the
+    /// pieces it leaves for the decoy's first start the same one. `None`
+    /// where PID 1 starts the copy itself, and in a plan written before it was
+    /// recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_prefix: Option<PathBuf>,
     /// Device-mapper names of the hidden backend, top of the stack first,
     /// marked for deferred removal before the way back.
     #[serde(default)]
@@ -633,6 +644,7 @@ pub(crate) fn sample() -> Plan {
         skips: Vec::new(),
         required_masks: Vec::new(),
         session_units: Vec::new(),
+        exec_prefix: None,
         backend: vec!["sample-backend-unmapped".to_string()],
         tools: Tools::default(),
         armed: Some(Arm {
@@ -715,6 +727,29 @@ mod tests {
         let older = sample().to_json();
         assert!(!older.contains("generator_masks"), "{older}");
         assert!(Plan::from_json(&older).unwrap().generator_masks.is_empty());
+    }
+
+    #[test]
+    fn the_exec_prefix_is_kept_and_a_plan_without_one_is_written_as_before() {
+        let prefixed = Plan {
+            exec_prefix: Some(PathBuf::from(crate::whole_root::exec_prefix::TRAMPOLINE)),
+            ..sample()
+        };
+        let text = prefixed.to_json();
+        assert!(text.contains("\"exec_prefix\":\"/usr/bin/env\""), "{text}");
+        assert_eq!(Plan::from_json(&text).unwrap(), prefixed);
+
+        // Without one the plan has no key at all, so it reads as one written
+        // before the field existed, byte for byte, and loads as one.
+        let plain = sample().to_json();
+        assert!(!plain.contains("exec_prefix"), "{plain}");
+        assert_eq!(
+            Plan::from_json(&text.replace(",\"exec_prefix\":\"/usr/bin/env\"", ""))
+                .unwrap()
+                .to_json(),
+            plain
+        );
+        assert_eq!(Plan::from_json(&plain).unwrap().exec_prefix, None);
     }
 
     #[test]

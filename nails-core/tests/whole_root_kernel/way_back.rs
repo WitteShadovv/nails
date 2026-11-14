@@ -627,6 +627,31 @@ fn a_way_back_that_fails_leaves_nothing_at_the_next_root_and_no_new_id() {
         assert!(points(&nextroot).is_empty(), "{:?}", points(&nextroot));
         assert!(plan.decoy_mounts.iter().all(|m| m.restored.is_none()));
 
+        // The plan starts the step's pieces for the decoy's first start
+        // through a program the decoy root lacks: the check fails once every
+        // mount is made, and with it there the way back is prepared.
+        let mut plan = decoy.plan(carried.clone(), record.mounts.clone());
+        plan.exec_prefix = Some(PathBuf::from(
+            nails_teardown::whole_root::exec_prefix::TRAMPOLINE,
+        ));
+        nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
+        let error = ret::complete_decoy_root(&mut plan, &nextroot, &run).unwrap_err();
+        assert!(matches!(error, ReturnError::ExecPrefix(_)), "{error}");
+        assert!(
+            error
+                .to_string()
+                .ends_with("in the decoy root /usr/bin/env does not exist"),
+            "{error}"
+        );
+        assert!(points(&nextroot).is_empty(), "{:?}", points(&nextroot));
+        assert!(plan.decoy_mounts.iter().all(|m| m.restored.is_none()));
+        let env = decoy.root().join("usr/bin/env");
+        std::fs::create_dir_all(env.parent().unwrap()).unwrap();
+        write_executable(&env, "#!/bin/sh\n", 0o755);
+        nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
+        ret::complete_decoy_root(&mut plan, &nextroot, &run).expect("the way back");
+        assert!(nextroot::detach_tree(&nextroot).is_empty());
+
         // The hidden session unmounted the carried ESP.
         nix::mount::umount(&carried[0].at).unwrap();
         let mut plan = decoy.plan(carried, record.mounts);

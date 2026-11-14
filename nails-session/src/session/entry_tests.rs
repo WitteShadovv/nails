@@ -132,6 +132,81 @@ fn minimal_inputs<'a>(
     }
 }
 
+/// A host whose PID 1 holds the runtime guards and counts its reloads; it
+/// builds and activates nothing.
+#[derive(Default)]
+struct Reloads(std::cell::Cell<u32>);
+
+impl GuardHost for Reloads {
+    fn unit_stop_commands(&self, _: &str) -> Result<String> {
+        Ok(String::new())
+    }
+    fn job_timeout_action(&self, _: &str) -> Result<String> {
+        Ok(transition::SWITCH_TIMEOUT_ACTION.to_string())
+    }
+    fn job_timeout(&self, _: &str) -> Result<String> {
+        Ok("30min".to_string())
+    }
+    fn service_watchdogs(&self) -> Result<String> {
+        Ok("yes".to_string())
+    }
+}
+
+impl EntryHost for Reloads {
+    fn daemon_reload(&self) -> Result<()> {
+        self.0.set(self.0.get() + 1);
+        Ok(())
+    }
+    fn build_hidden_system(&self, _: &NixOSBuilder, _: &Path, _: &Path) -> Result<PathBuf> {
+        Err(NailsError::NixOSError("not in this test".into()))
+    }
+    fn keep_hidden_closure(&self, _: &Path, _: &Path, _: &Path) -> Result<store::KeepReport> {
+        Err(NailsError::NixOSError("not in this test".into()))
+    }
+    fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
+        Err(NailsError::NixOSError("not in this test".into()))
+    }
+}
+
+/// The transition drop-in starts the RAM copy as the plan records, through
+/// its exec prefix where it has one, and the service manager loads it.
+#[test]
+fn the_transition_drop_in_starts_the_copy_as_the_plan_records() {
+    let run = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        root: PathBuf::from("/"),
+        run: run.path().to_path_buf(),
+    };
+    let mut plan = Plan::from_json(
+        r#"{"version":2,"hidden_root":"/mnt/data","upper":"/mnt/data/root/upper",
+            "work":"/mnt/data/root/work","decoy_root":{"source":"/dev/vda2","fstype":"ext4"},
+            "decoy":{"init":"/sbin/init"},"hidden":{"init":"/sbin/init"}}"#,
+    )
+    .unwrap();
+    let host = Reloads::default();
+    for prefix in [
+        None,
+        Some(PathBuf::from(
+            nails_teardown::whole_root::exec_prefix::TRAMPOLINE,
+        )),
+    ] {
+        plan.exec_prefix = prefix.clone();
+        let mut dropin = false;
+        install_transition(&paths, &plan, &host, &mut dropin).unwrap();
+        assert!(dropin);
+        assert_eq!(
+            std::fs::read_to_string(
+                run.path()
+                    .join(transition::DROPIN_DIR)
+                    .join(transition::DROPIN_NAME)
+            )
+            .unwrap(),
+            transition::dropin_text(Path::new("/run/overlay-runtime/control"), prefix.as_deref())
+        );
+    }
+    assert_eq!(host.0.get(), 2);
+}
+
 #[test]
 fn write_runtime_populates_the_runtime_directory() {
     let run = tempfile::tempdir().unwrap();

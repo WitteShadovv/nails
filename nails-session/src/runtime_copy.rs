@@ -152,6 +152,7 @@ mod tests {
             skips: Vec::new(),
             required_masks: Vec::new(),
             session_units: Vec::new(),
+            exec_prefix: None,
             backend: Vec::new(),
             tools: nails_teardown::whole_root::plan::Tools::default(),
             armed: None,

@@ -203,11 +203,18 @@ pub fn writer_args(switched_at: Duration, writer: &[String]) -> Vec<String> {
 }
 
 /// The drop-in text: it replaces the writer's start command with the binary
-/// copy at `binary`, which starts the writer through [`run`].
-fn dropin_text(binary: &Path, switched_at: Duration, writer: &[String]) -> String {
+/// copy at `binary`, started through `prefix` where the plan records one
+/// ([`crate::whole_root::exec_prefix`]), which starts the writer through
+/// [`run`].
+fn dropin_text(
+    binary: &Path,
+    switched_at: Duration,
+    writer: &[String],
+    prefix: Option<&Path>,
+) -> String {
     format!(
         "[Service]\nExecStart=\nExecStart={} {}\n",
-        binary.display(),
+        crate::whole_root::exec_prefix::command(prefix, binary),
         writer_args(switched_at, writer).join(" ")
     )
 }
@@ -219,12 +226,13 @@ pub fn install_dropin(
     binary: &Path,
     switched_at: Duration,
     writer: &[String],
+    prefix: Option<&Path>,
 ) -> io::Result<()> {
     let dir = run.join(DROPIN_DIR);
     std::fs::create_dir_all(&dir)?;
     plan::write_atomic_with_mode(
         &dir.join(DROPIN_NAME),
-        dropin_text(binary, switched_at, writer).as_bytes(),
+        dropin_text(binary, switched_at, writer, prefix).as_bytes(),
         SERVICE_CONFIG_MODE,
     )
 }

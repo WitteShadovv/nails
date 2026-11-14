@@ -274,7 +274,9 @@ impl Fix {
 /// of the tool read before the scrub removed the runtime directory,
 /// `switched_at` the boot clock at the switch, and `restore_noexec` whether the
 /// way back must make `/run` `noexec` again, which the reconcile step then does
-/// once the copy has run. The caller leaves `/run` executable until then.
+/// once the copy has run. The caller leaves `/run` executable until then. Both
+/// units start the copy through `prefix`, the program the plan records
+/// ([`crate::whole_root::exec_prefix`]), where it records one.
 ///
 /// The writer's drop-in goes last, after the binary copy it starts, so a way
 /// back cut short never leaves the writer a start command that points at a
@@ -286,8 +288,9 @@ pub fn install(
     fix: &Fix,
     switched_at: Duration,
     restore_noexec: bool,
+    prefix: Option<&Path>,
 ) -> io::Result<()> {
-    let result = install_pieces(run, binary, fix, switched_at, restore_noexec);
+    let result = install_pieces(run, binary, fix, switched_at, restore_noexec, prefix);
     if result.is_err() {
         remove_pieces(run);
     }
@@ -300,6 +303,7 @@ fn install_pieces(
     fix: &Fix,
     switched_at: Duration,
     restore_noexec: bool,
+    prefix: Option<&Path>,
 ) -> io::Result<()> {
     let bin_path = run.join(FIXUP_DIR).join(FIXUP_BINARY);
 
@@ -310,7 +314,7 @@ fn install_pieces(
     std::fs::create_dir_all(&unit_dir)?;
     plan::write_atomic_with_mode(
         &unit_dir.join(FIXUP_UNIT),
-        unit_text(&bin_path, switched_at, restore_noexec).as_bytes(),
+        unit_text(&bin_path, switched_at, restore_noexec, prefix).as_bytes(),
         SERVICE_CONFIG_MODE,
     )?;
     let wants = unit_dir.join(format!("{FIXUP_WANTED_BY}.wants"));
@@ -326,7 +330,7 @@ fn install_pieces(
     // Last, the writer's drop-in: it replaces the writer's start command with
     // the copy, which is in place by now.
     if let Some(writer) = &fix.writer {
-        boot_writer::install_dropin(run, &bin_path, switched_at, writer)?;
+        boot_writer::install_dropin(run, &bin_path, switched_at, writer, prefix)?;
     }
     Ok(())
 }
@@ -368,8 +372,14 @@ pub fn reconcile_args(switched_at: Duration, restore_noexec: bool) -> Vec<String
 /// The reconcile one-shot's unit text. It is ordered after the boot writers
 /// (`After=` a unit that does not exist is ignored) and before logins, its
 /// output goes nowhere, and its start command is prefixed `-` so a failure
-/// never marks it failed, which the decoy would list.
-fn unit_text(binary: &Path, switched_at: Duration, restore_noexec: bool) -> String {
+/// never marks it failed, which the decoy would list. It starts `binary`
+/// through `prefix` where the plan records one.
+fn unit_text(
+    binary: &Path,
+    switched_at: Duration,
+    restore_noexec: bool,
+    prefix: Option<&Path>,
+) -> String {
     format!(
         "[Unit]\n\
          Description=Overlay runtime boot bookkeeping\n\
@@ -386,7 +396,7 @@ fn unit_text(binary: &Path, switched_at: Duration, restore_noexec: bool) -> Stri
          [Install]\n\
          WantedBy={FIXUP_WANTED_BY}\n",
         boot_writer::WRITER_UNIT,
-        binary.display(),
+        crate::whole_root::exec_prefix::command(prefix, binary),
         reconcile_args(switched_at, restore_noexec).join(" ")
     )
 }

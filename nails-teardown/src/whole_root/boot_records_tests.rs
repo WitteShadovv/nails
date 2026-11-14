@@ -275,6 +275,7 @@ fn install_lays_out_every_piece_and_run_removes_them_all() {
         &writer_fix(),
         SWITCHED_AT,
         false,
+        None,
     )
     .unwrap();
 
@@ -325,6 +326,38 @@ fn install_lays_out_every_piece_and_run_removes_them_all() {
     );
 }
 
+/// Where the plan records an exec prefix, both units start the copy through
+/// it, with the same words after it, and the step still removes every piece.
+#[test]
+fn both_units_start_the_copy_through_the_plan_s_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let run_dir = dir.path();
+    let env = Path::new(crate::whole_root::exec_prefix::TRAMPOLINE);
+    install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true, Some(env)).unwrap();
+    let [bin, unit, link, dropin] = pieces(run_dir);
+    let text = std::fs::read_to_string(&unit).unwrap();
+    assert!(
+        text.contains(&format!(
+            "ExecStart=-/usr/bin/env {} {RECONCILE_ARG} 1234567890 {NOEXEC_FLAG}\n",
+            bin.display()
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&dropin).unwrap(),
+        format!(
+            "[Service]\nExecStart=\nExecStart=/usr/bin/env {} boot-writer 1234567890 \
+             /usr/bin/wtmpdb boot\n",
+            bin.display()
+        )
+    );
+    std::fs::create_dir_all(run_dir.join("var/log")).unwrap();
+    run(run_dir, run_dir, SWITCHED_AT, false);
+    for p in [&bin, &unit, &link, &dropin] {
+        assert!(!p.exists(), "{} should be gone", p.display());
+    }
+}
+
 #[test]
 fn without_a_writer_no_drop_in_is_installed() {
     let dir = tempfile::tempdir().unwrap();
@@ -332,7 +365,7 @@ fn without_a_writer_no_drop_in_is_installed() {
         writer: None,
         classic_wtmp: true,
     };
-    install(dir.path(), b"x", &fix, SWITCHED_AT, false).unwrap();
+    install(dir.path(), b"x", &fix, SWITCHED_AT, false, None).unwrap();
     let [bin, unit, _, dropin] = pieces(dir.path());
     assert!(bin.is_file() && unit.is_file());
     assert!(!dropin.exists());
@@ -347,7 +380,7 @@ fn a_failed_install_removes_what_it_wrote_and_writes_no_binary_copy() {
     let dir = tempfile::tempdir().unwrap();
     let run_dir = dir.path();
     std::fs::write(run_dir.join(FIXUP_DIR), b"in the way").unwrap();
-    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true).is_err());
+    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true, None).is_err());
     let [_, unit, link, dropin] = pieces(run_dir);
     for p in [&unit, &link, &dropin] {
         assert!(!p.exists(), "{} should be gone", p.display());
@@ -363,7 +396,7 @@ fn a_failed_install_removes_what_it_wrote_and_writes_no_binary_copy() {
     let dir = tempfile::tempdir().unwrap();
     let run_dir = dir.path();
     std::fs::write(run_dir.join("systemd"), b"not a directory").unwrap();
-    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true).is_err());
+    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true, None).is_err());
     assert!(!run_dir.join(FIXUP_DIR).exists(), "no binary copy");
 }
 
@@ -375,7 +408,7 @@ fn a_drop_in_that_cannot_be_written_takes_the_copy_and_the_unit_with_it() {
     let run_dir = dir.path();
     std::fs::create_dir_all(run_dir.join(RUNTIME_UNIT_DIR)).unwrap();
     std::fs::write(run_dir.join(boot_writer::DROPIN_DIR), b"in the way").unwrap();
-    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true).is_err());
+    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true, None).is_err());
     let [bin, unit, link, _] = pieces(run_dir);
     for p in [&bin, &unit, &link] {
         assert!(!p.exists(), "{} should be gone", p.display());
@@ -392,14 +425,14 @@ fn a_drop_in_that_cannot_be_written_takes_the_copy_and_the_unit_with_it() {
         writer: None,
         classic_wtmp: true,
     };
-    install(run_dir, b"x", &fix, SWITCHED_AT, true).unwrap();
+    install(run_dir, b"x", &fix, SWITCHED_AT, true, None).unwrap();
     assert!(bin.is_file() && unit.is_file());
 }
 
 #[test]
 fn the_noexec_flag_is_added_only_when_the_way_back_cleared_it() {
     let dir = tempfile::tempdir().unwrap();
-    install(dir.path(), b"x", &writer_fix(), SWITCHED_AT, true).unwrap();
+    install(dir.path(), b"x", &writer_fix(), SWITCHED_AT, true, None).unwrap();
     let text = std::fs::read_to_string(dir.path().join(RUNTIME_UNIT_DIR).join(FIXUP_UNIT)).unwrap();
     assert!(text.contains(&format!("{RECONCILE_ARG} 1234567890 {NOEXEC_FLAG}\n")));
     assert_eq!(
@@ -432,7 +465,13 @@ fn the_runtime_names_carry_no_product_name() {
         FIXUP_UNIT,
         FIXUP_WANTED_BY,
         FIXUP_BEFORE,
-        &unit_text(Path::new("/run/x"), SWITCHED_AT, true),
+        &unit_text(Path::new("/run/x"), SWITCHED_AT, true, None),
+        &unit_text(
+            Path::new("/run/x"),
+            SWITCHED_AT,
+            true,
+            Some(Path::new(crate::whole_root::exec_prefix::TRAMPOLINE)),
+        ),
     ] {
         assert!(!name.to_lowercase().contains("nails"), "{name}");
     }

@@ -25,6 +25,8 @@
 //!   fresh boot;
 //! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
 //! - [`ret`]: preparing the way back to the decoy;
+//! - [`exec_prefix`]: the program PID 1 starts the binary copy through on a
+//!   host that may run SELinux, and whether a root holds it;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
 //!   back;
 //! - [`decoy_mounts`]: the decoy's mounts the way back makes again, in the
@@ -49,6 +51,7 @@ pub mod carry;
 pub mod decoy_mounts;
 pub mod disk_guard;
 pub mod emergency;
+pub mod exec_prefix;
 pub mod fresh_pids;
 pub mod kernel_helpers;
 pub mod kill;

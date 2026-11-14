@@ -119,6 +119,7 @@ mod kernel_tests {
                 skips: Vec::new(),
                 required_masks: Vec::new(),
                 session_units: Vec::new(),
+                exec_prefix: None,
                 backend: Vec::new(),
                 tools: Tools::default(),
                 armed: Some(Arm::now(direction)),
@@ -231,7 +232,7 @@ mod kernel_tests {
             nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
             let run = tempfile::tempdir().unwrap();
             let binary = Path::new("/run/overlay-runtime/control");
-            let dropin = transition::install_dropin(run.path(), binary).unwrap();
+            let dropin = transition::install_dropin(run.path(), binary, None).unwrap();
             let quiet =
                 transition::install_quiet_mounts(run.path(), "mnt-data-root-decoy-.mount").unwrap();
             let rule = disk_guard::install_rule(run.path(), binary).unwrap();

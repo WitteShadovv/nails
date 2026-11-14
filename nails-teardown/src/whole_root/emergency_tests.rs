@@ -180,7 +180,7 @@ impl Interrupted {
         plan.owner = None;
         plan.backend = Vec::new();
         plan.tools.systemctl = Some(systemctl);
-        transition::install_dropin(&host.run, Path::new("/x")).unwrap();
+        transition::install_dropin(&host.run, Path::new("/x"), None).unwrap();
         plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
         plan.generator_masks = vec!["systemd-gpt-auto-generator".to_string()];
         plan.kernel_settings = kernel_helpers::read(&[modprobe.to_str().unwrap()]);

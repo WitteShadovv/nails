@@ -525,6 +525,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         skips: Vec::new(),
         required_masks: Vec::new(),
         session_units: inputs.session_units.clone(),
+        exec_prefix: None,
         backend: inputs.backend.clone(),
         tools: Tools {
             systemctl: nails_teardown::whole_root::tools::find(None, "systemctl")
@@ -593,7 +594,7 @@ fn build(
     if plan.run_noexec {
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
-    install_transition(paths, host, dropin)?;
+    install_transition(paths, &plan, host, dropin)?;
     crate::cancel::checkpoint()?;
 
     activation_step(ActivationPhase::Overlay, building);
@@ -892,8 +893,14 @@ impl HomeWay {
     }
 }
 
-/// Install the transition drop-in and reload the service manager.
-fn install_transition(paths: &Paths, host: &dyn EntryHost, dropin: &mut bool) -> Result<()> {
+/// Install the transition drop-in, which starts the RAM copy through the
+/// plan's exec prefix where it records one, and reload the service manager.
+fn install_transition(
+    paths: &Paths,
+    plan: &Plan,
+    host: &dyn EntryHost,
+    dropin: &mut bool,
+) -> Result<()> {
     let binary = if paths.is_system() {
         paths.binary_copy()
     } else {
@@ -901,7 +908,8 @@ fn install_transition(paths: &Paths, host: &dyn EntryHost, dropin: &mut bool) ->
         Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
             .join(nails_teardown::whole_root::plan::BINARY_NAME)
     };
-    transition::install_dropin(&paths.run, &binary).map_err(|e| io(&paths.run, e))?;
+    transition::install_dropin(&paths.run, &binary, plan.exec_prefix.as_deref())
+        .map_err(|e| io(&paths.run, e))?;
     *dropin = true;
     host.daemon_reload()?;
     check_stop_guards(host)?;

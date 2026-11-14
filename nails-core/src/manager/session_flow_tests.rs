@@ -189,6 +189,7 @@ fn plan(hidden: &Path) -> Plan {
         skips: Vec::new(),
         required_masks: Vec::new(),
         session_units: Vec::new(),
+        exec_prefix: None,
         backend: Vec::new(),
         tools: Tools::default(),
         armed: None,
@@ -233,6 +234,7 @@ fn install_dropins(machine: &Machine) {
     nails_teardown::whole_root::transition::install_dropin(
         &machine.paths.run,
         Path::new("/run/overlay-runtime/control"),
+        None,
     )
     .unwrap();
 }

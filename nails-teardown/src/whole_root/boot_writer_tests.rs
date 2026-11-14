@@ -150,7 +150,7 @@ fn the_drop_in_replaces_only_the_start_command() {
     let dir = tempfile::tempdir().unwrap();
     let binary = Path::new("/run/overlay-runtime-boot/control");
     let writer = ["/usr/bin/wtmpdb".to_string(), "boot".to_string()];
-    install_dropin(dir.path(), binary, SWITCHED_AT, &writer).unwrap();
+    install_dropin(dir.path(), binary, SWITCHED_AT, &writer, None).unwrap();
     let path = dir.path().join(DROPIN_DIR).join(DROPIN_NAME);
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -171,11 +171,27 @@ fn the_drop_in_replaces_only_the_start_command() {
     // leaves one the decoy has its own drop-ins in.
     remove_dropin(dir.path());
     assert!(!dir.path().join(DROPIN_DIR).exists());
-    install_dropin(dir.path(), binary, SWITCHED_AT, &writer).unwrap();
+    install_dropin(dir.path(), binary, SWITCHED_AT, &writer, None).unwrap();
     std::fs::write(dir.path().join(DROPIN_DIR).join("10-decoy.conf"), "").unwrap();
     remove_dropin(dir.path());
     assert!(!path.exists());
     assert!(dir.path().join(DROPIN_DIR).join("10-decoy.conf").exists());
+}
+
+/// Where the plan records an exec prefix, the writer's start goes through it,
+/// with the same words after it; the copy then starts the writer as without.
+#[test]
+fn the_drop_in_starts_the_copy_through_the_plan_s_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = Path::new("/run/overlay-runtime-boot/control");
+    let writer = ["/usr/bin/wtmpdb".to_string(), "boot".to_string()];
+    let env = Path::new(crate::whole_root::exec_prefix::TRAMPOLINE);
+    install_dropin(dir.path(), binary, SWITCHED_AT, &writer, Some(env)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(DROPIN_DIR).join(DROPIN_NAME)).unwrap(),
+        "[Service]\nExecStart=\nExecStart=/usr/bin/env \
+         /run/overlay-runtime-boot/control boot-writer 987654321 /usr/bin/wtmpdb boot\n"
+    );
 }
 
 #[test]
@@ -245,6 +261,13 @@ fn the_runtime_names_carry_no_product_name() {
             Path::new("/run/x"),
             SWITCHED_AT,
             &["/usr/bin/wtmpdb".into()],
+            None,
+        ),
+        &dropin_text(
+            Path::new("/run/x"),
+            SWITCHED_AT,
+            &["/usr/bin/wtmpdb".into()],
+            Some(Path::new(crate::whole_root::exec_prefix::TRAMPOLINE)),
         ),
     ] {
         assert!(!name.to_lowercase().contains("nails"), "{name}");

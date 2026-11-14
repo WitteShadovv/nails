@@ -114,6 +114,7 @@ mod kernel_tests {
             skips: Vec::new(),
             required_masks: Vec::new(),
             session_units: Vec::new(),
+            exec_prefix: None,
             backend: Vec::new(),
             tools: Tools::default(),
             armed: Some(Arm::now(Direction::Enter)),

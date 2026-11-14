@@ -676,6 +676,16 @@ pub fn regular_file_in_root(root: &Path, path: &Path) -> io::Result<bool> {
     Ok((stat.st_mode & libc::S_IFMT) == libc::S_IFREG)
 }
 
+/// Whether `path` is an executable regular file as if `root` were `/` (one
+/// with an execute bit, as [`precheck`] asks of the init), its symlinks
+/// resolved inside `root` as [`exists_in_root`] resolves them, with the error
+/// of a lookup that fails as for [`regular_file_in_root`]. The lookup opens
+/// nothing it reads (`O_PATH`), so the file's access time stays as it is.
+pub fn executable_in_root(root: &Path, path: &Path) -> io::Result<bool> {
+    let stat = rustix::fs::fstat(open_in_root(root, path)?).map_err(to_io)?;
+    Ok((stat.st_mode & libc::S_IFMT) == libc::S_IFREG && stat.st_mode & 0o111 != 0)
+}
+
 /// How many symlinks [`resolve_in_root`] follows by their text before it
 /// gives a path up, as the kernel's own limit for one lookup.
 const MAX_LINK_HOPS: usize = 40;

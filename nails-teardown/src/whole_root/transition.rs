@@ -4,7 +4,9 @@
 //! The last userspace step before PID 1 switches root.
 //!
 //! Activation installs a runtime drop-in that makes this step the `ExecStart=`
-//! of `systemd-soft-reboot.service`. That service is ordered after
+//! of `systemd-soft-reboot.service`, started through the program the plan
+//! records where the host may run SELinux ([`crate::whole_root::exec_prefix`]).
+//! That service is ordered after
 //! `shutdown.target`, `umount.target` and `final.target`, so every unit of the
 //! userspace being left has stopped (journald included) when it runs, and
 //! nothing runs after it but PID 1. It acts only on an **armed** plan
@@ -76,8 +78,8 @@ use crate::whole_root::plan::{
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::{
-    boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, skips,
-    switch_refusal, utab,
+    boot_records, exec_prefix, fresh_pids, kernel_helpers, network, run_records, runtime_units,
+    skips, switch_refusal, utab,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -89,12 +91,13 @@ pub const DROPIN_NAME: &str = "50-overlay-runtime.conf";
 /// The argument the drop-in passes to the RAM copy of the binary.
 pub const TRANSITION_ARG: &str = "transition";
 
-/// The drop-in text that runs `binary transition` as the service's start.
-pub fn dropin_text(binary: &Path) -> String {
+/// The drop-in text that runs `binary transition` as the service's start,
+/// through `prefix` where the plan records one ([`exec_prefix::command`]).
+pub fn dropin_text(binary: &Path, prefix: Option<&Path>) -> String {
     format!(
         "[Service]\nType=oneshot\nStandardInput=null\nStandardOutput=null\nStandardError=null\n\
          ExecStart=-{} {TRANSITION_ARG}\n",
-        binary.display()
+        exec_prefix::command(prefix, binary)
     )
 }
 
@@ -219,10 +222,11 @@ pub fn runtime_guards() -> impl Iterator<Item = (&'static str, &'static str)> {
         .chain(std::iter::once((SWITCH_TIMEOUT_UNIT, SWITCH_TIMEOUT_TEXT)))
 }
 
-/// Install the drop-in, and the runtime guards ([`runtime_guards`]), under
-/// `run`, readable by all ([`plan::SERVICE_CONFIG_MODE`]). The caller reloads
-/// the service manager.
-pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
+/// Install the drop-in, which starts `binary` through `prefix` where the plan
+/// records one, and the runtime guards ([`runtime_guards`]), under `run`,
+/// readable by all ([`plan::SERVICE_CONFIG_MODE`]). The caller reloads the
+/// service manager.
+pub fn install_dropin(run: &Path, binary: &Path, prefix: Option<&Path>) -> io::Result<PathBuf> {
     for (unit, text) in runtime_guards() {
         let dir = run.join(stop_guard_dir(unit));
         std::fs::create_dir_all(&dir)?;
@@ -237,7 +241,7 @@ pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     let path = dir.join(DROPIN_NAME);
     plan::write_atomic_with_mode(
         &path,
-        dropin_text(binary).as_bytes(),
+        dropin_text(binary, prefix).as_bytes(),
         plan::SERVICE_CONFIG_MODE,
     )?;
     Ok(path)
@@ -753,7 +757,15 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         .and_then(|binary| Some((binary, boot_records::Fix::for_decoy(&env.nextroot)?)))
         .is_some_and(|(binary, fix)| {
             let switched_at = boot_records::boot_clock();
-            boot_records::install(&env.run, binary, &fix, switched_at, plan.run_noexec).is_ok()
+            boot_records::install(
+                &env.run,
+                binary,
+                &fix,
+                switched_at,
+                plan.run_noexec,
+                plan.exec_prefix.as_deref(),
+            )
+            .is_ok()
         });
     if plan.run_noexec && !fixup_installed {
         let _ = nextroot::set_noexec(&env.run, true);
