@@ -2,14 +2,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! No check of `check` and activation makes a lookup that would mount an
-//! automount point that nothing is mounted on yet: the whole registry runs on
-//! a mock decoy with unmounted automount points where the checks read, and
-//! nothing at or below them is looked up, while each check that reads there
-//! names the point. Without a mount table, the checks that read the decoy
-//! look nothing up on it.
+//! automount point that nothing is mounted on yet. The whole registry, as it
+//! is built for an operator on a decoy that is no NixOS, and again with the
+//! NixOS layer's checks, runs on a mock decoy with unmounted automount points
+//! where the checks read and a hidden volume mounted at `/mnt/data`, so that
+//! the checks that need the volume run too: nothing at or below a point is
+//! looked up, and each check that reads there names the point. Without a
+//! mount table, the checks [`guarded`] lists, which read the decoy through
+//! the automount guard, look nothing up on it and say so.
 //!
-//! fstab-policy reads the decoy with nextroot, not through the mock, so its
-//! own tests cover it.
+//! Some checks of the registry skip themselves in tests, such as
+//! mount-namespace, host-tools and network-tools, and binary-location and
+//! locate-database run again with test inputs. fstab-policy reads the decoy
+//! with nextroot, not through the mock, so its own tests cover it.
+//! kernel-modules reads the running kernel's module tree in `/usr/lib/modules`
+//! and the hidden root's upper with the real filesystem, so this test sees
+//! none of its lookups.
 
 use super::automount_fixture::{ROOT_MOUNT, direct, reached};
 use crate::config::SleepPolicyMode;
@@ -49,15 +57,34 @@ const RELEASE: &str = "6.8.0-45-generic";
 /// The hidden root of the checks.
 const HIDDEN: &str = "/mnt/data";
 
+/// The hidden volume, mounted at [`HIDDEN`], as the mount table lists it.
+const HIDDEN_MOUNT: &str = "25 1 8:17 / /mnt/data rw,relatime - ext4 /dev/sdb1 rw\n";
+
+/// The checks of the registry that need the hidden volume, which the runner
+/// skips where `hidden-volume` refuses it.
+const ON_THE_VOLUME: &[&str] = &[
+    "backend-entries",
+    "symlink-support",
+    "upper-fs-capability",
+    "backend-encryption",
+    "outer-volume",
+    "backend-partition-type",
+    "storage-readiness",
+    "kernel-modules",
+    "package-drift",
+    "space",
+];
+
 /// bob, the operator, whose home is a name of the indirect map.
 fn bob() -> TargetUser {
     TargetUser::for_test(1000, 100, "bob", "/home/bob", "/bin/bash")
 }
 
 /// A mock decoy whose mount table holds the direct automount points
-/// `points` and the indirect map at `/home`, with bob in /etc/passwd, the
-/// running kernel's release, and journald set to `Storage=auto`, under which
-/// `/var/log/journal` decides where the journal goes.
+/// `points`, the indirect map at `/home` and the hidden volume, with bob in
+/// /etc/passwd, the running kernel's release, and journald set to
+/// `Storage=auto`, under which `/var/log/journal` decides where the journal
+/// goes.
 fn decoy_with(points: &[&str]) -> MockFilesystem {
     let fs = MockFilesystem::new();
     let mut table = ROOT_MOUNT.to_string();
@@ -65,7 +92,10 @@ fn decoy_with(points: &[&str]) -> MockFilesystem {
         table.push_str(&direct(point, id, 1));
     }
     table.push_str(HOME_MAP);
+    table.push_str(HIDDEN_MOUNT);
     fs.mock_set_mount_table(&table);
+    fs.mock_set_path_type(HIDDEN, crate::filesystem::PathKind::Dir);
+    fs.mock_set_writable(HIDDEN, true);
     fs.mock_add_file(
         "/etc/passwd",
         "root:x:0:0:root:/root:/bin/bash\nbob:x:1000:100:Bob:/home/bob:/bin/bash\n",
@@ -143,6 +173,23 @@ fn result<'a>(results: &'a [(String, CheckResult)], name: &str) -> &'a CheckResu
         .unwrap_or_else(|| panic!("no {name} among {results:#?}"))
 }
 
+/// Assert that the hidden volume's gate let the checks of `results` run,
+/// each of `needing` among them, which need the volume.
+fn the_volume_let_run(results: &[(String, CheckResult)], needing: &[&str]) {
+    let gate = result(results, "hidden-volume");
+    assert!(!gate.is_fail(), "{gate:?}");
+    for name in needing {
+        let result = result(results, name);
+        assert!(!result.is_skipped(), "{name}: {result:?}");
+    }
+    let skipped: Vec<&str> = results
+        .iter()
+        .filter(|(_, result)| result.message() == crate::preflight::SKIPPED_NO_HIDDEN_VOLUME)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(skipped.is_empty(), "{skipped:?}");
+}
+
 /// The whole text of `result`: its message and its remediation.
 fn text(result: &CheckResult) -> String {
     format!(
@@ -174,6 +221,7 @@ fn no_check_looks_up_a_path_behind_an_automount_point() {
     let fs = decoy();
     let results = checks(&fs);
     none_reached(&fs, POINTS);
+    the_volume_let_run(&results, ON_THE_VOLUME);
 
     // The journal's place is asked only where journald's settings say
     // Storage=auto, which a drop-in below /usr/local may change: with
@@ -197,6 +245,10 @@ fn no_check_looks_up_a_path_behind_an_automount_point() {
     }
     let memory = names(&results, "memory-wipe", &["/boot"]);
     assert!(memory.is_pass(), "{memory:?}");
+    // With the volume mounted, the overlay trial would load the overlay
+    // module, which reads its settings below /usr/local: no trial is made.
+    let capability = names(&results, "upper-fs-capability", &["/usr/local"]);
+    assert!(capability.is_fail(), "{capability:?}");
 
     // With /usr/local mounted, journald's settings say Storage=auto, and the
     // journal's place, an automount point itself, is what the refusal names.
@@ -209,7 +261,8 @@ fn no_check_looks_up_a_path_behind_an_automount_point() {
 
 /// On a NixOS decoy whose /etc/nixos links into bob's home, a name of the
 /// indirect map, the checks of the NixOS layer look up nothing behind the
-/// point either: suspicious-nails-reference refuses, naming it.
+/// point either: suspicious-nails-reference and nixos-config refuse, naming
+/// it.
 #[test]
 fn the_nixos_layer_looks_up_nothing_behind_an_automount_point() {
     use crate::Filesystem;
@@ -252,8 +305,13 @@ fn the_nixos_layer_looks_up_nothing_behind_an_automount_point() {
     );
     let (results, _) = registry.run_all_detailed(&fs);
     none_reached(&fs, POINTS);
-    let reference = names(&results, "suspicious-nails-reference", &["/home/bob"]);
-    assert!(reference.is_fail(), "{reference:?}");
+    let mut needing = ON_THE_VOLUME.to_vec();
+    needing.push("nixos-config");
+    the_volume_let_run(&results, &needing);
+    for name in ["suspicious-nails-reference", "nixos-config"] {
+        let result = names(&results, name, &["/home/bob"]);
+        assert!(result.is_fail(), "{name}: {result:?}");
+    }
 }
 
 /// The checks that read the decoy through the automount guard, each built
@@ -319,8 +377,20 @@ fn guarded() -> Vec<(&'static str, Box<dyn PreFlightCheck<MockFilesystem>>)> {
             "package-drift",
             Box::new(crate::session::package_drift::PackageDriftCheck::new(
                 PathBuf::from("/"),
-                hidden,
+                hidden.clone(),
             )),
+        ),
+        (
+            "unattended-upgrade-run",
+            Box::new(crate::preflight::UpgradeRunCheck::new()),
+        ),
+        (
+            "nixos-config",
+            Box::new(crate::preflight::NixOSConfigCheck::new(hidden.clone())),
+        ),
+        (
+            "suspicious-nails-reference",
+            Box::new(crate::preflight::SuspiciousNailsReferenceCheck::new(hidden)),
         ),
     ]
 }
