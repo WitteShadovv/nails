@@ -432,6 +432,9 @@ impl<F: Filesystem> NailsManager<F> {
             // could not be read, has no facts to rule SELinux out, so it needs
             // the labels as one that runs it does.
             labels: Labels::for_host(self.host_profile()),
+            // Fail closed the same way: where SELinux runs or may run, the RAM
+            // copies of the binary take the label of the system's programs.
+            program_label: crate::session::program_label::for_host(self.host_profile()),
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
             accepted_decoy_storage,

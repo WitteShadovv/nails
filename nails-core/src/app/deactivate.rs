@@ -188,8 +188,12 @@ impl LockedDeactivation {
     /// return to the decoy not unless the hidden session's PID 1 holds the
     /// guards the entry checked, the stop guard of `blk-availability.service`
     /// and the switch's timeout guard
-    /// ([`may_leave`](crate::session::leave::may_leave)). It asks the host
-    /// [`leave`](Self::leave) would leave with. `leave` asks again itself; a
+    /// ([`may_leave`](crate::session::leave::may_leave)), nor where the plan
+    /// records a label for the RAM copy of the binary and the loaded policy
+    /// would not start the way back's last step from it in the unconfined
+    /// service domain
+    /// ([`check_way_back`](crate::session::program_label::check_way_back)). It
+    /// asks the host [`leave`](Self::leave) would leave with. `leave` asks again itself; a
     /// caller that shows a person what comes asks first, so that a refusal
     /// comes before it.
     pub fn may_leave(&self, to: LeaveTo) -> Result<(), NailsError> {
@@ -198,7 +202,11 @@ impl LockedDeactivation {
             SessionView::Hidden(plan) => Some(&**plan),
             _ => None,
         });
-        crate::session::leave::may_leave(to, &host)
+        crate::session::leave::may_leave(to, &host)?;
+        if to == LeaveTo::Decoy {
+            crate::session::program_label::check_way_back(&self.ready.plan, &host)?;
+        }
+        Ok(())
     }
 
     /// Commit the way back: enqueue the soft-reboot (or the power-off). A

@@ -125,6 +125,7 @@ fn minimal_inputs<'a>(
         persona: Default::default(),
         operator: None,
         labels: Labels::BestEffort,
+        program_label: None,
         rebuild_space_mb: 0,
         read_only_disks: false,
         accepted_decoy_storage: None,
@@ -147,8 +148,14 @@ fn write_runtime_populates_the_runtime_directory() {
     let toml = "hidden_volume_root = \"/x\"\n".to_string();
     let inputs = minimal_inputs(hidden.path(), &binary, Some(toml.clone()));
     let snapshot = Snapshot::take(&paths.run);
+    // A host without SELinux: the copy takes no label, and nothing is asked.
+    let untouched = nails_teardown::test_support::FakeSelinux {
+        write_error: Some(rustix::io::Errno::PERM.raw_os_error()),
+        ..nails_teardown::test_support::FakeSelinux::targeted()
+    };
 
-    write_runtime(&paths, &inputs, &snapshot).unwrap();
+    write_runtime(&paths, &inputs, &snapshot, &untouched).unwrap();
+    assert!(untouched.labels_written().is_empty() && untouched.questions().is_empty());
 
     let runtime = paths.runtime();
     // The RAM copy of the binary is the running binary, byte for byte: the
@@ -169,6 +176,46 @@ fn write_runtime_populates_the_runtime_directory() {
     // The runtime directory is private (0o700), as write_runtime sets it.
     let mode = std::fs::metadata(&runtime).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700);
+}
+
+/// Where the host may run SELinux, the RAM copy takes the label of the
+/// system's programs as it is written; a copy that does not read it back
+/// refuses the entry.
+#[test]
+fn write_runtime_labels_the_copy_where_the_host_may_run_selinux() {
+    use nails_teardown::test_support::FakeSelinux;
+    let run = tempfile::tempdir().unwrap();
+    let hidden = tempfile::tempdir().unwrap();
+    let binary = run.path().join("nails-running-binary");
+    std::fs::write(&binary, b"the running binary bytes").unwrap();
+    let paths = Paths {
+        root: PathBuf::from("/"),
+        run: run.path().to_path_buf(),
+    };
+    let mut inputs = minimal_inputs(hidden.path(), &binary, None);
+    inputs.program_label = Some(super::super::program_label::Why::Kernel);
+    let snapshot = Snapshot::take(&paths.run);
+
+    let selinux = FakeSelinux::targeted();
+    write_runtime(&paths, &inputs, &snapshot, &selinux).unwrap();
+    assert_eq!(
+        selinux.labels_written(),
+        [b"system_u:object_r:bin_t:s0\0".to_vec()]
+    );
+
+    let refused = FakeSelinux {
+        write_error: Some(rustix::io::Errno::ACCESS.raw_os_error()),
+        ..FakeSelinux::targeted()
+    };
+    let error = write_runtime(&paths, &inputs, &snapshot, &refused).unwrap_err();
+    let NailsError::PreFlightCheckFailed(failures) = &error else {
+        panic!("expected the program label's refusal, got {error:?}");
+    };
+    assert_eq!(failures[0].0, super::super::program_label::CHECK);
+    assert!(
+        failures[0].1.contains("could not take the label: "),
+        "{error}"
+    );
 }
 
 #[test]

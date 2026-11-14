@@ -9,13 +9,18 @@
 //! 1. snapshot `/run` and save `utab`, before NAILS adds anything to `/run`;
 //! 2. the runtime directory: the snapshot, the RAM copy of the binary and
 //!    configuration, the plan; `noexec` cleared on `/run` when it is set
-//!    (Debian, Ubuntu), recorded in the plan;
+//!    (Debian, Ubuntu), recorded in the plan. Where the host may run SELinux
+//!    the copy takes the label of the system's programs, from which the
+//!    loaded policy must start it in the unconfined service domain, or the
+//!    entry is refused before anything is written ([`super::program_label`]);
 //! 3. the transition drop-in and the runtime guards installed and the service
 //!    manager reloaded, before anything is mounted at `/run/nextroot`: an
 //!    activation killed later leaves an unarmed next root that any soft-reboot
 //!    disarms. From here on a switch that hangs until its job timeout powers
 //!    the machine off ([`transition::SWITCH_TIMEOUT_ACTION`]); the entry is
-//!    refused when a guard does not hold once loaded;
+//!    refused when a guard does not hold once loaded, or where the copy takes
+//!    a label, when PID 1 starts `systemd-soft-reboot.service` in an
+//!    `SELinuxContext=` of its own;
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume. Before it is mounted the operator's home
 //!    is made in the fresh-home persona, and in either persona the directories
@@ -60,7 +65,8 @@
 //!    rollback reaches the copies other mount namespaces hold; see
 //!    [`nextroot`]); the init checked the way PID 1 will, and the soft-reboot
 //!    units the way back needs found in the next root;
-//! 9. the plan armed for the entry.
+//! 9. the plan armed for the entry, where the copy takes a label once it has
+//!    taken it again and the policy has been asked again.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
 //! must never be left behind, or a later plain reboot would enter it. A
@@ -182,6 +188,10 @@ impl GuardHost for RealEntryHost {
     fn unit_dropins(&self, unit: &str) -> Result<String> {
         show(Some(unit), "DropInPaths")
     }
+
+    fn selinux_context(&self, unit: &str) -> Result<String> {
+        show(Some(unit), "SELinuxContext")
+    }
 }
 
 /// `property` of `unit`, or of PID 1 itself, through the system's `systemctl`
@@ -272,6 +282,10 @@ pub struct EntryInputs<'a> {
     /// operator's home must take the SELinux labels of the decoy directories
     /// they stand for: [`Labels::for_host`] of the detected host.
     pub labels: Labels,
+    /// Why the RAM copies of the binary take the label of the system's
+    /// programs, `None` where they take none:
+    /// [`super::program_label::for_host`] of the detected host.
+    pub program_label: Option<super::program_label::Why>,
     /// The free space a hidden NixOS build needs on the hidden volume, in MB.
     pub rebuild_space_mb: u64,
     /// Keep the disks the session does not use read-only for the session
@@ -453,7 +467,12 @@ pub fn prepare(paths: &Paths, inputs: &EntryInputs<'_>, host: &dyn EntryHost) ->
     })
 }
 
-fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -> Result<()> {
+fn write_runtime(
+    paths: &Paths,
+    inputs: &EntryInputs<'_>,
+    snapshot: &Snapshot,
+    selinux: &dyn nails_teardown::whole_root::selinux::Selinux,
+) -> Result<()> {
     let runtime = paths.runtime();
     std::fs::create_dir_all(&runtime).map_err(|e| io(&runtime, e))?;
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))
@@ -482,6 +501,7 @@ fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -
     std::fs::copy(inputs.binary, &copy).map_err(|e| io(&copy, e))?;
     std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| io(&copy, e))?;
+    super::program_label::label_copy(inputs.program_label, selinux, &copy)?;
     if let Some(toml) = &inputs.config_toml {
         let path = runtime.join(CONFIG_COPY_NAME);
         nails_teardown::whole_root::plan::write_private_atomic(&path, toml.as_bytes())
@@ -537,7 +557,9 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         armed: None,
         entered_at: None,
         run_noexec: false,
-        program_label: None,
+        program_label: inputs
+            .program_label
+            .map(|_| super::program_label::PROGRAM_LABEL.to_string()),
         carried: Vec::new(),
         decoy_mounts: Vec::new(),
         read_only_disks: inputs.read_only_disks,
@@ -572,8 +594,9 @@ fn build(
     }
     let building = inputs.builder.is_some();
     activation_step(ActivationPhase::Runtime, building);
+    super::program_label::require(inputs.program_label, host.selinux())?;
     let snapshot = Snapshot::take(&paths.run);
-    write_runtime(paths, inputs, &snapshot)?;
+    write_runtime(paths, inputs, &snapshot, host.selinux())?;
     let layout = Layout::new(inputs.hidden_root);
     let mut plan = skeleton(paths, inputs, &layout);
     plan.hidden_dev = hidden_dev(&mounts, inputs.hidden_root);
@@ -594,7 +617,7 @@ fn build(
     if plan.run_noexec {
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
-    install_transition(paths, host, dropin)?;
+    install_transition(paths, inputs, host, dropin)?;
     crate::cancel::checkpoint()?;
 
     activation_step(ActivationPhase::Overlay, building);
@@ -734,6 +757,11 @@ fn build(
 
     crate::cancel::checkpoint()?;
     activation_step(ActivationPhase::Arm, building);
+    super::program_label::ready_for_entry(
+        inputs.program_label,
+        host.selinux(),
+        &paths.binary_copy(),
+    )?;
     plan.armed = Some(Arm::now(Direction::Enter));
     plan.write_atomic(&paths.plan())
         .map_err(|e| io(&paths.plan(), e))?;
@@ -897,8 +925,16 @@ impl HomeWay {
     }
 }
 
-/// Install the transition drop-in and reload the service manager.
-fn install_transition(paths: &Paths, host: &dyn EntryHost, dropin: &mut bool) -> Result<()> {
+/// Install the transition drop-in and reload the service manager, and refuse
+/// the entry when a guard does not hold once loaded, or PID 1 starts the
+/// transition's unit outside the domain the copy's label gives it
+/// ([`super::program_label::check_switch_unit`]).
+fn install_transition(
+    paths: &Paths,
+    inputs: &EntryInputs<'_>,
+    host: &dyn EntryHost,
+    dropin: &mut bool,
+) -> Result<()> {
     let binary = if paths.is_system() {
         paths.binary_copy()
     } else {
@@ -910,7 +946,8 @@ fn install_transition(paths: &Paths, host: &dyn EntryHost, dropin: &mut bool) ->
     *dropin = true;
     host.daemon_reload()?;
     check_stop_guards(host)?;
-    check_switch_timeout(host)
+    check_switch_timeout(host)?;
+    super::program_label::check_switch_unit(inputs.program_label, host)
 }
 
 /// The mounts below `root`, with their mount points made relative to it (as

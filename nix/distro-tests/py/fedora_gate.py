@@ -385,7 +385,6 @@ SCAN_WARNINGS_EXIT = 9
 # lsm-status out (lib/admitted.nix), which refuses every host where SELinux
 # runs until NAILS chooses the SELinux domains of what starts from its copy
 # in /run.
-NEEDS_LABEL = "the RAM copy labelled as a program (bin_t)"
 NEEDS_LSM = "lsm-status passing on an SELinux host, so the build keeps it"
 NEEDS_SOCKETS = (
     "a way back that empties what journald's sockets hold before the decoy starts"
@@ -1724,7 +1723,6 @@ class Gate:
                 "the watcher's",
                 guard.splitlines()[:1] == ["active"],
                 guard,
-                NEEDS_LABEL,
             )
         processes = self.fact(
             f"processes-{n}",
@@ -1739,14 +1737,12 @@ class Gate:
             bool(nails_lines)
             and all(sg.unconfined(line.split()[0]) for line in nails_lines),
             processes,
-            NEEDS_LABEL,
         )
         copy = self.fact(f"ram-copy-{n}", f"stat -c '%C' {RAM}")
         self.check(
             f"session {n}: the RAM copy is labelled bin_t",
             sg.context_type(copy) == "bin_t",
             copy,
-            NEEDS_LABEL,
         )
         pairs = distro_checks.parse_findmnt_pairs(
             vm.succeed("findmnt -rn -t overlay -o TARGET,OPTIONS")
@@ -1926,7 +1922,6 @@ class Gate:
             f"session {n}: the disk guard's udev rule is in place",
             "guard-device" in rule,
             rule,
-            NEEDS_LABEL,
         )
         disk = self.attach(f"extra{n}", HOTPLUG_BYTES)
         out = self.fact(
@@ -1939,7 +1934,6 @@ class Gate:
             f"session {n}: a disk attached in the session reads getro 1",
             lines[-1:] == ["1"],
             out,
-            NEEDS_LABEL,
         )
         node = lines[-2] if len(lines) >= 2 else disk
         record = self.fact(f"guard-record-{n}", f"cat {GUARD_RECORD} 2>&1; true")
@@ -1947,7 +1941,6 @@ class Gate:
             f"session {n}: the disk guard recorded the attached disk",
             any(line.split()[-1:] == [node] for line in record.splitlines()),
             {"disk": node, "record": record},
-            NEEDS_LABEL,
         )
         return disk
 
@@ -2160,7 +2153,6 @@ class Gate:
             f"way back {n}: the decoy's journal took no kernel record of the session",
             found["known"] and found["leakedFromSession"] == 0,
             found,
-            NEEDS_LABEL,
         )
         # The cursor the transition step writes is read and rewritten by the
         # decoy's journald before the gate can read it: what it did shows in
@@ -2182,7 +2174,6 @@ class Gate:
                 "beforeTheStep": found.get("beforeStep"),
                 "cursorFileNow": sg.seqnum_from_od(file),
             },
-            NEEDS_LABEL,
         )
         marker = f"GATEIN-{self.nonce}-{n}"
         shown = self.fact(
@@ -2228,7 +2219,6 @@ class Gate:
             f"way back {n}: the reconcile step left none of its pieces",
             not pieces,
             pieces,
-            NEEDS_LABEL,
         )
         # The pieces that stayed are judged above; anything else counts.
         # Without the RAM copy's label NAILS's steps run in init_t, and after
@@ -2245,7 +2235,6 @@ class Gate:
             "in /run",
             not added,
             {"added": added, "now": trees},
-            NEEDS_LABEL,
         )
         self.nextroot(n)
         noexec = "noexec" in vm.succeed("findmnt -no OPTIONS /run")
@@ -2523,7 +2512,6 @@ class Gate:
                 {"left": residue, "new": sorted(after - before)[:200]}
                 if controls
                 else "no control was taken",
-                NEEDS_LABEL,
             )
 
     def judge_execs(self) -> None:
@@ -2558,7 +2546,6 @@ class Gate:
             "either root",
             not data,
             data,
-            NEEDS_LABEL,
         )
         in_init = [
             r for r in nails if r["ran"] and sg.context_type(str(r["subj"])) == "init_t"
@@ -2567,7 +2554,6 @@ class Gate:
             "no NAILS program ran in init_t, in either root",
             not in_init,
             in_init,
-            NEEDS_LABEL,
         )
         domains: dict[str, list[str]] = {}
         for record in nails:
@@ -2584,7 +2570,6 @@ class Gate:
                 "missing": [s for s in NAILS_STEPS if s not in domains],
                 "domains": domains,
             },
-            NEEDS_LABEL,
         )
 
     def records_positive(self) -> None:
@@ -2759,12 +2744,10 @@ class Gate:
                         if a["source"] != "nails"
                     ]
                     new = [a for a in new if a["source"] == "nails"]
-                needs = NEEDS_LABEL if any(a["source"] == "nails" for a in new) else ""
                 self.check(
                     f"no new denial from {where} on",
                     not new,
                     [f"{a['signature']} ({a['why']}, {a['log']} log)" for a in new],
-                    needs,
                 )
                 if label is None:
                     continue
