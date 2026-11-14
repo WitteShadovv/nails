@@ -6,6 +6,7 @@
 //! policy, the drop-in, and the transition that consumes it.
 
 use nails_core::session::entry::{self, EntryHost, EntryInputs};
+use nails_core::session::exec_prefix::ExecPrefix;
 use nails_core::session::labels::Labels;
 use nails_core::session::layout::Paths;
 use nails_core::session::{GuardHost, WindowLauncher};
@@ -226,6 +227,7 @@ impl World {
             binary: Path::new("/proc/self/exe"),
             config_toml: Some("hidden_volume_root = \"/x\"\n".into()),
             session_units: Vec::new(),
+            exec_prefix: ExecPrefix::Direct,
             backend: vec!["data".into()],
             persona: Default::default(),
             operator: None,
@@ -1925,3 +1927,6 @@ fn a_launcher_that_cannot_be_written_never_fails_the_entry() {
 
 #[path = "entry_labels.rs"]
 mod labels;
+
+#[path = "entry_exec_prefix.rs"]
+mod exec_prefix;

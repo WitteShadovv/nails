@@ -46,6 +46,7 @@ use crate::error::{NailsError, Result};
 use crate::filesystem::Filesystem;
 use crate::platform::PlatformKind;
 use crate::session::entry::{self, EntryHost, EntryInputs};
+use crate::session::exec_prefix::ExecPrefix;
 use crate::session::labels::{self, Labels};
 use crate::session::package_drift::{self, Advisory};
 use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
@@ -396,6 +397,10 @@ impl<F: Filesystem> NailsManager<F> {
         // The risks that do not refuse the entry, read before the next root
         // is mounted: the result lists them with its warnings.
         let advisories = self.advisories_on(machine, options);
+        // From the host facts alone, as the labels: where SELinux runs or may
+        // run, PID 1 starts every step of the session through the same
+        // program, the units' and the transition step's alike.
+        let exec_prefix = ExecPrefix::for_host(self.host_profile());
         let inputs = EntryInputs {
             hidden_root: &hidden_root,
             decoy_root,
@@ -403,7 +408,11 @@ impl<F: Filesystem> NailsManager<F> {
             builder,
             binary: &options.binary,
             config_toml,
-            session_units: crate::session::units::session_units(&self.config),
+            session_units: crate::session::units::session_units(
+                &self.config,
+                exec_prefix.program(),
+            ),
+            exec_prefix,
             backend,
             persona: self.config.persona.clone(),
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),

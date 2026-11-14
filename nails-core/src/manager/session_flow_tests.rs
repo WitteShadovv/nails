@@ -1149,7 +1149,7 @@ fn an_overlay_only_entry_on_nixos_records_no_platform() {
 /// and an fstab.
 fn fhs_decoy() -> ScratchTmpfs {
     let decoy = ScratchTmpfs::new("");
-    for dir in ["etc", "usr/lib/systemd/system", "run", "home"] {
+    for dir in ["etc", "usr/bin", "usr/lib/systemd/system", "run", "home"] {
         decoy.mkdir(dir);
     }
     for unit in ["soft-reboot.target", "systemd-soft-reboot.service"] {
@@ -1166,6 +1166,8 @@ fn fhs_decoy() -> ScratchTmpfs {
         "#!/bin/sh\n",
         0o755,
     );
+    // What PID 1 starts NAILS's steps through on a host that may run SELinux.
+    write_executable(&decoy.path().join("usr/bin/env"), "#!/bin/sh\n", 0o755);
     decoy
 }
 
@@ -1223,6 +1225,25 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         );
         assert_eq!(entry.plan.hidden_root, hidden.path());
         assert!(machine.paths.plan().is_file());
+        // A host whose facts report no SELinux: PID 1 starts every step from
+        // the copy itself, as before there was an exec prefix.
+        assert_eq!(entry.plan.exec_prefix, None);
+        assert_eq!(
+            std::fs::read_to_string(
+                run.path()
+                    .join(nails_teardown::whole_root::transition::DROPIN_DIR)
+                    .join(nails_teardown::whole_root::transition::DROPIN_NAME)
+            )
+            .unwrap(),
+            nails_teardown::whole_root::transition::dropin_text(
+                Path::new("/run/overlay-runtime/control"),
+                None
+            )
+        );
+        assert_eq!(
+            entry.plan.session_units,
+            crate::session::units::session_units(m.config(), None)
+        );
         assert!(
             machine
                 .paths
@@ -1528,6 +1549,123 @@ fn an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone() {
             assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
             assert!(!hidden.path().join("state.json").exists());
         }
+    });
+}
+
+/// A host whose mount table lists a selinuxfs, with the SELinux facts a
+/// targeted, enforcing host reports.
+fn selinux_host() -> crate::platform::HostProfile {
+    let mut profile = FakePlatform::fhs().host_profile();
+    profile.selinux = Some(crate::platform::SelinuxStatus {
+        selinuxfs: Selinuxfs::Mounted,
+        enforce: Some(crate::platform::SelinuxMode::Enforcing),
+        config_mode: Some("enforcing".to_string()),
+        config_policy: Some("targeted".to_string()),
+    });
+    profile
+}
+
+/// Where SELinux runs, PID 1 starts NAILS's steps through `/usr/bin/env`: a
+/// decoy without it is refused before the entry writes anything, as the
+/// entry's own step could not start there.
+#[test]
+fn an_entry_on_a_host_that_runs_selinux_needs_env_on_the_decoy_before_anything_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&hidden);
+    m.set_host_profile(selinux_host());
+    let host = FakeEntryHost::default();
+
+    let error = m
+        .enter_session_no_preflight_on(&machine, &EnterOptions::default(), &host)
+        .unwrap_err();
+
+    let NailsError::PreFlightCheckFailed(failures) = &error else {
+        panic!("expected the exec-prefix refusal, got {error:?}");
+    };
+    assert_eq!(failures[0].0, crate::session::exec_prefix::CHECK, "{error}");
+    assert!(
+        failures[0]
+            .1
+            .contains("in the decoy root /usr/bin/env does not exist"),
+        "{error}"
+    );
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0, "no drop-in was written");
+    assert!(!hidden.join("state.json").exists());
+}
+
+/// The decoy root's own label, as a targeted policy gives `/`.
+const ROOT_LABEL: &[u8] = b"system_u:object_r:root_t:s0\0";
+
+#[test]
+fn an_entry_on_a_host_that_runs_selinux_starts_every_step_through_env() {
+    // The labels this host needs are given to the decoy root, so the entry
+    // gets past them: on a kernel without SELinux the namespace's root may
+    // write the attribute on its own tmpfs.
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_on_a_host_that_runs_selinux_starts_every_step_through_env
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        rustix::fs::lsetxattr(
+            decoy.path(),
+            crate::session::labels::LABEL_XATTR,
+            ROOT_LABEL,
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        m.set_host_profile(selinux_host());
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
+
+        let EnterOutcome::Prepared { entry, .. } = outcome else {
+            panic!("expected a prepared entry, got {outcome:?}");
+        };
+        let env = Path::new(nails_teardown::whole_root::exec_prefix::TRAMPOLINE);
+        // The plan records the program, so the way back starts its step the
+        // same way and checks the same program.
+        assert_eq!(entry.plan.exec_prefix.as_deref(), Some(env));
+        // The step's drop-in, written once for both directions.
+        assert_eq!(
+            std::fs::read_to_string(
+                run.path()
+                    .join(nails_teardown::whole_root::transition::DROPIN_DIR)
+                    .join(nails_teardown::whole_root::transition::DROPIN_NAME)
+            )
+            .unwrap(),
+            nails_teardown::whole_root::transition::dropin_text(
+                Path::new("/run/overlay-runtime/control"),
+                Some(env)
+            )
+        );
+        // The hidden session's own units: the watcher, at least.
+        assert!(!entry.plan.session_units.is_empty());
+        assert_eq!(
+            entry.plan.session_units,
+            crate::session::units::session_units(m.config(), Some(env))
+        );
+        entry::rollback(&machine.paths);
     });
 }
 

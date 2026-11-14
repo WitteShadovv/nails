@@ -176,17 +176,23 @@ impl LockedDeactivation {
     /// return to the decoy not unless the hidden session's PID 1 holds the
     /// guards the entry checked, the stop guard of `blk-availability.service`
     /// and the switch's timeout guard
-    /// ([`may_leave`](crate::session::leave::may_leave)). It asks the host
-    /// [`leave`](Self::leave) would leave with. `leave` asks again itself; a
-    /// caller that shows a person what comes asks first, so that a refusal
-    /// comes before it.
+    /// ([`may_leave`](crate::session::leave::may_leave)), nor while the
+    /// hidden root lacks the program the plan starts the way back's last step
+    /// through ([`check_way_back`](crate::session::exec_prefix::check_way_back)).
+    /// It asks the host [`leave`](Self::leave) would leave with. `leave` asks
+    /// again itself; a caller that shows a person what comes asks first, so
+    /// that a refusal comes before it.
     pub fn may_leave(&self, to: LeaveTo) -> Result<(), NailsError> {
         let view = self.ready.manager.session_view();
         let host = RealTargetHost::for_plan(match &view {
             SessionView::Hidden(plan) => Some(&**plan),
             _ => None,
         });
-        crate::session::leave::may_leave(to, &host)
+        crate::session::leave::may_leave(to, &host)?;
+        if to == LeaveTo::Decoy {
+            crate::session::exec_prefix::check_way_back(&self.ready.root, &self.ready.plan)?;
+        }
+        Ok(())
     }
 
     /// Commit the way back: enqueue the soft-reboot (or the power-off). A
@@ -554,6 +560,23 @@ mod tests {
             locked.may_leave(LeaveTo::Poweroff).unwrap();
 
             std::fs::write(watchdogs, "yes\n").unwrap();
+            locked.may_leave(LeaveTo::Decoy).unwrap();
+            drop(locked);
+
+            // The plan starts the way back's last step through a program the
+            // hidden root, here `dir`, lacks: a return is refused once the
+            // guards hold, a power-off is not.
+            let mut ready = ready_at(dir.path());
+            ready.plan.exec_prefix = Some(PathBuf::from("/usr/bin/env"));
+            let locked = self::locked(ready);
+            let error = locked.may_leave(LeaveTo::Decoy).unwrap_err();
+            let NailsError::PreFlightCheckFailed(failures) = &error else {
+                panic!("expected the exec-prefix refusal, got {error:?}")
+            };
+            assert_eq!(failures[0].0, crate::session::exec_prefix::CHECK, "{error}");
+            locked.may_leave(LeaveTo::Poweroff).unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            crate::test_support::write_executable(&dir.path().join("usr/bin/env"), "", 0o755);
             locked.may_leave(LeaveTo::Decoy).unwrap();
         });
     }

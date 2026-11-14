@@ -199,6 +199,21 @@ pub enum Reason {
     HostUndetected,
 }
 
+/// Why SELinux runs or may run, as the start of a sentence a refusal goes on
+/// with: "SELinux runs on this host (selinuxfs is mounted), so ...".
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Reason::SelinuxRunning => "SELinux runs on this host (selinuxfs is mounted)",
+            Reason::MountsUnreadable => {
+                "the host facts report SELinux and /proc/self/mounts could not be read to \
+                 tell whether selinuxfs is mounted"
+            }
+            Reason::HostUndetected => "the host could not be detected and may run SELinux",
+        })
+    }
+}
+
 impl Labels {
     /// What a host with this profile needs (the one `NailsManager::host_profile`
     /// returns, `None` where the detection failed): [`Labels::Required`] where
@@ -438,14 +453,6 @@ fn refusal(decoy: &Path, upper: &Path, labels: Labels, failure: Failure) -> Nail
     };
     NailsError::InvalidState(match labels {
         Labels::Required(reason) => {
-            let reason = match reason {
-                Reason::SelinuxRunning => "SELinux runs on this host (selinuxfs is mounted)",
-                Reason::MountsUnreadable => {
-                    "the host facts report SELinux and /proc/self/mounts could not \
-                     be read to tell whether selinuxfs is mounted"
-                }
-                Reason::HostUndetected => "the host could not be detected and may run SELinux",
-            };
             format!("{reason}, so {upper} must carry the SELinux label of {decoy}, but {why}")
         }
         Labels::BestEffort => {

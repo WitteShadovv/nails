@@ -15,7 +15,10 @@
 //!    activation killed later leaves an unarmed next root that any soft-reboot
 //!    disarms. From here on a switch that hangs until its job timeout powers
 //!    the machine off ([`transition::SWITCH_TIMEOUT_ACTION`]); the entry is
-//!    refused when a guard does not hold once loaded;
+//!    refused when a guard does not hold once loaded. Where the host may run
+//!    SELinux the drop-in starts the step through the exec prefix the plan
+//!    records, which the entry checks in the decoy root before it writes
+//!    anything ([`super::exec_prefix`]);
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume. Before it is mounted the operator's home
 //!    is made in the fresh-home persona, and in either persona the directories
@@ -58,8 +61,9 @@
 //!    ([`super::way_back`]); `/run` bound in and everything below the next
 //!    root made private (its own mount stays shared until the switch, so a
 //!    rollback reaches the copies other mount namespaces hold; see
-//!    [`nextroot`]); the init checked the way PID 1 will, and the soft-reboot
-//!    units the way back needs found in the next root;
+//!    [`nextroot`]); the init checked the way PID 1 will, the exec prefix
+//!    checked as well, where there is one, and the soft-reboot units the way
+//!    back needs found in the next root;
 //! 9. the plan armed for the entry.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
@@ -68,6 +72,7 @@
 //! store copy ask [`crate::cancel`], and the entry stops at the first one
 //! after the signal.
 
+use super::exec_prefix::{ExecPrefix, Root};
 use super::fstab::FstabEntry;
 use super::hidden_masks;
 use super::labels::{Labels, copy_label, copy_labels_along, copy_labels_along_existing};
@@ -259,8 +264,12 @@ pub struct EntryInputs<'a> {
     pub binary: &'a Path,
     /// The effective configuration as TOML, copied to RAM.
     pub config_toml: Option<String>,
-    /// The hidden session's runtime units.
+    /// The hidden session's runtime units, which start the RAM copy through
+    /// [`exec_prefix`](Self::exec_prefix).
     pub session_units: Vec<RuntimeUnit>,
+    /// How PID 1 starts the RAM copy: through `/usr/bin/env` where the host
+    /// may run SELinux ([`ExecPrefix::for_host`]), recorded in the plan.
+    pub exec_prefix: ExecPrefix,
     /// The hidden backend's device-mapper names, top first.
     pub backend: Vec<String>,
     /// The persona: fresh home and masks of inherited entries.
@@ -525,7 +534,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         skips: Vec::new(),
         required_masks: Vec::new(),
         session_units: inputs.session_units.clone(),
-        exec_prefix: None,
+        exec_prefix: inputs.exec_prefix.program().map(Path::to_path_buf),
         backend: inputs.backend.clone(),
         tools: Tools {
             systemctl: nails_teardown::whole_root::tools::find(None, "systemctl")
@@ -570,6 +579,9 @@ fn build(
             sudo_line(NextStep::Recover)
         )));
     }
+    // The entry's own step starts in the decoy root: without its program
+    // there, nothing is written.
+    inputs.exec_prefix.require(&paths.root, Root::Decoy)?;
     let building = inputs.builder.is_some();
     activation_step(ActivationPhase::Runtime, building);
     let snapshot = Snapshot::take(&paths.run);
@@ -720,6 +732,7 @@ fn build(
     nextroot::make_below_private(&nextroot).map_err(|e| io(&nextroot, e))?;
     nextroot::precheck(&nextroot, &ret::init_before_repoint(&plan.hidden))
         .map_err(|e| NailsError::InvalidState(e.to_string()))?;
+    inputs.exec_prefix.require(&nextroot, Root::Next)?;
     let missing = super::systemd::missing_soft_reboot_units(&nextroot);
     if !missing.is_empty() {
         return Err(NailsError::InvalidState(format!(

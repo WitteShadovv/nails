@@ -19,7 +19,9 @@
 //! two runtime guards the entry checked in the decoy's, the stop guard of
 //! `blk-availability.service` and the switch's timeout guard ([`may_leave`]):
 //! the hidden system's own configuration, or a change in the session, can
-//! undo one.
+//! undo one. Where the plan records an exec prefix, a return is refused as
+//! well while the hidden root lacks that program, through which PID 1 starts
+//! the way back's last step ([`super::exec_prefix::check_way_back`]).
 
 use super::guards::{self, GuardHost};
 use super::layout::Paths;
@@ -393,6 +395,7 @@ pub fn leave(
         host.start_target("poweroff.target")?;
         return Ok(LeaveReport::default());
     }
+    super::exec_prefix::check_way_back(&paths.root, plan)?;
     let unmounted = unmount_session_disks(paths, plan);
     let nextroot = paths.nextroot();
     if let Err(e) = ret::mount_decoy_root(plan, &nextroot, &paths.run) {
@@ -761,6 +764,38 @@ mod tests {
             leave(&paths, &mut session, LeaveTo::Poweroff, &host).unwrap();
             assert_eq!(*host.started.borrow(), ["poweroff.target"], "{property}");
         }
+    }
+
+    /// A return whose last step PID 1 starts through a program the hidden
+    /// root lacks is refused before anything is prepared, though the guards
+    /// hold. A power-off needs no such step and goes on.
+    #[test]
+    fn a_return_whose_last_step_cannot_start_is_refused_before_anything_is_prepared() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: dir.path().join("root"),
+            run: dir.path().join("run"),
+        };
+        std::fs::create_dir_all(&paths.root).unwrap();
+        let host = Guarded::default();
+        let mut session = plan();
+        session.exec_prefix = Some(PathBuf::from("/usr/bin/env"));
+        let error = leave(&paths, &mut session, LeaveTo::Decoy, &host).unwrap_err();
+        let NailsError::PreFlightCheckFailed(failures) = &error else {
+            panic!("{error}")
+        };
+        assert_eq!(failures[0].0, crate::session::exec_prefix::CHECK);
+        assert!(
+            failures[0]
+                .1
+                .contains("in the hidden root /usr/bin/env does not exist"),
+            "{error}"
+        );
+        assert!(session.armed.is_none());
+        assert!(host.started.borrow().is_empty());
+        assert!(!paths.nextroot().exists());
+        leave(&paths, &mut session, LeaveTo::Poweroff, &host).unwrap();
+        assert_eq!(*host.started.borrow(), ["poweroff.target"]);
     }
 
     #[test]

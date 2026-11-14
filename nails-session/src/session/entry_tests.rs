@@ -121,6 +121,7 @@ fn minimal_inputs<'a>(
         binary,
         config_toml,
         session_units: Vec::new(),
+        exec_prefix: ExecPrefix::Direct,
         backend: Vec::new(),
         persona: Default::default(),
         operator: None,

@@ -17,6 +17,7 @@
 
 pub mod checks;
 pub mod entry;
+pub mod exec_prefix;
 pub mod fstab;
 pub mod guards;
 pub mod hidden_masks;
