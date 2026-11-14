@@ -37,7 +37,6 @@ let
 
   images = import ./images.nix { inherit pkgs; };
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
-  hiddenRoot = import ./lib/hidden-root.nix;
   admitted = import ./lib/admitted.nix { inherit self; };
 
   # The helpers alone, so a change elsewhere in py/ does not rebuild a driver.
@@ -187,10 +186,6 @@ let
       }
       )
       // driftPackages;
-      scripts = {
-        setup_hidden_root = hiddenRoot.setupHiddenRoot;
-        reopen_hidden_root = hiddenRoot.reopenHiddenRoot;
-      };
     in
     distroVm.buildVmTest {
       entry = enforcing;
@@ -223,7 +218,6 @@ let
             utab,
             records,
             json.loads(${builtins.toJSON (builtins.toJSON settings)}),
-            json.loads(${builtins.toJSON (builtins.toJSON scripts)}),
         )
       '';
     };

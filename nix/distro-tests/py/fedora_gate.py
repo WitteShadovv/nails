@@ -90,8 +90,54 @@ SHARES = (("tools", "/run/tools"), ("rpms", "/run/rpms"))
 OP_DIR = "/run/gate-op"
 # The terminal of the console logins that write login records.
 LOGIN_TTY = "tty5"
-# Where a disk attached in the session appears, by its serial.
+# A disk attached in the session, as a USB disk would be.
 HOTPLUG_BYTES = 64 << 20
+# The hidden volume: a disk of its own, attached at the start of the run and
+# backed by a file on the driver's host, so that it survives every switch and
+# the second session finds the first one's upper on it, and nothing of it is
+# on the decoy disk. The Cloud image has no cryptsetup, so it holds plain
+# ext4. Its serial, like every name the decoy can see, is neutral.
+HIDDEN_DISK = "disk2"
+HIDDEN_BYTES = 1 << 30
+HIDDEN_DEVICE = f"/dev/disk/by-id/virtio-{HIDDEN_DISK}"
+HIDDEN_ROOT = f"""
+set -eu
+for i in $(seq 30); do [ -b {HIDDEN_DEVICE} ] && break; sleep 1; done
+if ! mountpoint -q {HIDDEN} ; then
+  blkid {HIDDEN_DEVICE} >/dev/null 2>&1 || mkfs.ext4 -q {HIDDEN_DEVICE}
+  mkdir -p {HIDDEN}
+  mount {HIDDEN_DEVICE} {HIDDEN}
+fi
+mkdir -p {HIDDEN}/root/work {HIDDEN}/config
+"""
+# The decoy prepared as its requirements ask, beyond what the gate checks
+# before and after its fix: core dumps discarded, the lid switch locking the
+# screen, freed memory zeroed (init_on_free=1, from the next boot on), and
+# sssd off with the state files its warning looks for removed.
+PREPARE_DECOY = """
+set -eu
+mkdir -p /etc/systemd/coredump.conf.d /etc/systemd/logind.conf.d
+printf '%s\\n' '[Coredump]' Storage=none ProcessSizeMax=0 \\
+  > /etc/systemd/coredump.conf.d/50-discard.conf
+printf '%s\\n' '[Login]' HandleLidSwitch=lock HandleLidSwitchExternalPower=lock \\
+  HandleLidSwitchDocked=ignore IdleAction=ignore \\
+  > /etc/systemd/logind.conf.d/10-lid.conf
+grubby --update-kernel=ALL --args=init_on_free=1
+systemctl disable --now sssd.service sssd-kcm.socket sssd-kcm.service || true
+rm -f /var/lib/sss/db/config.ldb /var/lib/sss/db/config_kcm.ldb \\
+  /var/lib/sss/mc/passwd /var/lib/sss/mc/group /var/lib/sss/mc/initgroups \\
+  /var/lib/sss/mc/sid /var/lib/sss/secrets/secrets.ldb \\
+  /var/lib/sss/pipes/nss /var/lib/sss/pipes/pam
+"""
+# What check warns of on the prepared decoy because of the harness and the VM,
+# not the decoy: each with why.
+HARNESS_WARNINGS = {
+    "backend-encryption": "the hidden volume is plain ext4, as the image has no "
+    "cryptsetup",
+    "binary-location": "the harness shares the binary into /run over 9p",
+    "decoy-nix-trace": "the harness mounts its own Nix store into the VM",
+    "dma-protection": "the VM has no IOMMU",
+}
 # The trees the canaries go to: the whole root is overlaid, /home and /var
 # are filesystems of their own on Fedora's btrfs.
 CANARY_TREES = ("home", "etc", "var", "usr", "root", "opt", "srv")
@@ -132,7 +178,6 @@ class Gate:
         utab: Any,
         records: Any,
         settings: dict[str, Any],
-        scripts: dict[str, str],
         out_dir: str,
     ) -> None:
         self.vm = vm
@@ -140,7 +185,6 @@ class Gate:
         self.utab = utab
         self.records = records
         self.settings = settings
-        self.scripts = scripts
         self.out_dir = out_dir
         self.image = str(settings["image"])
         self.name = f"{self.image}-gate"
@@ -413,7 +457,7 @@ class Gate:
         mounted, which check needs to judge the decoy."""
         vm = self.vm
         self.mark("prep-decoy")
-        self.sh("hidden-root", self.scripts["setup_hidden_root"])
+        self.sh("hidden-root", HIDDEN_ROOT)
         self.enforcing("on the decoy before the first entry")
         config = self.fact(
             "selinux-config", "grep -E '^SELINUX(TYPE)?=' /etc/selinux/config"
@@ -570,24 +614,19 @@ class Gate:
             "cat /etc/sysconfig/firewalld 2>&1; ps -eo comm,args | "
             "grep -E 'tuned|firewalld|abrtd' | grep -v grep",
         )
+        # A refusal hides the warnings of its row, so each daemon is judged
+        # where it shows: tuned's refusal first, then, with tuned fixed, the
+        # warnings of firewalld and ABRT, then none of them with all fixed.
         status, rows = self.check_rows("check-posture")
         row = rows.get("decoy-persistence", {})
-        text = json.dumps(row)
-        found_tuned = row.get("status") == "fail" and "tuned" in text
+        found = {"tuned": row.get("status") == "fail" and "tuned" in json.dumps(row)}
         self.check(
             "check refuses tuned while it logs to its file",
-            found_tuned and status == 4,
+            found["tuned"] and status == 4,
             row or status,
             NEEDS_POSTURE,
         )
-        found_firewalld = "firewalld" in text
-        self.check(
-            "check warns of firewalld's log file", found_firewalld, row, NEEDS_POSTURE
-        )
-        found_abrt = "abrt" in text.lower()
-        self.check("check warns of ABRT", found_abrt, row, NEEDS_POSTURE)
-        # The documented fixes: tuned without -l, firewalld to the journal,
-        # ABRT off.
+        # tuned's documented fix: its units start it without -l.
         self.vm.succeed(
             "mkdir -p /etc/systemd/system/tuned.service.d && "
             f"printf %s {shlex.quote(TUNED_DROPIN)} > "
@@ -596,7 +635,29 @@ class Gate:
             "mkdir -p /etc/systemd/system/tuned-ppd.service.d && printf %s "
             + shlex.quote("[Service]\nExecStart=\nExecStart=/usr/sbin/tuned-ppd\n")
             + " > /etc/systemd/system/tuned-ppd.service.d/50-journal.conf; fi; "
-            "systemctl daemon-reload && systemctl restart tuned.service && "
+            "systemctl daemon-reload && systemctl restart tuned.service"
+        )
+        status, rows = self.check_rows("check-posture-tuned")
+        row = rows.get("decoy-persistence", {})
+        text = json.dumps(row)
+        found["firewalld"] = row.get("status") == "warn" and "firewalld" in text
+        found["ABRT"] = row.get("status") == "warn" and "abrt" in text.lower()
+        self.check(
+            "check names tuned no more after its documented fix",
+            found["tuned"] and "tuned" not in text and status != 4,
+            text,
+            NEEDS_POSTURE,
+        )
+        self.check(
+            "check warns of firewalld's log file",
+            found["firewalld"],
+            text,
+            NEEDS_POSTURE,
+        )
+        self.check("check warns of ABRT", found["ABRT"], text, NEEDS_POSTURE)
+        # The documented fixes of the other two: firewalld logs to the
+        # journal, ABRT off.
+        self.vm.succeed(
             "printf 'FIREWALLD_ARGS=--log-target=syslog\\n' "
             "> /etc/sysconfig/firewalld && "
             "systemctl restart firewalld.service && "
@@ -604,24 +665,13 @@ class Gate:
         )
         status, rows = self.check_rows("check-posture-fixed")
         text = json.dumps(rows.get("decoy-persistence", {}))
-        for daemon, found in (
-            ("tuned", found_tuned),
-            ("firewalld", found_firewalld),
-            ("ABRT", found_abrt),
-        ):
-            if not found:
-                # Nothing was found to fix: a pass here would say nothing.
-                self.check(
-                    f"check names {daemon} no more after its documented fix",
-                    False,
-                    "not judged: check never named it",
-                    NEEDS_POSTURE,
-                )
-                continue
+        for daemon in ("firewalld", "ABRT"):
+            # Where check never named a daemon, a pass here would say nothing.
             self.check(
                 f"check names {daemon} no more after its documented fix",
-                daemon.lower() not in text.lower(),
-                text,
+                found[daemon] and daemon.lower() not in text.lower(),
+                text if found[daemon] else "not judged: check never named it",
+                NEEDS_POSTURE,
             )
 
     def locate(self) -> None:
@@ -680,13 +730,15 @@ class Gate:
             not failed and status in (0, 9),
             {"exit": status, "failed": failed},
         )
-        allowed = set()
+        allowed = dict(HARNESS_WARNINGS)
         if not self.settings.get("validated"):
-            allowed.add("platform")
+            allowed["platform"] = "the family table does not validate the release yet"
+        self.facts["clean-check-allowed"] = allowed
         self.check(
-            "check warns of nothing on the prepared decoy but an untested release",
-            set(warned) <= allowed,
-            warned,
+            "check warns of nothing on the prepared decoy but what the harness, "
+            "the VM and an untested release bring",
+            set(warned) <= set(allowed),
+            {name: row.get("message", "") for name, row in warned.items()},
         )
 
     # --- a session -------------------------------------------------------
@@ -861,20 +913,24 @@ class Gate:
             self.boots[self.boot]["records"].values(), f"GATEIN-{self.nonce}-{n}"
         )
 
+    def attach(self, serial: str, size: int) -> str:
+        """Attach a sparse disk of ``size`` bytes, backed by a file on the
+        driver's host, whose serial is ``serial``; the device's path."""
+        image = os.path.abspath(f"gate-{self.nonce}-{serial}.img")
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        self.vm.send_monitor_command(
+            f"drive_add 0 if=none,id={serial},file={image},format=raw"
+        )
+        self.vm.send_monitor_command(
+            f"device_add virtio-blk-pci,drive={serial},id={serial}d,serial={serial}"
+        )
+        return f"/dev/disk/by-id/virtio-{serial}"
+
     def hotplug(self, n: int) -> str:
         """A disk attached during the session, as a USB disk would be: the
         disk guard sets it read-only."""
-        image = os.path.abspath(f"gate-hotplug-{self.nonce}-{n}.img")
-        with open(image, "wb") as handle:
-            handle.truncate(HOTPLUG_BYTES)
-        drive = f"gate{n}"
-        self.vm.send_monitor_command(
-            f"drive_add 0 if=none,id={drive},file={image},format=raw"
-        )
-        self.vm.send_monitor_command(
-            f"device_add virtio-blk-pci,drive={drive},id={drive}d,serial={drive}"
-        )
-        disk = f"/dev/disk/by-id/virtio-{drive}"
+        disk = self.attach(f"extra{n}", HOTPLUG_BYTES)
         out = self.fact(
             f"hotplug-{n}",
             f"for i in $(seq 30); do [ -b {disk} ] && break; sleep 1; done; "
@@ -1266,12 +1322,15 @@ class Gate:
         vm = self.vm
         vm.wait_for_unit("multi-user.target")
         self.prepare()
+        self.attach(HIDDEN_DISK, HIDDEN_BYTES)
+        self.sh("prepare-decoy", PREPARE_DECOY)
         self.power_cycle("reference")
+        self.fact("cmdline", "cat /proc/cmdline")
         self.mark("boot-ready")
         self.decoy()
         self.control("control-1")
         # The first session: shared home, ended with deactivate.
-        self.sh("hidden-root-1", self.scripts["setup_hidden_root"])
+        self.sh("hidden-root-1", HIDDEN_ROOT)
         state = self.before_entry(1)
         self.mark("prep-session-1")
         if self.enter(1, "root", CONFIG):
@@ -1296,7 +1355,7 @@ class Gate:
             f"rpm -e --nodeps --noscripts {shlex.quote(removed)}; "
             f"rpm -q {shlex.quote(removed)}",
         )
-        self.sh("hidden-root-2", self.scripts["reopen_hidden_root"])
+        self.sh("hidden-root-2", HIDDEN_ROOT)
         _, rows = self.check_rows("check-drift")
         row = rows.get("package-drift", {})
         self.check(
@@ -1330,9 +1389,8 @@ def run(
     utab: Any,
     records: Any,
     settings: dict[str, Any],
-    scripts: dict[str, str],
 ) -> None:
     """Run the gate of the image ``settings`` names on ``vm``, with the e2e
     package's ``session`` and ``utab`` helpers and the ``records`` readers."""
     out_dir = os.environ.get("NAILS_GATE_OUT") or os.getcwd()
-    Gate(vm, session, utab, records, settings, scripts, out_dir).run()
+    Gate(vm, session, utab, records, settings, out_dir).run()
