@@ -7,21 +7,22 @@
 //! Where SELinux runs with a policy loaded, a program PID 1 starts runs in the
 //! domain the policy gives a start from PID 1's context through the label of
 //! the program's file, and in PID 1's own domain where it gives none.
-//! [`Selinux`] holds what the label's checks ask: PID 1's context, the
-//! context the policy gives a start, which permissions the policy denies,
-//! whether a policy capability is on, and the label of a file, written and
-//! read. [`Kernel`] answers them on the running system: PID 1's context from
-//! [`PID1_CONTEXT`]; the policy's answers from selinuxfs, the kernel's
-//! interface to the loaded policy, through its `create` and `access` files, as
-//! libselinux's `security_compute_create` and `security_compute_av` ask them,
-//! and its `policy_capabilities` directory; and the label from the file's
+//! [`Selinux`] holds what the label's checks ask: PID 1's context and this
+//! process's own, the context the policy gives a start, which permissions the
+//! policy denies, whether a policy capability is on, and the label of a file,
+//! written and read. [`Kernel`] answers them on the running system: the
+//! contexts from `/proc/1/attr/current` and `/proc/self/attr/current`; the
+//! policy's answers from selinuxfs, the kernel's interface to the loaded
+//! policy, through its `create` and `access` files, as libselinux's
+//! `security_compute_create` and `security_compute_av` ask them, and its
+//! `policy_capabilities` directory; and the label from the file's
 //! `security.selinux` attribute, which the kernel answers from its own record
 //! of the file where SELinux runs.
 //!
 //! No policy gives a domain on a kernel that runs no SELinux, which makes no
 //! mount point for selinuxfs in sysfs at boot ([`SELINUXFS`]), nor on one that
 //! runs it with no policy loaded, where every process has the context
-//! [`NO_POLICY`]: there [`Selinux::pid1`] is `None`. Where sysfs itself is not
+//! `kernel`: there [`Selinux::pid1`] is `None`. Where sysfs itself is not
 //! mounted, nothing tells, and the question fails. A kernel that runs a policy
 //! is asked through selinuxfs, so a selinuxfs that is not mounted there fails
 //! the questions about the policy, as does a caller the policy does not let
@@ -37,18 +38,21 @@ use std::path::Path;
 pub const SELINUXFS: &str = "/sys/fs/selinux";
 
 /// PID 1's SELinux context.
-pub const PID1_CONTEXT: &str = "/proc/1/attr/current";
+const PID1_CONTEXT: &str = "/proc/1/attr/current";
+
+/// This process's own SELinux context.
+const OWN_CONTEXT: &str = "/proc/self/attr/current";
 
 /// The context of every process on a kernel that runs SELinux with no policy
 /// loaded.
-pub const NO_POLICY: &str = "kernel";
+const NO_POLICY: &str = "kernel";
 
 /// The extended attribute that holds a file's SELinux label.
 pub const LABEL_XATTR: &str = "security.selinux";
 
 /// The largest value the kernel returns for an extended attribute
 /// (`XATTR_SIZE_MAX`): a buffer this size reads any label in one call.
-const LABEL_MAX: usize = 64 * 1024;
+pub const LABEL_MAX: usize = 64 * 1024;
 
 /// The questions the label of NAILS's program asks SELinux, and the label of a
 /// file written and read: tests replace it.
@@ -56,6 +60,9 @@ pub trait Selinux: std::fmt::Debug {
     /// PID 1's context, or `None` where no policy gives a program a domain:
     /// the kernel runs no SELinux, or runs it with no policy loaded.
     fn pid1(&self) -> io::Result<Option<String>>;
+    /// This process's own context, asked only where [`Selinux::pid1`] tells
+    /// of a policy: the domain it runs in.
+    fn current(&self) -> io::Result<String>;
     /// The context the loaded policy gives a process in `source` that starts
     /// a program from a file labelled `file`: `source` again where it gives
     /// none of its own.
@@ -87,6 +94,10 @@ pub static KERNEL: Kernel = Kernel;
 impl Selinux for Kernel {
     fn pid1(&self) -> io::Result<Option<String>> {
         pid1_context(Path::new(SELINUXFS), Path::new(PID1_CONTEXT))
+    }
+
+    fn current(&self) -> io::Result<String> {
+        own_context(Path::new(OWN_CONTEXT))
     }
 
     fn exec_context(&self, source: &str, file: &str) -> io::Result<String> {
@@ -189,8 +200,9 @@ fn capability_in(selinuxfs: &Path, name: &str) -> io::Result<bool> {
 
 /// PID 1's context as [`Kernel`] reads it ([`Selinux::pid1`]): `None` without
 /// the mount point `selinuxfs` in a sysfs that is there, or where the file
-/// `pid1` reads [`NO_POLICY`]. Without the sysfs the mount point would be in,
-/// nothing tells whether the kernel runs SELinux, which is an error.
+/// `pid1` reads `kernel`, the context of every process where no policy is
+/// loaded. Without the sysfs the mount point would be in, nothing tells
+/// whether the kernel runs SELinux, which is an error.
 fn pid1_context(selinuxfs: &Path, pid1: &Path) -> io::Result<Option<String>> {
     if let Err(e) = std::fs::symlink_metadata(selinuxfs) {
         if e.kind() != io::ErrorKind::NotFound {
@@ -205,10 +217,16 @@ fn pid1_context(selinuxfs: &Path, pid1: &Path) -> io::Result<Option<String>> {
     Ok((context != NO_POLICY).then_some(context))
 }
 
+/// This process's own context as [`Kernel`] reads it ([`Selinux::current`])
+/// from the file `own`.
+fn own_context(own: &Path) -> io::Result<String> {
+    context_text(&std::fs::read(own).map_err(|e| at(own, e))?)
+}
+
 /// A context as the kernel gives it, without the NUL or the newline it ends
 /// with. One that is empty, is not UTF-8, or holds a blank, a NUL or a newline
 /// of its own is an error: a request names each context as one word.
-pub fn context_text(raw: &[u8]) -> io::Result<String> {
+fn context_text(raw: &[u8]) -> io::Result<String> {
     let text = std::str::from_utf8(raw)
         .map_err(|_| invalid("an SELinux context that is not UTF-8".to_string()))?
         .trim_end_matches(['\0', '\n']);
@@ -219,7 +237,7 @@ pub fn context_text(raw: &[u8]) -> io::Result<String> {
 }
 
 /// The type of `context`, its third field: the domain of a process, the type
-/// of a file. `None` where `context` has no third field, as [`NO_POLICY`].
+/// of a file. `None` where `context` has no third field, as `kernel`.
 pub fn type_of(context: &str) -> Option<&str> {
     let mut fields = context.splitn(4, ':');
     let (_user, _role, kind) = (fields.next()?, fields.next()?, fields.next()?);

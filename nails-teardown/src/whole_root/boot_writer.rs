@@ -251,8 +251,38 @@ pub fn run(run: &Path, switched_at: Duration, writer: &[OsString]) -> io::Error 
     remove_dropin(run);
     match prepare(switched_at, writer) {
         Some(mut command) => command.exec(),
-        None => io::Error::new(io::ErrorKind::InvalidInput, "no writer command"),
+        None => no_writer(),
     }
+}
+
+/// [`run`] for a step that does not run in the domain the copy's label gives
+/// it ([`crate::whole_root::program_label::enter_domain`]): it removes the
+/// drop-in as well, and starts the writer as the decoy runs it, as where the
+/// copy was left out. It returns only where that start fails.
+pub fn run_as_decoy(run: &Path, writer: &[OsString]) -> io::Error {
+    remove_dropin(run);
+    match as_decoy(writer) {
+        Some(mut command) => command.exec(),
+        None => no_writer(),
+    }
+}
+
+fn no_writer() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "no writer command")
+}
+
+/// The writer's command as the decoy runs it, `None` when `writer` is empty.
+/// Its environment is this process's, but for the variable a step that
+/// started itself again sets
+/// ([`crate::whole_root::program_label::STARTED_AGAIN`]), which the decoy
+/// never gives the writer.
+fn as_decoy(writer: &[OsString]) -> Option<Command> {
+    let (program, args) = writer.split_first()?;
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .env_remove(crate::whole_root::program_label::STARTED_AGAIN);
+    Some(command)
 }
 
 /// The writer's command, `None` when `writer` is empty. When the kernel can
@@ -262,9 +292,7 @@ pub fn run(run: &Path, switched_at: Duration, writer: &[OsString]) -> io::Error 
 /// writer from the bus and discards its output. Otherwise the command is the
 /// writer as the decoy runs it.
 pub fn prepare(switched_at: Duration, writer: &[OsString]) -> Option<Command> {
-    let (program, args) = writer.split_first()?;
-    let mut command = Command::new(program);
-    command.args(args);
+    let mut command = as_decoy(writer)?;
     let uname = rustix::system::uname();
     let entered = uname
         .release()

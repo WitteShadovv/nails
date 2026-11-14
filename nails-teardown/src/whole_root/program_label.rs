@@ -44,6 +44,21 @@
 //!   in: from `/run`, which systemd mounts `nosuid`, and with
 //!   `NoNewPrivileges=`, which a drop-in for every service can set.
 //!
+//! The switch itself can take the label off again. At a switch where PID 1
+//! loads the policy anew, as on a host that runs SELinux permissive or whose
+//! policy lets PID 1 map the policy file, it gives every file on `/run` the
+//! label of the files there, after the switch's last step started from the
+//! copy and before it starts the units of the root it switched to; a
+//! `restorecon` over `/run` does the same at any time. So each unit PID 1
+//! starts from a copy after a switch checks its own domain first
+//! ([`enter_domain`]): the hidden session's watcher and sleep guard, and the
+//! decoy's reconcile one-shot and the wtmpdb writer's drop-in. One that runs
+//! anywhere but in [`DOMAIN`] gives its copy the label again and starts
+//! itself again from it, once; the policy gives that start from PID 1's own
+//! domain what it gives a start by PID 1. One that then still runs elsewhere,
+//! or whose copy does not take the label, does not do its work there: the
+//! caller ends it as its fail-closed end has it.
+//!
 //! The udev rule that keeps unused disks read-only
 //! ([`crate::whole_root::disk_guard`]) runs the copy too, but udevd starts
 //! it, not PID 1, and keeps its own domain for a program of this label.
@@ -378,6 +393,61 @@ pub enum NotReady {
 pub fn ready(selinux: &dyn Selinux, path: &Path, label: &str) -> Result<(), NotReady> {
     label_path(selinux, path, label).map_err(NotReady::Unlabelled)?;
     check_start(selinux, label).map_err(NotReady::Unfit)
+}
+
+/// The environment variable a unit PID 1 started from a RAM copy sets when
+/// it starts itself again from that copy ([`enter_domain`]), so that the
+/// start again does not start itself once more.
+pub const STARTED_AGAIN: &str = "OVERLAY_RUNTIME_STARTED_AGAIN";
+
+/// Why a unit PID 1 started from a RAM copy does not run in [`DOMAIN`]. It
+/// is not shown: such a unit runs with no output and no log.
+#[derive(Debug)]
+pub enum Outside {
+    /// Whether a policy is loaded, or the context it runs in, could not be
+    /// read: the kernel's error.
+    Unread(io::Error),
+    /// Its copy did not take the label again.
+    Unlabelled(Unlabelled),
+    /// Its start again from its copy failed: the kernel's error.
+    NotStarted(io::Error),
+    /// It runs in this context, though it is the start again from its copy
+    /// with the label.
+    Still(String),
+}
+
+/// Keep a unit that PID 1 started from the RAM copy at `copy` from doing its
+/// work anywhere but in [`DOMAIN`], where a policy is loaded as `selinux`
+/// tells it. A unit that runs elsewhere gives `copy` the label
+/// [`PROGRAM_LABEL`] again ([`label_path`]) and starts itself again from it
+/// through `start_again`, which returns only where that start fails: from
+/// PID 1's own domain the policy gives the start what it gives a start by
+/// PID 1. The start again (`again`) that still runs elsewhere fails, as does
+/// a unit whose copy does not take the label and one that cannot read its
+/// context. `Ok` is a unit that runs in [`DOMAIN`], one that runs where no
+/// policy is loaded ([`Selinux::pid1`]), which is asked nothing more, and
+/// one PID 1 did not start (`by_pid1`), which is asked nothing at all: only
+/// PID 1 starts NAILS's units, and what an operator starts by hand runs in
+/// the operator's domain.
+pub fn enter_domain(
+    selinux: &dyn Selinux,
+    copy: &Path,
+    by_pid1: bool,
+    again: bool,
+    start_again: impl FnOnce() -> io::Error,
+) -> Result<(), Outside> {
+    if !by_pid1 || selinux.pid1().map_err(Outside::Unread)?.is_none() {
+        return Ok(());
+    }
+    let own = selinux.current().map_err(Outside::Unread)?;
+    if type_of(&own) == Some(DOMAIN) {
+        return Ok(());
+    }
+    if again {
+        return Err(Outside::Still(own));
+    }
+    label_path(selinux, copy, PROGRAM_LABEL).map_err(Outside::Unlabelled)?;
+    Err(Outside::NotStarted(start_again()))
 }
 
 /// What keeps the copy at `path` from being ready, as a sentence of its own

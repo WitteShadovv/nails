@@ -326,6 +326,51 @@ fn install_lays_out_every_piece_and_run_removes_them_all() {
     );
 }
 
+/// A reconcile step that does not run in the domain its copy's label gives it
+/// only cleans up: the backdated boot record [`run`] corrects stays as it is,
+/// as where the copy was left out, and every piece still leaves `/run`.
+#[test]
+fn a_step_outside_its_domain_leaves_the_records_and_removes_every_piece() {
+    let backdated = wtmp(&[
+        record(BOOT_TIME, COLD_BOOT),
+        record(RUN_LVL, ACTIVATION),
+        record(BOOT_TIME, COLD_BOOT),
+    ]);
+    for in_domain in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path();
+        install(
+            run_dir,
+            b"\x7fELF-not-really",
+            &writer_fix(),
+            SWITCHED_AT,
+            false,
+            None,
+        )
+        .unwrap();
+        std::fs::create_dir_all(run_dir.join("var/log")).unwrap();
+        let records = run_dir.join(WTMP_PATH);
+        std::fs::write(&records, &backdated).unwrap();
+
+        if in_domain {
+            run(run_dir, run_dir, SWITCHED_AT, false);
+        } else {
+            clean_up(run_dir, false);
+        }
+
+        let after = std::fs::read(&records).unwrap();
+        assert_eq!(
+            after == backdated,
+            !in_domain,
+            "corrected only in the domain"
+        );
+        for piece in pieces(run_dir) {
+            assert!(!piece.exists(), "{} should be gone", piece.display());
+        }
+        assert!(!run_dir.join(FIXUP_DIR).exists());
+    }
+}
+
 #[test]
 fn without_a_writer_no_drop_in_is_installed() {
     let dir = tempfile::tempdir().unwrap();

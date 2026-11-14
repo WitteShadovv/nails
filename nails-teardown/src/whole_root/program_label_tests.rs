@@ -78,6 +78,9 @@ fn a_label_that_cannot_be_read_back_fails() {
         fn pid1(&self) -> io::Result<Option<String>> {
             self.0.pid1()
         }
+        fn current(&self) -> io::Result<String> {
+            self.0.current()
+        }
         fn exec_context(&self, source: &str, file: &str) -> io::Result<String> {
             self.0.exec_context(source, file)
         }
@@ -387,4 +390,191 @@ fn the_label_and_the_domain_are_those_of_the_system_s_programs() {
     assert_eq!(PROGRAM_LABEL, "system_u:object_r:bin_t:s0");
     assert_eq!(type_of(PROGRAM_LABEL), Some("bin_t"));
     assert_eq!(DOMAIN, "unconfined_service_t");
+}
+
+/// A copy for the domain check to label: a regular file in its own directory.
+fn copy_in(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let copy = dir.path().join("control");
+    std::fs::write(&copy, b"\x7fELF").unwrap();
+    copy
+}
+
+/// A start again that must not come.
+fn never() -> io::Error {
+    panic!("the unit must not start itself again")
+}
+
+/// A unit PID 1 did not start is asked nothing, and one where no policy is
+/// loaded only that: neither writes a label nor starts itself again.
+#[test]
+fn a_unit_outside_the_check_s_reach_is_asked_nothing_or_only_for_a_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = copy_in(&dir);
+    let in_pid1 = FakeSelinux {
+        current: INIT.to_string(),
+        ..FakeSelinux::targeted()
+    };
+    enter_domain(&in_pid1, &copy, false, false, never).unwrap();
+    assert!(in_pid1.questions().is_empty());
+
+    let without = FakeSelinux::without_policy();
+    enter_domain(&without, &copy, true, false, never).unwrap();
+    assert_eq!(without.questions(), ["pid1"]);
+    assert!(without.labels_written().is_empty());
+}
+
+/// A unit that runs in the unconfined service domain goes on, as the start
+/// again does once it runs there: no label, no start again.
+#[test]
+fn a_unit_in_the_unconfined_service_domain_goes_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = copy_in(&dir);
+    for again in [false, true] {
+        let selinux = FakeSelinux::targeted();
+        enter_domain(&selinux, &copy, true, again, never).unwrap();
+        assert_eq!(selinux.questions(), ["pid1", "current"]);
+        assert!(selinux.labels_written().is_empty());
+    }
+}
+
+/// A unit PID 1 started in its own domain, as from a copy that took the
+/// label of the files in `/run` again at the switch, gives the copy the
+/// label again and starts itself again from it; only a start again that
+/// fails comes back, with its error.
+#[test]
+fn a_unit_in_pid_1_s_domain_labels_its_copy_again_and_starts_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = copy_in(&dir);
+    let selinux = FakeSelinux {
+        current: INIT.to_string(),
+        ..FakeSelinux::targeted()
+    };
+    let mut started = 0;
+    let outside = enter_domain(&selinux, &copy, true, false, || {
+        started += 1;
+        io::Error::from_raw_os_error(libc::EACCES)
+    })
+    .unwrap_err();
+    assert_eq!(started, 1);
+    let Outside::NotStarted(error) = outside else {
+        panic!("expected the failed start again, got {outside:?}");
+    };
+    assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+    assert_eq!(
+        selinux.labels_written(),
+        [b"system_u:object_r:bin_t:s0\0".to_vec()]
+    );
+
+    // So does one that a context of its own keeps in another domain.
+    let elsewhere = FakeSelinux {
+        current: "system_u:system_r:udev_t:s0-s0:c0.c1023".to_string(),
+        ..FakeSelinux::targeted()
+    };
+    let outside = enter_domain(&elsewhere, &copy, true, false, || {
+        io::Error::from_raw_os_error(libc::EPERM)
+    })
+    .unwrap_err();
+    assert!(matches!(outside, Outside::NotStarted(_)), "{outside:?}");
+    assert_eq!(elsewhere.labels_written().len(), 1);
+}
+
+/// The start again that still runs outside the unconfined service domain
+/// fails at once, with the context it runs in: it labels nothing and does
+/// not start itself once more.
+#[test]
+fn the_start_again_outside_the_domain_fails_with_its_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = copy_in(&dir);
+    let selinux = FakeSelinux {
+        current: format!("{INIT}\0"),
+        ..FakeSelinux::targeted()
+    };
+    let outside = enter_domain(&selinux, &copy, true, true, never).unwrap_err();
+    let Outside::Still(context) = outside else {
+        panic!("expected the start again still outside, got {outside:?}");
+    };
+    assert_eq!(context, format!("{INIT}\0"));
+    assert!(selinux.labels_written().is_empty());
+    // A context with no type is no domain either.
+    let typeless = FakeSelinux {
+        current: "kernel".to_string(),
+        ..FakeSelinux::targeted()
+    };
+    assert!(matches!(
+        enter_domain(&typeless, &copy, true, true, never),
+        Err(Outside::Still(_))
+    ));
+    assert_ne!(UNCONFINED, INIT);
+}
+
+/// A unit whose copy does not take the label again, or is not there, does
+/// not start itself again; one that cannot read whether a policy is loaded,
+/// or its own context, fails as well.
+#[test]
+fn a_unit_that_cannot_label_its_copy_or_read_its_context_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = copy_in(&dir);
+    let refused = FakeSelinux {
+        current: INIT.to_string(),
+        write_error: Some(libc::EOPNOTSUPP),
+        ..FakeSelinux::targeted()
+    };
+    let outside = enter_domain(&refused, &copy, true, false, never).unwrap_err();
+    assert!(
+        matches!(outside, Outside::Unlabelled(Unlabelled::Write(_))),
+        "{outside:?}"
+    );
+    let outside = enter_domain(
+        &FakeSelinux {
+            current: INIT.to_string(),
+            ..FakeSelinux::targeted()
+        },
+        &dir.path().join("missing"),
+        true,
+        false,
+        never,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(outside, Outside::Unlabelled(Unlabelled::Open(_))),
+        "{outside:?}"
+    );
+
+    let unread = FakeSelinux {
+        current_error: Some(libc::EINVAL),
+        ..FakeSelinux::targeted()
+    };
+    let outside = enter_domain(&unread, &copy, true, false, never).unwrap_err();
+    assert!(
+        matches!(&outside, Outside::Unread(e) if e.raw_os_error() == Some(libc::EINVAL)),
+        "{outside:?}"
+    );
+    let untold = FakeSelinux {
+        pid1_error: Some(libc::ENOENT),
+        ..FakeSelinux::targeted()
+    };
+    let outside = enter_domain(&untold, &copy, true, false, never).unwrap_err();
+    assert!(
+        matches!(&outside, Outside::Unread(e) if e.raw_os_error() == Some(libc::ENOENT)),
+        "{outside:?}"
+    );
+    assert_eq!(untold.questions(), ["pid1"]);
+}
+
+/// The fake's late write error: the labels before it are written, the rest
+/// fail.
+#[test]
+fn a_late_write_error_fails_only_the_labels_after_it() {
+    let file = tempfile::tempfile().unwrap();
+    let selinux = FakeSelinux {
+        write_error: Some(libc::EOPNOTSUPP),
+        write_error_from: Some(1),
+        ..FakeSelinux::targeted()
+    };
+    label_file(&selinux, file.as_fd(), PROGRAM_LABEL).unwrap();
+    assert!(matches!(
+        label_file(&selinux, file.as_fd(), PROGRAM_LABEL),
+        Err(Unlabelled::Write(_))
+    ));
+    assert_eq!(selinux.labels_written().len(), 1);
 }

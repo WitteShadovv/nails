@@ -312,3 +312,38 @@ fn the_denied_permissions_are_the_bits_the_access_file_leaves_out() {
         io::ErrorKind::InvalidData
     );
 }
+
+/// This process's own context reads as PID 1's does, without its end, and a
+/// file that is not there names its path.
+#[test]
+fn the_own_context_reads_without_its_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let own = dir.path().join("current");
+    let error = own_context(&own).unwrap_err();
+    assert!(
+        error.to_string().starts_with(&own.display().to_string()),
+        "{error}"
+    );
+    std::fs::write(&own, "system_u:system_r:unconfined_service_t:s0\0").unwrap();
+    assert_eq!(
+        own_context(&own).unwrap(),
+        "system_u:system_r:unconfined_service_t:s0"
+    );
+}
+
+/// The running kernel answers this process's own context from
+/// `/proc/self/attr/current`, whatever that file gives on the test host.
+#[test]
+fn the_running_kernel_reads_the_own_context_from_procfs() {
+    match std::fs::read("/proc/self/attr/current") {
+        Ok(raw) => assert_eq!(Kernel.current().ok(), context_text(&raw).ok()),
+        Err(e) => {
+            let error = Kernel.current().unwrap_err();
+            assert_eq!(error.kind(), e.kind(), "{error}");
+            assert!(
+                error.to_string().starts_with("/proc/self/attr/current: "),
+                "{error}"
+            );
+        }
+    }
+}
