@@ -282,6 +282,47 @@ def audit_log(text: str, since: float) -> list[dict[str, Any]]:
     return found
 
 
+def boot_audit_log(
+    text: str, btime: float, slack: float = 120.0
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The records auditd's log ``text`` holds of the boot that started at
+    ``btime`` (seconds since the epoch), as :func:`audit_log` reads them, and
+    what bounded them.
+
+    They are the records after auditd's last start in the log, its
+    DAEMON_START record, when that start is of this boot: dated no more than
+    ``slack`` seconds before ``btime``, since a step of the clock moves the
+    times of a boot against each other. Without such a start the boot's
+    records are not told apart from an earlier boot's, and none is taken.
+    auditd's own records (DAEMON_START, DAEMON_END and the like) carry its own
+    serial numbers, not the kernel's, and are left out."""
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith("type=DAEMON_START "):
+            start = index
+    info: dict[str, Any] = {"btime": btime, "start": None}
+    if start is None:
+        return [], info
+    first = audit_log(lines[start], 0)
+    began = first[0]["time"] if first else None
+    info["start"] = began
+    if began is None or began < btime - slack:
+        return [], info
+    records = [
+        record
+        for record in audit_log("\n".join(lines[start + 1 :]), 0)
+        if not str(record["type"]).startswith("DAEMON_")
+    ]
+    if records:
+        info["serials"] = [
+            min(r["serial"] for r in records),
+            max(r["serial"] for r in records),
+        ]
+        info["times"] = [records[0]["time"], records[-1]["time"]]
+    return records, info
+
+
 def audit_serials(messages: Iterable[str]) -> set[int]:
     """The audit serial numbers the records ``messages`` carry."""
     return {
@@ -289,17 +330,20 @@ def audit_serials(messages: Iterable[str]) -> set[int]:
     }
 
 
-def serial_gaps(serials: Iterable[int]) -> list[tuple[int, int]]:
-    """The audit serial numbers of a boot that no record carries, as ranges:
-    the kernel numbers the events of a boot from 1 on, each record of an event
-    carries its event's number, and a record reaches the kernel log or the
-    daemon that reads the audit socket, so a number neither shows was lost."""
-    known = sorted(set(serials))
+def serial_gaps(serials: Iterable[int], first: int = 1) -> list[tuple[int, int]]:
+    """The audit serial numbers of a boot from ``first`` on that no record
+    carries, as ranges: the kernel numbers the events of a boot from 1 on,
+    each record of an event carries its event's number, and a record reaches
+    the kernel log or the daemon that reads the audit socket, so a number
+    neither shows was lost. Before the gate lifts printk's rate limit, and
+    while no daemon reads the socket, the kernel drops what the limit keeps
+    from its log, so the gate judges the numbers from its first marker on."""
+    known = sorted({serial for serial in serials if serial >= first})
     if not known:
         return []
     missing = gaps(known)
-    if known[0] > 1:
-        missing.insert(0, (1, known[0] - 1))
+    if known[0] > first:
+        missing.insert(0, (first, known[0] - 1))
     return missing
 
 

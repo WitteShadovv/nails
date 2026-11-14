@@ -1044,7 +1044,8 @@ stock decoy, from auditd's log, by the wall clock of the markers: a denial is
 new when a NAILS process or path has it, or when the decoy did not log its
 signature before the first entry (each run of check aside) nor at the first
 plain soft-reboot, a race of the image's own aside. The audit serial numbers
-of the boot must leave no gap between the two logs, and no phase may hold the
+of the boot from the gate's first marker on, once it lifted printk's rate
+limit, must leave no gap between the two logs, and no phase may hold the
 kernel's notice of a lost record. Each assertion is recorded with its outcome
 and the run goes on where it can; the driver writes `<image>-gate.json` and
 `<image>-gate.kmsg.txt` and fails at its end when one does not hold. Where an
@@ -1053,8 +1054,13 @@ it needs.
 
 `<image>-gate-noda` runs the same scenario with the policy's dontaudit rules
 off (`semodule -DB` before the reference boot), so that the denials those
-rules keep out of the log are counted too, and writes
-`<image>-gate-noda.json` and `<image>-gate-noda.kmsg.txt`.
+rules keep out of the log are counted too: a new denial of a NAILS process or
+path fails it, as in the gate, while the quiet denials of other programs,
+which show without those rules, are recorded. It writes
+`<image>-gate-noda.json` and `<image>-gate-noda.kmsg.txt`. Every run of the
+gate makes room for 8192 audit records in the kernel's queue
+(`auditctl -b 8192`): with the kernel's 64, this variant lost records at the
+switches.
 
 `<image>-btrfs` plants the btrfs scan controls on the stock image, made
 amnesic first as NAILS requires (journal volatile, auditd off, the run

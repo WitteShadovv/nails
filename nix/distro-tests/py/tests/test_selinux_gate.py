@@ -275,6 +275,41 @@ class AuditLogTest(unittest.TestCase):
         self.assertEqual(len(found["new"]), 4)
 
 
+BOOTS = "\n".join(
+    (
+        # The boot before: its own start and records, in the same log.
+        "type=DAEMON_START msg=audit(1794686000.000:3001): op=start res=1",
+        "type=SERVICE_START msg=audit(1794686001.000:40): pid=1 res=success",
+        "type=DAEMON_END msg=audit(1794686300.000:3002): op=terminate res=1",
+        # This boot: auditd starts and writes the records it holds from 1 on.
+        "type=DAEMON_START msg=audit(1794686399.500:3636): op=start res=1",
+        "type=SYSTEM_BOOT msg=audit(1794686399.000:1): pid=1 res=success",
+        "type=SERVICE_START msg=audit(1794686400.000:2): pid=1 res=success",
+        "type=DAEMON_END msg=audit(1794686500.000:3637): op=terminate res=1",
+    )
+)
+
+
+class BootAuditLogTest(unittest.TestCase):
+    def test_takes_the_records_after_the_boot_s_own_start(self) -> None:
+        records, info = sg.boot_audit_log(BOOTS, 1794686400)
+        self.assertEqual([r["serial"] for r in records], [1, 2])
+        self.assertEqual(info["start"], 1794686399.5)
+        self.assertEqual(info["serials"], [1, 2])
+
+    def test_takes_nothing_without_a_start_of_this_boot(self) -> None:
+        # auditd did not start in this boot: its last start is the boot
+        # before's, whose serial numbers are another boot's.
+        records, info = sg.boot_audit_log(BOOTS, 1794690000)
+        self.assertEqual(records, [])
+        self.assertEqual(info["start"], 1794686399.5)
+        self.assertEqual(sg.boot_audit_log("", 1794690000)[0], [])
+
+    def test_a_clock_step_within_the_slack_keeps_the_start(self) -> None:
+        records, _ = sg.boot_audit_log(BOOTS, 1794686399.5 + 100)
+        self.assertEqual([r["serial"] for r in records], [1, 2])
+
+
 class SerialTest(unittest.TestCase):
     def test_the_serials_of_kernel_and_audit_records(self) -> None:
         self.assertEqual(
@@ -289,6 +324,11 @@ class SerialTest(unittest.TestCase):
         self.assertEqual(sg.serial_gaps([1, 2, 5, 6]), [(3, 4)])
         self.assertEqual(sg.serial_gaps([4, 5]), [(1, 3)])
         self.assertEqual(sg.serial_gaps([]), [])
+
+    def test_judges_the_serials_from_a_first_one_on(self) -> None:
+        self.assertEqual(sg.serial_gaps([1, 39, 40, 42], 39), [(41, 41)])
+        self.assertEqual(sg.serial_gaps([1, 40], 39), [(39, 39)])
+        self.assertEqual(sg.serial_gaps([1, 2], 39), [])
 
 
 class SelinuxErrorTest(unittest.TestCase):

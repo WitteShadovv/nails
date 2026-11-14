@@ -20,7 +20,8 @@
 #   <image>-gate-noda
 #                 the same scenario with the policy's dontaudit rules off
 #                 (semodule -DB before the reference boot), so that a denial
-#                 those rules keep out of the log is counted too. It writes
+#                 of NAILS those rules keep out of the log is counted too; the
+#                 other programs' quiet denials it records. It writes
 #                 <image>-gate-noda.json and <image>-gate-noda.kmsg.txt.
 #   <image>-btrfs the btrfs scan controls on the stock image
 #                 (py/btrfs_controls.py): a file kept plain, a compressed one

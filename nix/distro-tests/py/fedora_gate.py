@@ -2,7 +2,8 @@
 
 ``nix/distro-tests/fedora-gate.nix`` builds one host driver per pinned Fedora
 image (``<image>-gate``, and ``<image>-gate-noda`` with the policy's dontaudit
-rules off) and calls :func:`run` with the driver's machine. The image boots
+rules off, where only NAILS's new denials fail and the others are recorded)
+and calls :func:`run` with the driver's machine. The image boots
 with SELinux enforcing, and NAILS is a test-only build that admits Fedora.
 Every ``nails`` command runs from a real operator domain: a login session of
 its own, a transient unit with the login PAM stack, whose pam_selinux gives
@@ -56,17 +57,19 @@ both roots, from the kernel log and, while auditd runs on the stock decoy,
 from its log: one is new when it is NAILS's own, or when neither the decoy
 before the first entry (each check aside) nor the first plain soft-reboot
 logged its signature (``selinux_gate``). The audit serial numbers of the boot
-must leave no gap between the two logs. Each assertion is recorded with its
-outcome and the run goes on where it can, so one run says which assertions
-hold and which do not; ``<name>.json`` and ``<name>.kmsg.txt`` in the
-directory ``NAILS_GATE_OUT`` names hold them, and the run fails at its end
-when one does not hold.
+from the gate's first marker on must leave no gap between the two logs. Each
+assertion is recorded with its outcome and the run goes on where it can, so
+one run says which assertions hold and which do not; ``<name>.json``,
+``<name>.kmsg.txt`` and ``<name>.audit.log`` in the directory
+``NAILS_GATE_OUT`` names hold them, and the run fails at its end when one does
+not hold.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import tempfile
 import traceback
@@ -162,9 +165,15 @@ rm -f /var/lib/sss/db/config.ldb /var/lib/sss/db/config_kcm.ldb \\
 """
 # The policy without its dontaudit rules, for the variant that counts the
 # denials those rules keep out of the log: libsemanage rebuilds and loads it,
-# and keeps the setting in its store, so the next boot loads it the same way.
+# and keeps the setting in its store as a flag file, so the next boot loads it
+# the same way.
 NO_DONTAUDIT = "semodule -DB"
-NO_DONTAUDIT_FLAG = "/var/lib/selinux/targeted/disable_dontaudit"
+NO_DONTAUDIT_FLAG = "disable_dontaudit"
+NO_DONTAUDIT_STORE = "/var/lib/selinux/targeted"
+# The kernel's queue of audit records waiting for its log or a daemon. A burst
+# beyond it is lost (audit_lost), as the variant without dontaudit rules showed
+# at the switches with the kernel's 64, so the gate makes room for one.
+AUDIT_BACKLOG = "auditctl -b 8192"
 # A failed console login of the user the script is given: util-linux's login
 # on a terminal of its own, given a wrong password once, which it records in
 # btmp before it says "Login incorrect". The script ends login then and prints
@@ -277,12 +286,12 @@ POLICY_LOADED = "Successfully loaded SELinux policy"
 
 
 def judged_row(rows: Mapping[str, Mapping[str, Any]], name: str) -> bool:
-    """Whether check's report holds the row ``name`` with a verdict a later
-    assertion can read: a pass or a warning. A report check could not print
-    holds no row, so an assertion that a row no longer names something holds
-    only where this does."""
+    """Whether check's report holds the row ``name`` with a verdict: a report
+    check could not print holds no row, so an assertion that a row no longer
+    names something holds only where this does. The row may fail for another
+    reason than the one judged."""
     row = rows.get(name)
-    return row is not None and row.get("status") in ("pass", "warn")
+    return row is not None and row.get("status") in ("pass", "warn", "fail")
 
 
 def failed_units_problems(
@@ -304,17 +313,32 @@ def failed_units_problems(
     return found
 
 
-def changed_paths(listing: str) -> set[str]:
+# The private temporary folder systemd makes for a unit at each of its starts
+# (PrivateTmp=): named after the boot, the unit and six random characters.
+_PRIVATE_TMP = re.compile(
+    r"^(/var/tmp/systemd-private-[0-9a-f]{32}-[^/]+)-[A-Za-z0-9]{6}(/.*)?$"
+)
+
+
+def changed_paths(listing: str, mount_points: Iterable[str] = ()) -> set[str]:
     """The paths of a listing of changed files on the decoy, without those the
     records checks judge (:data:`RECORD_PATHS`, a folder of them with what is
-    below it)."""
+    below it), and without ``mount_points``, which ``find -xdev`` lists with
+    the times of the filesystem mounted there. A unit's private temporary
+    folder is named by its unit alone, its random part as ``*``: each start of
+    the unit makes a new one, after a way back as after a plain
+    soft-reboot."""
+    mounted = set(mount_points)
     found = set()
     for line in listing.splitlines():
         path = line.strip()
-        if not path.startswith("/"):
+        if not path.startswith("/") or path in mounted:
             continue
         if any(path == kept or path.startswith(kept + "/") for kept in RECORD_PATHS):
             continue
+        private = _PRIVATE_TMP.match(path)
+        if private:
+            path = f"{private.group(1)}-*{private.group(2) or ''}"
         found.add(path)
     return found
 
@@ -592,8 +616,14 @@ class Gate:
             check_return=False,
             timeout=300,
         )
-        current["audit"] = sg.audit_log(out, float(current.get("btime", 0)))
-        self.facts[f"b{self.boot}.audit-log-records"] = len(current["audit"])
+        os.makedirs(self.out_dir, exist_ok=True)
+        with open(
+            os.path.join(self.out_dir, f"{self.name}.audit.log"), "w", encoding="utf-8"
+        ) as handle:
+            handle.write(out)
+        current["audit"], info = sg.boot_audit_log(out, float(current.get("btime", 0)))
+        info["records"] = len(current["audit"])
+        self.facts[f"b{self.boot}.audit-log"] = info
 
     # --- boots and switches ----------------------------------------------
 
@@ -626,7 +656,7 @@ class Gate:
         vm.succeed(f"mkdir -p {OP_DIR} && chmod 1777 {OP_DIR}")
         vm.succeed(f"cat > {CONFIG} <<'EOF'\n{CONFIG_TEXT}EOF")
         vm.succeed(f"cat > {FRESH_CONFIG} <<'EOF'\n{CONFIG_TEXT}{FRESH_TEXT}EOF")
-        self.sh("limits", sg.KMSG_LIMITS)
+        self.sh("limits", f"{sg.KMSG_LIMITS}; {AUDIT_BACKLOG}")
 
     def follow(self, trigger: str, label: str) -> str:
         """Follow a soft-reboot; the place after it, or ``lost``."""
@@ -766,7 +796,19 @@ class Gate:
             "-print; done | sort -u",
             600,
         )
-        changed = changed_paths(listing)
+        # find lists the mount points of other filesystems with the times of
+        # what is mounted there; the roots of the decoy's own stay listed.
+        others = [
+            target
+            for target, _, fstype in (
+                line.partition(" ")
+                for line in self.vm.succeed("findmnt -rn -o TARGET,FSTYPE").splitlines()
+            )
+            if fstype not in DISK_FSTYPES
+            or target in (HIDDEN, UTAB_BIND)
+            or target.startswith(HIDDEN + "/")
+        ]
+        changed = changed_paths(listing, others)
         self.disk[label] = changed
         return changed
 
@@ -788,10 +830,13 @@ class Gate:
             config,
         )
         if self.settings.get("dontaudit") is False:
-            flag = self.fact("no-dontaudit", f"ls {NO_DONTAUDIT_FLAG} 2>&1; true")
+            flag = self.fact(
+                "no-dontaudit",
+                f"find {NO_DONTAUDIT_STORE} -maxdepth 2 -name {NO_DONTAUDIT_FLAG}",
+            )
             self.check(
                 "the policy runs without its dontaudit rules",
-                flag == NO_DONTAUDIT_FLAG,
+                flag.endswith("/" + NO_DONTAUDIT_FLAG),
                 flag,
             )
         self.fact(
@@ -1867,16 +1912,41 @@ class Gate:
             self.check("the kernel log lost no record", not dropped, dropped)
             missing = [m["label"] for m in boot["markers"] if m["seq"] is None]
             self.check("every marker reached the kernel log", not missing, missing)
-            if not boot["markers"]:
+            markers = [m for m in boot["markers"] if m["seq"] is not None]
+            if not markers:
                 continue
+            audit = boot.get("audit", [])
             serials = sg.audit_serials(r["msg"] for r in records) | {
-                int(r["serial"]) for r in boot.get("audit", [])
+                int(r["serial"]) for r in audit
             }
-            holes = sg.serial_gaps(serials)
+            # From the first marker on, after the gate lifted printk's rate
+            # limit: what the boot's start lost there, before NAILS ran, is
+            # recorded only.
+            first = markers[0]
+            later = sg.audit_serials(
+                r["msg"] for r in records if int(r["seq"]) > int(first["seq"])
+            ) | {
+                int(r["serial"])
+                for r in in_window(audit, wall_of(first), None)
+            }
+            start = min(later, default=None)
+            holes = sg.serial_gaps(serials, start) if start is not None else []
+            self.facts[f"audit-serials-{boot['why']}"] = {
+                "fromFirstMarker": start,
+                "highest": max(serials, default=None),
+                "lostAtTheBootsStart": sg.serial_gaps(
+                    {s for s in serials if start is None or s <= start}
+                ),
+            }
             self.check(
-                "every audit record of the boot is in the kernel log or auditd's log",
-                bool(serials) and not holes,
-                {"gaps": holes[:20], "highest": max(serials, default=None)},
+                "every audit record of the boot from its first marker on is in the "
+                "kernel log or auditd's log",
+                start is not None and not holes,
+                {
+                    "from": start,
+                    "gaps": holes[:20],
+                    "highest": max(serials, default=None),
+                },
             )
             labels = self.baseline_labels(boot)
             for label, first, last, audit in self.phases(boot):
@@ -1889,11 +1959,22 @@ class Gate:
                     found["suppressed"][:10],
                 )
                 new = found["new"]
+                where = f"{'marker ' + label if label else name}"
                 if label is None or label in labels:
+                    new = [a for a in new if a["source"] == "nails"]
+                elif self.settings.get("dontaudit") is False:
+                    # Without the dontaudit rules the policy's quiet denials of
+                    # every program show: those of NAILS are judged, the others
+                    # recorded.
+                    self.facts.setdefault("noda-other-new", {})[where] = [
+                        f"{a['signature']} ({a['why']}, {a['log']} log)"
+                        for a in new
+                        if a["source"] != "nails"
+                    ]
                     new = [a for a in new if a["source"] == "nails"]
                 needs = NEEDS_LABEL if any(a["source"] == "nails" for a in new) else ""
                 self.check(
-                    f"no new denial from {'marker ' + label if label else name} on",
+                    f"no new denial from {where} on",
                     not new,
                     [f"{a['signature']} ({a['why']}, {a['log']} log)" for a in new],
                     needs,
@@ -2046,6 +2127,9 @@ class Gate:
         self.control("control-2")
         self.mark("prep-login")
         self.records_positive()
+        # The kernel log read to the end: the audit serials are judged up to
+        # the last record read.
+        self.mark("run-end")
 
 
 def run(
