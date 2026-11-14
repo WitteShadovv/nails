@@ -9,14 +9,17 @@ name: Distro E2E
 #   refusal  the refusal of each pinned image of a family the family table
 #            does not admit (Fedora, Arch)
 #   probe    the fact probes of the images not admitted yet
+#   staged   the smoke and records scenarios of each image staged for its
+#            family's admission (arch-boxes), with a test-only build that
+#            admits the family
 #
-# A smoke scenario is a derivation that nix build runs in the Nix build
-# sandbox. A records scenario, a refusal and a probe are host drivers: the job
-# builds the driver and runs it on the runner, outside the sandbox.
+# A smoke or staged scenario is a derivation that nix build runs in the Nix
+# build sandbox. A records scenario, a refusal and a probe are host drivers: the
+# job builds the driver and runs it on the runner, outside the sandbox.
 #
 # The records and refusal jobs gate: distro-result fails when one of them
-# fails. The smoke scenarios and the probes are informational, and their
-# failure only warns.
+# fails. The smoke and staged scenarios and the probes are informational, and
+# their failure only warns.
 #
 #   pull request to main  the records and refusal suites, when the change
 #   or next               touches what they are built from (the path filter
@@ -26,7 +29,8 @@ name: Distro E2E
 #   nightly schedule      smoke, records and refusal; the nightly run of next
 #                         is a dispatch from next-nightly.yml
 #   dispatch or call      the `suite` input: all (smoke, records and refusal,
-#                         the default), one of them, or the probes
+#                         the default), one of them, the probes, or the
+#                         staged scenarios
 #
 # The runner is an input, because each VM needs KVM; a hosted ubuntu-26.04
 # runner exposes /dev/kvm, and a self-hosted KVM runner is selected by passing
@@ -58,12 +62,14 @@ on:
       suite:
         description: >-
           What the VM jobs run: all (the smoke, records and refusal suites),
-          one of those three alone, or the fact probes of the images not
+          one of those three alone, the fact probes of the images not
           admitted yet, each uploading its facts as JSON (distros then names
-          probes, such as fedora-44-enforcing)
+          probes, such as fedora-44-enforcing), or the scenarios of the images
+          staged for admission (distros then names them, such as
+          arch-boxes-smoke)
         type: choice
         default: all
-        options: [all, smoke, records, refusal, probe]
+        options: [all, smoke, records, refusal, probe, staged]
       runner:
         description: >-
           runs-on for the VM jobs, as JSON: "ubuntu-26.04" or a label list such
@@ -186,9 +192,9 @@ jobs:
           read -ra selected <<< "$suites"
           for suite in "${selected[@]}"; do
             case "$suite" in
-              all | smoke | records | refusal | probe) ;;
+              all | smoke | records | refusal | probe | staged) ;;
               *)
-                echo "::error::suite must be all, smoke, records, refusal or probe, got '$suite'"
+                echo "::error::suite must be all, smoke, records, refusal, probe or staged, got '$suite'"
                 exit 1
                 ;;
             esac
@@ -236,9 +242,9 @@ jobs:
 
       # Built once here, so the VM jobs substitute it from the cache instead
       # of each compiling the static binary (when a cache is configured). A
-      # probe boots no nails.
+      # probe boots no nails, and a staged scenario a test-only build of it.
       - name: Build nails
-        if: steps.select.outputs.suites != '' && steps.select.outputs.suites != 'probe'
+        if: steps.select.outputs.suites != '' && steps.select.outputs.suites != 'probe' && steps.select.outputs.suites != 'staged'
         run: nix build -L --no-link .#nails
 
       # The records and refusal jobs run as the gating job, apart from the
@@ -323,8 +329,9 @@ jobs:
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
+      # A staged scenario builds the same way, one per job.
       - name: Run the distro smoke scenarios
-        if: matrix.suite == 'smoke'
+        if: matrix.suite == 'smoke' || matrix.suite == 'staged'
         env:
           TESTS: ${{ join(matrix.tests, ' ') }}
         run: |
@@ -509,11 +516,13 @@ jobs:
             echo "::error::One or more records or refusal scenarios failed or did not run ($GATING_RESULT)."
             status=1
           fi
-          # The smoke scenarios and the probes are informational: a failure is
-          # surfaced but does not gate.
+          # The smoke and staged scenarios and the probes are informational: a
+          # failure is surfaced but does not gate.
           if [ "$DISTRO_JOBS" != 0 ] && [ "$DISTRO_RESULT" != success ]; then
             if [ "$SUITES" = probe ]; then
               echo "::warning::One or more distro probes failed or did not run ($DISTRO_RESULT)."
+            elif [ "$SUITES" = staged ]; then
+              echo "::warning::One or more staged scenarios failed or did not run ($DISTRO_RESULT)."
             else
               echo "::warning::One or more distro smoke scenarios failed or did not run ($DISTRO_RESULT)."
             fi
