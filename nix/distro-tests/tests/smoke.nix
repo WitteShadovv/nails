@@ -70,10 +70,12 @@
 # ESP that systemd's GPT auto-generator mounts on demand at /efi, as on
 # arch-boxes, is bound read-only at /efi in each hidden session, with its
 # automount masked there at runtime, and the decoy's automount is back after
-# each way back. The rehearsal's scan exits 9 with a blind spot on a btrfs
-# root's device and 0 on any other image. Each session writes canaries of
-# its own, and the leak check looks for those of both sessions and for the
-# token the rehearsal planted in the second. Before each image it also reads
+# each way back. The first entry finds the ESP mounted, the second idle, with
+# only its automount at /efi, as two minutes after the last access. The
+# rehearsal's scan exits 9 with a blind spot on a btrfs root's device and 0 on
+# any other image. Each session writes canaries of its own, and the leak check
+# looks for those of both sessions and for the token the rehearsal planted in
+# the second. Before each image it also reads
 # the decoy root's files through the decoy's own kernel, from a read-only bind
 # of / that moves no access time: none of these may be in them, and the
 # positive control's token must be. On a btrfs root it also reads the older
@@ -1424,6 +1426,21 @@ distroVm.buildVmTest {
             )
             for target in reversed(boot_mounts):
                 vm.succeed(f"umount {target}")
+        # A boot filesystem systemd mounts on demand is idle at the second
+        # entry, as it is once its automount's idle time has passed since the
+        # last access: its mount stopped, the automount behind it still set
+        # up, and only that at the mount point. The first entry found it
+        # mounted.
+        for unit, (point, _, _) in boot_automounts.items():
+            mount_unit = unit.removesuffix(".automount") + ".mount"
+            vm.succeed(f"systemctl stop {shlex.quote(mount_unit)}")
+            vm.wait_until_succeeds(
+                f"test \"$(findmnt -rn -o FSTYPE -M {shlex.quote(point)})\" = autofs",
+                timeout=60,
+            )
+            state = unit_props(unit, "ActiveState")["ActiveState"]
+            assert state == "active", f"{unit} is {state} before the second entry"
+            print(f"{point} is idle before the second entry: only {unit} is there")
         entered_after = monotonic_us()
         follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
         session.assert_hidden_root(vm)
