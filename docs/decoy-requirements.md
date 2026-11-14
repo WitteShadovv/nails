@@ -92,17 +92,24 @@ The decoy also has to be one the session can enter and leave:
 
   Elsewhere a label is copied only where the decoy has one, so a decoy
   without labels gets the hidden root it got before. That includes a host
-  that keeps an empty `/sys/fs/selinux`, or an `/etc/selinux/config` that
-  sets `SELINUX=` or `SELINUXTYPE=` as SELinux packages installed once leave
-  it, while its mount table lists no selinuxfs: SELinux does not run there,
-  and the activation says so in one line. `nails check` tests part of this
-  with the same rule (`upper-fs-capability`): it copies the label of the
-  decoy's `/` onto the upper of its trial overlay on the hidden volume and,
-  where the labels are required, reads it back, so a hidden filesystem that
-  cannot store the label, a policy that denies the relabel and a decoy `/`
-  without a label fail the check as they refuse the activation. The roots of
-  the other decoy filesystems the session overlays and the way to your home
-  are not tested before activation.
+  whose mount table lists no selinuxfs while it keeps an empty
+  `/sys/fs/selinux`, or an `/etc/selinux/config` that sets `SELINUX=` or
+  `SELINUXTYPE=` as SELinux packages installed once leave it: no policy
+  reads a label there. Of these hosts, the `lsm-status` check lets only one
+  whose kernel does not run SELinux go on, such as one that keeps the
+  configuration of packages installed once, and there the activation says in
+  one line that SELinux is configured but selinuxfs is not mounted. A kernel
+  makes `/sys/fs/selinux` only where it started SELinux at boot, so where an
+  empty one is left SELinux runs in the kernel, and `lsm-status` refuses the
+  host (see [Fail closed](#fail-closed-activation-is-refused)).
+  `nails check` tests part of this with the same rule
+  (`upper-fs-capability`): it copies the label of the decoy's `/` onto the
+  upper of its trial overlay on the hidden volume and, where the labels are
+  required, reads it back, so a hidden filesystem that cannot store the
+  label, a policy that denies the relabel and a decoy `/` without a label
+  fail the check as they refuse the activation. The roots of the other decoy
+  filesystems the session overlays and the way to your home are not tested
+  before activation.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The
@@ -164,6 +171,13 @@ of the `nails` process from `/proc/self/attr/current`, and it refuses:
   case, since it names the directory the policy is loaded from;
 - a context whose level has a sensitivity other than `s0`, which only a
   multi-level (MLS) policy gives, whatever the file names;
+- a host whose kernel runs SELinux without a policy: the `nails` process is
+  labelled `kernel`, as every process is until a policy is loaded.
+  `SELINUX=disabled` leaves such a host where the kernel started SELinux at
+  boot, since a running kernel cannot turn SELinux off (Linux 6.4 and later):
+  no policy is loaded, selinuxfs is unmounted and an empty `/sys/fs/selinux`
+  is left. NAILS is untested there. The check says to start the kernel with
+  `selinux=0` on its command line;
 - a `nails` process in a domain other than `unconfined_t`, which a login
   whose SELinux user is `unconfined_u` runs in and `sudo` keeps, or
   `unconfined_service_t`;

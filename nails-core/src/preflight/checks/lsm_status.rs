@@ -14,6 +14,8 @@
 //! - **SELinux runs permissive, or `/etc/selinux/config` sets another mode than
 //!   the one it runs in: warn.**
 //! - **SELinux runs with another policy than targeted: fail**, as untested.
+//! - **SELinux is on in the kernel, but no policy is loaded: fail**, as
+//!   untested, with the remedy to start the kernel with SELinux off.
 //! - **NAILS runs in a confined domain: fail.**
 //! - **SELinux runs, or may run, and a fact this check needs cannot be read:
 //!   fail.** Where SELinux runs or may run, it never passes on a fact it could
@@ -28,6 +30,15 @@
 //! an SELinux context, cannot be told apart from not running where only
 //! `/sys/fs/selinux` or `/etc/selinux/config` shows it (that fails), and does
 //! not run where nothing shows it.
+//!
+//! Where SELinux runs by these rules and this process is labelled `kernel`,
+//! the kernel has loaded no policy: SELinux labels every process so until the
+//! first policy load. `SELINUX=disabled` leaves a host so where the kernel
+//! started SELinux at boot and cannot turn it off at runtime, as Linux 6.4 and
+//! later cannot: libselinux then loads no policy and unmounts selinuxfs, and
+//! only an empty `/sys/fs/selinux` is left. NAILS is untested there, so the
+//! check fails with that one finding, and says to start the kernel with
+//! SELinux off.
 //!
 //! # The policy
 //!
@@ -82,6 +93,10 @@ const TARGETED_SENSITIVITY: &str = "s0";
 
 /// The name the kernel gives SELinux in its list of active LSMs.
 const SELINUX: &str = "selinux";
+
+/// What SELinux shows as the context of every process before a policy is
+/// loaded.
+const UNLOADED: &str = "kernel";
 
 /// The SELinux domain of the processes systemd and udev start from NAILS's
 /// copy in `/run`: the transition step at each switch, the watcher, the sleep
@@ -225,6 +240,9 @@ fn unconfined(domain: &str) -> bool {
 enum Presence {
     /// SELinux does not run.
     Absent,
+    /// SELinux is on in the kernel, but no policy is loaded: this process is
+    /// labelled `kernel`.
+    Unloaded,
     /// SELinux runs.
     Running,
     /// Whether it runs cannot be told, for the reason given.
@@ -236,15 +254,20 @@ fn presence(facts: &Facts, labelled: bool) -> Presence {
         .selinux
         .as_ref()
         .is_some_and(|status| status.selinuxfs == Selinuxfs::Mounted);
-    if !facts.lsms.is_empty() {
-        return if mounted || facts.lsms.iter().any(|lsm| lsm == SELINUX) {
-            Presence::Running
+    let runs = if facts.lsms.is_empty() {
+        mounted || labelled
+    } else {
+        mounted || facts.lsms.iter().any(|lsm| lsm == SELINUX)
+    };
+    if runs {
+        return if facts.label.as_deref() == Some(UNLOADED) {
+            Presence::Unloaded
         } else {
-            Presence::Absent
+            Presence::Running
         };
     }
-    if mounted || labelled {
-        return Presence::Running;
+    if !facts.lsms.is_empty() {
+        return Presence::Absent;
     }
     match &facts.selinux {
         None => Presence::Absent,
@@ -307,8 +330,36 @@ fn judge(facts: &Facts, units: &UnitDomain) -> CheckResult {
         Presence::Undecided(why) => {
             CheckResult::fail(format!("Cannot tell whether SELinux runs: {why}."))
         }
+        Presence::Unloaded => unloaded(facts, &lsms),
         Presence::Running => running(facts, context.as_ref(), units, &lsms),
     }
+}
+
+/// The verdict on a host whose kernel has SELinux on without a policy: the
+/// one finding, whatever else the facts say, since no domain, mode or level
+/// means anything before a policy is loaded.
+fn unloaded(facts: &Facts, lsms: &str) -> CheckResult {
+    let disabled = facts
+        .selinux
+        .as_ref()
+        .and_then(|status| status.config_mode.as_deref())
+        == Some("disabled");
+    let cause = if disabled {
+        format!(
+            " {SELINUX_CONFIG} sets SELINUX=disabled, which kept a policy from loading but \
+             left SELinux on in this kernel."
+        )
+    } else {
+        String::new()
+    };
+    CheckResult::fail_with(
+        format!(
+            "SELinux is on in this kernel, but no policy is loaded: this nails process is \
+             labelled {UNLOADED:?} ({PROCESS_LABEL}), as SELinux labels every process until a \
+             policy is loaded.{cause} NAILS is untested on such a host. {lsms}"
+        ),
+        "Start the kernel with SELinux off: add selinux=0 to the kernel command line.",
+    )
 }
 
 /// The verdict on a host where SELinux runs: every finding, failures first,
