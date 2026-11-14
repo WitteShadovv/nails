@@ -8,6 +8,7 @@
 use super::tests::{OFF, ON, mock_decoy};
 use super::*;
 use crate::filesystem::MockFilesystem;
+use crate::filesystem::automount::mount_fix;
 use crate::preflight::checks::automount_fixture::{reached, with_automounts};
 use crate::preflight::checks::decoy_posture::DecoyPersistenceCheck;
 use crate::preflight::{CheckResult, InstallAtShutdown, PreFlightCheck};
@@ -46,7 +47,7 @@ fn a_part_that_cannot_be_looked_up_leaves_the_setting_unknown() {
             &[("50unattended-upgrades", Some(OFF)), ("99local", Some(ON))],
         );
         fs.mock_set_lookup_error("/etc/apt/apt.conf.d/99local", kind);
-        let found = finding(&fs, Path::new("/"), None);
+        let found = finding(&fs, &fs, Path::new("/"), None);
         let blocker = blocker(&found);
         assert_eq!(blocker.at_the_switch, AtTheSwitch::Unknown, "{kind:?}");
         assert!(
@@ -60,7 +61,7 @@ fn a_part_that_cannot_be_looked_up_leaves_the_setting_unknown() {
     // A part that is not there is no part.
     let fs = mock_decoy(true, &[("50unattended-upgrades", Some(OFF))]);
     fs.mock_set_lookup_error("/etc/apt/apt.conf.d/99local", ErrorKind::NotFound);
-    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+    assert_eq!(finding(&fs, &fs, Path::new("/"), None).blocker, None);
 }
 
 /// `/etc/apt/apt.conf.d` itself that cannot be looked up hides every part:
@@ -69,7 +70,7 @@ fn a_part_that_cannot_be_looked_up_leaves_the_setting_unknown() {
 fn a_parts_directory_that_cannot_be_looked_up_leaves_the_setting_unknown() {
     let fs = mock_decoy(true, &[("50unattended-upgrades", Some(OFF))]);
     fs.mock_set_lookup_error("/etc/apt/apt.conf.d", ErrorKind::Other);
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     let blocker = blocker(&found);
     assert_eq!(blocker.at_the_switch, AtTheSwitch::Unknown);
     assert!(
@@ -91,7 +92,7 @@ fn a_helper_nails_cannot_tell_runs_is_refused() {
         "/run/systemd/units/invocation:unattended-upgrades.service",
         ErrorKind::PermissionDenied,
     );
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     let blocker = blocker(&found);
     assert_eq!(blocker.at_the_switch, AtTheSwitch::Unknown);
     assert!(
@@ -162,7 +163,7 @@ fn a_mask_that_cannot_be_looked_up_leaves_the_sessions_copy_unknown() {
         "/etc/systemd/system/unattended-upgrades.service",
         ErrorKind::PermissionDenied,
     );
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     assert_eq!(found.blocker, None);
     let warning = found.warning.expect("a warning");
     assert!(
@@ -177,8 +178,8 @@ fn a_mask_that_cannot_be_looked_up_leaves_the_sessions_copy_unknown() {
 
 /// decoy-persistence reads apt's files through the automount guard: where
 /// `/etc/apt/apt.conf.d` is an automount point that nothing is mounted on
-/// yet, it is not looked up, the check refuses naming the point, with the
-/// override, and status cannot tell either.
+/// yet, it is not looked up, and for a helper that runs, the check refuses
+/// naming the point, with the override, and status cannot tell either.
 #[test]
 fn apts_files_behind_an_automount_point_are_not_looked_up() {
     let fs = mock_decoy(true, &[("50unattended-upgrades", Some(OFF))]);
@@ -256,11 +257,139 @@ fn the_refusal_says_may_keep_only_where_nails_cannot_tell() {
     );
 }
 
-/// status cannot tell where the guard made no lookup the probe needed, even
-/// where what it did read finds nothing: behind an automount point, and
-/// without the mount table.
+/// An amnesic decoy of the mock, journald set volatile, whose helper is
+/// enabled and stopped: the hidden session starts its own copy.
+fn amnesic_with_a_stopped_helper(parts: &[(&str, Option<&str>)]) -> MockFilesystem {
+    let fs = mock_decoy(false, parts);
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    enable(&fs);
+    fs
+}
+
+/// The check as `check` runs it, reading what the hidden session sees with
+/// the root overlay's upper at `upper` on top, or the decoy alone.
+fn check_with(allow: bool, upper: Option<&str>) -> DecoyPersistenceCheck {
+    let check = DecoyPersistenceCheck::new(allow, false);
+    match upper {
+        Some(upper) => check.with_upper(PathBuf::from(upper)),
+        None => check,
+    }
+}
+
+/// Where the automount guard makes no lookup that only a warning needs,
+/// python3-gi's module or what the hidden session's own copy of the helper
+/// reads, decoy-persistence warns, naming the point and how to mount it,
+/// and does not refuse, with the override or without: on the decoy alone,
+/// and with the root overlay's upper, as `check` reads what the session
+/// sees. Status, whose line is for the refusal, says nothing of it.
 #[test]
-fn status_cannot_tell_where_a_lookup_was_not_made() {
+fn a_lookup_not_made_for_a_warning_warns_and_never_refuses() {
+    let python3_gi = "unattended-upgrades.service is enabled on the decoy and NAILS cannot tell \
+                      whether python3-gi is installed \
+                      (/usr/lib/python3/dist-packages/gi/__init__.py cannot be looked up: NAILS \
+                      does not look up /usr/lib/python3/dist-packages/gi/__init__.py, since the \
+                      lookup would mount the automount point /usr/lib/python3)";
+    let session = "unattended-upgrades.service is stopped on the decoy but enabled, so the hidden \
+                   session starts it, and NAILS cannot tell whether \
+                   Unattended-Upgrade::InstallOnShutdown is on there, which would make it install \
+                   the pending updates when the session ends with deactivate: ";
+    let not_made = "(NAILS does not look up /etc/apt/apt.conf.d, since the lookup would mount the \
+                    automount point /etc/apt/apt.conf.d)";
+    let session_upper = Some("/hidden/upper");
+    for (point, upper, says) in [
+        ("/usr/lib/python3", None, python3_gi.to_string()),
+        ("/usr/lib/python3", session_upper, python3_gi.to_string()),
+        (
+            "/etc/apt/apt.conf.d",
+            None,
+            format!("{session}/etc/apt/apt.conf.d cannot be looked up {not_made}"),
+        ),
+        // The session's view asks first whether the decoy's directory is a
+        // link, which resolves through the overlay there.
+        (
+            "/etc/apt/apt.conf.d",
+            session_upper,
+            format!("{session}/etc/apt/apt.conf.d on the decoy cannot be looked up {not_made}"),
+        ),
+    ] {
+        let fs = amnesic_with_a_stopped_helper(&[("50unattended-upgrades", Some(OFF))]);
+        with_automounts(&fs, &[]);
+        let clear = check_with(false, upper).run(&fs).unwrap();
+        assert!(clear.is_pass(), "{point}, {upper:?}: {clear:?}");
+
+        with_automounts(&fs, &[point]);
+        fs.mock_clear_lookups();
+        for allow in [false, true] {
+            let result = check_with(allow, upper).run(&fs).unwrap();
+            assert!(result.is_warn(), "{point}, {upper:?}, {allow}: {result:?}");
+            assert!(
+                result.message().contains(&says),
+                "{point}, {upper:?}: {result:?}"
+            );
+            assert!(
+                result.message().ends_with(&mount_fix(&[Path::new(point)])),
+                "{point}, {upper:?}: {result:?}"
+            );
+        }
+        assert!(!reached(&fs, point), "{point}: {:?}", fs.mock_lookups());
+        assert_eq!(
+            DecoyPersistenceCheck::decoy_install_at_shutdown(&fs),
+            None,
+            "{point}"
+        );
+        assert!(!reached(&fs, point), "{point}: {:?}", fs.mock_lookups());
+    }
+}
+
+/// How the hidden session comes to start its own copy of the helper is read
+/// through the warnings' view too: where the automount guard makes no lookup
+/// of the place of the helper's mask in the session's overlay,
+/// decoy-persistence warns, naming the point and how to mount it, and does
+/// not refuse, with the override or without, while the decoy's helper runs
+/// with the setting off.
+#[test]
+fn a_lookup_not_made_of_how_the_sessions_copy_starts_warns_and_never_refuses() {
+    let point = "/hidden/upper/etc/systemd";
+    let fs = mock_decoy(true, &[("50unattended-upgrades", Some(OFF))]);
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    enable(&fs);
+    with_automounts(&fs, &[]);
+    let clear = check_with(false, Some("/hidden/upper")).run(&fs).unwrap();
+    assert!(clear.is_pass(), "{clear:?}");
+
+    with_automounts(&fs, &[point]);
+    fs.mock_clear_lookups();
+    for allow in [false, true] {
+        let result = check_with(allow, Some("/hidden/upper")).run(&fs).unwrap();
+        assert!(result.is_warn(), "{allow}: {result:?}");
+        assert!(
+            result.message().contains(
+                "NAILS does not look up \
+                 /hidden/upper/etc/systemd/system/unattended-upgrades.service, since the lookup \
+                 would mount the automount point /hidden/upper/etc/systemd"
+            ),
+            "{result:?}"
+        );
+        assert!(
+            result.message().ends_with(&mount_fix(&[Path::new(point)])),
+            "{result:?}"
+        );
+    }
+    assert!(!reached(&fs, point), "{:?}", fs.mock_lookups());
+}
+
+/// status cannot tell where the guard made no lookup that decides the
+/// install, even where what it did read finds nothing: behind an automount
+/// point, and without the mount table. A lookup it did not make for what
+/// only warns, python3-gi's module, changes nothing.
+#[test]
+fn status_cannot_tell_where_a_lookup_that_decides_the_install_was_not_made() {
     let fs = MockFilesystem::new();
     enable(&fs);
     fs.mock_add_file("/usr/lib/python3/dist-packages/gi/__init__.py", "");
@@ -268,15 +397,26 @@ fn status_cannot_tell_where_a_lookup_was_not_made() {
 
     with_automounts(&fs, &["/usr/lib/python3/dist-packages/gi"]);
     fs.mock_clear_lookups();
-    assert_eq!(
-        DecoyPersistenceCheck::decoy_install_at_shutdown(&fs),
-        Some(InstallAtShutdown::Unknown)
-    );
+    assert_eq!(DecoyPersistenceCheck::decoy_install_at_shutdown(&fs), None);
     assert!(
         !reached(&fs, "/usr/lib/python3/dist-packages/gi"),
         "{:?}",
         fs.mock_lookups()
     );
+
+    // Where the helper's unit leaves its marker, which shows whether it
+    // runs, and where it keeps its cgroup, which shows it running where the
+    // marker does not.
+    for point in ["/run/systemd/units", "/sys/fs/cgroup/system.slice"] {
+        with_automounts(&fs, &[point]);
+        fs.mock_clear_lookups();
+        assert_eq!(
+            DecoyPersistenceCheck::decoy_install_at_shutdown(&fs),
+            Some(InstallAtShutdown::Unknown),
+            "{point}"
+        );
+        assert!(!reached(&fs, point), "{point}: {:?}", fs.mock_lookups());
+    }
 
     fs.mock_set_mount_table_error("permission denied");
     fs.mock_clear_lookups();

@@ -966,10 +966,20 @@ fn decoy_blocker<F: Filesystem>(
 }
 
 /// unattended-upgrades' install at shutdown on the decoy under `root`, with
-/// the root overlay's upper at `upper` (`None`: the decoy alone).
-pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) -> Finding {
-    let polling = polling::warning(fs, root);
-    let running = match loggers::unit_active(fs, root, UNIT) {
+/// the root overlay's upper at `upper` (`None`: the decoy alone). What
+/// decides the refusal, whether the decoy's helper runs and what it reads, is
+/// read through `blocking`; what only warns, python3-gi's module and how the
+/// hidden session's own copy starts and what it reads, through `warning`. So
+/// where a check reads them through views of their own, a lookup the
+/// automount guard does not make refuses only where it decides the refusal.
+pub(super) fn finding<F: Filesystem>(
+    blocking: &F,
+    warning: &F,
+    root: &Path,
+    upper: Option<&Path>,
+) -> Finding {
+    let polling = polling::warning(warning, root);
+    let running = match loggers::unit_active(blocking, root, UNIT) {
         loggers::Activity::Active => true,
         loggers::Activity::Inactive => false,
         // A helper NAILS cannot tell runs may install at activation.
@@ -981,7 +991,7 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
             };
         }
     };
-    let start = match session_starts_helper(fs, root, upper) {
+    let start = match session_starts_helper(warning, root, upper) {
         Ok(start) => start.map(Ok),
         Err(why) => Some(Err(why)),
     };
@@ -995,12 +1005,12 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
     // What the decoy's running helper reads first.
     let mut apt_config = None;
     if running {
-        let blocker = match helper::running(fs, root) {
+        let blocker = match helper::running(blocking, root) {
             Err(doubt) if doubt.needs_root => Some(cannot_tell_without_root(&doubt.why)),
             Err(doubt) => Some(cannot_tell(&doubt.why)),
             Ok((pids, read_first)) => {
                 apt_config = read_first;
-                decoy_blocker(fs, root, &pids, apt_config.as_deref(), start.as_ref())
+                decoy_blocker(blocking, root, &pids, apt_config.as_deref(), start.as_ref())
             }
         };
         if blocker.is_some() {
@@ -1018,8 +1028,8 @@ pub(super) fn finding<F: Filesystem>(fs: &F, root: &Path, upper: Option<&Path>) 
         };
     };
     let session = match upper {
-        Some(upper) => session_setting(fs, root, upper, apt_config.as_deref()),
-        None => decoy_setting(fs, root, apt_config.as_deref()).0,
+        Some(upper) => session_setting(warning, root, upper, apt_config.as_deref()),
+        None => decoy_setting(warning, root, apt_config.as_deref()).0,
     };
     Finding {
         blocker: None,
