@@ -326,6 +326,7 @@ mod tests {
             cgroup_root: dir.path().join("cgroup"),
             protected_pids: Vec::new(),
             act: false,
+            selinux: &nails_teardown::whole_root::selinux::KERNEL,
         };
         emergency::run(plan, &host, finish)
     }

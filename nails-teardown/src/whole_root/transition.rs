@@ -74,7 +74,9 @@ use crate::whole_root::plan::{
     self, BINARY_NAME, Direction, PLAN_NAME, Plan, RECORDS_NAME, RUNTIME_DIR, SNAPSHOT_NAME,
     UTAB_MOUNTS_NAME, UTAB_NAME, unix_now,
 };
+use crate::whole_root::program_label::Labelling;
 use crate::whole_root::run_scrub::{self, Snapshot};
+use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::{
     boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, skips,
     switch_refusal, utab,
@@ -366,6 +368,10 @@ pub struct Env {
     pub network_tools: Option<network::NetTools>,
     /// How the way back powers off when it cannot put the network state back.
     pub power_off: PowerOff,
+    /// What gives the copy the way back leaves for the decoy's first start
+    /// the label the plan records ([`Plan::program_label`]): the running
+    /// kernel's SELinux, or a test's stand-in.
+    pub selinux: &'static dyn Selinux,
 }
 
 /// How the way back powers off instead of returning ([`PowerOff::system`]).
@@ -405,6 +411,7 @@ impl Env {
             pid_places: Some(fresh_pids::Places::system()),
             network_tools: None,
             power_off: PowerOff::system(),
+            selinux: &selinux::KERNEL,
         }
     }
 
@@ -746,14 +753,20 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // pieces left for the decoy's first start run the binary copy from /run,
     // and the reconcile one-shot turns noexec back on once they have, so /run
     // stays executable until then. Everything else sets noexec here, and so
-    // does a failed install. Done this late so the boot clock read now dates
-    // the switch itself, which comes next.
+    // does a failed install, a copy that does not take the plan's label among
+    // them: the decoy's PID 1 would start it in its own domain. Done this late
+    // so the boot clock read now dates the switch itself, which comes next.
+    let label = plan.program_label.as_deref().map(|label| Labelling {
+        selinux: env.selinux,
+        label,
+    });
     let fixup_installed = fixup_binary
         .as_deref()
         .and_then(|binary| Some((binary, boot_records::Fix::for_decoy(&env.nextroot)?)))
         .is_some_and(|(binary, fix)| {
             let switched_at = boot_records::boot_clock();
-            boot_records::install(&env.run, binary, &fix, switched_at, plan.run_noexec).is_ok()
+            boot_records::install(&env.run, binary, &fix, switched_at, plan.run_noexec, label)
+                .is_ok()
         });
     if plan.run_noexec && !fixup_installed {
         let _ = nextroot::set_noexec(&env.run, true);

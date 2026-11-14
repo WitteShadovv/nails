@@ -581,6 +581,7 @@ impl World {
             cgroup_root: self.base.join("cgroup"),
             protected_pids: Vec::new(),
             act: false,
+            selinux: &nails_teardown::whole_root::selinux::KERNEL,
         };
         let report = emergency::run(Plan::load(&paths.plan()).ok(), &host, Finish::Poweroff);
         assert_eq!(

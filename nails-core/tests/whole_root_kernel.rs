@@ -124,6 +124,7 @@ mod kernel_tests {
                 armed: Some(Arm::now(direction)),
                 entered_at: None,
                 run_noexec: false,
+                program_label: None,
                 carried: Vec::new(),
                 decoy_mounts: Vec::new(),
                 read_only_disks: false,
@@ -149,6 +150,7 @@ mod kernel_tests {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
                 },
+                selinux: &nails_teardown::whole_root::selinux::KERNEL,
             }
         }
     }

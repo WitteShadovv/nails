@@ -10,8 +10,13 @@
 //! executable for them and the reconcile step makes it `noexec` again, that the
 //! step reads the decoy's wtmp without updating its access time, and that the
 //! wtmpdb writer really starts in a time namespace whose boot clock starts at
-//! the switch, kept from the system bus. The soft-reboot itself and the
-//! decoy's own writers need a VM: the cross-distro records test runs them.
+//! the switch, kept from the system bus; and that the copy the way back leaves
+//! for the decoy's first start takes the SELinux label the plan records
+//! through the running kernel, carries none where the plan records none, and
+//! is left out with every piece that would start it, `/run` made `noexec`
+//! again, where the label cannot be written. The soft-reboot itself and the
+//! decoy's own writers need a VM: the cross-distro records test runs them, and
+//! the label under a loaded policy needs one as well.
 
 mod kernel_tests {
     use nails_core::test_path;
@@ -77,6 +82,7 @@ mod kernel_tests {
             armed: Some(Arm::now(Direction::Leave)),
             entered_at: Some(1),
             run_noexec: true,
+            program_label: None,
             carried: Vec::new(),
             decoy_mounts: Vec::new(),
             read_only_disks: false,
@@ -142,6 +148,7 @@ mod kernel_tests {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
                 },
+                selinux: &nails_teardown::whole_root::selinux::KERNEL,
             };
             let before = boot_records::boot_clock();
             let outcome = transition::run(&env);
@@ -157,6 +164,11 @@ mod kernel_tests {
                 .join(boot_records::FIXUP_DIR)
                 .join(boot_records::FIXUP_BINARY);
             assert_eq!(std::fs::read(&copy).unwrap(), b"\x7fELF-not-really");
+            assert_eq!(
+                label_of(&copy),
+                Err(rustix::io::Errno::NODATA),
+                "no label where the plan records none"
+            );
             let unit =
                 std::fs::read_to_string(run.join("systemd/system").join(boot_records::FIXUP_UNIT))
                     .unwrap();
@@ -205,6 +217,141 @@ mod kernel_tests {
             ] {
                 assert!(!gone.exists(), "{} should be gone", gone.display());
             }
+        });
+    }
+
+    /// The SELinux label `path` carries, as the kernel gives it, or the
+    /// kernel's error.
+    fn label_of(path: &Path) -> Result<Vec<u8>, rustix::io::Errno> {
+        let mut value = vec![0; 4096];
+        let len = rustix::fs::lgetxattr(path, "security.selinux", &mut value[..])?;
+        value.truncate(len);
+        Ok(value)
+    }
+
+    /// Lay out an FHS decoy that keeps classic wtmp, bound at the next root
+    /// under `run`, and the session's runtime pieces there, armed for the way
+    /// back with `label`, and run the way back's last step. Skips on a kernel
+    /// that labels every new file itself (SELinux active): the label is
+    /// checked against the loaded policy there, which needs a VM. Returns what
+    /// the step did and where it leaves its copy.
+    fn way_back_with(run: &Path, label: Option<&str>) -> (Outcome, PathBuf) {
+        let decoy = ScratchTmpfs::new("");
+        let root = decoy.path();
+        if let Ok(found) = label_of(root) {
+            skip_host(&format!(
+                "the kernel labels new files on this host ({}): SELinux is active, and the \
+                 label under a loaded policy needs a VM",
+                String::from_utf8_lossy(&found).trim_end_matches('\0')
+            ));
+        }
+        file(root, "etc/os-release", b"ID=fedora\n", 0o644);
+        file(root, "usr/lib/systemd/systemd", b"#!/bin/sh\n", 0o755);
+        file(root, "var/log/wtmp", &[0u8; 384], 0o664);
+        let hidden = ScratchTmpfs::new("");
+        let runtime = run.join("overlay-runtime");
+        let next = run.join("nextroot");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::create_dir_all(&next).unwrap();
+        file(&runtime, BINARY_NAME, b"\x7fELF-not-really", 0o700);
+        let mut plan = way_back_plan(hidden.path());
+        plan.program_label = label.map(str::to_string);
+        plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
+        nextroot::bind(root, &next, false).unwrap();
+        let env = Env {
+            run: run.to_path_buf(),
+            nextroot: next.clone(),
+            runtime_dir: runtime,
+            kmsg: run.join("no-kmsg"),
+            systemctl: None,
+            pid_places: None,
+            now: nails_teardown::whole_root::plan::unix_now(),
+            mounts: read_mountinfo().unwrap(),
+            network: nails_teardown::whole_root::network::Places::system(run),
+            network_tools: None,
+            power_off: transition::PowerOff {
+                grace: std::time::Duration::ZERO,
+                kernel: || false,
+            },
+            selinux: &nails_teardown::whole_root::selinux::KERNEL,
+        };
+        let outcome = transition::run(&env);
+        nextroot::detach_tree(&next);
+        let copy = run
+            .join(boot_records::FIXUP_DIR)
+            .join(boot_records::FIXUP_BINARY);
+        (outcome, copy)
+    }
+
+    #[test]
+    fn the_copy_for_the_decoy_s_first_start_takes_the_plan_s_label_through_the_kernel() {
+        let _ = Rerun::new(test_path!(
+            the_copy_for_the_decoy_s_first_start_takes_the_plan_s_label_through_the_kernel
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            // The namespace's root may write security.selinux on its own
+            // tmpfs, and a kernel without SELinux keeps the value as given.
+            let run_fs = ScratchTmpfs::new("");
+            let label = nails_teardown::whole_root::program_label::PROGRAM_LABEL;
+            let (outcome, copy) = way_back_with(run_fs.path(), Some(label));
+            assert!(
+                matches!(outcome, Outcome::Returned { failed: 0, .. }),
+                "{outcome:?}"
+            );
+            assert_eq!(label_of(&copy).unwrap(), format!("{label}\0").into_bytes());
+            assert!(
+                run_fs
+                    .path()
+                    .join("systemd/system")
+                    .join(boot_records::FIXUP_UNIT)
+                    .is_file()
+            );
+            assert!(
+                !nextroot::is_noexec(run_fs.path()).unwrap(),
+                "left executable"
+            );
+        });
+    }
+
+    #[test]
+    fn a_copy_that_cannot_take_its_label_leaves_its_pieces_out_and_run_noexec() {
+        let _ = Rerun::new(test_path!(
+            a_copy_that_cannot_take_its_label_leaves_its_pieces_out_and_run_noexec
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            // A ramfs stores no extended attributes, so no label can be
+            // written on it.
+            let scratch = ScratchTmpfs::new("");
+            let run = scratch.mkdir("run");
+            if let Err(errno) = nix::mount::mount(
+                Some("ramfs"),
+                &run,
+                Some("ramfs"),
+                nix::mount::MsFlags::empty(),
+                None::<&str>,
+            ) {
+                nails_core::test_support::skip(&format!(
+                    "cannot mount a ramfs in this namespace: {errno}"
+                ));
+            }
+            assert!(!nextroot::is_noexec(&run).unwrap());
+            let label = nails_teardown::whole_root::program_label::PROGRAM_LABEL;
+            let (outcome, copy) = way_back_with(&run, Some(label));
+            assert!(
+                matches!(outcome, Outcome::Returned { failed: 0, .. }),
+                "{outcome:?}"
+            );
+            assert!(!copy.exists(), "no copy for the decoy's first start");
+            for gone in [
+                run.join(boot_records::FIXUP_DIR),
+                run.join("systemd/system").join(boot_records::FIXUP_UNIT),
+                run.join("systemd/system/multi-user.target.wants"),
+            ] {
+                assert!(!gone.exists(), "{} should be gone", gone.display());
+            }
+            assert!(nextroot::is_noexec(&run).unwrap(), "noexec is back at once");
         });
     }
 

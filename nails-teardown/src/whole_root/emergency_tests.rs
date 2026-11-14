@@ -17,6 +17,7 @@ fn host(dir: &Path) -> Host {
         cgroup_root: dir.join("cgroup"),
         protected_pids: Vec::new(),
         act: false,
+        selinux: &selinux::KERNEL,
     }
 }
 
@@ -130,6 +131,99 @@ fn the_hidden_side_prepares_arms_kills_shells_enqueues_then_kills_in_that_order(
         crate::whole_root::plan::Direction::Leave,
         crate::whole_root::plan::unix_now()
     ));
+}
+
+/// Where the plan records a label for the RAM copy, the way back gives the
+/// copy that label again and checks PID 1's start of it against the loaded
+/// policy before it arms anything; where it records none, SELinux is asked
+/// nothing.
+#[test]
+fn the_way_back_labels_the_copy_again_before_it_arms() {
+    use crate::test_support::FakeSelinux;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = host(dir.path());
+    std::fs::create_dir_all(&h.runtime_dir).unwrap();
+    std::fs::write(h.runtime_dir.join(BINARY_NAME), b"\x7fELF").unwrap();
+
+    let untouched = FakeSelinux {
+        write_error: Some(libc::EPERM),
+        ..FakeSelinux::targeted()
+    }
+    .leak();
+    h.selinux = untouched;
+    let mut plan = sample();
+    let mut report = HotReport::new(Side::Hidden, Finish::Return);
+    hidden(&mut plan, &h, &mut report);
+    assert_eq!(report.dispatched, Some(Finish::Return));
+    assert!(!phases(&report).contains(&"label-program"));
+    assert!(untouched.labels_written().is_empty() && untouched.questions().is_empty());
+
+    let selinux = FakeSelinux::targeted().leak();
+    h.selinux = selinux;
+    let mut plan = sample();
+    plan.program_label = Some(crate::whole_root::program_label::PROGRAM_LABEL.to_string());
+    let mut report = HotReport::new(Side::Hidden, Finish::Return);
+    hidden(&mut plan, &h, &mut report);
+    assert_eq!(report.dispatched, Some(Finish::Return));
+    assert_eq!(report.fallback, None);
+    assert_eq!(
+        phases(&report),
+        [
+            "prepare-return",
+            "label-program",
+            "close-backend",
+            "arm",
+            "kill-shells",
+            "enqueue",
+            "kill"
+        ]
+    );
+    assert_eq!(
+        selinux.labels_written(),
+        [b"system_u:object_r:bin_t:s0\0".to_vec()]
+    );
+}
+
+/// A copy that does not take the label, or whose start the loaded policy
+/// would keep in PID 1's domain, powers off instead of returning: the way
+/// back's last step would not run where it can write the kernel log's cursor.
+/// Nothing is armed.
+#[test]
+fn a_copy_that_is_not_ready_for_the_way_back_powers_off_instead() {
+    use crate::test_support::FakeSelinux;
+    for (selinux, why) in [
+        (
+            FakeSelinux {
+                write_error: Some(libc::EACCES),
+                ..FakeSelinux::targeted()
+            },
+            "could not take the label",
+        ),
+        (
+            FakeSelinux {
+                entered: "system_u:system_r:init_t:s0".to_string(),
+                ..FakeSelinux::targeted()
+            },
+            "runs in PID 1's own domain",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = host(dir.path());
+        std::fs::create_dir_all(&h.runtime_dir).unwrap();
+        std::fs::write(h.runtime_dir.join(BINARY_NAME), b"\x7fELF").unwrap();
+        h.selinux = selinux.leak();
+        let mut plan = sample();
+        plan.armed = None;
+        plan.program_label = Some(crate::whole_root::program_label::PROGRAM_LABEL.to_string());
+        let mut report = HotReport::new(Side::Hidden, Finish::Return);
+        hidden(&mut plan, &h, &mut report);
+        assert_eq!(report.dispatched, Some(Finish::Poweroff), "{why}");
+        let fallback = report.fallback.clone().unwrap();
+        assert!(fallback.contains(why), "{fallback}");
+        assert!(fallback.ends_with("; powering off instead"), "{fallback}");
+        assert!(!phases(&report).contains(&"arm"), "{why}");
+        assert!(!h.plan_path().exists(), "nothing armed: {why}");
+    }
 }
 
 #[test]
