@@ -6,9 +6,10 @@
 # the changes a hidden session would make if it reached the decoy's login and
 # package records, written where the decoy keeps them. The oracle nightly scans
 # such a planted copy of after.raw in the place of after, and the verdict must
-# fail on exactly these paths: that shows the independent collector sees a row
-# added to a login database and a change to the package manager's state, which
-# the free-space controls (plant-in-free-space.sh) do not show.
+# fail on exactly these paths: that shows the independent collector sees a
+# login database and a package manager's state the session changed or added,
+# which the free-space controls (plant-in-free-space.sh) do not show. The
+# collector compares each by its file's digest, not a database by its rows.
 #
 #   sudo plant-records.sh <image> <out.json>
 #

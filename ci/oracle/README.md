@@ -350,10 +350,18 @@ no address, domain or URL. It mounts the copy's btrfs read-write from its top
 level for that, which rewrites the filesystem's own metadata, so the copy is
 this scan's alone. The verdict must fail, not blind, with residue of the
 restore channel at exactly the planted paths (a folder the planting had to
-make among them) and nothing else, which shows that the collector sees a row
-added to a login database and a change to the package manager's state, as
-the free-space controls do not. The planting says which databases it found
-absent, in `planted.json` beside the verdict.
+make among them) and nothing else, as the free-space controls cannot show.
+The oracle's Fedora decoys hold neither database, since nothing logs in on
+them through PAM, so on them the planting makes `lastlog2.db` and its folder
+new and plants no wtmpdb row: the scan shows that the collector sees a login
+database a session would add, and a file a session would add to the package
+manager's state. It compares a file by its digest, not a database by its
+rows, so a row added to a database the control cycle changed as well would
+read as noise; the distribution tests' records checks judge the rows of the
+decoy's login records instead
+([the gate](../../nix/e2e-tests/README.md#the-admission-gate-of-fedora)).
+`planted.json`, beside the verdict, names each planted path with whether the
+planting made it new or changed it, and the databases it found absent.
 
 #### Login records the control holds
 
