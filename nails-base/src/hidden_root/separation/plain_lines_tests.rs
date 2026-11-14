@@ -306,6 +306,116 @@ fn a_fuse_line_is_judged_by_the_source_it_gives_its_program() {
 }
 
 #[test]
+fn a_fuse_program_named_by_its_path_is_judged_where_it_lies() {
+    // mount.fuse runs the program a `fuse` line names before its #, or a
+    // `fuse.<program>` or `fuseblk.<program>` type names, from where its
+    // path leads: one in the root's folder lies in the volume, whatever
+    // source it gets, and the line is a finding, never the decoy's own.
+    for line in [
+        "/data/x/prog#/tmp/y /media/b fuse nofail 0 0",
+        "/tmp/y /media/b fuse./data/x/prog nofail 0 0",
+        "/tmp/y /media/b fuseblk./data/x/sub/prog nofail 0 0",
+    ] {
+        let judgement = bind_of_a_folder(line).judge("/mnt");
+        let shown: Vec<&str> = line.split_whitespace().take(3).collect();
+        let shown = shown.join(" ");
+        assert_eq!(
+            entry_needs(&judgement),
+            [SLASH, (EntryKind::Blocking, shown.as_str(), false)],
+            "{line}"
+        );
+        assert_eq!(
+            judgement.entries[1].why, "the program it runs lies in the volume at /mnt",
+            "{line}"
+        );
+        assert_eq!(judgement.entries[1].system_folder, None, "{line}");
+    }
+    // Through a link its place cannot be told, and a program with a / that
+    // is not absolute, which /bin/sh runs from /, is not plain.
+    let judgement = bind_of_a_folder("/data/link/prog#/tmp/y /media/b fuse nofail 0 0")
+        .link("/data/link", "/data/x")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [
+            SLASH,
+            (
+                EntryKind::Untold,
+                "/data/link/prog#/tmp/y /media/b fuse",
+                false
+            )
+        ]
+    );
+    assert_eq!(
+        judgement.entries[1].why,
+        "where the program it runs lies cannot be told: /data/link is a symbolic link, which \
+         NAILS does not follow"
+    );
+    for (line, shown) in [
+        (
+            "data/x/prog#/tmp/y /media/b fuse nofail 0 0",
+            "data/x/prog#/tmp/y /media/b fuse",
+        ),
+        (
+            "/tmp/y /media/b fuse3./data/x/prog nofail 0 0",
+            "/tmp/y /media/b fuse3./data/x/prog",
+        ),
+    ] {
+        let judgement = bind_of_a_folder(line).judge("/mnt");
+        assert_eq!(
+            entry_needs(&judgement),
+            [SLASH, (EntryKind::Untold, shown, false)],
+            "{line}"
+        );
+        assert_not_plain(&judgement.entries[1], shown, &Unplain::FuseProgram.reason());
+    }
+    // A program beside the root's folder, or named alone, names no part of
+    // it.
+    for line in [
+        "/data/y/prog#/tmp/y /media/b fuse nofail 0 0",
+        "/tmp/y /media/b fuse./usr/bin/prog nofail 0 0",
+        "bindfs#/data/y /media/b fuse nofail 0 0",
+    ] {
+        let judgement = bind_of_a_folder(line).judge("/mnt");
+        assert_eq!(entry_needs(&judgement), [SLASH], "{line}");
+    }
+}
+
+#[test]
+fn a_fuse_program_in_a_volume_of_its_own_places_the_root_on_the_decoys_storage() {
+    // The volume is veracrypt1 (dm-9) on the external sdb, at /mnt. The
+    // decoy's boot runs a program stored in it: the line is a finding, and
+    // the decoy uses the volume's filesystem, as for a swap or image file
+    // there, so the gate refuses the root.
+    for line in [
+        "/mnt/prog#/tmp/y /media/b fuse nofail 0 0",
+        "/tmp/y /media/b fuse./mnt/prog nofail 0 0",
+    ] {
+        let world = external_veracrypt().fstab(&with_the_decoys_lines(line));
+        let judgement = world.judge("/mnt");
+        let shown: Vec<&str> = line.split_whitespace().take(3).collect();
+        assert_eq!(
+            entry_needs(&judgement),
+            [(EntryKind::Blocking, shown.join(" ").as_str(), false)],
+            "{line}"
+        );
+        assert_eq!(
+            judgement.entries[0].why, "the program it runs lies in the volume at /mnt",
+            "{line}"
+        );
+        assert_eq!(
+            judgement.verdict,
+            Verdict::OnDecoyFilesystem {
+                how: Sharing::Filesystem,
+                at: PathBuf::from("/mnt"),
+                in_fstab: false,
+            },
+            "{line}"
+        );
+    }
+}
+
+#[test]
 fn a_fuse_line_makes_no_mount_of_the_decoys_own() {
     // The whole of / mounted again at /srv/again: a device line for it there
     // makes that mount, while a FUSE program makes a FUSE mount of its own,

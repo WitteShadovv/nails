@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The paths the decoy's fstab names, a bind line's source and the path of a
-//! swap or image file or of what a FUSE program reads, read as they are
+//! swap or image file, of what a FUSE program reads and of that program
+//! itself where a line names it by an absolute path, read as they are
 //! written: no link in them is followed.
 //!
 //! Each part of such a path is looked at on its own through the
@@ -18,9 +19,10 @@
 //! until a `..` leads back to a place that is there.
 //!
 //! Where such a path lies cannot be told ([`UntoldPath`]) when a part of it
-//! is a symbolic link, which the boot's `mount` or `swapon` would follow,
-//! when it is not absolute, when it is a device node, which they would use
-//! as the device it is, when it crosses the folder of an fstab line, a
+//! is a symbolic link, which the boot's `mount`, `swapon` or `mount.fuse`
+//! would follow, when it is not absolute, when it is a device node, which
+//! they would use as the device it is, when it crosses the folder of an
+//! fstab line, a
 //! `noauto` one too, while that line's mount is not there now
 //! ([`unmounted_folders`](super::lines::unmounted_folders)), so what lies
 //! there when systemd mounts it cannot be read now, when a part of it cannot
@@ -32,7 +34,7 @@ mod tests;
 
 use super::DeviceMap;
 use super::lines::unmounted_folders;
-use super::plain::source;
+use super::plain::{fuse_program, source};
 use crate::Filesystem;
 use crate::filesystem::MountRoot;
 use crate::filesystem::mountinfo::MountEntry;
@@ -41,10 +43,10 @@ use crate::hidden_root::mount_holding;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-/// The paths the lines of the decoy's fstab name ([`names_a_path`]), by the
-/// path as the line writes it (its first field, or the source of a FUSE
-/// line): each as it reads, with no `.` or `..` in it, or why where it lies
-/// cannot be told.
+/// The paths the lines of the decoy's fstab name ([`read_all`]), by the path
+/// as the line writes it (its first field, the source of a FUSE line or its
+/// program): each as it reads, with no `.` or `..` in it, or why where it
+/// lies cannot be told.
 pub type NamedPaths = BTreeMap<String, Result<PathBuf, UntoldPath>>;
 
 /// Why where a path of the decoy's fstab lies cannot be told.
@@ -128,6 +130,15 @@ pub(super) fn names_a_file(entry: &FstabEntry) -> bool {
     source(entry).is_some_and(|path| path.starts_with('/') && !is_device_path(path))
 }
 
+/// The program `mount.fuse` runs for the fstab line `entry`
+/// ([`fuse_program`]), when the line names it by an absolute path, which the
+/// claims place the line by as well. A program with no `/` is the one `PATH`
+/// finds, which names no path, and one with a `/` that is not absolute makes
+/// a line that is not plain.
+pub(super) fn program_path(entry: &FstabEntry) -> Option<&str> {
+    fuse_program(entry).filter(|program| program.starts_with('/'))
+}
+
 /// Whether the claims place the fstab line `entry` by the path it names,
 /// which [`read`] reads: a bind line's source, or the path of a swap or image
 /// file or of what a FUSE program reads.
@@ -154,10 +165,11 @@ pub(super) fn as_written(path: &Path) -> Option<PathBuf> {
     Some(at)
 }
 
-/// The paths the lines of `fstab` name ([`names_a_path`]), by the path as it
-/// is written ([`source`]), each read with [`read`] below `root`, the
-/// folders of its lines that are not mounted now told by `mounts` and
-/// `devices` ([`unmounted_folders`]).
+/// The paths the lines of `fstab` name, by the path as it is written, each
+/// read with [`read`] below `root`, the folders of its lines that are not
+/// mounted now told by `mounts` and `devices` ([`unmounted_folders`]): the
+/// path a line names ([`names_a_path`], [`source`]), and the FUSE program it
+/// names by its path ([`program_path`]).
 pub(super) fn read_all<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
@@ -166,11 +178,18 @@ pub(super) fn read_all<F: Filesystem>(
     devices: &DeviceMap,
 ) -> NamedPaths {
     let unmounted = unmounted_folders(mounts, fstab, devices);
+    let named = fstab
+        .iter()
+        .filter(|entry| names_a_path(entry))
+        .filter_map(source)
+        .chain(
+            fstab
+                .iter()
+                .filter(|entry| is_claimed(entry))
+                .filter_map(program_path),
+        );
     let mut paths = NamedPaths::new();
-    for entry in fstab.iter().filter(|entry| names_a_path(entry)) {
-        let Some(path) = source(entry) else {
-            continue;
-        };
+    for path in named {
         paths
             .entry(path.to_string())
             .or_insert_with(|| read(fs, mounts, root, &unmounted, Path::new(path)));

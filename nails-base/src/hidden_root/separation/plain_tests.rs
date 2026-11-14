@@ -342,6 +342,96 @@ fn a_fuse_line_is_read_by_the_source_it_gives_its_program() {
     }
 }
 
+/// The program `mount.fuse` runs for the one fstab line `line`.
+fn program_of(line: &str) -> Option<String> {
+    let (entries, _) = read_fstab(&format!("{line}\n"));
+    fuse_program(&entries[0]).map(str::to_string)
+}
+
+#[test]
+fn a_fuse_program_is_read_as_mount_fuse_runs_it() {
+    // mount.fuse runs, through /bin/sh, the part of a `fuse` line's first
+    // field before its #, or all of it, and the <program> of a
+    // `fuse.<program>` or `fuseblk.<program>` type, while mount.fuse3 runs
+    // a `fuse3.<program>` type as it is written (fuse 3.17, util-linux 2.42).
+    for (line, program) in [
+        (
+            "/srv/x/prog#/tmp/y /media/b fuse nofail 0 0",
+            Some("/srv/x/prog"),
+        ),
+        ("bindfs#/srv/x /media/b fuse nofail 0 0", Some("bindfs")),
+        ("bindfs /media/b fuse nofail 0 0", Some("bindfs")),
+        (
+            "/tmp/y /media/b fuse./srv/x/prog nofail 0 0",
+            Some("/srv/x/prog"),
+        ),
+        ("/srv/x /media/b fuse.bindfs nofail 0 0", Some("bindfs")),
+        (
+            "/tmp/y /media/b fuseblk./srv/x/prog nofail 0 0",
+            Some("/srv/x/prog"),
+        ),
+        (
+            "/tmp/y /media/b fuse3./srv/x/prog nofail 0 0",
+            Some("fuse3./srv/x/prog"),
+        ),
+        // mount.fuse3 runs the first field of a `fuse3` or `fuseblk` line,
+        // which NAILS reads as any line's first field is.
+        ("/srv/x/prog /media/b fuse3 nofail 0 0", None),
+        ("/dev/sdb1 /media/n fuseblk nofail 0 0", None),
+        // mount binds a bind line itself.
+        ("/srv/x /mnt fuse./srv/x/prog bind 0 0", None),
+        ("/dev/sdb1 /mnt ext4 defaults 0 0", None),
+    ] {
+        assert_eq!(program_of(line).as_deref(), program, "{line}");
+    }
+    // /bin/sh runs a program with a / that is not absolute from the folder
+    // mount runs in: such a line is not plain, a network type's too.
+    for (line, why_not) in [
+        (
+            "srv/x/prog#/tmp/y /media/b fuse nofail 0 0",
+            vec![Unplain::FuseProgram],
+        ),
+        (
+            "./prog#/tmp/y /media/b fuse nofail 0 0",
+            vec![Unplain::FuseProgram],
+        ),
+        (
+            "/tmp/y /media/b fuse.srv/x/prog nofail 0 0",
+            vec![Unplain::FuseProgram],
+        ),
+        (
+            "/tmp/y /media/b fuseblk.srv/x/prog nofail 0 0",
+            vec![Unplain::FuseProgram],
+        ),
+        (
+            "/tmp/y /media/b fuse3./srv/x/prog nofail 0 0",
+            vec![Unplain::FuseProgram],
+        ),
+        (
+            "/tmp/y /media/b fuse.sshfs/../srv/x/prog nofail 0 0",
+            vec![Unplain::FuseProgram],
+        ),
+        (
+            "srv/x/prog /media/b fuse nofail 0 0",
+            vec![Unplain::FuseNoSource, Unplain::FuseProgram],
+        ),
+    ] {
+        assert_eq!(why(line), why_not, "{line}");
+    }
+    // An absolute program, which the judge reads as a path, and one named
+    // alone, which PATH finds, are plain.
+    for line in [
+        "/srv/x/prog#/tmp/y /media/b fuse nofail 0 0",
+        "/tmp/y /media/b fuse./srv/x/prog nofail 0 0",
+        "/tmp/y /media/b fuseblk./srv/x/prog nofail 0 0",
+        "/usr/bin/fuse2fs#/srv/x/disk.img /media/i fuse nofail 0 0",
+        "bindfs#/srv/x /media/b fuse nofail 0 0",
+        "/tmp/y /media/b fuse3.bindfs nofail 0 0",
+    ] {
+        assert_eq!(why(line), [], "{line}");
+    }
+}
+
 #[test]
 fn an_id_tag_is_not_plain() {
     // libmount looks an ID= tag up in /dev/disk/by-id, which NAILS does

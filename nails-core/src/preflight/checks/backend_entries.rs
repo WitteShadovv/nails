@@ -32,15 +32,17 @@
 //! outer volume of another partition) warns: the decoy is configured to open
 //! storage on that drive.
 //!
-//! A bind line's source and the path of a swap or image file are read as
-//! they are written, one part at a time, and no link in them is followed. A
-//! line whose path cannot be told fails as well, with or without the flag: a
-//! path with a symbolic link in any part, one that is not absolute, a device
-//! node, one that crosses the folder of a line of the fstab, a `noauto` one
-//! too, while that line's mount is not there now, one with a part that cannot
-//! be looked up, and one whose lookup would mount an automount point. Such a
-//! line may mount the volume, so the check says why it cannot tell where the
-//! line leads, and to write it with its real path.
+//! A bind line's source, the path of a swap or image file, of what a FUSE
+//! program reads and of a FUSE program named by its path are read as they
+//! are written, one part at a time, and no link in them is followed: such a
+//! path in the volume fails as one that names it. A line whose path cannot be
+//! told fails as well, with or without the flag: a path with a symbolic link
+//! in any part, one that is not absolute, a device node, one that crosses the
+//! folder of a line of the fstab, a `noauto` one too, while that line's mount
+//! is not there now, one with a part that cannot be looked up, and one whose
+//! lookup would mount an automount point. Such a line may mount the volume,
+//! so the check says why it cannot tell where the line leads, and to write it
+//! with its real path.
 //!
 //! The check reads only plain fstab lines, which NAILS reads as `libmount`
 //! and systemd do: a line that holds a control character other than a tab,
@@ -51,19 +53,20 @@
 //! `PARTUUID=` or `PARTLABEL=` tag, such as a relative path or an `ID=` tag,
 //! which NAILS does not resolve, unless it is the line of a RAM, kernel,
 //! host-share, network, overlay or ZFS filesystem and no bind line, fails
-//! too, with or without the flag. A bind line is one with a `bind` or `rbind` option, `bind=x` too,
-//! as `libmount` reads it. A FUSE line is read as `mount.fuse` reads it: the
-//! source it gives its program, the part after the `#` of a `fuse` line's
-//! first field and a `fuse.<program>` line's whole first field, is judged as
-//! a first field is, where it is an absolute path or such a tag, and fails
-//! otherwise, unless that program takes a remote source by it (`sshfs`,
-//! `s3fs`, an rclone remote and a few more); a `#` in the first field of a
-//! line of any other type that begins with `fuse` fails too. The check reads
-//! only plain crypttab lines as well, which NAILS reads as systemd does: a
-//! line that holds such a character, a quote or a backslash in one of its
-//! four fields, or a source that is neither an absolute path nor such a tag
-//! fails with or without the flag. The check names what it could not read,
-//! and says to write the line plainly.
+//! too, with or without the flag. A bind line is one with a `bind` or
+//! `rbind` option, `bind=x` too, as `libmount` reads it. A FUSE line is read
+//! as `mount.fuse` reads it: the source it gives its program, the part after
+//! the `#` of a `fuse` line's first field and a `fuse.<program>` line's whole
+//! first field, is judged as a first field is, where it is an absolute path
+//! or such a tag, and fails otherwise, unless that program takes a remote
+//! source by it (`sshfs`, `s3fs`, an rclone remote and a few more); a `#` in
+//! the first field of a line of any other type that begins with `fuse` fails
+//! too, and so does a FUSE program named by a path with a `/` that is not
+//! absolute. The check reads only plain crypttab lines as well, which NAILS
+//! reads as systemd does: a line that holds such a character, a quote or a
+//! backslash in one of its four fields, or a source that is neither an
+//! absolute path nor such a tag fails with or without the flag. The check
+//! names what it could not read, and says to write the line plainly.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
@@ -111,8 +114,9 @@ pub const UNPLAIN: &str = "Write such a line plainly long before the next use, o
      its first field an absolute path or a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag, unless it is \
      no bind line and is for a RAM, kernel, host-share, network, overlay or ZFS filesystem or for a \
      FUSE program that takes a remote source. A line of the type fuse gives its program that path \
-     or tag after a # (program#/path), and a line of another type that begins with fuse holds no \
-     # in its first field. Then run the command again.";
+     or tag after a # (program#/path), a line of another type that begins with fuse holds no # in \
+     its first field, and a FUSE program is named alone or by its absolute path. Then run the \
+     command again.";
 
 /// What the operator does about a crypttab line that is not plain: NAILS
 /// reads only plain lines, so the line has to be written plainly, and once it

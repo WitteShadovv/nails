@@ -3,11 +3,11 @@
 
 //! The backend-entries check on lines that `libmount`, `mount.fuse` and
 //! systemd read otherwise than a plain reader would: a bind option with a
-//! value, the source a FUSE line gives its program, white space other than a
-//! space or a tab before a `#`, an `ID=` tag, and crypttab fields in quotes or
-//! with a backslash. Each either names the volume as `libmount` or systemd
-//! reads it, or is a line NAILS does not read, which fails, with the flag or
-//! without it.
+//! value, the source a FUSE line gives its program and the program itself,
+//! white space other than a space or a tab before a `#`, an `ID=` tag, and
+//! crypttab fields in quotes or with a backslash. Each either names the
+//! volume as `libmount` or systemd reads it, or is a line NAILS does not
+//! read, which fails, with the flag or without it.
 
 use super::*;
 use crate::hidden_root::separation::Unplain;
@@ -254,6 +254,176 @@ fn a_fuse_line_fails_by_the_source_it_gives_its_program() {
         "op@host:/ /media/s fuse.sshfs nofail 0 0",
         "remote:path /media/r fuse.rclone nofail 0 0",
         "mybucket /media/s3 fuse.s3fs _netdev,allow_other 0 0",
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
+        );
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_pass(), "{line}: {result:?}");
+        assert_eq!(result.message(), only_the_decoys_own_line("/"), "{line}");
+    }
+}
+
+#[test]
+fn a_fuse_program_in_the_volume_fails_and_the_gate_refuses_the_root() {
+    // The volume is the mapping `data` (dm-9) on the whole of sdb, at /mnt.
+    // mount.fuse runs the program a `fuse` line names before its #, or a
+    // `fuse.<program>` type names, from where its path leads (util-linux
+    // 2.42 and fuse 3.17 ran both): here a program stored in the volume.
+    // backend-entries fails the line, and hidden-volume refuses the root, as
+    // for a swap or image file there, with relative or absolute link
+    // targets in /dev/disk.
+    for (line, shown) in [
+        (
+            "/mnt/prog#/tmp/y /media/b fuse nofail 0 0",
+            "/mnt/prog#/tmp/y /media/b fuse",
+        ),
+        (
+            "/tmp/y /media/b fuse./mnt/prog nofail 0 0",
+            "/tmp/y /media/b fuse./mnt/prog",
+        ),
+    ] {
+        for (mapping, drive) in [("../../dm-9", "../../sdb"), ("/dev/dm-9", "/dev/sdb")] {
+            let decoy = decoy().encrypted().file(
+                "/etc/fstab",
+                &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}\n"),
+            );
+            decoy.fs.mock_set_device_node("/dev/dm-9");
+            decoy.link("/dev/disk/by-uuid/abcd", mapping);
+            decoy.link("/dev/disk/by-id/usb-x", drive);
+            let result = decoy.run();
+            assert_eq!(
+                result.message(),
+                names_the_volume(&format!(
+                    "/etc/fstab: '{shown}' (the program it runs lies in the volume at /mnt)"
+                )),
+                "{line}"
+            );
+            assert_eq!(result.remediation(), Some(REMEDIATION), "{line}");
+            let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+                .run(&decoy.fs)
+                .unwrap();
+            assert!(gate.is_fail(), "{line}: {gate:?}");
+            assert!(
+                gate.message().starts_with(
+                    "/mnt is not a volume of its own: it is the filesystem this computer has \
+                     mounted at /mnt"
+                ),
+                "{line}: {}",
+                gate.message()
+            );
+        }
+    }
+    // A program elsewhere, or named alone, names no part of it.
+    for line in [
+        "/usr/bin/fuse2fs#/srv/disk.img /media/i fuse nofail 0 0",
+        "/tmp/y /media/b fuse./usr/bin/prog nofail 0 0",
+        "bindfs#/srv/y /media/b fuse nofail 0 0",
+    ] {
+        let decoy = decoy().encrypted().file(
+            "/etc/fstab",
+            &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}\n"),
+        );
+        let result = decoy.run();
+        assert!(result.is_pass(), "{line}: {result:?}");
+    }
+}
+
+#[test]
+fn a_fuse_program_in_the_roots_folder_fails_with_the_flag_too() {
+    // A bind of the folder /srv/x of / at the root: mount.fuse runs a
+    // program stored in that folder, whatever source it gets, so the line
+    // names the volume and the flag does not let it be.
+    for (line, findings) in [
+        (
+            "/srv/x/prog#/tmp/y /media/b fuse nofail 0 0",
+            &["the program it runs lies in the volume at /mnt"][..],
+        ),
+        (
+            "/tmp/y /media/b fuse./srv/x/prog nofail 0 0",
+            &["the program it runs lies in the volume at /mnt"][..],
+        ),
+        (
+            "/tmp/y /media/b fuseblk./srv/x/sub/prog nofail 0 0",
+            &["the program it runs lies in the volume at /mnt"][..],
+        ),
+        (
+            "/srv/x/prog#/srv/x/y /media/b fuse nofail 0 0",
+            &[
+                "the program it runs lies in the volume at /mnt",
+                "the file it names lies in the volume at /mnt",
+            ][..],
+        ),
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
+        );
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{line}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        let shown: Vec<&str> = line.split_whitespace().take(3).collect();
+        let shown = shown.join(" ");
+        let described: Vec<String> = findings
+            .iter()
+            .map(|why| format!("/etc/fstab: '{shown}' ({why})"))
+            .collect();
+        assert_eq!(
+            result.message(),
+            names_the_volume(&described.join("; ")),
+            "{line}"
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{line}");
+        assert!(run_allowing(&fs, Allow::Nothing).is_fail(), "{line}");
+    }
+    // Through a link its place cannot be told.
+    let fs = rendered(
+        BIND_OF_ROOT,
+        "/dev/vda1 / ext4 defaults 0 1\n/srv/link/prog#/tmp/y /media/b fuse nofail 0 0\n",
+    );
+    fs.create_symlink(Path::new("/srv/x"), Path::new("/srv/link"))
+        .unwrap();
+    fails_as_untold(
+        &fs,
+        Allow::DecoyStorage,
+        &untold(
+            "/srv/link/prog#/tmp/y /media/b fuse",
+            "the program it runs",
+            "/srv/link is a symbolic link, which NAILS does not follow",
+        ),
+    );
+    // A program with a / that is not absolute, which /bin/sh runs from /,
+    // is not plain, and neither is a `fuse3.<program>` type with a /, which
+    // mount.fuse3 runs as it is written.
+    for (line, shown) in [
+        (
+            "srv/x/prog#/tmp/y /media/b fuse nofail 0 0",
+            "srv/x/prog#/tmp/y /media/b fuse",
+        ),
+        (
+            "/tmp/y /media/b fuse3./srv/x/prog nofail 0 0",
+            "/tmp/y /media/b fuse3./srv/x/prog",
+        ),
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            &format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n"),
+        );
+        fails_as_not_plain(
+            &fs,
+            Allow::DecoyStorage,
+            &not_plain(shown, &Unplain::FuseProgram.reason()),
+        );
+    }
+    // A program beside the root's folder, or named alone, and a remote
+    // source name no part of it.
+    for line in [
+        "/srv/y/prog#/tmp/y /media/b fuse nofail 0 0",
+        "/tmp/y /media/b fuse./srv/y/prog nofail 0 0",
+        "/usr/bin/fuse2fs#/srv/y/disk.img /media/i fuse nofail 0 0",
+        "bindfs#/srv/y /media/b fuse nofail 0 0",
+        "sshfs#op@host:/ /media/s fuse nofail 0 0",
+        "sshfs /media/s fuse nofail 0 0",
     ] {
         let fs = rendered(
             BIND_OF_ROOT,

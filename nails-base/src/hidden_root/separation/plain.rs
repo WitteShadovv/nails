@@ -41,6 +41,12 @@
 //! `fuse3` line as it does in a `fuse` one, and in a `fuse.<program>` line a
 //! program may read it in its own way.
 //!
+//! `mount.fuse` runs the program through `/bin/sh`, which looks a name with
+//! no `/` up in `PATH` and runs one with a `/` as the path it is, from the
+//! folder `mount` runs in, `/`, when it is not absolute ([`fuse_program`]).
+//! The judge reads an absolute program as a path, as it reads a bind line's
+//! source, and a program with a `/` that is not absolute is not plain.
+//!
 //! systemd's crypttab generator ends a line at a lone carriage return or a
 //! NUL as well as at a newline, splits it at ASCII white space but not at a
 //! no-break space, and keeps the quotes and backslashes of a field, which it
@@ -129,6 +135,9 @@ pub enum Unplain {
     /// a tag NAILS resolves, and that program is none known to take a remote
     /// source.
     FuseSource,
+    /// The FUSE program it has `mount.fuse` run is written with a `/` and is
+    /// no absolute path ([`fuse_program`]).
+    FuseProgram,
     /// One of the fields of a crypttab line holds a quote.
     Quote,
     /// One of the fields of a crypttab line holds a backslash.
@@ -173,6 +182,9 @@ impl Unplain {
                 "the source it gives its FUSE program is neither an absolute path nor a \
                  {TAGS_SHOWN}, and that program is none known to take a remote source"
             ),
+            Unplain::FuseProgram => {
+                "its FUSE program is a path with a / that is not absolute".to_string()
+            }
             Unplain::Quote => "one of its fields holds a quote".to_string(),
             Unplain::Backslash => "one of its fields holds a backslash".to_string(),
             Unplain::RelativeSource => {
@@ -302,6 +314,29 @@ pub(super) fn source(entry: &FstabEntry) -> Option<&str> {
     fuse_line(entry).map_or(Some(entry.spec.as_str()), |fuse| fuse.source)
 }
 
+/// The program `mount.fuse` runs for the fstab line `entry`, as written: the
+/// program of a `fuse` or `fuse.<program>` line ([`fuse_line`]), the
+/// `<program>` of a `fuseblk.<program>` line, from which `mount.fuse` strips
+/// `fuseblk.` as it strips `fuse.`, and the whole type of a line of any other
+/// type that begins with `fuse` and holds a `.`, such as `fuse3.<program>`,
+/// which `mount.fuse3` runs as it is written (fuse 3.17). `None` for a bind
+/// line, and for a line of the type `fuse3` or `fuseblk`, whose program is
+/// its first field, which NAILS reads as any line's first field is, and of
+/// any other type.
+pub(super) fn fuse_program(entry: &FstabEntry) -> Option<&str> {
+    if let Some(fuse) = fuse_line(entry) {
+        return Some(fuse.program);
+    }
+    if entry.is_bind() {
+        return None;
+    }
+    if let Some(program) = entry.vfstype.strip_prefix("fuseblk.") {
+        return Some(program);
+    }
+    (entry.vfstype.starts_with("fuse") && entry.vfstype.contains('.'))
+        .then_some(entry.vfstype.as_str())
+}
+
 /// Whether the FUSE program `program` takes `source` as a remote one, a name
 /// of no path of this computer: one of [`REMOTE_FUSE`], but rclone, which
 /// takes a local path as well, only for a source it reads as a configured
@@ -402,6 +437,10 @@ pub fn unplain(entry: &FstabEntry, line: &str) -> Vec<Unplain> {
         }
     } else if entry.is_bind() || !names_no_local_path(&entry.vfstype) {
         why.extend(unread(&entry.spec, Unplain::Relative));
+    }
+    if fuse_program(entry).is_some_and(|program| program.contains('/') && !program.starts_with('/'))
+    {
+        why.push(Unplain::FuseProgram);
     }
     why
 }

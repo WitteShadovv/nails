@@ -312,6 +312,45 @@ fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
 }
 
 #[test]
+fn a_fuse_program_named_by_its_path_is_read_as_well() {
+    // The program a FUSE line names by an absolute path, before the # of a
+    // `fuse` line or in a `fuse.<program>` or `fuseblk.<program>` type. No
+    // program named by its name alone, which PATH finds, and none with a
+    // relative path, which makes the line one that is not plain.
+    let fstab = parse_fstab(
+        "/dev/sda1 / ext4 defaults 0 1\n/srv/prog#/tmp/y /media/b fuse nofail 0 0\n\
+         /tmp/z /media/c fuse./srv/prog2 nofail 0 0\n/tmp/w /media/d fuseblk./srv/prog3 nofail 0 0\n\
+         bindfs#/srv/q /media/q fuse nofail 0 0\nsrv/rel#/tmp/v /media/r fuse nofail 0 0\n\
+         /tmp/u /media/u fuse3./srv/prog4 nofail 0 0\n/srv/link/prog#/tmp/y /media/l fuse nofail 0 0\n",
+    );
+    let fs = linked(&[("/srv/link", "/srv/x")]);
+    let paths = read_all(
+        &fs,
+        &parse_mountinfo(PLAIN),
+        Path::new("/"),
+        &fstab,
+        &DeviceMap::default(),
+    );
+    assert_eq!(
+        paths.keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "/srv/link/prog",
+            "/srv/prog",
+            "/srv/prog2",
+            "/srv/prog3",
+            "/srv/q",
+            "/tmp/u",
+            "/tmp/v",
+            "/tmp/w",
+            "/tmp/y",
+            "/tmp/z",
+        ]
+    );
+    assert_eq!(paths["/srv/prog"], reads("/srv/prog"));
+    assert_eq!(paths["/srv/link/prog"], link("/srv/link"));
+}
+
+#[test]
 fn the_paths_are_read_with_the_folders_of_lines_that_are_not_mounted() {
     // /backup is the folder of a line the boot mounts whose drive is not
     // mounted now, and /srv/n that of a noauto line, which systemd mounts
