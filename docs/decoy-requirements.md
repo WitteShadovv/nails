@@ -1218,6 +1218,18 @@ history yourself so an interactive shell has nowhere to write:
   writes its history then (start the shell you type in without it,
   `env -u TMOUT zsh -f`), a hook that may end the shell, which writes its
   history as it ends (`exit`, in a `$(...)` too, `exec`, `kill -HUP $$`), a
+  job your files start that may signal the shell later
+  (`{ sleep 3; kill -HUP $$ } &!`, any program in the background, a process
+  substitution, `nohup`, `setsid`, the code a shell is given with `-c`), a
+  widget that sets the line zsh runs otherwise than to a value as written
+  (`LBUFFER=...`, `BUFFER="sudo $BUFFER"`) or runs a widget of zsh's own that
+  may put other text in it (`zle up-history`, as `up-line-or-beginning-search`
+  does), a line typed or set as written that zsh may expand history in (`!`),
+  a `.zshenv` that sets `ZDOTDIR` or `XDG_CONFIG_HOME` and is not yours, is a
+  link or is one you may not read by its mode, or whose first line holds more
+  than that one assignment, as the check then reads your home's startup files
+  too (keep `export ZDOTDIR=...` alone on the first line of a `.zshenv` you
+  own), a startup file with bytes that are no UTF-8 in it, a
   builtin's name a hook runs as an outside program (after `command` or a
   `disable` of it, or of a module zsh does not load, as `stat`), a file your
   files source by a path with a modifier on `$HOME` (`source $HOME:a/x`), a

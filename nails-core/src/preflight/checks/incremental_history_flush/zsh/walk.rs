@@ -6,8 +6,10 @@
 //! whether that certainly runs at the top level; every other word that names
 //! an option; what the check cannot follow; the files it sources; the
 //! `ZDOTDIR` and `XDG_CONFIG_HOME` it sets; the directories it adds to
-//! `fpath` and the functions it autoloads; and the code it holds in strings
-//! that zsh runs ([`strings`]).
+//! `fpath` and the functions it autoloads; the code it holds in strings
+//! that zsh runs ([`strings`]); the jobs it starts that may run on after the
+//! startup files ([`jobs`]); and the line its widgets may give zsh to run
+//! ([`widgets`]).
 
 use super::OPTIONS;
 use super::backstop;
