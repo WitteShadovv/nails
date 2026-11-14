@@ -31,6 +31,7 @@ pub mod package_drift;
 pub mod persona;
 pub mod policy;
 pub mod probe;
+pub mod program_label;
 pub mod store;
 pub mod systemd;
 pub mod units;

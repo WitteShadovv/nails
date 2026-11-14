@@ -27,6 +27,10 @@ use std::path::Path;
 #[path = "session_model_tests.rs"]
 mod model;
 
+// The SELinux label of the RAM copies of the binary, through the manager.
+#[path = "session_flow_program_label_tests.rs"]
+mod program_label;
+
 /// The plain decoy: `/` is the decoy's own ext4.
 const DECOY_TABLE: &str = "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n";
 
@@ -38,6 +42,9 @@ struct FakeEntryHost {
     cancel_at_reload: bool,
     /// A soft-reboot still comes that cannot be dropped.
     switch_coming: bool,
+    /// The SELinux the RAM copy's label goes through, where not the running
+    /// kernel's.
+    selinux: Option<nails_teardown::test_support::FakeSelinux>,
 }
 
 impl EntryHost for FakeEntryHost {
@@ -81,6 +88,15 @@ impl GuardHost for FakeEntryHost {
     fn service_watchdogs(&self) -> Result<String> {
         Ok("yes".to_string())
     }
+    fn selinux_context(&self, _: &str) -> Result<String> {
+        Ok(String::new())
+    }
+    fn selinux(&self) -> &dyn nails_teardown::whole_root::selinux::Selinux {
+        match &self.selinux {
+            Some(selinux) => selinux,
+            None => &nails_teardown::whole_root::selinux::KERNEL,
+        }
+    }
 }
 
 /// Records the targets started; refuses them when `refuse` is set, and
@@ -110,6 +126,9 @@ impl GuardHost for FakeTarget {
     }
     fn service_watchdogs(&self) -> Result<String> {
         Ok(if self.unguarded { "no" } else { "yes" }.to_string())
+    }
+    fn selinux_context(&self, unit: &str) -> Result<String> {
+        FakeEntryHost::default().selinux_context(unit)
     }
 }
 
