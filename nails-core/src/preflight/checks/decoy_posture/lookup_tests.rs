@@ -496,3 +496,89 @@ fn a_nixos_upgrade_timer_nails_cannot_look_up_warns() {
     let elsewhere = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
     assert!(elsewhere.is_pass(), "{elsewhere:?}");
 }
+
+/// Fedora 44's `auditd.service`, as far as decoy-persistence reads it.
+const AUDITD_UNIT: &str = "[Unit]\nConditionKernelCommandLine=!audit=0\n\
+                           ConditionKernelCommandLine=!audit=off\n\n\
+                           [Service]\nType=forking\nExecStart=/usr/bin/auditd\n";
+
+/// An installed auditd that does not run, whose enabling link NAILS cannot
+/// look up, may be enabled: the decoy would start it after the way back, so
+/// it is refused, with the override, and the override says auditd may
+/// start then. Status and the window's launcher count only a running one.
+/// Without the unit nothing is refused for it.
+#[test]
+fn an_auditd_nails_cannot_tell_is_enabled_refuses() {
+    let link = "/etc/systemd/system/multi-user.target.wants/auditd.service";
+    let fs = decoy("volatile");
+    wants_dir(&fs);
+    fs.mock_set_lookup_error(link, ErrorKind::PermissionDenied);
+    assert!(run(&fs, false).is_pass(), "{:?}", run(&fs, false));
+
+    fs.mock_add_file("/usr/lib/systemd/system/auditd.service", AUDITD_UNIT);
+    let result = run(&fs, false);
+    refused_as_untold(
+        &fs,
+        &result,
+        "NAILS cannot tell whether auditd.service is enabled: NAILS cannot look up \
+         /etc/systemd/system/multi-user.target.wants/auditd.service; run the command again with \
+         sudo",
+    );
+    let allowed = run(&fs, true);
+    assert!(
+        allowed.message().contains(
+            "When the decoy starts after the way back, auditd may start with it and write audit \
+             records to /var/log/audit on the decoy disk."
+        ),
+        "{allowed:?}"
+    );
+    assert!(
+        !allowed
+            .message()
+            .contains("before the overlays are mounted"),
+        "{allowed:?}"
+    );
+    assert!(DecoyPersistenceCheck::persistence(&fs).is_empty());
+
+    // Masked, it starts by none of its links.
+    fs.create_symlink(
+        Path::new("/dev/null"),
+        Path::new("/etc/systemd/system/auditd.service"),
+    )
+    .unwrap();
+    assert!(run(&fs, false).is_pass(), "{:?}", run(&fs, false));
+}
+
+/// An auditd whose invocation marker NAILS cannot look up may run: refused
+/// once, with the override, whose warning says what a running or a starting
+/// one may write, and counted by status.
+#[test]
+fn an_auditd_nails_cannot_tell_runs_refuses_once() {
+    let fs = decoy("volatile");
+    fs.mock_set_lookup_error(
+        "/run/systemd/units/invocation:auditd.service",
+        ErrorKind::Other,
+    );
+    let result = run(&fs, false);
+    refused_as_untold(
+        &fs,
+        &result,
+        "NAILS cannot tell whether auditd.service runs: NAILS cannot look up \
+         /run/systemd/units/invocation:auditd.service (",
+    );
+    assert_eq!(
+        result.message().matches("auditd.service runs").count(),
+        1,
+        "{result:?}"
+    );
+    let allowed = run(&fs, true).message().to_string();
+    for says in [
+        "Records written before the overlays are mounted may survive on the decoy disk.",
+        "When the decoy starts after the way back, auditd may start with it",
+    ] {
+        assert!(allowed.contains(says), "{allowed}");
+    }
+    let findings = DecoyPersistenceCheck::persistence(&fs);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].untold.is_some(), "{findings:?}");
+}

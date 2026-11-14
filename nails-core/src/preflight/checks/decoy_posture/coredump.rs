@@ -199,8 +199,8 @@ impl CoredumpSettings {
 ///
 /// When it does, `coredump.conf` decides what reaches the disk
 /// ([`CoredumpSettings`]). A pattern that pipes or sockets to any other handler
-/// is that handler's business, so it is left alone, as is the plain-file form,
-/// which [`super`] reports directly.
+/// warns ([`foreign_handler_finding`]), and [`super`] reports the plain-file
+/// form directly.
 pub(super) fn pattern_targets_systemd_coredump(pattern: &str) -> bool {
     if let Some(helper) = pattern.strip_prefix('|') {
         return helper.contains("systemd-coredump");
@@ -210,6 +210,29 @@ pub(super) fn pattern_targets_systemd_coredump(pattern: &str) -> bool {
         return socket.contains("systemd") && socket.contains("coredump");
     }
     false
+}
+
+/// The warning for a `kernel.core_pattern` that hands core dumps to a
+/// handler other than systemd-coredump, by a pipe (`|program ...`) or the
+/// kernel coredump socket (`@socket`), or `None` for a pattern that does not.
+///
+/// NAILS does not judge what such a handler keeps, and a crash on the decoy
+/// around a switch, of a NAILS program among others, reaches it. Ubuntu's
+/// apport is one: it logs the program's path and command line of each crash
+/// to `/var/log/apport.log`, and stopping `apport.service` sets the pattern
+/// back to the kernel default, `core`.
+pub(super) fn foreign_handler_finding(pattern: &str) -> Option<String> {
+    if !pattern.starts_with(['|', '@']) || pattern_targets_systemd_coredump(pattern) {
+        return None;
+    }
+    Some(format!(
+        "kernel.core_pattern hands core dumps to a handler other than systemd-coredump \
+         ({pattern}), which NAILS does not judge: it may keep them, or a record of each crash \
+         with the program's path and command line, on the decoy disk; send core dumps to \
+         systemd-coredump with Storage=none and ProcessSizeMax=0, or stop that handler so that \
+         the kernel default, core, applies (Ubuntu's apport: systemctl disable --now \
+         apport.service, which sets it back to core)"
+    ))
 }
 
 /// A size as systemd's `parse_size()` reads it with base 1024, the way

@@ -132,18 +132,46 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 |---|---|
 | [Persistent systemd journal](#fail-closed-activation-is-refused) | The decoy journal records the sudo command line (including the hidden-root binary path) before the soft-reboot, and the decoy's own shutdown and start around each transition. |
 | [Classic syslog daemon](#fail-closed-activation-is-refused) | A syslog daemon (rsyslog, syslog-ng, a syslogd, metalog or socklog) writes every logged line to /var/log on the decoy disk, outside the journal. |
-| [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. |
+| [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. An enabled auditd that does not run starts again when the decoy starts after the way back, unless its unit is masked or the kernel command line keeps it from starting (audit=0). |
 | [Armed kdump](#fail-closed-activation-is-refused) | If the kernel crashes during a hidden session, kdump's crash kernel mounts the decoy root by its device, outside the session's overlay, and writes a dump of kernel memory (which can hold the hidden volume's key) and the session's kernel log to /var/crash on the decoy disk. |
 | [unattended-upgrades set to install at shutdown](#unattended-upgrades) | With Unattended-Upgrade::InstallOnShutdown on, unattended-upgrades' shutdown helper takes a switch through logind for a shutdown: at activation it installs the pending updates on the decoy disk and logs that run there, so the decoy keeps the record of a shutdown at the time of the switch, and its packages change. At the way back with nails deactivate the hidden session's own copy installs them into the session's overlay. |
+| [tuned's log file](#tuned-firewalld-and-abrt) | tuned started with its log option, -l, which Fedora's tuned.service passes, or with -d, writes its log to /var/log/tuned on the decoy disk: it logs when it stops for the switch and when it starts again after the way back, each line with the time, so the decoy keeps both times, as a syslog daemon's log would. tuned-ppd with -l, which Fedora's tuned-ppd.service passes, logs there the power profiles it sets and the holds it releases, around a switch too. Without them both log to their standard error, which a unit or a hand start can send to a file as well. |
 <!-- residue-catalog:end fail-closed -->
 
 Override these per run with `--allow-persistent-decoy` on `activate`/`check`,
 only if you understand and
 accept that what the decoy logs around each soft-reboot may survive on the
-decoy disk, that a kernel crash during the session can leave a dump of its
-memory there, and that unattended-upgrades set to install at shutdown installs
-the pending updates on the decoy disk at activation and logs that run there
-(see [Unattended upgrades](#unattended-upgrades)).
+decoy disk, that tuned logs its stop and start around each switch there, that
+a kernel crash during the session can leave a dump of its memory there, and
+that unattended-upgrades set to install at shutdown installs the pending
+updates on the decoy disk at activation and logs that run there (see
+[tuned, firewalld and ABRT](#tuned-firewalld-and-abrt) and
+[Unattended upgrades](#unattended-upgrades)).
+
+auditd counts while it runs, as a unit or a process, and also while its unit
+is enabled although it does not run, since the service manager starts it again
+when the decoy starts after the way back. An enabled auditd does not count
+where the manager cannot start it: where its unit is masked in any unit
+directory (`systemctl mask --runtime` masks it in `/run`, which the way back
+keeps), where no unit file is left, or where a `ConditionKernelCommandLine=`
+of its unit fails on the kernel's command line, which a soft-reboot keeps:
+every audit package NAILS knows ships `!audit=0` and `!audit=off` there, so a
+kernel booted with `audit=0` starts no auditd. Its unit refuses a plain
+`systemctl stop` on Fedora and Arch (`RefuseManualStop=yes`, as upstream ships
+it, which the Fedora 44 and Arch probes record), so there `systemctl stop` and
+`systemctl disable --now` leave it running. Turn it off for good, without a
+reboot, the same way on every family:
+
+```bash
+sudo systemctl disable auditd.service
+sudo systemctl mask auditd.service
+sudo auditctl --signal stop
+```
+
+`auditctl --signal stop` asks the daemon itself to stop (audit 3.1.1 and newer,
+which every supported release ships). On NixOS set `security.auditd.enable =
+false` in the decoy configuration, run `sudo auditctl --signal stop` while
+`auditctl` is still installed, and rebuild.
 
 The `unattended-upgrade-run` check refuses too, and no flag lifts its refusal:
 while a daily unattended-upgrade run is in progress, the switch would make
@@ -285,18 +313,43 @@ volatile can count as persistent. Run them with sudo.
 
 - **atime policy** — a root mounted without `noatime`/`relatime` records read
   access, leaving an atime trail on the decoy.
-- **Crash-dump channels** — a disk `kernel.core_pattern`, systemd-coredump with
+- **Crash-dump channels** — a disk `kernel.core_pattern`, one that hands core
+  dumps to a handler other than systemd-coredump (by a pipe, `|program`, or
+  the kernel's coredump socket, `@socket`), systemd-coredump with
   any setting other than `Storage=none` together with `ProcessSizeMax=0`, or
   registered pstore records. Each can persist process or
   kernel memory (which may contain hidden-session data) to the decoy disk or
-  firmware-backed storage. systemd-coredump writes every core it processes to
-  `/var/lib/systemd/coredump` first, so `Storage=none` alone still puts each
-  one on the decoy disk for as long as it takes; `ProcessSizeMax=0` stops the
-  processing, and with both set it only logs that a program crashed. Keep
-  systemd-coredump running with those two settings rather than turning it off:
-  without it the kernel writes a `core` file into the crashing program's
-  working directory. An armed kdump, which reaches past the session entirely,
-  is refused (see above).
+  firmware-backed storage. NAILS does not judge what another handler keeps:
+  Ubuntu's apport, which Ubuntu's images run, logs the path and the command
+  line of each crashing program to `/var/log/apport.log`. Only the kernel
+  default, `core`, which writes into the crashing program's working directory
+  as far as its core limit lets it, and an empty pattern pass without a
+  warning; stopping apport (`sudo systemctl disable --now apport.service`)
+  sets the pattern back to `core`. systemd-coredump writes every core it
+  processes to `/var/lib/systemd/coredump` first, so `Storage=none` alone
+  still puts each one on the decoy disk for as long as it takes;
+  `ProcessSizeMax=0` stops the processing, and with both set it only logs that
+  a program crashed. Keep systemd-coredump running with those two settings
+  rather than turning it off: without it the kernel writes a `core` file into
+  the crashing program's working directory. A unit that systemd-coredump
+  starts for each crash warns too, whatever those settings say: it can read
+  the crash from the journal. That is one `systemd-coredump@.service` names
+  in `OnSuccess=` or `OnFailure=`, a service it names in `Wants=`,
+  `Requires=`, `BindsTo=` or `Upholds=`, or one linked into its `.wants`,
+  `.requires` or `.upholds` directories, as KDE's DrKonqi links its
+  `drkonqi-coredump-processor@.service`. Ubuntu's apport package adds one,
+  `apport-coredump-hook@.service`, which runs where systemd-coredump takes the
+  crashes: it logs the path and the command line of each crashing program to
+  `/var/log/apport.log`, with the time, and, for a program a package
+  installed, writes a report of the crash to `/var/crash`, whether
+  `apport.service` runs or not; mask it
+  (`sudo systemctl mask apport-coredump-hook@.service`). An `apport.service`
+  that is stopped but still enabled warns as well, while the pattern does not
+  name apport: it sets the pattern to its pipe again when the decoy starts
+  after the way back. So does a pattern that a `sysctl.d` file sets, which
+  systemd-sysctl applies again then, where it differs from the pattern in
+  force now. An armed kdump, which reaches past the session entirely, is
+  refused (see above).
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
   decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
   module force-disables `system.autoUpgrade`, but with `--overlay-only`, or
@@ -329,6 +382,12 @@ volatile can count as persistent. Run them with sudo.
   WARNING lines to its log on the decoy disk, so every way back adds a pair
   dated at the switch (`apt install python3-gi`); see
   [Unattended upgrades](#unattended-upgrades).
+- **firewalld logging to a file** — firewalld's default log target appends its
+  warnings and errors to `/var/log/firewalld`, so what it logs when it stops
+  or starts around a switch stays on the decoy disk with the time; see
+  [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt).
+- **ABRT** — ABRT in use on the decoy keeps crash reports in
+  `/var/spool/abrt`; see [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt).
 
 The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
@@ -341,6 +400,137 @@ there.
 The `decoy-nix-trace` check warns when a decoy that is not NixOS holds what a
 Nix install leaves behind, and never blocks either (see
 [Nix on the decoy](#nix-on-the-decoy)).
+
+### tuned, firewalld and ABRT
+
+These daemons write to the decoy disk as their own settings say, so
+`decoy-persistence` reads how each starts: its unit file with every drop-in,
+as the service manager loads them, those of the unit's aliases included (the
+links `systemctl enable` makes from `Alias=`, as
+`dbus-org.fedoraproject.FirewallD1.service` for firewalld), and the commands
+of its `ExecStart=`, split as systemd splits them, with the variables the unit
+sets itself (`Environment=`, and the files `EnvironmentFile=` names, read as
+systemd reads them). It reads the program's own options as the program does.
+Where a daemon logs to its standard output or standard error, the unit's
+`StandardOutput=` and `StandardError=` say where that goes. A unit counts
+when the service manager can start it: it is enabled (a link in a `.wants`,
+`.requires` or `.upholds` directory) or active, and not masked. A process
+counts as it runs, by its name (`comm`), or, run through its interpreter as in
+`python3 /usr/sbin/tuned`, by the script Python runs, its options read from its
+command line, so a daemon started by hand, or one still running with the
+options its unit had before a change, is seen as well. NixOS's wrapper runs
+tuned as `.tuned-wrapped`, which counts as tuned. Fedora 44 enables all three
+by preset wherever their packages are installed; the Cloud image the Fedora 44
+probe boots has none of them.
+
+- **tuned** refuses activation, as a syslog daemon does, and
+  `--allow-persistent-decoy` turns that into a warning for one run. tuned
+  started with its log option, `-l` (`--log`), or with `-d`, writes its log to
+  `/var/log/tuned/tuned.log`, or to the file the option names: it logs when it
+  stops for the switch and when it starts again after the way back, each line
+  with the time, so the decoy disk keeps both times. Fedora's `tuned.service`
+  runs `/usr/sbin/tuned -l -P`. tuned-ppd, which serves the power profiles of
+  desktops through tuned, writes its log with `-l` to
+  `/var/log/tuned/tuned-ppd.log`, and Fedora's `tuned-ppd.service` passes it:
+  not a line at each stop and start, but the power profiles it sets and the
+  holds it adds or releases, around a switch too, each with the time.
+  Without `-l` and `-d` both log every line to their standard error, which
+  counts as a log file where it leads to one: where the unit's
+  `StandardError=` names a file (`file:`, `append:`, `truncate:`), or, left
+  to systemd's default, `inherit`, where `StandardOutput=` does, for one
+  unit or, through `service.d`, for every service; or where a running
+  process has a file as its standard error, as one started by hand with
+  `2>file` or `nohup` has. Only root may follow another user's descriptors,
+  so an unprivileged `nails check` cannot tell where a running tuned's
+  standard error goes and refuses: run it with sudo. tuned also counts when
+  it is neither enabled nor active but tuned-ppd is installed and not masked:
+  D-Bus starts tuned-ppd whenever a program asks for power profiles, and its
+  unit needs tuned's. So `systemctl disable` is not enough while tuned-ppd is
+  installed. Make tuned log to the journal with a drop-in for each unit, then
+  restart them:
+
+  ```ini
+  # /etc/systemd/system/tuned.service.d/50-journal.conf
+  [Service]
+  ExecStart=
+  ExecStart=/usr/sbin/tuned -P
+  StandardError=journal
+  ```
+
+  ```ini
+  # /etc/systemd/system/tuned-ppd.service.d/50-journal.conf
+  [Service]
+  ExecStart=
+  ExecStart=/usr/sbin/tuned-ppd
+  StandardError=journal
+  ```
+
+  ```bash
+  sudo systemctl daemon-reload
+  sudo systemctl restart tuned.service tuned-ppd.service
+  ```
+
+  Or mask both (`sudo systemctl mask --now tuned.service tuned-ppd.service`),
+  which takes the power profiles from the desktop. Any log file counts, one in
+  a RAM filesystem included. The log stops growing, but what tuned logged
+  before stays in `/var/log/tuned`. tuned also rewrites its state files in
+  `/etc/tuned` each time it starts, as other daemons rewrite theirs, which
+  these settings do not change. On NixOS disable `services.tuned`, or clear
+  `systemd.services.tuned`'s `ExecStart=` (and `tuned-ppd`'s) in the decoy
+  configuration and set it again without `-l`, with `StandardError=` set to
+  `journal`.
+- **firewalld** warns. With its default log target, `mixed`, it appends its
+  warnings and errors to `/var/log/firewalld`, and every message it logs with
+  `--debug`; the target `file` appends every message it logs there,
+  `--log-file` names another file, `syslog` sends them to the journal, and
+  `console` writes them to its standard output, which Fedora's and Debian's
+  units send to `/dev/null`. Fedora's unit runs
+  `/usr/bin/firewalld --nofork --nopid $FIREWALLD_ARGS` and reads
+  `FIREWALLD_ARGS` from `/etc/sysconfig/firewalld`. Make it log to the journal
+  there:
+
+  ```bash
+  # /etc/sysconfig/firewalld
+  FIREWALLD_ARGS=--log-target=syslog
+  ```
+
+  then `sudo systemctl restart firewalld.service`. Debian's unit runs
+  `/usr/sbin/firewalld --nofork --nopid` and reads no such variable: clear
+  `ExecStart=` in a drop-in and set it again with `--log-target=syslog`, then
+  restart it.
+  On NixOS set `services.firewalld.extraArgs = [ "--log-target=syslog" ];`,
+  from which the configuration writes `/etc/sysconfig/firewalld`, rebuild, then
+  restart it. NAILS takes `mixed`, the default of firewalld's upstream build
+  and of Fedora's, unless the command line says otherwise, and cannot tell, so
+  it warns, where the unit names a variable it does not set itself.
+- **ABRT** warns while it is in use: `abrtd.service`, which every other ABRT
+  unit needs, is enabled or active and runs `abrtd`, or an `abrtd` process
+  runs. ABRT keeps crash reports in its dump location, `/var/spool/abrt`
+  unless `DumpLocation` in `/etc/abrt/abrt.conf` names another, made from the
+  core dumps systemd-coredump keeps of the programs packages install (it drops
+  those of other programs, NAILS's own among them, unless `ProcessUnpackaged`
+  is on), from the kernel oops messages in the journal and, each time it
+  starts, from the crash records pstore holds, a kernel crash of the hidden
+  session among them. So a crash on the decoy around a switch, dated then, or
+  such a crash record lands there. Turn it off with
+  `sudo systemctl disable --now abrtd.service`.
+
+What NAILS cannot read of these, a unit file or drop-in directory it cannot
+read, a command or option it does not follow, a variable the unit does not
+set, a standard stream it cannot follow, a drop-in name that two of a unit's
+names hold in different files (the service manager takes the names in an
+order of its own), counts against the decoy: tuned is refused as if it logged
+to a file, and firewalld and ABRT warn. Whether a unit is enabled or active
+NAILS reads from the links and markers systemd leaves, without following them.
+A unit whose link or marker NAILS cannot look up, as an unprivileged
+`nails check` cannot in a directory only root may look into, counts as one
+that starts, wherever its commands would make the daemon log to a file or
+NAILS cannot tell whether they would. A
+unit that another unit pulls in with `Wants=` or `Requires=` in its own file
+is not followed, tuned-ppd's need of tuned aside, and a unit of another name
+that runs one of these programs is seen only by its process, while it runs.
+Where `/proc` hides other users' processes, an unprivileged `nails check` sees
+only the units, while activation, which runs as root, sees the processes too.
 
 ## Package updates
 
@@ -427,7 +617,15 @@ logind.
 - **Volatile journald**: `services.journald.storage = "volatile";`.
 - **No classic syslog / audit**: do not enable `services.rsyslogd`,
   `services.syslog-ng`, `services.syslogd` or `security.auditd` / the audit
-  framework on the decoy.
+  framework on the decoy. To turn a running auditd off, set
+  `security.auditd.enable = false`, run `sudo auditctl --signal stop` and
+  rebuild.
+- **tuned without its log file**: leave `services.tuned` disabled, or clear
+  `systemd.services.tuned`'s `ExecStart=` and set it again without `-l`, with
+  `StandardError=` set to `journal` (see
+  [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt)).
+- **firewalld logging to the journal**: with `services.firewalld` enabled, set
+  `services.firewalld.extraArgs = [ "--log-target=syslog" ];`.
 - **noatime**: add `"noatime"` to the root filesystem's mount options.
 - **The locate database skips the hidden volume** (`locate-database`): leave
   `services.locate` disabled, or for a volume mounted below `/mnt` add
@@ -561,8 +759,10 @@ logind.
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
   file and every `journald.conf.d/*.conf` drop-in the way systemd does, so a
   drop-in that sets `Storage=persistent` is caught too.
-- Remove or disable `rsyslog`, any other syslog daemon and `auditd` if
-  installed.
+- Remove or disable `rsyslog` and any other syslog daemon if installed, and
+  turn `auditd` off for good if installed (`systemctl disable` and
+  `systemctl mask auditd.service`, then `auditctl --signal stop`; see
+  [Fail closed](#fail-closed-activation-is-refused)).
 - Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off, or
   set it to `false`. With it on, the decoy's shutdown helper installs the
   pending updates on the decoy disk at every activation, as at every shutdown,
@@ -570,9 +770,15 @@ logind.
   [Unattended upgrades](#unattended-upgrades)). Where the helper is enabled,
   install python3-gi (`apt install python3-gi`), without which it writes two
   lines to its log on the decoy disk at every way back.
+- Turn apport off (`sudo systemctl disable --now apport.service`), which sets
+  `kernel.core_pattern` back to `core`: Ubuntu's images run it, and it logs the
+  path and the command line of each crashing program to `/var/log/apport.log`
+  on the decoy disk, which `decoy-persistence` warns of.
 - If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
   under `[Coredump]` in a drop-in such as
-  `/etc/systemd/coredump.conf.d/50-discard.conf`.
+  `/etc/systemd/coredump.conf.d/50-discard.conf`, and mask the hook apport
+  adds to it (`sudo systemctl mask apport-coredump-hook@.service`), which
+  reads each crash from the journal whatever those settings say.
 - Mount the root with `noatime`; disable swap and hibernation.
 - With plocate installed, add the directory the hidden volume is mounted in to
   `PRUNEPATHS` in `/etc/updatedb.conf`, or mask and stop
@@ -592,7 +798,9 @@ logind.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable the syslog daemon (`rsyslog`, `syslog-ng`,
-  `inetutils-syslogd`, `busybox-syslogd`, `sysklogd`) and `auditd`.
+  `inetutils-syslogd`, `busybox-syslogd`, `sysklogd`), and turn `auditd` off
+  for good (`systemctl disable` and `systemctl mask auditd.service`, then
+  `auditctl --signal stop`).
 - Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off, or
   set it to `false`. With it on, the decoy's shutdown helper installs the
   pending updates on the decoy disk at every activation, as at every shutdown,
@@ -1651,11 +1859,11 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Journal window around each soft-reboot](#what-the-decoy-journal-keeps) (`pre-entry-journal-window`) | journald records of `sudo nails activate`, the decoy shutdown before the soft-reboot and the decoy start after the way back | all | `decoy-persistence` (refuses) | `journal-scan` | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `decoy-journal-leak` |
 | [Decoy journal reset by the way back](#what-the-decoy-journal-keeps) (`runtime-journal-reset`) | the runtime journal below /run/log/journal, which the decoy and the hidden journald write alike and the way back deletes | all | none: the scrub causes it, as the last step before the switch back | none: RAM only, gone at power-off | Power off after the session. | `session-lifecycle` |
 | [Classic syslog daemon](#fail-closed-activation-is-refused) (`classic-syslog`) | `/var/log/syslog`, `/var/log/messages`, `/var/log/auth.log` | all | `decoy-persistence` (refuses) | `deep-scan-files` | Remove or disable the syslog daemon on the decoy. | `decoy-persistence-preflight` |
-| [Audit daemon log](#fail-closed-activation-is-refused) (`auditd`) | `/var/log/audit` | all | `decoy-persistence` (refuses) | path probe (warn) | Disable auditd and the audit framework on the decoy. | `decoy-persistence-preflight` |
+| [Audit daemon log](#fail-closed-activation-is-refused) (`auditd`) | `/var/log/audit` | all | `decoy-persistence` (refuses) | path probe (warn) | Turn auditd off for good, without a reboot: systemctl disable auditd.service and systemctl mask auditd.service, then auditctl --signal stop, which has the daemon stop itself (on Fedora and Arch its unit refuses a plain systemctl stop); on NixOS set security.auditd.enable = false, stop the daemon with auditctl --signal stop, then run nixos-rebuild switch. | `decoy-persistence-preflight` |
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
 | [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | `examiner-audit` |
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
-| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent. | `examiner-audit` |
+| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent: stop and disable a handler other than systemd-coredump, such as apport (systemctl disable --now apport.service), so that the kernel default, core, applies, and mask a unit systemd-coredump starts for each crash, such as apport-coredump-hook@.service. | `examiner-audit` |
 | [Armed kdump](#fail-closed-activation-is-refused) (`kdump`) | `/var/crash` | all | `decoy-persistence` (refuses) | none: the crash-dumps row probes /var/crash, where kdump writes its dumps | Disable kdump on the decoy (Ubuntu: kdump-tools, Fedora: kdump). | none: a VM test would have to reserve crash kernel memory and panic the guest kernel; the refusal is unit tested |
 | [Locate database](#the-locate-database) (`locate-database`) | `/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`, `/var/cache/locatedb` | all | `locate-database` (refuses) | path probe (info) | Make updatedb skip the directory the volume is mounted in (PRUNEPATHS in /etc/updatedb.conf, services.locate.prunePaths on NixOS), or stop what schedules it, long before the volume is next used. Activation refuses while an updatedb that runs now, or that a timer, path unit, enabled service or cron job the check reads starts, does not skip it; the docs name what the check does not read. | `locate-database` |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
@@ -1686,6 +1894,9 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [unattended-upgrades set to install at shutdown](#unattended-upgrades) (`unattended-upgrades-install-on-shutdown`) | `/var/log/unattended-upgrades`, `/var/log/apt`, `/var/log/dpkg.log` | Debian | `decoy-persistence` (refuses) | none: the logs and the packages are the decoy's own, as after any shutdown that installs updates | Activation refuses while the decoy's helper runs with the setting on, or with an apt configuration NAILS cannot read or follow, one apt refuses, or one that changed since the helper started while no file sets the setting, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override |
 | [A daily unattended-upgrade run at the switch](#unattended-upgrades) (`unattended-upgrades-run-at-the-switch`) | `/var/log/unattended-upgrades` | Debian | `unattended-upgrade-run` (refuses) | none: the lines are the decoy's own logs, as after a shutdown during a daily run | Activation refuses while apt-daily-upgrade.service or apt-daily.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run |
 | [unattended-upgrades' shutdown helper without python3-gi](#unattended-upgrades) (`unattended-upgrades-polling-without-python3-gi`) | `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log` | Debian | `decoy-persistence` | none: the lines are the decoy's own log, as after any start of the helper | decoy-persistence warns while the decoy's helper is enabled and python3-gi is not installed. Install it: apt install python3-gi. | none: asserted on Debian 13 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose stock decoy warns of it and whose helper adds a pair at the way back |
+| [tuned's log file](#tuned-firewalld-and-abrt) (`tuned-log`) | `/var/log/tuned` | all | `decoy-persistence` (refuses) | path probe (warn) | Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, then restart them, or mask them. | none: no VM test runs tuned: Fedora, whose units pass -l, is not admitted yet and its cloud image has no tuned; the refusal is unit tested on Fedora 44's own unit files |
+| [firewalld's log file](#tuned-firewalld-and-abrt) (`firewalld-log`) | `/var/log/firewalld` | all | `decoy-persistence` | path probe (info) | decoy-persistence warns while firewalld is enabled or active, or runs, with a log file. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it. | none: no VM test runs firewalld: Fedora, which enables it, is not admitted yet and its cloud image has no firewalld; the warning is unit tested on Fedora 44's own unit and sysconfig file |
+| [ABRT's crash reports](#tuned-firewalld-and-abrt) (`abrt-spool`) | `/var/spool/abrt` | all | `decoy-persistence` | path probe (warn) | decoy-persistence warns while ABRT is in use on the decoy. Turn it off: systemctl disable --now abrtd.service, which the other ABRT units need. | none: no VM test runs ABRT: Fedora, which enables it, is not admitted yet and its cloud image has no ABRT; the warning is unit tested on Fedora 44's own unit |
 | [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | `preflight-checks` |
 | [sssd and the domain controller's records](#decoys-joined-to-a-domain) (`sssd-domain-records`) | the domain controller's own records of the logins and account lookups sssd makes on a decoy joined to a domain, and sssd's caches under /var/lib/sss and logs under /var/log/sssd | all | `decoy-persistence` | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: no VM test runs a domain controller; the warning is unit-tested |
 <!-- residue-catalog:end session -->

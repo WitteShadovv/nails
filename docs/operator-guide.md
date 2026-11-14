@@ -8,8 +8,9 @@
 
 > **Amnesic decoy first.** NAILS requires a decoy base that keeps no durable
 > record of the hidden session. Activation fails closed on a persistent journald
-> journal, an active syslog/audit daemon, an armed kdump or unattended-upgrades
-> set to install at shutdown. Read
+> journal, an active syslog/audit daemon, an enabled audit daemon, tuned
+> logging to a file, an armed kdump or unattended-upgrades set to install at
+> shutdown. Read
 > [decoy-requirements.md](decoy-requirements.md) and set the decoy up before you
 > rely on NAILS.
 

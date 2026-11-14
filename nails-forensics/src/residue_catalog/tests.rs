@@ -344,6 +344,47 @@ fn the_unattended_upgrades_rows_say_how_they_are_caught() {
 }
 
 #[test]
+fn the_tuned_firewalld_and_abrt_rows_say_how_they_are_caught() {
+    // decoy-persistence judges all three on any family: tuned's log file
+    // refuses activation, as a syslog daemon's does, firewalld's and ABRT's
+    // files only warn. verify probes where each writes.
+    let table = super::docs::render_block("fail-closed", "decoy-requirements.md").unwrap();
+    for (id, path, blocks, severity) in [
+        ("tuned-log", "/var/log/tuned", true, ProbeSeverity::Warn),
+        (
+            "firewalld-log",
+            "/var/log/firewalld",
+            false,
+            ProbeSeverity::Info,
+        ),
+        ("abrt-spool", "/var/spool/abrt", false, ProbeSeverity::Warn),
+    ] {
+        let row = class(id).unwrap_or_else(|| panic!("catalog row {id} is missing"));
+        assert_eq!(row.kind, ResidueKind::Session, "{id}");
+        assert_eq!(row.platforms, Platforms::ALL, "{id}");
+        assert_eq!(row.preflight, Probe::Check("decoy-persistence"), "{id}");
+        assert_eq!(row.preflight_blocks, blocks, "{id}");
+        assert!(
+            matches!(row.channel, Channel::Paths(paths) if paths == [path]),
+            "{id}"
+        );
+        assert!(
+            matches!(
+                row.verify,
+                Probe::Paths { paths, severity: found } if paths == [path] && found == severity
+            ),
+            "{id}"
+        );
+        assert_eq!(
+            row.doc_anchor, "decoy-requirements.md#tuned-firewalld-and-abrt",
+            "{id}"
+        );
+        assert!(!row.residual, "{id}");
+        assert_eq!(table.contains(row.title), blocks, "{id}: {table}");
+    }
+}
+
+#[test]
 fn the_locate_database_row_says_how_it_is_caught() {
     // An updatedb that would list the hidden volume refuses activation
     // through its own check, which no flag lifts; verify notes a database it

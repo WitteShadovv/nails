@@ -61,6 +61,22 @@ path = [
 SPDX-FileCopyrightText = "2020 Steinar H. Gunderson"
 SPDX-License-Identifier = "GPL-2.0-or-later"
 
+# The decoy-persistence check's unit tests read the units and the
+# environment file that Fedora 44's tuned, tuned-ppd, firewalld and abrt
+# packages install, copied unchanged, so that the check is tested on what a
+# Fedora decoy holds; the tests name the package each is taken from. Each
+# stays under the licence of its package, GPL-2.0-or-later for all four.
+[[annotations]]
+path = [
+    "nails-core/src/preflight/checks/decoy_posture/fixtures/fedora-44-tuned.service",
+    "nails-core/src/preflight/checks/decoy_posture/fixtures/fedora-44-tuned-ppd.service",
+    "nails-core/src/preflight/checks/decoy_posture/fixtures/fedora-44-firewalld.service",
+    "nails-core/src/preflight/checks/decoy_posture/fixtures/fedora-44-firewalld.sysconfig",
+    "nails-core/src/preflight/checks/decoy_posture/fixtures/fedora-44-abrtd.service",
+]
+SPDX-FileCopyrightText = "Red Hat, Inc. and the tuned, firewalld and abrt contributors"
+SPDX-License-Identifier = "GPL-2.0-or-later"
+
 # Fedora's updatedb.conf, which its plocate.spec writes; Fedora's spec files
 # are under the MIT licence.
 [[annotations]]

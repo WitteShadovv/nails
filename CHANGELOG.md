@@ -50,6 +50,26 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- `decoy-persistence` judges tuned, tuned-ppd, firewalld and ABRT by how their units start them,
+  the unit file and every drop-in read as the service manager loads them, those of the unit's
+  aliases included, `ExecStart=` split as systemd splits it with the variables the unit sets
+  itself (`Environment=`, and the files `EnvironmentFile=` names), and by their running
+  processes, one that Python runs as a script or NixOS's wrapper names `.tuned-wrapped` included.
+  tuned or tuned-ppd that logs to a file refuses activation, which `--allow-persistent-decoy`
+  turns into a warning for one run: tuned logs its stop and its start around each switch, with
+  the time, to `/var/log/tuned` on the decoy disk with `-l`, which Fedora's units pass, or `-d`,
+  and to its standard error without them, which counts where the unit's `StandardError=`, or the
+  `StandardOutput=` it follows, or a running process sends it to a file; tuned-ppd logs the power
+  profiles it sets then. tuned counts while it is enabled or active, and also while tuned-ppd is
+  installed and not masked, since D-Bus starts tuned-ppd whenever a program asks for power
+  profiles and tuned-ppd needs tuned. firewalld logging to a file (its default log
+  target, `mixed`, appends its warnings and errors to `/var/log/firewalld`) and ABRT in use (crash
+  reports in `/var/spool/abrt`) warn. What NAILS cannot read of their units, their commands or
+  the standard streams of their processes counts against the decoy. The residue catalog has a row
+  for each (`tuned-log`, `firewalld-log`, `abrt-spool`), and `docs/decoy-requirements.md` says how
+  to fix each, NixOS's firewalld by `services.firewalld.extraArgs`. Fedora is not admitted yet, so
+  no VM test runs them; the unit tests read the units Fedora 44's packages install. The unit
+  reader that `locate-database` uses reads the drop-ins of a unit's aliases too.
 - `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
   `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
   its order and every other key stay as they were, a value already set as asked is not rewritten
@@ -659,6 +679,20 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- `decoy-persistence` warns of a `kernel.core_pattern` that hands core dumps to a handler other
+  than systemd-coredump, by a pipe or the kernel's coredump socket, which it left alone before:
+  NAILS does not judge what such a handler keeps. Ubuntu 24.04 and 26.04 run apport, which logs the
+  path and the command line of each crashing program to `/var/log/apport.log`, so a stock Ubuntu
+  decoy warns until apport is stopped (`systemctl disable --now apport.service`, which sets the
+  pattern back to `core`). An `apport.service` that is stopped but still enabled warns too, as it
+  sets its pipe again when the decoy starts after the way back, and so does a `kernel.core_pattern`
+  that a `sysctl.d` file sets then, where it differs from the one in force. A unit
+  systemd-coredump starts for each crash warns too, whatever `coredump.conf` keeps: one its
+  `OnSuccess=` or `OnFailure=` names, a service its `Wants=`, `Requires=`, `BindsTo=` or
+  `Upholds=` names, or one linked into its `.wants`, `.requires` or `.upholds` directories, as
+  KDE's DrKonqi links its processor. The hook apport adds to it, `apport-coredump-hook@.service`,
+  reads each crash from the journal, logs the program's path and command line to
+  `/var/log/apport.log` and writes a report to `/var/crash` for a program a package installed.
 - `backend-detect` reads the start of the device below a LUKS mapping read-only and without
   changing its access time, as before only as root, and tells what it holds. A LUKS1 header is
   read as well as a LUKS2 one, and the mapping's own header is named in the pass line as showing
@@ -978,6 +1012,14 @@ of this changelog for that version becomes the release notes word for word, and
   below that one counts now, read through sysfs: the loop device, a crypt mapping below an LVM
   volume, and the loop device of a partition the mapping reads from. A loop device or crypt mapping
   that no device of the hidden volume reads from still warns.
+- `decoy-persistence` refuses an enabled auditd that does not run, as it refuses a running one:
+  the service manager starts it again when the decoy starts after the way back, unless its unit is
+  masked in any unit directory, no unit file is left, or its `ConditionKernelCommandLine=` fails,
+  as `!audit=0` does on a kernel booted with `audit=0`. Its fix is now the
+  same for every family, with no reboot: `systemctl disable` and `systemctl mask auditd.service`,
+  then `auditctl --signal stop`. auditd.service refuses `systemctl stop` on Fedora and Arch, so
+  turning it off the usual way, with `systemctl disable --now`, left it running there. On NixOS the
+  fix is `security.auditd.enable = false`, `auditctl --signal stop` and a rebuild.
 - The check that the state file lies on the hidden volume follows every symlink and `..` on the
   way to the file as the kernel does, and refuses what it cannot settle so: a symlink that leads
   nowhere, a part of the path it may not look at, a `..` after a directory that does not exist yet,

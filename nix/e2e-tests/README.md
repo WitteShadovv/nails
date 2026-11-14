@@ -694,7 +694,8 @@ Layout:
   through its loop device, which is attached without autoclear so that the
   hidden root can be opened again on the decoy after a session. It also
   switches to a volatile journal (plus masking an active rsyslog), which the
-  decoy-persistence preflight needs, and stops apt's daily timers, which every
+  decoy-persistence preflight needs, stops apport, which Ubuntu's images run
+  and which the preflight warns of, and stops apt's daily timers, which every
   scenario that activates on an image with apt's timers does after each boot
   before it waits for a daily run already started to end, so that no daily
   run makes `unattended-upgrade-run` refuse an activation.
