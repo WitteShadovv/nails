@@ -1758,24 +1758,26 @@ of this changelog for that version becomes the release notes word for word, and
   `TRAPZERR` that exits and each of the others. So is a job the files start that may run on after
   them and signal the shell later, on which zsh ends and writes the file (a list in the background,
   `&`, `&!` or `&|`, a process substitution, a job a `$(...)` leaves running, what `nohup`,
-  `setsid`, `daemonize`, `start-stop-daemon`, `systemd-run`, `at` and `batch` start, and a job the
-  code a shell is given with `-c` starts), where its code may signal the shell's process, runs code
-  the check does not read as the job's, or runs a command that may be an outside program, which may
-  signal its parent, the shell: any but a builtin of zsh's and a function or an alias whose code
-  holds none of that; zsh 5.9 to 5.9.2 wrote the lines with `{ sleep 3; kill -HUP $$ } &!`,
-  `( sleep 3; pkill -HUP -P $PPID zsh ) &!`, `exec {fd}< <(sleep 3; kill -HUP $$)`,
-  `nohup sh -c 'sleep 3; kill -HUP $PPID' &!`, `sh -c '(sleep 3; kill -HUP $PPID) &'`, in a sourced
-  file and in a function the files run, where the check passed. And the line a widget gives zsh to
-  run is read: a value a function gives `BUFFER` as written as a line typed, a doubt where zsh may
-  expand history in it (`!1`), and any other way a function sets the line (`LBUFFER=exit`,
-  `BUFFER=$c`, `local BUFFER=exit`, `print -v BUFFER`, a line that sets it where the walk reads no
-  such assignment) and a widget of zsh's own a function runs that may put other text in it
-  (`zle .up-history`, `zle .yank`, `zle .kill-word`, one that completes the word at the cursor where
-  a file sets the line as written) as a doubt should a widget run the function; zsh 5.9 to 5.9.2 ran
-  `exit` and wrote the lines typed before it with `BUFFER=exit` in a wrapper of `accept-line`, in
-  `zle-line-init` and in `zle-line-finish`, `LBUFFER=exit`, `BUFFER=$c` and the others, where the
-  check passed. The lines `zle -U`, `print -z` and `bindkey -s` type are doubts too where zsh may
-  expand history in them. A builtin's name runs an outside program, which gets
+  `setsid`, `daemonize`, `start-stop-daemon`, `systemd-run`, `at`, `batch`, `crontab` and zsh's
+  `zpty` start, and a job the code a shell is given with `-c` starts), where its code may signal the
+  shell's process, runs code the check does not read as the job's, or runs a command that may be an
+  outside program, which may signal its parent, the shell: any but a builtin of zsh's and a function
+  or an alias whose code holds none of that; zsh 5.9 to 5.9.2 wrote the lines with
+  `{ sleep 3; kill -HUP $$ } &!`, `( sleep 3; pkill -HUP -P $PPID zsh ) &!`,
+  `exec {fd}< <(sleep 3; kill -HUP $$)`, `nohup sh -c 'sleep 3; kill -HUP $PPID' &!`,
+  `sh -c '(sleep 3; kill -HUP $PPID) &'`, in a sourced file and in a function the files run, where
+  the check passed. And the line a widget gives zsh to run is read: a value a function gives
+  `BUFFER` as written as a line typed, a doubt where zsh may expand history in it (`!1`), and any
+  other way a function sets the line (`LBUFFER=exit`, `BUFFER=$c`, `local BUFFER=exit`,
+  `print -v BUFFER`, a line that sets it where the walk reads no such assignment) and a widget of
+  zsh's own a function runs that may put other text in it (`zle .up-history`, `zle .yank`,
+  `zle .kill-word`, `zle vi-cmd-mode` and a `zle -K` of another keymap than `main`, `emacs` or
+  `viins`, after which the keys typed run vi's commands, one that completes the word at the cursor
+  where a file sets the line as written) as a doubt should a widget run the function; zsh 5.9 to
+  5.9.2 ran `exit` and wrote the lines typed before it with `BUFFER=exit` in a wrapper of
+  `accept-line`, in `zle-line-init` and in `zle-line-finish`, `LBUFFER=exit`, `BUFFER=$c` and the
+  others, where the check passed. The lines `zle -U`, `print -z` and `bindkey -s` type are doubts
+  too where zsh may expand history in them. A builtin's name runs an outside program, which gets
   its words, after `command` but where `POSIX_BUILTINS` is on (`command print -r -- "$1"`), after a
   `disable` of it (`disable print`, `disable -m 'p*'`) and for a builtin of a module zsh does not
   load as the name is first run (`stat`, `strftime`), so in a hook such a name counts as that
@@ -2814,14 +2816,15 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Known issues
 
-- The history check (`incremental-history-flush`) does not see a program the startup files or a
-  hook run in the foreground that leaves a process of its own running that signals the shell later,
-  which ends it and makes it write its history (a script, or `env setsid sh -c ...`; it reads the
-  code a shell is given with `-c` and what `nohup`, `setsid` and the like start where they run it
+- The history check (`incremental-history-flush`) does not see a program the startup files or a hook
+  run in the foreground that leaves a process of its own running that signals the shell later, which
+  ends it and makes it write its history (a script, or `env setsid sh -c ...`; it reads the code a
+  shell is given with `-c` and what `nohup`, `setsid` and the like start where they run it
   themselves), a key you type a line with that a file binds to another widget than `self-insert`
-  (`bindkey o beginning-of-history`), which may change the line you type into one that ends the
-  shell, nor a security module (SELinux, AppArmor) that keeps zsh from opening a startup file you
-  own and may read by its mode. With a zsh started as `zsh -f` only `/etc/zshenv` can hold one. See
+  (`bindkey o beginning-of-history`), or a keymap a file makes the one you type in
+  (`bindkey -A vicmd main`), which may change the line you type into one that ends the shell, nor a
+  security module (SELinux, AppArmor) that keeps zsh from opening a startup file you own and may
+  read by its mode. With a zsh started as `zsh -f` only `/etc/zshenv` can hold one. See
   docs/operator-guide.md.
 - A switch into or out of a hidden session can stop halfway: the programs have closed, but the
   screen stays dark or still and no login screen comes. Once the old system's units have stopped,
