@@ -449,19 +449,20 @@ impl<F: Filesystem> Reader<'_, F> {
         forms
     }
 
-    /// Read the startup file at `path` and follow what it sets.
-    fn file(&mut self, path: &Path) {
-        self.file_in(path, None);
+    /// Read the startup file at `path` and follow what it sets; `certain`
+    /// when zsh certainly reads it ([`Reader::piece`]).
+    fn file(&mut self, path: &Path, certain: bool) {
+        self.file_in(path, certain, None);
     }
 
     /// Read the file at `path` that runs as the code of the function `outer`
     /// when in one, and follow what it sets ([`Reader::file`]).
-    fn file_in(&mut self, path: &Path, outer: Option<String>) {
+    fn file_in(&mut self, path: &Path, certain: bool, outer: Option<String>) {
         let was = std::mem::replace(&mut self.function_code, outer.is_some());
         let text = self.text(path);
         self.function_code = was;
         if let Some(text) = text {
-            self.code_in(path, &text, outer);
+            self.code_in(path, &text, certain, outer);
         }
     }
 
@@ -472,13 +473,14 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Follow what `text`, the code of the file at `path` that runs as the
-    /// code of the function `outer` when in one, sets. In NixOS's
-    /// `/etc/zshrc`, as zsh reads it at the top, the `eval` of what dircolors
-    /// prints is left out ([`dircolors_split`]): the lines before it are read
-    /// first, what they and the files read so far may change it with is
-    /// noted ([`Snapshot`]), then the rest; one that does not close its
-    /// structure before the line is read whole.
-    fn code_in(&mut self, path: &Path, text: &str, outer: Option<String>) {
+    /// code of the function `outer` when in one, sets; `certain` when zsh
+    /// certainly reads it. In NixOS's `/etc/zshrc`, as zsh reads it at
+    /// the top, the `eval` of what dircolors prints is left out
+    /// ([`dircolors_split`]): the lines before it are read first, what they
+    /// and the files read so far may change it with is noted
+    /// ([`Snapshot`]), then the rest; one that does not close its structure
+    /// before the line is read whole.
+    fn code_in(&mut self, path: &Path, text: &str, certain: bool, outer: Option<String>) {
         let place = path.to_string_lossy().into_owned();
         if outer.is_none()
             && self.stack.is_empty()
@@ -487,26 +489,35 @@ impl<F: Filesystem> Reader<'_, F> {
             let first = events(before, &place, None);
             if !first.confused {
                 let stops = first.may_stop;
-                self.piece(path, before, first, true, None);
+                self.piece(path, before, first, (true, certain), None);
                 self.snapshot(&place, program);
                 let second = events(after, &place, None);
-                self.piece(path, after, second, !stops, None);
+                self.piece(path, after, second, (!stops, certain && !stops), None);
                 return;
             }
         }
         let read = events(text, &place, outer.clone());
-        self.piece(path, text, read, true, outer);
+        self.piece(path, text, read, (true, certain), outer);
     }
 
     /// Follow what `text`, the code of the file at `path` or a piece of it
     /// that runs as the code of the function `outer` when in one, sets, as
-    /// `read` reads it; `whole` when it runs from its start where zsh runs it
-    /// (the rest of NixOS's `/etc/zshrc` past a `return` it may run does
-    /// not). An assignment it certainly runs is the one value of `ZDOTDIR`
-    /// or `XDG_CONFIG_HOME` for the rest of it, but once it ends, the values
-    /// from before it and each it gave may hold too: zsh may have stopped it
-    /// at an error before the assignment ([`paths`]).
-    fn piece(&mut self, path: &Path, text: &str, read: Read, whole: bool, outer: Option<String>) {
+    /// `read` reads it; of `how`, whether it runs from its start where zsh
+    /// runs it (the rest of NixOS's `/etc/zshrc` past a `return` it may run
+    /// does not), and whether zsh certainly reads it. An assignment it
+    /// certainly runs is the one value of `ZDOTDIR` or `XDG_CONFIG_HOME` for
+    /// the rest of it, but once it ends, the values from before it and each
+    /// it gave may hold too: zsh may have stopped it at an error before the
+    /// assignment, or not read it ([`paths`]).
+    fn piece(
+        &mut self,
+        path: &Path,
+        text: &str,
+        read: Read,
+        how: (bool, bool),
+        outer: Option<String>,
+    ) {
+        let (whole, certain) = how;
         self.rcs |= backstop::names_rcs(text);
         self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
@@ -526,7 +537,8 @@ impl<F: Filesystem> Reader<'_, F> {
         self.outers.push(outer);
         let before = self.start_file();
         for event in read.events {
-            self.apply(event, &place, whole && !read.confused);
+            let sure = whole && !read.confused;
+            self.apply(event, &place, (sure, certain && sure));
         }
         self.end_file(before);
         self.outers.pop();
@@ -547,9 +559,11 @@ impl<F: Filesystem> Reader<'_, F> {
         }
     }
 
-    /// Apply one event of the file at `place`; `certain` when zsh certainly
-    /// runs the file whole and the check followed its structure.
-    fn apply(&mut self, event: Event, place: &str, certain: bool) {
+    /// Apply one event of the file at `place`; of `how`, whether the check
+    /// followed its structure from where zsh starts it, and whether zsh
+    /// certainly reads the file besides.
+    fn apply(&mut self, event: Event, place: &str, how: (bool, bool)) {
+        let (sure, certain) = how;
         self.order += 1;
         match event {
             // A turn-off names the option as much as a turn-on: no reading
@@ -561,32 +575,11 @@ impl<F: Filesystem> Reader<'_, F> {
                 self.options[1] = Some(format!("Oh My Zsh, which {place} loads, sets"));
             }
             Event::Doubt(doubt) => self.doubt(doubt),
-            Event::Source { path, function, .. } => {
-                self.known_files.push(path.text.clone());
-                // Sourced in a function, it is read for every value the
-                // files ever give ZDOTDIR and XDG_CONFIG_HOME, as the
-                // function runs later.
-                let later = function.is_some() || self.in_function_code();
-                let files = if later {
-                    let late = Late::Source(path.clone(), function.clone(), place.to_string());
-                    self.late.push(late);
-                    self.resolve_ever(&path)
-                } else {
-                    self.resolve(&path)
-                };
-                match files {
-                    Some(files) => {
-                        for file in files {
-                            // Sourced in a function, its code runs as that one's.
-                            self.file_in(&file, function.clone());
-                        }
-                    }
-                    None => self.doubt(format!(
-                        "it cannot follow the file {place} sources as `{}`",
-                        path.text
-                    )),
-                }
-            }
+            Event::Source {
+                path,
+                unconditional,
+                function,
+            } => self.source(&path, certain && unconditional, function, place),
             Event::Assign {
                 name: "NIX_PROFILES",
                 value,
@@ -653,7 +646,12 @@ impl<F: Filesystem> Reader<'_, F> {
                 value,
                 unconditional,
                 first,
-            } => self.assign(name, value, (certain && unconditional, first), place),
+            } => self.assign(
+                name,
+                value,
+                (sure && unconditional, certain && unconditional && first),
+                place,
+            ),
             Event::Fpath {
                 dir: Some(dir),
                 first,
@@ -1088,36 +1086,39 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         if login_stage && start.login == Some(false) {
             continue;
         }
-        // Read whole only by a zsh that certainly reads it, and a file only
-        // when it is the one zsh can read for this stage: a zsh reads its
-        // stage's file in /etc or in /etc/zsh, as it was built, and the
-        // user's in one ZDOTDIR.
         // Without `RCS`, zsh reads /etc's zshenv and nothing after it;
         // without `GLOBAL_RCS`, no other file in /etc; a file read so far
         // may turn them on again.
         if !(start.rcs || reader.rcs) && stage != "zshenv" {
             break;
         }
+        // Whether zsh certainly reads the stage's file, as an assignment
+        // that is its first command then drops the values from before it
+        // ([`paths`]): a login stage's only for a login shell. A file in /etc
+        // never, as a zsh reads its stage's file in /etc or in /etc/zsh, as
+        // it was built, which the check does not know.
+        let certain = !login_stage || start.login == Some(true);
         if start.global_rcs || reader.rcs || stage == "zshenv" {
             for dir in ["/etc", "/etc/zsh"] {
-                reader.file(&Path::new(dir).join(stage));
+                reader.file(&Path::new(dir).join(stage), false);
             }
             if stage == "zshenv" && !matches!(fs.inode(Path::new("/etc/NIXOS")), Ok(None)) {
                 // The zshenv nixpkgs builds into zsh reads, on NixOS,
                 // /etc/set-environment when /etc/zshenv is missing, and
                 // /etc/zshenv.local after either.
                 if matches!(fs.inode(Path::new("/etc/zshenv")), Ok(None)) {
-                    reader.file(Path::new("/etc/set-environment"));
+                    reader.file(Path::new("/etc/set-environment"), false);
                 }
-                reader.file(Path::new("/etc/zshenv.local"));
+                reader.file(Path::new("/etc/zshenv.local"), false);
             }
         }
         if !(start.rcs || reader.rcs) {
             break;
         }
         // The user's own, from each place the files read so far may put
-        // ZDOTDIR in.
-        reader.user_files(stage);
+        // ZDOTDIR in. Where a file read so far may turn `RCS` off, zsh reads
+        // none of them, so they may still be certain.
+        reader.user_files(stage, certain);
     }
     reader.startup_changers = reader.changers.len();
     reader.autoloaded();

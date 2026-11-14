@@ -77,7 +77,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 continue;
             }
             if !(ever && self.has_read(&file)) {
-                self.file_in(&file, name);
+                self.file_in(&file, false, name);
             }
         }
     }
