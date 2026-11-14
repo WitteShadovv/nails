@@ -729,6 +729,8 @@ Layout:
   `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
   smoke's reads of a btrfs decoy's image: its zstd frames, decompressed, and
   its older roots, with btrfs-progs.
+- `fedora-gate.nix`: the drivers of Fedora's admission gate
+  ([below](#the-admission-gate-of-fedora)).
 - `default.nix`: maps the scenarios over the table, builds the scenarios of
   the images staged for their family's admission (`stagedImages`), and
   exposes the metadata.
@@ -1085,6 +1087,37 @@ mkdir -p /var/tmp/r
 TMPDIR=/var/tmp/r XDG_RUNTIME_DIR=/var/tmp/r ./fedora-44-refusal/bin/test-driver
 ```
 
+### The admission gate of Fedora
+
+Fedora is admitted in one commit with its CI matrix entry, once its admission
+gate passes on its current releases. The drivers that gate runs before that
+commit are in `fedora-gate.nix`, one set per pinned Fedora image, and run in
+the staged suite of `distro-e2e.yml`, which only a dispatch selects. Each is a
+host driver that writes what it found into the directory `NAILS_GATE_OUT`
+names (the working directory when it is unset).
+
+`<image>-rpms` resolves the packages that one `dnf install` of tuned,
+firewalld and ABRT needs on the stock image, which the gate scenarios install
+on the decoy offline, since their VMs have no network. Only the image's own
+package manager knows what it holds, so the driver boots the image with the
+guest's network on and has its dnf download that install's transaction from
+the release's own repository alone, which does not change once the release is
+out, with weak dependencies left out and every package's signature checked
+against the release key. It writes `<image>-rpms.json`: which of the three the
+image holds already, and the name, NEVRA, SHA-256, size and repository path of
+every package dnf chose (`py/fedora_rpms.py`). It fails when a package's
+signature does not check out or its location is not in the release
+repository.
+
+By hand on a KVM host, as the refusal's:
+
+```sh
+nix build .#legacyPackages.x86_64-linux.e2e-distro.fedora-44-rpms -o fedora-44-rpms
+mkdir -p /var/tmp/g/out
+TMPDIR=/var/tmp/g XDG_RUNTIME_DIR=/var/tmp/g NAILS_GATE_OUT=/var/tmp/g/out \
+  ./fedora-44-rpms/bin/test-driver
+```
+
 ### Running and CI
 
 The tier needs KVM, so it is a VM tier, not a container one. A hosted
@@ -1093,18 +1126,18 @@ passing its label list. `.github/workflows/distro-e2e.yml` runs it in five
 suites: `smoke`, `records` and `refusal`, which run together as `all`, `probe`
 and `staged`. The CI matrix is planned by `python3 -m ci.e2e distro-plan`: the
 smoke shards are kept at or below eight parallel jobs (distributions times their
-shards), and each records scenario, refusal and probe is a job of its own that
-builds its driver and runs `bin/test-driver` on the runner. Each staged
-scenario, the smoke or records scenario of an image staged for its family's
-admission run with a test-only build that admits the family, is a job of its
-own too, built in the sandbox as a smoke scenario is; only a dispatch runs
-them. The nightly runs
+shards), and each records scenario, refusal, probe and staged driver is a job of
+its own that builds its driver and runs `bin/test-driver` on the runner. Each
+staged scenario, the smoke or records scenario of an image staged for its
+family's admission run with a test-only build that admits the family, is a job
+of its own too, built in the sandbox as a smoke scenario is; only a dispatch
+runs the staged suite. The nightly runs
 run `all`. On a pull request, a push runs the records and refusal suites when
 the change touches what the tier is built from, and `all` when the pull request
 carries the `distro-e2e` label, and adding the label runs `all` at once. A
 dispatch takes the suite and the runner as inputs. The records and refusal jobs
 gate: the workflow's `distro-result` fails when one of them fails. The smoke
-and staged scenarios and the probes are informational
+and staged scenarios, the staged drivers and the probes are informational
 ([details](../../docs/ci.md#the-vm-tests-distro-e2eyml)). The NixOS suite in
 `e2e.yml` is unchanged and stays NixOS-only.
 
