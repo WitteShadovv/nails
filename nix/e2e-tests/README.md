@@ -629,7 +629,9 @@ The distribution tier under `nix/distro-tests/` boots real Debian 13, Ubuntu
 [`numtide/nix-vm-test`](https://github.com/numtide/nix-vm-test), so the
 whole-root session, platform detection, the read-only ESP and the
 decoy-persistence preflight are exercised on a non-NixOS host, and on Debian
-13 a Nix installed in the hidden session. Debian 12 is not
+13 a Nix installed in the hidden session. The arch-boxes image, staged for
+Arch's admission, runs the smoke and records scenarios with a test-only build
+that admits Arch, when a run asks for them. Debian 12 is not
 in the table: its systemd is too old for a soft-reboot. A container tier cannot
 do this: a privileged container cannot host an overlay upper on an overlay2
 rootfs and cannot exercise journald or a soft-reboot.
@@ -665,11 +667,20 @@ Layout:
 - `tests/apt-shutdown.nix`: the unattended-upgrades scenario, run on Debian
   13, Ubuntu 24.04 and Ubuntu 26.04
   ([below](#the-unattended-upgrades-scenario)).
-- `default.nix`: maps the scenarios over the table and exposes the metadata.
+- `lib/admitted.nix`: the test-only build of the release binary in which one
+  family's row of the family table is admitted, for the scenarios of a family
+  not admitted yet (the staged scenarios and the oracle images); never
+  released.
+- `py/`: the scenarios' host-side helpers, unit-tested by the
+  `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
+  smoke's read of a btrfs decoy's image with btrfs-progs.
+- `default.nix`: maps the scenarios over the table, builds the scenarios of
+  the images staged for their family's admission (`stagedImages`), and
+  exposes the metadata.
 
 Each smoke scenario shares the static musl `nails` binary into the guest over
 9p (on `/run`, off the decoy disk); asserts platform detection selects the
-Debian-family backend; images the decoy as booted for a baseline; runs the
+overlay-only backend; images the decoy as booted for a baseline; runs the
 decoy-persistence preflight (a stock persistent journal is refused, and passes
 once the decoy is amnesic); runs `blk-availability.service` as lvm2 ships it
 (the image's own unit on Ubuntu, Debian's copy where only `dmsetup` is
@@ -692,7 +703,26 @@ volume keeps the unit's stop from unmounting it; rehearses on that session
 `deactivate` a clean scan of the raw decoy devices in the same boot, which on
 Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
 host-side decoy disk-image check (`lib/disk_forensics.py`, shared with the
-NixOS suite) with null and positive controls. It lists the failed units five
+NixOS suite) with null and positive controls, the positive control's token in
+the file's contents only. It turns the decoy's disk swap off before the first
+hidden root exists, and the swap is off in both sessions, before each entry and
+before each image. With the swap line of the fstab kept, the first session sees
+its unit skipped and `swap.target` reached, and its way back turns the swap on
+again, which the scenario asserts and turns off at once; the second session
+runs with the line made `noauto`, which masks its unit in the session and
+keeps the swap off through the way back. It asserts every unit NAILS masks in
+the hidden root masked at runtime, the residue report of each activation free
+of warnings (the first session's loop device is detached before the second
+entry), an ESP that systemd mounts on demand bound read-only at its mount point
+in each hidden session, with its automount masked there and back on the decoy
+after each way back, and the rehearsal's scan exiting 9 with the blind spot on
+a btrfs root's device, 0 on any other root. On a btrfs root the disk-image
+check also reads the image as btrfs-progs does (`py/btrfs_scan.py`): no canary
+may be in the files of the live tree, decompressed, or at a canary's path in an
+older root of the tree, and three planted controls show what each read sees: a
+plain file the raw scan finds, a compressed file the raw scan misses and the
+live tree's read finds, and a compressed file written and deleted that only an
+older root keeps. It lists the failed units five
 times, on the decoy before the first switch and right after each switch (in
 both hidden sessions and on the decoy after both ways back), compares each
 listing with the entry's `knownFailedUnits`, and checks that the `platform` row
@@ -903,6 +933,19 @@ again where the decoy had it so. A plain soft-reboot afterwards is the positive
 control and must leave the trace. NixOS is not in it: its records already read
 as a power cycle. CI runs it in the records suite of `distro-e2e.yml`, and its
 driver runs by hand as the refusal's below.
+
+Every records scenario makes the swap lines of the decoy's fstab `noauto` and
+turns the swap off before the power cycle. The staged suite runs the scenario
+on arch-boxes (`arch-boxes-staged-records`), in the Nix build sandbox, with the
+build that admits Arch. Arch keeps classic wtmp on systemd 262, which resets
+the start time across a soft-reboot, so a plain soft-reboot's boot record reads
+as a power cycle's, and the control shows that instead. What could still give
+a session away there is a record of the session itself: a console login
+through PAM's login stack runs in the hidden session and must write its
+lastlog2 row and its wtmp records there, none of which may be on the decoy
+after the way back (its lastlog2 and btmp as they were, its wtmp without a
+record on the login's terminal), with the same login on the decoy as the
+positive control.
 
 ### The refusal of Fedora and Arch
 
