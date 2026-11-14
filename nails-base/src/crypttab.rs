@@ -72,6 +72,26 @@ impl CrypttabEntry {
     }
 }
 
+/// A key file's or a header's location, `<path>[:<device>]`, as systemd's
+/// crypttab generator splits it (`split_locationspec()`): at its last `:`,
+/// when what follows is an absolute path or a `UUID=`, `LABEL=`, `PARTUUID=`
+/// or `PARTLABEL=` tag, into the path of the file on that device and the
+/// device, which the generator mounts for it; otherwise all of it is the path
+/// of the file, with no device (`/k:ID=x` names the file `/k:ID=x`).
+pub fn split_location(location: &str) -> (&str, Option<&str>) {
+    match location.rsplit_once(':') {
+        Some((file, device))
+            if device.starts_with('/')
+                || ["UUID=", "LABEL=", "PARTUUID=", "PARTLABEL="]
+                    .iter()
+                    .any(|tag| device.starts_with(tag)) =>
+        {
+            (file, Some(device))
+        }
+        _ => (location, None),
+    }
+}
+
 /// Parse crypttab text. Comments, blank lines and lines with fewer than two
 /// fields are skipped.
 pub fn parse_crypttab(text: &str) -> Vec<CrypttabEntry> {
@@ -242,6 +262,28 @@ mod tests {
                 ("data", "/dev/sdb", "data /dev/sdb none luks"),
             ]
         );
+    }
+
+    /// systemd 260.5's crypttab generator mounted `/dev/sdd` for the key
+    /// field `none:/dev/sdd` and `/dev/disk/by-label/keys` for `/k:LABEL=keys`,
+    /// and read the file `/k:ID=xyz` for the key field `/k:ID=xyz`.
+    #[test]
+    fn a_location_is_split_at_its_last_colon_before_a_device() {
+        for (location, split) in [
+            ("/key", ("/key", None)),
+            ("/key:/dev/mapper/data", ("/key", Some("/dev/mapper/data"))),
+            ("none:/dev/sdd", ("none", Some("/dev/sdd"))),
+            ("/a:b:/dev/sdb", ("/a:b", Some("/dev/sdb"))),
+            ("/k:LABEL=keys", ("/k", Some("LABEL=keys"))),
+            ("/k:UUID=1234", ("/k", Some("UUID=1234"))),
+            ("/k:ID=xyz", ("/k:ID=xyz", None)),
+            ("/key:", ("/key:", None)),
+            ("/a:/b:c", ("/a:/b:c", None)),
+            (":/dev/sdb", ("", Some("/dev/sdb"))),
+            ("UUID=1234", ("UUID=1234", None)),
+        ] {
+            assert_eq!(split_location(location), split, "{location}");
+        }
     }
 
     #[test]

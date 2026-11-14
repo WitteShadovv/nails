@@ -15,17 +15,18 @@
 //! plain (see the `plain` module). The paths they name, a bind line's source,
 //! the path of a swap or image file, of what a FUSE program reads and of a
 //! FUSE program named by its path, and a crypttab source that is no tag and
-//! no device's path in `/dev`, are read below `etc_root` as they are written,
-//! one part at a time, with no link in them followed (see the `paths`
-//! module), once the block devices are known, which tell the folders of its
-//! lines whose mount is not there now, and which device's paths in `/dev` no
-//! block device answers to. The path of a swap or image file or of a
-//! crypttab line's file is never resolved as the name of a device, and
-//! neither is a bind line's source that is an absolute path outside `/dev`.
-//! A device's path in `/dev` is resolved only through links that stay in
-//! `/dev` (see [`follow_in_dev`](crate::blockdev::follow_in_dev)).
-//! A FUSE line names a device by the source it gives its program, the part
-//! after the `#` of a `fuse` line's first field.
+//! no device's path in `/dev`, and so a crypttab line's key file, its header
+//! and what its boot mounts for one of these, are read below `etc_root` as
+//! they are written, one part at a time, with no link in them followed (see the
+//! `paths` module), once the block devices are known, which tell the folders of
+//! its lines whose mount is not there now, and which device's paths in `/dev`
+//! no block device answers to. The path of a swap or image file or of a
+//! crypttab line's file is never resolved as the name of a device, and neither
+//! is a bind line's source that is an absolute path outside `/dev`. A device's
+//! path in `/dev` is resolved only through links that stay in `/dev` (see
+//! [`follow_in_dev`](crate::blockdev::follow_in_dev)). A FUSE line names a
+//! device by the source it gives its program, the part after the `#` of a
+//! `fuse` line's first field.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -185,6 +186,11 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
                 .into_iter()
                 .chain([format!("/dev/mapper/{}", entry.name)])
         }))
+        .chain(
+            super::paths::crypttab_reads(&collected.crypttab)
+                .filter(|spec| !super::paths::is_file_path(spec))
+                .map(str::to_string),
+        )
         .chain(
             mounts
                 .iter()

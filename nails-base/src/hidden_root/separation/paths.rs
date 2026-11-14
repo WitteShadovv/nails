@@ -6,10 +6,11 @@
 //! a swap or image file, of what a FUSE program reads and of that program
 //! itself where a line names it by an absolute path, and the source of a
 //! crypttab line that is no tag and no device's path in `/dev`, such as a
-//! container file, which `systemd-cryptsetup` opens through a loop device.
-//! A device's path in `/dev` that no block device answers to is followed
-//! through its links only while they stay in `/dev` ([`follow_in_dev`]): a
-//! link that leads out of it is not followed.
+//! container file, which `systemd-cryptsetup` opens through a loop device,
+//! and so its key file, its header and what the boot mounts for one of these
+//! (see the `reads` module). A device's path in `/dev` that no block device
+//! answers to is followed through its links only while they stay in `/dev`
+//! ([`follow_in_dev`]): a link that leads out of it is not followed.
 //!
 //! Each part of such a path is looked at on its own through the
 //! [`Filesystem`] trait, from `/` down, with one `statx` that follows no link
@@ -141,7 +142,7 @@ fn is_device_path(spec: &str) -> bool {
 /// crypttab line, is the path of a file: an absolute path that is not the
 /// path of a device in `/dev` ([`is_device_path`]), such as `//dev/sdb`, a
 /// link to a device or a device node outside `/dev`, which [`read`] tells.
-fn is_file_path(spec: &str) -> bool {
+pub(super) fn is_file_path(spec: &str) -> bool {
     spec.starts_with('/') && !is_device_path(spec)
 }
 
@@ -212,10 +213,13 @@ pub(super) fn as_written(path: &Path) -> Option<PathBuf> {
 /// lines that are not mounted now told by `mounts` and `devices`
 /// ([`unmounted_folders`]): the path an fstab line names ([`names_a_path`],
 /// [`source`]), the FUSE program it names by its path ([`program_path`]),
-/// and the file a crypttab line opens ([`opens_a_file`]). A device's path in
-/// `/dev` that an fstab line other than a bind line or a crypttab line names,
-/// and that no block device in `devices` answers to, is held as well where
-/// it leads out of `/dev` or cannot be looked up ([`leaving_dev`]).
+/// the file a crypttab line opens ([`opens_a_file`]), and a file it reads
+/// besides, its key file, its header or what the boot mounts for one of
+/// them ([`reads`](super::reads::reads)). A device's path in `/dev` that an
+/// fstab line other than a bind line or a crypttab line names, for what it
+/// opens or what it reads, and that no block device in `devices` answers to,
+/// is held as well where it leads out of `/dev` or cannot be looked up
+/// ([`leaving_dev`]).
 pub(super) fn read_all<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
@@ -240,7 +244,8 @@ pub(super) fn read_all<F: Filesystem>(
                 .iter()
                 .filter(|entry| opens_a_file(entry))
                 .map(|entry| entry.source.as_str()),
-        );
+        )
+        .chain(crypttab_reads(crypttab).filter(|spec| is_file_path(spec)));
     let mut paths = NamedPaths::new();
     for path in named {
         paths
@@ -255,6 +260,7 @@ pub(super) fn read_all<F: Filesystem>(
         .filter(|entry| is_claimed(entry) && !entry.is_bind())
         .filter_map(source)
         .chain(crypttab.iter().map(|entry| entry.source.as_str()))
+        .chain(crypttab_reads(crypttab))
         .filter(|spec| is_device_path(spec) && !devices.by_spec.contains_key(*spec));
     for spec in unresolved {
         if let Some(why) = leaving_dev(fs, spec) {
@@ -262,6 +268,14 @@ pub(super) fn read_all<F: Filesystem>(
         }
     }
     paths
+}
+
+/// The paths and tags the lines of `crypttab` read besides their sources
+/// ([`reads`](super::reads::reads)).
+pub(super) fn crypttab_reads(crypttab: &[CrypttabEntry]) -> impl Iterator<Item = &str> {
+    crypttab
+        .iter()
+        .flat_map(|entry| super::reads::reads(entry).into_iter().map(|(_, spec)| spec))
 }
 
 /// Why where `spec`, a device's path in `/dev` that no block device here
