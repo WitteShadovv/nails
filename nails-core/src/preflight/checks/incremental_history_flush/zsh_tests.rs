@@ -389,8 +389,8 @@ fn a_zdotdir_neither_the_environment_nor_a_file_sets_is_empty_in_a_path() {
         .map(|write| write.what)
         .collect();
     assert_eq!(found, ["/home/alice/z/hist.zsh names SHARE_HISTORY"]);
-    // Set under a condition, it may be either, which the check cannot
-    // follow.
+    // Set under a condition, it may be either: zsh reads the file of each
+    // place, with ZDOTDIR holding that place, unset for the home's.
     let fs = MockFilesystem::new();
     seed(
         &fs,
@@ -398,9 +398,16 @@ fn a_zdotdir_neither_the_environment_nor_a_file_sets_is_empty_in_a_path() {
         "[[ -d ~/z ]] && ZDOTDIR=/home/alice/z\n",
     );
     seed(&fs, "/home/alice/.zshrc", "source $ZDOTDIR/hist.zsh\n");
+    seed(&fs, "/home/alice/z/.zshrc", "source $ZDOTDIR/hist.zsh\n");
+    seed(&fs, "/hist.zsh", "setopt inc_append_history\n");
+    seed(&fs, "/home/alice/z/hist.zsh", "setopt share_history\n");
+    assert_eq!(scan(&fs, NOT_LOGIN).doubts, Vec::<String>::new());
     assert_eq!(
-        scan(&fs, NOT_LOGIN).doubts,
-        ["it cannot follow the file /home/alice/.zshrc sources as `$ZDOTDIR/hist.zsh`"]
+        on(&fs, NOT_LOGIN),
+        [
+            "/hist.zsh names INC_APPEND_HISTORY",
+            "/home/alice/z/hist.zsh names SHARE_HISTORY",
+        ]
     );
 }
 
@@ -566,35 +573,36 @@ fn a_shift_in_an_arithmetic_command_opens_no_here_document() {
         ["/home/alice/.config/zsh/.zshrc names SHARE_HISTORY"]
     );
 
-    // After one, a ZDOTDIR set at the top level moves where zsh reads, and
-    // two subshells, `((...); ...)`, are no arithmetic command: one set in
-    // them does not.
+    // After one, a ZDOTDIR set at the top level is the one the rest of the
+    // file uses, and two subshells, `((...); ...)`, are no arithmetic
+    // command: one set in them may not be (`$ZDOTDIR/x.zsh` is `/x.zsh`
+    // where it is unset).
     let fs = MockFilesystem::new();
-    seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
+    seed(&fs, "/x.zsh", "setopt share_history\n");
     seed(
         &fs,
-        "/home/alice/.config/zsh/.zshrc",
+        "/home/alice/.config/zsh/x.zsh",
         "setopt inc_append_history\n",
     );
     seed(
         &fs,
         "/home/alice/.zshenv",
-        "(( x = 1 << 2 ))\nexport ZDOTDIR=~/.config/zsh\n",
+        "(( x = 1 << 2 ))\nexport ZDOTDIR=~/.config/zsh\nsource $ZDOTDIR/x.zsh\n",
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY"]
+        ["/home/alice/.config/zsh/x.zsh names INC_APPEND_HISTORY"]
     );
     seed(
         &fs,
         "/home/alice/.zshenv",
-        "((cd /tmp); export ZDOTDIR=~/.config/zsh)\n",
+        "((cd /tmp); export ZDOTDIR=~/.config/zsh)\nsource $ZDOTDIR/x.zsh\n",
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
         [
-            "/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY",
-            "/home/alice/.zshrc names SHARE_HISTORY",
+            "/home/alice/.config/zsh/x.zsh names INC_APPEND_HISTORY",
+            "/x.zsh names SHARE_HISTORY",
         ]
     );
 }
@@ -937,35 +945,36 @@ fn a_source_in_a_case_arm_a_short_form_or_after_a_descriptor_is_followed() {
         ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"]
     );
 
-    // A short form's body ends with its line, so a ZDOTDIR set after it
-    // moves where zsh reads; `foreach`'s body ends at `end`, so one set in it
-    // may not.
+    // A short form's body ends with its line, so a ZDOTDIR set after it is
+    // the one the rest of the file uses; `foreach`'s body ends at `end`, so
+    // one set in it may not be (`$ZDOTDIR/x.zsh` is `/x.zsh` where it is
+    // unset).
     let fs = MockFilesystem::new();
-    seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
+    seed(&fs, "/x.zsh", "setopt share_history\n");
     seed(
         &fs,
-        "/home/alice/.config/zsh/.zshrc",
+        "/home/alice/.config/zsh/x.zsh",
         "setopt inc_append_history\n",
     );
     seed(
         &fs,
         "/home/alice/.zshenv",
-        "for x ($list) :\nexport ZDOTDIR=~/.config/zsh\n",
+        "for x ($list) :\nexport ZDOTDIR=~/.config/zsh\nsource $ZDOTDIR/x.zsh\n",
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY"]
+        ["/home/alice/.config/zsh/x.zsh names INC_APPEND_HISTORY"]
     );
     seed(
         &fs,
         "/home/alice/.zshenv",
-        "foreach x ($list)\n  :\n  export ZDOTDIR=~/.config/zsh\nend\n",
+        "foreach x ($list)\n  :\n  export ZDOTDIR=~/.config/zsh\nend\nsource $ZDOTDIR/x.zsh\n",
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
         [
-            "/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY",
-            "/home/alice/.zshrc names SHARE_HISTORY",
+            "/home/alice/.config/zsh/x.zsh names INC_APPEND_HISTORY",
+            "/x.zsh names SHARE_HISTORY",
         ]
     );
 }
@@ -1577,16 +1586,19 @@ fn a_zdotdir_set_under_a_condition_adds_where_zsh_may_look() {
         ]
     );
 
-    // One the check cannot follow stops the reads in the home, and is a
-    // doubt.
+    // One the check cannot follow is a doubt, and the home's files are
+    // read too, as zsh may stop the file before it.
     let fs = MockFilesystem::new();
     seed(&fs, "/home/alice/.zshenv", "export ZDOTDIR=$(zdotdir)\n");
     seed(&fs, "/home/alice/.zshrc", "unsetopt share_history\n");
     let found = scan(&fs, NOT_LOGIN);
-    assert!(found.writes.is_empty());
     assert_eq!(
         found.doubts,
         ["it cannot follow the ZDOTDIR that /home/alice/.zshenv sets (`$(zdotdir)`)"]
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zshrc names SHARE_HISTORY"]
     );
 }
 

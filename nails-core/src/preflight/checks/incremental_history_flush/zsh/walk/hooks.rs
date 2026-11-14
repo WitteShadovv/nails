@@ -164,7 +164,9 @@ impl Walker<'_> {
             .iter()
             .any(|arg| arg.text.starts_with('-') && arg.text.contains(['d', 'D', 'L']))
         {
-            self.events.push(Event::Autoload((*function).clone()));
+            let in_function = self.function().is_some();
+            self.events
+                .push(Event::Autoload((*function).clone(), in_function));
         }
     }
 
