@@ -69,24 +69,47 @@ def archive_repository(release: str) -> str:
     return f"{ARCHIVE}/{release}/Everything/x86_64/os/"
 
 
+# Where dnf reads the distribution's repository files: dnf5 of Fedora 45 ships
+# them under /usr/share, an older one in /etc.
+REPO_DIRS = ("/etc/yum.repos.d", "/usr/share/dnf5/repos.d", "/etc/distro.repos.d")
+KEY_DIRS = ("/etc/pki/rpm-gpg", "/usr/share/distribution-gpg-keys/fedora")
+
+
 def find_key(release: str) -> str:
     """The guest command that sets ``key`` to the release key file the image's
     own repositories check packages with, or fails naming what it found.
 
-    It takes the first ``gpgkey`` of the image's ``fedora.repo``, with dnf's
-    ``$releasever`` and ``$basearch`` filled in, where that names a file the
-    image holds, and otherwise the first key file of the release the image
-    ships under ``/etc/pki/rpm-gpg``. ``release`` may be a shell expansion."""
-    base = "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora"
+    It takes the first ``gpgkey`` file of the image's ``fedora.repo``, in any
+    folder dnf reads repository files from, with dnf's ``$releasever`` and
+    ``$basearch`` filled in, where the image holds that file, and otherwise
+    the first key file of the release in the image's key folders. Every
+    command in it succeeds under ``set -euo pipefail`` whatever the image
+    lacks. ``release`` may be a shell expansion."""
+    repos = " ".join(f"{folder}/fedora.repo" for folder in REPO_DIRS)
+    keys = " ".join(
+        f"{folder}/RPM-GPG-KEY-fedora-{release}-{kind}"
+        for folder in KEY_DIRS
+        for kind in ("x86_64", "primary")
+    )
+    first_key = (
+        r"sed -n '/^gpgkey=file:\/\//{s|^gpgkey=file://||;s/[ ,].*//;p;q}' "
+        '"$repo"'
+    )
     return (
-        "key=$(sed -n 's|^gpgkey=file://||p' /etc/yum.repos.d/fedora.repo "
-        "2>/dev/null | head -n 1 | cut -d' ' -f1 | "
+        "key=; "
+        f"for repo in {repos}; do "
+        '[ -f "$repo" ] || continue; '
+        f"candidate=$({first_key} | "
         f"sed 's/[$]releasever/{release}/g; s/[$]basearch/x86_64/g'); "
-        '[ -n "$key" ] && [ -e "$key" ] || key=; '
-        f"for candidate in {base}-{release}-x86_64 {base}-{release}-primary; do "
+        '[ -n "$candidate" ] && [ -e "$candidate" ] && { key=$candidate; break; }; '
+        "done; "
+        f"for candidate in {keys}; do "
         '[ -n "$key" ] && break; [ -e "$candidate" ] && key=$candidate; done; '
-        '[ -n "$key" ] || { grep -h "^gpgkey" /etc/yum.repos.d/*.repo >&2; '
-        "ls -la /etc/pki/rpm-gpg >&2; "
+        '[ -n "$key" ] || { grep -rh "^gpgkey" '
+        + " ".join(REPO_DIRS)
+        + " >&2 || true; ls -la "
+        + " ".join(KEY_DIRS)
+        + " >&2 || true; "
         f'echo "no release key of Fedora {release}" >&2; exit 3; }}'
     )
 
