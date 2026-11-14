@@ -23,6 +23,7 @@ def sample_metadata(
     probes: dict[str, str] | None = None,
     records: dict[str, str] | None = None,
     refusals: dict[str, str] | None = None,
+    gates: dict[str, str] | None = None,
 ) -> distro.DistroMetadata:
     scenarios = scenarios or {
         "debian-12": ["debian-12-smoke"],
@@ -38,11 +39,14 @@ def sample_metadata(
         records = {name: f"{name}-records" for name in ("debian-13", "ubuntu-24.04")}
     if refusals is None:
         refusals = {name: f"{name}-refusal" for name in ("arch-boxes", "fedora-44")}
+    if gates is None:
+        gates = {name: name for name in ("fedora-44-gate", "fedora-44-rpms")}
     if timeouts is None:
         timeouts = {name: 2400 for members in scenarios.values() for name in members}
         timeouts.update({attr: 1200 for attr in probes.values()})
         timeouts.update({attr: 1800 for attr in records.values()})
         timeouts.update({attr: 900 for attr in refusals.values()})
+        timeouts.update({attr: 3600 for attr in gates.values()})
     return distro.DistroMetadata(
         distros=list(scenarios),
         scenarios=scenarios,
@@ -50,6 +54,7 @@ def sample_metadata(
         probes=probes,
         records=records,
         refusals=refusals,
+        gates=gates,
     )
 
 
@@ -124,6 +129,26 @@ class ParseMetadataTest(unittest.TestCase):
             "scenarios": {},
             "timeouts": {},
             "probes": [],
+        }
+        with self.assertRaises(distro.DistroError):
+            distro.parse_distro_metadata(payload)
+
+    def test_parses_gates(self) -> None:
+        payload = {
+            "distros": [],
+            "scenarios": {},
+            "timeouts": {"fedora-44-gate": 3600},
+            "gates": {"fedora-44-gate": "fedora-44-gate"},
+        }
+        meta = distro.parse_distro_metadata(payload)
+        self.assertEqual(meta.gates, {"fedora-44-gate": "fedora-44-gate"})
+
+    def test_rejects_a_gate_driver_without_timeout(self) -> None:
+        payload = {
+            "distros": [],
+            "scenarios": {},
+            "timeouts": {},
+            "gates": {"fedora-44-gate": "fedora-44-gate"},
         }
         with self.assertRaises(distro.DistroError):
             distro.parse_distro_metadata(payload)
@@ -252,7 +277,8 @@ class PlanMatrixTest(unittest.TestCase):
             assert isinstance(members, list)
             tests.update(str(test) for test in members)
         drivers = {*meta.probes.values(), *meta.records.values()}
-        self.assertFalse(tests & (drivers | set(meta.refusals.values())))
+        drivers |= {*meta.refusals.values(), *meta.gates.values()}
+        self.assertFalse(tests & drivers)
 
     def test_smoke_jobs_are_marked_and_do_not_gate(self) -> None:
         for job in distro.plan_distro_matrix(sample_metadata())["include"]:
@@ -338,6 +364,42 @@ class PlanDriverMatrixTest(unittest.TestCase):
             distro.plan_driver_matrix(sample_metadata(), "smoke")
 
 
+class PlanGateMatrixTest(unittest.TestCase):
+    def test_one_informational_job_per_gate_driver(self) -> None:
+        meta = sample_metadata()
+        include = distro.plan_driver_matrix(meta, "gate")["include"]
+        self.assertEqual([job["distro"] for job in include], list(meta.gates))
+        for job in include:
+            self.assertEqual((job["suite"], job["gating"]), ("gate", False))
+            self.assertEqual(job["tests"], [meta.gates[str(job["distro"])]])
+            self.assertEqual(job["seconds"], 3600)
+            timeout = job["timeout"]
+            assert isinstance(timeout, int)
+            self.assertGreater(timeout * 60, 3600)
+
+    def test_selecting_gate_drivers_in_order(self) -> None:
+        include = distro.plan_driver_matrix(
+            sample_metadata(), "gate", ["fedora-44-rpms", "fedora-44-gate"]
+        )["include"]
+        self.assertEqual(
+            [job["distro"] for job in include], ["fedora-44-rpms", "fedora-44-gate"]
+        )
+
+    def test_an_unknown_gate_driver_names_its_suite(self) -> None:
+        with self.assertRaisesRegex(
+            distro.DistroError, "unknown gate driver: fedora-44"
+        ):
+            distro.plan_driver_matrix(sample_metadata(), "gate", ["fedora-44"])
+
+    def test_no_runnable_gate_driver_raises(self) -> None:
+        with self.assertRaisesRegex(distro.DistroError, "no gate driver can run"):
+            distro.plan_matrix(sample_metadata(gates={}), ["gate"])
+
+    def test_all_leaves_the_gate_drivers_out(self) -> None:
+        include = distro.plan_matrix(sample_metadata(), ["all"])["include"]
+        self.assertNotIn("gate", {str(job["suite"]) for job in include})
+
+
 class ExpandSuitesTest(unittest.TestCase):
     def test_all_is_smoke_records_and_refusal(self) -> None:
         self.assertEqual(distro.expand_suites(["all"]), ["smoke", "records", "refusal"])
@@ -347,6 +409,7 @@ class ExpandSuitesTest(unittest.TestCase):
             distro.expand_suites(["probe", "refusal", "records", "refusal"]),
             ["records", "refusal", "probe"],
         )
+        self.assertEqual(distro.expand_suites(["gate", "probe"]), ["probe", "gate"])
         self.assertEqual(
             distro.expand_suites(["records", "all"]), ["smoke", "records", "refusal"]
         )
@@ -380,11 +443,13 @@ class PlanSuitesTest(unittest.TestCase):
         )
 
     def test_only_the_records_and_refusal_jobs_gate(self) -> None:
-        include = distro.plan_matrix(sample_metadata(), ["all", "probe"])["include"]
+        include = distro.plan_matrix(sample_metadata(), ["all", "probe", "gate"])[
+            "include"
+        ]
         gating = {str(job["suite"]) for job in include if job["gating"]}
         informational = {str(job["suite"]) for job in include if not job["gating"]}
         self.assertEqual(gating, {"records", "refusal"})
-        self.assertEqual(informational, {"smoke", "probe"})
+        self.assertEqual(informational, {"smoke", "probe", "gate"})
 
     def test_each_suite_runs_what_it_has_of_the_names(self) -> None:
         self.assertEqual(
@@ -513,6 +578,10 @@ class DistroPlanCommandTest(unittest.TestCase):
     def test_probe_suite_plans_the_named_probes(self) -> None:
         include = self.plan("--suite", "probe", "fedora-44")["include"]
         self.assertEqual([job["tests"] for job in include], [["fedora-44-probe"]])
+
+    def test_gate_suite_plans_the_named_drivers(self) -> None:
+        include = self.plan("--suite", "gate", "fedora-44-gate")["include"]
+        self.assertEqual([job["tests"] for job in include], [["fedora-44-gate"]])
 
     def test_suites_combine(self) -> None:
         include = self.plan("--suite", "records", "--suite", "refusal", "fedora-44")

@@ -3,7 +3,7 @@
 The NixOS E2E suite (``plan.py``/``resolve.py``) shards one distribution's
 tests on the NixOS test driver. The distro tier instead boots several Linux
 distributions through ``numtide/nix-vm-test``, so a regression on a non-NixOS
-host is caught instead of passing unseen. It has four suites:
+host is caught instead of passing unseen. It has five suites:
 
 - ``smoke``: the smoke scenarios of the admitted distributions, each a
   derivation that ``nix build`` runs in the Nix build sandbox;
@@ -12,14 +12,19 @@ host is caught instead of passing unseen. It has four suites:
 - ``refusal``: the refusal of each pinned image of a family the family table
   does not admit;
 - ``probe``: the fact probes of the images not admitted yet whose image is
-  pinned.
+  pinned;
+- ``gate``: the drivers of the admission gate of a family not admitted yet,
+  run with a test-only build of NAILS that admits the family before the
+  commit that admits it: its gate scenarios, and the resolution of the
+  package closures they install offline.
 
-A records scenario, a refusal and a probe are each a host driver, one job of
-its own that builds the driver and runs it on the runner, outside the sandbox.
-``all`` plans the smoke, records and refusal suites together, the default run;
-the probes boot no NAILS and run only when asked for. The records and refusal
-jobs gate (:data:`GATING_SUITES`): the workflow fails its result on them, while
-a smoke scenario or a probe that fails only warns.
+A records scenario, a refusal, a probe and a gate driver are each a host
+driver, one job of its own that builds the driver and runs it on the runner,
+outside the sandbox. ``all`` plans the smoke, records and refusal suites
+together, the default run; the probes boot no NAILS, and the gate drivers
+judge no admitted family, so both run only when asked for. The records and
+refusal jobs gate (:data:`GATING_SUITES`): the workflow fails its result on
+them, while a smoke scenario, a probe or a gate driver that fails only warns.
 
 The distro list is plain data the flake exposes as
 ``legacyPackages.<system>.e2e-distro-metadata``. Each distribution names its
@@ -52,8 +57,9 @@ SMOKE = "smoke"
 RECORDS = "records"
 REFUSAL = "refusal"
 PROBE = "probe"
+GATE = "gate"
 # Every suite, in the order a plan lists their jobs.
-SUITES = (SMOKE, RECORDS, REFUSAL, PROBE)
+SUITES = (SMOKE, RECORDS, REFUSAL, PROBE, GATE)
 # The name that selects ALL_SUITES.
 ALL = "all"
 # What ``all`` plans: every suite that runs NAILS.
@@ -66,6 +72,7 @@ _DRIVER_NOUNS = {
     RECORDS: "records scenario",
     REFUSAL: "refusal",
     PROBE: "probe",
+    GATE: "gate driver",
 }
 # Why a suite can have nothing to run.
 _NOTHING_TO_RUN = {
@@ -75,6 +82,7 @@ _NOTHING_TO_RUN = {
         "no refusal can run: no image of a family the family table refuses is pinned"
     ),
     PROBE: "no probe can run: no image of the probe table is pinned",
+    GATE: "no gate driver can run: no image of a family not admitted yet is pinned",
 }
 
 
@@ -91,8 +99,9 @@ class DistroMetadata:
     ``timeouts`` maps each scenario, and each driver attribute, to its effective
     timeout in seconds. ``probes`` maps each probe a run can boot to its
     attribute name, ``records`` each distribution with a records scenario to
-    that scenario's attribute, and ``refusals`` each image a refusal can boot
-    to the refusal's attribute.
+    that scenario's attribute, ``refusals`` each image a refusal can boot to
+    the refusal's attribute, and ``gates`` each gate driver a run can boot
+    (``fedora-44-gate``, ``fedora-44-rpms``) to its attribute.
     """
 
     distros: list[str]
@@ -101,10 +110,16 @@ class DistroMetadata:
     probes: dict[str, str] = field(default_factory=dict)
     records: dict[str, str] = field(default_factory=dict)
     refusals: dict[str, str] = field(default_factory=dict)
+    gates: dict[str, str] = field(default_factory=dict)
 
     def drivers(self, suite: str) -> dict[str, str]:
         """The drivers of a driver suite: each name to its attribute."""
-        tables = {PROBE: self.probes, RECORDS: self.records, REFUSAL: self.refusals}
+        tables = {
+            PROBE: self.probes,
+            RECORDS: self.records,
+            REFUSAL: self.refusals,
+            GATE: self.gates,
+        }
         if suite not in tables:
             raise DistroError(f"{suite} is not a suite of host drivers")
         return tables[suite]
@@ -187,7 +202,8 @@ def parse_distro_metadata(payload: object) -> DistroMetadata:
             if scenario not in timeouts:
                 raise DistroError(f"distro metadata has no timeout for {scenario}")
     tables = {
-        key: _driver_table(payload, key) for key in ("probes", "records", "refusals")
+        key: _driver_table(payload, key)
+        for key in ("probes", "records", "refusals", "gates")
     }
     for table in tables.values():
         for attr in table.values():
@@ -200,6 +216,7 @@ def parse_distro_metadata(payload: object) -> DistroMetadata:
         probes=tables["probes"],
         records=tables["records"],
         refusals=tables["refusals"],
+        gates=tables["gates"],
     )
 
 

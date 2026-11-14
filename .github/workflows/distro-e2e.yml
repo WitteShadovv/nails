@@ -9,14 +9,19 @@ name: Distro E2E
 #   refusal  the refusal of each pinned image of a family the family table
 #            does not admit (Fedora, Arch)
 #   probe    the fact probes of the images not admitted yet
+#   gate     the drivers of the admission gate of a family not admitted yet
+#            (Fedora): its gate scenarios, with a test-only build that admits
+#            the family, and the resolution of the package closures they
+#            install offline, each uploading what it wrote
 #
 # A smoke scenario is a derivation that nix build runs in the Nix build
-# sandbox. A records scenario, a refusal and a probe are host drivers: the job
-# builds the driver and runs it on the runner, outside the sandbox.
+# sandbox. A records scenario, a refusal, a probe and a gate driver are host
+# drivers: the job builds the driver and runs it on the runner, outside the
+# sandbox.
 #
 # The records and refusal jobs gate: distro-result fails when one of them
-# fails. The smoke scenarios and the probes are informational, and their
-# failure only warns.
+# fails. The smoke scenarios, the probes and the gate drivers are
+# informational, and their failure only warns.
 #
 #   pull request to main  the records and refusal suites, when the change
 #   or next               touches what they are built from (the path filter
@@ -26,7 +31,8 @@ name: Distro E2E
 #   nightly schedule      smoke, records and refusal; the nightly run of next
 #                         is a dispatch from next-nightly.yml
 #   dispatch or call      the `suite` input: all (smoke, records and refusal,
-#                         the default), one of them, or the probes
+#                         the default), one of them, the probes, or the gate
+#                         drivers
 #
 # The runner is an input, because each VM needs KVM; a hosted ubuntu-26.04
 # runner exposes /dev/kvm, and a self-hosted KVM runner is selected by passing
@@ -58,12 +64,14 @@ on:
       suite:
         description: >-
           What the VM jobs run: all (the smoke, records and refusal suites),
-          one of those three alone, or the fact probes of the images not
+          one of those three alone, the fact probes of the images not
           admitted yet, each uploading its facts as JSON (distros then names
-          probes, such as fedora-44-enforcing)
+          probes, such as fedora-44-enforcing), or the drivers of the
+          admission gate of a family not admitted yet, each uploading what it
+          wrote (distros then names them, such as fedora-44-gate)
         type: choice
         default: all
-        options: [all, smoke, records, refusal, probe]
+        options: [all, smoke, records, refusal, probe, gate]
       runner:
         description: >-
           runs-on for the VM jobs, as JSON: "ubuntu-26.04" or a label list such
@@ -79,7 +87,9 @@ on:
         type: string
         default: ""
       max-jobs:
-        description: Upper bound on parallel smoke jobs (distros x shards).
+        description: >-
+          Upper bound on parallel smoke jobs (distros x shards), and on the
+          informational jobs of a run that run at once
         type: number
         default: 8
   workflow_call:
@@ -137,6 +147,7 @@ jobs:
       distro-jobs: ${{ steps.matrix.outputs.distro-jobs }}
       gating: ${{ steps.matrix.outputs.gating }}
       gating-jobs: ${{ steps.matrix.outputs.gating-jobs }}
+      max-jobs: ${{ steps.select.outputs.max-jobs }}
 
     steps:
       - name: Checkout repository
@@ -186,9 +197,9 @@ jobs:
           read -ra selected <<< "$suites"
           for suite in "${selected[@]}"; do
             case "$suite" in
-              all | smoke | records | refusal | probe) ;;
+              all | smoke | records | refusal | probe | gate) ;;
               *)
-                echo "::error::suite must be all, smoke, records, refusal or probe, got '$suite'"
+                echo "::error::suite must be all, smoke, records, refusal, probe or gate, got '$suite'"
                 exit 1
                 ;;
             esac
@@ -236,9 +247,9 @@ jobs:
 
       # Built once here, so the VM jobs substitute it from the cache instead
       # of each compiling the static binary (when a cache is configured). A
-      # probe boots no nails.
+      # probe boots no nails, and a gate driver a test-only build of it.
       - name: Build nails
-        if: steps.select.outputs.suites != '' && steps.select.outputs.suites != 'probe'
+        if: steps.select.outputs.suites != '' && steps.select.outputs.suites != 'probe' && steps.select.outputs.suites != 'gate'
         run: nix build -L --no-link .#nails
 
       # The records and refusal jobs run as the gating job, apart from the
@@ -308,6 +319,10 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
+      # At most max-jobs of these jobs at once, so a run of several drivers
+      # leaves runners for the other workflows. The planner already keeps the
+      # smoke shards at or below it.
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max-jobs) }}
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
@@ -385,6 +400,54 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # A gate driver runs as a probe does: the job builds it and runs it
+      # here, with its VM state on the root disk. It writes what it found
+      # into the directory NAILS_GATE_OUT names, and the step adds its log.
+      # The driver's exit status is the job's, once the upload below has
+      # what it wrote.
+      - name: Run the gate drivers
+        if: matrix.suite == 'gate'
+        env:
+          TESTS: ${{ join(matrix.tests, ' ') }}
+          GATE_SECONDS: ${{ matrix.seconds }}
+        run: |
+          set -euo pipefail
+          read -ra tests <<< "$TESTS"
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::error::The plan gave this job no gate driver to run."
+            exit 1
+          fi
+          out="$RUNNER_TEMP/gate"
+          scratch="$RUNNER_TEMP/vm"
+          mkdir -p "$out" "$scratch"
+          status=0
+          for test in "${tests[@]}"; do
+            driver="$RUNNER_TEMP/$test"
+            # Quote the attribute, as above: a name may contain a dot.
+            nix build --print-build-logs --out-link "$driver" \
+              ".#legacyPackages.x86_64-linux.e2e-distro.\"$test\""
+            (
+              cd "$scratch"
+              TMPDIR="$scratch" XDG_RUNTIME_DIR="$scratch" NAILS_GATE_OUT="$out" \
+                timeout "$GATE_SECONDS" "$driver/bin/test-driver" </dev/null
+            ) 2>&1 | tee "$out/$test.log" || status=$?
+            if [ "$status" -eq 124 ]; then
+              echo "::error::$test ran past its time limit of $GATE_SECONDS s."
+            fi
+          done
+          exit "$status"
+
+      # The artifact holds what each gate driver wrote and its log; a driver
+      # that failed part of the way still leaves both.
+      - name: Upload the gate results
+        if: matrix.suite == 'gate' && !cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gate-${{ matrix.distro }}
+          path: ${{ runner.temp }}/gate/
+          if-no-files-found: warn
+          retention-days: 30
 
       # The artifact holds the record, the raw output of every query and the
       # driver's log; a probe that failed before its record still leaves the
@@ -509,17 +572,21 @@ jobs:
             echo "::error::One or more records or refusal scenarios failed or did not run ($GATING_RESULT)."
             status=1
           fi
-          # The smoke scenarios and the probes are informational: a failure is
-          # surfaced but does not gate.
+          # The smoke scenarios, the probes and the gate drivers are
+          # informational: a failure is surfaced but does not gate.
           if [ "$DISTRO_JOBS" != 0 ] && [ "$DISTRO_RESULT" != success ]; then
             if [ "$SUITES" = probe ]; then
               echo "::warning::One or more distro probes failed or did not run ($DISTRO_RESULT)."
+            elif [ "$SUITES" = gate ]; then
+              echo "::warning::One or more gate drivers failed or did not run ($DISTRO_RESULT)."
             else
               echo "::warning::One or more distro smoke scenarios failed or did not run ($DISTRO_RESULT)."
             fi
           fi
           if [ "$SUITES" = probe ]; then
             echo "Distro probes finished."
+          elif [ "$SUITES" = gate ]; then
+            echo "Gate drivers finished."
           else
             echo "Distro E2E finished ($SUITES)."
           fi
