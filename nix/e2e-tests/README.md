@@ -668,9 +668,12 @@ Layout:
   13, Ubuntu 24.04 and Ubuntu 26.04
   ([below](#the-unattended-upgrades-scenario)).
 - `lib/admitted.nix`: the test-only build of the release binary in which one
-  family's row of the family table is admitted, for the scenarios of a family
-  not admitted yet (the staged scenarios and the oracle images); never
-  released.
+  family's base row of the family table is admitted, for the scenarios of a
+  family not admitted yet (the staged scenarios and the oracle images); never
+  released. `lib/admit-row.awk` makes the change, and the build fails unless
+  it changes that row's `admitted` line alone: a row already admitted, a
+  derivative's row and an id the table lacks each fail it
+  (`ci/tests/test_admit_row.py` runs the script on the family table).
 - `py/`: the scenarios' host-side helpers, unit-tested by the
   `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
   smoke's read of the older roots of a btrfs decoy's image with btrfs-progs.
