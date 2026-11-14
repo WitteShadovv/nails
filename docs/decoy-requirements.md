@@ -417,7 +417,16 @@ of its `ExecStart=`, split as systemd splits them, with the variables the unit
 sets itself (`Environment=`, and the files `EnvironmentFile=` names, read as
 systemd reads them). It reads the program's own options as the program does.
 Where a daemon logs to its standard output or standard error, the unit's
-`StandardOutput=` and `StandardError=` say where that goes. A unit counts
+`StandardOutput=` and `StandardError=` say where that goes. Where that is
+the journal, or the daemon logs to syslog, the journal namespace its unit
+sets with `LogNamespace=` decides, or, for a running daemon, the one its
+mount table shows: that namespace's journald instance reads
+`journald@<namespace>.conf` and its drop-ins, never `journald.conf`, and
+keeps the journal on the decoy disk, in
+`/var/log/journal/<machine-id>.<namespace>`, unless they set another
+`Storage=`, so a namespace that persists counts as a log file, however
+volatile the decoy's own journal is. Other units' namespaces are not read
+here. A unit counts
 when the service manager can start it: it is enabled (a link in a `.wants`,
 `.requires` or `.upholds` directory) or active, and not masked. A process
 counts as it runs, by its name (`comm`), or, run through its interpreter as in

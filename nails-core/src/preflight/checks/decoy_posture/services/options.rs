@@ -29,8 +29,8 @@
 //!   warnings and errors to the file `--log-file` names,
 //!   `/var/log/firewalld` unless set, and every message with `--debug`;
 //!   `file` appends every message there; `syslog` sends them to syslog,
-//!   which on a systemd host is the journal; `console` writes them to its
-//!   standard output.
+//!   which on a systemd host is the journal, that of its unit's namespace
+//!   where the unit sets one; `console` writes them to its standard output.
 
 use super::streams::{Stream, log_to_path};
 use std::collections::BTreeMap;
@@ -190,6 +190,16 @@ pub(in crate::preflight::checks::decoy_posture) enum Log {
         stream: Stream,
         /// The options that make it log there, as a finding names them.
         by: &'static str,
+    },
+    /// To the journal, by `syslog()` or a stream sent there: that of the
+    /// journal namespace its unit or process logs to, which may persist
+    /// ([`super::namespace`]).
+    Journal {
+        /// The options and settings that make it log there, as a finding
+        /// names them.
+        by: String,
+        /// What it writes there.
+        what: &'static str,
     },
     /// NAILS cannot tell, for this reason.
     Unknown(String),
@@ -417,7 +427,7 @@ pub(in crate::preflight::checks::decoy_posture) fn firewalld(args: &[Vec<u8>]) -
     };
     let every = "every message it logs";
     let (by, what) = match target {
-        "syslog" => return Log::NoFile,
+        "syslog" => return Log::Journal { by, what: every },
         "console" => {
             return Log::Stream {
                 stream: Stream::Output,
