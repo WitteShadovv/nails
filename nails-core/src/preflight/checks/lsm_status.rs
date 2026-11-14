@@ -594,8 +594,9 @@ fn running(
 
 /// The domain `units` gives one kind of NAILS's processes, where it is known.
 /// The finding that fails it goes to `fails`: `unknown` where nothing shows the
-/// domain, and where it is not unconfined, that `starts` (the start of a
-/// sentence that names what starts them) puts them in that domain.
+/// domain, and where it is not one NAILS counts as unconfined, that `starts`
+/// (the start of a sentence that names what starts them) puts them in that
+/// domain.
 fn unit_domain<'a>(
     units: &'a UnitDomain,
     unknown: &str,

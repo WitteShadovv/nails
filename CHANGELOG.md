@@ -450,12 +450,12 @@ of this changelog for that version becomes the release notes word for word, and
   transition step at each switch, the watcher and the sleep guard of the hidden session, and the
   boot-record steps after the way back), nor that of the disk guard, which udev runs itself from
   the rule NAILS installs there, so for now it refuses every host where SELinux runs. It judges
-  the two apart, since what NAILS sets on systemd's side does not reach what udev runs. It warns, where nothing refuses, when SELinux is permissive or runs in another mode
-  than `/etc/selinux/config` sets. Where the kernel's list cannot be read, a mounted selinuxfs or
-  an SELinux context of the process means SELinux runs, and without either, `/sys/fs/selinux` or a
-  configuration that sets a mode or names a policy is refused without deciding: a mount over
-  `/sys` can hide `/sys/fs/selinux`, so the check does not rule SELinux out because it is
-  missing.
+  the two apart, since what NAILS sets on systemd's side does not reach what udev runs. It warns,
+  where nothing refuses, when SELinux is permissive or runs in another mode than
+  `/etc/selinux/config` sets. Where the kernel's list cannot be read, a mounted selinuxfs or an
+  SELinux context of the process means SELinux runs, and without either, `/sys/fs/selinux` or a
+  configuration that sets a mode or names a policy is refused without deciding: a mount over `/sys`
+  can hide `/sys/fs/selinux`, so the check does not rule SELinux out because it is missing.
 - `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
   tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
   the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists
