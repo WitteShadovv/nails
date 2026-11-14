@@ -260,7 +260,7 @@ pub fn verify_base_config_clean<F: Filesystem>(
         return Ok(scan);
     }
 
-    let markers = markers(fs, hidden_volume_root);
+    let markers = markers(fs, hidden_volume_root)?;
     for file in &files {
         let content = fs.read_file_content(file)?;
         scan.files_read += 1;
@@ -276,7 +276,14 @@ pub fn verify_base_config_clean<F: Filesystem>(
 }
 
 /// The markers for `hidden_volume_root`, in the order a line is matched.
-fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
+///
+/// # Errors
+///
+/// The mount table is there but cannot be read: without it the device
+/// names of the hidden volume are not known, and a line that names them
+/// would pass. Where it is not there, as on a test's tree, no mount shows a
+/// device.
+fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Result<Vec<Marker>> {
     let marker = |pattern, kind| Marker { pattern, kind };
     let mut markers: Vec<Marker> = ARTIFACTS
         .iter()
@@ -291,9 +298,11 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
 
     // Only an absolute device path is a device marker: a pseudo source such as
     // `tmpfs` names no device.
-    let mountinfo = fs
-        .read_file_content(Path::new(SELF_MOUNTINFO))
-        .unwrap_or_default();
+    let mountinfo = match fs.read_file_content(Path::new(SELF_MOUNTINFO)) {
+        Ok(mountinfo) => mountinfo,
+        Err(error) if error.nothing_there() => String::new(),
+        Err(error) => return Err(error),
+    };
     let sources = resolve_backing_sources(&mountinfo, hidden_volume_root);
     let below = storage::below(fs, &parse_mountinfo(&mountinfo), hidden_volume_root);
     let mut names: Vec<String> = Vec::new();
@@ -364,7 +373,7 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
         Pattern::Word("nails".into()),
         ReferenceKind::ToolName,
     ));
-    markers
+    Ok(markers)
 }
 
 /// Add `item` to `items` unless it is there already.
