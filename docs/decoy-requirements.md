@@ -96,8 +96,8 @@ The decoy also has to be one the session can enter and leave:
   without labels gets the hidden root it got before. That includes a host
   whose mount table lists no selinuxfs while it keeps an empty
   `/sys/fs/selinux`, or an `/etc/selinux/config` that sets `SELINUX=` or
-  `SELINUXTYPE=` as SELinux packages installed once leave it: no policy
-  reads a label there. Of these hosts, the `lsm-status` check lets only one
+  `SELINUXTYPE=` as SELinux packages installed once leave it: no selinuxfs
+  shows a policy there. Of these hosts, the `lsm-status` check lets only one
   whose kernel does not run SELinux go on, such as one that keeps the
   configuration of packages installed once, and there the activation says in
   one line that SELinux is configured but selinuxfs is not mounted. A kernel
@@ -205,9 +205,11 @@ changed, and the SELinux context of the `nails` process from
 Where it refuses nothing, it warns when SELinux is permissive, or runs in
 another mode than `/etc/selinux/config` sets. Where the kernel's list of
 active modules cannot be read, a mounted selinuxfs or an SELinux context of
-the `nails` process means SELinux runs, and `/sys/fs/selinux` or an
-`/etc/selinux/config` that sets a mode or names a policy, without either, is
-refused as a host whose SELinux cannot be judged.
+the `nails` process means SELinux runs. Without either, `/sys/fs/selinux` or
+an `/etc/selinux/config` that sets a mode or names a policy is refused
+without deciding: a kernel makes `/sys/fs/selinux` only where it started
+SELinux at boot, but a mount over `/sys` can hide it too, so the check does
+not rule SELinux out because it is missing.
 
 kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
 kernel is loaded), or when `kdump-tools.service` (Ubuntu, Debian) or

@@ -529,7 +529,8 @@ fn probe_in_scratch(
 /// A copy the entry would refuse is [`ProbeError::Label`] with the copy's own
 /// reason, [`LabelFault::CannotStore`] where the hidden root refused to store
 /// the label and [`LabelFault::Refused`] otherwise. A best-effort copy
-/// ([`Labels::BestEffort`]) is not read back: no policy reads a label there.
+/// ([`Labels::BestEffort`]) is not read back: no selinuxfs shows a policy
+/// there.
 fn probe_label(
     decoy_root: &Path,
     upper: &Path,

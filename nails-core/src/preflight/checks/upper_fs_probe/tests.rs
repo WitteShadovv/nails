@@ -1226,8 +1226,8 @@ mod kernel_tests {
                 ),
                 other => panic!("expected the label refusal, got {other:?}"),
             }
-            // Where nothing reads a label, the copy is best effort, as at the
-            // entry.
+            // Where no selinuxfs shows a policy, the copy is best effort, as
+            // at the entry.
             probe_label(decoy.path(), &upper, Labels::BestEffort).expect("best effort");
         });
     }
