@@ -628,7 +628,20 @@ pub(super) fn tuned_fix(units: &[&str], programs: &[&str], is_nixos: bool) -> St
                 set to journal, then run nixos-rebuild switch"
             .to_string();
     }
-    if units.is_empty() {
+    let mut fixes = Vec::new();
+    if !units.is_empty() {
+        let names = units.join(" ");
+        fixes.push(format!(
+            "make tuned log to the journal: for each of {names}, add a drop-in (such as \
+             /etc/systemd/system/{first}.d/50-journal.conf) that clears ExecStart= and sets it \
+             again without -l and -d (Fedora's tuned.service: ExecStart=/usr/sbin/tuned -P; its \
+             tuned-ppd.service: ExecStart=/usr/sbin/tuned-ppd) and sets StandardError=journal, \
+             then run systemctl daemon-reload and systemctl restart {names}; or mask them \
+             (systemctl mask --now {names})",
+            first = units[0]
+        ));
+    }
+    if !programs.is_empty() {
         let restart: Vec<String> = programs
             .iter()
             .map(|program| format!("{program}.service"))
@@ -639,24 +652,15 @@ pub(super) fn tuned_fix(units: &[&str], programs: &[&str], is_nixos: bool) -> St
         } else {
             "-l"
         };
-        return format!(
+        fixes.push(format!(
             "stop each {} process that logs to a file and start it again without {options}, its \
              standard error sent to no file, as systemctl restart {} does once its unit no \
              longer makes it log to one",
             programs.join(" and "),
             restart.join(" ")
-        );
+        ));
     }
-    let names = units.join(" ");
-    format!(
-        "make tuned log to the journal: for each of {names}, add a drop-in (such as \
-         /etc/systemd/system/{first}.d/50-journal.conf) that clears ExecStart= and sets it \
-         again without -l and -d (Fedora's tuned.service: ExecStart=/usr/sbin/tuned -P; its \
-         tuned-ppd.service: ExecStart=/usr/sbin/tuned-ppd) and sets StandardError=journal, then \
-         run systemctl daemon-reload and systemctl restart {names}; or mask them (systemctl mask \
-         --now {names})",
-        first = units[0]
-    )
+    fixes.join(", and ")
 }
 
 #[cfg(test)]

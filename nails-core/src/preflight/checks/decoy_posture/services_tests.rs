@@ -258,11 +258,60 @@ fn fedora_tuned_and_tuned_ppd_refuse_with_their_log_files() {
     assert!(allowed.is_warn(), "{allowed:?}");
     assert!(
         allowed.message().contains(
-            "What tuned or tuned-ppd logs around a switch stays in its log file on the decoy \
-             disk, with the time"
+            "What tuned or tuned-ppd logs around a switch stays on the decoy disk, with the time."
         ),
         "{allowed:?}"
     );
+}
+
+#[test]
+fn the_override_says_tuned_may_log_where_nails_cannot_tell() {
+    // A program NAILS does not follow: it cannot tell where tuned logs.
+    let decoy = Decoy::new();
+    decoy
+        .unit("tuned.service", TUNED_UNIT)
+        .enable("multi-user.target", "tuned.service")
+        .file(
+            "/etc/systemd/system/tuned.service.d/50-wrap.conf",
+            "[Service]\nExecStart=\nExecStart=/usr/local/bin/run-tuned\nStandardError=journal\n",
+        );
+    let message = decoy.check(true).message().to_string();
+    assert!(
+        message.contains("NAILS cannot tell whether tuned writes a log file"),
+        "{message}"
+    );
+    assert!(
+        message.contains(
+            "What tuned or tuned-ppd logs around a switch may stay on the decoy disk, with the \
+             time."
+        ),
+        "{message}"
+    );
+    assert!(!message.contains("stays on the decoy disk"), "{message}");
+}
+
+#[test]
+fn the_fix_names_a_process_that_still_logs_beside_a_unit_that_does() {
+    // tuned's unit is fixed but tuned still runs with -l; tuned-ppd's unit
+    // is not fixed yet.
+    let decoy = Decoy::new();
+    decoy.fedora_tuned().file(
+        "/etc/systemd/system/tuned.service.d/50-journal.conf",
+        TUNED_DROPIN,
+    );
+    let found = decoy.findings();
+    assert_eq!(found.units, ["tuned-ppd.service"], "{found:?}");
+    assert_eq!(found.programs, ["tuned"], "{found:?}");
+    let result = decoy.check(false);
+    let remediation = result.remediation().unwrap();
+    for part in [
+        "for each of tuned-ppd.service, add a drop-in",
+        "systemctl restart tuned-ppd.service;",
+        "and stop each tuned process that logs to a file and start it again without -l and -d, \
+         its standard error sent to no file, as systemctl restart tuned.service does",
+    ] {
+        assert!(remediation.contains(part), "{part}: {remediation}");
+    }
 }
 
 /// The drop-ins docs/decoy-requirements.md gives for tuned and tuned-ppd.

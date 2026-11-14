@@ -1006,10 +1006,15 @@ impl Blockers {
                  on the decoy disk.",
             );
         }
-        if !self.tuned.is_empty() {
+        if self.tuned.iter().any(|finding| finding.untold.is_none()) {
             msg.push_str(
-                " What tuned or tuned-ppd logs around a switch stays in its log file on the decoy \
-                 disk, with the time.",
+                " What tuned or tuned-ppd logs around a switch stays on the decoy disk, with the \
+                 time.",
+            );
+        } else if !self.tuned.is_empty() {
+            msg.push_str(
+                " What tuned or tuned-ppd logs around a switch may stay on the decoy disk, with \
+                 the time.",
             );
         }
         match self.upgrade.as_ref().map(|blocker| blocker.at_the_switch) {
