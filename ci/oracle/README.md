@@ -285,12 +285,15 @@ power-off instead of exiting, so the images are one disk's lineage: each is a
 copy of the paused disk, and a reset boots it again.
 
 Fedora is not admitted yet, so the driver runs a test-only build of the
-release binary in which only the Fedora row of the family table is admitted.
-That build is never released. The verdict on the images says what the
-oracle's channels see of a session on a Fedora Cloud decoy of that release,
-with what they
-do not see listed under [What it does not see](#what-it-does-not-see), not
-that NAILS supports Fedora.
+release binary in which only the Fedora row of the family table is admitted
+(`nix/distro-tests/lib/admitted.nix`). Fedora's derivatives follow that row
+there, as they will once Fedora is admitted, and no image of one runs. That
+build is never released, and once the image table enables the image, as the
+commit that admits Fedora does, the driver runs the release binary on it
+instead. The verdict on the images says what the oracle's channels see of a
+session on a Fedora Cloud decoy of that release, with what they do not see
+listed under [What it does not see](#what-it-does-not-see), not that NAILS
+supports Fedora.
 
 Before the first image the driver makes the decoy's journal volatile and turns
 auditd off (the posture NAILS requires), creates `/mnt/data` and writes the

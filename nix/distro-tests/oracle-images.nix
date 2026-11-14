@@ -38,9 +38,13 @@
 # paused disk, and system_reset then boots the same disk again.
 #
 # Fedora is not admitted yet: the release `nails` refuses it (the refusal
-# scenario, refusal.nix, proves that). So this driver runs a test-only build
-# of the release binary in which the one Fedora row of the family table is
-# admitted, and nothing else changes. That build is never shipped. The
+# scenario, refusal.nix, proves that). So for an image the image table does
+# not enable yet this driver runs a test-only build of the release binary in
+# which the Fedora base row of the family table is admitted, and no other line
+# of the table changes (lib/admitted.nix). Fedora's derivatives follow that
+# row there, as they will once Fedora is admitted, and no image of one runs
+# here. That build is never shipped. The commit that admits Fedora enables its
+# images, and from then on this driver runs the release binary on them. The
 # oracle's verdict on the images says what its channels see of a session on a
 # Fedora Cloud decoy's disk (ci/oracle/README.md lists what they do not), not
 # that NAILS supports Fedora.
@@ -70,9 +74,13 @@ let
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   hiddenRoot = import ./lib/hidden-root.nix;
 
-  # The release binary with the Fedora base row admitted, for this driver
-  # only (lib/admitted.nix).
-  nailsFedoraAdmitted = import ./lib/admitted.nix { inherit self; } "fedora";
+  # The binary an image's session runs: the release binary once the image
+  # table enables the image, as the commit that admits Fedora does, and until
+  # then the release binary with the Fedora base row admitted, for the
+  # scenarios of its admission only. That build fails for a family whose row
+  # is admitted already.
+  admitted = import ./lib/admitted.nix { inherit self; };
+  nailsFor = entry: if entry.enabled then self.packages.x86_64-linux.nails else admitted "fedora";
 
   binShare = {
     tag = "tools";
@@ -86,7 +94,7 @@ let
       target = "driver";
 
       sharedDirs.${binShare.tag} = {
-        source = "${nailsFedoraAdmitted}/bin";
+        source = "${nailsFor entry}/bin";
         inherit (binShare) target;
       };
 

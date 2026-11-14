@@ -2,18 +2,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # A test-only build of the release binary in which one base row of the family
-# table (nails-platform/src/platform/family.rs) is admitted, and nothing else
-# changes: the scenarios a family's admission needs run on its images before
-# the commit that admits it. admit-row.awk makes the change, and the build
-# fails unless the row is a base row the table refuses and exactly its
-# `admitted` line changes: a row already admitted, a derivative's row and an
-# id the table lacks each fail it (ci/tests/test_admit_row.py runs the
+# table (nails-platform/src/platform/family.rs) is admitted, and no other line
+# of the table changes: the scenarios a family's admission needs run on its
+# images before the commit that admits it. admit-row.awk makes the change, and
+# the build fails unless the row is a base row the table refuses and exactly
+# its `admitted` line changes: a row already admitted, a derivative's row and
+# an id the table lacks each fail it (ci/tests/test_admit_row.py runs the
 # script on the table). It is never released, and what a scenario shows with
 # it says what NAILS does on that family's image, not that NAILS supports the
 # family.
 #
-# `id` is the row's os-release ID ("fedora", "arch"). A derivative of the
-# family keeps its row as it is.
+# `id` is the row's os-release ID ("fedora", "arch"). The rows of the family's
+# derivatives keep their lines, and follow the base row as they do in the
+# release once the family is admitted: this build runs a derivative with the
+# warning that NAILS has not tested it (EndeavourOS, CachyOS and Manjaro for
+# Arch; Nobara and Ultramarine from release 44 for Fedora). No scenario boots
+# an image of one.
 { self }:
 id:
 assert builtins.match "[a-z0-9._-]+" id != null;

@@ -42,7 +42,12 @@ let
 
   images = import ./images.nix { inherit pkgs; };
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
+  # The binary the gate runs: the release binary once the image table enables
+  # the image, as the commit that admits Fedora does, and until then the
+  # release binary with the image's base row admitted (lib/admitted.nix),
+  # whose build fails for a row admitted already.
   admitted = import ./lib/admitted.nix { inherit self; };
+  nailsFor = entry: if entry.enabled then self.packages.x86_64-linux.nails else admitted entry.osId;
 
   # The helpers alone, so a change elsewhere in py/ does not rebuild a driver.
   gatePy = lib.fileset.toSource {
@@ -198,7 +203,7 @@ let
       target = "driver";
       sharedDirs = {
         tools = {
-          source = "${admitted entry.osId}/bin";
+          source = "${nailsFor entry}/bin";
           target = "/run/tools";
         };
         rpms = {
