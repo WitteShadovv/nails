@@ -138,19 +138,33 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
     }
 
     /// The target of `path` where it is a link, without following it; `None`
-    /// for anything else.
+    /// for anything else, nothing there among it.
     ///
     /// # Errors
     ///
-    /// Why NAILS cannot read the link.
+    /// Why NAILS cannot tell whether `path` is a link, as where it may not
+    /// look it up or the automount guard did not, or cannot read the link.
     pub fn link_target(&self, path: &Path) -> Result<Option<PathBuf>, String> {
-        if !self.fs.is_symlink(path).unwrap_or(false) {
-            return Ok(None);
+        let shown = path.display();
+        match self.fs.is_symlink(path) {
+            Ok(false) => return Ok(None),
+            Ok(true) => {}
+            Err(error) => {
+                return Err(match error.io_kind() {
+                    Some(std::io::ErrorKind::PermissionDenied) => {
+                        format!("NAILS cannot look up {shown}; run the command again with sudo")
+                    }
+                    _ if error.not_looked_up().is_some() => {
+                        describe(&shown.to_string(), &error).sentence
+                    }
+                    _ => format!("NAILS cannot look up {shown} ({error})"),
+                });
+            }
         }
         self.fs
             .read_link(path)
             .map(Some)
-            .map_err(|e| format!("NAILS cannot read the link {} ({e})", path.display()))
+            .map_err(|e| format!("NAILS cannot read the link {shown} ({e})"))
     }
 
     /// The entries of directory `dir`; none when it is missing or no

@@ -206,3 +206,32 @@ fn what_the_system_does_not_show_is_named() {
         ))
     );
 }
+
+/// A link is read only once it is seen to be one; where NAILS cannot tell
+/// whether a path is a link, it says why, and nothing there is no link.
+#[test]
+fn a_link_nails_cannot_look_up_is_one_it_cannot_tell_about() {
+    let fs = MockFilesystem::new();
+    let hidden = [PathBuf::from("/mnt/data")];
+    let files = DecoyFiles::new(&fs, Path::new("/"), &hidden);
+    fs.mock_add_file("/etc/x", "x");
+    fs.create_symlink(Path::new("/etc/x"), Path::new("/etc/link"))
+        .unwrap();
+    assert_eq!(
+        files.link_target(Path::new("/etc/link")),
+        Ok(Some(PathBuf::from("/etc/x")))
+    );
+    assert_eq!(files.link_target(Path::new("/etc/x")), Ok(None));
+    assert_eq!(files.link_target(Path::new("/etc/none")), Ok(None));
+    fs.mock_set_lookup_error("/etc/denied", std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        files.link_target(Path::new("/etc/denied")),
+        Err("NAILS cannot look up /etc/denied; run the command again with sudo".to_string())
+    );
+    fs.mock_set_lookup_error("/etc/broken", std::io::ErrorKind::Other);
+    assert!(
+        files
+            .link_target(Path::new("/etc/broken"))
+            .is_err_and(|why| why.starts_with("NAILS cannot look up /etc/broken (")),
+    );
+}
