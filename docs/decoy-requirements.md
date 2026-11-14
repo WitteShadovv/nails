@@ -554,8 +554,9 @@ not tested yet.
   remove the line, and turn the swap off once (`sudo swapoff /swap/swapfile`).
 - **The ESP mounted on demand**: where systemd's GPT auto-generator mounts the
   ESP at `/efi` because the fstab has no line for it, the hidden session gets
-  it bound read-only at `/efi`, and the decoy's automount is back after the way
-  back.
+  it bound read-only at `/efi`, whether the ESP was mounted at the activation
+  or only its automount was there, and the decoy's automount is back after the
+  way back.
 - With `systemd-coredump` keeping core dumps on the disk, as it does on
   arch-boxes, `decoy-persistence` warns: set `Storage=none` and
   `ProcessSizeMax=0` under `[Coredump]` in a `coredump.conf.d/*.conf` drop-in.
@@ -565,9 +566,10 @@ not tested yet.
   and `memory-wipe` warns: add `init_on_free=1` to the kernel command line.
 - **Login records**: Arch keeps classic wtmp, and lastlog2 through
   `pam_lastlog2`. A login in a hidden session writes its lastlog2 row and its
-  wtmp records in the hidden session only: after the way back the decoy's
-  lastlog2 and btmp are as they were, and its wtmp holds no record of that
-  login. systemd 262 takes a new start time at a soft-reboot, so the boot
+  wtmp records in the hidden session only, and so does a failed one, such as
+  a wrong password given to `su`, its btmp record: after the way back the
+  decoy's lastlog2 and btmp are as they were, and its wtmp holds no record of
+  that login. systemd 262 takes a new start time at a soft-reboot, so the boot
   record of the way back reads as a power cycle's.
 - **`nails rehearse`**: a raw scan cannot prove a canary absent from the
   compressed btrfs root, so `rehearse scan` reports the root's device as not
