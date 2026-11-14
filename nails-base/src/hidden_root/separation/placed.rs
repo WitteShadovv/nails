@@ -5,7 +5,8 @@
 //! reads, with no link in it followed (see the `paths` module): a bind
 //! line's source, the file of a swap or image line, the source a FUSE line
 //! gives its program and the program itself where the line names it by its
-//! path, and the file a crypttab line opens.
+//! path, and the file a crypttab line opens, its key file and its header and
+//! a file its boot mounts for one of these (see the `reads` module).
 //!
 //! A path that lies in the volume, at the root's folder or inside it as the
 //! mount that holds it shows it, makes a finding: a bind line mounts the
@@ -32,6 +33,17 @@ pub(super) enum Named {
     Program,
     /// The file a crypttab line opens.
     Opened,
+    /// The key file of a crypttab line, in its key field or a
+    /// `tcrypt-keyfile=`.
+    KeyFile,
+    /// What the boot mounts for the key file of a crypttab line, the device
+    /// of its `keyfile:keydev` key field.
+    KeyDevice,
+    /// The header of a crypttab line, its `header=`.
+    Header,
+    /// What the boot mounts for the header of a crypttab line, the device of
+    /// its `header=<path>:<device>`.
+    HeaderDevice,
 }
 
 impl Named {
@@ -42,6 +54,10 @@ impl Named {
             Named::File => "the file it names",
             Named::Program => "the program it runs",
             Named::Opened => "the file it opens",
+            Named::KeyFile => "its key file",
+            Named::KeyDevice => "what it mounts for its key file",
+            Named::Header => "its header",
+            Named::HeaderDevice => "what it mounts for its header",
         }
     }
 }

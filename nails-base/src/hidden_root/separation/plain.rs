@@ -6,10 +6,12 @@
 //! systemd's crypttab generator does, and whose first field or source, where
 //! it names a device or a path, names it in a form NAILS reads. Where a path
 //! that a plain line names leads is told apart (see the `paths` module). Of a
-//! plain crypttab line the judge reads the name, the source and a few of the
-//! options, and not the key file. A line that is not plain is an entry where
-//! what it names cannot be told, and that is the only finding the judge makes
-//! of it, while it still claims what NAILS reads in it.
+//! plain crypttab line the judge reads the name, the source, the key file and
+//! the header and what the boot mounts for one of these (see the `reads`
+//! module), and a few of the options, `noauto` and the TrueCrypt ones, as
+//! systemd reads them (see the `options` module). A line that is not plain is
+//! an entry where what it names cannot be told, and that is the only finding
+//! the judge makes of it, while it still claims what NAILS reads in it.
 //!
 //! NAILS's parser splits a line at any white space and decodes the octal
 //! escapes (a backslash and three octal digits) of its first two fields in
@@ -62,10 +64,15 @@
 //! than a space or a tab, or a quote or a backslash in one of its four
 //! fields, or whose source is neither an absolute path nor a tag NAILS
 //! resolves: `systemd-cryptsetup` opens a relative path from the folder it
-//! runs in, `/`. Of a plain line, the judge resolves a source that is a tag
-//! or a device's path in `/dev` as a device's name, and reads any other
+//! runs in, `/`. Nor is a crypttab line plain whose source, key file or
+//! header leads into `/dev` as written but does not start with `/dev/` or
+//! holds a `..` ([`Unplain::DevOtherwise`]), whose key file or header on a
+//! device the boot mounts holds a `..`, or that gives `keyscript=` (see the
+//! `reads` module). Of a plain line, the judge resolves a source that is a
+//! tag or a device's path in `/dev` as a device's name, and reads any other
 //! source, which `systemd-cryptsetup` opens through the links in it, as the
-//! path of a file, with no link followed (see the `paths` module).
+//! path of a file, with no link followed (see the `paths` module), and so
+//! what the line reads besides.
 
 #[cfg(test)]
 #[path = "plain_tests.rs"]
@@ -147,9 +154,9 @@ pub enum Unplain {
     /// The FUSE program it has `mount.fuse` run is written with a `/` and is
     /// no absolute path ([`fuse_program`]).
     FuseProgram,
-    /// Its first field, or the source of a crypttab line, leads into `/dev`
-    /// as it is written, while it does not start with `/dev/` or holds a
-    /// `..`, such as `//dev/sdb`
+    /// Its first field, or the source of a crypttab line or a path it reads
+    /// besides, leads into `/dev` as it is written, while it does not start
+    /// with `/dev/` or holds a `..`, such as `//dev/sdb`
     /// ([`names_dev_otherwise`](super::paths::names_dev_otherwise)).
     DevOtherwise,
     /// One of the fields of a crypttab line holds a quote.
@@ -164,6 +171,13 @@ pub enum Unplain {
     /// module): `x-systemd.wanted-by=` or `x-systemd.required-by=` with no
     /// unit, and `subvol` or `subvolid` alone or with no value.
     NoValue(&'static str),
+    /// A crypttab line gives `keyscript=`, a program that reads the line's
+    /// key field in its own way.
+    Keyscript,
+    /// The path of a crypttab line's key file (`key file`) or header
+    /// (`header`) on the device the boot mounts for it holds a `..`, which can
+    /// lead out of that mount.
+    UpOutOfDevice(&'static str),
 }
 
 /// The tags NAILS resolves, as a tail completing "nor a".
@@ -213,6 +227,13 @@ impl Unplain {
                 format!("its source is neither an absolute path nor a {TAGS_SHOWN}")
             }
             Unplain::NoValue(option) => format!("its option {option} gives no value"),
+            Unplain::Keyscript => {
+                "it gives keyscript=, a program that reads its key field in its own way".to_string()
+            }
+            Unplain::UpOutOfDevice(what) => format!(
+                "the path of its {what} on the device it mounts for it holds a .., which can lead \
+                 out of that mount"
+            ),
         }
     }
 }
@@ -374,10 +395,10 @@ fn takes_a_remote_source(program: &str, source: Option<&str>) -> bool {
     REMOTE_FUSE.contains(&program)
 }
 
-/// Whether `field`, the first field of an fstab line or the source of a
-/// crypttab line, decoded, is an absolute path or a tag NAILS resolves as a
-/// device's name.
-fn is_read(field: &str) -> bool {
+/// Whether `field`, the first field of an fstab line, the source of a
+/// crypttab line or a path it reads besides (see the `reads` module),
+/// decoded, is an absolute path or a tag NAILS resolves as a device's name.
+pub(super) fn is_read(field: &str) -> bool {
     field.starts_with('/')
         || field
             .split_once('=')
@@ -492,9 +513,12 @@ pub fn unplain_crypttab(entry: &CrypttabEntry, line: &str) -> Vec<Unplain> {
     if !is_read(&entry.source) {
         why.push(Unplain::RelativeSource);
     }
-    if names_dev_otherwise(&entry.source) {
+    let reads = super::reads::reads(entry);
+    if names_dev_otherwise(&entry.source) || reads.iter().any(|(_, spec)| names_dev_otherwise(spec))
+    {
         why.push(Unplain::DevOtherwise);
     }
+    why.extend(super::reads::unplain(entry));
     why
 }
 

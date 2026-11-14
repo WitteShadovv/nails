@@ -36,10 +36,18 @@
 //! outer volume of another partition) warns: the decoy is configured to open
 //! storage on that drive.
 //!
+//! A crypttab line's key file and `header=`, which `systemd-cryptsetup`
+//! reads, a `tcrypt-keyfile=`, and the device after the last `:` of its key
+//! field or a `header=`, which systemd's crypttab generator mounts for it
+//! (`/key:/dev/sdb`, `header=/hdr:/dev/sdb`), are read as its source is: a
+//! device of the hidden drive fails the line, as one that the boot reads or
+//! mounts, the decoy's own crypttab line too.
+//!
 //! A bind line's source, the path of a swap or image file, of what a FUSE
 //! program reads and of a FUSE program named by its path, and a crypttab
 //! source that is no tag and no device's path in `/dev`, such as a container
-//! file, are read as they are written, one part at a time, and no link in
+//! file, and so its key file, its header or a file its boot mounts for one of
+//! these, are read as they are written, one part at a time, and no link in
 //! them is followed: such a path in the volume fails as one that names it. A
 //! line whose path cannot be told fails as well, with or without the flag: a
 //! path with a symbolic link in any part, one that is not absolute, a device
@@ -76,11 +84,15 @@
 //! of a line of any other type that begins with `fuse` fails too, and so does a
 //! FUSE program named by a path with a `/` that is not absolute. The check
 //! reads only plain crypttab lines as well: a line that holds such a character,
-//! a quote or a backslash in one of its four fields, or a source that is
-//! neither an absolute path nor such a tag or that leads into `/dev` so, fails
-//! with or without the flag. Of a plain crypttab line it reads the name, the
-//! source and a few of the options, and not the key file. The check names what
-//! it could not read, and says to write the line plainly.
+//! a quote or a backslash in one of its four fields, a source that is neither
+//! an absolute path nor such a tag, a source, key file or header that leads
+//! into `/dev` so, a key file or header on a device the boot mounts whose path
+//! holds a `..`, which can lead out of that mount, or a `keyscript=`, a program
+//! Debian's initramfs hands the key field to, fails with or without the flag.
+//! Of a plain crypttab line it reads the name, the source, the key file, the
+//! `header=` and `tcrypt-keyfile=` options and what the boot mounts for them,
+//! `noauto`, `auto` and the TrueCrypt options. The check names what it could
+//! not read, and says to write the line plainly.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
@@ -140,8 +152,9 @@ pub const UNPLAIN: &str = "Write such a line plainly long before the next use, o
 pub const UNPLAIN_CRYPTTAB: &str = "Write such a crypttab line plainly long before the next use, \
      or remove it: its fields apart by spaces or tabs, with no quote and no backslash in them, and \
      as its source a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag, a device by its path that starts \
-     with /dev/ and holds no .., or another absolute path, such as a container file's. Then run the \
-     command again.";
+     with /dev/ and holds no .., or another absolute path, such as a container file's. Its key \
+     file and its header= name a device or a file in the same way, the path of a file on a device \
+     (path:device) holds no .., and the line gives no keyscript=. Then run the command again.";
 
 /// Pre-flight check that no decoy fstab or crypttab entry opens or mounts the
 /// hidden volume.

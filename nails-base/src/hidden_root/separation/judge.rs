@@ -703,6 +703,10 @@ fn crypttab_claims(
             };
             place(scene, hidden, &line, &entry.source)
         });
+        // What it reads besides its source: its key file, its header, or a
+        // device the boot mounts for one of them (see the `reads` module).
+        let (read, read_holders) =
+            super::reads::judged(scene, hidden, entry, &line, entry_stack, needed);
         // The findings for this line, and whether it claims what it opens.
         let mut found = Vec::new();
         let claimed = 'line: {
@@ -760,6 +764,7 @@ fn crypttab_claims(
         };
         let (finding, holder) = placed.unwrap_or_default();
         found.extend(finding);
+        found.extend(read);
         // A line that is not plain claims what NAILS reads in it, and is a
         // finding of its own, its only one: what it opens cannot be told.
         match scene.unplain_crypttab.get(&index) {
@@ -768,7 +773,12 @@ fn crypttab_claims(
         }
         if claimed {
             let noauto = crypttab_noauto(entry);
-            claims.extend(holder.map(|holder| mount_claim(scene, holder, noauto)));
+            claims.extend(
+                holder
+                    .into_iter()
+                    .chain(read_holders)
+                    .map(|holder| mount_claim(scene, holder, noauto)),
+            );
             let tops: Vec<String> = source
                 .into_iter()
                 .chain(mapping)

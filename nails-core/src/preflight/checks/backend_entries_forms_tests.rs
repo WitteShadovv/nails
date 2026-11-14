@@ -6,7 +6,9 @@
 //! value, the source a FUSE line gives its program and the program itself,
 //! white space other than a space or a tab before a `#`, an `ID=` tag, a
 //! path into `/dev` written otherwise than as a device's path, crypttab fields
-//! in quotes or with a backslash, and a crypttab source that is a file's path.
+//! in quotes or with a backslash, a crypttab source that is a file's path,
+//! `noauto` and an automount with a value, and a crypttab line's key file,
+//! key device and header.
 //! Each either names the volume as `libmount` or systemd reads it, or is a
 //! line NAILS does not read, which fails, with the flag or without it.
 
@@ -888,9 +890,6 @@ fn a_dev_link_out_of_dev_is_untold_at_that_link_and_nothing_past_it_is_read() {
 }
 
 // ------------------------------------------------------------------------
-// Options read by their names, as systemd reads them
-// ------------------------------------------------------------------------
-
 // Options read by their names, and what a crypttab line reads besides its
 // source
 // ------------------------------------------------------------------------
@@ -1033,4 +1032,313 @@ fn an_option_with_no_value_where_systemd_reads_one_fails_with_the_flag_too() {
     );
     let result = run_allowing(&fs, Allow::DecoyStorage);
     assert_eq!(result.message(), only_the_decoys_own_line("/home"));
+}
+
+/// The volume's finding for the crypttab line `vault /dev/sdc`, a line for
+/// another drive, which says `why`.
+fn vault(why: &str) -> String {
+    format!("/etc/crypttab: 'vault /dev/sdc' ({why})")
+}
+
+/// Why a line that mounts the volume or a device below it for `what` fails.
+fn mounts_for(what: &str) -> String {
+    format!("it mounts the volume at /mnt or a device it is stored on for its {what}")
+}
+
+/// Why a line that reads `what` from the volume or a device below it fails.
+fn reads_from(what: &str) -> String {
+    format!("it reads its {what} from the volume at /mnt or a device it is stored on")
+}
+
+#[test]
+fn a_crypttab_key_file_key_device_or_header_on_the_volume_fails() {
+    // The volume is the mapping `data` on the whole of sdb, at /mnt, and
+    // by-uuid/vol names it; vault opens sdc, another drive. systemd 260.5's
+    // crypttab generator mounted the device after the last `:` of the key
+    // field read-only (`/key:/dev/mapper/data`, `none:/dev/sdd`) and of a
+    // `header=` read-write before it opened the line, had the line wait for
+    // the device a key file or a header names, and for the mounts of a file's
+    // path, which systemd-cryptsetup reads, as it reads a `tcrypt-keyfile=`.
+    // A file in the volume makes the gate refuse the root, as a container
+    // there does.
+    for (crypttab, why, refused) in [
+        (
+            "vault /dev/sdc /mnt/key luks,nofail",
+            "its key file lies in the volume at /mnt".to_string(),
+            true,
+        ),
+        (
+            "vault /dev/sdc /key:/dev/mapper/data luks,nofail",
+            mounts_for("key file"),
+            false,
+        ),
+        (
+            "vault /dev/sdc /key:UUID=vol luks,nofail",
+            mounts_for("key file"),
+            false,
+        ),
+        (
+            "vault /dev/sdc none luks,header=/mnt/hdr,nofail",
+            "its header lies in the volume at /mnt".to_string(),
+            true,
+        ),
+        (
+            "vault /dev/sdc none:/dev/mapper/data luks,nofail",
+            mounts_for("key file"),
+            false,
+        ),
+        (
+            "vault /dev/sdc /key:/dev/sdb luks,nofail",
+            mounts_for("key file"),
+            false,
+        ),
+        (
+            "vault /dev/sdc none luks,header=/hdr:/dev/mapper/data,nofail",
+            mounts_for("header"),
+            false,
+        ),
+        (
+            "vault /dev/sdc /dev/sdb luks,keyfile-size=512,nofail",
+            reads_from("key file"),
+            false,
+        ),
+        (
+            "vault /dev/sdc UUID=vol luks,nofail",
+            reads_from("key file"),
+            false,
+        ),
+        (
+            "vault /dev/sdc none luks,header=UUID=vol,nofail",
+            reads_from("header"),
+            false,
+        ),
+        (
+            "vault /dev/sdc none tcrypt,tcrypt-keyfile=/mnt/tk,nofail",
+            "its key file lies in the volume at /mnt".to_string(),
+            true,
+        ),
+    ] {
+        let decoy = decoy()
+            .encrypted()
+            .file("/etc/crypttab", &format!("{crypttab}\n"));
+        decoy.link("/dev/disk/by-uuid/vol", "/dev/dm-9");
+        let result = decoy.run();
+        assert_eq!(
+            result.message(),
+            names_the_volume(&vault(&why)),
+            "{crypttab}"
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{crypttab}");
+        let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+            .run(&decoy.fs)
+            .unwrap();
+        assert_eq!(gate.is_fail(), refused, "{crypttab}: {gate:?}");
+    }
+    // A key file elsewhere, none, /dev/urandom, a key device of another
+    // filesystem (the decoy's /), a key file that is no absolute path, which
+    // systemd-cryptsetup ignores, a header elsewhere or none, which it
+    // refuses, and a TrueCrypt key file elsewhere name no part of it.
+    for crypttab in [
+        "vault /dev/sdc /etc/keys/v.key luks,nofail",
+        "vault /dev/sdc none luks,nofail",
+        "vault /dev/sdc - luks,nofail",
+        "cswap /dev/sdc /dev/urandom swap,cipher=aes-xts-plain64,size=256",
+        "vault /dev/sdc /key:/dev/nvme0n1p3 luks,nofail",
+        "vault /dev/sdc keys/v.key luks,nofail",
+        "vault /dev/sdc none luks,header=/etc/hdr,nofail",
+        "vault /dev/sdc none luks,header,nofail",
+        "vault /dev/sdc none tcrypt,tcrypt-keyfile=/etc/tk,nofail",
+    ] {
+        let decoy = decoy()
+            .encrypted()
+            .file("/etc/crypttab", &format!("{crypttab}\n"));
+        let result = decoy.run();
+        assert!(result.is_pass(), "{crypttab}: {result:?}");
+    }
+}
+
+#[test]
+fn a_crypttab_key_file_whose_place_cannot_be_told_or_that_is_not_plain_fails() {
+    // A link to the volume, in /dev or elsewhere, is not followed. A key file
+    // on a device the boot mounts whose path holds a `..` leads out of that
+    // mount (the generator handed systemd-cryptsetup `<mount>/../../../mnt/key`
+    // for `../../../mnt/key:/dev/sdg`), `//dev/sdb` names the drive, and
+    // Debian's initramfs hands the key field of a line with `keyscript=` to
+    // that program: NAILS reads none of these.
+    for (crypttab, why) in [
+        (
+            "vault /dev/sdc /dev/key.link luks,nofail",
+            "where its key file lies cannot be told: /dev/key.link is a symbolic link that leads \
+             out of /dev, which NAILS does not follow",
+        ),
+        (
+            "vault /dev/sdc /keys/k.link luks,nofail",
+            "where its key file lies cannot be told: /keys/k.link is a symbolic link, which NAILS \
+             does not follow",
+        ),
+        (
+            "vault /dev/sdc /k:/dev/kd.link luks,nofail",
+            "where what it mounts for its key file lies cannot be told: /dev/kd.link is a \
+             symbolic link that leads out of /dev, which NAILS does not follow",
+        ),
+    ] {
+        let decoy = decoy()
+            .encrypted()
+            .file("/etc/crypttab", &format!("{crypttab}\n"));
+        decoy.link("/dev/key.link", "/mnt/key");
+        decoy.link("/keys/k.link", "/mnt/key");
+        decoy.link("/dev/kd.link", "/mnt/kd.img");
+        let result = decoy.run();
+        assert_eq!(
+            result.message(),
+            may_name_the_volume(&vault(why)),
+            "{crypttab}"
+        );
+        assert_eq!(result.remediation(), Some(UNTOLD), "{crypttab}");
+    }
+    for (crypttab, why) in [
+        (
+            "vault /dev/sdc ../../../../mnt/key:/dev/nvme0n1p3 luks,nofail",
+            Unplain::UpOutOfDevice("key file"),
+        ),
+        (
+            "vault /dev/sdc none luks,header=../../hdr:/dev/nvme0n1p3,nofail",
+            Unplain::UpOutOfDevice("header"),
+        ),
+        (
+            "vault /dev/sdc //dev/sdb luks,nofail",
+            Unplain::DevOtherwise,
+        ),
+        (
+            "vault /dev/sdc /dev/disk/by-uuid/vol:/key luks,keyscript=passdev,nofail",
+            Unplain::Keyscript,
+        ),
+    ] {
+        let decoy = decoy()
+            .encrypted()
+            .file("/etc/crypttab", &format!("{crypttab}\n"));
+        let result = decoy.run();
+        assert_eq!(
+            result.message(),
+            may_name_the_volume(&crypttab_not_plain("vault /dev/sdc", &why.reason())),
+            "{crypttab}"
+        );
+        assert_eq!(result.remediation(), Some(UNPLAIN_CRYPTTAB), "{crypttab}");
+    }
+}
+
+#[test]
+fn with_the_flag_a_key_file_or_header_in_the_roots_folder_or_on_its_device_fails() {
+    // A folder of / bound at the root, and a key file in the key field: in
+    // the root's folder, or on the root's own device, which the boot mounts
+    // a second time for it, and a header there. A key file beside the root's
+    // folder and a key device of another filesystem name no part of it, and
+    // neither does a path in the options field after a key field `none`,
+    // which systemd-cryptsetup ignores as an option it does not know.
+    for (crypttab, why) in [
+        (
+            "vault /dev/vdc /srv/x/key luks",
+            "its key file lies in the volume at /mnt".to_string(),
+        ),
+        (
+            "vault /dev/vdc /srv/x/key:/dev/vda1 luks",
+            mounts_for("key file"),
+        ),
+        (
+            "vault /dev/vdc /etc/k:/dev/vda1 luks",
+            mounts_for("key file"),
+        ),
+        (
+            "vault /dev/vdc none luks,header=/srv/x/hdr",
+            "its header lies in the volume at /mnt".to_string(),
+        ),
+        (
+            "vault /dev/vdc none luks,header=/hdr:/dev/vda1",
+            mounts_for("header"),
+        ),
+        (
+            "vault /dev/vdc /mnt/key luks",
+            "its key file lies in the volume at /mnt".to_string(),
+        ),
+    ] {
+        let fs = rendered(BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n");
+        fs.mock_set_file_content("/etc/crypttab", &format!("{crypttab}\n"));
+        assert!(hidden_volume_with_the_flag(&fs).is_warn(), "{crypttab}");
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert_eq!(
+            result.message(),
+            names_the_volume(&format!("/etc/crypttab: 'vault /dev/vdc' ({why})")),
+            "{crypttab}"
+        );
+        assert_eq!(result.remediation(), Some(REMEDIATION), "{crypttab}");
+    }
+    for crypttab in [
+        "vault /dev/vdc /srv/y/key luks",
+        "vault /dev/vdc /key:/dev/vdc1 luks",
+        "vault /dev/vdc none /srv/x/key luks",
+        "vault /dev/vdc none /srv/x/key:/dev/vda1 luks",
+    ] {
+        let fs = rendered(BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n");
+        fs.mock_set_file_content("/etc/crypttab", &format!("{crypttab}\n"));
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_pass(), "{crypttab}: {result:?}");
+        assert_eq!(
+            result.message(),
+            only_the_decoys_own_line("/"),
+            "{crypttab}"
+        );
+    }
+}
+
+#[test]
+fn on_an_encrypted_decoy_its_own_line_with_a_key_in_the_roots_folder_fails() {
+    // The decoy's own crypttab line, which the flag lets be, with its key
+    // file in the root's folder, or with its key device the root's own
+    // mapping, which the boot mounts a second time, is a finding beside it;
+    // its boot needs the line. A key file elsewhere on the root's filesystem
+    // is none. With `keyscript=` the line is not plain.
+    for (key, why) in [
+        (
+            "/srv/x/key",
+            "its key file lies in the volume at /mnt".to_string(),
+        ),
+        ("/k:/dev/mapper/cryptroot", mounts_for("key file")),
+    ] {
+        let decoy = encrypted_decoy().file(
+            "/etc/crypttab",
+            &format!("cryptroot /dev/nvme0n1p3 {key} luks,discard\n"),
+        );
+        assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn(), "{key}");
+        let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+        assert_eq!(
+            result.message(),
+            names_the_volume(&format!(
+                "/etc/crypttab: 'cryptroot /dev/nvme0n1p3' ({why}, and the decoy's own boot \
+                 needs it)"
+            )),
+            "{key}"
+        );
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{key}");
+    }
+    let decoy = encrypted_decoy().file(
+        "/etc/crypttab",
+        "cryptroot /dev/nvme0n1p3 /etc/keys/root.key luks,discard\n",
+    );
+    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+    assert_eq!(
+        result.message(),
+        only_the_decoys_own_lines("line for /", "cryptroot /dev/nvme0n1p3")
+    );
+    let decoy = encrypted_decoy().file(
+        "/etc/crypttab",
+        "cryptroot /dev/nvme0n1p3 none luks,discard,keyscript=decrypt_keyctl\n",
+    );
+    let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+    assert_eq!(
+        result.message(),
+        may_name_the_volume(&crypttab_not_plain(
+            "cryptroot /dev/nvme0n1p3",
+            &Unplain::Keyscript.reason()
+        ))
+    );
 }

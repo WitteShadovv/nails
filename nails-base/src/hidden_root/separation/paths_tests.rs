@@ -356,12 +356,15 @@ fn a_fuse_program_named_by_its_path_is_read_as_well() {
 #[test]
 fn a_crypttab_file_is_read_as_well() {
     // The file a crypttab line opens: any absolute source that is no
-    // device's path in /dev, such as `//dev/sdb` or a link. No tag, device
-    // path or relative source, and no key file.
+    // device's path in /dev, such as `//dev/sdb` or a link, and its key file,
+    // header or what the boot mounts for one of these, where that is such a
+    // path too. No tag, device path or relative source.
     let crypttab = parse_crypttab(
         "vault //dev/sdb none luks\nbox /srv/box.img /srv/key luks\ndata /dev/sdc none luks\n\
          root UUID=e1 none luks\nrel dev/sdd none luks\nlinked /sdb.link none luks\n\
-         up /dev/../srv/up.img none luks\n",
+         up /dev/../srv/up.img none luks\n\
+         hdr /dev/sdc none luks,header=/srv/hdr\nkd /dev/sdc /k:/srv/kd.img luks\n\
+         rk /dev/sdc keys/k luks\n",
     );
     let fs = linked(&[("/sdb.link", "/dev/sdb")]);
     fs.mock_set_device_node("/dev/sdb");
@@ -383,10 +386,15 @@ fn a_crypttab_file_is_read_as_well() {
             "//dev/sdb",
             "/dev/../srv/up.img",
             "/sdb.link",
-            "/srv/box.img"
+            "/srv/box.img",
+            "/srv/hdr",
+            "/srv/kd.img",
+            "/srv/key"
         ]
     );
-    assert_eq!(paths["/srv/box.img"], reads("/srv/box.img"));
+    for file in ["/srv/box.img", "/srv/hdr", "/srv/kd.img", "/srv/key"] {
+        assert_eq!(paths[file], reads(file), "{file}");
+    }
     assert_eq!(paths["/dev/../srv/up.img"], reads("/srv/up.img"));
     assert_eq!(paths["/sdb.link"], link("/sdb.link"));
     assert_eq!(
@@ -448,18 +456,23 @@ fn a_device_path_is_untold_at_the_first_link_out_of_dev_and_nothing_past_it_is_r
     // /dev/shm/box.link by a relative target), and /dev/out.link to
     // /tmp/back, a link on the decoy's disk back to the drive. NAILS stops at
     // the first link that leaves /dev: a lookup of /mnt or /tmp fails here,
-    // and none is made.
+    // and none is made. A key file or a key device in /dev is read so too.
     // udev's relative by-uuid link stays in /dev and is no path to tell.
     let fstab = parse_fstab(
         "/dev/sda1 / ext4 defaults 0 1\n/dev/out.link /media/o ext4 nofail 0 0\n\
          /dev/disk/by-uuid/e1 /media/e ext4 nofail 0 0\n",
     );
-    let crypttab = parse_crypttab("box /dev/box.link none luks\nshm /dev/shm/box.link none luks\n");
+    let crypttab = parse_crypttab(
+        "box /dev/box.link none luks\nshm /dev/shm/box.link none luks\n\
+         key /dev/sdc /dev/key.link luks\nkd /dev/sdc /k:/dev/kd.link luks\n",
+    );
     let fs = linked(&[
         ("/dev/box.link", "/mnt/box.img"),
         ("/dev/shm/box.link", "../../mnt/box.img"),
         ("/dev/out.link", "/tmp/back"),
         ("/tmp/back", "/dev/sdb"),
+        ("/dev/key.link", "/mnt/key"),
+        ("/dev/kd.link", "/tmp/back"),
         ("/dev/disk/by-uuid/e1", "../../sdb1"),
     ]);
     for place in ["/mnt", "/tmp"] {
@@ -473,14 +486,20 @@ fn a_device_path_is_untold_at_the_first_link_out_of_dev_and_nothing_past_it_is_r
         &crypttab,
         &DeviceMap::default(),
     );
-    for link in ["/dev/box.link", "/dev/shm/box.link", "/dev/out.link"] {
+    for link in [
+        "/dev/box.link",
+        "/dev/shm/box.link",
+        "/dev/out.link",
+        "/dev/key.link",
+        "/dev/kd.link",
+    ] {
         assert_eq!(
             paths[link],
             Err(UntoldPath::LeavesDev(PathBuf::from(link))),
             "{link}"
         );
     }
-    for spec in ["/dev/sda1", "/dev/disk/by-uuid/e1"] {
+    for spec in ["/dev/sda1", "/dev/disk/by-uuid/e1", "/dev/sdc"] {
         assert!(!paths.contains_key(spec), "{spec}");
     }
     assert_eq!(
