@@ -1649,3 +1649,99 @@ fn a_hook_in_the_directory_of_an_instance_prefix_warns() {
         );
     }
 }
+
+#[test]
+fn a_tuned_that_logs_to_a_journal_namespace_that_persists_refuses() {
+    // NAILS's own drop-in, and a journal namespace for the unit: its
+    // journald instance reads journald@tuned.conf only, never journald.conf,
+    // and keeps the journal on the disk by default.
+    let decoy = Decoy::new();
+    decoy
+        .unit("tuned.service", TUNED_UNIT)
+        .enable("multi-user.target", "tuned.service")
+        .file(
+            "/etc/systemd/system/tuned.service.d/50-journal.conf",
+            TUNED_DROPIN,
+        )
+        .file(
+            "/etc/systemd/system/tuned.service.d/60-namespace.conf",
+            "[Service]\nLogNamespace=tuned\n",
+        );
+    assert_eq!(
+        decoy.findings().blockers,
+        [logs_to(
+            "tuned",
+            "/var/log/journal/<machine-id>.tuned",
+            "tuned.service is enabled, with neither -l nor -d and StandardError=journal, to the \
+             journal of its namespace tuned, which journald keeps on the decoy disk unless \
+             journald@tuned.conf sets Storage=volatile"
+        )]
+    );
+    assert!(decoy.check(false).is_fail());
+    // A namespace whose journal stays in RAM keeps nothing on the disk.
+    decoy.file(
+        "/etc/systemd/journald@tuned.conf.d/50-volatile.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    assert_eq!(decoy.findings(), Findings::default());
+}
+
+#[test]
+fn a_running_tuned_in_a_journal_namespace_that_persists_refuses() {
+    // Its units fixed, the running tuned still logs to the journal of the
+    // namespace it was started with, which its mount table shows.
+    let decoy = Decoy::new();
+    decoy
+        .process(
+            812,
+            "tuned",
+            &["/usr/bin/python3", "-Es", "/usr/sbin/tuned", "-P"],
+        )
+        .link("/proc/812/fd/2", "socket:[4242]")
+        .file(
+            "/proc/812/mountinfo",
+            "36 35 0:32 / / rw,noatime shared:1 - btrfs /dev/vda3 rw\n\
+             612 590 0:25 /systemd/journal.tuned /run/systemd/journal ro,nosuid,nodev - tmpfs \
+             tmpfs rw,mode=755\n",
+        );
+    assert_eq!(
+        decoy.findings().blockers,
+        [logs_to(
+            "tuned",
+            "/var/log/journal/<machine-id>.tuned",
+            "process 812 runs with neither -l nor -d, its standard error being a socket, the \
+             journal's, to the journal of its namespace tuned, which journald keeps on the decoy \
+             disk unless journald@tuned.conf sets Storage=volatile"
+        )]
+    );
+}
+
+#[test]
+fn firewalld_logging_to_syslog_in_a_journal_namespace_that_persists_warns() {
+    // NAILS's own firewalld fix, and a journal namespace for the unit:
+    // syslog() reaches the namespace's journal through /dev/log.
+    let decoy = Decoy::new();
+    decoy
+        .unit("firewalld.service", FIREWALLD_UNIT)
+        .file(
+            "/etc/sysconfig/firewalld",
+            "FIREWALLD_ARGS=--log-target=syslog\n",
+        )
+        .enable("multi-user.target", "firewalld.service");
+    assert_eq!(decoy.findings(), Findings::default());
+    decoy.file(
+        "/etc/systemd/system/firewalld.service.d/60-namespace.conf",
+        "[Service]\nLogNamespace=fw\n",
+    );
+    let warnings = decoy.findings().warnings;
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with(
+            "firewalld writes every message it logs to /var/log/journal/<machine-id>.fw \
+             (firewalld.service is enabled, with --log-target=syslog, to the journal of its \
+             namespace fw, which journald keeps on the decoy disk unless journald@fw.conf sets \
+             Storage=volatile)"
+        ),
+        "{warnings:?}"
+    );
+}

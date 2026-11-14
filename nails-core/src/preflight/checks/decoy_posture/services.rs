@@ -62,6 +62,7 @@
 
 mod coredump_hooks;
 mod environment;
+mod namespace;
 mod options;
 mod processes;
 mod streams;
@@ -167,7 +168,8 @@ fn shown(word: &[u8]) -> String {
 }
 
 /// The first log of `logs` that is a file, else the first NAILS cannot tell,
-/// else the first to a standard stream; no file when none is.
+/// else the first to a standard stream or the journal, which may lead to
+/// one; no file when none is.
 fn first_file(logs: Vec<Log>) -> Log {
     let mut unknown = None;
     let mut stream = None;
@@ -175,8 +177,8 @@ fn first_file(logs: Vec<Log>) -> Log {
         match log {
             Log::File(_) => return log,
             Log::Unknown(_) if unknown.is_none() => unknown = Some(log),
-            Log::Stream { .. } if stream.is_none() => stream = Some(log),
-            Log::Unknown(_) | Log::Stream { .. } | Log::NoFile => {}
+            Log::Stream { .. } | Log::Journal { .. } if stream.is_none() => stream = Some(log),
+            Log::Unknown(_) | Log::Stream { .. } | Log::Journal { .. } | Log::NoFile => {}
         }
     }
     unknown.or(stream).unwrap_or(Log::NoFile)
@@ -214,6 +216,9 @@ impl Logs {
                     Log::Stream { stream, .. } => {
                         format!("{unit} would start it logging to its {}", stream.name())
                     }
+                    Log::Journal { .. } => {
+                        format!("{unit} would start it logging to a journal")
+                    }
                     Log::Unknown(reason) => format!("{unit} would start it, and {reason}"),
                 };
                 self.unknown.push(format!("{would}, and {why}"));
@@ -235,6 +240,9 @@ impl Logs {
             Log::Stream { stream, .. } => self
                 .unknown
                 .push(format!("{source}, and it logs to its {}", stream.name())),
+            Log::Journal { .. } => self
+                .unknown
+                .push(format!("{source}, and it logs to a journal")),
             Log::Unknown(why) => self.unknown.push(format!("{source}: {why}")),
         }
     }
@@ -325,6 +333,16 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
             Log::Stream { stream, by } => streams::of_unit(assignments, stream, by),
             log => log,
         };
+        let log = match log {
+            Log::Journal { by, what } => namespace::journal_log(
+                self.fs,
+                self.root,
+                namespace::of_unit(assignments),
+                &by,
+                what,
+            ),
+            log => log,
+        };
         (log, env_files)
     }
 
@@ -366,12 +384,24 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
                         "its command line names no {}, so NAILS cannot read its options",
                         daemon.program
                     )),
-                    Some(args) => match (daemon.judge)(&args) {
-                        Log::Stream { stream, by } => {
-                            streams::of_process(self.fs, self.root, &process.pid, stream, by)
+                    Some(args) => {
+                        let log = match (daemon.judge)(&args) {
+                            Log::Stream { stream, by } => {
+                                streams::of_process(self.fs, self.root, &process.pid, stream, by)
+                            }
+                            log => log,
+                        };
+                        match log {
+                            Log::Journal { by, what } => namespace::journal_log(
+                                self.fs,
+                                self.root,
+                                namespace::of_process(self.fs, self.root, &process.pid),
+                                &by,
+                                what,
+                            ),
+                            log => log,
                         }
-                        log => log,
-                    },
+                    }
                 },
             };
             logs.add(&source, " with", log);

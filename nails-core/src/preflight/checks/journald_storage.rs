@@ -258,6 +258,30 @@ fn resolved_storage<F: Filesystem>(
     ))
 }
 
+/// Whether the journal of namespace `namespace` persists to the decoy disk
+/// under `root`, as the journald instance of that namespace reads it, or why
+/// NAILS cannot tell. That instance reads `journald@<namespace>.conf` and its
+/// drop-ins, never `journald.conf`, and its `Storage=` is `persistent`
+/// unless they set another (journald.conf(5)); it keeps the journal in
+/// `/var/log/journal/<machine-id>.<namespace>`. The `journal.storage`
+/// credential is not read for it, so one that sets `volatile` counts for
+/// nothing, which fails closed.
+pub fn namespace_persistence_at<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    namespace: &str,
+) -> Result<bool, Unread> {
+    let name = format!("journald@{namespace}.conf");
+    let assignments =
+        systemd_conf::section_assignments(fs, root, &name, JOURNAL_SECTION, host_systemd_major())?;
+    let storage = storage_from(&assignments).unwrap_or(JournaldStorage::Persistent);
+    let dir_present = match storage {
+        JournaldStorage::Auto => persistent_journal_dir_present(fs, root)?,
+        JournaldStorage::Persistent | JournaldStorage::Volatile | JournaldStorage::None => false,
+    };
+    Ok(journal_persists_to_disk(storage, dir_present))
+}
+
 /// Whether `/var/log/journal` is a real on-disk directory (not tmpfs, not
 /// absent), which is what makes `Storage=auto` behave persistently, or why
 /// NAILS cannot tell: its lookup failed for another reason than that nothing

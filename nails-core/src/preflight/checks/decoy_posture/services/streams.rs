@@ -9,8 +9,10 @@
 //! (systemd.exec(5)). `StandardError=` and `StandardOutput=` count by their
 //! last value that is not empty: systemd ignores an empty one, which leaves
 //! the one before. `file:`, `append:` and `truncate:` write the file they
-//! name, unless it is a device that keeps nothing ([`log_to_path`]), and
-//! `null`, `journal`, `kmsg`, `tty` and their `+console` forms write none. `inherit` sends the standard error where the standard output
+//! name, unless it is a device that keeps nothing ([`log_to_path`]);
+//! `journal`, `syslog` and their `+console` forms send it to the journal,
+//! which may be a namespace's that persists ([`super::namespace`]); and
+//! `null`, `kmsg`, `tty` and the `+console` form of `kmsg` write no file. `inherit` sends the standard error where the standard output
 //! goes, and the standard output where the standard input comes from, which
 //! is no file unless `StandardInput=` names one or a descriptor of a socket
 //! unit. So does `socket`, for a service that no socket starts. Unset, each
@@ -18,12 +20,13 @@
 //! `DefaultStandardOutput=` in `system.conf`), which systemd never lets name
 //! a file, a socket or a descriptor: the default standard error is `inherit`
 //! unless `system.conf` sets another, and NAILS takes `inherit`, the only one
-//! that may lead to a file. A value NAILS does not know, such as a named
-//! descriptor (`fd:`), leaves it unknown.
+//! that may lead to a file; the default standard output is the journal, which
+//! NAILS takes where the standard input leads to no file. A value NAILS does
+//! not know, such as a named descriptor (`fd:`), leaves it unknown.
 //!
 //! By a running process, as the link of its descriptor in `/proc` leads: a
-//! socket, or a device that keeps nothing, is no file, and a descriptor that
-//! is closed takes nothing. A pipe leads to the process that reads it, which may copy what
+//! socket is the journal's, and a device that keeps nothing is no file, and a
+//! descriptor that is closed takes nothing. A pipe leads to the process that reads it, which may copy what
 //! it reads into a file, as `tee` does, so NAILS cannot tell. Only root may
 //! follow the descriptors of another user's process, so an unprivileged
 //! `nails check` cannot tell where they lead.
@@ -70,16 +73,11 @@ impl Stream {
 
 /// The values of `StandardOutput=` and `StandardError=` that send a stream
 /// to no file.
-const NO_FILE: &[&str] = &[
-    "null",
-    "journal",
-    "kmsg",
-    "journal+console",
-    "kmsg+console",
-    "tty",
-    "syslog",
-    "syslog+console",
-];
+const NO_FILE: &[&str] = &["null", "kmsg", "kmsg+console", "tty"];
+
+/// The values of `StandardOutput=` and `StandardError=` that send a stream
+/// to the journal.
+const JOURNAL: &[&str] = &["journal", "journal+console", "syslog", "syslog+console"];
 
 /// The values of `StandardInput=` from which a standard output that follows
 /// the input writes to no file.
@@ -162,7 +160,14 @@ pub(super) fn of_unit(assignments: &[Assignment], stream: Stream, by: &str) -> L
             (true, Stream::Output) => {
                 let input = setting(assignments, "StandardInput");
                 if input.is_none_or(|input| NO_FILE_INPUT.contains(&input)) {
-                    return Log::NoFile;
+                    // Unset, it is the manager's default, the journal.
+                    return match value {
+                        None => Log::Journal {
+                            by: listed(&followed),
+                            what: "its log",
+                        },
+                        Some(_) => Log::NoFile,
+                    };
                 }
                 followed.push(format!("StandardInput={}", input.unwrap_or_default()));
                 break None;
@@ -181,6 +186,12 @@ pub(super) fn of_unit(assignments: &[Assignment], stream: Stream, by: &str) -> L
     };
     if NO_FILE.contains(&value) || (at == Stream::Output && value == "socket") {
         return Log::NoFile;
+    }
+    if JOURNAL.contains(&value) {
+        return Log::Journal {
+            by: listed(&followed),
+            what: "its log",
+        };
     }
     match FILE_KINDS.iter().find_map(|kind| value.strip_prefix(kind)) {
         Some(path) => log_to_path(path, || {
@@ -215,7 +226,10 @@ fn led_to(target: crate::Result<PathBuf>, stream: Stream, by: &str) -> Log {
         Ok(target) => {
             let target = target.to_string_lossy().into_owned();
             if target.starts_with("socket:") {
-                Log::NoFile
+                Log::Journal {
+                    by: format!("{by}, its {name} being a socket, the journal's"),
+                    what: "its log",
+                }
             } else if target.starts_with("pipe:") {
                 Log::Unknown(format!(
                     "it logs to its {name}, a pipe, which NAILS cannot follow past the process \

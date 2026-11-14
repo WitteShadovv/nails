@@ -212,14 +212,21 @@ fn firewalld_writes_every_message_with_debug_or_the_file_target() {
 }
 
 #[test]
-fn firewalld_with_the_syslog_target_logs_to_no_file() {
+fn firewalld_with_the_syslog_target_logs_to_the_journal() {
     for line in [
         "--nofork --nopid --log-target=syslog",
         "--log-target syslog --debug",
         "--log-target=file --log-target=syslog",
         "--log-tar=syslog --log-file=/var/log/fw.log",
     ] {
-        assert_eq!(firewalld(&args(line)), Log::NoFile, "{line}");
+        assert_eq!(
+            firewalld(&args(line)),
+            Log::Journal {
+                by: "--log-target=syslog".to_string(),
+                what: "every message it logs"
+            },
+            "{line}"
+        );
     }
     assert_eq!(
         firewalld(&args("--log-target=console")),

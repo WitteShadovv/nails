@@ -32,26 +32,59 @@ fn unknown(log: Log) -> String {
 
 const TUNED_BY: &str = "neither -l nor -d";
 
+/// A log to the journal, as `by` says.
+fn journal(by: &str) -> Log {
+    Log::Journal {
+        by: by.to_string(),
+        what: "its log",
+    }
+}
+
 #[test]
-fn a_stream_the_unit_leaves_alone_goes_to_no_file() {
+fn a_stream_the_unit_leaves_alone_goes_to_the_journal_or_no_file() {
     // Fedora's tuned.service sets neither: the standard error follows the
     // standard output, whose default the service manager never lets name a
-    // file, and which follows a standard input of /dev/null where it is
+    // file: the journal, which may be a namespace's.
+    let unset = "neither -l nor -d, StandardError= not set (inherit) and StandardOutput= not set";
+    for (text, by) in [
+        ("", unset),
+        (
+            "StandardError=inherit",
+            "neither -l nor -d, StandardError=inherit and StandardOutput= not set",
+        ),
+        (
+            "StandardOutput=journal",
+            "neither -l nor -d, StandardError= not set (inherit) and StandardOutput=journal",
+        ),
+        (
+            "StandardError=journal\nStandardOutput=append:/var/log/out.log",
+            "neither -l nor -d and StandardError=journal",
+        ),
+        (
+            "StandardError=syslog",
+            "neither -l nor -d and StandardError=syslog",
+        ),
+        (
+            "StandardError=socket",
+            "neither -l nor -d, StandardError=socket and StandardOutput= not set",
+        ),
+        ("StandardInput=data", unset),
+    ] {
+        assert_eq!(
+            of_unit(&section(text), Stream::Error, TUNED_BY),
+            journal(by),
+            "{text:?}"
+        );
+    }
+    // The standard output follows a standard input of /dev/null where it is
     // inherit.
     for text in [
-        "",
-        "StandardError=inherit",
         "StandardOutput=inherit",
-        "StandardOutput=journal",
-        "StandardError=journal\nStandardOutput=append:/var/log/out.log",
         "StandardError=null",
         "StandardError=kmsg+console",
         "StandardError=tty",
-        "StandardError=syslog",
         "StandardOutput=socket",
-        "StandardError=socket",
         "StandardOutput=inherit\nStandardInput=tty-force",
-        "StandardInput=data",
         // A device that keeps nothing it is given.
         "StandardError=file:/dev/null",
         "StandardError=append:/dev/console",
@@ -116,7 +149,7 @@ fn a_stream_the_unit_sends_to_a_file_logs_there() {
             Stream::Error,
             TUNED_BY
         ),
-        Log::NoFile
+        journal("neither -l nor -d and StandardError=journal")
     );
     // firewalld's console target reads its standard output alone.
     assert_eq!(
@@ -125,7 +158,7 @@ fn a_stream_the_unit_sends_to_a_file_logs_there() {
             Stream::Output,
             "the log target console"
         ),
-        Log::NoFile
+        journal("the log target console and StandardOutput= not set")
     );
 }
 
@@ -163,8 +196,12 @@ fn what_nails_cannot_follow_of_a_unit_is_unknown() {
 #[test]
 fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
     let by = TUNED_BY;
+    // A socket is the journal's, which may be a namespace's.
+    assert_eq!(
+        led_to(Ok(PathBuf::from("socket:[24680]")), Stream::Error, by),
+        journal("neither -l nor -d, its standard error being a socket, the journal's")
+    );
     for target in [
-        "socket:[24680]",
         "/dev/null",
         "/dev/pts/1",
         "/dev/kmsg",
