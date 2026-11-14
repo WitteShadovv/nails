@@ -706,7 +706,9 @@ Layout:
 
 Each smoke scenario shares the static musl `nails` binary into the guest over
 9p (on `/run`, off the decoy disk); asserts platform detection selects the
-Debian-family backend; images the decoy as booted for a baseline; runs the
+Debian-family backend, and that the `lsm-status` row of `check` passes and
+names the security modules the kernel runs; images the decoy as booted for a
+baseline; runs the
 decoy-persistence preflight (a stock persistent journal is refused, and passes
 once the decoy is amnesic); runs `blk-availability.service` as lvm2 ships it
 (the image's own unit on Ubuntu, Debian's copy where only `dmsetup` is
@@ -951,6 +953,13 @@ smoke scenario, it asserts that:
 
 - `check` fails its `platform` row with the family table's reason (exit 4) and
   leaves the hidden root holding what it held;
+- `check` names the security modules the kernel runs in its `lsm-status` row.
+  On Arch, where SELinux does not run, the row passes. On Fedora, where it
+  runs, the row fails, and its first finding is the one every such host gets
+  for now, that NAILS does not choose the SELinux domain of its units: none of
+  the facts it reads there (the mode, `/etc/selinux/config`, the context of
+  the `nails` process) failed to read or failed its rule, and the row says
+  SELinux is permissive exactly when the kernel does;
 - `activate` exits 8 before it writes a byte or a timestamp to the hidden root.
   It starts no session (no next root mounted, no `/run/overlay-runtime`, no
   soft-reboot drop-in or job, the same boot), and the top two levels of `/run`

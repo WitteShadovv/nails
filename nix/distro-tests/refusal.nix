@@ -10,6 +10,13 @@
 #
 #   - `check` fails its platform row with the family table's reason, and the
 #     hidden root still holds what it held;
+#   - `check` names the security modules the kernel runs in its lsm-status row.
+#     Where SELinux does not run (Arch) the row passes. Where it runs (Fedora)
+#     the row fails, and its first finding is the one every such host gets for
+#     now, that NAILS does not choose the SELinux domain of its units, so no
+#     fact it reads there (the mode, /etc/selinux/config, the context of the
+#     nails process) failed to read or failed its rule, and it says SELinux is
+#     permissive exactly when the kernel says so;
 #   - `activate` exits with the unsupported-platform status (8) before it
 #     writes anything to the hidden root, and starts no session: no next root
 #     is mounted, no overlay runtime directory, soft-reboot drop-in or
@@ -369,6 +376,30 @@ let
             assert report["ok"] is False and report["data"]["ready"] is False, report
             # A failed row is a pre-flight refusal.
             assert status == 4, (status, err)
+
+        with subtest("check names the kernel's security modules in its lsm-status row"):
+            _, out, _ = check
+            report = json.loads(out.strip().splitlines()[-1])
+            row = next(r for r in report["data"]["checks"] if r["name"] == "lsm-status")
+            lsms = [m for m in vm.succeed("cat /sys/kernel/security/lsm").strip().split(",") if m]
+            print(f"active LSMs: {lsms}; lsm-status row: {row}")
+            named = f"Active LSMs: {', '.join(lsms)}."
+            if "selinux" in lsms:
+                # The row lists its failures in a fixed order, the domain of
+                # the units last: one that starts with it failed for nothing
+                # else.
+                assert row["status"] == "fail", row
+                assert row["message"].startswith(
+                    "NAILS does not choose the SELinux domain of the processes systemd "
+                    "and udev start from its copy in /run"
+                ), row
+                permissive = vm.succeed("cat /sys/fs/selinux/enforce").strip() == "0"
+                assert ("SELinux is permissive:" in row["message"]) == permissive, row
+                assert row["message"].endswith(named), (lsms, row)
+            else:
+                assert row["status"] == "pass", row
+                assert row["message"].startswith("SELinux does not run"), row
+                assert row["message"].endswith(named), (lsms, row)
 
         with subtest("the decoy checks find a planted trace (positive control)"):
             cursor = journal_cursor()

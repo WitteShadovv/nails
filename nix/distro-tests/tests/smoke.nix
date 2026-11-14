@@ -8,7 +8,9 @@
 # the hidden root, every mounted boot filesystem stays read-only, and
 # deactivation and emergency soft-reboot back to the plain decoy without a trace
 # on the decoy disk. Before the first entry, check refuses a noauto line of the
-# decoy's fstab below the hidden root (fstab-policy, exit 4). The
+# decoy's fstab below the hidden root (fstab-policy, exit 4), and its
+# lsm-status row passes, naming the security modules the kernel runs: SELinux
+# does not run on these images. The
 # decoy runs blk-availability.service as Debian's and Ubuntu's lvm2 ships it
 # (the image's own unit where lvm2 is installed, a copy where only dmsetup
 # is), and the second session, entered without /boot or the ESP mounted, keeps
@@ -770,6 +772,13 @@ distroVm.buildVmTest {
         assert "out from below /mnt/data" in row["remediation"], row
         failed = [r["name"] for r in rows if r["status"] == "fail"]
         assert failed == ["fstab-policy"], failed
+        # The row names the kernel's security modules in their order.
+        lsms = [m for m in vm.succeed("cat /sys/kernel/security/lsm").strip().split(",") if m]
+        row = next((r for r in rows if r["name"] == "lsm-status"), None)
+        print(f"active LSMs: {lsms}; lsm-status row: {row}")
+        assert row is not None and row["status"] == "pass", row
+        assert row["message"].startswith("SELinux does not run"), row
+        assert row["message"].endswith(f"Active LSMs: {', '.join(lsms)}."), (lsms, row)
         vm.succeed("cp /run/fstab.orig /etc/fstab && rm /run/fstab.orig")
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
