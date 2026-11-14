@@ -542,7 +542,14 @@ impl Walker<'_> {
         // (and after a special builtin where POSIX_BUILTINS is on), so with a
         // command after them they may set a parameter, and need not.
         let mut assignments = Vec::new();
-        while let Some(word) = words.next_if(|word| is_assignment(&word.text)) {
+        // A word with a quote or a backslash before its first `=` assigns
+        // nothing: zsh runs it as the command's name (`"ZDOTDIR=x"`).
+        while let Some(word) = words.next_if(|word| {
+            is_assignment(&word.text)
+                && word
+                    .quoted_at
+                    .is_none_or(|at| word.text.find('=').is_some_and(|eq| at > eq))
+        }) {
             if word.expands {
                 input = Input::Computed;
             }
@@ -864,6 +871,7 @@ impl Walker<'_> {
                     expands: word.expands,
                     quoted: false,
                     bare: word.bare,
+                    quoted_at: None,
                 };
                 self.hook_value(&value);
             }
@@ -898,6 +906,7 @@ impl Walker<'_> {
                     expands: word.expands,
                     quoted: false,
                     bare: word.bare,
+                    quoted_at: None,
                 };
                 self.prompt(&word.text, &value);
             }
@@ -930,8 +939,11 @@ impl Walker<'_> {
             value: Some(Word {
                 text: value,
                 expands: word.expands,
-                quoted: false,
+                quoted: word.quoted,
                 bare: word.bare,
+                // A quote at or before the value's start keeps a `~` there
+                // (`ZDOTDIR="~/.zd"`).
+                quoted_at: word.quoted_at.map(|at| at.saturating_sub(name.len() + 1)),
             }),
             unconditional,
             first,

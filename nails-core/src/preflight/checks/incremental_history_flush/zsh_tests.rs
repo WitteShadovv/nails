@@ -1655,18 +1655,21 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                         expands: false,
                         quoted: false,
                         bare: false,
+                        quoted_at: None,
                     },
                     Word {
                         text: "y".to_string(),
                         expands: false,
                         quoted: false,
                         bare: false,
+                        quoted_at: None,
                     },
                     Word {
                         text: "z".to_string(),
                         expands: false,
                         quoted: false,
                         bare: false,
+                        quoted_at: None,
                     },
                 ]
             ),
@@ -1715,6 +1718,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 expands: false,
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             }),
         ]
     );
@@ -1726,6 +1730,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 expands: false,
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             }),
             Token::Open,
             Token::Close,
@@ -1734,18 +1739,21 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 expands: false,
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             }),
             Token::Word(Word {
                 text: "x".to_string(),
                 expands: false,
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             }),
             Token::Word(Word {
                 text: "}".to_string(),
                 expands: false,
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             }),
             Token::End(End::Condition),
             Token::Word(Word {
@@ -1753,6 +1761,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 expands: false,
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             }),
             Token::End(End::Condition),
             Token::Word(Word {
@@ -1760,6 +1769,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 expands: false,
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             }),
             Token::End(End::Pipe),
             Token::Word(Word {
@@ -1767,6 +1777,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 expands: false,
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             }),
             Token::End(End::Background),
         ]
