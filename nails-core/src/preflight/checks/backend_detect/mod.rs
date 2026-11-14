@@ -282,11 +282,13 @@ impl Layer {
 /// Discards over the hidden volume fail closed (unless accepted for the run);
 /// the other findings are deniability trade-offs the operator may have
 /// accepted, so they only warn. Without a readable mount table the check
-/// cannot find the device the hidden root is on, so it cannot tell whether
-/// discards reach the hidden volume: it refuses as for discards, and
-/// `--allow-discards` turns that into a warning too. Anything else the check
-/// cannot read is treated as "no backend information" rather than an error,
-/// and detection is automatic and read-only.
+/// cannot find the device the hidden root is on, and where a device below it
+/// or one of their attributes is there but cannot be read, it cannot tell
+/// what they would show: in either case it cannot tell whether discards
+/// reach the hidden volume, and refuses as for discards, which
+/// `--allow-discards` turns into a warning too. The LUKS header it cannot
+/// read is treated as "no backend information" rather than an error, and
+/// detection is automatic and read-only.
 ///
 /// # How it detects
 ///
@@ -391,9 +393,11 @@ fn assess_with_dev_dir<F: Filesystem>(
         );
     };
 
-    let mut layers = blockdev::device_of_mount(fs, mount)
-        .map(|top| device_layers(fs, &top))
-        .unwrap_or_default();
+    let (mut layers, unread) = match blockdev::device_of_mount_or_unread(fs, mount) {
+        Ok(Some(top)) => device_layers(fs, &top),
+        Ok(None) => (Vec::new(), Vec::new()),
+        Err(_) => (Vec::new(), vec![Unread::Device]),
+    };
     let header_devices: Vec<Option<String>> = layers
         .iter()
         .map(|layer| header_device(&layers, layer).map(str::to_string))
@@ -422,6 +426,16 @@ fn assess_with_dev_dir<F: Filesystem>(
         return CheckResult::fail_with(DISCARD_REFUSAL, DISCARD_REMEDIATION)
             .accepted_by(Allowable::Discards);
     }
+    // A device or an attribute of the stack that could not be read may be a
+    // mapping that forwards discards: NAILS cannot tell, which refuses as
+    // discards do.
+    let untold = (!discards && !unread.is_empty()).then(|| unread_stack(&unread));
+    if let Some(why) = &untold
+        && !allow_discards
+    {
+        return CheckResult::fail_with(why.as_str(), UNREAD_STACK_REMEDIATION)
+            .accepted_by(Allowable::Discards);
+    }
 
     // A root on a filesystem the decoy uses (a bind, a subvolume, the
     // filesystem itself), which the attach gate refuses unless the run
@@ -430,12 +444,14 @@ fn assess_with_dev_dir<F: Filesystem>(
     if let Verdict::OnDecoyFilesystem { .. } =
         separation::judge_storage(fs, &entries, mount, Path::new("/")).verdict
     {
-        return if discards {
-            CheckResult::Warn(format!(
+        return match (discards, &untold) {
+            (true, _) => CheckResult::Warn(format!(
                 "{ON_DECOY_FILESYSTEM}. {DISCARD_ACCEPTED} See {BACKENDS_DOC}."
-            ))
-        } else {
-            CheckResult::Pass(ON_DECOY_FILESYSTEM.into())
+            )),
+            (false, Some(why)) => CheckResult::Warn(format!(
+                "{ON_DECOY_FILESYSTEM}. {why}. {UNREAD_STACK_ACCEPTED} See {BACKENDS_DOC}."
+            )),
+            (false, None) => CheckResult::Pass(ON_DECOY_FILESYSTEM.into()),
         };
     }
 
@@ -443,6 +459,9 @@ fn assess_with_dev_dir<F: Filesystem>(
     let mut found = hazards(&layers, &entries);
     if discards {
         found.insert(0, DISCARD_ACCEPTED.to_string());
+    }
+    if let Some(why) = untold {
+        found.insert(0, format!("{why}. {UNREAD_STACK_ACCEPTED}"));
     }
     let notes: String = hazards::notes(&layers)
         .iter()
@@ -505,6 +524,58 @@ const DISCARD_REMEDIATION: &str = "Re-open the hidden volume with discards off. 
 const DISCARD_ACCEPTED: &str = "Discards are enabled over the hidden volume, accepted for this \
      run: TRIM leaves a readable map of used and free blocks on the physical device, where a \
      deniable volume should look like uniform random data.";
+
+/// What of the devices below the hidden root is there in sysfs but could not
+/// be read. Neither names a device: like the discard refusal, the refusal
+/// that says NAILS cannot tell names no device-mapper node.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Unread {
+    /// The device the hidden root is mounted from, which could not be
+    /// found.
+    Device,
+    /// This attribute or listing of a device below it, by its path in the
+    /// device's sysfs directory (`queue/discard_max_bytes`, `slaves`).
+    Attribute(String),
+}
+
+/// Why NAILS cannot tell whether discards reach the hidden volume, where
+/// `unread` could not be read.
+fn unread_stack(unread: &[Unread]) -> String {
+    let mut attributes: Vec<&str> = unread
+        .iter()
+        .filter_map(|place| match place {
+            Unread::Attribute(name) => Some(name.as_str()),
+            Unread::Device => None,
+        })
+        .collect();
+    attributes.sort_unstable();
+    attributes.dedup();
+    let what = if unread.contains(&Unread::Device) {
+        "the device the hidden root is mounted from".to_string()
+    } else {
+        format!("{} of a device below the hidden root", listing(&attributes))
+    };
+    format!(
+        "NAILS cannot tell whether discards reach the hidden volume: sysfs shows {what}, but \
+         NAILS cannot read it, and it may show a device that forwards them"
+    )
+}
+
+/// `items` as a list in a sentence: `a`, `a and b`, `a, b and c`.
+fn listing(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// What to do where the devices below the hidden root cannot all be read.
+const UNREAD_STACK_REMEDIATION: &str = "Make sure sysfs is mounted at /sys and readable, then \
+     run the check again. See docs/backends.md.";
+
+/// What follows [`unread_stack`] where the run accepts discards.
+const UNREAD_STACK_ACCEPTED: &str = "Discards over the hidden volume are accepted for this run.";
 
 /// Whether discards reach the physical device under the hidden volume: a
 /// cryptsetup mapping forwards TRIM (at runtime or through a stored LUKS2 flag)
@@ -576,12 +647,30 @@ fn header_device<'a>(layers: &'a [Layer], layer: &'a Layer) -> Option<&'a str> {
 /// sees it: into the device behind a loop over a block device, which holds
 /// the hidden volume's data, and no further than a loop over a file, a file
 /// container, whose filesystem is not the hidden volume's
-/// ([`LoopFollow::BlockDevices`]).
-fn device_layers<F: Filesystem>(fs: &F, top: &Path) -> Vec<Layer> {
-    blockdev::stack(fs, top, LoopFollow::BlockDevices)
+/// ([`LoopFollow::BlockDevices`]). With it, the attributes and listings of
+/// its devices that are there but could not be read.
+fn device_layers<F: Filesystem>(fs: &F, top: &Path) -> (Vec<Layer>, Vec<Unread>) {
+    let walk = blockdev::walk(
+        fs,
+        top,
+        LoopFollow::BlockDevices,
+        blockdev::MAX_STACK_DEVICES,
+    );
+    let unread = walk
+        .layers
         .iter()
-        .map(Layer::from_device)
-        .collect()
+        .flat_map(|device| {
+            device.unread.iter().map(|path| {
+                // The path in the device's own directory, else its last name:
+                // a directory's path can name a device-mapper node.
+                let name = path
+                    .strip_prefix(&device.sysfs)
+                    .unwrap_or_else(|_| Path::new(path.file_name().unwrap_or_default()));
+                Unread::Attribute(name.display().to_string())
+            })
+        })
+        .collect();
+    (walk.layers.iter().map(Layer::from_device).collect(), unread)
 }
 
 /// Pure seam: the mount that contains `path` (longest mount-point prefix).

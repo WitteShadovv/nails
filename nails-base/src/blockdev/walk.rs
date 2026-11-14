@@ -10,6 +10,7 @@ use super::{
 };
 use crate::Filesystem;
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
+use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,9 @@ pub fn walk<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow, limit: usize)
             }
             Err(error) => {
                 layer.slaves_unread = error.io_kind() != Some(std::io::ErrorKind::NotFound);
+                if layer.slaves_unread {
+                    layer.unread.push(dir.join("slaves"));
+                }
                 Vec::new()
             }
         };
@@ -77,18 +81,43 @@ pub fn device_numbered<F: Filesystem>(fs: &F, number: &str) -> Option<String> {
 
 /// The sysfs directory of the block device a mount sits on, if any.
 pub fn device_of_mount<F: Filesystem>(fs: &F, mount: &MountEntry) -> Option<PathBuf> {
+    device_of_mount_or_unread(fs, mount).ok().flatten()
+}
+
+/// [`device_of_mount`], telling a mount on no block device from one whose
+/// device NAILS cannot find: `Err` names the first sysfs place that is there
+/// but could not be read, for another reason than that it is not there,
+/// where no device was found, since it may have shown the device.
+pub fn device_of_mount_or_unread<F: Filesystem>(
+    fs: &F,
+    mount: &MountEntry,
+) -> Result<Option<PathBuf>, PathBuf> {
+    let unread = RefCell::new(Vec::new());
+    match device_of_mount_noting(fs, mount, &unread) {
+        Some(dir) => Ok(Some(dir)),
+        None => unread.into_inner().into_iter().next().map_or(Ok(None), Err),
+    }
+}
+
+/// [`device_of_mount`], keeping in `unread` each place that could not be
+/// read.
+fn device_of_mount_noting<F: Filesystem>(
+    fs: &F,
+    mount: &MountEntry,
+    unread: &RefCell<Vec<PathBuf>>,
+) -> Option<PathBuf> {
     // ext4, xfs and f2fs report the real block device's number.
-    if let Some(dir) = block_dir(fs, &Path::new(SYS_DEV_BLOCK).join(&mount.dev)) {
+    if let Some(dir) = block_dir_noting(fs, &Path::new(SYS_DEV_BLOCK).join(&mount.dev), unread) {
         return Some(dir);
     }
 
     // btrfs reports an anonymous `0:N` device, so fall back to the source.
     let source_name = mount.source.file_name()?.to_str()?;
     if mount.source.starts_with("/dev/mapper") {
-        return find_dm_by_name(fs, source_name);
+        return find_dm_by_name(fs, source_name, unread);
     }
     if mount.source.starts_with("/dev") {
-        return block_dir(fs, &Path::new(SYS_CLASS_BLOCK).join(source_name));
+        return block_dir_noting(fs, &Path::new(SYS_CLASS_BLOCK).join(source_name), unread);
     }
     None
 }
@@ -164,10 +193,32 @@ pub(super) fn dev_node_dir<F: Filesystem>(fs: &F, path: &Path) -> Option<PathBuf
 /// `dir` with its symlinks resolved, when it is a block device's sysfs
 /// directory (every one carries a `dev` attribute).
 pub(super) fn block_dir<F: Filesystem>(fs: &F, dir: &Path) -> Option<PathBuf> {
+    block_dir_noting(fs, dir, &RefCell::new(Vec::new()))
+}
+
+/// [`block_dir`], keeping in `unread` a `dev` attribute that could not be
+/// read for another reason than that it is not there.
+fn block_dir_noting<F: Filesystem>(
+    fs: &F,
+    dir: &Path,
+    unread: &RefCell<Vec<PathBuf>>,
+) -> Option<PathBuf> {
     let dir = canonical(fs, dir);
-    fs.read_file_content(&dir.join("dev"))
-        .is_ok()
-        .then_some(dir)
+    attribute(fs, &dir.join("dev"), unread).map(|_| dir)
+}
+
+/// The text of the sysfs attribute at `path`, or `None` when it is not
+/// there or cannot be read; one that is there but cannot be read for
+/// another reason than that it is not there is kept in `unread`.
+fn attribute<F: Filesystem>(fs: &F, path: &Path, unread: &RefCell<Vec<PathBuf>>) -> Option<String> {
+    match fs.read_file_content(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.nothing_there() => None,
+        Err(_) => {
+            unread.borrow_mut().push(path.to_path_buf());
+            None
+        }
+    }
 }
 
 /// `path` with its symlinks resolved, or as given when that fails.
@@ -193,20 +244,37 @@ fn file_name(path: &Path) -> Option<String> {
         .map(|name| name.to_string_lossy().into_owned())
 }
 
-/// Find the device-mapper device whose `dm/name` is `name`.
-fn find_dm_by_name<F: Filesystem>(fs: &F, name: &str) -> Option<PathBuf> {
-    sorted_listing(fs, Path::new(SYS_BLOCK))
+/// Find the device-mapper device whose `dm/name` is `name`; a listing or a
+/// name that could not be read is kept in `unread`.
+fn find_dm_by_name<F: Filesystem>(
+    fs: &F,
+    name: &str,
+    unread: &RefCell<Vec<PathBuf>>,
+) -> Option<PathBuf> {
+    let mut entries = match fs.list_directory(Path::new(SYS_BLOCK)) {
+        Ok(entries) => entries,
+        Err(error) => {
+            if !error.nothing_there() {
+                unread.borrow_mut().push(PathBuf::from(SYS_BLOCK));
+            }
+            return None;
+        }
+    };
+    entries.sort();
+    entries
         .into_iter()
         .map(|dir| canonical(fs, &dir))
         .find(|dir| {
-            fs.read_file_content(&dir.join("dm/name"))
-                .is_ok_and(|dm_name| dm_name.trim() == name)
+            attribute(fs, &dir.join("dm/name"), unread)
+                .is_some_and(|dm_name| dm_name.trim() == name)
         })
 }
 
-/// Read the attributes of one block device; every attribute is optional.
+/// Read the attributes of one block device; every attribute is optional,
+/// and one that is there but cannot be read is kept in [`Layer::unread`].
 fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
-    let read = |attribute: &str| fs.read_file_content(&dir.join(attribute)).ok();
+    let unread = RefCell::new(Vec::new());
+    let read = |name: &str| attribute(fs, &dir.join(name), &unread);
 
     let uevent = read("uevent").unwrap_or_default();
     let (holders, holders_unread) = match fs.list_directory(&dir.join("holders")) {
@@ -214,10 +282,13 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
             holders.sort();
             (names(&holders), false)
         }
-        Err(error) => (
-            Vec::new(),
-            error.io_kind() != Some(std::io::ErrorKind::NotFound),
-        ),
+        Err(error) => {
+            let unlisted = error.io_kind() != Some(std::io::ErrorKind::NotFound);
+            if unlisted {
+                unread.borrow_mut().push(dir.join("holders"));
+            }
+            (Vec::new(), unlisted)
+        }
     };
     let dm_name = read("dm/name").map(|name| name.trim().to_string());
     let dm_uuid = read("dm/uuid").map(|uuid| uuid.trim().to_string());
@@ -249,8 +320,9 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
         below: Vec::new(),
         holders,
         holders_unread,
-        partition: read_partition(fs, dir, &uevent),
-        loop_device: read_loop(fs, dir),
+        partition: read_partition(fs, dir, &uevent, &unread),
+        loop_device: read_loop(fs, dir, &unread),
+        unread: unread.take(),
     }
 }
 
@@ -263,8 +335,13 @@ fn device_name(uevent: &str, dir: &Path) -> String {
 
 /// A partition's number and start, its disk (the sysfs parent directory) and
 /// its name and uuid from `uevent`; `None` for a device that is no partition.
-fn read_partition<F: Filesystem>(fs: &F, dir: &Path, uevent: &str) -> Option<Partition> {
-    let read = |path: &Path| fs.read_file_content(path).ok();
+fn read_partition<F: Filesystem>(
+    fs: &F,
+    dir: &Path,
+    uevent: &str,
+    unread: &RefCell<Vec<PathBuf>>,
+) -> Option<Partition> {
+    let read = |path: &Path| attribute(fs, path, unread);
     let number = read(&dir.join("partition"))?.trim().parse().ok()?;
     let disk = dir
         .parent()
@@ -281,8 +358,12 @@ fn read_partition<F: Filesystem>(fs: &F, dir: &Path, uevent: &str) -> Option<Par
 
 /// The binding of a loop device; `None` for any other device and for an
 /// unbound loop device, which has no `loop/` directory.
-fn read_loop<F: Filesystem>(fs: &F, dir: &Path) -> Option<LoopDevice> {
-    let read = |attribute: &str| fs.read_file_content(&dir.join(attribute)).ok();
+fn read_loop<F: Filesystem>(
+    fs: &F,
+    dir: &Path,
+    unread: &RefCell<Vec<PathBuf>>,
+) -> Option<LoopDevice> {
+    let read = |name: &str| attribute(fs, &dir.join(name), unread);
     let path = read("loop/backing_file")
         .as_deref()
         .and_then(parse_backing_file)?;
