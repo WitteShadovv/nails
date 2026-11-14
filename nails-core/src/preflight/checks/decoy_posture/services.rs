@@ -77,7 +77,7 @@ use super::loggers::{self, Activity};
 use super::{Enabled, PersistenceFinding, unit_enabled};
 use crate::Filesystem;
 use options::Log;
-use processes::{Process, own_args, runs_anywhere};
+use processes::{Processes, own_args, runs_anywhere};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -251,7 +251,7 @@ struct Decoy<'a, F: Filesystem> {
     files: DecoyFiles<'a, F>,
     /// The system manager's unit directories, highest priority first.
     dirs: Vec<PathBuf>,
-    processes: Vec<Process>,
+    processes: Processes,
 }
 
 impl<'a, F: Filesystem> Decoy<'a, F> {
@@ -343,9 +343,21 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
         }
     }
 
-    /// Add where `daemon`'s processes log to `logs`.
-    fn add_processes(&self, daemon: &Daemon, logs: &mut Logs) {
-        for process in self.processes.iter().filter(|p| p.name == daemon.program) {
+    /// Add where `daemon`'s processes log to `logs`, and, where the daemon is
+    /// `installed`, a process NAILS cannot read, which may be one of them.
+    fn add_processes(&self, daemon: &Daemon, installed: bool, logs: &mut Logs) {
+        if installed && let Some(why) = &self.processes.unread {
+            logs.unknown.push(format!(
+                "a process NAILS cannot read may run {}: {why}",
+                daemon.program
+            ));
+        }
+        for process in self
+            .processes
+            .found
+            .iter()
+            .filter(|p| p.name == daemon.program)
+        {
             let source = format!("process {} runs", process.pid);
             let log = match &process.argv {
                 Err(why) => Log::Unknown(why.clone()),
@@ -406,8 +418,9 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
             };
             ppd_logs.add_unit(TUNED_PPD.unit, start, self.unit_log(&TUNED_PPD, &ppd).0);
         }
-        self.add_processes(&TUNED, &mut tuned_logs);
-        self.add_processes(&TUNED_PPD, &mut ppd_logs);
+        let present = |section: &UnitSection| !matches!(section, UnitSection::Missing);
+        self.add_processes(&TUNED, present(&tuned), &mut tuned_logs);
+        self.add_processes(&TUNED_PPD, present(&ppd), &mut ppd_logs);
         (tuned_logs, ppd_logs)
     }
 
@@ -423,7 +436,8 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
             env_files = files;
             logs.add_unit(FIREWALLD.unit, start, log);
         }
-        self.add_processes(&FIREWALLD, &mut logs);
+        let present = !matches!(section, UnitSection::Missing);
+        self.add_processes(&FIREWALLD, present, &mut logs);
         (logs, env_files)
     }
 
@@ -434,6 +448,7 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
     fn abrt(&self) -> AbrtSigns {
         let mut signs = AbrtSigns::default();
         let section = self.section(ABRTD_UNIT);
+        let present = !matches!(section, UnitSection::Missing);
         let start = match section {
             UnitSection::Missing | UnitSection::Masked => None,
             UnitSection::Assignments(_) | UnitSection::Unknown(_) => self.started(ABRTD_UNIT),
@@ -472,8 +487,14 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
         } else {
             signs.untold = found;
         }
+        if present && let Some(why) = &self.processes.unread {
+            signs
+                .untold
+                .push(format!("a process NAILS cannot read may be abrtd: {why}"));
+        }
         signs.sure.extend(
             self.processes
+                .found
                 .iter()
                 .filter(|process| process.name == ABRTD)
                 .map(|process| format!("process {} is abrtd", process.pid)),

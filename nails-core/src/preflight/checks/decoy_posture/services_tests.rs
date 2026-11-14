@@ -1246,7 +1246,9 @@ fn processes_are_read_in_the_order_of_their_numbers_and_only_by_their_names() {
             ],
         )
         .link("/proc/301/fd/2", "socket:[24682]");
-    let found = processes::processes(&decoy.fs, Path::new("/"), PROCESS_NAMES, PYTHON_SCRIPTS);
+    let processes = processes::processes(&decoy.fs, Path::new("/"), PROCESS_NAMES, PYTHON_SCRIPTS);
+    assert_eq!(processes.unread, None);
+    let found = processes.found;
     let names: Vec<(&str, &str)> = found
         .iter()
         .map(|process| (process.pid.as_str(), process.name))
@@ -1541,4 +1543,79 @@ fn a_tuned_that_logs_to_the_null_device_logs_to_no_file() {
         assert_eq!(decoy.findings(), Findings::default(), "{dropin}");
         assert!(decoy.check(false).is_pass(), "{dropin}");
     }
+}
+
+#[test]
+fn a_process_nails_cannot_read_counts_where_the_daemon_is_installed() {
+    // /proc mounted with hidepid=1 lists other users' processes but lets
+    // no one else read them.
+    let decoy = Decoy::new();
+    decoy
+        .process(812, "tuned", TUNED_ARGV)
+        .process(813, "sshd", &["/usr/sbin/sshd", "-D"])
+        .lookup_error("/proc/812/comm", std::io::ErrorKind::PermissionDenied)
+        .lookup_error("/proc/813/comm", std::io::ErrorKind::PermissionDenied);
+    // No daemon is installed: nothing counts.
+    assert_eq!(decoy.findings(), Findings::default());
+    let why = "a process NAILS cannot read may run tuned: NAILS cannot read /proc/812/comm, nor \
+               the name of 1 more process; run the command again with sudo";
+    decoy
+        .unit("tuned.service", TUNED_UNIT)
+        .mask("tuned.service");
+    assert_eq!(
+        decoy.findings().blockers,
+        [format!(
+            "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it counts as \
+             one that does ({why})"
+        )]
+    );
+    decoy
+        .unit("firewalld.service", FIREWALLD_UNIT)
+        .unit("abrtd.service", ABRTD_UNIT_FILE)
+        .mask("firewalld.service")
+        .mask("abrtd.service");
+    let warnings = decoy.findings().warnings;
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with(
+            "NAILS cannot tell whether firewalld writes a log file on the decoy disk (a process \
+             NAILS cannot read may run firewalld: "
+        ),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[1].starts_with(
+            "ABRT may be in use on the decoy (a process NAILS cannot read may be abrtd: NAILS \
+             cannot read /proc/812/comm"
+        ),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_hook_link_nails_cannot_look_up_warns() {
+    // A dependency directory NAILS may list but not search, as a 0644 one
+    // is to anyone but root.
+    let link = "/usr/lib/systemd/system/systemd-coredump@.service.wants/\
+                drkonqi-coredump-processor@.service";
+    let decoy = coredump_decoy();
+    decoy
+        .unit(
+            "drkonqi-coredump-processor@.service",
+            "[Service]\nExecStart=/usr/libexec/drkonqi-coredump-processor\n",
+        )
+        .link(
+            link,
+            "/usr/lib/systemd/system/drkonqi-coredump-processor@.service",
+        )
+        .lookup_error(link, std::io::ErrorKind::PermissionDenied);
+    let result = decoy.check(false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(&format!(
+            "NAILS cannot tell which units systemd-coredump starts for each crash (NAILS cannot \
+             look up {link}; run the command again with sudo)"
+        )),
+        "{result:?}"
+    );
 }

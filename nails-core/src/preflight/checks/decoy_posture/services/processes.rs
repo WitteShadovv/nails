@@ -12,7 +12,12 @@
 //! process counts by the script it runs, the first word after the
 //! interpreter's own options as Python reads them, and not when Python runs
 //! a command (`-c`), a module (`-m`) or its standard input instead.
-//! `comm` and `cmdline` can be read by every user.
+//! `comm` and `cmdline` can be read by every user, unless `/proc` is
+//! mounted with `hidepid=1`, which lists other users' processes but lets no
+//! one else read them: a process NAILS cannot read may run any daemon, so it
+//! is named ([`Processes::unread`]). With `hidepid=2` other users' processes
+//! are not listed at all, and an unprivileged `nails check` does not see
+//! them.
 //!
 //! A command line runs a daemon only where its first word is the daemon's
 //! program, or a Python interpreter whose script is ([`own_args`]). Another
@@ -133,6 +138,41 @@ pub(super) fn runs_anywhere(program: &'static str, words: &[Vec<u8>]) -> bool {
     words.iter().any(|word| names(program, file_name(word)))
 }
 
+/// The processes of the daemons, and why NAILS cannot tell what some others
+/// run, if it cannot.
+#[derive(Default)]
+pub(super) struct Processes {
+    /// Those that run one of the daemons, in the order of their numbers.
+    pub(super) found: Vec<Process>,
+    /// Why NAILS cannot read what some other processes run: the listing of
+    /// `/proc` or a process's name could not be read, so one of them may
+    /// run a daemon.
+    pub(super) unread: Option<String>,
+}
+
+/// Why NAILS cannot tell what the processes run whose `comm` it could not
+/// read, each with the error that read failed with: the first one, how many
+/// others, and the hint to run the command with sudo where only that would
+/// let it.
+fn unread_names(unread: &[(u64, crate::NailsError)]) -> Option<String> {
+    let ((pid, error), rest) = unread.split_first()?;
+    let denied =
+        |error: &crate::NailsError| error.io_kind() == Some(std::io::ErrorKind::PermissionDenied);
+    let mut why = format!("NAILS cannot read /proc/{pid}/comm");
+    if !denied(error) {
+        why.push_str(&format!(" ({error})"));
+    }
+    match rest.len() {
+        0 => {}
+        1 => why.push_str(", nor the name of 1 more process"),
+        more => why.push_str(&format!(", nor the names of {more} more processes")),
+    }
+    if unread.iter().all(|(_, error)| denied(error)) {
+        why.push_str("; run the command again with sudo");
+    }
+    Some(why)
+}
+
 /// The processes under `<root>/proc` that run one of `programs` (see the
 /// [module docs](self)), in the order of their numbers; `scripts` are those
 /// of `programs` that are Python scripts. One that ended since the listing
@@ -142,11 +182,18 @@ pub(super) fn processes<F: Filesystem>(
     root: &Path,
     programs: &[&'static str],
     scripts: &[&'static str],
-) -> Vec<Process> {
-    let Ok(entries) = fs.list_directory(&root.join("proc")) else {
-        return Vec::new();
+) -> Processes {
+    let entries = match fs.list_directory(&root.join("proc")) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return Processes {
+                found: Vec::new(),
+                unread: Some(format!("NAILS cannot list /proc ({e})")),
+            };
+        }
     };
     let mut out: Vec<(u64, Process)> = Vec::new();
+    let mut unread: Vec<(u64, crate::NailsError)> = Vec::new();
     for entry in entries {
         let Some(number) = entry
             .file_name()
@@ -155,8 +202,14 @@ pub(super) fn processes<F: Filesystem>(
         else {
             continue;
         };
-        let Ok(comm) = fs.read_file_content(&entry.join("comm")) else {
-            continue;
+        let comm = match fs.read_file_content(&entry.join("comm")) {
+            Ok(comm) => comm,
+            // It ended since the listing.
+            Err(e) if e.io_kind() == Some(std::io::ErrorKind::NotFound) => continue,
+            Err(e) => {
+                unread.push((number, e));
+                continue;
+            }
         };
         let comm = comm.trim_end_matches('\n');
         let named = program_of(programs, comm.as_bytes());
@@ -198,7 +251,10 @@ pub(super) fn processes<F: Filesystem>(
         ));
     }
     out.sort_by_key(|(number, _)| *number);
-    out.into_iter().map(|(_, process)| process).collect()
+    Processes {
+        found: out.into_iter().map(|(_, process)| process).collect(),
+        unread: unread_names(&unread),
+    }
 }
 
 #[cfg(test)]
