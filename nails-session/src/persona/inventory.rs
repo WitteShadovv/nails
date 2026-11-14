@@ -43,17 +43,18 @@ use crate::{Filesystem, NailsError};
 /// operator's home through the next root instead, resolved as the hidden root
 /// will resolve it.
 ///
-/// A place the source cannot look up, or that the automount guard does not
-/// look up ([`Guarded`](crate::filesystem::automount::Guarded)), is an
-/// [`Err`]: never taken for one that is not there. A directory that cannot be
-/// listed and a file that cannot be read for another reason stay empty.
+/// A place the source cannot look up, list or read for another reason than
+/// that it is not there, or that the automount guard does not look up
+/// ([`Guarded`](crate::filesystem::automount::Guarded)), is an [`Err`]:
+/// never taken for one that is not there.
 pub trait PersonaSource {
-    /// The entries of `dir`, as paths below it; empty when it is not there,
-    /// or is there and cannot be listed; `Err` when it cannot be looked up,
-    /// or the guard does not look it up.
+    /// The entries of `dir`, as paths below it; empty when it is not there;
+    /// `Err` when it cannot be looked up or listed, or the guard does not
+    /// look it up.
     fn entries(&self, dir: &Path) -> Result<Vec<PathBuf>, NotRead>;
-    /// The text of the file at `path`, `None` when it cannot be read, `Err`
-    /// when the guard does not look it up.
+    /// The text of the file at `path`, `None` when it is not there or holds
+    /// no text, `Err` when it cannot be read or the guard does not look it
+    /// up.
     fn text(&self, path: &Path) -> Result<Option<String>, NotRead>;
     /// Whether `path` exists; `Err` when it cannot be looked up.
     fn exists(&self, path: &Path) -> Result<bool, NotRead>;
@@ -70,23 +71,27 @@ pub trait PersonaSource {
 impl<F: Filesystem> PersonaSource for F {
     fn entries(&self, dir: &Path) -> Result<Vec<PathBuf>, NotRead> {
         // A lookup of the directory that fails, a home or a `~/.config` NAILS
-        // cannot search among them, leaves what it holds not read; looked up,
-        // a directory that cannot be listed stays empty, as before.
+        // cannot search among them, leaves what it holds not read, and so
+        // does a directory that is there but cannot be listed.
         if let Err(e) = self.path_exists(dir) {
             return Err(NotRead::of(dir, &e));
         }
         match self.list_directory(dir) {
             Ok(entries) => Ok(entries),
-            Err(e) if e.not_looked_up().is_some() => Err(NotRead::of(dir, &e)),
-            Err(_) => Ok(Vec::new()),
+            Err(e) if e.nothing_there() => Ok(Vec::new()),
+            Err(e) => Err(NotRead::of(dir, &e)),
         }
     }
 
     fn text(&self, path: &Path) -> Result<Option<String>, NotRead> {
         match self.read_file_content(path) {
             Ok(text) => Ok(Some(text)),
-            Err(e) if e.not_looked_up().is_some() => Err(NotRead::of(path, &e)),
-            Err(_) => Ok(None),
+            // A file that holds bytes that are no text was read: it is read
+            // as an empty one, as before.
+            Err(e) if e.nothing_there() || e.io_kind() == Some(std::io::ErrorKind::InvalidData) => {
+                Ok(None)
+            }
+            Err(e) => Err(NotRead::of(path, &e)),
         }
     }
 
@@ -472,8 +477,8 @@ fn collect_autologin<F: PersonaSource>(fs: &F, user: &str, entries: &mut Vec<Per
     );
 }
 
-/// List a directory: one that is missing or cannot be listed is empty, and
-/// one the source cannot look up, or does not, is noted as not read.
+/// List a directory: one that is missing is empty, and one the source cannot
+/// look up or list, or does not look up, is noted as not read.
 pub(super) fn list_dir<F: PersonaSource>(fs: &F, dir: &Path) -> Vec<PathBuf> {
     fs.entries(dir).unwrap_or_else(|not_read| {
         fs.note(not_read);

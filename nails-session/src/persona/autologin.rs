@@ -445,8 +445,8 @@ fn regular<F: PersonaSource>(fs: &F, path: &Path) -> bool {
     })
 }
 
-/// The text of the file at `path`, if it can be read; one the source does
-/// not look up is noted as not read.
+/// The text of the file at `path`, if it is there and can be read; one the
+/// source cannot read, or does not look up, is noted as not read.
 fn text_of<F: PersonaSource>(fs: &F, path: &Path) -> Option<String> {
     fs.text(path).unwrap_or_else(|not_read| {
         fs.note(not_read);
