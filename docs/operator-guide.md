@@ -1911,7 +1911,10 @@ afterwards:
     leaves the home's files out. One in `/etc` does not, as a zsh reads its
     stage's file in `/etc` or in `/etc/zsh`, as it was built, which the check
     does not know, nor one in `.zprofile` or `.zlogin` for a shell it cannot
-    tell is a login shell. A `~` a quote or a backslash keeps
+    tell is a login shell. The check takes such a `.zshenv` for one zsh reads
+    and its first command for one zsh runs, also where you cannot read the
+    file or a parse error later on that line stops zsh first, two cases it
+    does not see (see the limits below). A `~` a quote or a backslash keeps
     (`ZDOTDIR="~/.zd"`, `\~/.zd`) is no home but a path below the working
     directory, as zsh expands no `~` there, a doubt, and a word with a quote
     or a backslash before its `=` (`"ZDOTDIR=$HOME/.zd"`) assigns nothing, as
@@ -2180,7 +2183,18 @@ afterwards:
   setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
   program named like the command you type that zsh finds first in `PATH` or
   that `hash` names (a `sudo` script in `~/bin`), a program a hook runs that
-  ends the shell by itself (one that signals its parent), a file a bash
+  ends the shell by itself (one that signals its parent), a job or a program
+  the startup files start that signals the shell later, which ends it
+  (`{ sleep 3; kill -HUP $$ } &!`, or one through `nohup sh -c`), a widget
+  that rewrites the line zsh runs (`BUFFER=exit` in a wrapper of
+  `accept-line`, in `zle-line-init` or in `zle-line-finish`), an assignment
+  of `ZDOTDIR` or `XDG_CONFIG_HOME` as the first command of a `.zshenv` that
+  zsh does not run (a file you cannot read, as `sudo $EDITOR ~/.zshenv` can
+  leave it under `umask 077`, or a first line with a parse error after the
+  assignment), a vertical tab, a form feed, a carriage return (a Windows
+  line end), a no-break space or another Unicode space outside quotes, which
+  it takes for a space where zsh keeps it in the word (so a `#` after it
+  starts no comment for zsh), a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), a `TMOUT` the
@@ -2223,7 +2237,9 @@ afterwards:
   home, only with `HIST_FCNTL_LOCK` on, see above): zsh's default, under which a zsh
   writes its history only as it ends, which the kill at activation keeps it
   from doing, unless it ends before that. A hook that may end it and a
-  `TMOUT` above 0 make the check warn (see above), and a shell you end
+  `TMOUT` above 0 make the check warn (see above), a job the startup files
+  start that signals it later and a widget that rewrites the line to `exit`
+  do not (see the limits above), and a shell you end
   yourself before activation (`exit`, Ctrl-D, closing its window, which sends
   it SIGHUP) writes its history then, so leave the shell you typed in open
   until activation.
