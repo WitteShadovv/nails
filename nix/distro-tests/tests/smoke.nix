@@ -48,6 +48,30 @@
 # job timeout powers off), and after each way back the decoy's PID 1 has its
 # own unit again.
 #
+# The decoy's disk swap stays off from before the first hidden root exists to
+# the power-off before the last image, as the swap check asks: the hidden root
+# lives in RAM, where a disk swap could take it onto the decoy disk. With its
+# fstab line kept, as most users keep it, the decoy turns the swap on again at
+# every boot, the way back's included, and the scenario turns it off right
+# after; the first session sees that line skipped and swap.target reached. The
+# second session runs with the line made noauto, which no boot turns on, and
+# sees its unit masked. Every unit NAILS masks in the hidden root is masked at
+# runtime only (masked-runtime), never as a file of the root. The residue
+# report each activation writes before the switch holds no warning: the loop
+# device under the hidden root's LUKS mapping counts as the hidden volume's,
+# and the first session's loop device is detached before the second entry. An
+# ESP that systemd's GPT auto-generator mounts on demand at /efi, as on
+# arch-boxes, is not mounted anywhere in the hidden root, and the decoy's
+# automount is back after each way back. The rehearsal's scan exits 9 with a
+# blind spot on a btrfs root's device and 0 on any other image. On a btrfs root
+# the leak checks read the image the way btrfs-progs does as well
+# (py/btrfs_scan.py): the files of the live tree, decompressed, hold no canary,
+# and three planted controls show what each read sees there: a file kept
+# plain, which the raw scan finds; a compressed one, which only the read of
+# the live tree finds; and a compressed one written and deleted, which only a
+# read of an older root of the tree finds. The positive control of the raw scan
+# carries its token in the file's contents only.
+#
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
 # not in the guest, so they are distribution-agnostic.
@@ -68,14 +92,15 @@
   self,
   pkgs,
   nix-vm-test,
+  # The binary the scenario runs: the canonical static musl binary, the exact
+  # artifact a user installs, or, for an image whose family is not admitted
+  # yet, a test-only build of it that admits the family (lib/admitted.nix).
+  nails ? self.packages.x86_64-linux.nails,
 }:
 let
   distroVm = import ../lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   hiddenRoot = import ../lib/hidden-root.nix;
   diskForensics = import ../../e2e-tests/lib/disk-forensics.nix { inherit pkgs; };
-
-  # The canonical static musl binary, the exact artifact a user installs.
-  inherit (self.packages.x86_64-linux) nails;
 
   # The binary is shared read-only over 9p onto the /run tmpfs, so neither the
   # binary nor its mount point ever lands on the decoy disk the forensic check
@@ -120,16 +145,28 @@ distroVm.buildVmTest {
 
     # The distribution-generic smoke helpers (nix/distro-tests/py), locked by
     # the `distro-checks` flake check: where a hidden write lands, which boot
-    # filesystems to check, and the overlay feature-option read-back.
+    # filesystems to check, the overlay feature-option read-back, and the
+    # logical scan of a btrfs decoy.
     sys.path.insert(0, "${../py}")
+    import btrfs_scan  # noqa: E402
     import distro_checks  # noqa: E402
+    import shutil
     import subprocess
+    import tempfile
     import time
     from typing import Any
 
     # The decoy's /etc/os-release ID, from the image-table entry. The scenario
     # is otherwise distribution-agnostic; this names the decoy in the log.
     os_id = "${entry.osId}"
+    # The root filesystem the image table says the image ships.
+    rootfs = "${entry.rootfs}"
+
+    # btrfs-progs and sfdisk on the driver, for the logical scan of a btrfs
+    # decoy's image.
+    BTRFS = "${pkgs.btrfs-progs}/bin/btrfs"
+    BTRFS_FIND_ROOT = "${pkgs.btrfs-progs}/bin/btrfs-find-root"
+    SFDISK = "${pkgs.util-linux}/bin/sfdisk"
 
     # The entry's name in images.json, and the units its image is known to
     # fail there (knownFailedUnits), or None to only print the failed units.
@@ -258,6 +295,217 @@ distroVm.buildVmTest {
         write_config()
         vm.succeed("""${hiddenRoot.stopAptTimers}""")
         vm.wait_until_succeeds("""${hiddenRoot.aptRunsEnded}""", timeout=900)
+
+
+    def disk_swaps():
+        # The swaps on now that are on a disk: every one but zram.
+        return distro_checks.disk_swaps(vm.succeed("cat /proc/swaps"))
+
+
+    def assert_no_disk_swap(where):
+        swaps = disk_swaps()
+        assert not swaps, f"{where}: a disk swap is on: {swaps}"
+
+
+    def quiesce_disk_swap(where):
+        # Turn every disk swap off, as the swap check advises; zram, which
+        # keeps what it swaps in RAM, stays on. Returns the swaps that were on.
+        swaps = disk_swaps()
+        for name in swaps:
+            vm.succeed(f"swapoff {shlex.quote(name)}")
+        print(f"disk swaps on {where}: {swaps or 'none'}; now none")
+        assert_no_disk_swap(where)
+        return swaps
+
+
+    def unit_file_state(unit):
+        return vm.succeed(f"systemctl show -P UnitFileState {shlex.quote(unit)}").strip()
+
+
+    def generated_boot_automounts():
+        # The automounts systemd's GPT auto-generator made for a boot
+        # filesystem the fstab does not list (an ESP at /efi), each with its
+        # mount point and the device and type its first access mounts there.
+        found = {}
+        _, listing = vm.execute("ls /run/systemd/generator.late 2>/dev/null")
+        for unit in listing.split():
+            if not unit.endswith(".automount"):
+                continue
+            point = vm.succeed(f"systemctl show -P Where {shlex.quote(unit)}").strip()
+            if point not in distro_checks.BOOT_FILESYSTEMS:
+                continue
+            found[unit] = (point, *mount_on_access(point, unit))
+        print(f"boot filesystems mounted on demand: {found or 'none'}")
+        return found
+
+
+    def mount_on_access(point, unit):
+        # Access the automount point and read what it mounted there.
+        vm.succeed(f"ls {shlex.quote(point)} > /dev/null")
+        listing = f"findmnt -rn -o SOURCE,FSTYPE -M {shlex.quote(point)}"
+        vm.wait_until_succeeds(f"{listing} | grep -v ' autofs$'", timeout=60)
+        mounted = distro_checks.mounted_at(vm.succeed(listing))
+        assert mounted is not None, f"{unit} mounted nothing at {point}"
+        return mounted
+
+
+    def assert_no_generated_boot_mount(where):
+        # The hidden root masks the GPT auto-generator: no automount for a
+        # boot filesystem it made on the decoy, and its device mounted nowhere.
+        for unit, (point, device, _) in boot_automounts.items():
+            state = vm.succeed(f"systemctl show -P LoadState {shlex.quote(unit)}").strip()
+            assert state == "not-found", f"{where}: {unit} is {state}"
+            vm.fail(f"mountpoint -q {shlex.quote(point)}")
+            rc, out = vm.execute(f"findmnt -rn -o TARGET,OPTIONS -S {shlex.quote(device)}")
+            assert rc != 0 and not out.strip(), f"{where}: {device} is mounted: {out}"
+        print(f"{where}: no boot filesystem mounted on demand ({sorted(boot_automounts)})")
+
+
+    def assert_generated_boot_mounts_back(where):
+        # After a way back the decoy's GPT auto-generator made each automount
+        # again, and an access mounts the same device there.
+        for unit, (point, device, fstype) in boot_automounts.items():
+            state = unit_props(unit, "LoadState", "ActiveState", "FragmentPath")
+            assert state["LoadState"] == "loaded" and state["ActiveState"] == "active", (
+                f"{where}: {unit}: {state}"
+            )
+            assert state["FragmentPath"].startswith("/run/systemd/generator.late/"), (
+                f"{where}: {unit}: {state}"
+            )
+            mounted = mount_on_access(point, unit)
+            assert mounted == (device, fstype), f"{where}: {point} mounts {mounted}"
+        print(f"{where}: the boot automounts are back ({sorted(boot_automounts)})")
+
+
+    def assert_clean_baseline(where):
+        # The residue report the activation wrote on the hidden volume before
+        # the switch holds no warning and no critical finding.
+        names = vm.succeed("ls /mnt/data/reports").split()
+        reports = [name for name in names if name.startswith("activation-residue-")]
+        assert len(reports) == 1, f"{where}: residue reports {reports}"
+        report = vm.succeed(f"cat /mnt/data/reports/{shlex.quote(reports[0])}")
+        print(f"=== the residue baseline of {where} ===\n{report}")
+        residue = distro_checks.baseline_residue(report)
+        assert not residue, f"{where}: the residue baseline holds residue:\n" + "\n".join(
+            residue
+        )
+
+
+    def assert_swaps_kept_off(where, entered_after, masked):
+        # No disk swap in a hidden session. The unit of each swap line of the
+        # decoy's fstab is masked at runtime where the line is noauto (nothing
+        # requires it), and skipped where it is kept (swap.target requires it):
+        # loaded, its condition tested in this session and unmet. swap.target
+        # is reached either way.
+        assert_no_disk_swap(where)
+        for spec, _ in decoy_swaps:
+            unit = distro_checks.swap_unit(spec)
+            props = unit_props(
+                unit,
+                "LoadState",
+                "ActiveState",
+                "UnitFileState",
+                "ConditionResult",
+                "ConditionTimestampMonotonic",
+            )
+            print(f"{where}: {unit}: {props}")
+            if masked:
+                assert props["LoadState"] == "masked", f"{where}: {unit}: {props}"
+                assert props["UnitFileState"] == "masked-runtime", f"{where}: {unit}: {props}"
+            else:
+                assert props["LoadState"] == "loaded", f"{where}: {unit}: {props}"
+                assert props["ActiveState"] == "inactive", f"{where}: {unit}: {props}"
+                assert props["ConditionResult"] == "no", f"{where}: {unit}: {props}"
+                tested = int(props.get("ConditionTimestampMonotonic") or 0)
+                assert tested > entered_after, f"{where}: {unit}: {props}"
+        if decoy_swaps:
+            state = vm.succeed("systemctl is-active swap.target || true").strip()
+            assert state == "active", f"{where}: swap.target is {state}"
+
+
+    def assert_runtime_masks(where, units):
+        # A unit NAILS keeps off in the hidden root is masked at runtime, in
+        # /run: never as a file of the root, which would land in the upper.
+        for unit in units:
+            state = unit_file_state(unit)
+            assert state == "masked-runtime", f"{where}: {unit} is {state}"
+        print(
+            vm.succeed(
+                "systemctl list-unit-files --state=masked,masked-runtime "
+                + "--no-legend --no-pager"
+            )
+        )
+
+
+    # The logical scan of a btrfs decoy (py/btrfs_scan.py), on the driver, from
+    # a sparse copy of the root's partition in a whole-disk image.
+    btrfs_work = None
+
+
+    def btrfs_root_copy(image, label):
+        global btrfs_work
+        if btrfs_work is None:
+            btrfs_work = tempfile.mkdtemp(prefix="nails-btrfs-")
+        table = subprocess.run(
+            [SFDISK, "--json", str(image)], check=True, capture_output=True, text=True
+        ).stdout
+        number = btrfs_scan.partition_number(decoy_root_device)
+        start, size = btrfs_scan.partition_extent(table, number)
+        part = os.path.join(btrfs_work, f"{label}.btrfs")
+        btrfs_scan.extract_partition(image, start, size, part)
+        print(
+            f"{label}: partition {number}, {size} bytes from byte {start}, "
+            + f"generation {btrfs_scan.read_generation(part)}"
+        )
+        return part
+
+
+    def restored_tokens(part, label, tokens, *, root=None, regex=None):
+        # The tokens in the files btrfs restore writes out of the copy: the
+        # live tree, or the tree of an older root.
+        dest = tempfile.mkdtemp(prefix=f"{label}-", dir=btrfs_work)
+        started = time.monotonic()
+        done = btrfs_scan.restore(BTRFS, part, dest, root=root, regex=regex)
+        found = btrfs_scan.tokens_in_tree(dest, tokens)
+        shutil.rmtree(dest)
+        print(
+            f"{label}: btrfs restore exited {done.returncode} in "
+            + f"{time.monotonic() - started:.0f} s, found {sorted(found) or 'nothing'}"
+        )
+        if root is None:
+            assert done.returncode == 0, f"{label}: {done.stdout}\n{done.stderr}"
+        return found
+
+
+    def history_tokens(part, label, tokens, regex, limit=64):
+        # The tokens in the paths `regex` takes in the older roots of the
+        # tree, newest first: what copy-on-write keeps of a file since
+        # deleted or overwritten, while its blocks are not reused.
+        roots = btrfs_scan.find_roots(BTRFS_FIND_ROOT, part)
+        print(f"{label}: {len(roots)} roots, generations {[r.generation for r in roots]}")
+        found = set()
+        for root in roots[:limit]:
+            found |= restored_tokens(
+                part, f"{label}-gen-{root.generation}", tokens, root=root.bytenr, regex=regex
+            )
+        return found
+
+
+    def fs_path_on_root(path):
+        # Where `path` lies in the decoy root's filesystem, as btrfs restore
+        # writes it out, or None when it lies on another filesystem.
+        directory = os.path.dirname(path)
+        fields = vm.succeed(
+            f"findmnt -rn -o TARGET,SOURCE,OPTIONS -T {shlex.quote(directory)}"
+        ).split()
+        target, source, options = fields[0], fields[1], fields[2]
+        if source.split("[", 1)[0] != decoy_root_device:
+            return None
+        subvol = next(
+            (o.split("=", 1)[1] for o in options.split(",") if o.startswith("subvol=")),
+            "/",
+        )
+        return btrfs_scan.filesystem_path(subvol, target, path)
 
 
     def qmp(command: str, arguments: dict[str, Any] | None = None) -> Any:
@@ -733,6 +981,22 @@ distroVm.buildVmTest {
         assert "systemd-logind.service" in fresh_numbers, fresh_numbers
         assert any(unit in fresh_numbers for unit in RANGED_UNITS), fresh_numbers
 
+    with subtest("the decoy's root, disk swap and boot automounts before any hidden root"):
+        decoy_root_device, decoy_root_fstype, decoy_root_options = distro_checks.root_mount(
+            vm.succeed("findmnt -rn -o SOURCE,FSTYPE,OPTIONS /")
+        )
+        print(f"the decoy root: {decoy_root_device} {decoy_root_fstype} {decoy_root_options}")
+        assert decoy_root_fstype == rootfs, (
+            f"the image table says the root is {rootfs}; it is {decoy_root_fstype}"
+        )
+        # The hidden root is backed by a file in RAM, which a disk swap could
+        # take onto the decoy disk: the swap is off before it exists, and
+        # stays off until the power-off before the last image.
+        decoy_swaps = distro_checks.fstab_swaps(vm.succeed("cat /etc/fstab"))
+        print(f"swap lines of the decoy's fstab: {decoy_swaps or 'none'}")
+        quiesce_disk_swap("the decoy before the first hidden root")
+        boot_automounts = generated_boot_automounts()
+
     with subtest("decoy-persistence preflight refuses a persistent journal"):
         # Prepare everything else first, so the only finding left is the decoy
         # posture: the check gates on a mounted hidden root and reads the config.
@@ -915,6 +1179,7 @@ distroVm.buildVmTest {
             + "then echo kept; else echo gone; fi > /run/waiting-entry"
         )
         vm.succeed(f"systemd-run --unit=switch-look --collect sh -c {shlex.quote(look)}")
+        entered_first = monotonic_us()
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
         print(vm.succeed("cat /run/waiting-status.json /run/waiting-recover.out"))
         waiting = json.loads(vm.succeed("cat /run/waiting-status.json"))["data"]["place"]
@@ -934,11 +1199,17 @@ distroVm.buildVmTest {
         assert_quiet_kernel_log("the first session")
         assert_local_fs_reached("the first session")
         # The units the hidden root does not need are masked there where the
-        # decoy has them, and so is the GPT auto-generator.
+        # decoy has them, at runtime, and so is the GPT auto-generator.
+        masked_here = []
         for unit, state in load_states(hidden_masked_units).items():
             if decoy_masked_units[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden root: {state}"
+                masked_here.append(unit)
+        assert_runtime_masks("the first session", masked_here)
         assert_gpt_auto_masked("the first session", masked=True)
+        assert_no_generated_boot_mount("the first session")
+        assert_swaps_kept_off("the first session", entered_first, masked=False)
+        assert_clean_baseline("the first activation")
         assert_timeout_guard("the first session", loaded=True)
         vm.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
         probe_report("the first hidden session")
@@ -981,7 +1252,14 @@ distroVm.buildVmTest {
                 )
             print(f"boot filesystems read-only in the hidden root: {boot_mounts}")
         else:
-            print("this image mounts no separate boot filesystem")
+            # Then the image's boot filesystem is one systemd mounts on demand,
+            # which the first session asserted is mounted nowhere here.
+            assert boot_automounts, (
+                "this image mounts no boot filesystem, neither from its fstab nor on "
+                + "demand: nothing here would test that the hidden session cannot "
+                + "write to one"
+            )
+            print(f"no boot filesystem mounted in the hidden root: {sorted(boot_automounts)}")
 
     with subtest("the hidden overlays pin the forensic feature options"):
         # NAILS pins index=off,metacopy=off,redirect_dir=nofollow on every
@@ -1010,6 +1288,14 @@ distroVm.buildVmTest {
 
     with subtest("emergency soft-reboots back to the plain decoy"):
         follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
+        # The way back starts the decoy's own units, so it turns the swap of
+        # each kept fstab line on again, while the first session's file is
+        # still in RAM: off with it at once.
+        back_on = quiesce_disk_swap("the decoy after the emergency")
+        kept = [spec for spec, options in decoy_swaps if "noauto" not in options]
+        assert sorted(back_on) == sorted(kept), (
+            f"the way back turned on {back_on}; the fstab keeps {kept}"
+        )
         pid1_health("after emergency")
         session.assert_decoy_root(vm)
         check_failed_units("on the decoy after the emergency", "afterReturn")
@@ -1025,13 +1311,30 @@ distroVm.buildVmTest {
             "the decoy's own units again"
         )
         assert_gpt_auto_masked("after the emergency", masked=False)
+        assert_generated_boot_mounts_back("after the emergency")
         assert_timeout_guard("after the emergency", loaded=False)
         assert_quiet_kernel_log("after the emergency")
         assert uu_stop_lines() == decoy_uu_stops, (
             f"the first entry wrote a stop line to {uu_log} on the decoy disk"
         )
+        # The first session's loop device outlives its mapping, as the hidden
+        # root's setup attaches it without autoclear: detach it, so no file of
+        # a finished session stays in RAM, and the second activation's residue
+        # baseline sees only the volume it activates.
+        vm.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        first_loop = vm.succeed("cat /run/blk.dev").strip()
+        vm.succeed(f"losetup -d {shlex.quote(first_loop)}")
+        vm.wait_until_fails(f"losetup {shlex.quote(first_loop)}", timeout=60)
 
     with subtest("a second session ends with deactivate"):
+        # The second session runs with every swap line of the decoy's fstab
+        # made noauto, which no boot turns on: NAILS masks its unit in the
+        # hidden root, and the way back leaves the swap off.
+        if decoy_swaps:
+            noauto = distro_checks.with_swaps_noauto(vm.succeed("cat /etc/fstab"))
+            vm.succeed(f"printf %s {shlex.quote(noauto)} > /etc/fstab && systemctl daemon-reload")
+            print(f"the decoy's fstab for the second session:\n{noauto}")
+        assert_no_disk_swap("the decoy before the second hidden root")
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         boot_mounts: list[str] = []
         if blk_availability:
@@ -1041,11 +1344,14 @@ distroVm.buildVmTest {
             # /boot (where the stop did unmount it), the session carries
             # nothing there. The decoy mounts both again from its fstab on the
             # way back.
-            boot_mounts = [
+            # The fstab's boot filesystems: one systemd mounts on demand is
+            # not carried below the hidden volume.
+            on_demand = {point for point, _, _ in boot_automounts.values()}
+            boot_mounts = distro_checks.unique(
                 target
                 for target in vm.succeed("findmnt -rn -o TARGET").split()
-                if target in ("/boot", "/boot/efi", "/efi")
-            ]
+                if target in ("/boot", "/boot/efi", "/efi") and target not in on_demand
+            )
             for target in reversed(boot_mounts):
                 vm.succeed(f"umount {target}")
         entered_after = monotonic_us()
@@ -1054,6 +1360,13 @@ distroVm.buildVmTest {
         check_failed_units("in the second hidden session", "hiddenSession")
         assert_uu_ended_on_logind("the second entry")
         vm.succeed("mountpoint -q /mnt/data && test -s /mnt/data/activate-2.log")
+        assert_clean_baseline("the second activation")
+        assert_swaps_kept_off("the second session", entered_after, masked=True)
+        assert_no_generated_boot_mount("the second session")
+        assert_runtime_masks(
+            "the second session",
+            masked_here + [distro_checks.swap_unit(spec) for spec, _ in decoy_swaps],
+        )
         if blk_availability:
             # The unit runs in the hidden session too; its stop stays cleared
             # until the way back has switched.
@@ -1085,6 +1398,8 @@ distroVm.buildVmTest {
         hold_shutdown_back("delay-probe-hidden", "/mnt/data/delay-probe.seen", 3)
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
+        # The noauto lines kept the swap off through the way back.
+        assert_no_disk_swap("the decoy after deactivate")
         check_failed_units("on the decoy after deactivate", "afterReturn")
         assert uu_stop_lines() == decoy_uu_stops, (
             f"the second entry wrote a stop line to {uu_log} on the decoy disk"
@@ -1107,6 +1422,7 @@ distroVm.buildVmTest {
                 vm.fail(f"test -e /run/systemd/system/{shlex.quote(unit)}.d")
         probe_report("after deactivate")
         assert_gpt_auto_masked("after deactivate", masked=False)
+        assert_generated_boot_mounts_back("after deactivate")
         assert_timeout_guard("after deactivate", loaded=False)
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
@@ -1124,7 +1440,9 @@ distroVm.buildVmTest {
                 )
 
     with subtest("the rehearsal's scan runs on the decoy in the planting boot"):
-        # As the operator would: unlock and mount the hidden volume again.
+        # As the operator would: unlock and mount the hidden volume again,
+        # with the disk swap still off.
+        assert_no_disk_swap("the decoy before the rehearsal's scan")
         vm.succeed("""${hiddenRoot.reopenHiddenRoot}""")
         # The program in the session saw logind's shutdown signal at the way
         # back, and its copy of unattended-upgrades' helper wrote no stop line
@@ -1146,13 +1464,15 @@ distroVm.buildVmTest {
         assert next_step.startswith("Step 3 of 3"), next_step
         rc, out, err = rehearse("scan")
         assert token not in out + err, "scan printed the token"
-        assert rc == 0, (rc, out, err)
+        print(f"the rehearsal's scan exited {rc}: {out}")
+        # It finds nothing, and names the blind spot this image has: on a
+        # btrfs root a raw scan cannot prove the canary absent, so it exits 9
+        # with the reason on the root's device; elsewhere it exits 0.
         result = json.loads(out)["data"]["scan"]
-        assert result["devices"], result
-        for device in result["devices"]:
-            assert "error" not in device, device
-            assert device["hits"] == [], device
-        assert any(d["bytes_scanned"] > 0 for d in result["devices"]), result
+        problems = distro_checks.rehearse_scan_problems(
+            rc, result, decoy_root_device, rootfs, decoy_root_options
+        )
+        assert not problems, "\n".join(problems)
         print(f"clean rehearsal scan of {[d['device'] for d in result['devices']]}")
         # No `rehearse reset`: the root's image file sits on a tmpfs the
         # soft-reboot detached, so the attach gate cannot tell where it lives
@@ -1162,10 +1482,17 @@ distroVm.buildVmTest {
 
     with subtest("decoy disk-image leak check: no hidden canaries, positive control caught"):
         canary_tokens = [f"NAILS_CANARY_{tree}" for tree in canary_trees]
+        # Where each canary would lie on the decoy root's filesystem, for the
+        # read of the older roots of a btrfs root's tree.
+        canary_paths = [
+            fs_path_on_root(f"/{tree}/{distro_checks.canary_name(tree)}")
+            for tree in canary_trees
+        ]
 
         # Null control: image the decoy root after the whole lifecycle and prove
         # no canary leaked onto it, and no registry token appeared that the
         # baseline did not already carry.
+        assert_no_disk_swap("the decoy before its last image")
         clean = image_decoy("clean")
         # One pass over the multi-GB image for both token sets.
         clean_hits = disk_forensics.run_strings_scan(clean, canary_tokens + registry_tokens)
@@ -1176,22 +1503,106 @@ distroVm.buildVmTest {
             f"the lifecycle introduced registry tokens onto the decoy image: "
             f"{sorted(new_registry)}"
         )
-        os.remove(clean)
+        if rootfs == "btrfs":
+            # The raw scan cannot see what a compressed extent holds. The files
+            # of the live tree, decompressed, hold no canary either, nor does
+            # what an older root of the tree keeps at a canary's path.
+            part = btrfs_root_copy(clean, "clean")
+            os.remove(clean)
+            live = restored_tokens(part, "clean-live", canary_tokens)
+            assert not live, f"the decoy's files hold hidden canaries: {sorted(live)}"
+            on_root = [path for path in canary_paths if path is not None]
+            older = history_tokens(
+                part, "clean", canary_tokens, btrfs_scan.path_filter(on_root)
+            )
+            assert not older, f"an older root keeps hidden canaries: {sorted(older)}"
+            os.remove(part)
+        else:
+            os.remove(clean)
 
         # Positive control: a token written straight onto the decoy root (no
         # overlay) must be found, so a scanner that silently finds nothing fails.
-        # This boot starts from the pristine image, so /var/tmp is a plain
+        # The token is in the file's contents only, never in its name. This
+        # boot starts from the pristine image, so /var/tmp is a plain
         # decoy-disk directory.
         vm.start()
         vm.wait_for_unit("multi-user.target")
         poison = "NAILS_POSCTL_distro"
-        vm.succeed(f"printf '%s\\n' {poison} > /var/tmp/{poison}")
+        controls = "/var/tmp/scan-controls"
+        vm.succeed(f"mkdir -p {controls}/plain {controls}/compressed")
+        if rootfs == "btrfs":
+            # Files the plain directory gets are stored uncompressed, files
+            # the compressed one gets compressed: the btrfs compression
+            # property, or the file attribute where it is not set.
+            vm.succeed(
+                f"btrfs property set {controls}/plain compression none "
+                + f"|| chattr +m {controls}/plain"
+            )
+            vm.succeed(
+                f"btrfs property set {controls}/compressed compression zstd "
+                + f"|| chattr +c {controls}/compressed"
+            )
+        vm.succeed(f"printf '%s\\n' {poison} > {controls}/plain/positive")
+        if rootfs == "btrfs":
+            # The three controls of the logical scan. Each poison is a unit of
+            # 15 bytes repeated, and its token is four units in a row: btrfs's
+            # zstd stores a run of the unit as one copy and a back-reference,
+            # so the token is on the disk in plain bytes only where the file
+            # is stored plain.
+            def poison_unit(name):
+                return f"NAILS-POISON-{name}-"
+
+            def poison_token(name):
+                return poison_unit(name) * 4
+
+            def write_poison(name, path):
+                # 17476 units, 262140 bytes: two compressed extents of
+                # 128 KiB.
+                vm.succeed(
+                    f"printf '{poison_unit(name)}%.0s' $(seq 17476) > {path}"
+                )
+
+            # (a) plain: on the disk as written.
+            vm.succeed(f"printf %s {poison_token('A')} > {controls}/plain/a")
+            # (b) compressed, kept.
+            write_poison("B", f"{controls}/compressed/b")
+            # (c) compressed, kept through a few commits, then deleted.
+            write_poison("C", f"{controls}/compressed/c")
+            for tick in range(3):
+                vm.succeed(f"echo {tick} > {controls}/tick && sync")
+            vm.succeed(f"rm {controls}/compressed/c && sync")
+            print(vm.succeed(f"ls -la {controls}/plain {controls}/compressed"))
         vm.succeed("sync")
+        controls_path = fs_path_on_root(f"{controls}/plain") if rootfs == "btrfs" else None
         positive = image_decoy("positive")
         found = disk_forensics.run_strings_scan(positive, [poison])
         assert found == {poison}, (
             f"positive control failed: the scanner did not see the planted token ({found})"
         )
+        if rootfs == "btrfs":
+            a, b, c = poison_token("A"), poison_token("B"), poison_token("C")
+            raw = disk_forensics.run_strings_scan(positive, [a, b, c])
+            print(f"the raw scan finds {sorted(raw) or 'nothing'} of the btrfs controls")
+            assert a in raw, "control (a): the raw scan does not see a file btrfs keeps plain"
+            assert b not in raw, (
+                "control (b): the raw scan sees the compressed file, so btrfs stored "
+                + "it plain and the control proves nothing"
+            )
+            part = btrfs_root_copy(positive, "positive")
+            os.remove(positive)
+            assert controls_path is not None, "the controls are not on the decoy root"
+            regex = btrfs_scan.path_filter([os.path.dirname(controls_path)], below=True)
+            live = restored_tokens(part, "positive-live", [poison, a, b, c], regex=regex)
+            assert {poison, a, b} <= live, (
+                f"the live tree's read misses controls: it found {sorted(live)}"
+            )
+            assert c not in live, "control (c): the deleted file is in the live tree"
+            older = history_tokens(part, "positive", [c], regex)
+            assert c in older, (
+                "control (c): no older root of the tree keeps the deleted file"
+            )
+            os.remove(part)
+            shutil.rmtree(btrfs_work)
 
     with subtest("every failure the image is known to show still happens"):
         assert not gone_failures, "\n\n".join(gone_failures)
