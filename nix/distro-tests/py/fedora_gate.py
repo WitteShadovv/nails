@@ -1177,19 +1177,23 @@ class Gate:
             console or records.utmp_added(before.wtmp, after.wtmp),
         )
         if self.settings.get("lastlog2"):
-            kept = [
+            # lastlog2 keeps one row a user, the last login: the operator's
+            # commands after the console login are logins of theirs too
+            # (pam_lastlog2 writes them without a terminal), so the row is
+            # the last of those, dated from the console login to the entry.
+            since = min((int(row.get("tv_sec", 0)) for row in console), default=0)
+            last = [
                 row
-                for row in added
+                for row in after.lastlog2
                 if row.get("Name") == operator
-                and row.get("TTY") == OPERATOR_TTY
                 and isinstance(row.get("Time"), int)
-                and row["Time"] < entered
+                and 0 < since <= row["Time"] < entered
             ]
             self.check(
-                f"way back {n}: lastlog2 keeps the operator's console login, "
-                "dated before the entry",
-                bool(kept),
-                added,
+                f"way back {n}: lastlog2 keeps the operator's last login on the "
+                "decoy, dated from the console login to the entry",
+                bool(last),
+                {"console": since, "entered": entered, "rows": after.lastlog2},
             )
 
     # --- the controls ----------------------------------------------------
