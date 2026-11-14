@@ -42,8 +42,9 @@ ARCHIVE = "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases"
 # in it says who runs it.
 USER_AGENT = "nails-rpm-closure/1"
 
-# Where the resolution leaves the files in the guest: on the decoy's disk,
-# which the driver's VM keeps in a temporary layer that goes with it.
+# dnf's cache in the guest, where the resolution leaves the packages: on the
+# decoy's disk, which the driver's VM keeps in a temporary layer that goes
+# with it.
 GUEST_DIR = "/var/tmp/rpm-closure"
 
 # The repository id dnf gets for the release repository.
@@ -91,16 +92,20 @@ def resolve_command(release: str, requested: Sequence[str] = REQUESTED) -> str:
 
     It says which of them the image holds already (``in-image``), adds the
     release repository as the one repository dnf may use, has dnf download one
-    install's transaction from it, with weak dependencies left out, and
-    describes every file dnf downloaded: its name, NEVRA, SHA-256 and size
-    (``package``), what ``rpm -K`` says of it once the release key is
-    imported (``checksig``), and the URL dnf has for it (``location``). The
-    guest is the driver's own, which keeps every write in a temporary layer.
+    install's transaction from it (``install --downloadonly``, which keeps the
+    packages in dnf's cache, here a directory of its own), with weak
+    dependencies left out, and describes every file dnf downloaded: its
+    name, NEVRA, SHA-256 and size (``package``), what ``rpm -K`` says of it
+    once the release key is imported (``checksig``), and the URL dnf has for
+    it (``location``). The guest is the driver's own, which keeps every write
+    in a temporary layer.
     """
     names = " ".join(shlex.quote(name) for name in requested)
     dnf = (
         f"dnf --assumeyes --quiet --repo={REPO_ID} "
         "--setopt=install_weak_deps=False "
+        f"--setopt=system_cachedir={GUEST_DIR} --setopt=cachedir={GUEST_DIR} "
+        "--setopt=keepcache=True "
         f"--setopt=user_agent={shlex.quote(USER_AGENT)}"
     )
     return "\n".join(
@@ -114,17 +119,18 @@ def resolve_command(release: str, requested: Sequence[str] = REQUESTED) -> str:
             f"cat > /etc/yum.repos.d/{REPO_ID}.repo <<'EOF'",
             repo_file(release).rstrip("\n"),
             "EOF",
-            f'{dnf} install --downloadonly --destdir="$dest" {names} >&2',
+            f"{dnf} install --downloadonly {names} >&2",
             f"rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-{release}-x86_64",
-            'for file in "$dest"/*.rpm; do',
+            'find "$dest" -name "*.rpm" | sort > "$dest.list"',
+            "while read -r file; do",
             '  nevra=$(rpm -qp --qf "%{NEVRA}" "$file")',
             '  printf "package %s %s %s %s\\n" "$(basename "$file")" "$nevra" '
             '"$(sha256sum < "$file" | cut -d" " -f1)" "$(stat -c %s "$file")"',
             '  printf "checksig %s %s\\n" "$(basename "$file")" '
             '"$(rpm -K "$file" | sed "s/^[^:]*: //")"',
             f'  printf "location %s %s\\n" "$(basename "$file")" "$({dnf} '
-            'repoquery --location "$nevra" | head -n 1)"',
-            "done",
+            'repoquery --location "$nevra" < /dev/null | head -n 1)"',
+            'done < "$dest.list"',
         )
     )
 
