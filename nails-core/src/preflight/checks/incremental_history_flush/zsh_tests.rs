@@ -58,7 +58,7 @@ mod outside;
 mod made_files;
 
 // The values ZDOTDIR and XDG_CONFIG_HOME may hold where zsh need not read
-// a file that sets them.
+// a file that sets them, or set them as the walk reads it.
 #[path = "zsh_candidates_tests.rs"]
 mod candidates;
 

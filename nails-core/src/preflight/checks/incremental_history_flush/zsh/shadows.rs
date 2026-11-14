@@ -13,7 +13,9 @@
 //! variable of the dynamic loader or `ARGV0`, the name zsh gives every program
 //! it runs, which picks the program a multi-call coreutils runs, each set by
 //! a file or held by the shell's environment, which may make the program
-//! print other code.
+//! print other code. And what may change what a builtin runs by which the walk
+//! reads a setting ([`SETTERS`]): a function or a regular alias of its name,
+//! and a `disable` of it, are doubts wherever the files read define them.
 
 use super::Reader;
 use super::backstop::Forms;
@@ -43,6 +45,33 @@ pub(super) struct Snapshot {
     program: String,
 }
 
+/// The builtins and precommands by which the walk reads a parameter as set,
+/// declared or taken away (`export ZDOTDIR=...`, `unset XDG_CONFIG_HOME`) or a
+/// file as sourced. A regular alias of such a name runs in its place (`alias
+/// export=:`, zsh 5.9 to 5.9.2 then set nothing), and so does a function of a
+/// name that is no reserved word, or one `disable -r` takes away (`unset() {
+/// }`, `source() { }`), and after a `disable` of it zsh runs what PATH finds,
+/// so the setting the walk read need not happen.
+const SETTERS: &[&str] = &[
+    "typeset",
+    "export",
+    "declare",
+    "local",
+    "readonly",
+    "integer",
+    "float",
+    "private",
+    "unset",
+    "source",
+    ".",
+    "builtin",
+    "command",
+    "noglob",
+    "nocorrect",
+    "exec",
+    "time",
+];
+
 /// Whether a function named `name` changes what the dircolors line that
 /// runs `program` runs: one named `eval` or `export`, which it runs, or
 /// like `program`, a `TRAP...` function, which zsh may run in its command
@@ -67,6 +96,42 @@ impl<F: Filesystem> Reader<'_, F> {
                 function: None,
                 outer: outer.map(str::to_string),
             });
+        }
+    }
+
+    /// Note a doubt where `what` (`/etc/zshenv defines a function or an
+    /// alias`) is named `name`, like a builtin by which the walk reads a
+    /// setting ([`SETTERS`]), or where an expansion may make the name, as it
+    /// then runs in that builtin's place.
+    pub(super) fn shadow_setter(&mut self, name: &str, what: &str) {
+        if SETTERS.contains(&name) || may_expand(name) {
+            self.doubt(format!(
+                "it cannot tell what the files set where they run `{name}`, as {what} `{name}`, \
+                 which zsh runs in place of the builtin of that name"
+            ));
+        }
+    }
+
+    /// Note a doubt where a `disable` at `place` may take away a builtin by
+    /// which the walk reads a setting ([`SETTERS`]), the patterns of its names
+    /// `patterns`, as zsh then runs what PATH finds by that name.
+    pub(super) fn disable_setters(&mut self, patterns: &[String], place: &str) {
+        let names: Vec<&str> = SETTERS
+            .iter()
+            .copied()
+            .filter(|name| {
+                patterns
+                    .iter()
+                    .any(|pattern| super::walk::may_match(pattern, name))
+            })
+            .collect();
+        if !names.is_empty() {
+            self.doubt(format!(
+                "it cannot tell what the files set where they run `{}`, as a `disable` in \
+                 {place} may take that builtin away, after which zsh runs what PATH finds by its \
+                 name",
+                names.join("`, `")
+            ));
         }
     }
 

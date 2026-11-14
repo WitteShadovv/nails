@@ -171,11 +171,13 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// Read the user's file of the stage `stage` (`zshrc`) from each place
     /// `ZDOTDIR` may put it in: where zsh reads the one there, `ZDOTDIR`
-    /// holds that place, or is unset for the home's; `certain` when zsh
-    /// certainly reads the stage's file. The home's first, so the warning
-    /// names a file of a place the files set.
+    /// holds that place, or is unset for the home's, and where an `emulate`
+    /// of sh's mode may last, the home's with `ZDOTDIR` as it is; `certain`
+    /// when zsh certainly reads the stage's file. The home's first, so the
+    /// warning names a file of a place the files set.
     pub(super) fn user_files(&mut self, stage: &str, certain: bool) {
-        let mut dirs = self.values.zdotdirs.clone();
+        let before = self.values.zdotdirs.clone();
+        let mut dirs = before.clone();
         dirs.sort_by_key(Option::is_some);
         let mut after: Vec<Option<PathBuf>> = Vec::new();
         let mut read: Vec<PathBuf> = Vec::new();
@@ -190,6 +192,17 @@ impl<F: Filesystem> Reader<'_, F> {
                 read.push(path.clone());
                 self.file(&path, certain);
             }
+            add_all(&mut after, std::mem::take(&mut self.values.zdotdirs));
+        }
+        // In sh's or ksh's mode zsh reads the home's file in place of the
+        // one in ZDOTDIR, which keeps what it held
+        // ([`super::reading::emulates_sh`]).
+        if self.sh_mode
+            && let Some(path) = self.home.map(|home| home.join(format!(".{stage}")))
+            && !read.contains(&path)
+        {
+            self.values.zdotdirs = before;
+            self.file(&path, false);
             add_all(&mut after, std::mem::take(&mut self.values.zdotdirs));
         }
         self.values.zdotdirs = after;

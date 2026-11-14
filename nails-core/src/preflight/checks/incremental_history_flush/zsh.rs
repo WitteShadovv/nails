@@ -215,8 +215,11 @@ struct Reader<'a, F: Filesystem> {
     /// What the check could not follow.
     doubts: Vec<String>,
     /// Whether a file read may turn `RCS` or `GLOBAL_RCS` on again
-    /// ([`backstop::names_rcs`]).
+    /// ([`backstop::names_rcs`]), and whether one may run an `emulate` of
+    /// sh's or ksh's mode that lasts, in which zsh reads the user's files in
+    /// the home ([`Event::Emulates`]).
     rcs: bool,
+    sh_mode: bool,
     /// Whether a file read may turn `PROMPT_SUBST` on
     /// ([`backstop::names_prompt_subst`]).
     prompt_subst: bool,
@@ -612,6 +615,7 @@ impl<F: Filesystem> Reader<'_, F> {
             } => self.call(name, args, function, input, place),
             Event::Define(name) => {
                 self.shadow_function(&name, place, "defines");
+                self.shadow_setter(&name, &format!("{place} defines a function or an alias"));
                 if !self.defined.contains(&name) {
                     self.defined.push(name);
                 }
@@ -679,6 +683,10 @@ impl<F: Filesystem> Reader<'_, F> {
                     .unwrap_or_default()
                     .to_string();
                 self.shadow_function(&name, place, "autoloads");
+                // One whose name an expansion makes is a doubt of its own.
+                if !walk::may_expand(&name) {
+                    self.shadow_setter(&name, &format!("{place} autoloads a function"));
+                }
                 if name == "compinit" && !self.compinit_places.iter().any(|known| known == place) {
                     self.compinit_places.push(place.to_string());
                 }
@@ -720,6 +728,7 @@ impl<F: Filesystem> Reader<'_, F> {
                     self.hooks.push(name);
                 }
             }
+            Event::Emulates => self.sh_mode = true,
         }
     }
 
@@ -739,7 +748,7 @@ impl<F: Filesystem> Reader<'_, F> {
         // autoload, whose code the check reads, and a stock one whose work
         // it reads by its name (`prompt`), for a path as written.
         if name == "disable" {
-            self.disable(&args);
+            self.disable(&args, place);
         }
         let creates = made::creates(&name);
         if creates
@@ -1024,6 +1033,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         in_functions: Vec::new(),
         doubts,
         rcs: false,
+        sh_mode: false,
         prompt_subst: false,
         prompts: Vec::new(),
         install,
@@ -1117,8 +1127,9 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         }
         // The user's own, from each place the files read so far may put
         // ZDOTDIR in. Where a file read so far may turn `RCS` off, zsh reads
-        // none of them, so they may still be certain.
-        reader.user_files(stage, certain);
+        // none of them, so they may still be certain; where one may run an
+        // `emulate` of sh's mode, zsh may read the home's in their place.
+        reader.user_files(stage, certain && !reader.sh_mode);
     }
     reader.startup_changers = reader.changers.len();
     reader.autoloaded();

@@ -124,6 +124,11 @@ pub(in super::super) enum Event {
     /// The function `name` is made a hook, which zsh runs as each command
     /// is entered or ends (`add-zsh-hook precmd name`, `zle -N name`).
     Hook(String),
+    /// An `emulate` of sh's or ksh's mode that may last past the command
+    /// (`emulate sh`, not `emulate sh -c ...` or an `emulate -L` in a
+    /// function), in which zsh reads the user's startup files in the home,
+    /// whatever `ZDOTDIR` holds (Src/init.c, `sourcehome`).
+    Emulates,
     /// An alias stands for an `fc` that writes nothing, as written
     /// (`h=fc -l`), whose name is `name`: zsh hands such an `fc` the words
     /// the alias is used with, which may write the history file
