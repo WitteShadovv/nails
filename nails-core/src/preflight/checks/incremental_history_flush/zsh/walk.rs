@@ -33,12 +33,14 @@ mod patterns;
 mod sets;
 mod strings;
 mod unread;
+mod widgets;
 
 pub(super) use super::builtins::HOOKS;
 pub(super) use event::{Arith, Event, Input};
 pub(super) use hooks::{STOCK_NAMES, may_expand};
 pub(super) use patterns::may_match;
 pub(super) use strings::{PROMPTS, expands};
+pub(super) use widgets::{COMPLETING_WIDGETS, STRICT_WIDGETS};
 
 /// The option that `word` names, by its place in [`OPTIONS`], and whether the
 /// name turns it on (`false` for its `no` form); `None` for any other word.
@@ -211,8 +213,10 @@ struct Walker<'a> {
     /// How often it read an array of hook functions set or declared
     /// ([`backstop::hook_writes`]).
     hooks: usize,
-    /// How often it read a prompt set ([`backstop::prompt_writes`]).
+    /// How often it read a prompt set ([`backstop::prompt_writes`]), and
+    /// the line editor's line ([`widgets`]).
     prompts: usize,
+    buffers: usize,
     /// How often it read a parameter of [`super::arith::READ_AS_NUMBER`] set,
     /// declared or unset ([`backstop::number_writes`]).
     numbers: usize,
@@ -915,6 +919,7 @@ struct Walked {
     indirects: usize,
     hooks: usize,
     prompts: usize,
+    buffers: usize,
     numbers: usize,
     alias_params: usize,
     function_params: usize,
@@ -968,6 +973,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Wa
         indirects: 0,
         hooks: 0,
         prompts: 0,
+        buffers: 0,
         numbers: 0,
         outer,
         pending: Pending {
@@ -1011,6 +1017,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Wa
         indirects: walker.indirects,
         hooks: walker.hooks,
         prompts: walker.prompts,
+        buffers: walker.buffers,
         numbers: walker.numbers,
         alias_params: walker.alias_params,
         function_params: walker.function_params,
@@ -1055,6 +1062,7 @@ pub(super) fn events(text: &str, place: &str, outer: Option<String>) -> Read {
         &walked,
         place,
     ));
+    events.extend(widgets::beyond(text, walked.buffers, place));
     Read {
         events,
         confused: walked.confused,

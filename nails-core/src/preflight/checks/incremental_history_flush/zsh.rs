@@ -127,6 +127,7 @@ mod backstop;
 mod builtins;
 mod command_line;
 mod completion;
+mod edits;
 mod functions;
 mod install;
 mod jobs;
@@ -215,6 +216,10 @@ struct Reader<'a, F: Filesystem> {
     /// functions whose code may end the shell ([`Event::Ends`]).
     in_functions: Vec<(String, Result<String, String>)>,
     ends_in: Vec<String>,
+    /// The widgets the files make, and each widget a function runs by its
+    /// name, the function and where ([`edits`]).
+    widgets: Vec<String>,
+    edits: Vec<(String, String, String)>,
     /// The jobs the files start that may run on after them ([`jobs`]):
     /// each as the warning names it, the commands it runs and what in it may
     /// signal the shell.
@@ -647,6 +652,8 @@ impl<F: Filesystem> Reader<'_, F> {
             | Event::Ends { .. }
             | Event::Runs { .. }
             | Event::Job { .. }
+            | Event::Widget(_)
+            | Event::Edits { .. }
             | Event::FpathSplits(_)
             | Event::KeysSplit { .. }
             | Event::Typed { .. }
@@ -883,6 +890,10 @@ impl<F: Filesystem> Reader<'_, F> {
                 self.in_functions.push((function, Err(doubt)));
             }
             Event::Job { what, calls, stops } => self.jobs.push((what, calls, stops)),
+            Event::Widget(name) => self.widgets.push(name),
+            Event::Edits { function, widget } => {
+                self.edits.push((function, widget, place.to_string()));
+            }
             Event::Computed {
                 function,
                 name,
@@ -1053,6 +1064,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         hooks: Vec::new(),
         in_functions: Vec::new(),
         ends_in: Vec::new(),
+        widgets: Vec::new(),
+        edits: Vec::new(),
         jobs: Vec::new(),
         doubts,
         rcs: false,
@@ -1156,6 +1169,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
     }
     reader.startup_changers = reader.changers.len();
     reader.autoloaded();
+    reader.edits();
     reader.runs();
     reader.jobs();
     reader.reading_doubts();

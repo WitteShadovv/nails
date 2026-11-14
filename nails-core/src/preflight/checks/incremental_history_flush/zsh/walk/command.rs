@@ -280,6 +280,7 @@ impl Walker<'_> {
         self.fpaths += nested.fpaths;
         self.fcs += nested.fcs;
         self.nix_profiles += nested.nix_profiles;
+        self.buffers += nested.buffers;
         self.indirects += nested.indirects;
         self.alias_params += nested.alias_params;
         self.function_params += nested.function_params;
@@ -769,8 +770,11 @@ impl Walker<'_> {
             )));
         }
         // A prompt, an array of hook functions, an alias or a function that
-        // a builtin sets by its name, to a value the check cannot read.
+        // a builtin sets by its name, to a value the check cannot read, and
+        // the line the line editor holds.
         for target in targets(&command.text, args) {
+            let shown = format!("{} {}", command.text, target.text);
+            self.buffer(&target.text, None, &shown);
             let name = assigned(&target.text);
             if ALIAS_PARAMETERS.contains(&name) {
                 self.alias_params += 1;
@@ -848,6 +852,17 @@ impl Walker<'_> {
     /// `fpath` or `FPATH`, and its mentions.
     pub(super) fn assignment(&mut self, word: &Word, unconditional: bool) {
         self.assignment_arithmetic(word);
+        // The line the line editor holds, which a widget may give zsh to run.
+        match word.text.split_once('=') {
+            Some((target, value)) => {
+                let value = Word {
+                    text: value.to_string(),
+                    ..word.clone()
+                };
+                self.buffer(target, Some(&value), &word.text);
+            }
+            None => self.buffer(&word.text, None, &word.text),
+        }
         // Its value, which zsh reads as arithmetic each time it uses it, the
         // walk judges ([`Event::Arith`]); declared without one, it keeps its
         // value.

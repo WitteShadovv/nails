@@ -236,6 +236,13 @@ pub(in super::super) enum Event {
         args: Vec<Word>,
         outside: bool,
     },
+    /// A widget is made by the name `name` (`zle -N name`, `zle -C name`),
+    /// whose code the check reads as a hook's.
+    Widget(String),
+    /// The function `function` runs the widget `widget` by its name as
+    /// written (`zle up-history`), which may change the line zsh runs as a
+    /// widget accepts it ([`super::widgets`]).
+    Edits { function: String, widget: String },
     /// A job that may run on after the startup files ([`super::jobs`]): one
     /// in the background, a process substitution, or what a program that
     /// detaches what it runs starts (`nohup`); `what` names it, as the

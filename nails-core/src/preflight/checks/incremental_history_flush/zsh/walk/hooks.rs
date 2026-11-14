@@ -7,6 +7,7 @@
 //! hook functions, and a function copied to a hook's name.
 
 use super::super::lexer::Word;
+use super::widgets::{COMPLETING_WIDGETS, STRICT_WIDGETS, expands_history};
 use super::{Event, HOOKS, Input, Walker};
 
 /// Whether `widget`, a widget's name as written, may be one zsh runs by its
@@ -227,6 +228,34 @@ impl Walker<'_> {
             )));
             return;
         }
+        if matches!(op, Some('N' | 'C'))
+            && let Some(widget) = words.first()
+        {
+            self.events.push(Event::Widget(widget.text.clone()));
+        }
+        if op.is_none()
+            && let Some(widget) = words.first()
+        {
+            // `zle up-history`: a widget run by its name.
+            self.runs_widget(widget);
+        }
+        // `zle -A up-history self-insert`: each key typed runs another
+        // widget, which may put other text in the line.
+        if op == Some('A')
+            && let [old, new, ..] = words.as_slice()
+            && matches!(new.text.as_str(), "self-insert" | "magic-space")
+            && ![STRICT_WIDGETS, COMPLETING_WIDGETS]
+                .iter()
+                .any(|known| known.contains(&old.text.trim_start_matches('.')))
+        {
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell what line the keys you type give zsh to run, as `zle {}` in {} \
+                 makes them run `{}`",
+                line(),
+                self.place,
+                old.text
+            )));
+        }
         let function = match op {
             // `zle -N widget [function]`.
             Some('N') => words.get(1).or(words.first()),
@@ -258,6 +287,7 @@ impl Walker<'_> {
                     || typed.bare
                     || typed.text.contains(['$', '`'])
                     || typed.text.chars().any(|c| c.is_control() && c != '\n')
+                    || expands_history(&typed.text)
                 {
                     self.events.push(Event::Doubt(format!(
                         "it cannot tell what `zle -U {}` in {} types",
