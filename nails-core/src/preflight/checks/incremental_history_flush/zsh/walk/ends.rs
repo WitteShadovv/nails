@@ -155,6 +155,7 @@ mod tests {
                 expands: text.contains('$'),
                 quoted: false,
                 bare: false,
+                quoted_at: None,
             })
             .collect()
     }

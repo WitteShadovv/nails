@@ -203,3 +203,54 @@ fn an_emulate_of_sh_or_ksh_that_lasts_reads_the_user_files_in_the_home() {
         assert!(writes(&fs, NOT_LOGIN).is_empty(), "{zshenv}");
     }
 }
+
+#[test]
+fn a_tilde_a_quote_or_a_backslash_keeps_is_no_home() {
+    // zsh 5.9 to 5.9.2 expand no `~` a quote or a backslash keeps: ZDOTDIR
+    // holds `~/.zd`, below the working directory, so they read
+    // `./~/.zd/.zshrc` (the home's, where it starts) and write each line.
+    for zshenv in [
+        "export ZDOTDIR=\"~/.zd\"\n",
+        "ZDOTDIR='~/.zd'\n",
+        "ZDOTDIR=\\~/.zd\n",
+        "export \"ZDOTDIR=~/.zd\"\n",
+    ] {
+        let fs = moved_home();
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        let found = zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &Install::default());
+        assert!(
+            found
+                .doubts
+                .iter()
+                .any(|doubt| doubt.starts_with("it cannot follow the ZDOTDIR that")),
+            "{zshenv}: {found:?}"
+        );
+    }
+    // A sourced path, and one XDG_CONFIG_HOME holds.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "source \"~/x.zsh\"\n");
+    seed(&fs, "/home/alice/x.zsh", "true\n");
+    assert_eq!(
+        scan(&fs, NOT_LOGIN).doubts,
+        ["it cannot follow the file /home/alice/.zshrc sources as `~/x.zsh`"]
+    );
+    // One a quote follows is the home.
+    let fs = moved_home();
+    seed(&fs, "/home/alice/.zshenv", "ZDOTDIR=~/\".zd\"\n");
+    assert!(writes(&fs, NOT_LOGIN).is_empty());
+}
+
+#[test]
+fn a_word_quoted_before_its_equals_sign_assigns_nothing() {
+    // zsh 5.9 to 5.9.2 run `"ZDOTDIR=~/.zd"` as a command of that name,
+    // which they do not find, read ~/.zshrc and write each line.
+    for zshenv in ["\"ZDOTDIR=$HOME/.zd\"\n", "Z\\DOTDIR=$HOME/.zd\n"] {
+        let fs = moved_home();
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        assert_ne!(scan(&fs, NOT_LOGIN), Scan::default(), "{zshenv}");
+    }
+    // A quote in the value only is an assignment's.
+    let fs = moved_home();
+    seed(&fs, "/home/alice/.zshenv", "ZDOTDIR=\"$HOME/.zd\"\n");
+    assert!(writes(&fs, NOT_LOGIN).is_empty());
+}

@@ -122,6 +122,7 @@ impl Walker<'_> {
                         expands: false,
                         quoted: false,
                         bare: false,
+                        quoted_at: None,
                     }),
                     first,
                     in_function,
@@ -214,6 +215,8 @@ impl Walker<'_> {
                 expands: part.contains(['$', '`']),
                 quoted: word.quoted,
                 bare: word.bare && part.contains(['$', '`']),
+                // A quote anywhere in the word may keep a `~` of the part.
+                quoted_at: word.quoted_at.map(|_| 0),
             })
             .collect();
         // `fpath+=dir` appends; `fpath[1,0]=dir` and `fpath[1]=dir` put it

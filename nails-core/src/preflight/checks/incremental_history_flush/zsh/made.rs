@@ -667,6 +667,7 @@ impl<F: Filesystem> Reader<'_, F> {
             expands: value.contains(['$', '`']),
             quoted: false,
             bare: false,
+            quoted_at: None,
         };
         let patterns: Vec<String> = match self.resolve(&word) {
             Some(paths) => paths

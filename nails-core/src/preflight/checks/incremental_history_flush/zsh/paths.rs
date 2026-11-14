@@ -117,7 +117,8 @@ impl<F: Filesystem> Reader<'_, F> {
     /// defaults in it, an unset or empty one expanding to nothing, as zsh
     /// expands it (`$ZDOTDIR/x` is `/x`), and a `$HOME` that a letter, a digit
     /// or a `_` follows being another parameter (`$HOMEBREW`), but no `~` a
-    /// value gives it; `None` when it
+    /// value gives it or a quote or a backslash keeps (`"~/x"`, `\~/x`), which
+    /// zsh leaves as it is; `None` when it
     /// names anything else the check cannot know, a modifier or a subscript on
     /// one of them among it (`$HOME:a`, `$ZDOTDIR:h`), or no absolute path.
     fn resolve_in(
@@ -157,10 +158,12 @@ impl<F: Filesystem> Reader<'_, F> {
             }
         }
         // A `~` the value starts with is the home; one a parameter's value
-        // gives stays as it is, as zsh expands no `~` in it (`$XDG_CONFIG_HOME`
-        // holding `~/.cfg` names `~/.cfg` below the working directory).
+        // gives, or a quote or a backslash keeps, stays as it is, as zsh
+        // expands no `~` there (`$XDG_CONFIG_HOME` holding `~/.cfg` names
+        // `~/.cfg` below the working directory).
         if (value.text == "~" || value.text.starts_with("~/"))
             && (text == "~" || text.starts_with("~/"))
+            && value.quoted_at != Some(0)
         {
             text = format!("{home}{}", &text[1..]);
         }

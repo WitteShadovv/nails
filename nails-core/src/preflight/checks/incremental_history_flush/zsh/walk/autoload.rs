@@ -148,6 +148,7 @@ impl Walker<'_> {
                         expands: name.expands,
                         quoted: false,
                         bare: name.bare,
+                        quoted_at: None,
                     })
                 })
                 .collect();

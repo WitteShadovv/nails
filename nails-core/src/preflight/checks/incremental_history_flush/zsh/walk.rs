@@ -323,6 +323,7 @@ impl Walker<'_> {
                         expands: true,
                         quoted: false,
                         bare: true,
+                        quoted_at: None,
                     }),
                     first: *first,
                     in_function: false,

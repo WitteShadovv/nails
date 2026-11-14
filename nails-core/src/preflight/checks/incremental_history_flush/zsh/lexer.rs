@@ -17,6 +17,10 @@ pub(super) struct Word {
     /// Whether quotes are in it (`"$fpath"`, `'x'`, `$'x'`), which keep what
     /// an expansion gives in one word.
     pub(super) quoted: bool,
+    /// Where in `text` the first character a quote or a backslash keeps
+    /// stands, if any: zsh expands no `~` there (`"~/x"`, `\~/x`), and a word
+    /// with one before its first `=` assigns nothing (`"ZDOTDIR=x"`).
+    pub(super) quoted_at: Option<usize>,
     /// Whether an expansion in it stands outside double quotes (`$x`,
     /// `$x""`, `"$a"$b`), where zsh drops the word when what it gives is
     /// empty and may make several words of it (an array, `${=x}`, a command
@@ -185,6 +189,13 @@ impl Lexer<'_> {
         self.word.get_or_insert_with(Word::default)
     }
 
+    /// Note that the next character of the word is one a quote or a
+    /// backslash keeps ([`Word::quoted_at`]).
+    fn mark_quoted(&mut self) {
+        let word = self.word();
+        word.quoted_at.get_or_insert(word.text.len());
+    }
+
     fn end_word(&mut self) {
         if let Some(word) = self.word.take() {
             self.tokens.push(Token::Word(word));
@@ -243,9 +254,13 @@ impl Lexer<'_> {
         match c {
             '\\' => match self.chars.next() {
                 Some('\n') | None => {}
-                Some(escaped) => self.word().text.push(escaped),
+                Some(escaped) => {
+                    self.mark_quoted();
+                    self.word().text.push(escaped);
+                }
             },
             '\'' => {
+                self.mark_quoted();
                 self.word().quoted = true;
                 let mut closed = false;
                 for c in self.chars.by_ref() {
@@ -260,6 +275,7 @@ impl Lexer<'_> {
                 }
             }
             '"' => {
+                self.mark_quoted();
                 self.word().quoted = true;
                 let mut closed = false;
                 while let Some(c) = self.chars.next() {
@@ -327,6 +343,8 @@ impl Lexer<'_> {
             return;
         }
         if !quoted && self.chars.next_if_eq(&'\'').is_some() {
+            let word = self.word();
+            word.quoted_at.get_or_insert(word.text.len() - 1);
             self.word().quoted = true;
             self.word().text.push('\'');
             if !self.balanced(&[Nest::Ansi], "`$'`") {
@@ -720,6 +738,7 @@ impl Lexer<'_> {
             expands: true,
             quoted: false,
             bare: true,
+            quoted_at: None,
         });
         if self.balanced(&[Nest::Arith], "`((`") && self.chars.next_if_eq(&')').is_some() {
             let mut text = self.word.take().expect("the arithmetic command").text;
@@ -838,6 +857,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
                     expands: false,
                     quoted: false,
                     bare: false,
+                    quoted_at: None,
                 }));
             }
             '<' | '>' if lexer.chars.peek() == Some(&'(') => {
