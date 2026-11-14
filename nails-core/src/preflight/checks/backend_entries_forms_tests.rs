@@ -4,10 +4,11 @@
 //! The backend-entries check on lines that `libmount`, `mount.fuse` and
 //! systemd read otherwise than a plain reader would: a bind option with a
 //! value, the source a FUSE line gives its program and the program itself,
-//! white space other than a space or a tab before a `#`, an `ID=` tag, and
-//! crypttab fields in quotes or with a backslash. Each either names the
-//! volume as `libmount` or systemd reads it, or is a line NAILS does not
-//! read, which fails, with the flag or without it.
+//! white space other than a space or a tab before a `#`, an `ID=` tag, a
+//! path into `/dev` written otherwise than as a device's path, crypttab fields
+//! in quotes or with a backslash, and a crypttab source that is a file's path.
+//! Each either names the volume as `libmount` or systemd reads it, or is a
+//! line NAILS does not read, which fails, with the flag or without it.
 
 use super::*;
 use crate::hidden_root::separation::Unplain;
@@ -524,6 +525,42 @@ fn an_id_tag_fails_without_the_flag() {
     );
 }
 
+#[test]
+fn a_device_path_written_otherwise_or_leading_out_of_dev_fails_without_the_flag() {
+    // The volume is the mapping `data` (dm-9) on the whole of sdb, at /mnt.
+    // mount opens /dev/sdb for `//dev/sdb`, and a link in /dev to an image
+    // file in the volume mounts that file: NAILS reads neither.
+    let decoy = decoy().encrypted().file(
+        "/etc/fstab",
+        "/dev/nvme0n1p3 / ext4 defaults 0 1\n//dev/sdb /media/x ext4 nofail 0 0\n",
+    );
+    fails_as_not_plain(
+        &decoy.fs,
+        Allow::Nothing,
+        &not_plain("//dev/sdb /media/x ext4", &Unplain::DevOtherwise.reason()),
+    );
+    let linked = decoy.file(
+        "/etc/fstab",
+        "/dev/nvme0n1p3 / ext4 defaults 0 1\n/dev/img.link /media/i ext4 loop,nofail 0 0\n",
+    );
+    linked.link("/dev/img.link", "/mnt/img.raw");
+    fails_as_untold(
+        &linked.fs,
+        Allow::Nothing,
+        &untold(
+            "/dev/img.link /media/i ext4",
+            "the file it names",
+            "/dev/img.link leads out of /dev through a symbolic link",
+        ),
+    );
+    // A drive that is not plugged in names nothing here.
+    let absent = linked.file(
+        "/etc/fstab",
+        "/dev/nvme0n1p3 / ext4 defaults 0 1\n/dev/sdz1 /media/z ext4 nofail 0 0\n",
+    );
+    assert!(absent.run().is_pass());
+}
+
 /// The finding for the crypttab line that is not plain whose name and
 /// source read `shown`, for `reason`.
 fn crypttab_not_plain(shown: &str, reason: &str) -> String {
@@ -613,6 +650,146 @@ fn a_crypttab_line_that_is_not_plain_fails_without_the_flag() {
              stored on)"
         )
     );
+}
+
+/// The failure that names `finding`, a crypttab line whose source cannot be
+/// told, alone.
+fn may_name_the_volume(finding: &str) -> String {
+    format!("The decoy's configuration may name the volume at /mnt: {finding}. {STORED}")
+}
+
+#[test]
+fn a_crypttab_source_outside_dev_fails_by_the_file_it_opens() {
+    // The volume is the mapping `data` on the whole of sdb, at /mnt.
+    // systemd 260's crypttab generator wrote BindsTo=dev-sdf.device for
+    // `//dev/sdf` and RequiresMountsFor= for a link elsewhere to the drive,
+    // and systemd-cryptsetup opens what the source leads to, a regular file
+    // through a loop device. NAILS reads a device only by a tag or its path
+    // in /dev written plainly: `//dev/sdb` is not plain, a link or a device
+    // node outside /dev cannot be told, and a container file is judged where
+    // it lies. The gate passes these lines, as it passes the plain line for
+    // the drive.
+    let slashes = decoy()
+        .encrypted()
+        .file("/etc/crypttab", "vault //dev/sdb none luks,nofail\n");
+    let result = slashes.run();
+    assert_eq!(
+        result.message(),
+        may_name_the_volume(&crypttab_not_plain(
+            "vault //dev/sdb",
+            &Unplain::DevOtherwise.reason()
+        ))
+    );
+    assert_eq!(result.remediation(), Some(UNPLAIN_CRYPTTAB));
+    let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+        .run(&slashes.fs)
+        .unwrap();
+    assert!(gate.is_pass(), "{gate:?}");
+    for (crypttab, why) in [
+        (
+            "vault /sdb.link none luks,nofail\n",
+            "/sdb.link is a symbolic link, which NAILS does not follow",
+        ),
+        (
+            "vault /srv/sdb.node none luks,nofail\n",
+            "/srv/sdb.node is a device node",
+        ),
+    ] {
+        let decoy = decoy().encrypted().file("/etc/crypttab", crypttab);
+        decoy.link("/sdb.link", "/dev/sdb");
+        decoy.fs.mock_set_device_node("/srv/sdb.node");
+        let result = decoy.run();
+        let shown: Vec<&str> = crypttab.split_whitespace().take(2).collect();
+        assert_eq!(
+            result.message(),
+            may_name_the_volume(&format!(
+                "/etc/crypttab: '{}' (where the file it opens lies cannot be told: {why})",
+                shown.join(" ")
+            )),
+            "{crypttab}"
+        );
+        assert_eq!(result.remediation(), Some(UNTOLD), "{crypttab}");
+        let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+            .run(&decoy.fs)
+            .unwrap();
+        assert!(gate.is_pass(), "{crypttab}: {gate:?}");
+    }
+    // A link in /dev, as a tmpfiles.d line can make at boot, to a container
+    // in the volume: no block device answers to its path, which leads out of
+    // /dev, so it cannot be told either.
+    let linked = decoy()
+        .encrypted()
+        .file("/etc/crypttab", "box /dev/box.link none luks,nofail\n");
+    linked.link("/dev/box.link", "/mnt/box.img");
+    assert_eq!(
+        linked.run().message(),
+        may_name_the_volume(
+            "/etc/crypttab: 'box /dev/box.link' (where the file it opens lies cannot be told: \
+             /dev/box.link leads out of /dev through a symbolic link)"
+        )
+    );
+    // The drive by its own path names it, as before.
+    let drive = decoy()
+        .encrypted()
+        .file("/etc/crypttab", "vault /dev/sdb none luks,nofail\n");
+    assert_eq!(
+        drive.run().message(),
+        names_the_volume(
+            "/etc/crypttab: 'vault /dev/sdb' (it opens the volume at /mnt or a device it is \
+             stored on)"
+        )
+    );
+    // A container file in the volume: the boot opens it from there, so the
+    // line names the volume, and the gate refuses the root, as for an image
+    // line there. One elsewhere names no part of it.
+    let container = decoy()
+        .encrypted()
+        .file("/etc/crypttab", "box /mnt/box.img none luks,nofail\n");
+    let result = container.run();
+    assert_eq!(
+        result.message(),
+        names_the_volume(
+            "/etc/crypttab: 'box /mnt/box.img' (the file it opens lies in the volume at /mnt)"
+        )
+    );
+    assert_eq!(result.remediation(), Some(REMEDIATION));
+    let gate = crate::preflight::HiddenVolumeCheck::new(PathBuf::from("/mnt"))
+        .run(&container.fs)
+        .unwrap();
+    assert!(gate.is_fail(), "{gate:?}");
+    let result = decoy()
+        .encrypted()
+        .file("/etc/crypttab", "box /srv/box.img none luks,nofail\n")
+        .run();
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn a_container_in_the_roots_folder_fails_with_the_flag_too() {
+    // A bind of the folder /srv/x of / at the root: a crypttab line that
+    // opens a container file in that folder names the volume, and the flag
+    // does not let it be; one beside it passes.
+    let crypttab = |line: &str| {
+        let fs = rendered(BIND_OF_ROOT, "/dev/vda1 / ext4 defaults 0 1\n");
+        fs.mock_set_file_content("/etc/crypttab", line);
+        fs
+    };
+    let fs = crypttab("box /srv/x/box.img none luks\n");
+    assert!(hidden_volume_with_the_flag(&fs).is_warn());
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert_eq!(
+        result.message(),
+        names_the_volume(
+            "/etc/crypttab: 'box /srv/x/box.img' (the file it opens lies in the volume at /mnt)"
+        )
+    );
+    assert_eq!(result.remediation(), Some(REMEDIATION));
+    let result = run_allowing(
+        &crypttab("box /srv/y/box.img none luks\n"),
+        Allow::DecoyStorage,
+    );
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(result.message(), only_the_decoys_own_line("/"));
 }
 
 #[test]

@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Whether NAILS reads a line of the decoy's fstab as `libmount` and systemd
-//! read it, or a line of its crypttab as systemd does: a plain line. A line
-//! that is not plain is an entry where what it names cannot be told, and that
-//! is the only finding the judge makes of it, while it still claims what
-//! NAILS reads in it.
+//! Whether NAILS reads the fields of a line of the decoy's fstab as
+//! `libmount` and systemd read them, or those of a line of its crypttab as
+//! systemd does: a plain line. Where a path that a plain line names leads is
+//! told apart (see the `paths` module). A line that is not plain is an entry
+//! where what it names cannot be told, and that is the only finding the judge
+//! makes of it, while it still claims what NAILS reads in it.
 //!
 //! NAILS's parser splits a line at any white space and decodes the octal
 //! escapes (a backslash and three octal digits) of its first two fields in
@@ -57,12 +58,16 @@
 //! than a space or a tab, or a quote or a backslash in one of its four
 //! fields, or whose source is neither an absolute path nor a tag NAILS
 //! resolves: `systemd-cryptsetup` opens a relative path from the folder it
-//! runs in, `/`.
+//! runs in, `/`. Of a plain line, the judge resolves a source that is a tag
+//! or a device's path in `/dev` as a device's name, and reads any other
+//! source, which `systemd-cryptsetup` opens through the links in it, as the
+//! path of a file, with no link followed (see the `paths` module).
 
 #[cfg(test)]
 #[path = "plain_tests.rs"]
 mod tests;
 
+use super::paths::names_dev_otherwise;
 use crate::crypttab::{CrypttabEntry, parse_crypttab_lines};
 use crate::fstab::{
     FstabEntry, is_host_share_type, is_network_type, is_virtual_type, parse_fstab_lines,
@@ -138,6 +143,11 @@ pub enum Unplain {
     /// The FUSE program it has `mount.fuse` run is written with a `/` and is
     /// no absolute path ([`fuse_program`]).
     FuseProgram,
+    /// Its first field, or the source of a crypttab line, leads into `/dev`
+    /// as it is written, while it does not start with `/dev/` or holds a
+    /// `..`, such as `//dev/sdb`
+    /// ([`names_dev_otherwise`](super::paths::names_dev_otherwise)).
+    DevOtherwise,
     /// One of the fields of a crypttab line holds a quote.
     Quote,
     /// One of the fields of a crypttab line holds a backslash.
@@ -185,6 +195,9 @@ impl Unplain {
             Unplain::FuseProgram => {
                 "its FUSE program is a path with a / that is not absolute".to_string()
             }
+            Unplain::DevOtherwise => "it names a path in /dev by one that does not start with \
+                                      /dev/ or holds a .."
+                .to_string(),
             Unplain::Quote => "one of its fields holds a quote".to_string(),
             Unplain::Backslash => "one of its fields holds a backslash".to_string(),
             Unplain::RelativeSource => {
@@ -442,6 +455,12 @@ pub fn unplain(entry: &FstabEntry, line: &str) -> Vec<Unplain> {
     {
         why.push(Unplain::FuseProgram);
     }
+    if !entry.is_bind()
+        && !names_no_local_path(&entry.vfstype)
+        && source(entry).is_some_and(names_dev_otherwise)
+    {
+        why.push(Unplain::DevOtherwise);
+    }
     why
 }
 
@@ -461,6 +480,9 @@ pub fn unplain_crypttab(entry: &CrypttabEntry, line: &str) -> Vec<Unplain> {
     }
     if !is_read(&entry.source) {
         why.push(Unplain::RelativeSource);
+    }
+    if names_dev_otherwise(&entry.source) {
+        why.push(Unplain::DevOtherwise);
     }
     why
 }

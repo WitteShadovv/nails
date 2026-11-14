@@ -3,9 +3,9 @@
 
 //! The lines the claims place by a path they name, judged where that path
 //! reads, with no link in it followed (see the `paths` module): a bind
-//! line's source, the file of a swap or image line, and the source a FUSE
-//! line gives its program and the program itself where the line names it by
-//! its path.
+//! line's source, the file of a swap or image line, the source a FUSE line
+//! gives its program and the program itself where the line names it by its
+//! path, and the file a crypttab line opens.
 //!
 //! A path that lies in the volume, at the root's folder or inside it as the
 //! mount that holds it shows it, makes a finding: a bind line mounts the
@@ -30,6 +30,8 @@ pub(super) enum Named {
     File,
     /// The program a FUSE line has `mount.fuse` run.
     Program,
+    /// The file a crypttab line opens.
+    Opened,
 }
 
 impl Named {
@@ -39,13 +41,14 @@ impl Named {
             Named::Source => "its source",
             Named::File => "the file it names",
             Named::Program => "the program it runs",
+            Named::Opened => "the file it opens",
         }
     }
 }
 
 /// A line the claims place by a path it names.
 pub(super) struct Line {
-    /// The file it is in.
+    /// The file it is in, the fstab or the crypttab.
     pub file: &'static str,
     /// The line, as its first fields read.
     pub shown: String,
@@ -84,7 +87,7 @@ pub(super) fn place<'a>(
 /// when that path lies in the volume of `hidden`: at the volume's folder of
 /// that filesystem or inside it, as `holder` shows it now. A bind line then
 /// mounts the volume or a folder of it, and any other line names a file in
-/// the volume, which the boot swaps on, mounts or runs. It goes as
+/// the volume, which the boot swaps on, mounts, opens or runs. It goes as
 /// any line does that names the volume itself, unless the decoy's own boot
 /// needs it ([`Line::boot_needs`]), and it is never the decoy's own line.
 fn in_volume(

@@ -12,15 +12,18 @@
 //! another root lets an offline scan judge a decoy's files.
 //!
 //! The fstab and the crypttab are read with each of their lines that is not
-//! plain (see the `plain` module). The paths the fstab names, a bind line's
-//! source and the path of a swap or image file or of what a FUSE program
-//! reads, are read below `etc_root` as they are written, one part at a time,
-//! with no link in them followed (see the `paths` module), once the block
-//! devices are known, which tell the folders of its lines whose mount is not
-//! there now. The path of a swap or image file is never resolved as the name
-//! of a device, and neither is a bind line's source that is an absolute path
-//! outside `/dev`. A FUSE line names a device by the source it gives its
-//! program, the part after the `#` of a `fuse` line's first field.
+//! plain (see the `plain` module). The paths they name, a bind line's source,
+//! the path of a swap or image file, of what a FUSE program reads and of a
+//! FUSE program named by its path, and a crypttab source that is no tag and
+//! no device's path in `/dev`, are read below `etc_root` as they are written,
+//! one part at a time, with no link in them followed (see the `paths`
+//! module), once the block devices are known, which tell the folders of its
+//! lines whose mount is not there now, and which device's paths in `/dev` no
+//! block device answers to. The path of a swap or image file or of a
+//! crypttab line's file is never resolved as the name of a device, and
+//! neither is a bind line's source that is an absolute path outside `/dev`.
+//! A FUSE line names a device by the source it gives its program, the part
+//! after the `#` of a `fuse` line's first field.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -167,19 +170,19 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
 
     // The names the files and the mount table use for devices, a FUSE
     // line's by the source it gives its program. The path of a file the
-    // fstab names is no name of one: resolved whole, its links would be read,
-    // and a `..` leads out of `/dev`.
+    // fstab names or a crypttab line opens is no name of one: resolved whole,
+    // its links would be read, and a `..` leads out of `/dev`.
     let specs = collected
         .fstab
         .iter()
         .filter(|entry| !super::paths::names_a_file(entry))
         .filter_map(|entry| super::plain::source(entry).map(str::to_string))
-        .chain(
-            collected
-                .crypttab
-                .iter()
-                .flat_map(|entry| [entry.source.clone(), format!("/dev/mapper/{}", entry.name)]),
-        )
+        .chain(collected.crypttab.iter().flat_map(|entry| {
+            let source = (!super::paths::opens_a_file(entry)).then(|| entry.source.clone());
+            source
+                .into_iter()
+                .chain([format!("/dev/mapper/{}", entry.name)])
+        }))
         .chain(
             mounts
                 .iter()
@@ -210,8 +213,14 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         Err(unread) => collected.unreadable.push(unread),
     }
     collected.devices.extra = super::extra::extra_devices(fs, mounts, &collected.devices);
-    collected.paths =
-        super::paths::read_all(fs, mounts, etc_root, &collected.fstab, &collected.devices);
+    collected.paths = super::paths::read_all(
+        fs,
+        mounts,
+        etc_root,
+        &collected.fstab,
+        &collected.crypttab,
+        &collected.devices,
+    );
     collected
 }
 

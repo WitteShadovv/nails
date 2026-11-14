@@ -4,7 +4,7 @@
 //! The judge: the decoy's claims, then the first verdict that matches.
 
 use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
-use super::paths::{is_claimed, names_a_file, program_path};
+use super::paths::{is_claimed, is_untold_device, names_a_file, opens_a_file, program_path};
 use super::placed::{Line, Named, place};
 use super::plain::source;
 use super::{
@@ -554,13 +554,14 @@ fn claims(
                     break 'line;
                 }
             }
-            if let Some(spec) =
-                spec.filter(|_| entry.is_bind() || (node.is_none() && names_a_file(entry)))
-            {
+            let untold = |spec: &str| is_untold_device(scene.paths, spec);
+            if let Some(spec) = spec.filter(|spec| {
+                entry.is_bind() || (node.is_none() && (names_a_file(entry) || untold(spec)))
+            }) {
                 // A bind, or a swap or image file or the file a FUSE program
-                // reads: the filesystem holding the source or the file, read
-                // as written, with no link followed (see the `placed`
-                // module).
+                // reads, or a device's path in /dev that leads out of it:
+                // the filesystem holding the source or the file, read as
+                // written, with no link followed (see the `placed` module).
                 let named = if entry.is_bind() {
                     Named::Source
                 } else {
@@ -687,6 +688,20 @@ fn crypttab_claims(
             || source.is_some_and(|s| entry_stack.iter().any(|n| n == s) && !own_device(s));
         let needed = (own_needed && makes_own)
             || boot_needs(devices, claims, hidden, own_device, [source, mapping]);
+        // A source that is the path of a file, a container, say, which
+        // `systemd-cryptsetup` opens through the links in it, or a device's
+        // path in /dev that leads out of it: the filesystem that holds it,
+        // read as written, with no link followed.
+        let by_path = opens_a_file(entry) || is_untold_device(scene.paths, &entry.source);
+        let placed = by_path.then(|| {
+            let line = Line {
+                file: CRYPTTAB,
+                shown: line.clone(),
+                named: Named::Opened,
+                boot_needs: needed,
+            };
+            place(scene, hidden, &line, &entry.source)
+        });
         // The findings for this line, and whether it claims what it opens.
         let mut found = Vec::new();
         let claimed = 'line: {
@@ -742,6 +757,8 @@ fn crypttab_claims(
             }
             true
         };
+        let (finding, holder) = placed.unwrap_or_default();
+        found.extend(finding);
         // A line that is not plain claims what NAILS reads in it, and is a
         // finding of its own, its only one: what it opens cannot be told.
         match scene.unplain_crypttab.get(&index) {
@@ -749,6 +766,8 @@ fn crypttab_claims(
             None => entries.append(&mut found),
         }
         if claimed {
+            let noauto = entry.has_option("noauto");
+            claims.extend(holder.map(|holder| mount_claim(scene, holder, noauto)));
             let tops: Vec<String> = source
                 .into_iter()
                 .chain(mapping)

@@ -6,6 +6,7 @@
 //! where a path lies cannot be told.
 
 use super::*;
+use crate::crypttab::parse_crypttab;
 use crate::filesystem::MockFilesystem;
 use crate::filesystem::mountinfo::parse_mountinfo;
 use crate::fstab::parse_fstab;
@@ -289,6 +290,7 @@ fn the_paths_the_claims_place_a_line_by_are_read_and_no_other() {
         &parse_mountinfo(PLAIN),
         Path::new("/"),
         &fstab,
+        &[],
         &DeviceMap::default(),
     );
     assert_eq!(
@@ -329,6 +331,7 @@ fn a_fuse_program_named_by_its_path_is_read_as_well() {
         &parse_mountinfo(PLAIN),
         Path::new("/"),
         &fstab,
+        &[],
         &DeviceMap::default(),
     );
     assert_eq!(
@@ -351,6 +354,105 @@ fn a_fuse_program_named_by_its_path_is_read_as_well() {
 }
 
 #[test]
+fn a_crypttab_file_is_read_as_well() {
+    // The file a crypttab line opens: any absolute source that is no
+    // device's path in /dev, such as `//dev/sdb` or a link. No tag, device
+    // path or relative source, and no key file.
+    let crypttab = parse_crypttab(
+        "vault //dev/sdb none luks\nbox /srv/box.img /srv/key luks\ndata /dev/sdc none luks\n\
+         root UUID=e1 none luks\nrel dev/sdd none luks\nlinked /sdb.link none luks\n\
+         up /dev/../srv/up.img none luks\n",
+    );
+    let fs = linked(&[("/sdb.link", "/dev/sdb")]);
+    fs.mock_set_device_node("/dev/sdb");
+    let mut devices = DeviceMap::default();
+    devices
+        .by_spec
+        .insert("/dev/sdc".to_string(), "sdc".to_string());
+    let paths = read_all(
+        &fs,
+        &parse_mountinfo(PLAIN),
+        Path::new("/"),
+        &[],
+        &crypttab,
+        &devices,
+    );
+    assert_eq!(
+        paths.keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "//dev/sdb",
+            "/dev/../srv/up.img",
+            "/sdb.link",
+            "/srv/box.img"
+        ]
+    );
+    assert_eq!(paths["/srv/box.img"], reads("/srv/box.img"));
+    assert_eq!(paths["/dev/../srv/up.img"], reads("/srv/up.img"));
+    assert_eq!(paths["/sdb.link"], link("/sdb.link"));
+    assert_eq!(
+        paths["//dev/sdb"],
+        Err(UntoldPath::Device(PathBuf::from("/dev/sdb")))
+    );
+}
+
+#[test]
+fn a_device_path_that_leads_out_of_dev_cannot_be_told() {
+    // A link in /dev, as a tmpfiles.d line can make at boot, to a file
+    // elsewhere: mount, swapon and systemd-cryptsetup open that file. A
+    // device's path that no block device answers to is read for that alone,
+    // of a line that is no bind line or of a crypttab line, and one that
+    // stays in /dev, or a device the map holds, is no path to tell.
+    let fstab = parse_fstab(
+        "/dev/sda1 / ext4 defaults 0 1\n/dev/img.link /media/i ext4 loop,nofail 0 0\n\
+         /dev/sdz1 /media/z ext4 nofail 0 0\nfuse2fs#/dev/f.link /media/f fuse nofail 0 0\n\
+         /dev/disk/by-uuid/e1 /media/e ext4 nofail 0 0\n/dev/loop.link /media/l ext4 nofail 0 0\n",
+    );
+    let crypttab = parse_crypttab("box /dev/box.link none luks\nvault /dev/sdb none luks\n");
+    let fs = linked(&[
+        ("/dev/img.link", "/srv/img.raw"),
+        ("/dev/f.link", "../srv/f.img"),
+        ("/dev/box.link", "/srv/box.img"),
+        ("/dev/disk/by-uuid/e1", "../../sdb1"),
+        ("/dev/loop.link", "/dev/loop.link"),
+    ]);
+    let mut devices = DeviceMap::default();
+    devices
+        .by_spec
+        .insert("/dev/sdb".to_string(), "sdb".to_string());
+    let paths = read_all(
+        &fs,
+        &parse_mountinfo(PLAIN),
+        Path::new("/"),
+        &fstab,
+        &crypttab,
+        &devices,
+    );
+    let leaves = |spec: &str| Err(UntoldPath::LeavesDev(PathBuf::from(spec)));
+    assert_eq!(paths["/dev/img.link"], leaves("/dev/img.link"));
+    assert_eq!(paths["/dev/f.link"], leaves("/dev/f.link"));
+    assert_eq!(paths["/dev/box.link"], leaves("/dev/box.link"));
+    assert_eq!(
+        paths["/dev/loop.link"],
+        Err(UntoldPath::Unreadable(PathBuf::from("/dev/loop.link")))
+    );
+    for spec in ["/dev/sdz1", "/dev/disk/by-uuid/e1", "/dev/sdb"] {
+        assert!(!paths.contains_key(spec), "{spec}");
+    }
+    assert!(is_untold_device(&paths, "/dev/img.link"));
+    assert!(!is_untold_device(&paths, "/dev/sdz1"));
+}
+
+#[test]
+fn on_a_real_filesystem_a_device_path_that_stays_in_dev_or_is_not_there_is_none() {
+    // /dev/null stays in /dev, a missing name is not there, and a name below
+    // a device node is no folder: none of them leads out of /dev.
+    let fs = crate::filesystem::RealFilesystem;
+    for spec in ["/dev/null", "/dev/nails-no-such-device", "/dev/null/x"] {
+        assert_eq!(leaving_dev(&fs, spec), None, "{spec}");
+    }
+}
+
+#[test]
 fn the_paths_are_read_with_the_folders_of_lines_that_are_not_mounted() {
     // /backup is the folder of a line the boot mounts whose drive is not
     // mounted now, and /srv/n that of a noauto line, which systemd mounts
@@ -365,6 +467,7 @@ fn the_paths_are_read_with_the_folders_of_lines_that_are_not_mounted() {
         &parse_mountinfo(PLAIN),
         Path::new("/"),
         &fstab,
+        &[],
         &DeviceMap::default(),
     );
     assert_eq!(
