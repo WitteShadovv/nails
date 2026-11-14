@@ -134,6 +134,10 @@ pub struct BaseConfigScan {
     pub files_read: usize,
     /// Every line that names the hidden environment, by file and then line.
     pub references: Vec<BaseConfigReference>,
+    /// The places that may give a name of the hidden volume's storage that
+    /// are there but could not be read: a line that names the storage by
+    /// one of those names would not be found.
+    pub unread: Vec<String>,
 }
 
 impl BaseConfigScan {
@@ -260,7 +264,7 @@ pub fn verify_base_config_clean<F: Filesystem>(
         return Ok(scan);
     }
 
-    let markers = markers(fs, hidden_volume_root)?;
+    let markers = markers(fs, hidden_volume_root, &mut scan.unread)?;
     for file in &files {
         let content = fs.read_file_content(file)?;
         scan.files_read += 1;
@@ -276,6 +280,8 @@ pub fn verify_base_config_clean<F: Filesystem>(
 }
 
 /// The markers for `hidden_volume_root`, in the order a line is matched.
+/// The places of the storage's names that could not be read land in
+/// `unread`.
 ///
 /// # Errors
 ///
@@ -283,7 +289,11 @@ pub fn verify_base_config_clean<F: Filesystem>(
 /// names of the hidden volume are not known, and a line that names them
 /// would pass. Where it is not there, as on a test's tree, no mount shows a
 /// device.
-fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Result<Vec<Marker>> {
+fn markers<F: Filesystem>(
+    fs: &F,
+    hidden_volume_root: &Path,
+    unread: &mut Vec<String>,
+) -> Result<Vec<Marker>> {
     let marker = |pattern, kind| Marker { pattern, kind };
     let mut markers: Vec<Marker> = ARTIFACTS
         .iter()
@@ -305,6 +315,7 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Result<Vec<Marke
     };
     let sources = resolve_backing_sources(&mountinfo, hidden_volume_root);
     let below = storage::below(fs, &parse_mountinfo(&mountinfo), hidden_volume_root);
+    unread.extend(below.unread.iter().cloned());
     let mut names: Vec<String> = Vec::new();
     let from_sources = sources
         .iter()
