@@ -101,6 +101,32 @@ class RepositoryTest(unittest.TestCase):
             found = subprocess.run(run, capture_output=True, text=True, check=True)
             self.assertEqual(found.stdout.strip(), str(shipped))
 
+    def test_a_release_the_guest_expands_fills_the_named_key_too(self) -> None:
+        # The offline install asks the image for its release, as
+        # $(rpm -E %fedora); Fedora 45 names its key under /usr/share/pki.
+        with tempfile.TemporaryDirectory() as work:
+            vendor = Path(work, "vendor")
+            vendor.mkdir()
+            shipped = Path(work, "RPM-GPG-KEY-fedora-45-x86_64")
+            shipped.write_text("key\n")
+            (vendor / "fedora.repo").write_text(
+                f"[fedora]\ngpgkey=file://{work}/RPM-GPG-KEY-fedora-"
+                "$releasever-$basearch\n"
+            )
+            script = (
+                fr.find_key("$(echo 45)")
+                .replace("/etc/yum.repos.d", str(Path(work, "none")))
+                .replace("/usr/share/dnf5/repos.d", str(vendor))
+            )
+            found = subprocess.run(
+                ["bash", "-c", "set -euo pipefail; " + script + '; echo "$key"'],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(found.stdout.strip(), str(shipped))
+        self.assertIn("/usr/share/pki/rpm-gpg", fr.KEY_DIRS)
+
 
 class ResolveCommandTest(unittest.TestCase):
     def test_it_is_a_shell_script(self) -> None:
