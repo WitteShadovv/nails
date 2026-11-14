@@ -116,7 +116,7 @@ fn run_matches(pieces: &[Piece], name: &[char]) -> bool {
 
 /// Whether zsh may match the pattern `pattern`, as a builtin is given it,
 /// against `name` ([the module](self)).
-pub(super) fn may_match(pattern: &str, name: &str) -> bool {
+pub(in super::super) fn may_match(pattern: &str, name: &str) -> bool {
     let chars: Vec<char> = pattern.chars().collect();
     let name: Vec<char> = name.chars().collect();
     let mut at = 0;

@@ -386,10 +386,12 @@ pub(super) fn creates(command: &str) -> bool {
 
 /// Whether `command` may make or write what the files its words name hold:
 /// any command but a builtin that writes no file ([`builtins::quiet`]:
-/// `print`, `[[`) and a program that writes nothing in them
-/// ([`NO_CONTENT`]).
-pub(super) fn may_write(command: &str) -> bool {
-    !builtins::quiet(program(command)) && !NO_CONTENT.contains(&program(command))
+/// `print`, `[[`), unless it runs as an outside program (`outside`: a file
+/// disables it) or is named by a path, and a program that writes nothing
+/// in them ([`NO_CONTENT`]).
+pub(super) fn may_write(command: &str, outside: bool) -> bool {
+    let quiet = !outside && !command.contains('/') && builtins::quiet(command);
+    !quiet && !NO_CONTENT.contains(&program(command))
 }
 
 /// Whether an expansion may make the last part of the path `text` names
@@ -590,7 +592,7 @@ impl<F: Filesystem> Reader<'_, F> {
             Self::is_hook(caller, hooked)
                 && !self.defined.contains(callee)
                 && !self.autoloads.contains(callee)
-                && !builtins::builtin(callee)
+                && (!builtins::builtin(callee) || self.outside(callee))
                 && !matches!(callee.as_str(), "[[" | "]]")
         });
         if let Some((caller, callee)) = program {

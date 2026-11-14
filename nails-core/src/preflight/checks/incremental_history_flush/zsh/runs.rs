@@ -6,7 +6,7 @@
 //! zsh runs as hooks write or may write, and where the aliases the files
 //! define are used.
 
-use super::{Forms, Reader, backstop, builtins, walk};
+use super::{Forms, Reader, Word, backstop, builtins, walk};
 use crate::Filesystem;
 
 /// How a command a function runs may write what the shell's code gives it.
@@ -243,7 +243,7 @@ impl<F: Filesystem> Reader<'_, F> {
             if !Self::is_hook(&function, &hooked)
                 || self.defined.contains(&command)
                 || self.autoloads.contains(&command)
-                || builtins::quiet(&command)
+                || (builtins::quiet(&command) && !self.outside(&command))
             {
                 continue;
             }
@@ -320,6 +320,63 @@ impl<F: Filesystem> Reader<'_, F> {
                 ));
             }
         }
+    }
+
+    /// Note the builtins a `disable` of `args` takes away, after which zsh
+    /// runs what PATH finds by their names ([`Reader::outside`]): each name,
+    /// a pattern of `-m`, or any where a word an expansion, brace expansion or
+    /// a glob may make stands among them; none with `-a`, `-f`, `-p`, `-r` or
+    /// `-s`, which disable aliases, functions, patterns or reserved words.
+    pub(super) fn disable(&mut self, args: &[Word]) {
+        let mut at = 0;
+        let mut letters = String::new();
+        while let Some(word) = args.get(at) {
+            if word.expands || word.bare {
+                self.disabled.push(String::from("*"));
+                return;
+            }
+            let Some(flags) = word
+                .text
+                .strip_prefix('-')
+                .filter(|flags| !flags.is_empty())
+            else {
+                break;
+            };
+            at += 1;
+            if flags == "-" {
+                break;
+            }
+            letters.push_str(flags);
+        }
+        if letters.contains(['a', 'f', 'p', 'r', 's']) {
+            return;
+        }
+        for word in &args[at..] {
+            if word.expands || word.bare {
+                self.disabled.push(String::from("*"));
+            } else if letters.contains('m') {
+                self.disabled.push(word.text.clone());
+            } else {
+                // A name as it is, its pattern characters too.
+                self.disabled.push(word.text.replace(
+                    [
+                        '*', '?', '[', ']', '(', ')', '|', '#', '^', '~', '<', '>', '\\',
+                    ],
+                    "?",
+                ));
+            }
+        }
+    }
+
+    /// Whether a builtin named `name` may run as an outside program of that
+    /// name, as zsh runs what PATH finds by the name of one a file disables
+    /// (`disable print`, `disable -m 'p*'`, [`Reader::disable`]).
+    pub(super) fn outside(&self, name: &str) -> bool {
+        builtins::builtin(name)
+            && self
+                .disabled
+                .iter()
+                .any(|pattern| walk::may_match(pattern, name))
     }
 
     /// Whether the commands that feed a pipeline, `feeders`, each one's name

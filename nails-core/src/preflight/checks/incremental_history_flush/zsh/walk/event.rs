@@ -137,6 +137,16 @@ pub(in super::super) enum Event {
         function: Option<String>,
         input: Input,
     },
+    /// A builtin that writes no file runs by the name `name` in the function
+    /// `function`, with the words `args`, reading `input`: where a file
+    /// disables it, zsh runs the program PATH finds by that name in its
+    /// place, which gets them.
+    Builtin {
+        name: String,
+        args: Vec<Word>,
+        function: String,
+        input: Input,
+    },
     /// What the function `function` holds may write the history file should
     /// it be a hook, as `doubt` says (a write to a descriptor above 2, which
     /// may be any file the shell has open).

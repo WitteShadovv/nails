@@ -15,7 +15,7 @@ use super::super::backstop::{
     self, FC_WRITES, history_path, qualifier_code, reexpands, xdg_config_home_writes,
     zdotdir_writes,
 };
-use super::super::builtins::fc_letters;
+use super::super::builtins::{self, fc_letters};
 use super::super::lexer::{Word, is_name};
 use super::hooks::hook_array;
 use super::names::{names_parameter, targets};
@@ -50,6 +50,9 @@ const PRECOMMANDS: &[&str] = &[
 struct Run {
     /// In the shell's place (`exec`).
     exec: bool,
+    /// As an outside program, whatever builtin or function has its name, as
+    /// `command` runs it unless `POSIX_BUILTINS` is on.
+    outside: bool,
 }
 
 /// Whether zsh can expand `value`, an assignment's value as written, with
@@ -489,6 +492,7 @@ impl Walker<'_> {
                     if whence {
                         return None;
                     }
+                    run.outside = true;
                     words.next_if(|word| word.text == "--");
                 }
                 "exec" => {
@@ -560,6 +564,25 @@ impl Walker<'_> {
         };
         let args: Vec<Word> = words.collect();
         self.ends(&command.text, &args, run.exec);
+        // A function named like the command a NAILS command is typed with
+        // or one a widget runs with the line (`sudo`, `man`) that runs the
+        // program of its name with its own words and nothing else hands it
+        // what it would get without the function.
+        let wrapper = self.function().as_deref() == Some(command.text.as_str())
+            && (builtins::typed(&command.text) || builtins::line_command(&command.text))
+            && matches!(args.as_slice(), [only] if only.text == "$@")
+            && input == Input::None;
+        if run.outside && !command.expands && !command.bare && !wrapper {
+            // `command print`: an outside program of that name, which gets
+            // the words and what the command reads, whatever builtin or
+            // function has the name.
+            self.events.push(Event::Call {
+                name: format!("command {}", command.text),
+                args: args.clone(),
+                function: self.function(),
+                input: input.clone(),
+            });
+        }
         self.qualifier(&command.text);
         let function = self.function();
         self.words(&command, &args, function.as_ref());
@@ -589,6 +612,18 @@ impl Walker<'_> {
         self.command_arithmetic(&command.text, &args);
         self.tested(&command.text, &args);
         self.computed_sets(&command.text, &args);
+        // A builtin read below by what it does, for a file that may disable
+        // it ([`Event::Builtin`]).
+        let builtin = function
+            .clone()
+            .filter(|_| builtins::quiet(&command.text))
+            .map(|function| Event::Builtin {
+                name: command.text.clone(),
+                args: args.clone(),
+                function,
+                input: input.clone(),
+            });
+        let mut called = false;
         // `functions` as a command prints, copies or marks functions.
         self.function_params += usize::from(command.text == "functions");
         match command.text.as_str() {
@@ -654,6 +689,7 @@ impl Walker<'_> {
                 self.declare(&command.text, &args, unconditional);
             }
             _ => {
+                called = true;
                 self.mention_word(&command);
                 for arg in &args {
                     self.mention_word(arg);
@@ -667,6 +703,9 @@ impl Walker<'_> {
                     });
                 }
             }
+        }
+        if let Some(builtin) = builtin.filter(|_| !called) {
+            self.events.push(builtin);
         }
     }
 
