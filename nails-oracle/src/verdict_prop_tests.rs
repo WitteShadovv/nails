@@ -123,12 +123,12 @@ fn held_by_control_logins(scans: &Scans, f: &Finding) -> bool {
         && scans.control_login_records.contains(&f.field)
 }
 
-/// A file `btrfs restore` recovered at `path`.
+/// A file the restore carve recovered at `path`.
 fn restore(path: &str) -> Finding {
     restore_holding(path, "sha256:0a")
 }
 
-/// An entry `btrfs restore` recovered at `path` holding `value`.
+/// An entry the restore carve recovered at `path` holding `value`.
 fn restore_holding(path: &str, value: &str) -> Finding {
     Finding::new(Tool::BtrfsRestore, path, value)
 }

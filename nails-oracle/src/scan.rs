@@ -7,7 +7,7 @@
 //! per tool:
 //!
 //! ```text
-//! outputs/restore/<label>/...            restored file tree (btrfs restore, debugfs rdump)
+//! outputs/restore/<label>/...            restored file tree (btrfs read-only mount, debugfs rdump)
 //! outputs/restore/<label>.sha256         a SHA-256 of every restored file
 //! outputs/nix_db/<label>.jsonl           every row of the restored Nix store database, one a line
 //! outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files

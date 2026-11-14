@@ -63,29 +63,30 @@ jobs:
 
       # OS packages the scan needs. The scan script pins bulk_extractor (built
       # from its source commit, so its build chain and libraries are installed
-      # here), builds and carves the btrfs images with btrfs-progs, and reads
-      # the verdict it renders with jq. sleuthkit (mmls), e2fsprogs (debugfs)
-      # and sqlite3 serve the real-image mode (ORACLE_IMAGES_DIR), which this
-      # template does not use. No docker: no plaso timeline runs on btrfs. No
-      # KVM is used.
+      # here), builds the btrfs images with btrfs-progs and copies their files
+      # from a read-only mount with rsync, and reads the verdict it renders
+      # with jq. sleuthkit (mmls), e2fsprogs (debugfs) and sqlite3 serve the
+      # real-image mode (ORACLE_IMAGES_DIR), which this template does not use.
+      # No docker: no plaso timeline runs on btrfs. No KVM is used.
       - name: Install analysis tools
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            btrfs-progs sleuthkit e2fsprogs jq sqlite3 \
+            btrfs-progs rsync sleuthkit e2fsprogs jq sqlite3 \
             git autoconf automake build-essential libtool pkg-config flex \
             libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
             libabsl-dev libgcrypt20-dev libgpg-error-dev
 
       # The scan script builds the before/control/after images one at a time,
-      # runs btrfs restore and bulk_extractor over each into the outputs/ tree
-      # described in ci/oracle/README.md, and finishes by rendering the
-      # nails-oracle verdict over that tree (writing verdict.json). The
-      # verdict on btrfs images is partial at best (exit 3), which the script
-      # passes, exiting 0, only when verdict.json says partial and names the
-      # timeline alone as left out; anything else fails this step. It needs
-      # root for the loop mounts. The coverage canary is the fixed committed
-      # value; set ORACLE_SEED here to rotate it per run instead.
+      # carves each through a read-only mount and runs bulk_extractor over it
+      # into the outputs/ tree described in ci/oracle/README.md, and finishes
+      # by rendering the nails-oracle verdict over that tree (writing
+      # verdict.json). The verdict on btrfs images is partial at best (exit 3),
+      # which the script passes, exiting 0, only when verdict.json says partial
+      # and names the timeline alone as left out; anything else fails this
+      # step. It needs root for the loop mounts. The coverage canary is the
+      # fixed committed value; set ORACLE_SEED here to rotate it per run
+      # instead.
       - name: Build images, run the scan and render the verdict
         run: |
           sudo env \
