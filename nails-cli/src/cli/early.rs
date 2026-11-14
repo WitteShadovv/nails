@@ -36,9 +36,10 @@
 //! once. One that still runs elsewhere does not do its work there. The
 //! watcher and the sleep guard power the machine off through the emergency's
 //! hot path, as the emergency does where its way back's last step would not
-//! start right; the reconcile step only removes its pieces from `/run` and
-//! leaves the records as they are; the boot writer's drop-in starts the writer
-//! as the decoy runs it.
+//! start right; the reconcile step leaves the records as they are and only
+//! cleans up after itself
+//! (`nails_teardown::whole_root::boot_records::clean_up`); the boot writer's
+//! drop-in starts the writer as the decoy runs it.
 //!
 //! In every other case `dispatch` does nothing and the normal path runs.
 //!

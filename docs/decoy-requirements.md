@@ -171,9 +171,9 @@ The decoy also has to be one the session can enter and leave:
     from `init_t` gives it the domain a start by PID 1 gets. One that then
     still runs outside it does not do its work there: the watcher and the
     sleep guard power the machine off, the one-shot only removes NAILS's
-    pieces from `/run` and makes it `noexec` again, leaving the records as
-    they would be without that fix, and the drop-in starts the wtmpdb writer
-    as the decoy runs it.
+    pieces from `/run`, and makes it `noexec` again where the activation had
+    cleared it, leaving the records as they would be without that fix, and
+    the drop-in starts the wtmpdb writer as the decoy runs it.
 
   Elsewhere, as on a stock Debian, Ubuntu or NixOS host, no copy gets a label
   and no policy is asked anything: the units started from a copy only find
