@@ -531,6 +531,97 @@ logind.
 - Nix, if you use it, installed inside a hidden session, not on the decoy
   (`decoy-nix-trace`; see [Nix on the decoy](#nix-on-the-decoy)).
 
+### Fedora
+
+- **Fedora 44, Cloud edition** (systemd 259). Fedora 45 (systemd 262), the
+  Workstation and KDE Plasma Desktop editions and any other edition run with a
+  warning that NAILS has not been tested on them. A release before 44 is
+  refused, and so are Fedora's ostree and composefs systems (Silverblue,
+  Kinoite, CoreOS, bootc images): NAILS cannot overlay an immutable system.
+  The distribution tests run
+  [Fedora's admission gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora)
+  on the Cloud images of Fedora 44 and 45, with SELinux enforcing.
+- **SELinux enforcing, with the targeted policy**, as Fedora installs it: the
+  gate runs its sessions so, and in them NAILS's own steps run in
+  `unconfined_service_t` and neither root logs a denial of a NAILS process or
+  path. Do not update `selinux-policy`, load a policy module or create
+  `/.autorelabel` in a hidden session (see
+  [The SELinux policy and the kernel log](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
+- **Volatile journald.** Fedora's journald keeps a persistent journal, which
+  `decoy-persistence` refuses: set `Storage=volatile` under `[Journal]` in
+  `/etc/systemd/journald.conf` or in a drop-in such as
+  `/etc/systemd/journald.conf.d/50-volatile.conf`.
+- **auditd off for good.** Fedora runs auditd, which `decoy-persistence`
+  refuses, and its unit refuses `systemctl stop`. Turn it off without a
+  reboot:
+
+  ```bash
+  sudo systemctl disable auditd.service
+  sudo systemctl mask auditd.service
+  sudo auditctl --signal stop
+  ```
+
+- **tuned, firewalld and ABRT**, which the Cloud images do not install.
+  `decoy-persistence` refuses tuned while it writes its own log file, as
+  Fedora's `tuned.service` starts it (`tuned -l -P`), and warns of firewalld's
+  log file and of ABRT. The gate installs all three and shows that these
+  fixes end each: a drop-in that starts tuned without `-l`, in
+  `/etc/systemd/system/tuned.service.d/50-journal.conf`,
+
+  ```ini
+  [Service]
+  ExecStart=
+  ExecStart=/usr/sbin/tuned -P
+  ```
+
+  then `sudo systemctl daemon-reload` and `sudo systemctl restart
+  tuned.service`; `FIREWALLD_ARGS=--log-target=syslog` in
+  `/etc/sysconfig/firewalld`, then `sudo systemctl restart firewalld.service`;
+  and `sudo systemctl disable --now abrtd.service`.
+- **sssd off.** Fedora enables `sssd-kcm.socket`, so a decoy made from it warns
+  of sssd even when it is not joined to a domain: disable it and delete its
+  state files (see [Decoys joined to a domain](#decoys-joined-to-a-domain)).
+- `Storage=none` and `ProcessSizeMax=0` in a `coredump.conf.d/*.conf` drop-in,
+  since the Cloud images run systemd-coredump; `init_on_free=1` on the kernel
+  command line (`sudo grubby --update-kernel=ALL --args=init_on_free=1`, then
+  a reboot); the lid switch set to `lock` (see
+  [Suspend and the lid switch](#suspend-and-the-lid-switch)).
+- `noatime`; no swap on a disk (the swap of the Cloud images, on zram, is in
+  RAM, and no check warns of it); no hibernation.
+- With plocate installed (the Cloud images have none), the directory the
+  hidden volume is mounted in in `PRUNEPATHS` of `/etc/updatedb.conf`, or
+  `plocate-updatedb.timer` masked and stopped (`locate-database`; see
+  [The locate database](#the-locate-database)).
+- **btrfs.** Fedora keeps its root on btrfs mounted `compress=zstd:1`, and a
+  raw scan of the disk cannot read what a compressed file holds: on both Cloud
+  images the gate's btrfs controls find a compressed file's contents through
+  the kernel and not on the raw disk, so `nails rehearse` reports such a decoy
+  as not checked rather than clean (see
+  [Residue catalog](#residue-catalog), copy-on-write and compressed storage
+  history). A file deleted on the decoy can still be read back: btrfs's
+  copy-on-write leaves older roots of its tree on the disk, and the controls
+  restore a deleted compressed file from them, its path and its contents,
+  from an image of the disk taken right after the deletion. What the decoy
+  writes afterwards can take the freed blocks: in one run the writes before
+  the power-off did, in others the contents were still there after it.
+- **Packages.** Update and install on the decoy with `dnf`, as for every
+  family (see [Package updates](#package-updates)). Where hidden sessions keep
+  their own copy of the rpm database and the decoy changed a package since,
+  `package-drift` warns and names the `dnf` command that brings the copy up to
+  date.
+- **VeraCrypt and cryptsetup.** VeraCrypt's RPM, installed on the decoy, stays
+  in its rpm database, and so does the key that checked it, imported with
+  `rpm --import`, as a `gpg-pubkey` package named after the key, so whoever
+  lists the decoy's packages sees both: after the gate imports the release
+  key of Fedora 45, `rpm -q gpg-pubkey` lists `Fedora (45)
+  <fedora-45-primary@fedoraproject.org> public key`. cryptsetup
+  opens VeraCrypt volumes as well (see [backends](backends.md)), but the Cloud
+  images do not install it, and no test opens a VeraCrypt or LUKS volume on
+  Fedora. The Cloud images run with FIPS mode off
+  (`/proc/sys/crypto/fips_enabled` is `0`); their kernels list AES in XTS
+  mode (`xts(aes)`) in `/proc/crypto` and ship Serpent, Twofish and Camellia
+  as modules. No test runs a session with FIPS mode on.
+
 ## The sudo-log exposure and its mitigation
 
 Running `sudo nails …` is itself a sensitive event: sudo logs the invoking user,

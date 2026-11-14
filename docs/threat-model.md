@@ -248,6 +248,24 @@ upper changes.
   the way back still cannot set back keeps the random one, until power-off,
   and nothing reports it: end such a session with `deactivate --poweroff` or
   `emergency --poweroff` when that address must never reach the decoy.
+- **The SELinux policy and the kernel log.** A soft-reboot keeps the kernel,
+  and with it the SELinux policy the decoy loaded at its boot: at each switch
+  PID 1 does not load the policy of the root it starts in, and logs `Failed to
+  load new SELinux policy. Continuing with old policy.` after a denial of its
+  `map` on the policy file, as at a plain `systemctl soft-reboot`. The hidden
+  session runs under the decoy's policy, and the decoy after the way back
+  under the policy the kernel holds then. So do not update `selinux-policy`,
+  load a policy module or create `/.autorelabel` in a hidden session: a policy
+  loaded there would still be the kernel's after the way back, and no test
+  covers either. With auditd off, as the decoy requirements ask, the kernel
+  writes each SELinux denial to its log, and each audit record a program
+  sends, such as the record rpm sends of every package it installs; that log
+  outlives both switches, in RAM, until power-off. The way back moves the
+  decoy journal's kmsg cursor past the hidden session's records (see
+  [Residual channels](#residual-channels)). On Fedora 44 and 45 with SELinux
+  enforcing the distribution tests find none of those records in the decoy's
+  journal after either way back, and no new denial of a NAILS process or path
+  in either root.
 - **SELinux labels.** On a host that runs SELinux, activation gives two kinds
   of directory on the hidden volume the label of the decoy directory they
   stand for: the root of each upper, which becomes the hidden `/` or the root
