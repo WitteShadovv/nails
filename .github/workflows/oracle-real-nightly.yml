@@ -363,10 +363,9 @@ jobs:
             test -f "$out/forensics/$raw.raw"
           done
 
-      # Unlike the ext4 raws, the Fedora ones are not sparse: nearly every
-      # block of the 5 GiB disk holds data, so the artifact is about 2.3 GB.
-      # The arch-boxes disk is 40 GiB, most of it never written: tar keeps
-      # those holes.
+      # The driver digs the zeros out of each raw, so a raw keeps only the
+      # blocks that hold data and tar keeps the holes. Most of the 40 GiB
+      # arch-boxes disk is never written.
       - name: Pack the raws
         env:
           IMAGE: ${{ matrix.image }}
@@ -437,8 +436,8 @@ jobs:
 
       # The scan reads before.raw, control.raw and after.raw from one
       # directory: the three raws it compares, with the raw this scan
-      # compares in the place of after. Only those are unpacked, since each
-      # Fedora raw takes about 5 GB of the runner's disk.
+      # compares in the place of after. Only those are unpacked, to keep the
+      # runner's disk for the scan's copies and carves.
       - name: Unpack the raws
         env:
           RAW: ${{ matrix.raw }}
