@@ -1432,7 +1432,27 @@ afterwards:
     where a hook sets a parameter that is not the function's own to what an
     expansion makes (`preexec() { LINE=$1; logger }`), which zsh gives the
     program in its environment once it is exported, but for a value of
-    parameters zsh keeps a number in alone (`start=$SECONDS`). A global alias is
+    parameters zsh keeps a number in alone (`start=$SECONDS`). A builtin's
+    name runs an outside program, which gets its words and what it reads,
+    after `command`, unless `POSIX_BUILTINS` is on, which the check does not
+    read (`command print -r -- "$1"`), after a `disable` of it (`disable print`,
+    `disable -m 'p*'`), and for a builtin of a module zsh does not load as the
+    name is first run (`stat`, `strftime`, `sysread`, the `zsh/files` builtins
+    such as `rm`), so in a hook such a name counts as that program; a function
+    named like the command you type a NAILS command with, or one a widget runs
+    with the line, that runs the program of its own name with `"$@"` alone
+    (`sudo() { command sudo "$@" }`) passes. What a `$(...)` in a hook writes
+    counts as the hook's: its redirections (`x=$(print -r -- "$1" >> $f)`),
+    an `fc`, a write to a descriptor and a word that names the history file.
+    zsh writes its history file as it ends, so a hook that may end the shell
+    is a doubt: `exit`, `bye` or `logout`, in a subshell or a `$(...)` too,
+    where zsh writes the file as the subshell exits
+    (`$(cd x || exit 1)`), an `exec` of a command, a `return` in a trap's
+    string or in a line a key types, which runs where zsh is at its top
+    level, and a signal that may reach the shell's process (`kill -HUP $$`,
+    `kill 0`, a pid an expansion makes, `pkill`, `killall`), from a `$(...)`
+    too; `ERR_EXIT` ends the shell without writing the file and passes. A
+    global alias is
     a doubt where a word of the code the check reads holds its name beyond its
     definition, as zsh puts its value in place of that word (`function X`,
     `set -A X w`, `read X`, `print -r -- "$1" G`), and so is one named like a
@@ -1543,20 +1563,36 @@ afterwards:
     the command zsh runs for a redirection with none, one of the parameters zsh
     reads as arithmetic that is no number (see below), and a prompt there that
     holds an expansion holds code where `PROMPT_SUBST` may be on, as zsh shows
-    it unless a file sets it. An `XDG_CONFIG_HOME` there is what a path of your
-    files names with it (`${XDG_CONFIG_HOME:-$HOME/.config}/zsh`), until a
-    file sets it or takes it away: after `unset XDG_CONFIG_HOME`, and in a
-    function after a `local XDG_CONFIG_HOME`, which makes it the function's
-    own and empty, that path names `~/.config/zsh`. As for `ZDOTDIR`, a line
-    that sets or takes it away otherwise than by an assignment or an `unset`
-    as written (`XDG_CONFIG_HOME+=x`, `: ${XDG_CONFIG_HOME:=...}`, `read`,
-    `print -v`, `unset -m 'XDG_CONFIG_HOM?'`) is a doubt. For a zsh whose
-    environment it does not know, as one it reads because it found no shell
-    you typed into, such a path is one it cannot follow until a file sets it.
-    An assignment before a command (`ZDOTDIR=/x true`), which zsh keeps for
-    that command alone (but before a special builtin where `POSIX_BUILTINS`
-    is on), may set the parameter and need not, so the check reads the files
-    both where it puts them and where they were;
+    it unless a file sets it. A path of your files that names `ZDOTDIR` or
+    `XDG_CONFIG_HOME` (`${XDG_CONFIG_HOME:-$HOME/.config}/zsh`) the check
+    reads for each value either may hold: for `XDG_CONFIG_HOME` the one the
+    environment holds, each one your files give it, and its empty default,
+    which `${XDG_CONFIG_HOME:-...}` takes as `~/.config` and which a write the
+    check does not follow may leave (`typeset -a XDG_CONFIG_HOME`, which
+    makes it an empty array, a declaration in an anonymous function, which
+    makes it the function's own and empty there). Unset or empty, `$ZDOTDIR`
+    and `$XDG_CONFIG_HOME` expand to nothing, as zsh expands them. An
+    assignment of either holds for the rest of its file, but once the file
+    ends the values from before it stay too, as zsh stops reading a file at
+    an error (an unset parameter under `NO_UNSET`, a read-only one, a bad
+    subscript) that may come before it, and then reads the user's files where
+    they were: only an assignment that is the file's first command, with a
+    value whose expansion cannot fail (`export ZDOTDIR="$HOME/.config/zsh"`
+    as the first line of `.zshenv`), leaves the home's files out. The user's
+    file of each stage is read in each place `ZDOTDIR` may hold, as zsh reads
+    it with `ZDOTDIR` holding that place, and a path that code run as a
+    function names, which runs after your files define it, for every value
+    your files ever give either parameter. As for `ZDOTDIR`, a line that sets
+    or takes `XDG_CONFIG_HOME` away otherwise than by an assignment or an
+    `unset` as written (`XDG_CONFIG_HOME+=x`, `: ${XDG_CONFIG_HOME:=...}`,
+    `read`, `print -v`, `unset -m 'XDG_CONFIG_HOM?'`) is a doubt. For a zsh
+    whose environment it does not know, as one it reads because it found no
+    shell you typed into, a path that names `XDG_CONFIG_HOME` is one it
+    cannot follow, but in a file that sets it first. An assignment before a
+    command (`ZDOTDIR=/x true`), which zsh keeps for that command alone (but
+    before a special builtin where `POSIX_BUILTINS` is on), may set the
+    parameter and need not, so the check reads the files both where it puts
+    them and where they were;
   - zsh's own `promptinit`, and the `add-zsh-hook` and `add-zle-hook-widget`
     it autoloads, it knows by their bytes as zsh 5.9, 5.9.1 and 5.9.2 ship
     them, and reads for what that code does, and a changed one as code.
@@ -1630,8 +1666,15 @@ afterwards:
     (`TMOUT='pipestatus[$(cmd)1]'` runs `cmd` at each prompt), so a value
     that is no number is a doubt, one your files give one of them and one the
     shell's environment holds, and so is one set in a form the check does not
-    read (`read TMOUT`, `print -v TMOUT`); a number, as a hardened
-    `/etc/profile` sets `TMOUT=900` with `readonly` and `export`, passes. A
+    read (`read TMOUT`, `print -v TMOUT`). A number passes for all but
+    `TMOUT`: above 0, in your files or in the shell's environment, it is a
+    doubt, as zsh then ends by itself once a prompt has waited that many
+    seconds (a `TRAPALRM` aside, which a later file or a hook may take away)
+    and writes its history file as it ends, so the lines you typed before a
+    pause, the unlock and mount commands among them, are on the decoy disk.
+    A hardened `/etc/profile` that sets `TMOUT=900` with `readonly` and
+    `export` makes the check warn: type the decoy commands in a shell started
+    without it (`env -u TMOUT zsh -f`). `TMOUT=0` and an empty one pass. A
     tie (`typeset -T TMOUT tmout`, and past an option's number, as in
     `typeset -Z 3 -T ZDOTDIR zd`), by which zsh sets a parameter by the other
     name too (`tmout=(...)`), is a doubt where it names one of them,
@@ -1654,12 +1697,19 @@ afterwards:
     that writes in place counts (`sed -i`, `patch`, `sponge`), and a
     redirection, or a command known to write the files it names (`cp`, `mv`,
     `tee`, `sed`, `perl`, `sponge`), given a path an expansion may make so
-    (`>> $log`, `cp ~/.src ${f}en`); for a file a function's code reads, which
+    (`>> $log`, `cp ~/.src ${f}en`), the last command of the file before
+    among them; for a file a function's code reads, which
     zsh reads as the function runs, a hook's at each prompt, any such command
-    (`precmd() { . ~/.x }; cp ~/.y ~/.x`). A program that writes a file it is
-    not given the name of, or that it is given by a path an expansion makes
-    where the check does not know that program to write the files it names,
-    it does not see;
+    (`precmd() { . ~/.x }; cp ~/.y ~/.x`). Such a command given a directory
+    the file is in or below writes it too, as it may write any file there
+    (`cp -r ~/p ~/.zd`, `rsync -a ~/p/ ~/`, `tar -C ~ -xf ~/p.tar`): one the
+    check resolves, and for a command known to write the files it names one
+    whose expansions may be any (`cp -r ~/p $d`), a path below the working
+    directory and `.`; and a program that unpacks an archive (`tar`, `unzip`,
+    `cpio` and the like) may write any file. A program that writes a file it
+    is given neither the name of nor a directory above (`chezmoi apply`), or
+    that it is given by a path an expansion makes where the check does not
+    know that program to write the files it names, it does not see;
   - an option counts as on wherever a file zsh reads names it, outside a line
     that is a comment (where a file sets `histchars`, whose third character
     starts a comment in place of `#`, such a line may run, a doubt): a `setopt`,
@@ -1701,7 +1751,9 @@ afterwards:
   when an attribute is given `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES` or
   `fpath` that changes what zsh expands it to, what it holds or whether a
   later assignment sets it (`typeset -l ZDOTDIR`, and so `-u`, `-L 3`, `-i`,
-  and `readonly ZDOTDIR`; `typeset -U fpath` passes), when a parameter is set
+  `readonly ZDOTDIR`, and `-a` but on `fpath`, an array already, as
+  `typeset -a XDG_CONFIG_HOME` makes it an empty array; `typeset -U fpath`
+  passes), when a parameter is set
   by a name another one holds
   (`${(P)name::=on}`) or that an expansion makes in a `zstyle -s`, `getopts`,
   `strftime -s` (`-s$name` too), `vared`, `zparseopts`, `zformat -f`, `getln`,
@@ -1815,8 +1867,12 @@ afterwards:
   is left the check cannot tell and, for the zsh you typed the command into,
   nothing it read changed after it started (with its history file in your
   home, only with `HIST_FCNTL_LOCK` on, see above): zsh's default, under which a zsh
-  writes its history only as it exits, which the kill at activation keeps it
-  from doing.
+  writes its history only as it ends, which the kill at activation keeps it
+  from doing, unless it ends before that. A hook that may end it and a
+  `TMOUT` above 0 make the check warn (see above), and a shell you end
+  yourself before activation (`exit`, Ctrl-D, closing its window, which sends
+  it SIGHUP) writes its history then, so leave the shell you typed in open
+  until activation.
   Nearly every `.zshrc` autoloads `compinit`, which makes the check warn (see
   above), so a zsh started as `zsh -f` is in practice the one that passes. If
   you turn the options off

@@ -890,7 +890,20 @@ of this changelog for that version becomes the release notes word for word, and
   (`zle -N`, `zle -C`, `zle -F`, a `zle -T` transformation's), which a key bound to it may run as a
   line is typed, a function named like a builtin, which the hooks of zsh's own
   `add-zle-hook-widget` run, or like their dispatcher (`azhw:...`), a prompt theme `prompt` runs from a hook, `command_not_found_handler`, and the code
-  `sched`, `zstyle -e` and `bindkey -s` run. An `fc -p`, and a `history -p` or `history -P`, count
+  `sched`, `zstyle -e` and `bindkey -s` run. What a `$(...)` in a hook writes counts as the hook's
+  (`x=$(print -r -- "$1" >> $f)`, an `fc`, a descriptor). As zsh writes its history file as it ends,
+  a hook that may end the shell is a doubt: `exit`, `bye` or `logout`, in a subshell or a `$(...)`
+  too, as zsh writes the file in a subshell that exits (`$(cd x || exit 1)`), an `exec` of a
+  command, a `return` in a trap's string or a line a key types, and a signal that may reach the
+  shell's process (`kill -HUP $$`, `kill 0`, a pid an expansion makes, `pkill`, `killall`), from a
+  `$(...)` too; zsh 5.9 to 5.9.2 wrote the line with `preexec() { exit }`, `bye`, `kill -HUP $$`, a
+  `TRAPZERR` that exits and each of the others. A builtin's name runs an outside program, which gets
+  its words, after `command` but where `POSIX_BUILTINS` is on (`command print -r -- "$1"`), after a
+  `disable` of it (`disable print`, `disable -m 'p*'`) and for a builtin of a module zsh does not
+  load as the name is first run (`stat`, `strftime`), so in a hook such a name counts as that
+  program, which zsh 5.9 to 5.9.2 handed the line to; a wrapper that runs the program of its own
+  name with `"$@"` alone (`sudo() { command sudo "$@" }`) passes. An `fc -p`, and a `history -p` or
+  `history -P`, count
   as a write, and so do a global alias for the history file
   (`alias -g /dev/tty=~/.zsh_history`) and an element of zsh/mapfile's `mapfile` that names it. A
   prompt set in a form the walk does not read (`print -v PS1`, `${PS1::=...}`, `read PS1`, `prompt`,
@@ -952,7 +965,10 @@ of this changelog for that version becomes the release notes word for word, and
   `DIRSTACKSIZE`, `MENUSCROLL`, `LOGCHECK` or `ZFTP_TMOUT` that is no number, which zsh reads as
   arithmetic each time it uses it, at a prompt, after a command or at a `cd`, so that
   `TMOUT='pipestatus[$(cmd)1]'` runs `cmd` at each prompt: one a file gives it, one set in a form
-  the walk does not read (`read TMOUT`, `print -v TMOUT`) and one the shell's environment holds, at
+  the walk does not read (`read TMOUT`, `print -v TMOUT`) and one the shell's environment holds,
+  at a `TMOUT` above 0 there, a number too (`TMOUT=900`, as a hardened `/etc/profile` sets it), as
+  zsh then ends by itself once a prompt has waited that many seconds and writes its history file
+  as it ends, which zsh 5.9 to 5.9.2 did with `TMOUT=3`, at
   a tie (`typeset -T TMOUT tmout`, past an option's number too, as in `typeset -Z 3 -T ZDOTDIR zd`)
   of one of them, of `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES`, `fpath` or of an array of hook
   functions, by which zsh sets it by the other name too, at
@@ -1016,25 +1032,38 @@ of this changelog for that version becomes the release notes word for word, and
   (`typeset {ZDOT,}DIR=~/.zd`, `unset {ZDOT,}DIR`, `read -r {ZDOT,}DIR`), and a word where the options
   of `print`, `printf`, `zstyle`, `strftime` or the like may stand (`print ${f}DIR ~/.zd` with
   `f=-vZDOT`, `print "$x"`, which `print -r -- "$x"` is not). So is an `unset -m` whose pattern may
-  match a parameter the check reads (`unset -m 'ZDOTDI?'`, `unset -m '(ZDOTDIR|x)'`), and an
+  match a parameter the check reads (`unset -m 'ZDOTDI?'`, `unset -m '(ZDOTDIR|x)'`,
+  `unset -m 'ZDOTDI[\]R]'`, whose class holds the `]` a backslash keeps), and an
   attribute given `ZDOTDIR`, `XDG_CONFIG_HOME`, `NIX_PROFILES` or `fpath` that changes what zsh
   expands it to, what it holds or whether a later assignment sets it (`typeset -l ZDOTDIR`, with
-  which `. $ZDOTDIR/rc` sources a file in lower case, `readonly ZDOTDIR`). An `fc` is read past the
+  which `. $ZDOTDIR/rc` sources a file in lower case, `readonly ZDOTDIR`, and `-a` but on `fpath`,
+  as `typeset -a XDG_CONFIG_HOME` makes it an empty array). An `fc` is read past the
   word `-e` or `-t` takes (`fc -t %F -AI`, `fc -e - -AI`), and one with a letter it does not take
-  writes nothing, as zsh then refuses it (`history -A`). The `XDG_CONFIG_HOME` of the shell's
-  environment is what `${XDG_CONFIG_HOME:-$HOME/.config}` names, until a file sets it, or takes it
-  away (`unset XDG_CONFIG_HOME`, after which that names `~/.config`, and in a function a `local`
-  that makes it the function's own and empty), and as for `ZDOTDIR`, a line that sets or takes it
+  writes nothing, as zsh then refuses it (`history -A`). A path that names `ZDOTDIR` or
+  `XDG_CONFIG_HOME` is read for each value either may hold: for `XDG_CONFIG_HOME` the shell's
+  environment's, each one the files give it and its empty default beside them, which
+  `${XDG_CONFIG_HOME:-$HOME/.config}` takes as `~/.config` and which a write the walk does not
+  follow may leave (`typeset -a XDG_CONFIG_HOME`, a declaration in an anonymous function), and an
+  unset or empty one expands to nothing. An assignment of either holds for the rest of its file,
+  but once the file ends the values from before it stay too, as zsh stops a file at an error (an
+  unset parameter under `NO_UNSET`, a read-only one, a bad subscript, a division by zero) that may
+  come before the assignment, and then reads the home's files: zsh 5.9 to 5.9.2 did so with each,
+  where the check read only `ZDOTDIR`'s. Only an assignment that is its file's first command, with
+  a value whose expansion cannot fail, drops them. The user's file of each stage is read in each
+  place `ZDOTDIR` may hold, with `ZDOTDIR` holding that place, and a path that code run as a
+  function sources, adds to `fpath` or autoloads by path, for every value the files ever give
+  either, a later one among them. As for `ZDOTDIR`, a line that sets or takes `XDG_CONFIG_HOME`
   away otherwise than as the walk reads it is a doubt (`XDG_CONFIG_HOME+=x`,
   `${XDG_CONFIG_HOME:=...}`, `read`, `print -v`, `unset -m 'XDG_CONFIG_HOM?'`). For a zsh whose
   environment the check does not know, a path that names `XDG_CONFIG_HOME` is one it cannot follow
-  until a file sets it. An assignment before a command (`ZDOTDIR=/x true`), which zsh keeps for that
-  command alone (but before a special builtin where `POSIX_BUILTINS` is on), may set the parameter
-  and need not, so the check reads the files where it puts them and where they were before. A function or a
-  regular alias named `run-help` or `which-command`, which the widgets of those names run with the
-  line being typed on the buffer stack as Alt-h, Alt-? or a key a file binds to them is pressed, or
-  named as a key runs those widgets (`.run-help`, a name `zle -A` gives a widget), or named `man`,
-  which zsh's own alias `run-help` stands for, or named `run-help-` and a command, which zsh's own
+  but in a file that sets it first. An assignment before a command (`ZDOTDIR=/x true`), which zsh
+  keeps for that command alone (but before a special builtin where `POSIX_BUILTINS` is on), may set
+  the parameter and need not, so the check reads the files where it puts them and where they were
+  before. A function or a regular alias named `run-help` or `which-command`, which the widgets of
+  those names run with the line being typed on the buffer stack as Alt-h, Alt-? or a key a file
+  binds to them is pressed, or named as a key runs those widgets (`.run-help`, a name `zle -A` gives
+  a widget), or named `man`, which zsh's own alias `run-help` stands for, or named `run-help-` and a
+  command, which zsh's own
   `run-help` hands the line's words, counts as a hook, and a global alias named like one of them or
   like `whence`, which zsh's own alias `which-command` stands for, counts as used. `compctl`, whose
   completion runs without `compinit` (a `-K` function that reads the line with `read -l`), is a
@@ -1042,7 +1071,13 @@ of this changelog for that version becomes the release notes word for word, and
   is that file's name, as written, writes to it, in an option's word too (`sort -o~/.x`,
   `sort --output=~/.x`, `curl -o.x`), but one that writes nothing in the files it names
   (`cat`, `touch`), a function the files define and zsh's own `prompt`, whose work the check reads:
-  `sed -i`, `patch` and `sponge` among them.
+  `sed -i`, `patch` and `sponge` among them, the last command of the file before among them, which
+  the check missed (`cp ~/.src ~/.zshrc` as the last line of `.zshenv`). Such a command given a
+  directory the file is in or below writes it too (`cp -r ~/p ~/.zd`, `rsync -a ~/p/ ~/`,
+  `tar -C ~ -xf ~/p.tar`): one the check resolves, and for a command known to write the files it
+  names one whose expansions may be any, a path below the working directory and `.`; and a program
+  that unpacks an archive (`tar`, `unzip`, `cpio`) may write any file. zsh 5.9 to 5.9.2 wrote each
+  line after each of these, for a shell the check reads without its start time.
   For the shell the command was typed into, or likely typed into, the
   check reads when its process started, and a startup file, a file they source or a function's
   file it reads or looks for that changed after that, by its status change time, is a doubt: the

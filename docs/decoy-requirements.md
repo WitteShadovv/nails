@@ -615,13 +615,21 @@ history yourself so an interactive shell has nowhere to write:
   options or the name (`private -$o x`, `typeset {a,b}=x`, `print "$x"`, which
   `print -r -- "$x"` is not), an attribute that changes what `ZDOTDIR` or
   `XDG_CONFIG_HOME` expands to or keeps a later assignment from setting it
-  (`typeset -l`, `readonly`), an `XDG_CONFIG_HOME` set otherwise than by an
-  assignment or an `unset` (`read`, `+=`), an `autoload -X`, `ALIAS_FUNC_DEF` where an alias shares a function's
+  (`typeset -l`, `readonly`, `typeset -a XDG_CONFIG_HOME`), an
+  `XDG_CONFIG_HOME` set otherwise than by an assignment or an `unset`
+  (`read`, `+=`), an `autoload -X`, `ALIAS_FUNC_DEF` where an alias shares a
+  function's
   name, a prompt with code where `PROMPT_SUBST` (or `PROMPT_VARS`) may be on, a
   `NULLCMD` or `READNULLCMD` of any value in the environment you start the shell
   from, a `TMOUT`, `PERIOD` or `REPORTTIME` (and the like) that is no number,
   which zsh reads as arithmetic each time it uses it, in your files or in that
-  environment, or tied to another name (`typeset -T TMOUT tmout`), a file your
+  environment, or tied to another name (`typeset -T TMOUT tmout`), a `TMOUT`
+  above 0 there, with which zsh ends by itself at a prompt left waiting and
+  writes its history then (start the shell you type in without it,
+  `env -u TMOUT zsh -f`), a hook that may end the shell, which writes its
+  history as it ends (`exit`, in a `$(...)` too, `exec`, `kill -HUP $$`), a
+  builtin's name a hook runs as an outside program (after `command` or a
+  `disable` of it, or of a module zsh does not load, as `stat`), a file your
   files source by a path with a modifier on `$HOME` (`source $HOME:a/x`), a
   file your startup files write before zsh reads it (at any point, for one a
   hook or another function reads), a function
