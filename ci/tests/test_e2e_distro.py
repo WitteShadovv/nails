@@ -24,6 +24,7 @@ def sample_metadata(
     records: dict[str, str] | None = None,
     refusals: dict[str, str] | None = None,
     staged: dict[str, str] | None = None,
+    staged_drivers: dict[str, str] | None = None,
 ) -> distro.DistroMetadata:
     scenarios = scenarios or {
         "debian-12": ["debian-12-smoke"],
@@ -44,12 +45,15 @@ def sample_metadata(
             "arch-boxes-smoke": "arch-boxes-staged-smoke",
             "arch-boxes-records": "arch-boxes-staged-records",
         }
+    if staged_drivers is None:
+        staged_drivers = {name: name for name in ("fedora-44-gate", "fedora-44-rpms")}
     if timeouts is None:
         timeouts = {name: 2400 for members in scenarios.values() for name in members}
         timeouts.update({attr: 1200 for attr in probes.values()})
         timeouts.update({attr: 1800 for attr in records.values()})
         timeouts.update({attr: 900 for attr in refusals.values()})
         timeouts.update({attr: 2400 for attr in staged.values()})
+        timeouts.update({attr: 3600 for attr in staged_drivers.values()})
     return distro.DistroMetadata(
         distros=list(scenarios),
         scenarios=scenarios,
@@ -58,6 +62,7 @@ def sample_metadata(
         records=records,
         refusals=refusals,
         staged=staged,
+        staged_drivers=staged_drivers,
     )
 
 
@@ -165,11 +170,35 @@ class ParseMetadataTest(unittest.TestCase):
         meta = distro.parse_distro_metadata(payload)
         self.assertEqual(meta.staged, {"arch-boxes-smoke": "arch-boxes-staged-smoke"})
 
+    def test_parses_staged_drivers_and_they_are_optional(self) -> None:
+        empty: dict[str, object] = {"distros": [], "scenarios": {}, "timeouts": {}}
+        self.assertEqual(distro.parse_distro_metadata(empty).staged_drivers, {})
+        payload = {
+            "distros": [],
+            "scenarios": {},
+            "timeouts": {"fedora-44-gate": 3600},
+            "stagedDrivers": {"fedora-44-gate": "fedora-44-gate"},
+        }
+        meta = distro.parse_distro_metadata(payload)
+        self.assertEqual(meta.staged_drivers, {"fedora-44-gate": "fedora-44-gate"})
+
+    def test_rejects_a_staged_name_that_runs_in_and_out_of_the_sandbox(self) -> None:
+        payload = {
+            "distros": [],
+            "scenarios": {},
+            "timeouts": {"arch-boxes-staged-smoke": 2400, "arch-boxes-smoke": 3600},
+            "staged": {"arch-boxes-smoke": "arch-boxes-staged-smoke"},
+            "stagedDrivers": {"arch-boxes-smoke": "arch-boxes-smoke"},
+        }
+        with self.assertRaisesRegex(distro.DistroError, "arch-boxes-smoke"):
+            distro.parse_distro_metadata(payload)
+
     def test_rejects_a_driver_without_timeout(self) -> None:
         for key, table in (
             ("records", {"debian-13": "debian-13-records"}),
             ("refusals", {"fedora-44": "fedora-44-refusal"}),
             ("staged", {"arch-boxes-smoke": "arch-boxes-staged-smoke"}),
+            ("stagedDrivers", {"fedora-44-gate": "fedora-44-gate"}),
         ):
             with self.subTest(key=key):
                 payload = {"distros": [], "scenarios": {}, "timeouts": {}, key: table}
@@ -177,7 +206,7 @@ class ParseMetadataTest(unittest.TestCase):
                     distro.parse_distro_metadata(payload)
 
     def test_rejects_driver_tables_that_are_not_a_mapping(self) -> None:
-        for key in ("records", "refusals", "staged"):
+        for key in ("records", "refusals", "staged", "stagedDrivers"):
             with self.subTest(key=key):
                 payload: dict[str, object] = {
                     "distros": [],
@@ -273,11 +302,13 @@ class PlanMatrixTest(unittest.TestCase):
             assert isinstance(members, list)
             tests.update(str(test) for test in members)
         drivers = {*meta.probes.values(), *meta.records.values()}
-        self.assertFalse(tests & (drivers | set(meta.refusals.values())))
+        drivers |= {*meta.refusals.values(), *meta.staged_drivers.values()}
+        self.assertFalse(tests & drivers)
 
     def test_smoke_jobs_are_marked_and_do_not_gate(self) -> None:
         for job in distro.plan_distro_matrix(sample_metadata())["include"]:
             self.assertEqual((job["suite"], job["gating"]), ("smoke", False))
+            self.assertIs(job["host"], False)
 
 
 class PlanProbeMatrixTest(unittest.TestCase):
@@ -331,6 +362,7 @@ class PlanDriverMatrixTest(unittest.TestCase):
                 for job in include:
                     self.assertEqual(job["suite"], suite)
                     self.assertIs(job["gating"], True)
+                    self.assertIs(job["host"], True)
                     self.assertEqual((job["index"], job["count"]), (1, 1))
                     self.assertEqual(job["tests"], [table[str(job["distro"])]])
                     self.assertEqual(job["seconds"], seconds)
@@ -362,15 +394,21 @@ class PlanDriverMatrixTest(unittest.TestCase):
         meta = sample_metadata()
         include = distro.plan_matrix(meta, ["staged"])["include"]
         self.assertEqual(
-            [(job["distro"], job["tests"]) for job in include],
+            [(job["distro"], job["tests"], job["host"]) for job in include],
             [
-                ("arch-boxes-smoke", ["arch-boxes-staged-smoke"]),
-                ("arch-boxes-records", ["arch-boxes-staged-records"]),
+                ("arch-boxes-smoke", ["arch-boxes-staged-smoke"], False),
+                ("arch-boxes-records", ["arch-boxes-staged-records"], False),
+                ("fedora-44-gate", ["fedora-44-gate"], True),
+                ("fedora-44-rpms", ["fedora-44-rpms"], True),
             ],
         )
         for job in include:
             self.assertEqual((job["suite"], job["gating"]), ("staged", False))
-            self.assertEqual(job["seconds"], 2400)
+            seconds = 3600 if job["host"] else 2400
+            self.assertEqual(job["seconds"], seconds)
+            timeout = job["timeout"]
+            assert isinstance(timeout, int)
+            self.assertGreater(timeout * 60, seconds)
 
     def test_a_staged_scenario_is_chosen_by_its_name(self) -> None:
         meta = sample_metadata()
@@ -382,9 +420,23 @@ class PlanDriverMatrixTest(unittest.TestCase):
         ):
             distro.plan_matrix(sample_metadata(), ["staged"], ["arch-boxes"])
 
+    def test_staged_drivers_are_chosen_by_their_names_in_order(self) -> None:
+        include = distro.plan_matrix(
+            sample_metadata(), ["staged"], ["fedora-44-rpms", "fedora-44-gate"]
+        )["include"]
+        self.assertEqual(
+            [job["distro"] for job in include], ["fedora-44-rpms", "fedora-44-gate"]
+        )
+        with self.assertRaisesRegex(
+            distro.DistroError, "unknown staged scenario: fedora-44"
+        ):
+            distro.plan_matrix(sample_metadata(), ["staged"], ["fedora-44"])
+
     def test_no_staged_image_raises(self) -> None:
         with self.assertRaisesRegex(distro.DistroError, "no image is staged"):
-            distro.plan_matrix(sample_metadata(staged={}), ["staged"])
+            distro.plan_matrix(
+                sample_metadata(staged={}, staged_drivers={}), ["staged"]
+            )
 
 
 class ExpandSuitesTest(unittest.TestCase):
@@ -568,6 +620,10 @@ class DistroPlanCommandTest(unittest.TestCase):
     def test_probe_suite_plans_the_named_probes(self) -> None:
         include = self.plan("--suite", "probe", "fedora-44")["include"]
         self.assertEqual([job["tests"] for job in include], [["fedora-44-probe"]])
+
+    def test_staged_suite_plans_the_named_drivers(self) -> None:
+        include = self.plan("--suite", "staged", "fedora-44-gate")["include"]
+        self.assertEqual([job["tests"] for job in include], [["fedora-44-gate"]])
 
     def test_suites_combine(self) -> None:
         include = self.plan("--suite", "records", "--suite", "refusal", "fedora-44")
