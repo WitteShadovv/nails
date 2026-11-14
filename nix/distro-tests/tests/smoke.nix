@@ -26,27 +26,30 @@
 # devices that runs and finds nothing. On systemd 255 (Ubuntu 24.04), which
 # reports no soft-reboot count, only the session's entry time tells the two
 # apart. The scenario lists the failed units on the decoy before the first
-# switch and right after each switch. Where the image table lists what the
-# image is known to fail (`knownFailedUnits`), each listing must hold exactly
-# the units listed for its phase (none before the first switch), each failed
-# with its known line, and the `platform` row of `check` must warn about every
-# unit listed; without a list they are only printed. A listing sees only what
-# is failed at that moment: a unit that failed while a switch stopped the old
-# system and that the new system started again is not in it, nor is one that
-# fails after it. After the second session, which pushes the kernel's process
-# numbers far on, the getty the decoy starts again carries a number in the
-# power-of-two range the decoy's fresh boot gave it, and logind a number below
-# the one the session pushed the counter to. Each switch goes through logind: a
-# program that blocks shutdown makes the activation refuse, a program that
-# holds the shutdown back (a delay inhibitor) keeps the first entry waiting,
-# with status showing it activating and recover leaving it alone, and one in
-# the second session holds the way back and leaves the proof of logind's
-# signal on the hidden volume. Each entry ends the decoy's unattended-upgrades
-# shutdown helper on logind's signal, as an ordinary shutdown does: the unit
-# does not fail at the switch, and neither its log on the decoy disk nor the
-# session's copy gains a stop line. In each session the hidden PID 1 has the
-# session's timeout guard for soft-reboot.target (a switch that hangs until its
-# job timeout powers off), and after each way back the decoy's PID 1 has its
+# switch and right after each switch, and in each hidden session again just
+# before its way back, which resets the units that failed in the session.
+# Where the image table lists what the image is known to fail
+# (`knownFailedUnits`), each listing must hold exactly the units listed for
+# its phase (none before the first switch), each failed with its known line,
+# and the `platform` row of `check` must warn about every unit listed; without
+# a list they are only printed. A listing sees only what is failed at that
+# moment: a unit that failed while a switch stopped the old system and that
+# the new system started again is not in it, nor is one that fails and
+# starts again between two listings, nor one that fails after the last. After
+# the second session, which pushes the kernel's process numbers far on, the
+# getty the decoy starts again carries a number in the power-of-two range the
+# decoy's fresh boot gave it, and logind a number below the one the session
+# pushed the counter to. Each switch goes through logind: a program that
+# blocks shutdown makes the activation refuse, a program that holds the
+# shutdown back (a delay inhibitor) keeps the first entry waiting, with status
+# showing it activating and recover leaving it alone, and one in the second
+# session holds the way back and leaves the proof of logind's signal on the
+# hidden volume. Each entry ends the decoy's unattended-upgrades shutdown
+# helper on logind's signal, as an ordinary shutdown does: the unit does not
+# fail at the switch, and neither its log on the decoy disk nor the session's
+# copy gains a stop line. In each session the hidden PID 1 has the session's
+# timeout guard for soft-reboot.target (a switch that hangs until its job
+# timeout powers off), and after each way back the decoy's PID 1 has its
 # own unit again.
 #
 # The decoy's disk swap is turned off before the first hidden root exists, as
@@ -1350,6 +1353,10 @@ distroVm.buildVmTest {
         print(f"overlay feature options pinned on: {[t for t, _ in overlays]}")
 
     with subtest("emergency soft-reboots back to the plain decoy"):
+        # The session's failed units once more, just before the way back: a
+        # unit that failed while the session ran is reset by the way back, so
+        # no listing on the decoy would see it.
+        check_failed_units("in the first hidden session before the emergency", "hiddenSession")
         follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
         # The way back starts the decoy's own units, so it turns the swap of
         # each kept fstab line on again, while the first session's file is
@@ -1467,6 +1474,9 @@ distroVm.buildVmTest {
         vm.succeed("for i in $(seq 8000); do /bin/sh -c :; done")
         reached = int(vm.succeed("sh -c 'echo $$'").strip())
         assert reached > 4 * max(fresh_numbers.values()), (reached, fresh_numbers)
+        # The session's failed units once more, just before the way back,
+        # which resets those that failed in the session.
+        check_failed_units("in the second hidden session before deactivate", "hiddenSession")
         # The way back goes through logind as well: a program in the session
         # holds it back and leaves its proof on the hidden volume.
         hold_shutdown_back("delay-probe-hidden", "/mnt/data/delay-probe.seen", 3)

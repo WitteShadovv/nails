@@ -36,9 +36,10 @@
 #   source         where the image comes from (see below);
 #   knownFailedUnits
 #                  optional: the units the smoke scenario must find failed when
-#                  it lists the failed units, which it does five times: on the
-#                  decoy before the first switch, and right after each switch,
+#                  it lists the failed units, which it does seven times: on
+#                  the decoy before the first switch, right after each switch,
 #                  in both hidden sessions and on the decoy after both ways
+#                  back, and in both hidden sessions again just before the way
 #                  back. Absent or null, the scenario only prints them.
 #                  Otherwise the table has exactly three keys: `hiddenSession`
 #                  and `afterReturn` map each unit that must be failed at the
@@ -53,11 +54,11 @@
 #                  line, a `notInImage` unit the image now has, and a
 #                  `platform` row of `check` that does not warn and name every
 #                  unit listed. An empty table asserts that no unit is failed
-#                  at any of the five listings. A listing sees only what is
+#                  at any of the seven listings. A listing sees only what is
 #                  failed at that moment: not a unit that failed and started
 #                  again before it, as one that failed while a switch stopped
 #                  the old system does when the new system starts it, nor one
-#                  that fails after it.
+#                  that fails after the last.
 #
 # A `source` is one of:
 #   { kind = "nix-vm-test"; distro; image; }  a release nix-vm-test already pins,
