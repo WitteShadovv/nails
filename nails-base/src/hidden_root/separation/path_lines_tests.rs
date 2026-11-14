@@ -646,6 +646,141 @@ fn a_line_whose_path_cannot_be_told_claims_the_filesystem_its_text_names() {
 }
 
 #[test]
+fn a_crypttab_source_outside_dev_is_judged_as_a_file() {
+    // The volume is veracrypt1 (dm-9) on the external sdb, at /mnt.
+    // systemd-cryptsetup opens any source through the links in it, and a
+    // regular file through a loop device: NAILS reads a source that is no
+    // tag and no device's path in /dev as a file's path, with no link
+    // followed. A link to the volume's drive, or a device node outside
+    // /dev, cannot be told, and the line is a finding with no flag.
+    for (crypttab, link, node, why) in [
+        (
+            "vault /sdb.link none luks,nofail\n",
+            Some(("/sdb.link", "/dev/sdb")),
+            None,
+            "/sdb.link is a symbolic link, which NAILS does not follow",
+        ),
+        (
+            "vault /dev/../sdb.link none luks,nofail\n",
+            Some(("/sdb.link", "/dev/sdb")),
+            None,
+            "/sdb.link is a symbolic link, which NAILS does not follow",
+        ),
+        (
+            "vault /srv/sdb.node none luks,nofail\n",
+            None,
+            Some("/srv/sdb.node"),
+            "/srv/sdb.node is a device node",
+        ),
+    ] {
+        let mut world = external_veracrypt().crypttab(crypttab);
+        if let Some((link, target)) = link {
+            world = world.link(link, target);
+        }
+        if let Some(node) = node {
+            world = world.device_node(node);
+        }
+        let judgement = world.judge("/mnt");
+        let shown: Vec<&str> = crypttab.split_whitespace().take(2).collect();
+        let shown = shown.join(" ");
+        assert_eq!(
+            entry_needs(&judgement),
+            [(EntryKind::Untold, shown.as_str(), false)],
+            "{crypttab}"
+        );
+        let entry = &judgement.entries[0];
+        assert_eq!(entry.file, CRYPTTAB);
+        assert_eq!(
+            entry.why,
+            format!("where the file it opens lies cannot be told: {why}"),
+            "{crypttab}"
+        );
+        assert!(!entry.not_plain, "{crypttab}");
+        assert_eq!(judgement.verdict, Verdict::Separate, "{crypttab}");
+    }
+    // A container file in the volume: the boot opens it from there, so the
+    // line is a finding, and the decoy uses the volume's filesystem, as for
+    // an image line there.
+    let judgement = external_veracrypt()
+        .crypttab("box /mnt/box.img none luks,nofail\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [(EntryKind::Blocking, "box /mnt/box.img", false)]
+    );
+    assert_eq!(
+        judgement.entries[0].why,
+        "the file it opens lies in the volume at /mnt"
+    );
+    assert!(
+        matches!(judgement.verdict, Verdict::OnDecoyFilesystem { .. }),
+        "{:?}",
+        judgement.verdict
+    );
+    // So does one in the root's folder of a bind of a folder of /, which is
+    // never the decoy's own line.
+    let judgement = bind_of_a_folder("")
+        .crypttab("box /data/x/box.img none luks\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [SLASH, (EntryKind::Blocking, "box /data/x/box.img", false)]
+    );
+    assert_eq!(judgement.entries[1].system_folder, None);
+    // A container beside it, and the drive by its own path, as before.
+    let judgement = bind_of_a_folder("")
+        .crypttab("box /data/y/box.img none luks\n")
+        .judge("/mnt");
+    assert_eq!(entry_needs(&judgement), [SLASH]);
+    let judgement = external_veracrypt()
+        .crypttab("vault /dev/sdb none luks,nofail\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [(EntryKind::Blocking, "vault /dev/sdb", false)]
+    );
+}
+
+#[test]
+fn a_device_path_that_leads_out_of_dev_cannot_be_told() {
+    // The volume is veracrypt1 (dm-9) on the external sdb, at /mnt. A link
+    // in /dev to an image or a container file in the volume: the boot
+    // mounts or opens that file. No block device answers to the path, so
+    // NAILS places the line by it, where it cannot be told.
+    let world = external_veracrypt()
+        .fstab(&with_the_decoys_lines(
+            "/dev/img.link /media/i ext4 loop,nofail 0 0",
+        ))
+        .crypttab("box /dev/box.link none luks,nofail\n")
+        .link("/dev/img.link", "/mnt/img.raw")
+        .link("/dev/box.link", "/mnt/box.img");
+    let judgement = world.judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [
+            (EntryKind::Untold, "/dev/img.link /media/i ext4", false),
+            (EntryKind::Untold, "box /dev/box.link", false),
+        ]
+    );
+    assert_eq!(
+        judgement.entries[0].why,
+        "where the file it names lies cannot be told: /dev/img.link leads out of /dev through a \
+         symbolic link"
+    );
+    assert_eq!(
+        judgement.entries[1].why,
+        "where the file it opens lies cannot be told: /dev/box.link leads out of /dev through a \
+         symbolic link"
+    );
+    // A device that is not plugged in names nothing here, as before.
+    let judgement = external_veracrypt()
+        .fstab(&with_the_decoys_lines("/dev/sdz1 /media/z ext4 nofail 0 0"))
+        .crypttab("other /dev/sdz2 none luks,nofail\n")
+        .judge("/mnt");
+    assert_eq!(entry_needs(&judgement), []);
+}
+
+#[test]
 fn a_path_that_was_not_looked_up_cannot_be_told() {
     // The scene holds each path the fstab names as it reads; one it does not
     // hold is no path that is known to lie anywhere.

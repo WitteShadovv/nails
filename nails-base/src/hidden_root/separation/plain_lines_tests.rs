@@ -416,6 +416,36 @@ fn a_fuse_program_in_a_volume_of_its_own_places_the_root_on_the_decoys_storage()
 }
 
 #[test]
+fn a_path_into_dev_written_otherwise_is_its_lines_only_finding() {
+    // The volume is veracrypt1 (dm-9) on the external sdb, at /mnt:
+    // `//dev/sdb` names its drive, whether or not /dev/sdb shows as a device
+    // node, and NAILS reads no such path.
+    for (fstab, shown) in [
+        (
+            "//dev/sdb /media/x ext4 nofail 0 0",
+            "//dev/sdb /media/x ext4",
+        ),
+        (
+            "fuse2fs#//dev/dm-9 /media/f fuse nofail 0 0",
+            "fuse2fs#//dev/dm-9 /media/f fuse",
+        ),
+    ] {
+        let world = external_veracrypt().fstab(&with_the_decoys_lines(fstab));
+        let judgement = world.judge("/mnt");
+        assert_eq!(
+            entry_needs(&judgement),
+            [(EntryKind::Untold, shown, false)],
+            "{fstab}"
+        );
+        assert_not_plain(
+            &judgement.entries[0],
+            shown,
+            &Unplain::DevOtherwise.reason(),
+        );
+    }
+}
+
+#[test]
 fn a_fuse_line_makes_no_mount_of_the_decoys_own() {
     // The whole of / mounted again at /srv/again: a device line for it there
     // makes that mount, while a FUSE program makes a FUSE mount of its own,

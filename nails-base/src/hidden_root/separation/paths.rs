@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The paths the decoy's fstab names, a bind line's source and the path of a
-//! swap or image file, of what a FUSE program reads and of that program
-//! itself where a line names it by an absolute path, read as they are
-//! written: no link in them is followed.
+//! The paths the decoy's fstab and crypttab name, read as they are written:
+//! no link in them is followed. These are a bind line's source, the path of
+//! a swap or image file, of what a FUSE program reads and of that program
+//! itself where a line names it by an absolute path, and the source of a
+//! crypttab line that is no tag and no device's path in `/dev`, such as a
+//! container file, which `systemd-cryptsetup` opens through a loop device.
 //!
 //! Each part of such a path is looked at on its own through the
 //! [`Filesystem`] trait, from `/` down, with one `statx` that follows no link
@@ -19,10 +21,10 @@
 //! until a `..` leads back to a place that is there.
 //!
 //! Where such a path lies cannot be told ([`UntoldPath`]) when a part of it
-//! is a symbolic link, which the boot's `mount`, `swapon` or `mount.fuse`
-//! would follow, when it is not absolute, when it is a device node, which
-//! they would use as the device it is, when it crosses the folder of an
-//! fstab line, a
+//! is a symbolic link, which the boot's `mount`, `swapon`, `mount.fuse` or
+//! `systemd-cryptsetup` would follow, when it is not absolute, when it is a
+//! device node, which they would use as the device it is, when it crosses
+//! the folder of an fstab line, a
 //! `noauto` one too, while that line's mount is not there now
 //! ([`unmounted_folders`](super::lines::unmounted_folders)), so what lies
 //! there when systemd mounts it cannot be read now, when a part of it cannot
@@ -36,6 +38,7 @@ use super::DeviceMap;
 use super::lines::unmounted_folders;
 use super::plain::{fuse_program, source};
 use crate::Filesystem;
+use crate::crypttab::CrypttabEntry;
 use crate::filesystem::MountRoot;
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::{FstabEntry, is_network_type};
@@ -43,13 +46,13 @@ use crate::hidden_root::mount_holding;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-/// The paths the lines of the decoy's fstab name ([`read_all`]), by the path
-/// as the line writes it (its first field, the source of a FUSE line or its
-/// program): each as it reads, with no `.` or `..` in it, or why where it
-/// lies cannot be told.
+/// The paths the lines of the decoy's fstab and crypttab name ([`read_all`]),
+/// by the path as the line writes it (an fstab line's first field, the
+/// source of a FUSE line or its program, a crypttab line's source): each as
+/// it reads, with no `.` or `..` in it, or why where it lies cannot be told.
 pub type NamedPaths = BTreeMap<String, Result<PathBuf, UntoldPath>>;
 
-/// Why where a path of the decoy's fstab lies cannot be told.
+/// Why where a path of the decoy's fstab or crypttab lies cannot be told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UntoldPath {
     /// This part of the path is a symbolic link, which is not followed.
@@ -67,6 +70,10 @@ pub enum UntoldPath {
     Automount(PathBuf),
     /// This part of the path could not be looked up.
     Unreadable(PathBuf),
+    /// This device's path in `/dev`, which no block device here answers to,
+    /// leads out of `/dev` through a symbolic link, as one that a
+    /// `tmpfiles.d` line makes at boot can.
+    LeavesDev(PathBuf),
     /// The path was not looked up.
     NotLookedUp,
 }
@@ -92,6 +99,10 @@ impl UntoldPath {
             UntoldPath::Unreadable(place) => {
                 format!("{} on its way could not be looked up", place.display())
             }
+            UntoldPath::LeavesDev(path) => format!(
+                "{} leads out of /dev through a symbolic link",
+                path.display()
+            ),
             UntoldPath::NotLookedUp => "it was not looked up".to_string(),
         }
     }
@@ -111,8 +122,9 @@ pub(super) fn is_claimed(entry: &FstabEntry) -> bool {
             || entry.vfstype == "overlay")
 }
 
-/// Whether `spec`, the first field of an fstab line, is the path of a device
-/// in `/dev`, which no `..` in it leads out of.
+/// Whether `spec`, the first field of an fstab line or the source of a
+/// crypttab line, is the path of a device in `/dev`, which no `..` in it
+/// leads out of.
 fn is_device_path(spec: &str) -> bool {
     spec.starts_with("/dev/")
         && !Path::new(spec)
@@ -120,14 +132,31 @@ fn is_device_path(spec: &str) -> bool {
             .any(|part| part == Component::ParentDir)
 }
 
+/// Whether `spec`, the first field of an fstab line or the source of a
+/// crypttab line, is the path of a file: an absolute path that is not the
+/// path of a device in `/dev` ([`is_device_path`]), such as `//dev/sdb`, a
+/// link to a device or a device node outside `/dev`, which [`read`] tells.
+fn is_file_path(spec: &str) -> bool {
+    spec.starts_with('/') && !is_device_path(spec)
+}
+
+/// Whether `spec`, the first field of an fstab line or the source of a
+/// crypttab line, leads into `/dev` as it is written ([`as_written`]), while
+/// it is no device's path there ([`is_device_path`]): `//dev/sdb` and
+/// `/dev/../dev/sdb` name `/dev/sdb`, which `mount` and `systemd-cryptsetup`
+/// open, and NAILS reads a device only by its path in `/dev` or a tag.
+pub(super) fn names_dev_otherwise(spec: &str) -> bool {
+    is_file_path(spec) && as_written(Path::new(spec)).is_some_and(|path| path.starts_with("/dev"))
+}
+
 /// Whether the first field of the fstab line `entry`, or the source a FUSE
-/// line gives its program ([`source`]), is the path of a file: a swap file,
-/// an image file, or what a FUSE program reads. That is an absolute path that
-/// is not the path of a device in `/dev` ([`is_device_path`]). A first field
-/// that is neither absolute nor a tag makes a line that is not plain, unless
-/// its type names no local path by it (see the `plain` module).
+/// line gives its program ([`source`]), is the path of a file
+/// ([`is_file_path`]): a swap file, an image file, or what a FUSE program
+/// reads. A first field that is neither absolute nor a tag makes a line that
+/// is not plain, unless its type names no local path by it (see the `plain`
+/// module).
 pub(super) fn names_a_file(entry: &FstabEntry) -> bool {
-    source(entry).is_some_and(|path| path.starts_with('/') && !is_device_path(path))
+    source(entry).is_some_and(is_file_path)
 }
 
 /// The program `mount.fuse` runs for the fstab line `entry`
@@ -137,6 +166,14 @@ pub(super) fn names_a_file(entry: &FstabEntry) -> bool {
 /// a line that is not plain.
 pub(super) fn program_path(entry: &FstabEntry) -> Option<&str> {
     fuse_program(entry).filter(|program| program.starts_with('/'))
+}
+
+/// Whether the crypttab line `entry` opens a file: its source is the path of
+/// one ([`is_file_path`]), which `systemd-cryptsetup` opens through the links
+/// in it, through a loop device for a regular file. A tag or a device's path
+/// in `/dev` names a device instead.
+pub(super) fn opens_a_file(entry: &CrypttabEntry) -> bool {
+    is_file_path(&entry.source)
 }
 
 /// Whether the claims place the fstab line `entry` by the path it names,
@@ -165,16 +202,21 @@ pub(super) fn as_written(path: &Path) -> Option<PathBuf> {
     Some(at)
 }
 
-/// The paths the lines of `fstab` name, by the path as it is written, each
-/// read with [`read`] below `root`, the folders of its lines that are not
-/// mounted now told by `mounts` and `devices` ([`unmounted_folders`]): the
-/// path a line names ([`names_a_path`], [`source`]), and the FUSE program it
-/// names by its path ([`program_path`]).
+/// The paths the lines of `fstab` and `crypttab` name, by the path as it is
+/// written, each read with [`read`] below `root`, the folders of the fstab's
+/// lines that are not mounted now told by `mounts` and `devices`
+/// ([`unmounted_folders`]): the path an fstab line names ([`names_a_path`],
+/// [`source`]), the FUSE program it names by its path ([`program_path`]),
+/// and the file a crypttab line opens ([`opens_a_file`]). A device's path in
+/// `/dev` that an fstab line other than a bind line or a crypttab line names,
+/// and that no block device in `devices` answers to, is held as well where
+/// it leads out of `/dev` or cannot be looked up ([`leaving_dev`]).
 pub(super) fn read_all<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
     root: &Path,
     fstab: &[FstabEntry],
+    crypttab: &[CrypttabEntry],
     devices: &DeviceMap,
 ) -> NamedPaths {
     let unmounted = unmounted_folders(mounts, fstab, devices);
@@ -187,6 +229,12 @@ pub(super) fn read_all<F: Filesystem>(
                 .iter()
                 .filter(|entry| is_claimed(entry))
                 .filter_map(program_path),
+        )
+        .chain(
+            crypttab
+                .iter()
+                .filter(|entry| opens_a_file(entry))
+                .map(|entry| entry.source.as_str()),
         );
     let mut paths = NamedPaths::new();
     for path in named {
@@ -194,7 +242,51 @@ pub(super) fn read_all<F: Filesystem>(
             .entry(path.to_string())
             .or_insert_with(|| read(fs, mounts, root, &unmounted, Path::new(path)));
     }
+    // A device's path in /dev that no block device here answers to, of a
+    // line that is no bind line, or of a crypttab line: the device names of
+    // the running system, as they are resolved.
+    let unresolved = fstab
+        .iter()
+        .filter(|entry| is_claimed(entry) && !entry.is_bind())
+        .filter_map(source)
+        .chain(crypttab.iter().map(|entry| entry.source.as_str()))
+        .filter(|spec| is_device_path(spec) && !devices.by_spec.contains_key(*spec));
+    for spec in unresolved {
+        if let Some(why) = leaving_dev(fs, spec) {
+            paths.entry(spec.to_string()).or_insert(Err(why));
+        }
+    }
     paths
+}
+
+/// Why where `spec`, a device's path in `/dev` that no block device here
+/// answers to, leads cannot be told: it leads out of `/dev` through a link,
+/// to a file, say, or its lookup fails for another reason than that it is
+/// not there. `None` for one that is not there, as for a drive that is not
+/// plugged in, and for one that stays in `/dev`.
+fn leaving_dev<F: Filesystem>(fs: &F, spec: &str) -> Option<UntoldPath> {
+    let path = Path::new(spec);
+    match fs.canonicalize(path) {
+        Ok(target) => as_written(&target)
+            .is_none_or(|target| !target.starts_with("/dev"))
+            .then(|| UntoldPath::LeavesDev(path.into())),
+        Err(error)
+            if matches!(
+                error.io_kind(),
+                Some(std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+            ) =>
+        {
+            None
+        }
+        Err(_) => Some(UntoldPath::Unreadable(path.into())),
+    }
+}
+
+/// Whether `spec`, a device's path in `/dev` that no block device here
+/// answers to, cannot be told, as [`read_all`] found ([`leaving_dev`]): the
+/// line is then placed by that path, as a file's.
+pub(super) fn is_untold_device(paths: &NamedPaths, spec: &str) -> bool {
+    is_device_path(spec) && matches!(paths.get(spec), Some(Err(_)))
 }
 
 /// Whether a lookup that reaches `path` makes the mount that holds it, as

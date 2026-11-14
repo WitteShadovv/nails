@@ -433,6 +433,49 @@ fn a_fuse_program_is_read_as_mount_fuse_runs_it() {
 }
 
 #[test]
+fn a_path_into_dev_written_otherwise_is_not_plain() {
+    // `//dev/sdb` and `/dev/../dev/sdb` name /dev/sdb, which mount, swapon
+    // and mount.fuse's program open, as systemd-cryptsetup does for such a
+    // crypttab source: NAILS reads a device only by a path that starts with
+    // /dev/ and holds no .., or by a tag.
+    for line in [
+        "//dev/sdb /media/x ext4 nofail 0 0",
+        "/dev/../dev/sdb none swap sw 0 0",
+        "/./dev/mapper/data /media/x ext4 nofail 0 0",
+        "fuse2fs#//dev/sdb /media/f fuse nofail 0 0",
+        "//dev/sdb /media/f fuse.fuse2fs nofail 0 0",
+    ] {
+        assert_eq!(why(line), [Unplain::DevOtherwise], "{line}");
+    }
+    assert_eq!(
+        why_crypttab("vault //dev/sdb none luks,nofail"),
+        [Unplain::DevOtherwise]
+    );
+    assert_eq!(
+        why_crypttab("vault /dev/../dev/sdb none luks"),
+        [Unplain::DevOtherwise]
+    );
+    // A device's own path, a path that `..` leads out of /dev, a bind of a
+    // folder in /dev and a line whose type names no local path stay plain.
+    for line in [
+        "/dev/sdb /media/x ext4 nofail 0 0",
+        "/dev//sdb /media/x ext4 nofail 0 0",
+        "/dev/../srv/node none swap sw 0 0",
+        "//dev/shm /run/shm none bind 0 0",
+        "//dev/shm /mnt/t tmpfs defaults 0 0",
+    ] {
+        assert_eq!(why(line), [], "{line}");
+    }
+    for line in [
+        "vault /dev/sdb none luks",
+        "vault /dev/../sdb.link none luks",
+        "vault //srv/box.img none luks",
+    ] {
+        assert_eq!(why_crypttab(line), [], "{line}");
+    }
+}
+
+#[test]
 fn an_id_tag_is_not_plain() {
     // libmount looks an ID= tag up in /dev/disk/by-id, which NAILS does
     // not, and systemd's fstab generator leaves it to mount.

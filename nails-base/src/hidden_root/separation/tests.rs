@@ -181,7 +181,14 @@ impl World {
         let mounts = parse_mountinfo(&self.mountinfo);
         let (fstab, unplain) = read_fstab(&self.fstab);
         let (crypttab, unplain_crypttab) = read_crypttab(&self.crypttab);
-        let paths = paths::read_all(&self.files, &mounts, Path::new("/"), &fstab, &self.devices);
+        let paths = paths::read_all(
+            &self.files,
+            &mounts,
+            Path::new("/"),
+            &fstab,
+            &crypttab,
+            &self.devices,
+        );
         let hidden = top_mount_at(&mounts, Path::new(root)).expect("a mount at the root");
         ask(
             &Scene {
