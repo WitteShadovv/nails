@@ -1546,16 +1546,30 @@ distroVm.buildVmTest {
         if rootfs == "btrfs":
             # Files the plain directory gets are stored uncompressed, files
             # the compressed one gets compressed: the btrfs compression
-            # property, or the file attribute where it is not set.
-            vm.succeed(
+            # property, or the file attribute, where the image has the tool
+            # to set one. The contents do the same on a root mounted to
+            # compress without them: random bytes do not compress, so btrfs
+            # stores a file that is mostly random plain, and a run of one
+            # short unit compresses well. The raw and logical reads below
+            # show which happened.
+            vm.execute(
                 f"btrfs property set {controls}/plain compression none "
                 + f"|| chattr +m {controls}/plain"
             )
-            vm.succeed(
+            vm.execute(
                 f"btrfs property set {controls}/compressed compression zstd "
                 + f"|| chattr +c {controls}/compressed"
             )
-        vm.succeed(f"printf '%s\\n' {poison} > {controls}/plain/positive")
+
+
+        def write_plain(path, token):
+            # The token on a line of its own, then 64 KiB of random bytes.
+            vm.succeed(
+                f"{{ printf '%s\\n' {token}; head -c 65536 /dev/urandom; }} > {path}"
+            )
+
+
+        write_plain(f"{controls}/plain/positive", poison)
         if rootfs == "btrfs":
             # The three controls of the logical scan. Each poison is a unit of
             # 15 bytes repeated, and its token is four units in a row: btrfs's
@@ -1576,7 +1590,7 @@ distroVm.buildVmTest {
                 )
 
             # (a) plain: on the disk as written.
-            vm.succeed(f"printf %s {poison_token('A')} > {controls}/plain/a")
+            write_plain(f"{controls}/plain/a", poison_token("A"))
             # (b) compressed, kept.
             write_poison("B", f"{controls}/compressed/b")
             # (c) compressed, kept through a few commits, then deleted.
