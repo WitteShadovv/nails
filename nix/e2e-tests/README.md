@@ -710,7 +710,7 @@ Layout:
   released.
 - `py/`: the scenarios' host-side helpers, unit-tested by the
   `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
-  smoke's read of a btrfs decoy's image with btrfs-progs.
+  smoke's read of the older roots of a btrfs decoy's image with btrfs-progs.
 - `default.nix`: maps the scenarios over the table, builds the scenarios of
   the images staged for their family's admission (`stagedImages`), and
   exposes the metadata.
@@ -755,13 +755,17 @@ of warnings (the first session's loop device is detached before the second
 entry), an ESP that systemd mounts on demand bound read-only at its mount point
 in each hidden session, with its automount masked there and back on the decoy
 after each way back, and the rehearsal's scan exiting 9 with the blind spot on
-a btrfs root's device, 0 on any other root. On a btrfs root the disk-image
-check also reads the image as btrfs-progs does (`py/btrfs_scan.py`): no canary
-may be in the files of the live tree, decompressed, or at a canary's path in an
-older root of the tree, and three planted controls show what each read sees: a
-plain file the raw scan finds, a compressed file the raw scan misses and the
-live tree's read finds, and a compressed file written and deleted that only an
-older root keeps. It lists the failed units five
+a btrfs root's device, 0 on any other root. Before each image the disk-image
+check also reads the decoy root's files through the decoy's kernel, from a
+read-only bind of `/`: no canary may be in them, and the positive control's
+token must be. On a btrfs root it also reads the older roots of the image's
+tree as btrfs-progs does (`py/btrfs_scan.py`): none may keep a file at a
+canary's path, nor a canary. Three planted controls show what each read sees:
+a plain file the raw scan finds, a compressed file the raw scan misses and the
+read through the kernel finds, and a compressed file written and deleted that
+only an older root keeps. `btrfs restore` reads the older roots only, since it
+cannot read about 11,000 inline zstd extents of the arch-boxes image, which
+the kernel reads. It lists the failed units five
 times, on the decoy before the first switch and right after each switch (in
 both hidden sessions and on the decoy after both ways back), compares each
 listing with the entry's `knownFailedUnits`, and checks that the `platform` row

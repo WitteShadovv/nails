@@ -1,10 +1,11 @@
 """Unit tests for the btrfs logical-scan helpers of the smoke scenario.
 
-They lock the parts of the logical scan that run without btrfs-progs: where
-the partition lies in the image, which filter btrfs restore gets, how the
-roots btrfs-find-root lists are read and how a restored tree is searched. A
-silent drift here would turn the planted btrfs controls, or the scan of the
-decoy after a session, into a pass that read nothing.
+They lock the parts of the read of a btrfs decoy's older roots that run
+without btrfs-progs: where the partition lies in the image, which filter btrfs
+restore gets, how the roots btrfs-find-root lists are read and how a restored
+tree is searched for tokens and paths. A silent drift here would turn the
+planted btrfs controls, or the scan of the decoy after a session, into a pass
+that read nothing.
 """
 
 from __future__ import annotations
@@ -241,6 +242,23 @@ class TokensInTreeTest(unittest.TestCase):
     def test_no_token_finds_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(bs.tokens_in_tree(tmp, []), set())
+
+
+class PathsInTreeTest(unittest.TestCase):
+    def test_the_paths_a_restore_wrote_whatever_they_hold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(Path(tmp, "home"))
+            # Empty, as btrfs restore leaves a file it could not read.
+            Path(tmp, "home", "canary").write_bytes(b"")
+            os.symlink("/nowhere", Path(tmp, "home", "dangling"))
+            wanted = ["/home/canary", "/home/dangling", "/home/absent", "/etc/canary"]
+            self.assertEqual(
+                bs.paths_in_tree(tmp, wanted), ["/home/canary", "/home/dangling"]
+            )
+
+    def test_no_path_finds_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(bs.paths_in_tree(tmp, []), [])
 
 
 if __name__ == "__main__":
