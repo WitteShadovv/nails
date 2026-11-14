@@ -214,9 +214,9 @@ class Cell:
             out = "/run/dsx/dsxrec/op.out"
             inner = f"{cmd}; echo $? > {out}.rc"
             return (
-                "systemd-run --quiet --wait --collect -p PAMName=login -p User=root "
+                "( systemd-run --quiet --wait --collect -p PAMName=login -p User=root "
                 f"/bin/sh -c {shlex.quote(f'( {inner} ) > {out} 2>&1')}; "
-                f"cat {out}; exit $(cat {out}.rc 2>/dev/null || echo 125)"
+                f"cat {out}; exit $(cat {out}.rc 2>/dev/null || echo 125) )"
             )
         return cmd
 
