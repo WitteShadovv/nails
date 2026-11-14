@@ -2320,12 +2320,32 @@ of this changelog for that version becomes the release notes word for word, and
   it cannot look up as one it could not tell about, never as one that is not there: as a finding at
   the severity of what it looks for there but no more than a warning, or among the areas it did not
   check, and one it had no permission for says to run it again with sudo. Some readers still take a
-  place they cannot list, read or follow for an empty one, among them the walk of the decoy's
-  `/etc/nixos`, the lookups `soft-reboot-units` makes for its units in the decoy's root and
-  activation makes in the operator's home, the readers of the sudoers files and of `/proc/swaps`,
-  and the walks of `verify` through the log directory and the temporary folders. Offline, a shell
-  history or desktop recency file that does not resolve inside the root, as a loop of links, is now
-  listed as not checked, where it was passed over.
+  place they cannot list, read or follow for an empty one, among them the lookups `soft-reboot-units`
+  makes for its units in the decoy's root (it refuses as for a missing unit) and activation makes in
+  the operator's home, and the walks of `verify` through the log directory and the temporary
+  folders. Offline, a shell history or desktop recency file that does not resolve inside the root,
+  as a loop of links, is now listed as not checked, where it was passed over.
+- Readers of `nails check` and activation that took a place they could not list, read or resolve,
+  for another reason than that nothing is there, for one that shows nothing now say they cannot
+  tell, name the place, and refuse or warn as for what they look for. `decoy-persistence` refuses
+  (`--allow-persistent-decoy` lifts it) where it cannot list a unit directory that may hold an
+  enabling link of a kdump unit, resolve a `syslog.service` link, list the invocation markers of
+  systemd's units, read a unit's `cgroup.events`, list `/proc` or read a process's `comm` or
+  `cmdline`, and warns where it cannot read `kernel.core_pattern`, `/sys/fs/pstore`, the mount
+  table's options for `/`, or a sudoers file or include directory. `backend-detect` refuses as for
+  discards (`--allow-discards` lifts it) where it cannot read the mount table, which passed as
+  "Backend detection skipped", or a device or an attribute of the stack below the hidden root.
+  `session-state` refuses where it cannot read the mount table, and takes a session plan it cannot
+  read for one an interrupted entry left, which `recover` removes. `fstab-policy` and `decoy-root`
+  refuse without the mount table. `swap` refuses where it cannot read `/proc/swaps`, a zram
+  device's `backing_dev`, `/sys/power/resume` or `/proc/cmdline`. `suspicious-nails-reference`
+  refuses where its walk of `/etc/nixos` cannot look up a place, or it cannot read the mount table
+  or a place that names the hidden volume's storage. `locate-database` warns where it cannot
+  resolve an updatedb link, `binary-location` where it cannot resolve a link in a `PATH`
+  directory, `dma-protection` where it cannot read what lets it pass, and `hidden-volume` where it
+  cannot read the names of the volume's source. `inherited-autostart` lists a directory it cannot
+  list, or a file it cannot read, as not read, and `memory-wipe` no longer says the kernel zeroes
+  freed memory where it cannot read the command line.
 - `nails deactivate` that cannot take its lock, a hidden root that cannot be looked up among the
   causes, refuses before the switch as before, and now names `emergency`, which ends the session
   without the lock: it returns to the decoy where it can prepare the return and powers off where it

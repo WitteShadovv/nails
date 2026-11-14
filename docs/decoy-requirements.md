@@ -382,6 +382,8 @@ volatile can count as persistent. Run them with sudo.
   whole terminal sessions, keystrokes and output included. Both write to the
   decoy disk, outside the journal. A sudoers file behind an automount point
   that nothing is mounted on yet is not read, and the check names the point.
+  One that is there but cannot be read, or an include directory that cannot
+  be listed, warns that NAILS cannot tell, and names it.
 - **sssd** — sssd in use on the decoy: one of its units or daemons running,
   its Kerberos ticket cache listening on its socket, or one of nine state
   files it writes under `/var/lib/sss`. Where NAILS cannot look up a place
