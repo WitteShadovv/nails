@@ -38,7 +38,9 @@
 # Fedora is not admitted yet: the release `nails` refuses it (the refusal
 # scenario, refusal.nix, proves that). So this driver runs a test-only build
 # of the release binary in which the one Fedora row of the family table is
-# admitted, and nothing else changes. That build is never shipped. The
+# admitted and the lsm-status check, which refuses every host where SELinux
+# runs for now, is left out; nothing else changes. That build is never
+# shipped. The
 # oracle's verdict on the images says what its channels see of a session on a
 # Fedora 44 Cloud decoy's disk (ci/oracle/README.md lists what they do not),
 # not that NAILS supports Fedora.
@@ -69,7 +71,12 @@ let
   hiddenRoot = import ./lib/hidden-root.nix;
 
   # The release binary with the Fedora base row admitted, for this driver
-  # only. The build fails unless exactly that one row changes.
+  # only. The build fails unless exactly that one row changes. It also leaves
+  # out the lsm-status check, which refuses every host where SELinux runs,
+  # this permissive decoy among them, until NAILS chooses the SELinux domain
+  # of the processes systemd and udev start from its copy in /run. The check
+  # only reads, so leaving it out changes nothing a session leaves on the
+  # disk. The build fails unless exactly that one line changes too.
   nailsFedoraAdmitted = self.packages.x86_64-linux.nails.overrideAttrs (old: {
     pname = "nails-test-fedora-admitted";
     postPatch = (old.postPatch or "") + ''
@@ -84,9 +91,21 @@ let
         exit 1
       }
       mv "$table.new" "$table"
+      registry=nails-core/src/manager/preflight_runner.rs
+      awk '
+        $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomain::Unknown)));" {
+          print "    let _ = LsmStatusCheck::new(UnitDomain::Unknown);"; left++; next
+        }
+        { print }
+        END { if (left != 1) exit 1 }
+      ' "$registry" > "$registry.new" || {
+        echo "the lsm-status check of $registry was not left out exactly once" >&2
+        exit 1
+      }
+      mv "$registry.new" "$registry"
     '';
     meta = old.meta // {
-      description = "nails with the Fedora row admitted, for the btrfs oracle images only; never released";
+      description = "nails with the Fedora row admitted and lsm-status left out, for the btrfs oracle images only; never released";
     };
   });
 

@@ -278,10 +278,13 @@ copy of the paused disk, and a reset boots it again.
 
 Fedora is not admitted yet, so the driver runs a test-only build of the
 release binary in which only the Fedora row of the family table is admitted.
-That build is never released. The verdict on the images says what the
-oracle's channels see of a session on a Fedora 44 Cloud decoy, with what they
-do not see listed under [What it does not see](#what-it-does-not-see), not
-that NAILS supports Fedora.
+It also leaves out the `lsm-status` check, which refuses every host where
+SELinux runs, this permissive decoy among them, until NAILS chooses the
+SELinux domain of the processes systemd and udev start from its copy in
+`/run`; the check only reads. That build is never released. The verdict on the
+images says what the oracle's channels see of a session on a Fedora 44 Cloud
+decoy, with what they do not see listed under [What it does not
+see](#what-it-does-not-see), not that NAILS supports Fedora.
 
 Before the first image the driver makes the decoy's journal volatile and masks
 auditd (the posture NAILS requires), creates `/mnt/data` and writes the

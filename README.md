@@ -194,6 +194,12 @@ Also refused by the pre-flight checks:
   default, and on any disk the partition table shows its type;
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
+- a host where SELinux runs with a policy other than `targeted`, where `nails`
+  runs in a confined SELinux domain, or whose SELinux facts cannot be read.
+  NAILS does not yet choose the SELinux domain of the processes systemd and
+  udev start for it, so for now every host where SELinux runs is refused. A
+  host where it does not run, such as Debian or Ubuntu with AppArmor, passes,
+  and the check names the security modules the kernel runs (`lsm-status`);
 - running inside a container or another mount namespace than PID 1's
   (`mount-namespace`).
 

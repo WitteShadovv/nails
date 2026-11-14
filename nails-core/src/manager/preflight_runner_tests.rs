@@ -52,6 +52,7 @@ fn build_registry_includes_the_shared_checks() {
         "binary-location",
         "dma-protection",
         "kernel-modules",
+        "lsm-status",
         "network-tools",
         "package-drift",
         "state",
@@ -1143,6 +1144,73 @@ fn the_platform_row_names_a_tested_host_and_fails_a_refused_one() {
 fn no_platform_row_without_a_detected_host() {
     let manager = manager_with(MockFilesystem::new());
     assert!(platform_result(&manager).is_none());
+}
+
+/// The lsm-status row of the registry over `fs`.
+fn lsm_status_row(fs: &MockFilesystem) -> CheckResult {
+    let inputs = RegistryInputs {
+        options: PreflightOptions::default(),
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
+        operator: None,
+        caller_path: None,
+        typed_shell: None,
+        host_profile: None,
+        systemd_version: None,
+    };
+    build_registry(fs, &explicit_config(), &inputs, None)
+        .expect("registry builds")
+        .run_all_detailed(fs)
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "lsm-status")
+        .map(|(_, result)| result)
+        .expect("an lsm-status row")
+}
+
+/// The registry's lsm-status row passes a host where SELinux does not run and
+/// names its modules, and fails one where SELinux enforces the targeted policy
+/// with `nails` unconfined: NAILS does not choose the domain of the processes
+/// systemd and udev start for it yet.
+#[test]
+fn the_lsm_status_row_fails_every_host_where_selinux_runs_for_now() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        "/sys/kernel/security/lsm",
+        "lockdown,capability,landlock,yama,apparmor",
+    );
+    fs.mock_set_file_content("/proc/self/attr/current", "unconfined\n");
+    let row = lsm_status_row(&fs);
+    assert!(row.is_pass(), "{row:?}");
+    assert_eq!(
+        row.message(),
+        "SELinux does not run. Active LSMs: lockdown, capability, landlock, yama, apparmor."
+    );
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content("/sys/kernel/security/lsm", "capability,selinux");
+    fs.mock_set_file_content(
+        "/proc/self/mounts",
+        "selinuxfs /sys/fs/selinux selinuxfs rw,nosuid,noexec,relatime 0 0\n",
+    );
+    fs.mock_set_file_content("/sys/fs/selinux/enforce", "1");
+    fs.mock_set_file_content(
+        "/etc/selinux/config",
+        "SELINUX=enforcing\nSELINUXTYPE=targeted\n",
+    );
+    fs.mock_set_file_content(
+        "/proc/self/attr/current",
+        "unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023\0",
+    );
+    let row = lsm_status_row(&fs);
+    assert!(row.is_fail(), "{row:?}");
+    assert!(
+        row.message()
+            .starts_with("NAILS does not choose the SELinux domain of the processes systemd and"),
+        "{row:?}"
+    );
 }
 
 /// The systemd-version row of the registry built from inputs that carry the

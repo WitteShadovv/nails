@@ -7,8 +7,8 @@
 //! [`HostProfile`](super::HostProfile), so the parts of NAILS that care about a
 //! host's mandatory-access-control layer (the window, and the Fedora label work)
 //! read them from one place rather than probing the kernel themselves. The
-//! readers are public, so a check can read the facts again when it runs, and
-//! one more reads the label of the process ([`read_process_label`]). Every
+//! `lsm-status` check reads them again with the same functions when it runs,
+//! together with the label of the process ([`read_process_label`]). Every
 //! read goes through the [`Filesystem`] trait and tolerates absence: a host
 //! without SELinux, or a kernel that does not expose the LSM list, simply
 //! reports nothing. None of them uses libselinux: `/etc/selinux/config` is

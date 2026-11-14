@@ -41,14 +41,16 @@ FILTERS: dict[str, re.Pattern[str]] = {
     # machine interface, the files the tests keep in step with the code (the
     # man page, the CLI and configuration references, the help capture and the
     # residue tables), the docs whose headings the residue catalog links to,
-    # and the VM tests and fixtures under nix/e2e-tests/ that they read. A
-    # change to one runs the rust job, which runs every test of the workspace.
-    # A test that reads another file from outside the crates adds its path
-    # here.
+    # the VM tests and fixtures under nix/e2e-tests/ that they read, and the
+    # facts the distribution probes recorded, which the lsm-status tests
+    # judge. A change to one runs the rust job, which runs every test of the
+    # workspace. A test that reads another file from outside the crates adds
+    # its path here.
     "testdata": re.compile(
         r"^(copy-lint\.toml|README\.md|nails\.1"
         r"|docs/(cli|configuration|decoy-requirements|operator-guide|threat-model)\.md"
-        r"|docs/assets/screenshots/help\.txt|nix/e2e-tests/fixtures/indicators\.json)$"
+        r"|docs/assets/screenshots/help\.txt|nix/e2e-tests/fixtures/indicators\.json"
+        r"|nix/distro-tests/probe/[^/]+\.json)$"
         r"|^(docs/schemas|nix/e2e-tests/tests|nix/e2e-tests/fixtures/configs)/"
     ),
     # The fuzz crate, a workspace of its own: the lint job checks its lock and
