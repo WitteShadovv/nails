@@ -18,6 +18,17 @@ use std::path::{Path, PathBuf};
 /// upper, as the entry copies it onto the root upper: the decoy root.
 const DECOY_ROOT: &str = "/";
 
+/// Filesystems that store `security.selinux` attributes. Where the hidden root
+/// is on one and still takes no label, its mount is what keeps the label off.
+const LABEL_FILESYSTEMS: [&str; 3] = ["ext4", "xfs", "btrfs"];
+
+/// What the hidden volume must be where SELinux may run, for a failure that
+/// cannot tell more.
+const STORE_LABELS: &str = "Where SELinux may run, the hidden volume's filesystem must store \
+     security.selinux attributes, as ext4, xfs and btrfs do, and the volume must be mounted \
+     without the context= option, which gives every file of the mount one label and lets no \
+     other be set.";
+
 /// The overlay-upper capability a probe could not confirm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingCapability {
@@ -56,8 +67,9 @@ enum LabelFault {
     /// host, for a reason other than the hidden root's filesystem: a decoy root
     /// without a label, a policy that denies the relabel, a write that failed.
     Refused,
-    /// The entry's own copy refused it because the hidden root's filesystem
-    /// cannot store the label.
+    /// The entry's own copy refused it because the hidden root could not
+    /// store the label (`ENOTSUP`): its filesystem stores none, or its mount
+    /// lets none be set.
     CannotStore,
     /// The copy went through, but the read back does not show the trial upper
     /// with the decoy root's label.
@@ -96,15 +108,17 @@ enum LabelFault {
 /// SELinux ([`Labels::Required`]) a label it cannot copy refuses the entry. The
 /// probe copies the decoy root's label onto its trial upper with the same
 /// function under the same rule, which the registry takes from the same host
-/// facts as the activation ([`Labels::for_host`]), so a hidden filesystem that
+/// facts as the activation ([`Labels::for_host`]), so a hidden volume that
 /// cannot store the label, a policy that denies the relabel or a decoy root
 /// without a label fails this check as it would refuse the entry. The failure
-/// gives the copy's own reason, and only where the hidden root's filesystem
-/// cannot store the label does it name that filesystem and what it must store.
-/// Where a label is required the probe also reads it back, and fails unless
-/// the trial upper keeps the decoy root's label. Elsewhere the copy is best
-/// effort, as at the entry, and the label is not read back. The decoy root is
-/// only read: reading an extended attribute changes no access time.
+/// gives the copy's own reason, and only where the hidden root could not store
+/// the label does it name its filesystem and say what the volume must be: on
+/// a filesystem that stores labels, that its mount keeps the label off, as the
+/// `context=` option does. Where a label is required the probe also reads it
+/// back, and fails unless the trial upper keeps the decoy root's label.
+/// Elsewhere the copy is best effort, as at the entry, and the label is not
+/// read back. The decoy root is only read: reading an extended attribute
+/// changes no access time.
 ///
 /// The trial overlay is mounted detached, through the mount API
 /// (`fsopen`/`fsconfig`/`fsmount`): the kernel hands back a file descriptor for
@@ -203,9 +217,11 @@ fn classify(missing: MissingCapability, fstype: Option<&str>) -> CheckResult {
 
 /// Pure seam: the `Fail` for a trial upper that did not take or keep the decoy
 /// root's SELinux label, through `fault`, for the reason `why`. Only where the
-/// hidden root's filesystem cannot store the label does it name that
-/// filesystem's type, `fstype` when the mount table knows it, and say what the
-/// filesystem must do.
+/// hidden root could not store the label does it name its filesystem's type,
+/// `fstype` when the mount table knows it, and say what the volume must be: on
+/// a filesystem that stores labels ([`LABEL_FILESYSTEMS`]), that its mount
+/// keeps the label off, as the `context=` option does, and on any other, or an
+/// unknown one, what the filesystem and the mount must do.
 fn label_refusal(fault: LabelFault, why: &str, fstype: Option<&str>) -> CheckResult {
     let lead = match fault {
         LabelFault::Refused | LabelFault::CannotStore => {
@@ -219,13 +235,16 @@ fn label_refusal(fault: LabelFault, why: &str, fstype: Option<&str>) -> CheckRes
     };
     let mut message = format!("{lead}: {why}.");
     if fault == LabelFault::CannotStore {
-        if let Some(fs) = fstype {
-            message.push_str(&format!(" The hidden root is on a {fs} filesystem."));
-        }
-        message.push_str(
-            " Where SELinux may run, the hidden volume's filesystem must store \
-             security.selinux attributes, as ext4, xfs and btrfs do.",
-        );
+        message.push_str(&match fstype {
+            Some(fs) if LABEL_FILESYSTEMS.contains(&fs) => format!(
+                " The hidden root's filesystem is {fs}, which stores security.selinux \
+                 attributes, so its mount keeps the label off, as the context= mount option \
+                 does: that option gives every file of the mount one label and lets no other be \
+                 set. Where SELinux may run, mount the hidden volume without it."
+            ),
+            Some(fs) => format!(" The hidden root's filesystem is {fs}. {STORE_LABELS}"),
+            None => format!(" {STORE_LABELS}"),
+        });
     }
     CheckResult::fail(message)
 }
@@ -508,10 +527,9 @@ fn probe_in_scratch(
 /// `decoy_root` has.
 ///
 /// A copy the entry would refuse is [`ProbeError::Label`] with the copy's own
-/// reason, [`LabelFault::CannotStore`] where the hidden root's filesystem
-/// refused to store the label and [`LabelFault::Refused`] otherwise. A
-/// best-effort copy ([`Labels::BestEffort`]) is not read back: no policy reads
-/// a label there.
+/// reason, [`LabelFault::CannotStore`] where the hidden root refused to store
+/// the label and [`LabelFault::Refused`] otherwise. A best-effort copy
+/// ([`Labels::BestEffort`]) is not read back: no policy reads a label there.
 fn probe_label(
     decoy_root: &Path,
     upper: &Path,

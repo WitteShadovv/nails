@@ -202,7 +202,9 @@ fn a_filesystem_without_extended_attributes_is_skipped_without_selinux_and_refus
         );
         let refused = copy_label(decoy.path(), &on_ramfs, REQUIRED).unwrap_err();
         assert!(
-            refused.to_string().ends_with("cannot store labels"),
+            refused.to_string().ends_with(
+                "cannot store labels: its filesystem stores none, or its mount lets none be set"
+            ),
             "{refused}"
         );
         assert_eq!(label(&on_ramfs), Err(Errno::NOTSUP));

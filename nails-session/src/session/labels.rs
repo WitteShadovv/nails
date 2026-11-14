@@ -292,9 +292,10 @@ pub struct Refused {
 }
 
 impl Refused {
-    /// Whether the filesystem of the upper directory refused to store the
-    /// label: writing it failed with `ENOTSUP`, as on a filesystem without
-    /// extended attributes, or one SELinux does not let carry labels.
+    /// Whether the upper directory could not store the label: writing it
+    /// failed with `ENOTSUP`, as on a filesystem without extended attributes,
+    /// or on a mount where SELinux lets no label be set, as on one with the
+    /// `context=` option, which gives every file of the mount its label.
     pub fn cannot_store(&self) -> bool {
         self.failure == Failure::Write(Errno::NOTSUP)
     }
@@ -475,9 +476,10 @@ fn refusal(decoy: &Path, upper: &Path, labels: Labels, failure: Failure) -> Nail
             format!("{upper} is a link or a file, not a directory")
         }
         Failure::Upper(Errno::NOENT) => format!("{upper} does not exist"),
-        Failure::Write(Errno::NOTSUP) => {
-            format!("the filesystem of {upper} cannot store labels")
-        }
+        Failure::Write(Errno::NOTSUP) => format!(
+            "{upper} cannot store labels: its filesystem stores none, or its mount lets none be \
+             set"
+        ),
         Failure::Read(errno) => format!(
             "reading the label of {decoy} failed: {}",
             std::io::Error::from(errno)

@@ -64,8 +64,11 @@ Whatever the backend, the filesystem at the hidden root must:
   the probe ends; without root, or on a kernel that cannot mount it that way,
   the check fails before it writes anything (see
   [What `check` touches](operator-guide.md#what-check-touches)). When the
-  filesystem lacks one of these capabilities, or stores no labels where
-  SELinux may run, the failure names its detected type;
+  filesystem lacks one of these capabilities, or the volume stores no label
+  where SELinux may run, the failure names its detected type. Where that type
+  is ext4, xfs or btrfs, which store labels, it says that the volume's mount
+  keeps the label off, as the `context=` mount option does, which gives every
+  file of the mount one label and lets no other be set;
 - **keep every overlay upper and its work directory on one filesystem**.
   overlayfs refuses an upper and work directory on different filesystems.
   NAILS keeps both under the hidden root (`<root>/root/upper` and
