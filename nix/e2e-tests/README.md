@@ -985,16 +985,17 @@ driver runs by hand as the refusal's below.
 
 Every records scenario makes the swap lines of the decoy's fstab `noauto` and
 turns the swap off before the power cycle. The staged suite runs the scenario
-on arch-boxes (`arch-boxes-staged-records`), in the Nix build sandbox, with the
-build that admits Arch. Arch keeps classic wtmp on systemd 262, which resets
-the start time across a soft-reboot, so a plain soft-reboot's boot record reads
-as a power cycle's, and the control shows that instead. What could still give
-a session away there is a record of the session itself: a console login
-through PAM's login stack runs in the hidden session and must write its
-lastlog2 row and its wtmp records there, none of which may be on the decoy
-after the way back (its lastlog2 and btmp as they were, its wtmp without a
-record on the login's terminal), with the same login on the decoy as the
-positive control.
+on arch-boxes (`arch-boxes-records` in the `distros` input of
+`distro-e2e.yml`, the attribute `arch-boxes-staged-records`), in the Nix build
+sandbox, with the build that admits Arch. Arch keeps classic wtmp on systemd
+262, which resets the start time across a soft-reboot, so a plain
+soft-reboot's boot record reads as a power cycle's, and the control shows that
+instead. What could still give a session away there is a record of the session
+itself: a console login through PAM's login stack runs in the hidden session
+and must write its lastlog2 row and its wtmp records there, none of which may
+be on the decoy after the way back (its lastlog2 and btmp as they were, its
+wtmp without a record on the login's terminal), with the same login on the
+decoy as the positive control.
 
 ### The refusal of Fedora and Arch
 
