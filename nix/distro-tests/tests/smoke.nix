@@ -61,8 +61,9 @@
 # device under the hidden root's LUKS mapping counts as the hidden volume's,
 # and the first session's loop device is detached before the second entry. An
 # ESP that systemd's GPT auto-generator mounts on demand at /efi, as on
-# arch-boxes, is not mounted anywhere in the hidden root, and the decoy's
-# automount is back after each way back. The rehearsal's scan exits 9 with a
+# arch-boxes, is read-only wherever it is mounted in the hidden root, its
+# automount masked there at runtime, and the decoy's automount is back after
+# each way back. The rehearsal's scan exits 9 with a
 # blind spot on a btrfs root's device and 0 on any other image. On a btrfs root
 # the leak checks read the image the way btrfs-progs does as well
 # (py/btrfs_scan.py): the files of the live tree, decompressed, hold no canary,
@@ -349,16 +350,24 @@ distroVm.buildVmTest {
         return mounted
 
 
-    def assert_no_generated_boot_mount(where):
-        # The hidden root masks the GPT auto-generator: no automount for a
-        # boot filesystem it made on the decoy, and its device mounted nowhere.
+    def assert_generated_boot_mounts_read_only(where):
+        # A boot filesystem the GPT auto-generator mounts on demand on the
+        # decoy is read-only to the hidden session: the decoy's automount is
+        # masked there at runtime (the hidden root masks the generator too),
+        # and every mount of its device is read-only and refuses a write.
         for unit, (point, device, _) in boot_automounts.items():
-            state = vm.succeed(f"systemctl show -P LoadState {shlex.quote(unit)}").strip()
-            assert state == "not-found", f"{where}: {unit} is {state}"
-            vm.fail(f"mountpoint -q {shlex.quote(point)}")
-            rc, out = vm.execute(f"findmnt -rn -o TARGET,OPTIONS -S {shlex.quote(device)}")
-            assert rc != 0 and not out.strip(), f"{where}: {device} is mounted: {out}"
-        print(f"{where}: no boot filesystem mounted on demand ({sorted(boot_automounts)})")
+            props = unit_props(unit, "LoadState", "ActiveState", "UnitFileState")
+            assert props["LoadState"] in ("masked", "not-found"), f"{where}: {unit}: {props}"
+            assert props["ActiveState"] == "inactive", f"{where}: {unit}: {props}"
+            if props["LoadState"] == "masked":
+                assert props["UnitFileState"] == "masked-runtime", f"{where}: {unit}: {props}"
+            _, out = vm.execute(f"findmnt -rn -o TARGET,OPTIONS -S {shlex.quote(device)}")
+            mounts = distro_checks.parse_findmnt_pairs(out)
+            print(f"{where}: {unit} {props}; {device} mounted at {mounts or 'nothing'}")
+            for target, options in mounts:
+                assert "ro" in options.split(","), f"{where}: {device} at {target}: {options}"
+                err = vm.fail(f"touch {shlex.quote(target)}/nails-should-fail 2>&1")
+                assert "read-only" in err.lower(), f"{target} took a hidden write: {err}"
 
 
     def assert_generated_boot_mounts_back(where):
@@ -1207,7 +1216,7 @@ distroVm.buildVmTest {
                 masked_here.append(unit)
         assert_runtime_masks("the first session", masked_here)
         assert_gpt_auto_masked("the first session", masked=True)
-        assert_no_generated_boot_mount("the first session")
+        assert_generated_boot_mounts_read_only("the first session")
         assert_swaps_kept_off("the first session", entered_first, masked=False)
         assert_clean_baseline("the first activation")
         assert_timeout_guard("the first session", loaded=True)
@@ -1252,8 +1261,9 @@ distroVm.buildVmTest {
                 )
             print(f"boot filesystems read-only in the hidden root: {boot_mounts}")
         else:
-            # Then the image's boot filesystem is one systemd mounts on demand,
-            # which the first session asserted is mounted nowhere here.
+            # Then the image's boot filesystem is one systemd mounts on demand
+            # and was not mounted at the entry: the first session asserted it
+            # is read-only wherever it is mounted here.
             assert boot_automounts, (
                 "this image mounts no boot filesystem, neither from its fstab nor on "
                 + "demand: nothing here would test that the hidden session cannot "
@@ -1362,7 +1372,7 @@ distroVm.buildVmTest {
         vm.succeed("mountpoint -q /mnt/data && test -s /mnt/data/activate-2.log")
         assert_clean_baseline("the second activation")
         assert_swaps_kept_off("the second session", entered_after, masked=True)
-        assert_no_generated_boot_mount("the second session")
+        assert_generated_boot_mounts_read_only("the second session")
         assert_runtime_masks(
             "the second session",
             masked_here + [distro_checks.swap_unit(spec) for spec, _ in decoy_swaps],
