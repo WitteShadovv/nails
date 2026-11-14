@@ -287,6 +287,55 @@ fn the_kernel_config_decides_when_the_command_line_is_silent() {
     assert!(off.is_warn(), "{}", off.message());
 }
 
+/// A command line that is there but cannot be read may turn init_on_free
+/// off, or page poisoning on: the config's default no longer says freed
+/// memory is zeroed, and the informational pass names the command line,
+/// where the config decided and the check said the kernel zeroes it.
+#[test]
+fn a_command_line_that_cannot_be_read_lets_no_config_say_zeroed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // A directory where the command line is: a read fails, and not as
+    // missing.
+    std::fs::create_dir(root.join("cmdline")).unwrap();
+    write(
+        root,
+        "osrelease",
+        "test-kernel
+",
+    );
+    write(
+        root,
+        "boot/config-test-kernel",
+        "CONFIG_INIT_ON_FREE_DEFAULT_ON=y
+",
+    );
+    let check = MemoryWipeCheck {
+        cmdline_path: root.join("cmdline"),
+        osrelease_path: root.join("osrelease"),
+        config: ConfigSources {
+            proc_config: root.join("config.gz"),
+            boot_dir: root.join("boot"),
+            modules_dir: root.join("modules"),
+        },
+        dracut_modules_dir: root.join("dracut-modules.d"),
+    };
+    let result = check.run(&RealFilesystem).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.starts_with("Could not read whether the decoy kernel zeroes freed memory"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "NAILS cannot look up {}/cmdline (",
+            root.display()
+        )),
+        "{message}"
+    );
+}
+
 #[test]
 fn the_command_line_overrides_the_kernel_config() {
     // init_on_free=1 wins over a config default of off.
