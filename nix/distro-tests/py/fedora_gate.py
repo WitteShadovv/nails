@@ -90,6 +90,10 @@ SHARES = (("tools", "/run/tools"), ("rpms", "/run/rpms"))
 OP_DIR = "/run/gate-op"
 # The terminal of the console logins that write login records.
 LOGIN_TTY = "tty5"
+# The terminal of the operator's own console login on the decoy, right before
+# each entry, as an operator logs in to run the activation: its records are the
+# decoy's, and the judgment must keep them apart from the hidden session's.
+OPERATOR_TTY = "tty4"
 # A disk attached in the session, as a USB disk would be.
 HOTPLUG_BYTES = 64 << 20
 # The hidden volume: a disk of its own, attached at the start of the run and
@@ -254,14 +258,15 @@ class Gate:
             f"cat {out}.out {out}.err; exit $(cat {out}.rc 2>/dev/null || echo 125) )"
         )
 
-    def pam_login(self, user: str) -> str:
-        """A console login of ``user`` through PAM's login stack, as a getty's
-        login runs it on a terminal: systemd opens the PAM session and writes
-        the session's utmp and wtmp records, and pam_lastlog2 its row."""
+    def pam_login(self, user: str, tty: str = LOGIN_TTY) -> str:
+        """A console login of ``user`` on ``tty`` through PAM's login stack,
+        as a getty's login runs it on a terminal: systemd opens the PAM
+        session and writes the session's utmp and wtmp records, and
+        pam_lastlog2 its row."""
         return (
             "systemd-run --wait --collect --quiet -p PAMName=login "
-            f"-p User={user} -p TTYPath=/dev/{LOGIN_TTY} "
-            f"-p UtmpIdentifier={LOGIN_TTY} -p UtmpMode=user /bin/true"
+            f"-p User={user} -p TTYPath=/dev/{tty} "
+            f"-p UtmpIdentifier={tty} -p UtmpMode=user /bin/true"
         )
 
     def nails(
@@ -765,6 +770,10 @@ class Gate:
         return state
 
     def enter(self, n: int, user: str, config: str) -> bool:
+        # The operator logs in on the decoy's console first, then checks and
+        # activates.
+        self.facts[f"operator-{n}"] = user
+        self.sh(f"operator-login-{n}", self.pam_login(user, OPERATOR_TTY))
         status, rows = self.check_rows(f"check-before-{n}", user, config)
         self.facts[f"check-before-{n}"] = rows
         drift = rows.get("package-drift", {})
@@ -1119,6 +1128,7 @@ class Gate:
         )
         failed = records.utmp_added(before.btmp, after.btmp)
         self.check(f"way back {n}: btmp gained nothing", not failed, failed)
+        operator = str(self.facts.get(f"operator-{n}", ""))
         # The hidden session's own time: from the start of its userspace,
         # which the operator's logins for check and activate come before,
         # to its way back.
@@ -1150,6 +1160,37 @@ class Gate:
             and not inside,
             added,
         )
+        # The operator's console login right before the entry is the decoy's
+        # own: the records keep it, dated before the session.
+        console = [
+            row
+            for row in records.utmp_added(before.wtmp, after.wtmp)
+            if row.get("line") == OPERATOR_TTY
+            and row.get("type") == "USER_PROCESS"
+            and row.get("user") == operator
+            and 0 < float(str(row.get("tv_sec", 0))) < entered
+        ]
+        self.check(
+            f"way back {n}: wtmp keeps the operator's console login, dated "
+            "before the entry",
+            bool(console),
+            console or records.utmp_added(before.wtmp, after.wtmp),
+        )
+        if self.settings.get("lastlog2"):
+            kept = [
+                row
+                for row in added
+                if row.get("Name") == operator
+                and row.get("TTY") == OPERATOR_TTY
+                and isinstance(row.get("Time"), int)
+                and row["Time"] < entered
+            ]
+            self.check(
+                f"way back {n}: lastlog2 keeps the operator's console login, "
+                "dated before the entry",
+                bool(kept),
+                added,
+            )
 
     # --- the controls ----------------------------------------------------
 
