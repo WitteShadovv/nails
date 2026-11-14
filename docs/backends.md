@@ -48,17 +48,24 @@ Whatever the backend, the filesystem at the hidden root must:
   decoy's storage, or an `nbd` or `ublk` device you know is served from
   elsewhere, with a warning, never a folder;
 - **support symbolic links** (`symlink-support`);
-- **support `trusted.*` xattrs, report a file type (`d_type`) from readdir, and
-  store overlayfs whiteouts** (`upper-fs-capability`). The check proves this
-  before the session is touched: in a throwaway `.probe-*` directory on the
-  hidden root it sets and removes a trusted xattr, reads directory entry types
-  and tries a small overlay that it exercises with a new file and a whiteout,
-  then removes the directory. The overlay is mounted detached, so no mount
-  table lists it and it is gone when the probe ends; without root, or on a
-  kernel that cannot mount it that way, the check fails before it writes
-  anything (see
-  [What `check` touches](operator-guide.md#what-check-touches)). On failure it
-  names the detected filesystem type;
+- **support `trusted.*` xattrs, report a file type (`d_type`) from readdir,
+  store overlayfs whiteouts and, where SELinux may run, keep the
+  `security.selinux` label activation copies onto the directories it
+  creates there** (`upper-fs-capability`). The check proves this before the
+  session is touched: in a throwaway `.probe-*` directory on the hidden root
+  it sets and removes a trusted xattr, reads directory entry types, gives the
+  upper of its trial overlay the SELinux label of the decoy's `/` with the
+  activation's own copy and, where SELinux may run, reads it back, and tries
+  a small overlay that it exercises with a new file and a whiteout, then
+  removes the directory. Where SELinux may run, the check fails when the
+  decoy's `/` has no label or the copy cannot write it, as activation is then
+  refused, and when the upper does not keep the label it was given. The
+  overlay is mounted detached, so no mount table lists it and it is gone when
+  the probe ends; without root, or on a kernel that cannot mount it that way,
+  the check fails before it writes anything (see
+  [What `check` touches](operator-guide.md#what-check-touches)). When the
+  filesystem lacks one of these capabilities, or stores no labels where
+  SELinux may run, the failure names its detected type;
 - **keep every overlay upper and its work directory on one filesystem**.
   overlayfs refuses an upper and work directory on different filesystems.
   NAILS keeps both under the hidden root (`<root>/root/upper` and

@@ -806,6 +806,11 @@ fn the_upper_fs_probe_as_root_copies_the_decoy_roots_label_where_one_is_required
             )),
             "{refused:?}"
         );
+        // The hidden tmpfs stores labels: the failure does not blame it.
+        assert!(
+            !refused.message().contains("security.selinux attributes"),
+            "{refused:?}"
+        );
         assert!(left().is_empty(), "the probe left {:?}", left());
         rustix::fs::lsetxattr(
             &decoy.root,

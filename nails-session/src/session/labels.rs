@@ -257,11 +257,46 @@ pub enum Copied {
 /// missing label, a filesystem without extended attributes, or a link or a file
 /// in place of `upper` is not.
 pub fn copy_label(decoy: &Path, upper: &Path, labels: Labels) -> Result<Copied> {
+    try_copy_label(decoy, upper, labels).map_err(Refused::into_error)
+}
+
+/// [`copy_label`], whose refusal also tells whether the filesystem of `upper`
+/// is what refused the label ([`Refused::cannot_store`]), for a caller whose
+/// advice depends on it.
+pub fn try_copy_label(
+    decoy: &Path,
+    upper: &Path,
+    labels: Labels,
+) -> std::result::Result<Copied, Refused> {
     let copied = read_label(decoy).map_err(Failure::Read).and_then(|label| {
         let dir = rustix::fs::open(upper, DIRECTORY, Mode::empty()).map_err(Failure::Upper)?;
         write_label(&dir, &label)
     });
-    judge(decoy, upper, labels, copied)
+    judge_copy(decoy, upper, labels, copied)
+}
+
+/// A copy [`try_copy_label`] refused: the error [`copy_label`] returns for it,
+/// and the step that failed.
+#[derive(Debug)]
+pub struct Refused {
+    /// The step that failed, with the kernel's error.
+    failure: Failure,
+    /// The refusal, as [`copy_label`] returns it.
+    error: NailsError,
+}
+
+impl Refused {
+    /// Whether the filesystem of the upper directory refused to store the
+    /// label: writing it failed with `ENOTSUP`, as on a filesystem without
+    /// extended attributes, or one SELinux does not let carry labels.
+    pub fn cannot_store(&self) -> bool {
+        self.failure == Failure::Write(Errno::NOTSUP)
+    }
+
+    /// The refusal, as [`copy_label`] returns it.
+    pub fn into_error(self) -> NailsError {
+        self.error
+    }
 }
 
 /// Give every directory on the way from the upper root `upper` down to
@@ -390,6 +425,16 @@ fn judge(
     labels: Labels,
     copied: std::result::Result<(), Failure>,
 ) -> Result<Copied> {
+    judge_copy(decoy, upper, labels, copied).map_err(Refused::into_error)
+}
+
+/// [`judge`], keeping the step that failed in a refusal.
+fn judge_copy(
+    decoy: &Path,
+    upper: &Path,
+    labels: Labels,
+    copied: std::result::Result<(), Failure>,
+) -> std::result::Result<Copied, Refused> {
     let failure = match copied {
         Ok(()) => return Ok(Copied::Label),
         Err(failure) => failure,
@@ -406,7 +451,10 @@ fn judge(
             _ => {}
         }
     }
-    Err(refusal(decoy, upper, labels, failure))
+    Err(Refused {
+        failure,
+        error: refusal(decoy, upper, labels, failure),
+    })
 }
 
 /// The error for a copy that failed: what failed and, where every label is
