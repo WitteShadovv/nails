@@ -240,12 +240,16 @@ fn signs<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Signs {
     }
     // A daemon matters on its own only where no unit shows it: one started
     // outside systemd, or by a systemd that left no marker.
-    if signs.is_empty()
-        && let Some(daemon) = loggers::running_process_names(fs, root)
-            .into_iter()
-            .find(|name| is_daemon(name))
-    {
-        signs.push(format!("{daemon} runs"));
+    if signs.is_empty() {
+        let processes = loggers::running_processes(fs, root);
+        match processes.names.into_iter().find(|name| is_daemon(name)) {
+            Some(daemon) => signs.push(format!("{daemon} runs")),
+            None => unknown.extend(
+                processes
+                    .untold
+                    .map(|why| format!("NAILS cannot tell whether an sssd daemon runs: {why}")),
+            ),
+        }
     }
     let mut table_untold = false;
     match kcm_sign(fs, root, is_nixos) {

@@ -23,6 +23,11 @@
 //!   read from `<root>/proc`, which also catches a daemon started outside
 //!   systemd, one with no invocation marker.
 //!
+//! A place NAILS cannot look up, list or read for another reason than that
+//! nothing is there, on any of these ways, leaves it unable to tell whether a
+//! daemon runs, which counts as one that does: `/proc`, or a process's `comm`
+//! or `cmdline`, among them, unless the process ended.
+//!
 //! `klogd` is not one of them: it only hands the kernel's messages on to the
 //! syslog daemon, which is caught itself.
 //!
@@ -47,8 +52,8 @@ use super::super::locate_database::files::DecoyFiles;
 use super::super::locate_database::unit::{SYSTEM_UNIT_PATH, UnitSection, unit_section};
 use super::super::systemd_conf::Assignment;
 use super::PersistenceFinding;
-use crate::Filesystem;
 use crate::filesystem::automount::describe;
+use crate::{Filesystem, NailsError};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -162,7 +167,11 @@ fn activity_finding(logger: &Logger, activity: Activity) -> Option<PersistenceFi
 
 /// The fail-closed findings for active syslog daemons on the decoy under
 /// `root`, one per daemon however it was detected, and one for each daemon
-/// whose unit NAILS cannot tell runs, which counts as one that does.
+/// whose unit NAILS cannot tell runs, which counts as one that does. Where
+/// NAILS cannot read the processes ([`running_processes`]), one more says
+/// that a syslog or audit daemon systemd did not start may run: the audit
+/// daemon's own findings ([`active_auditd_finding`], [`auditd`]) leave that
+/// to this one.
 ///
 /// The enabled syslog daemon is found under `syslog.service` as well; when no
 /// daemon of [`SYSLOG_DAEMONS`] is found by its own names, an active
@@ -171,15 +180,22 @@ pub(super) fn active_syslog_blockers<F: Filesystem>(
     fs: &F,
     root: &Path,
 ) -> Vec<PersistenceFinding> {
-    let running = running_process_names(fs, root);
+    let processes = running_processes(fs, root);
     let mut out: Vec<PersistenceFinding> = SYSLOG_DAEMONS
         .iter()
-        .filter_map(|logger| activity_finding(logger, activity(fs, root, &running, logger)))
+        .filter_map(|logger| activity_finding(logger, activity(fs, root, &processes.names, logger)))
         .collect();
     if out.iter().all(|found| found.untold.is_some())
         && let Some(found) = enabled_syslog_finding(fs, root)
     {
         out.push(found);
+    }
+    // A daemon started outside systemd shows only as a process.
+    if let Some(why) = processes.untold {
+        out.push(PersistenceFinding::untold(format!(
+            "NAILS cannot tell whether a syslog or audit daemon that systemd did not start runs: \
+             {why}"
+        )));
     }
     out
 }
@@ -262,7 +278,7 @@ pub(super) fn active_auditd_finding<F: Filesystem>(
     fs: &F,
     root: &Path,
 ) -> Option<PersistenceFinding> {
-    let running = running_process_names(fs, root);
+    let running = running_processes(fs, root).names;
     activity_finding(&AUDITD, activity(fs, root, &running, &AUDITD))
 }
 
@@ -274,7 +290,7 @@ pub(super) fn active_auditd_finding<F: Filesystem>(
 /// the hidden volume's locations, resolved, which no read follows a link
 /// onto.
 pub(super) fn auditd<F: Filesystem>(fs: &F, root: &Path, hidden: &[PathBuf]) -> Option<Auditd> {
-    let running = running_process_names(fs, root);
+    let running = running_processes(fs, root).names;
     match activity(fs, root, &running, &AUDITD) {
         Activity::Active => return Some(Auditd::Active),
         Activity::Untold(why) => return Some(Auditd::MayRun(why)),
@@ -406,13 +422,14 @@ fn enabled_syslog_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<Persiste
 /// Only a path that is a link is resolved, so a decoy without the alias (the
 /// amnesic one NAILS asks for) has nothing read beyond its metadata.
 ///
-/// A link that names no other service, such as a mask, or one that cannot
-/// be resolved, names none, and the next unit directory is looked in.
+/// A link that names no other service, such as a mask, or one that leads to
+/// nothing, names none, and the next unit directory is looked in.
 ///
 /// # Errors
 ///
 /// Why NAILS cannot tell which daemon the alias names: the lookup of the
-/// alias in a unit directory failed, or was not made, before a link that
+/// alias in a unit directory, or of where it leads, failed for another
+/// reason than that nothing is there, or was not made, before a link that
 /// names a service was found.
 fn resolve_alias<F: Filesystem>(
     fs: &F,
@@ -431,13 +448,22 @@ fn resolve_alias<F: Filesystem>(
                 ));
             }
         }
-        let unit = fs.canonicalize(&link).ok().and_then(|target| {
-            target
-                .file_name()
-                .and_then(|name| name.to_str())
-                .filter(|unit| *unit != alias && unit.ends_with(".service"))
-                .map(str::to_string)
-        });
+        let target = match fs.canonicalize(&link) {
+            Ok(target) => target,
+            // A link that leads to nothing names no unit file.
+            Err(error) if error.nothing_there() => continue,
+            Err(error) => {
+                return Err(format!(
+                    "NAILS cannot tell which daemon {alias} names: {}",
+                    describe(&link.display().to_string(), &error).sentence
+                ));
+            }
+        };
+        let unit = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|unit| *unit != alias && unit.ends_with(".service"))
+            .map(str::to_string);
         if unit.is_some() {
             return Ok(unit);
         }
@@ -484,11 +510,12 @@ impl Activity {
 /// stopped-but-installed unit has none of these, so this never fires on a
 /// package that ships a disabled service. The cgroup is a second route to a
 /// running unit. A daemon started outside systemd leaves neither, and its
-/// process is what shows it ([`running_process_names`]). A oneshot unit that
+/// process is what shows it ([`running_processes`]). A oneshot unit that
 /// has run and exited, such as `kdump-tools.service`, keeps no process and no
 /// populated cgroup, so its marker is all that shows it. When the marker
-/// cannot be looked up and no other route shows the unit running, NAILS
-/// cannot tell.
+/// cannot be looked up, or the directory of the markers cannot be listed or
+/// the cgroup's `cgroup.events` read for another reason than that it is not
+/// there, and no other route shows the unit running, NAILS cannot tell.
 pub(in crate::preflight::checks) fn unit_active<F: Filesystem>(
     fs: &F,
     root: &Path,
@@ -498,48 +525,100 @@ pub(in crate::preflight::checks) fn unit_active<F: Filesystem>(
     // The marker is a link to the invocation id (see INVOCATION_DIR): a probe
     // that follows it, such as `path_exists`, never sees it.
     let marker = invocations.join(format!("invocation:{unit}"));
-    let marked = match fs.is_symlink(&marker) {
+    let untold = |place: &Path, error: &NailsError| {
+        Activity::Untold(format!(
+            "NAILS cannot tell whether {unit} runs: {}",
+            describe(&place.display().to_string(), error).sentence
+        ))
+    };
+    let mut marked = match fs.is_symlink(&marker) {
         Ok(true) => return Activity::Active,
         Ok(false) => Activity::Inactive,
-        Err(error) => Activity::Untold(format!(
-            "NAILS cannot tell whether {unit} runs: {}",
-            describe(&marker.display().to_string(), &error).sentence
-        )),
+        Err(error) => untold(&marker, &error),
     };
     if let Some(stem) = unit.strip_suffix(".service") {
         let prefix = format!("invocation:{stem}@");
-        if let Ok(entries) = fs.list_directory(&invocations)
-            && entries.iter().any(|entry| {
-                entry
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".service"))
-            })
-        {
-            return Activity::Active;
+        match fs.list_directory(&invocations) {
+            Ok(entries)
+                if entries.iter().any(|entry| {
+                    entry
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".service"))
+                }) =>
+            {
+                return Activity::Active;
+            }
+            Ok(_) => {}
+            Err(error) if error.nothing_there() => {}
+            // A marker of an instance it cannot list may be there.
+            Err(error) => {
+                if marked == Activity::Inactive {
+                    marked = untold(&invocations, &error);
+                }
+            }
         }
     }
     let events = root
         .join("sys/fs/cgroup/system.slice")
         .join(unit)
         .join("cgroup.events");
-    if fs
-        .read_file_content(&events)
-        .is_ok_and(|content| content.lines().any(|line| line == "populated 1"))
-    {
-        return Activity::Active;
+    match fs.read_file_content(&events) {
+        Ok(content) if content.lines().any(|line| line == "populated 1") => {
+            return Activity::Active;
+        }
+        Ok(_) => {}
+        Err(error) if error.nothing_there() => {}
+        // A cgroup it cannot read may hold a process.
+        Err(error) => {
+            if marked == Activity::Inactive {
+                marked = untold(&events, &error);
+            }
+        }
     }
     marked
 }
 
-/// The `comm` and `argv[0]` basenames of every process under `<root>/proc`.
+/// What the processes under `<root>/proc` show.
+pub(super) struct Processes {
+    /// The `comm` and `argv[0]` basenames of every process NAILS could read.
+    pub(super) names: BTreeSet<String>,
+    /// Why a process may run that `names` does not show, when one may: the
+    /// first place NAILS could not list or read for another reason than that
+    /// it is not there, or the process ended.
+    pub(super) untold: Option<String>,
+}
+
+/// The processes under `<root>/proc`, by their `comm` and `argv[0]`
+/// basenames.
 ///
 /// Reads `comm` and `cmdline` only, both world-readable, so an unprivileged
-/// `nails check` sees daemons that run as root.
-pub(super) fn running_process_names<F: Filesystem>(fs: &F, root: &Path) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    let Ok(entries) = fs.list_directory(&root.join("proc")) else {
-        return names;
+/// `nails check` sees daemons that run as root. A `/proc` that is not there
+/// holds no process, and a process that ended since the listing is gone. A
+/// `/proc` NAILS cannot list, or a process whose `comm` or `cmdline` it
+/// cannot read, as where `/proc` is mounted `hidepid=noaccess` for a check
+/// that is not root, may hide one: [`Processes::untold`] says why.
+pub(super) fn running_processes<F: Filesystem>(fs: &F, root: &Path) -> Processes {
+    let mut processes = Processes {
+        names: BTreeSet::new(),
+        untold: None,
+    };
+    let shown = |path: &Path| Path::new("/").join(path.strip_prefix(root).unwrap_or(path));
+    let unread = |what: &str, path: &Path, error: &NailsError| match error.io_kind() {
+        Some(std::io::ErrorKind::PermissionDenied) => format!(
+            "NAILS cannot {what} {}; run the command again with sudo",
+            shown(path).display()
+        ),
+        _ => format!("NAILS cannot {what} {} ({error})", shown(path).display()),
+    };
+    let proc = root.join("proc");
+    let entries = match fs.list_directory(&proc) {
+        Ok(entries) => entries,
+        Err(error) if error.nothing_there() => return processes,
+        Err(error) => {
+            processes.untold = Some(unread("list", &proc, &error));
+            return processes;
+        }
     };
     for entry in entries {
         let is_pid = entry
@@ -549,15 +628,39 @@ pub(super) fn running_process_names<F: Filesystem>(fs: &F, root: &Path) -> BTree
         if !is_pid {
             continue;
         }
-        if let Ok(comm) = fs.read_file_content(&entry.join("comm")) {
-            names.insert(comm.trim().to_string());
+        let mut read = |name: &str| {
+            let path = entry.join(name);
+            match fs.read_file_content(&path) {
+                Ok(text) => Some(text),
+                Err(error) if ended(&error) => None,
+                Err(error) => {
+                    processes
+                        .untold
+                        .get_or_insert_with(|| unread("read", &path, &error));
+                    None
+                }
+            }
+        };
+        let comm = read("comm");
+        let cmdline = read("cmdline");
+        if let Some(comm) = comm {
+            processes.names.insert(comm.trim().to_string());
         }
-        if let Ok(cmdline) = fs.read_file_content(&entry.join("cmdline"))
+        if let Some(cmdline) = cmdline
             && let Some(argv0) = cmdline.split('\0').find(|arg| !arg.is_empty())
             && let Some(base) = Path::new(argv0).file_name().and_then(|name| name.to_str())
         {
-            names.insert(base.to_string());
+            processes.names.insert(base.to_string());
         }
     }
-    names
+    processes
+}
+
+/// Whether `error`, of a read of a file in a process's `/proc` directory,
+/// says the process ended: the directory is gone (`ENOENT`), or the kernel
+/// no longer has the task (`ESRCH`).
+fn ended(error: &NailsError) -> bool {
+    error.nothing_there()
+        || matches!(error, NailsError::IoError { source, .. }
+            if source.raw_os_error() == Some(nix::libc::ESRCH))
 }

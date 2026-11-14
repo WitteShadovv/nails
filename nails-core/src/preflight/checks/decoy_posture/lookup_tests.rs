@@ -8,8 +8,8 @@
 //! the decoy keeps, with why NAILS cannot tell.
 
 use super::*;
-use crate::filesystem::MockFilesystem;
 use crate::filesystem::automount::mount_fix;
+use crate::filesystem::{MockFailure, MockFilesystem, MockLookup};
 use crate::preflight::checks::automount_fixture::{reached, with_automounts};
 use std::io::ErrorKind;
 
@@ -256,6 +256,113 @@ fn a_syslog_alias_nails_cannot_look_up_refuses() {
         "NAILS cannot tell which daemon syslog.service names: NAILS cannot look up \
          /etc/systemd/system/syslog.service (",
     );
+}
+
+/// A `syslog.service` link whose target NAILS cannot resolve, for another
+/// reason than that it leads to nothing, may name a daemon that writes logs
+/// to the decoy disk: refused, with the override, where the resolution that
+/// failed read as a link that names no service. One that leads to nothing
+/// names none, and the decoy passes.
+#[test]
+fn a_syslog_alias_nails_cannot_resolve_refuses() {
+    let link = Path::new("/etc/systemd/system/syslog.service");
+    let decoy_with_alias = |failure: ErrorKind| {
+        let fs = decoy("volatile");
+        fs.create_symlink(Path::new("/usr/lib/systemd/system/rsyslog.service"), link)
+            .unwrap();
+        fs.mock_fail_only(link, MockLookup::Canonicalize, MockFailure::Io(failure));
+        fs
+    };
+    let fs = decoy_with_alias(ErrorKind::PermissionDenied);
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        "NAILS cannot tell which daemon syslog.service names: NAILS cannot look up \
+         /etc/systemd/system/syslog.service; run the command again with sudo",
+    );
+    let fs = decoy_with_alias(ErrorKind::NotFound);
+    let result = run(&fs, false);
+    assert!(result.is_pass(), "{result:?}");
+}
+
+/// The directory of the invocation markers, which NAILS cannot list, may
+/// hold the marker of a running template instance of a logger, and a
+/// cgroup's `cgroup.events`, which it cannot read, may show a process in the
+/// unit: NAILS cannot tell whether the unit runs, and refuses with the
+/// override, where the listing or the read that failed showed nothing
+/// running. Neither is there on a decoy that passes.
+#[test]
+fn a_marker_directory_or_cgroup_nails_cannot_read_refuses() {
+    let fs = decoy("volatile");
+    fs.mock_set_unreadable_dir("/run/systemd/units");
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        "NAILS cannot tell whether rsyslog.service runs: NAILS cannot look up \
+         /run/systemd/units; run the command again with sudo",
+    );
+
+    let events = "/sys/fs/cgroup/system.slice/auditd.service/cgroup.events";
+    let fs = decoy("volatile");
+    fs.mock_set_lookup_error(events, ErrorKind::Other);
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        &format!("NAILS cannot tell whether auditd.service runs: NAILS cannot look up {events} ("),
+    );
+
+    for kind in [ErrorKind::NotFound, ErrorKind::NotADirectory] {
+        let fs = decoy("volatile");
+        fs.mock_set_lookup_error("/run/systemd/units", kind);
+        fs.mock_set_lookup_error(events, kind);
+        let result = run(&fs, false);
+        assert!(result.is_pass(), "{kind:?}: {result:?}");
+    }
+}
+
+/// A `/proc` that NAILS cannot list, or a process whose `comm` or `cmdline`
+/// it cannot read, may hide a syslog or audit daemon that systemd did not
+/// start, which writes to the decoy disk: refused, with the override, where
+/// they read as no process, and sssd's warning says it cannot tell. A
+/// process that ended since the listing hides none.
+#[test]
+fn processes_nails_cannot_read_refuse() {
+    let fs = decoy("volatile");
+    fs.mock_set_unreadable_dir("/proc");
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        "NAILS cannot tell whether a syslog or audit daemon that systemd did not start runs: \
+         NAILS cannot list /proc; run the command again with sudo",
+    );
+    let sssd = sssd::sssd_finding(&fs, Path::new("/"), false).expect("sssd cannot be told");
+    assert!(
+        sssd.starts_with(
+            "NAILS cannot tell whether sssd is in use on the decoy: NAILS cannot tell whether \
+             an sssd daemon runs: NAILS cannot list /proc; run the command again with sudo"
+        ),
+        "{sssd}"
+    );
+
+    let one_process = || {
+        let fs = decoy("volatile");
+        fs.mock_set_directory_contents(Path::new("/proc"), vec![PathBuf::from("/proc/731")]);
+        fs
+    };
+    let fs = one_process();
+    fs.mock_add_file("/proc/731/comm", "bash\n");
+    fs.mock_set_lookup_error("/proc/731/cmdline", ErrorKind::PermissionDenied);
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        "NAILS cannot tell whether a syslog or audit daemon that systemd did not start runs: \
+         NAILS cannot read /proc/731/cmdline; run the command again with sudo",
+    );
+
+    // Gone: neither file is there any more.
+    let fs = one_process();
+    let result = run(&fs, false);
+    assert!(result.is_pass(), "{result:?}");
 }
 
 /// Without a daemon found by its own names, an enabled `syslog.service`
