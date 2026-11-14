@@ -232,3 +232,143 @@ fn errors_read_as_their_reason() {
     assert_eq!(ExecError::Refused("x".to_string()).to_string(), "x");
     assert_eq!(ExecError::Unknown("y".to_string()).to_string(), "y");
 }
+
+fn with(value: &str, variables: &[(&str, &str)]) -> Result<Vec<ExecCommand>, ExecError> {
+    let variables: Variables = variables
+        .iter()
+        .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+        .collect();
+    exec_commands_with(value, &variables)
+}
+
+#[test]
+fn a_variable_alone_becomes_its_value_split_at_blanks() {
+    // firewalld.service: ExecStart=/usr/bin/firewalld --nofork --nopid $FIREWALLD_ARGS.
+    let value = "/usr/bin/firewalld --nofork --nopid $FIREWALLD_ARGS";
+    for (args, expected) in [
+        ("", vec!["--nofork", "--nopid"]),
+        (
+            "--log-target=syslog",
+            vec!["--nofork", "--nopid", "--log-target=syslog"],
+        ),
+        (
+            " --debug\t--log-target=file \n",
+            vec!["--nofork", "--nopid", "--debug", "--log-target=file"],
+        ),
+    ] {
+        assert_eq!(
+            with(value, &[("FIREWALLD_ARGS", args)]).unwrap(),
+            [command("/usr/bin/firewalld", &expected)],
+            "{args:?}"
+        );
+    }
+    // Quoted, the word is still the variable alone, as systemd unquotes it
+    // before it expands it.
+    assert_eq!(
+        with("/bin/x \"$A\" b", &[("A", "1 2")]).unwrap(),
+        [command("/bin/x", &["1", "2", "b"])]
+    );
+}
+
+#[test]
+fn a_braced_variable_becomes_its_value_within_its_word() {
+    assert_eq!(
+        with(
+            "/bin/x --log=${DIR}/x.log ${A}",
+            &[("DIR", "/var/log"), ("A", "1 2")]
+        )
+        .unwrap(),
+        [command("/bin/x", &["--log=/var/log/x.log", "1 2"])]
+    );
+    assert_eq!(
+        with("/bin/x a$$b $$A", &[]).unwrap(),
+        [command("/bin/x", &["a$b", "$A"])]
+    );
+    // `:` keeps every `$`.
+    assert_eq!(
+        with(":/bin/x $A ${A}", &[("A", "1")]).unwrap(),
+        [command("/bin/x", &["$A", "${A}"])]
+    );
+}
+
+#[test]
+fn what_nails_cannot_expand_is_unknown() {
+    for (value, variables, why) in [
+        (
+            "/bin/x $B",
+            &[("A", "1")][..],
+            "it takes an argument from $B, which the unit itself does not set",
+        ),
+        (
+            "/bin/x ${B}",
+            &[][..],
+            "it takes an argument from $B, which the unit itself does not set",
+        ),
+        (
+            "/bin/x $A",
+            &[("A", "'quoted' value")][..],
+            "it takes arguments from the value of $A, which holds a quote or a backslash",
+        ),
+        (
+            "/bin/x a$A",
+            &[("A", "1")][..],
+            "it names an environment variable in a way NAILS does not follow",
+        ),
+        (
+            "/bin/x ${A:-1}",
+            &[("A", "1")][..],
+            "it names an environment variable in a way NAILS does not follow",
+        ),
+        (
+            "/bin/x ${A",
+            &[("A", "1")][..],
+            "it names an environment variable in a way NAILS does not follow",
+        ),
+        (
+            "/bin/x $1A",
+            &[("1A", "1")][..],
+            "it names an environment variable in a way NAILS does not follow",
+        ),
+        (
+            "@/bin/x $A b",
+            &[("A", "1")][..],
+            "it takes argv[0] from an environment variable",
+        ),
+    ] {
+        assert_eq!(
+            with(value, variables),
+            Err(ExecError::Unknown(why.to_string())),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn environment_words_unquote_and_read_specifiers() {
+    assert_eq!(
+        environment_words("A=1 \"B=x y\" 'C=%%'").unwrap(),
+        [b"A=1".to_vec(), b"B=x y".to_vec(), b"C=%".to_vec()]
+    );
+    assert!(matches!(
+        environment_words("A=\\x41"),
+        Err(ExecError::Unknown(_))
+    ));
+    assert!(matches!(
+        environment_words("A=%n"),
+        Err(ExecError::Unknown(_))
+    ));
+    assert!(matches!(
+        environment_words("\"A=1"),
+        Err(ExecError::Refused(_))
+    ));
+}
+
+#[test]
+fn variable_names_are_those_systemd_takes() {
+    for name in ["A", "_", "FIREWALLD_ARGS", "a1_b"] {
+        assert!(is_variable_name(name.as_bytes()), "{name}");
+    }
+    for name in ["", "1A", "A-B", "A B", "A=B", "Ä"] {
+        assert!(!is_variable_name(name.as_bytes()), "{name}");
+    }
+}
