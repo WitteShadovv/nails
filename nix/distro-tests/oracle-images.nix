@@ -11,9 +11,9 @@
 # (ci/oracle/run-scan.sh). This driver produces the real images that scan
 # needs, on the stock Fedora 44 Cloud image (btrfs, zstd compressed, with the
 # root, /boot, /home and /var subvolumes next to a vfat ESP) and on the stock
-# arch-boxes basic image (btrfs, zstd compressed, every file in the top level,
-# next to a vfat ESP that systemd mounts on demand at /efi, and a BIOS boot
-# partition):
+# arch-boxes basic image (btrfs, zstd compressed, mounted from its top level
+# (subvolid=5), next to a vfat ESP that systemd mounts on demand at /efi, and a
+# BIOS boot partition):
 #
 #   before    the decoy as prepared, powered off;
 #   control   the same disk after one plain reboot, powered off;
