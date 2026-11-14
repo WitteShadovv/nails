@@ -667,6 +667,15 @@ Layout:
 - `tests/apt-shutdown.nix`: the unattended-upgrades scenario, run on Debian
   13, Ubuntu 24.04 and Ubuntu 26.04
   ([below](#the-unattended-upgrades-scenario)).
+- `lib/admitted.nix`: the test-only build of the release binary in which one
+  family's base row of the family table is admitted, for the scenarios of a
+  family not admitted yet (the gate scenarios and the oracle images); never
+  released. `lib/admit-row.awk` makes the change, and the build fails unless
+  it changes that row's `admitted` line alone: a row already admitted, a
+  derivative's row and an id the table lacks each fail it
+  (`ci/tests/test_admit_row.py` runs the script on the family table).
+- `fedora-gate.nix`: the drivers of Fedora's admission gate
+  ([below](#the-admission-gate-of-fedora)).
 - `default.nix`: maps the scenarios over the table and exposes the metadata.
 
 Each smoke scenario shares the static musl `nails` binary into the guest over
