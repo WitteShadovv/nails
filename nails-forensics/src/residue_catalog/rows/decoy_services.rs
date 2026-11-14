@@ -81,14 +81,14 @@ pub(super) const ROWS: &[ResidueClass] = &[
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/log/tuned"]),
         platforms: Platforms::ALL,
-        risk: "tuned started with its log option, -l, which Fedora's tuned.service passes, or with -d, writes its log to /var/log/tuned on the decoy disk: it logs when it stops for the switch and when it starts again after the way back, each line with the time, so the decoy keeps both times, as a syslog daemon's log would. tuned-ppd with -l, which Fedora's tuned-ppd.service passes, logs there the power profiles it sets and the holds it releases, around a switch too. Without them both log to their standard error, which a unit or a hand start can send to a file as well.",
+        risk: "tuned started with its log option, -l, which Fedora's tuned.service passes, or with -d, writes its log to /var/log/tuned on the decoy disk: it logs when it stops for the switch and when it starts again after the way back, each line with the time, so the decoy keeps both times, as a syslog daemon's log would. tuned-ppd with -l, which Fedora's tuned-ppd.service passes, logs there the power profiles it sets and the holds it releases, around a switch too. Without them both log to their standard error, which a unit or a hand start can send to a file as well, and a unit to a journal namespace that the decoy keeps on its disk.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: true,
         verify: Probe::Paths {
             paths: &["/var/log/tuned"],
             severity: ProbeSeverity::Warn,
         },
-        mitigation: "Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, then restart them, or mask them.",
+        mitigation: "Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, started by a timer, path or socket that runs, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file or to a journal namespace the decoy keeps included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, with no LogNamespace= whose journal the decoy keeps, then restart them, or mask them.",
         doc_anchor: "decoy-requirements.md#tuned-firewalld-and-abrt",
         e2e: E2e::None(
             "no VM test runs tuned: Fedora, whose units pass -l, is not admitted yet and its cloud image has no tuned; the refusal is unit tested on Fedora 44's own unit files",
@@ -109,7 +109,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             paths: &["/var/log/firewalld"],
             severity: ProbeSeverity::Info,
         },
-        mitigation: "decoy-persistence warns while firewalld is enabled or active, or runs, with a log file. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it.",
+        mitigation: "decoy-persistence warns while firewalld is enabled, active or started by a timer, path or socket that runs, or runs, with a log file, a journal namespace the decoy keeps included. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it.",
         doc_anchor: "decoy-requirements.md#tuned-firewalld-and-abrt",
         e2e: E2e::None(
             "no VM test runs firewalld: Fedora, which enables it, is not admitted yet and its cloud image has no firewalld; the warning is unit tested on Fedora 44's own unit and sysconfig file",

@@ -135,7 +135,7 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 | [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. An enabled auditd that does not run starts again when the decoy starts after the way back, unless its unit is masked or the kernel command line keeps it from starting (audit=0). |
 | [Armed kdump](#fail-closed-activation-is-refused) | If the kernel crashes during a hidden session, kdump's crash kernel mounts the decoy root by its device, outside the session's overlay, and writes a dump of kernel memory (which can hold the hidden volume's key) and the session's kernel log to /var/crash on the decoy disk. |
 | [unattended-upgrades set to install at shutdown](#unattended-upgrades) | With Unattended-Upgrade::InstallOnShutdown on, unattended-upgrades' shutdown helper takes a switch through logind for a shutdown: at activation it installs the pending updates on the decoy disk and logs that run there, so the decoy keeps the record of a shutdown at the time of the switch, and its packages change. At the way back with nails deactivate the hidden session's own copy installs them into the session's overlay. |
-| [tuned's log file](#tuned-firewalld-and-abrt) | tuned started with its log option, -l, which Fedora's tuned.service passes, or with -d, writes its log to /var/log/tuned on the decoy disk: it logs when it stops for the switch and when it starts again after the way back, each line with the time, so the decoy keeps both times, as a syslog daemon's log would. tuned-ppd with -l, which Fedora's tuned-ppd.service passes, logs there the power profiles it sets and the holds it releases, around a switch too. Without them both log to their standard error, which a unit or a hand start can send to a file as well. |
+| [tuned's log file](#tuned-firewalld-and-abrt) | tuned started with its log option, -l, which Fedora's tuned.service passes, or with -d, writes its log to /var/log/tuned on the decoy disk: it logs when it stops for the switch and when it starts again after the way back, each line with the time, so the decoy keeps both times, as a syslog daemon's log would. tuned-ppd with -l, which Fedora's tuned-ppd.service passes, logs there the power profiles it sets and the holds it releases, around a switch too. Without them both log to their standard error, which a unit or a hand start can send to a file as well, and a unit to a journal namespace that the decoy keeps on its disk. |
 <!-- residue-catalog:end fail-closed -->
 
 Override these per run with `--allow-persistent-decoy` on `activate`/`check`,
@@ -160,7 +160,7 @@ kernel booted with `audit=0` starts no auditd. Its unit refuses a plain
 `systemctl stop` on Fedora and Arch (`RefuseManualStop=yes`, as upstream ships
 it, which the Fedora 44 and Arch probes record), so there `systemctl stop` and
 `systemctl disable --now` leave it running. Turn it off for good, without a
-reboot, the same way on every family:
+reboot, the same way on Debian, Ubuntu, Fedora and Arch:
 
 ```bash
 sudo systemctl disable auditd.service
@@ -531,21 +531,28 @@ probe boots has none of them.
   `sudo systemctl disable --now abrtd.service`.
 
 What NAILS cannot read of these, a unit file or drop-in directory it cannot
-read, a command or option it does not follow, a variable the unit does not
-set, a standard stream it cannot follow, a drop-in name that two of a unit's
-names hold in different files (the service manager takes the names in an
-order of its own), counts against the decoy: tuned is refused as if it logged
-to a file, and firewalld and ABRT warn. Whether a unit is enabled or active
-NAILS reads from the links and markers systemd leaves, without following them.
-A unit whose link or marker NAILS cannot look up, as an unprivileged
-`nails check` cannot in a directory only root may look into, counts as one
-that starts, wherever its commands would make the daemon log to a file or
-NAILS cannot tell whether they would. A
-unit that another unit pulls in with `Wants=` or `Requires=` in its own file
-is not followed, tuned-ppd's need of tuned aside, and a unit of another name
-that runs one of these programs is seen only by its process, while it runs.
-Where `/proc` hides other users' processes, an unprivileged `nails check` sees
-only the units, while activation, which runs as root, sees the processes too.
+read, a command or option it does not follow, a program that runs the daemon
+in turn (as `logsave` or `script` does, which can copy what it logs into a
+file of their own), a variable the unit does not set, a standard stream it
+cannot follow (a pipe among them), a journal namespace whose configuration it
+cannot read, a drop-in name that two of a unit's names hold in different files
+(the service manager takes the names in an order of its own), counts against
+the decoy: tuned is refused as if it logged to a file, and firewalld and ABRT
+warn. A log to a device that keeps nothing it is given, as `/dev/null` or a
+terminal, is no file. Whether a unit is enabled or active NAILS reads from the
+links and markers systemd leaves, without following them. A unit whose link
+or marker NAILS cannot look up, as an unprivileged `nails check` cannot in a
+directory only root may look into, counts as one that starts, wherever its
+commands would make the daemon log to a file or NAILS cannot tell whether
+they would; a unit directory NAILS cannot list at all hides the links in it.
+A socket on a running daemon's standard output or standard error counts as
+the journal's. A unit that another unit pulls in with `Wants=` or `Requires=`
+in its own file is not followed, tuned-ppd's need of tuned aside, and a unit
+of another name that runs one of these programs is seen only by its process,
+while it runs. Where `/proc` is mounted with `hidepid=1`, a process an
+unprivileged `nails check` cannot read counts against the decoy wherever the
+daemon's unit is installed; with `hidepid=2` it does not see other users'
+processes at all. Activation, which runs as root, sees them all.
 
 ## Package updates
 
@@ -1909,8 +1916,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [unattended-upgrades set to install at shutdown](#unattended-upgrades) (`unattended-upgrades-install-on-shutdown`) | `/var/log/unattended-upgrades`, `/var/log/apt`, `/var/log/dpkg.log` | Debian | `decoy-persistence` (refuses) | none: the logs and the packages are the decoy's own, as after any shutdown that installs updates | Activation refuses while the decoy's helper runs with the setting on, or with an apt configuration NAILS cannot read or follow, one apt refuses, or one that changed since the helper started while no file sets the setting, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override |
 | [A daily unattended-upgrade run at the switch](#unattended-upgrades) (`unattended-upgrades-run-at-the-switch`) | `/var/log/unattended-upgrades` | Debian | `unattended-upgrade-run` (refuses) | none: the lines are the decoy's own logs, as after a shutdown during a daily run | Activation refuses while apt-daily-upgrade.service or apt-daily.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run |
 | [unattended-upgrades' shutdown helper without python3-gi](#unattended-upgrades) (`unattended-upgrades-polling-without-python3-gi`) | `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log` | Debian | `decoy-persistence` | none: the lines are the decoy's own log, as after any start of the helper | decoy-persistence warns while the decoy's helper is enabled and python3-gi is not installed. Install it: apt install python3-gi. | none: asserted on Debian 13 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose stock decoy warns of it and whose helper adds a pair at the way back |
-| [tuned's log file](#tuned-firewalld-and-abrt) (`tuned-log`) | `/var/log/tuned` | all | `decoy-persistence` (refuses) | path probe (warn) | Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, then restart them, or mask them. | none: no VM test runs tuned: Fedora, whose units pass -l, is not admitted yet and its cloud image has no tuned; the refusal is unit tested on Fedora 44's own unit files |
-| [firewalld's log file](#tuned-firewalld-and-abrt) (`firewalld-log`) | `/var/log/firewalld` | all | `decoy-persistence` | path probe (info) | decoy-persistence warns while firewalld is enabled or active, or runs, with a log file. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it. | none: no VM test runs firewalld: Fedora, which enables it, is not admitted yet and its cloud image has no firewalld; the warning is unit tested on Fedora 44's own unit and sysconfig file |
+| [tuned's log file](#tuned-firewalld-and-abrt) (`tuned-log`) | `/var/log/tuned` | all | `decoy-persistence` (refuses) | path probe (warn) | Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, started by a timer, path or socket that runs, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file or to a journal namespace the decoy keeps included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, with no LogNamespace= whose journal the decoy keeps, then restart them, or mask them. | none: no VM test runs tuned: Fedora, whose units pass -l, is not admitted yet and its cloud image has no tuned; the refusal is unit tested on Fedora 44's own unit files |
+| [firewalld's log file](#tuned-firewalld-and-abrt) (`firewalld-log`) | `/var/log/firewalld` | all | `decoy-persistence` | path probe (info) | decoy-persistence warns while firewalld is enabled, active or started by a timer, path or socket that runs, or runs, with a log file, a journal namespace the decoy keeps included. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it. | none: no VM test runs firewalld: Fedora, which enables it, is not admitted yet and its cloud image has no firewalld; the warning is unit tested on Fedora 44's own unit and sysconfig file |
 | [ABRT's crash reports](#tuned-firewalld-and-abrt) (`abrt-spool`) | `/var/spool/abrt` | all | `decoy-persistence` | path probe (warn) | decoy-persistence warns while ABRT is in use on the decoy. Turn it off: systemctl disable --now abrtd.service, which the other ABRT units need. | none: no VM test runs ABRT: Fedora, which enables it, is not admitted yet and its cloud image has no ABRT; the warning is unit tested on Fedora 44's own unit |
 | [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | `preflight-checks` |
 | [sssd and the domain controller's records](#decoys-joined-to-a-domain) (`sssd-domain-records`) | the domain controller's own records of the logins and account lookups sssd makes on a decoy joined to a domain, and sssd's caches under /var/lib/sss and logs under /var/log/sssd | all | `decoy-persistence` | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: no VM test runs a domain controller; the warning is unit-tested |
