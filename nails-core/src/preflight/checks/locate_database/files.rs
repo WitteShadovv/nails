@@ -137,6 +137,22 @@ impl<'a, F: Filesystem> DecoyFiles<'a, F> {
         }
     }
 
+    /// The target of `path` where it is a link, without following it; `None`
+    /// for anything else.
+    ///
+    /// # Errors
+    ///
+    /// Why NAILS cannot read the link.
+    pub fn link_target(&self, path: &Path) -> Result<Option<PathBuf>, String> {
+        if !self.fs.is_symlink(path).unwrap_or(false) {
+            return Ok(None);
+        }
+        self.fs
+            .read_link(path)
+            .map(Some)
+            .map_err(|e| format!("NAILS cannot read the link {} ({e})", path.display()))
+    }
+
     /// The entries of directory `dir`; none when it is missing or no
     /// directory.
     ///

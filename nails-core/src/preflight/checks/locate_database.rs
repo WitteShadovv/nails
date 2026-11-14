@@ -38,6 +38,7 @@
 //! warns that it cannot tell, naming the point, as for a file it cannot
 //! read. Without a readable mount table it looks up nothing, and warns.
 
+mod aliases;
 pub mod conf;
 pub mod cron;
 pub mod exec;
