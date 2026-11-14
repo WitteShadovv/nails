@@ -36,11 +36,15 @@ written and deleted the same way before that remount, with the image's own
 older roots keep its path and whether any keeps its contents, and asserts
 nothing of it.
 
-The decoy is the stock image; no NAILS runs here. The disk is imaged whole once
-the controls are synced, as the oracle images driver images it: QEMU pauses at
-the guest's power-off, and the image is a QMP backup of the paused disk. The
-driver writes ``<image>-btrfs.json``, every assertion with its outcome, into the
-directory ``NAILS_GATE_OUT`` names, and fails when one does not hold.
+The decoy is the stock image made amnesic as NAILS requires it, before the
+controls are planted: its journal volatile and auditd off. The stock image
+keeps a persistent journal, and a first run on it found the blocks of the
+deleted control taken by a journal file within the run. No NAILS runs here.
+The disk is imaged whole once the controls are synced, as the oracle images
+driver images it: QEMU pauses at the guest's power-off, and the image is a QMP
+backup of the paused disk. The driver writes ``<image>-btrfs.json``, every
+assertion with its outcome, into the directory ``NAILS_GATE_OUT`` names, and
+fails when one does not hold.
 """
 
 from __future__ import annotations
@@ -66,6 +70,22 @@ ROOTS = 64
 POISON_BYTES = 256 * 1024
 # The size of a block of the decoy's btrfs.
 BLOCK = 4096
+# The first bytes of a zstd frame, as each compressed extent of the decoy's
+# btrfs starts.
+ZSTD_MAGIC = "28b52ffd"
+# What NAILS requires of the decoy before a session: journald keeps its journal
+# in RAM, and auditd does not run.
+AMNESIC = (
+    "mkdir -p /etc/systemd/journald.conf.d && "
+    "printf '[Journal]\\nStorage=volatile\\n' "
+    "> /etc/systemd/journald.conf.d/50-volatile.conf && "
+    "systemctl restart systemd-journald && "
+    "systemctl disable auditd.service; systemctl mask auditd.service; "
+    "auditctl --signal stop; "
+    "for i in $(seq 30); do pgrep -x auditd >/dev/null || break; sleep 1; done; "
+    "{ journalctl --header 2>/dev/null || true; } | grep -m1 '^File path' || true; "
+    "pgrep -x auditd || echo auditd gone"
+)
 
 
 def poison_unit(name: str) -> str:
@@ -141,6 +161,9 @@ class Controls:
         # Deleted with the image's own discard=async: recorded only.
         self.write_poison("D", "d")
         self.commits()
+        self.facts["d-extents"] = vm.succeed(
+            f"filefrag -v {CONTROLS}/compressed/d 2>&1 || true"
+        )
         vm.succeed(f"rm {CONTROLS}/compressed/d && sync")
         self.commits()
         # Async discard runs in the background: wait until the filesystem has
@@ -282,12 +305,13 @@ class Controls:
         subprocess.run([self.tools["cp"], "--sparse=always", full, target], check=True)
         os.remove(full)
 
-    def extent_heads(self, part: str) -> list[dict[str, Any]]:
-        """For each extent of (c) the guest listed, the first bytes the image
-        holds at its address: a zstd frame (28b52ffd) while the extent was
-        neither discarded nor reused."""
+    def extent_heads(self, part: str, control: str) -> list[dict[str, Any]]:
+        """For each extent of the deleted ``control`` the guest listed, the
+        first bytes the image holds at its address: a zstd frame
+        (``ZSTD_MAGIC``) while the extent was neither discarded nor reused."""
         heads = []
-        for logical in encoded_extents(str(self.facts.get("c-extents", ""))):
+        listing = str(self.facts.get(f"{control}-extents", ""))
+        for logical in encoded_extents(listing):
             with tempfile.NamedTemporaryFile() as out:
                 done = subprocess.run(
                     [
@@ -310,6 +334,7 @@ class Controls:
                     "logical": logical,
                     "exit": done.returncode,
                     "head": data[:8].hex(),
+                    "zstd": data[:4].hex() == ZSTD_MAGIC,
                     "zeros": bool(data) and not data.strip(b"\0"),
                     "said": done.stdout.strip()[-300:] + done.stderr.strip()[-300:],
                 }
@@ -325,6 +350,7 @@ class Controls:
         d = poison_token("D")
         work = tempfile.mkdtemp(prefix="gate-btrfs-")
         try:
+            self.facts["amnesic"] = vm.succeed(AMNESIC)
             self.facts["root"] = vm.succeed(
                 "findmnt -no SOURCE,FSTYPE,OPTIONS /"
             ).strip()
@@ -379,7 +405,8 @@ class Controls:
             self.facts["generation"] = btrfs_scan.read_generation(part)
             roots = btrfs_scan.find_roots(self.tools["btrfs-find-root"], part)
             self.facts["roots"] = [root.generation for root in roots]
-            self.facts["c-extents-on-disk"] = self.extent_heads(part)
+            self.facts["c-extents-on-disk"] = self.extent_heads(part, "c")
+            self.facts["d-extents-on-disk"] = self.extent_heads(part, "d")
             regex = btrfs_scan.path_filter([os.path.dirname(in_fs)], below=True)
             live_b = os.path.join(in_fs, "compressed", "b")
             deleted = os.path.join(in_fs, "compressed", "c")
