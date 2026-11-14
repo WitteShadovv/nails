@@ -22,6 +22,10 @@ const SELINUX_MOUNTS: &str = "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0
 /// A mount table without selinuxfs.
 const PLAIN_MOUNTS: &str = "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n\
                             proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n";
+/// When the judged hosts booted, in seconds since the epoch.
+const BOOT: u64 = 1_790_000_000;
+/// What `/proc/stat` shows of that boot.
+const STAT: &str = "cpu  10 0 10 100 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime 1790000000\nprocesses 1\n";
 
 /// The LSM list as the kernel writes it, split.
 fn lsms(list: &str) -> Vec<String> {
@@ -54,6 +58,7 @@ fn enforcing(label: &str) -> Facts {
             Some("targeted"),
         )),
         label: Some(label.to_string()),
+        config_age: ConfigAge::Older,
     }
 }
 
@@ -188,13 +193,19 @@ fn enforcing_targeted_with_nails_unconfined_passes() {
          SELINUX=enforcing\nSELINUXTYPE=targeted\n",
     );
     fs.mock_set_file_content(PROCESS_LABEL, &format!("{UNCONFINED_LOGIN}\0"));
+    fs.mock_set_file_content(PROC_STAT, STAT);
+    fs.mock_set_change_time(
+        SELINUX_CONFIG,
+        UNIX_EPOCH + std::time::Duration::from_secs(BOOT - 3600),
+    );
     let result = run_on(&fs, known_units());
     assert!(result.is_pass(), "{result:?}");
     assert_eq!(
         result.message(),
-        "SELinux enforces the targeted policy, and NAILS runs unconfined: this process in \
-         unconfined_t, the processes systemd and udev start for it in unconfined_service_t. \
-         Active LSMs: lockdown, capability, yama, selinux, bpf, landlock."
+        "SELinux enforces, /etc/selinux/config names the targeted policy and has not changed \
+         since the boot, and NAILS runs unconfined: this process in unconfined_t, the \
+         processes systemd and udev start for it in unconfined_service_t. Active LSMs: \
+         lockdown, capability, yama, selinux, bpf, landlock."
     );
 }
 
@@ -323,8 +334,8 @@ fn a_policy_other_than_targeted_fails_as_untested() {
         assert!(result.is_fail(), "{policy}: {result:?}");
         assert!(
             result.message().starts_with(&format!(
-                "SELinux runs the {policy:?} policy (/etc/selinux/config, SELINUXTYPE=): this \
-                 check takes only the targeted policy, and NAILS is untested under any other."
+                "/etc/selinux/config names the {policy:?} policy (SELINUXTYPE=): this check \
+                 takes only the targeted policy, and NAILS is untested under any other."
             )),
             "{result:?}"
         );
@@ -343,8 +354,8 @@ fn a_level_of_a_multi_level_policy_fails_whatever_the_configuration_names() {
         assert!(result.is_fail(), "{label}: {result:?}");
         assert!(
             result.message().contains(
-                "and the targeted policy has none but s0: the policy SELinux runs is a \
-                 multi-level (MLS) one."
+                "and Fedora's targeted policy has none but s0: SELinux runs another policy, \
+                 such as a multi-level (MLS) one, and NAILS is untested under any other."
             ),
             "{result:?}"
         );
@@ -358,7 +369,8 @@ fn a_level_of_a_multi_level_policy_fails_whatever_the_configuration_names() {
     assert!(
         result.message().starts_with(
             "The SELinux context of this nails process has no level, which every context of \
-             the targeted policy has: the policy SELinux runs is not targeted."
+             Fedora's targeted policy has: SELinux runs another policy, and NAILS is untested \
+             under any other."
         ),
         "{result:?}"
     );
@@ -558,6 +570,7 @@ fn selinux_that_cannot_be_ruled_out_without_the_lsm_list_fails() {
             lsms: Vec::new(),
             selinux: Some(selinux),
             label: None,
+            config_age: ConfigAge::Older,
         };
         let result = judge(&facts, &known_units());
         assert!(result.is_fail(), "{result:?}");
@@ -581,12 +594,13 @@ fn every_finding_is_listed_failures_first() {
             Some("mls"),
         )),
         label: Some("staff_u:sysadm_r:sysadm_t:s0-s15:c0.c1023".to_string()),
+        config_age: ConfigAge::Changed,
     };
     let result = judge(&facts, &UnitDomain::Unknown);
     assert!(result.is_fail(), "{result:?}");
     let message = result.message();
     let order = [
-        "SELinux runs the \"mls\" policy",
+        "/etc/selinux/config names the \"mls\" policy",
         "runs at the sensitivity s15",
         "runs in the SELinux domain sysadm_t",
         "NAILS does not choose the SELinux domain",
@@ -603,6 +617,9 @@ fn every_finding_is_listed_failures_first() {
         })
         .collect();
     assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{message}");
+    // A configuration that changed since the boot adds nothing to the failure
+    // of a policy it names that is not targeted.
+    assert!(!message.contains("after this boot"), "{message}");
 }
 
 // ---------------------------------------------------------------------------
@@ -623,6 +640,7 @@ fn unloaded_host(config: &str) -> MockFilesystem {
     fs.mock_set_file_content("/proc/self/mounts", PLAIN_MOUNTS);
     fs.mock_set_file_content(SELINUX_CONFIG, config);
     fs.mock_set_file_content(PROCESS_LABEL, "kernel\0");
+    fs.mock_set_file_content(PROC_STAT, STAT);
     fs
 }
 
@@ -707,6 +725,7 @@ fn a_kernel_label_where_nothing_shows_selinux_runs_is_not_taken_for_it() {
             config_policy: Some("targeted".to_string()),
         }),
         label: Some("kernel".to_string()),
+        config_age: ConfigAge::Older,
     };
     let result = judge(&facts, &known_units());
     assert!(result.is_fail(), "{result:?}");
@@ -720,6 +739,121 @@ fn a_kernel_label_where_nothing_shows_selinux_runs_is_not_taken_for_it() {
     let mut facts = facts;
     facts.lsms = lsms(APPARMOR_LSMS);
     assert!(judge(&facts, &known_units()).is_pass());
+}
+
+// ---------------------------------------------------------------------------
+// A configuration that names the targeted policy but changed since the boot
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_configuration_that_changed_since_the_boot_fails_the_targeted_policy() {
+    let mut facts = enforcing(UNCONFINED_LOGIN);
+    facts.config_age = ConfigAge::Changed;
+    let result = judge(&facts, &known_units());
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "/etc/selinux/config changed after this boot (its change time is not before the boot \
+         time in /proc/stat), so SELinux may run another policy than the targeted one it names \
+         now. A reboot loads the one it names. Active LSMs: lockdown, capability, yama, \
+         selinux, bpf, landlock."
+    );
+
+    facts.config_age = ConfigAge::Unknown("it is a symbolic link, and so on".to_string());
+    let result = judge(&facts, &known_units());
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "Whether /etc/selinux/config changed after this boot cannot be told (it is a symbolic \
+         link, and so on), so whether SELinux runs the targeted policy it names cannot be told \
+         either. Active LSMs: lockdown, capability, yama, selinux, bpf, landlock."
+    );
+}
+
+/// What [`ConfigAge::read`] makes of a host whose `/proc/stat` holds `stat`
+/// and whose `/etc/selinux/config` last changed `offset` seconds after the
+/// boot (before it where negative).
+fn age_of(stat: Option<&str>, offset: i64) -> ConfigAge {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(SELINUX_CONFIG, "SELINUX=enforcing\nSELINUXTYPE=targeted\n");
+    let changed = BOOT.checked_add_signed(offset).unwrap();
+    fs.mock_set_change_time(
+        SELINUX_CONFIG,
+        UNIX_EPOCH
+            + std::time::Duration::from_secs(changed)
+            + std::time::Duration::from_millis(500),
+    );
+    if let Some(stat) = stat {
+        fs.mock_set_file_content(PROC_STAT, stat);
+    }
+    ConfigAge::read(&fs)
+}
+
+#[test]
+fn the_age_of_the_configuration_is_its_change_time_against_the_boot() {
+    assert_eq!(age_of(Some(STAT), -1), ConfigAge::Older);
+    assert_eq!(age_of(Some(STAT), -86_400), ConfigAge::Older);
+    // A change in the second of the boot counts, as a filesystem may keep its
+    // change times to the second.
+    assert_eq!(age_of(Some(STAT), 0), ConfigAge::Changed);
+    assert_eq!(age_of(Some(STAT), 60), ConfigAge::Changed);
+    // A boot time that cannot be read leaves it untold.
+    assert!(matches!(age_of(None, -60), ConfigAge::Unknown(why) if why.contains("/proc/stat")));
+    assert_eq!(
+        age_of(Some("cpu  1 2 3\nprocesses 1\n"), -60),
+        ConfigAge::Unknown("/proc/stat gives no boot time (btime)".to_string())
+    );
+    assert_eq!(
+        age_of(Some("btime soon\n"), -60),
+        ConfigAge::Unknown("/proc/stat gives no boot time (btime)".to_string())
+    );
+}
+
+#[test]
+fn a_configuration_behind_a_link_has_no_age_to_tell() {
+    // A link: the change of what it leads to would not show on the link.
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(PROC_STAT, STAT);
+    fs.mock_set_path_type(SELINUX_CONFIG, crate::filesystem::PathKind::Symlink);
+    match ConfigAge::read(&fs) {
+        ConfigAge::Unknown(why) => assert!(why.contains("symbolic link"), "{why}"),
+        other => panic!("expected an untold age, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_configuration_that_changed_since_the_boot_fails_through_the_check() {
+    // The whole check, on a host that enforces the targeted policy: the
+    // configuration was edited after the boot.
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(host_facts::LSM_LIST, SELINUX_LSMS);
+    fs.mock_set_file_content("/proc/self/mounts", SELINUX_MOUNTS);
+    fs.mock_set_file_content(SELINUX_ENFORCE, "1");
+    fs.mock_set_file_content(SELINUX_CONFIG, "SELINUX=enforcing\nSELINUXTYPE=targeted\n");
+    fs.mock_set_file_content(PROCESS_LABEL, &format!("{UNCONFINED_LOGIN}\0"));
+    fs.mock_set_file_content(PROC_STAT, STAT);
+    fs.mock_set_change_time(
+        SELINUX_CONFIG,
+        UNIX_EPOCH + std::time::Duration::from_secs(BOOT + 600),
+    );
+    let result = run_on(&fs, known_units());
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .starts_with("/etc/selinux/config changed after this boot"),
+        "{result:?}"
+    );
+    // Without the boot time the check cannot tell, and fails too.
+    fs.mock_set_file_content(PROC_STAT, "cpu 1\n");
+    let result = run_on(&fs, known_units());
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .starts_with("Whether /etc/selinux/config changed after this boot cannot be told"),
+        "{result:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -811,6 +945,7 @@ proptest::proptest! {
                 config_policy: Some("mls".to_string()),
             }),
             label,
+            config_age: ConfigAge::Changed,
         };
         proptest::prop_assert!(judge(&facts, &UnitDomain::Unknown).is_pass());
     }
@@ -864,6 +999,7 @@ fn the_probed_hosts_pass_enforcing_and_warn_permissive() {
                     lsms: lsms("lockdown,capability,landlock,yama,bpf"),
                     selinux: None,
                     label: None,
+                    config_age: ConfigAge::Unknown("no such file".to_string()),
                 },
                 &UnitDomain::Unknown,
             ),

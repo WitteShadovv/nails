@@ -9,11 +9,13 @@
 //!
 //! - **SELinux does not run: pass.** AppArmor, Landlock, Yama and the other
 //!   modules change nothing this check judges.
-//! - **SELinux runs, enforcing, with the targeted policy, its configuration
-//!   sets the mode it runs in, and NAILS runs unconfined: pass.**
+//! - **SELinux runs, enforcing, `/etc/selinux/config` names the targeted
+//!   policy, has not changed since the boot and sets the mode SELinux runs in,
+//!   and NAILS runs unconfined: pass.**
 //! - **SELinux runs permissive, or `/etc/selinux/config` sets another mode than
 //!   the one it runs in: warn.**
-//! - **SELinux runs with another policy than targeted: fail**, as untested.
+//! - **`/etc/selinux/config` names another policy than targeted, or the
+//!   context of this process shows another: fail**, as untested.
 //! - **SELinux is on in the kernel, but no policy is loaded: fail**, as
 //!   untested, with the remedy to start the kernel with SELinux off.
 //! - **NAILS runs in a confined domain: fail.**
@@ -45,9 +47,15 @@
 //! The kernel does not know the name of the policy it loaded. systemd loads it
 //! at boot from the directory `SELINUXTYPE=` names in `/etc/selinux/config`,
 //! which [`host_facts`] reads the way libselinux reads it, its case kept, so
-//! only a value of exactly `targeted` passes. The level of this process is
-//! checked too: the targeted policy has no sensitivity but `s0`, so a level
-//! with another one, as a multi-level (MLS) policy gives, fails whatever the
+//! only a value of exactly `targeted` passes. That is the name the file gives
+//! when the check runs, so where it names `targeted` the check also fails
+//! when the file changed since the boot, by its change time against the boot
+//! time in `/proc/stat`, to the second, or when that cannot be told (the file
+//! is a symbolic link, or a time cannot be read): SELinux may then run another
+//! policy than the one the file names now. The level of this process is
+//! checked too: every context of Fedora's targeted policy has a level, whose
+//! one sensitivity is `s0`, so a context without a level, or with another
+//! sensitivity, as a multi-level (MLS) policy gives, fails whatever the
 //! configuration names.
 //!
 //! # The domain NAILS runs in
@@ -72,13 +80,17 @@
 //!   SELinux runs this check fails until NAILS starts them in a domain a run
 //!   under the policy has shown to be unconfined.
 //!
-//! Every fact is read through the host-fact readers detection uses, without
-//! libselinux, and only read: nothing here writes.
+//! Every SELinux fact is read through the host-fact readers detection uses,
+//! without libselinux; the change time of `/etc/selinux/config` and the boot
+//! time come through the same [`Filesystem`] trait. Everything is only read:
+//! nothing here writes.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::platform::host_facts::{self, LSM_LIST, PROCESS_LABEL, SELINUX_CONFIG, SELINUX_ENFORCE};
 use crate::platform::{SelinuxMode, SelinuxStatus, Selinuxfs};
 use crate::{Filesystem, Result};
+use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 /// The SELinux domains NAILS counts as unconfined: that of a login whose
 /// SELinux user is `unconfined_u`, and that of a service the targeted policy
@@ -88,7 +100,7 @@ pub const UNCONFINED_DOMAINS: [&str; 2] = ["unconfined_t", "unconfined_service_t
 /// The one policy this check passes, as `SELINUXTYPE=` names it.
 const TARGETED: &str = "targeted";
 
-/// The one sensitivity of the targeted policy's levels.
+/// The one sensitivity of the levels of Fedora's targeted policy.
 const TARGETED_SENSITIVITY: &str = "s0";
 
 /// The name the kernel gives SELinux in its list of active LSMs.
@@ -97,6 +109,9 @@ const SELINUX: &str = "selinux";
 /// What SELinux shows as the context of every process before a policy is
 /// loaded.
 const UNLOADED: &str = "kernel";
+
+/// Where the kernel gives the time it booted (`btime`).
+const PROC_STAT: &str = "/proc/stat";
 
 /// The SELinux domain of the processes systemd and udev start from NAILS's
 /// copy in `/run`: the transition step at each switch, the watcher, the sleep
@@ -151,6 +166,8 @@ struct Facts {
     selinux: Option<SelinuxStatus>,
     /// What `/proc/self/attr/current` holds for this process.
     label: Option<String>,
+    /// Whether `/etc/selinux/config` changed since the boot.
+    config_age: ConfigAge,
 }
 
 impl Facts {
@@ -159,8 +176,74 @@ impl Facts {
             lsms: host_facts::read_lsms(fs),
             selinux: host_facts::read_selinux(fs),
             label: host_facts::read_process_label(fs),
+            config_age: ConfigAge::read(fs),
         }
     }
+}
+
+/// Whether `/etc/selinux/config` changed since the kernel booted. Where it
+/// did, its `SELINUXTYPE=` may name another policy than the one SELinux
+/// loaded at boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConfigAge {
+    /// It last changed before the boot.
+    Older,
+    /// It changed in the second of the boot or later.
+    Changed,
+    /// Which of the two cannot be told, for the reason given.
+    Unknown(String),
+}
+
+impl ConfigAge {
+    /// The file's change time, of the file itself (`lstat`), against the boot
+    /// time in `/proc/stat`, to the second, as a filesystem may keep its
+    /// change times to the second. Unlike the modification time, nothing but
+    /// a change of the system clock sets a change time back. A symbolic link
+    /// is not followed: what it leads to may change without changing the
+    /// link.
+    fn read<F: Filesystem>(fs: &F) -> Self {
+        let config = Path::new(SELINUX_CONFIG);
+        match fs.is_symlink(config) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Self::Unknown(
+                    "it is a symbolic link, and NAILS does not follow when what it leads to \
+                     changed"
+                        .to_string(),
+                );
+            }
+            Err(e) => return Self::Unknown(format!("it cannot be looked up: {e}")),
+        }
+        let changed = match fs.change_time(config) {
+            Ok(changed) => changed,
+            Err(e) => return Self::Unknown(format!("its change time cannot be read: {e}")),
+        };
+        let boot = match fs.read_file_content(Path::new(PROC_STAT)) {
+            Ok(stat) => boot_time(&stat),
+            Err(e) => {
+                return Self::Unknown(format!("the boot time cannot be read ({PROC_STAT}: {e})"));
+            }
+        };
+        let Some(boot) = boot else {
+            return Self::Unknown(format!("{PROC_STAT} gives no boot time (btime)"));
+        };
+        let changed = changed
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        if changed >= boot {
+            Self::Changed
+        } else {
+            Self::Older
+        }
+    }
+}
+
+/// The boot time `/proc/stat` gives (`btime`), in whole seconds since the
+/// epoch.
+fn boot_time(stat: &str) -> Option<u64> {
+    stat.lines()
+        .find_map(|line| line.strip_prefix("btime "))
+        .and_then(|value| value.trim().parse().ok())
 }
 
 /// An SELinux context, `user:role:type:level`, as the kernel shows it.
@@ -406,10 +489,10 @@ fn running(
             "{SELINUX_CONFIG} could not be read or names no policy (SELINUXTYPE=), so the \
              policy SELinux runs cannot be told."
         )),
-        Some(TARGETED) => {}
+        Some(TARGETED) => fails.extend(age_finding(&facts.config_age)),
         Some(policy) => fails.push(format!(
-            "SELinux runs the {policy:?} policy ({SELINUX_CONFIG}, SELINUXTYPE=): this check \
-             takes only the targeted policy, and NAILS is untested under any other."
+            "{SELINUX_CONFIG} names the {policy:?} policy (SELINUXTYPE=): this check takes \
+             only the targeted policy, and NAILS is untested under any other."
         )),
     }
 
@@ -469,8 +552,9 @@ fn running(
     {
         return if warns.is_empty() {
             CheckResult::Pass(format!(
-                "SELinux enforces the targeted policy, and NAILS runs unconfined: this process \
-                 in {process}, the processes systemd and udev start for it in {units}. {lsms}"
+                "SELinux enforces, {SELINUX_CONFIG} names the targeted policy and has not \
+                 changed since the boot, and NAILS runs unconfined: this process in {process}, \
+                 the processes systemd and udev start for it in {units}. {lsms}"
             ))
         } else {
             CheckResult::Warn(format!("{} {lsms}", warns.join(" ")))
@@ -480,14 +564,32 @@ fn running(
     CheckResult::fail(format!("{} {lsms}", fails.join(" ")))
 }
 
+/// The finding on when `/etc/selinux/config`, which names the targeted
+/// policy, last changed, where SELinux may run another policy than that.
+fn age_finding(age: &ConfigAge) -> Option<String> {
+    match age {
+        ConfigAge::Older => None,
+        ConfigAge::Changed => Some(format!(
+            "{SELINUX_CONFIG} changed after this boot (its change time is not before the boot \
+             time in {PROC_STAT}), so SELinux may run another policy than the targeted one it \
+             names now. A reboot loads the one it names."
+        )),
+        ConfigAge::Unknown(why) => Some(format!(
+            "Whether {SELINUX_CONFIG} changed after this boot cannot be told ({why}), so \
+             whether SELinux runs the targeted policy it names cannot be told either."
+        )),
+    }
+}
+
 /// The finding on the level of this process's `context`, where it shows a
-/// policy that is not targeted: no level at all, or a sensitivity other than
-/// `s0`.
+/// policy that is not Fedora's targeted one: no level at all, or a
+/// sensitivity other than `s0`.
 fn level_finding(context: &Context<'_>) -> Option<String> {
     if context.sensitivities.is_empty() {
         return Some(
             "The SELinux context of this nails process has no level, which every context of \
-             the targeted policy has: the policy SELinux runs is not targeted."
+             Fedora's targeted policy has: SELinux runs another policy, and NAILS is untested \
+             under any other."
                 .to_string(),
         );
     }
@@ -497,9 +599,9 @@ fn level_finding(context: &Context<'_>) -> Option<String> {
         .find(|sensitivity| **sensitivity != TARGETED_SENSITIVITY)
         .map(|other| {
             format!(
-                "This nails process runs at the sensitivity {other}, and the targeted policy \
-                 has none but {TARGETED_SENSITIVITY}: the policy SELinux runs is a multi-level \
-                 (MLS) one."
+                "This nails process runs at the sensitivity {other}, and Fedora's targeted \
+                 policy has none but {TARGETED_SENSITIVITY}: SELinux runs another policy, such \
+                 as a multi-level (MLS) one, and NAILS is untested under any other."
             )
         })
 }

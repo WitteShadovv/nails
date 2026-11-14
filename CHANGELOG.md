@@ -435,21 +435,25 @@ of this changelog for that version becomes the release notes word for word, and
   `/sys/kernel/security/lsm`, and judge SELinux where it runs (the `lsm-status` check). A host where
   SELinux does not run passes, Debian and Ubuntu with AppArmor among them. Where it runs, the check
   reads its mode from `/sys/fs/selinux/enforce`, `SELINUX=` and `SELINUXTYPE=` from
-  `/etc/selinux/config` the way libselinux reads them, the policy name in its case, and the context
-  of the `nails` process from `/proc/self/attr/current`, without libselinux and without writing
-  anything. It refuses a policy other than `targeted`, as untested, a context whose level has a
-  sensitivity other than `s0`, which only a multi-level policy gives, whatever the file names, and a
-  host whose kernel runs SELinux without a policy (the process is labelled `kernel`, as
-  `SELINUX=disabled` leaves Linux 6.4 and later where the kernel started SELinux at boot), which it
-  says to start with `selinux=0`. It refuses a `nails` process in a domain other than `unconfined_t`
-  or `unconfined_service_t`, and a fact it cannot read. NAILS does not yet choose the SELinux domain
-  of the processes systemd and udev start from its copy in `/run` (the transition step at each
-  switch, the watcher, the sleep guard and the disk guard of the hidden session, and the boot-record
-  steps after the way back), so for now it refuses every host where SELinux runs. It warns, where
-  nothing refuses, when SELinux is permissive or runs in another mode than `/etc/selinux/config`
-  sets. Where the kernel's list cannot be read, a mounted selinuxfs or an SELinux context of the
-  process means SELinux runs, and `/sys/fs/selinux` or a configuration that sets a mode or names a
-  policy, without either, is refused as a host whose SELinux cannot be judged.
+  `/etc/selinux/config` the way libselinux reads them, the policy name in its case, when that file
+  last changed, and the context of the `nails` process from `/proc/self/attr/current`, without
+  libselinux and without writing anything. It refuses a configuration that names a policy other
+  than `targeted`, as untested, and one that names `targeted` but changed after the boot, by its
+  change time against the boot time in `/proc/stat`, or whose change cannot be told, since the
+  policy SELinux loaded may then be another. It refuses a context without a level or whose level
+  has a sensitivity other than `s0`, which Fedora's targeted policy does not give, whatever the
+  file names, and a host whose kernel runs SELinux without a policy (the process is labelled
+  `kernel`, as `SELINUX=disabled` leaves Linux 6.4 and later where the kernel started SELinux at
+  boot), which it says to start with `selinux=0`. It refuses a `nails` process in a domain other
+  than `unconfined_t` or `unconfined_service_t`, and a fact it cannot read. NAILS does not yet
+  choose the SELinux domain of the processes systemd and udev start from its copy in `/run` (the
+  transition step at each switch, the watcher, the sleep guard and the disk guard of the hidden
+  session, and the boot-record steps after the way back), so for now it refuses every host where
+  SELinux runs. It warns, where nothing refuses, when SELinux is permissive or runs in another mode
+  than `/etc/selinux/config` sets. Where the kernel's list cannot be read, a mounted selinuxfs or
+  an SELinux context of the process means SELinux runs, and `/sys/fs/selinux` or a configuration
+  that sets a mode or names a policy, without either, is refused as a host whose SELinux cannot be
+  judged.
 - `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
   tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
   the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists

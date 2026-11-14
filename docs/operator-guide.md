@@ -1162,7 +1162,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   `noatime`, a read or a program start can update an access time.
   `upper-fs-capability` reads the SELinux label of the decoy's `/`, which
   changes no access time, and `lsm-status` reads `/etc/selinux/config`, as
-  root without changing its access time.
+  root without changing its access time, and looks up when it last changed,
+  which changes nothing.
 - **No lookup that would mount an automount point.** A lookup that passes an
   automount point that nothing is mounted on yet mounts it: a direct or
   offset one, such as the one systemd makes for an `x-systemd.automount` line

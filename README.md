@@ -196,7 +196,8 @@ Also refused by the pre-flight checks:
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS, or, where SELinux may
   run, one that cannot keep the SELinux label activation copies onto it
   (`upper-fs-capability`);
-- a host where SELinux runs with a policy other than `targeted` or without a
+- a host where SELinux runs and `/etc/selinux/config` names a policy other
+  than `targeted`, or changed after the boot, where SELinux runs without a
   policy loaded, where `nails` runs in a confined SELinux domain, or whose
   SELinux facts cannot be read. NAILS does not yet choose the SELinux domain
   of the processes systemd and udev start for it, so for now every host where

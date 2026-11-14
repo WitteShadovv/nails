@@ -1204,6 +1204,12 @@ fn the_lsm_status_row_fails_every_host_where_selinux_runs_for_now() {
         "/proc/self/attr/current",
         "unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023\0",
     );
+    // A configuration that last changed before the boot.
+    fs.mock_set_file_content("/proc/stat", "btime 1790000000\n");
+    fs.mock_set_change_time(
+        "/etc/selinux/config",
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_789_000_000),
+    );
     let row = lsm_status_row(&fs);
     assert!(row.is_fail(), "{row:?}");
     assert!(
