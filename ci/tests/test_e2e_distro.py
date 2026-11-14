@@ -373,10 +373,10 @@ class PlanDriverMatrixTest(unittest.TestCase):
             self.assertEqual(job["seconds"], 2400)
 
     def test_a_staged_scenario_is_chosen_by_its_name(self) -> None:
-        include = distro.plan_matrix(sample_metadata(), ["staged"], ["arch-boxes-smoke"])[
-            "include"
-        ]
-        self.assertEqual([job["tests"] for job in include], [["arch-boxes-staged-smoke"]])
+        meta = sample_metadata()
+        include = distro.plan_matrix(meta, ["staged"], ["arch-boxes-smoke"])["include"]
+        tests = [job["tests"] for job in include]
+        self.assertEqual(tests, [["arch-boxes-staged-smoke"]])
         with self.assertRaisesRegex(
             distro.DistroError, "unknown staged scenario: arch-boxes"
         ):
