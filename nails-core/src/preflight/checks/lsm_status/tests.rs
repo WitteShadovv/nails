@@ -19,6 +19,9 @@ const SERVICE: &str = "unconfined_service_t";
 /// A mount table with selinuxfs at its usual place.
 const SELINUX_MOUNTS: &str = "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n\
                               selinuxfs /sys/fs/selinux selinuxfs rw,nosuid,noexec,relatime 0 0\n";
+/// A mount table without selinuxfs.
+const PLAIN_MOUNTS: &str = "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n\
+                            proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n";
 
 /// The LSM list as the kernel writes it, split.
 fn lsms(list: &str) -> Vec<String> {
@@ -450,10 +453,11 @@ fn a_context_that_cannot_be_read_fails() {
         "{result:?}"
     );
 
-    // What the kernel answers for a process before any policy is loaded, and a
-    // label that holds a control character, shown escaped.
+    // Labels that read as no context: another module's, and one that holds a
+    // control character, shown escaped. The label of a process before any
+    // policy is loaded has its own finding.
     for (label, shown) in [
-        ("kernel", "\"kernel\""),
+        ("unconfined", "\"unconfined\""),
         ("a:b\x1b[2J", "\"a:b\\u{1b}[2J\""),
     ] {
         facts.label = Some(label.to_string());
@@ -599,6 +603,123 @@ fn every_finding_is_listed_failures_first() {
         })
         .collect();
     assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{message}");
+}
+
+// ---------------------------------------------------------------------------
+// SELinux on in the kernel without a policy: fail, with the remedy
+// ---------------------------------------------------------------------------
+
+/// The host a kernel that started SELinux leaves where `/etc/selinux/config`
+/// sets `SELINUX=disabled`: libselinux loads no policy and unmounts
+/// selinuxfs, so only the empty mount point is left, and every process is
+/// labelled `kernel`.
+fn unloaded_host(config: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        host_facts::LSM_LIST,
+        "lockdown,capability,landlock,yama,selinux,bpf,ipe,ima,evm",
+    );
+    fs.mock_set_path_type("/sys/fs/selinux", crate::filesystem::PathKind::Dir);
+    fs.mock_set_file_content("/proc/self/mounts", PLAIN_MOUNTS);
+    fs.mock_set_file_content(SELINUX_CONFIG, config);
+    fs.mock_set_file_content(PROCESS_LABEL, "kernel\0");
+    fs
+}
+
+#[test]
+fn selinux_on_without_a_policy_fails_with_its_own_finding_and_the_remedy() {
+    let fs = unloaded_host("SELINUX=disabled\nSELINUXTYPE=targeted\n");
+    // The domain of NAILS's units means nothing without a policy: the
+    // verdict is the same whatever the registry knows of it.
+    for units in [UnitDomain::Unknown, known_units()] {
+        let result = run_on(&fs, units);
+        assert!(result.is_fail(), "{result:?}");
+        assert_eq!(
+            result.message(),
+            "SELinux is on in this kernel, but no policy is loaded: this nails process is \
+             labelled \"kernel\" (/proc/self/attr/current), as SELinux labels every process \
+             until a policy is loaded. /etc/selinux/config sets SELINUX=disabled, which kept a \
+             policy from loading but left SELinux on in this kernel. NAILS is untested on such \
+             a host. Active LSMs: lockdown, capability, landlock, yama, selinux, bpf, ipe, ima, \
+             evm."
+        );
+        assert_eq!(
+            result.remediation(),
+            Some("Start the kernel with SELinux off: add selinux=0 to the kernel command line.")
+        );
+    }
+    // Debian's policy, named where its packages set SELinux up: the same.
+    let result = run_on(
+        &unloaded_host("SELINUX=disabled\nSELINUXTYPE=default\n"),
+        UnitDomain::Unknown,
+    );
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .starts_with("SELinux is on in this kernel, but no policy is loaded"),
+        "{result:?}"
+    );
+    assert!(!result.message().contains("default"), "{result:?}");
+}
+
+#[test]
+fn a_policy_that_did_not_load_is_named_without_the_disabled_cause() {
+    // selinuxfs mounted and a configuration that sets another mode: a policy
+    // that failed to load leaves the kernel so too. The label alone decides,
+    // also where the kernel's list cannot be read.
+    for list in [Some(SELINUX_LSMS), None] {
+        let mut facts = enforcing("kernel");
+        facts.selinux = Some(status(
+            Some(SelinuxMode::Permissive),
+            Some("permissive"),
+            Some("targeted"),
+        ));
+        if list.is_none() {
+            facts.lsms = Vec::new();
+        }
+        let result = judge(&facts, &known_units());
+        assert!(result.is_fail(), "{list:?}: {result:?}");
+        assert!(
+            result.message().starts_with(
+                "SELinux is on in this kernel, but no policy is loaded: this nails process is \
+                 labelled \"kernel\" (/proc/self/attr/current), as SELinux labels every \
+                 process until a policy is loaded. NAILS is untested on such a host."
+            ),
+            "{result:?}"
+        );
+        assert!(!result.message().contains("SELINUX="), "{result:?}");
+        assert!(result.remediation().is_some(), "{result:?}");
+    }
+}
+
+#[test]
+fn a_kernel_label_where_nothing_shows_selinux_runs_is_not_taken_for_it() {
+    // Without the kernel's list or a mounted selinuxfs, "kernel" is no
+    // context: whether SELinux runs is not told by it, and the check fails
+    // as for any host whose SELinux cannot be judged.
+    let facts = Facts {
+        lsms: Vec::new(),
+        selinux: Some(SelinuxStatus {
+            selinuxfs: Selinuxfs::NotMounted,
+            enforce: None,
+            config_mode: Some("disabled".to_string()),
+            config_policy: Some("targeted".to_string()),
+        }),
+        label: Some("kernel".to_string()),
+    };
+    let result = judge(&facts, &known_units());
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .starts_with("Cannot tell whether SELinux runs:"),
+        "{result:?}"
+    );
+    // And where the list leaves SELinux out, the label changes nothing.
+    let mut facts = facts;
+    facts.lsms = lsms(APPARMOR_LSMS);
+    assert!(judge(&facts, &known_units()).is_pass());
 }
 
 // ---------------------------------------------------------------------------

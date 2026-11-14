@@ -438,16 +438,18 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/selinux/config` the way libselinux reads them, the policy name in its case, and the context
   of the `nails` process from `/proc/self/attr/current`, without libselinux and without writing
   anything. It refuses a policy other than `targeted`, as untested, a context whose level has a
-  sensitivity other than `s0`, which only a multi-level policy gives, whatever the file names, a
-  `nails` process in a domain other than `unconfined_t` or `unconfined_service_t`, and a fact it
-  cannot read. NAILS does not yet choose the SELinux domain of the processes systemd and udev start
-  from its copy in `/run` (the transition step at each switch, the watcher, the sleep guard and the
-  disk guard of the hidden session, and the boot-record steps after the way back), so for now it
-  refuses every host where SELinux runs. It warns, where nothing refuses, when SELinux is
-  permissive or runs in another mode than `/etc/selinux/config` sets. Where the kernel's list
-  cannot be read, a mounted selinuxfs or an SELinux context of the process means SELinux runs, and
-  `/sys/fs/selinux` or a configuration that sets a mode or names a policy, without either, is
-  refused as a host whose SELinux cannot be judged.
+  sensitivity other than `s0`, which only a multi-level policy gives, whatever the file names, and a
+  host whose kernel runs SELinux without a policy (the process is labelled `kernel`, as
+  `SELINUX=disabled` leaves Linux 6.4 and later where the kernel started SELinux at boot), which it
+  says to start with `selinux=0`. It refuses a `nails` process in a domain other than `unconfined_t`
+  or `unconfined_service_t`, and a fact it cannot read. NAILS does not yet choose the SELinux domain
+  of the processes systemd and udev start from its copy in `/run` (the transition step at each
+  switch, the watcher, the sleep guard and the disk guard of the hidden session, and the boot-record
+  steps after the way back), so for now it refuses every host where SELinux runs. It warns, where
+  nothing refuses, when SELinux is permissive or runs in another mode than `/etc/selinux/config`
+  sets. Where the kernel's list cannot be read, a mounted selinuxfs or an SELinux context of the
+  process means SELinux runs, and `/sys/fs/selinux` or a configuration that sets a mode or names a
+  policy, without either, is refused as a host whose SELinux cannot be judged.
 - `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
   tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
   the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists
@@ -900,13 +902,17 @@ of this changelog for that version becomes the release notes word for word, and
   in the shared-home persona. Elsewhere a label is copied only where the decoy has one, so a decoy
   without labels gets the hidden root it got before. That includes a host that keeps an
   `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
-  no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line.
-  `nails check` tests part of this with the same rule: `upper-fs-capability` copies the label of
-  the decoy's `/` onto the upper of its trial overlay on the hidden volume and, where a label is
-  required, reads it back, so a hidden filesystem that cannot store the label, a policy that denies
-  the relabel and a decoy `/` without a label fail it as they refuse the activation. The roots of
-  the other overlaid decoy filesystems and the way to the operator's home are not tested before
-  activation; see docs/decoy-requirements.md.
+  no selinuxfs is mounted: no policy reads a label there. The activation goes on there, and says so
+  in one line, only where the kernel does not run SELinux, as on a host that keeps the
+  configuration of packages installed once: the kernel makes `/sys/fs/selinux` only where it
+  started SELinux at boot, and `lsm-status` refuses a host where it runs, an empty
+  `/sys/fs/selinux` with no policy loaded among them. `nails check` tests part of this with the
+  same rule: `upper-fs-capability` copies the label of the decoy's `/` onto the upper of its trial
+  overlay on the hidden volume and, where a label is required, reads it back, so a hidden
+  filesystem that cannot store the label, a policy that denies the relabel and a decoy `/` without
+  a label fail it as they refuse the activation. The roots of the other overlaid decoy filesystems
+  and the way to the operator's home are not tested before activation; see
+  docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new
