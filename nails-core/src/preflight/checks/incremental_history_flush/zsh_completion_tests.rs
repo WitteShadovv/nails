@@ -353,6 +353,95 @@ fn a_dump_file_whose_completion_is_code_is_read_as_code() {
 }
 
 #[test]
+fn a_function_of_the_files_own_is_a_hook_where_compinit_runs() {
+    // zsh 5.9.2's `_ls` runs `ls --help` as Tab completes a word of `ls`, so
+    // a function named `ls` runs there, which appends the line to the
+    // history file; zsh's own completion functions run other commands by
+    // name too (`locale`, `ps`, `getent`).
+    let writes = "print -r -- \"$BUFFER\" >> ~/.zl";
+    for rc in [
+        format!("ls() {{ {writes}; command ls \"$@\" }}\n"),
+        format!("function locale {{ {writes} }}\n"),
+        format!("functions[ps]='{writes}'\n"),
+        format!("eval 'getent() {{ {writes} }}'\n"),
+    ] {
+        let got = found(&format!("{COMPINIT}{rc}"));
+        assert!(warned(&got), "{rc}");
+        // Without compinit, it runs where it is typed, which the check does
+        // not read.
+        assert_eq!(found_plain(rc.trim_end()), Scan::default(), "{rc}");
+    }
+    // One the files autoload from a directory of their own is theirs too.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/zf/ls", &format!("{writes}\n"));
+    let got = found_with(
+        &fs,
+        &format!("fpath=(~/zf $fpath)\nautoload -Uz ls\n{COMPINIT}"),
+    );
+    assert!(warned(&got), "{got:?}");
+    // One of zsh's own, autoloaded from its directory, and one of the
+    // files' that writes nothing, are no doubt.
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &[&STOCK[..], &["zmv"]].concat());
+    seed(&fs, &format!("{OWN}/zmv"), "mv -- \"$1\" \"$2\"\n");
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        &format!("{COMPINIT}autoload -Uz zmv\n"),
+    );
+    assert_eq!(scan_with(&fs, UNKNOWN, &install(&fs, &[])), Scan::default());
+    assert_eq!(
+        found(&format!("{COMPINIT}hello() {{ print -r -- hi }}\n")),
+        Scan::default()
+    );
+    // A helper that hands its words to a program warns again: the check
+    // cannot tell that the program writes no file they name.
+    assert!(warned(&found(&format!(
+        "{COMPINIT}mkcd() {{ mkdir -p -- \"$1\" && cd -- \"$1\" }}\n"
+    ))));
+}
+
+#[test]
+fn a_file_named_like_a_function_of_zsh_s_own_in_a_directory_the_files_add_is_a_doubt() {
+    // compinit autoloads compinstall, and zsh 5.9.2 runs `~/zf/compinstall`
+    // in place of zsh's own as the completer it is given, which appends the
+    // line to the history file.
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &[&STOCK[..], &["compinstall"]].concat());
+    listed(&fs, "/home/alice/zf", &["compinstall", "mytool"]);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        &format!("fpath=(~/zf $fpath)\n{COMPINIT}zstyle ':completion:*' completer compinstall\n"),
+    );
+    let got = scan_with(&fs, UNKNOWN, &install(&fs, &[]));
+    assert_eq!(
+        got.doubts,
+        [
+            "it cannot tell what the functions in /home/alice/zf write (`compinstall`), which zsh \
+             may run in place of zsh's own of their names where its own code runs one by name, \
+             as that directory of fpath is neither zsh's own nor a Nix profile's"
+        ]
+    );
+    // A function the files autoload by its path is theirs where a completer
+    // or a compdef names it.
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &[&STOCK[..], &["compinstall"]].concat());
+    seed(&fs, "/home/alice/zf/compinstall", ":\n");
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        &format!("{COMPINIT}autoload -Uz ~/zf/compinstall\ncompdef compinstall print\n"),
+    );
+    let got = scan_with(&fs, UNKNOWN, &install(&fs, &[]));
+    assert!(
+        got.doubts.iter().any(|doubt| doubt
+            .starts_with("it cannot tell what `compinstall`, which `compdef compinstall print`")),
+        "{got:?}"
+    );
+}
+
+#[test]
 fn a_completion_style_whose_value_zsh_s_own_code_may_run_is_a_doubt() {
     // zsh 5.9.2 runs the backquote in `_files`'s `eval` of file-patterns,
     // the subscript in `_main_complete`'s arithmetic on menu's number,
@@ -459,4 +548,70 @@ fn a_parameter_that_gives_the_completion_system_code_or_options_is_a_doubt() {
             "{line}"
         );
     }
+}
+
+#[test]
+fn what_the_check_cannot_read_where_compinit_runs_is_a_doubt() {
+    // An fpath directory it cannot list may hold completion functions.
+    let fs = MockFilesystem::new();
+    fs.mock_set_unreadable_dir("/home/alice/zc");
+    let got = found_with(&fs, &format!("fpath=(~/zc $fpath)\n{COMPINIT}"));
+    assert!(
+        got.doubts
+            .iter()
+            .any(|doubt| doubt
+                .starts_with("it could not read the directory /home/alice/zc of fpath")),
+        "{got:?}"
+    );
+    // Where it cannot list zsh's own directory as it reads the files, no
+    // completer is one of its own.
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &STOCK);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        &format!("{COMPINIT}zstyle ':completion:*' completer _complete\n"),
+    );
+    let known = install(&fs, &[]);
+    fs.mock_set_unreadable_dir(OWN);
+    let got = scan_with(&fs, UNKNOWN, &known);
+    assert!(
+        got.doubts
+            .iter()
+            .any(|doubt| doubt.starts_with("it cannot tell what `_complete`")),
+        "{got:?}"
+    );
+    // A Nix profile's directory named with zsh's version is one of the
+    // profiles' only while no file sets ZSH_VERSION, which may name
+    // another.
+    let fs = MockFilesystem::new();
+    nixos(&fs);
+    let profile = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-profile"; // pragma: allowlist secret
+    let dir = format!("{profile}/share/zsh/5.9.2/functions");
+    listed(&fs, &dir, &["_w"]);
+    let known = install(
+        &fs,
+        &[
+            ("NIX_PROFILES", profile),
+            ("USER", "alice"),
+            ("__NIXOS_SET_ENVIRONMENT_DONE", "1"),
+        ],
+    );
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        &format!("fpath=({dir} $fpath)\n"),
+    );
+    assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default());
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        &format!("ZSH_VERSION=x\nfpath=({dir} $fpath)\n"),
+    );
+    let got = scan_with(&fs, UNKNOWN, &known);
+    let doubt = format!("it cannot tell what the completion functions in {dir} write");
+    assert!(
+        got.doubts.iter().any(|found| found.starts_with(&doubt)),
+        "{got:?}"
+    );
 }
