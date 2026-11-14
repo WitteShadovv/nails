@@ -969,10 +969,11 @@ sandbox, with the build that admits Arch. Arch keeps classic wtmp on systemd
 soft-reboot's boot record reads as a power cycle's, and the control shows that
 instead. What could still give a session away there is a record of the session
 itself: a console login through PAM's login stack runs in the hidden session
-and must write its lastlog2 row and its wtmp records there, none of which may
-be on the decoy after the way back (its lastlog2 and btmp as they were, its
-wtmp without a record on the login's terminal), with the same login on the
-decoy as the positive control.
+and must write its lastlog2 row and its wtmp records there, and a failed login,
+a wrong password for root that an unprivileged user gives `su`, its btmp
+record, none of which may be on the decoy after the way back (its lastlog2 and
+btmp as they were, its wtmp without a record on the login's terminal), with
+the same logins on the decoy as the positive control.
 
 ### The refusal of Fedora and Arch
 
