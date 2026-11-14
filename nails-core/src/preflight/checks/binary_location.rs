@@ -151,27 +151,27 @@ impl BinaryLocationCheck {
                     continue;
                 }
                 let candidate = dir.join(name);
+                let shown = candidate.display().to_string();
+                let untold = |error: &crate::NailsError| {
+                    format!(
+                        "NAILS cannot tell whether {shown} is a link to the hidden binary: {}",
+                        describe(&shown, error).sentence
+                    )
+                };
                 match fs.is_symlink(&candidate) {
                     Ok(false) => {}
-                    Ok(true) => {
-                        let target = fs
-                            .canonicalize(&candidate)
-                            .unwrap_or_else(|_| candidate.clone());
-                        if target == resolved {
-                            warnings.push(format!(
-                                "{} is a decoy PATH symlink pointing at the hidden binary",
-                                candidate.display()
-                            ));
-                        }
-                    }
+                    Ok(true) => match fs.canonicalize(&candidate) {
+                        Ok(target) if target == resolved => warnings.push(format!(
+                            "{shown} is a decoy PATH symlink pointing at the hidden binary"
+                        )),
+                        Ok(_) => {}
+                        // A link that leads to nothing points at no binary.
+                        Err(error) if error.nothing_there() => {}
+                        // Where it leads may be the hidden binary.
+                        Err(error) => warnings.push(untold(&error)),
+                    },
                     // A link there would be a pointer to the hidden tool.
-                    Err(error) => {
-                        let shown = candidate.display().to_string();
-                        warnings.push(format!(
-                            "NAILS cannot tell whether {shown} is a link to the hidden binary: {}",
-                            describe(&shown, &error).sentence
-                        ));
-                    }
+                    Err(error) => warnings.push(untold(&error)),
                 }
             }
         }
@@ -217,6 +217,41 @@ mod tests {
         let result = check.run(&fs).unwrap();
         assert!(result.is_warn(), "{result:?}");
         assert!(result.message().contains("decoy disk"), "{result:?}");
+    }
+
+    /// A link in a PATH directory that NAILS cannot resolve, for another
+    /// reason than that it leads to nothing, may point at the hidden binary:
+    /// a warning, where the resolution that failed passed. One that leads to
+    /// nothing points at no binary.
+    #[test]
+    fn warns_when_a_decoy_path_symlink_cannot_be_resolved() {
+        use crate::filesystem::{MockFailure, MockLookup};
+        let link = std::path::Path::new("/usr/local/bin/nails");
+        let check = BinaryLocationCheck::with_probes(
+            PathBuf::from("/mnt/vault"),
+            PathBuf::from("/mnt/vault/nails"),
+            vec![PathBuf::from("/usr/local/bin")],
+        );
+        let linked = |failure: std::io::ErrorKind| {
+            let fs = MockFilesystem::new();
+            fs.create_symlink(std::path::Path::new("/mnt/vault/nails"), link)
+                .unwrap();
+            fs.mock_fail_only(link, MockLookup::Canonicalize, MockFailure::Io(failure));
+            fs
+        };
+        let result = check
+            .run(&linked(std::io::ErrorKind::PermissionDenied))
+            .unwrap();
+        assert_eq!(
+            result,
+            CheckResult::Warn(
+                "NAILS cannot tell whether /usr/local/bin/nails is a link to the hidden binary: \
+                 NAILS cannot look up /usr/local/bin/nails; run the command again with sudo"
+                    .to_string()
+            )
+        );
+        let result = check.run(&linked(std::io::ErrorKind::NotFound)).unwrap();
+        assert!(result.is_pass(), "{result:?}");
     }
 
     #[test]
