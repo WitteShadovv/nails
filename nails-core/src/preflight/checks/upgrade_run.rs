@@ -47,8 +47,10 @@
 //! ([`crate::filesystem::automount`]): one that would mount an automount
 //! point nothing is mounted on yet, as below a `/var` an automounter mounts,
 //! is not made, which leaves NAILS unable to tell and refuses, naming the
-//! point and how to mount it. The entry's look right before the switch is
-//! not guarded.
+//! point and how to mount it. Without the mount table, which shows where
+//! such a point is, no lookup is made, and the refusal says to run the check
+//! where `/proc` is mounted and readable. The entry's look right before the
+//! switch is not guarded.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::decoy_posture::{Activity, unit_active};
@@ -232,6 +234,11 @@ pub const RETRY: &str = "Try again in a few minutes, once the run has ended \
 const UNREAD: &str = "Make sure /run/unattended-upgrades.lock, where it exists, is a plain file \
                       that can be looked up and opened, then activate again.";
 
+/// What to do when `check` cannot read the mount table, and so looks
+/// nothing up.
+const NO_MOUNT_TABLE: &str = "Run the check where /proc is mounted and readable, so that NAILS \
+                              can read the mount table.";
+
 /// `unattended-upgrade-run`: refuses activation while a daily
 /// unattended-upgrade run is in progress.
 #[derive(Debug)]
@@ -273,11 +280,17 @@ impl<F: Filesystem> PreFlightCheck<F> for UpgradeRunCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let view = Guarded::new(fs.clone(), &Snapshot::read(fs, &self.root));
+        let snapshot = Snapshot::read(fs, &self.root);
+        let view = Guarded::new(fs.clone(), &snapshot);
         let run = upgrade_run(&view, &self.root);
         let skipped = view.skipped();
         let result = match run.refusal() {
             None => CheckResult::Pass("no daily unattended-upgrade run is in progress".into()),
+            // Without the mount table no lookup was made: reading it is the
+            // fix.
+            Some(why) if snapshot.unreadable().is_some() => {
+                CheckResult::fail_with(why, NO_MOUNT_TABLE)
+            }
             // Where the guard made no lookup, mounting the point is the fix,
             // which settle gives.
             Some(why) if !skipped.is_empty() && matches!(run, UpgradeRun::Unknown(_)) => {

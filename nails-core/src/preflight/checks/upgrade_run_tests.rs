@@ -520,3 +520,27 @@ fn a_lock_file_behind_an_automount_point_is_not_looked_up() {
     // The entry's own look, right before the switch, is not guarded.
     assert_eq!(upgrade_run(&fs, Path::new("/")), UpgradeRun::Idle);
 }
+
+/// Without the mount table, which shows where a lookup would mount an
+/// automount point, check looks nothing up and refuses, and says how to let
+/// NAILS read it, as its other refusals of what NAILS cannot tell say what to
+/// do. No flag lifts it.
+#[test]
+fn without_a_mount_table_the_refusal_says_how_to_let_nails_read_it() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table_error("no mountinfo");
+    let result = check(&fs);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().starts_with(
+            "NAILS cannot tell whether a daily unattended-upgrade run is in progress \
+             (/run/unattended-upgrades.lock cannot be looked up: NAILS does not look up \
+             /run/unattended-upgrades.lock, since it cannot read the mount table \
+             (/proc/self/mountinfo: no mountinfo)"
+        ),
+        "{result:?}"
+    );
+    assert_eq!(result.remediation(), Some(NO_MOUNT_TABLE));
+    assert_eq!(result.allowable(), None, "{result:?}");
+    assert_eq!(fs.mock_lookups(), Vec::<PathBuf>::new());
+}
