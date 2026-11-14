@@ -36,18 +36,20 @@
 //! file of packages installed once, boots with SELinux off, or has SELinux
 //! on in the kernel without a policy, as `SELINUX=disabled` leaves a kernel
 //! that started SELinux at boot. No policy reads a label there, unless
-//! selinuxfs was unmounted after a policy was loaded. The `lsm-status`
-//! pre-flight check, which runs before the entry, refuses such a host
-//! wherever the kernel runs SELinux or may run it, so of these hosts only one
-//! whose kernel does not run SELinux reaches the entry. Such a host, and one
-//! whose facts report no SELinux, copies on a best effort basis: a label the
-//! decoy directory has is copied there too, but a decoy directory without a
-//! label (the usual case there) or none at all, a filesystem without extended
-//! attributes, or a link or a file in place of an upper directory leaves the
-//! upper as it was, so a decoy without labels gets the same hidden root there
-//! as before. Any other failure is an error either way. The activation says so
-//! in one line on a host that is configured for SELinux but shows no policy
-//! ([`configured_but_not_running`]).
+//! selinuxfs was unmounted after a policy was loaded. Where the kernel lists
+//! SELinux among its security modules, the RAM copies of the binary take their
+//! label all the same ([`super::program_label::Why::Kernel`]). The
+//! `lsm-status` pre-flight check, which runs before the entry, refuses such a
+//! host wherever the kernel runs SELinux or may run it, so of these hosts only
+//! one whose kernel does not run SELinux reaches the entry. Such a host, and
+//! one whose facts report no SELinux, copies on a best effort basis: a label
+//! the decoy directory has is copied there too, but a decoy directory without
+//! a label (the usual case there) or none at all, a filesystem without
+//! extended attributes, or a link or a file in place of an upper directory
+//! leaves the upper as it was, so a decoy without labels gets the same hidden
+//! root there as before. Any other failure is an error either way. The
+//! activation says so in one line on a host that is configured for SELinux but
+//! shows no policy ([`configured_but_not_running`]).
 //!
 //! # Where the copies go
 //!

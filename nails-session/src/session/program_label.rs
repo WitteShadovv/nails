@@ -15,10 +15,17 @@
 //! where the activation runs, since the kernel enforces a loaded policy all
 //! the same, and one that reports SELinux without a list of security modules
 //! to rule it out ([`Why`]). The activation decides it once ([`for_host`]),
-//! and the entry records the label in the plan, which every later step takes
-//! it from. Where SELinux does not run, as on a stock Debian, Ubuntu or NixOS,
-//! the plan records none: no label is written or read and nothing is asked of
-//! the kernel. The unit files and drop-ins are the same on every host.
+//! and the entry records the label in the plan, from which the entry,
+//! `deactivate`, the emergency and both directions of the transition step
+//! take it. The units PID 1 starts from a copy after a switch do not read the
+//! plan, which is gone once the decoy has its `/run` back: when they start
+//! they ask the running kernel whether a policy is loaded, and check their
+//! domain where one is
+//! ([`nails_teardown::whole_root::program_label::enter_domain`]). Where
+//! SELinux does not run, as on a stock Debian, Ubuntu or NixOS, the plan
+//! records none: no label is written or read and no policy is asked
+//! anything, and those units only find that no policy is loaded. The unit
+//! files and drop-ins are the same on every host.
 //!
 //! The entry ([`super::entry`]):
 //!
@@ -45,11 +52,13 @@
 //! ([`nails_teardown::whole_root::emergency`]); it asks PID 1 nothing, as for
 //! the runtime guards, so it does not see an `SELinuxContext=` of that unit,
 //! and a refusal for one names only the power-offs besides deactivating
-//! again. The way back's last step gives the copy it leaves for the decoy's
-//! first start the label, or leaves that copy out
-//! ([`nails_teardown::whole_root::boot_records::install`]). The units PID 1
-//! starts from a copy after a switch check their own domain when they start
-//! ([`nails_teardown::whole_root::program_label::enter_domain`]).
+//! again. The step of each armed switch checks its own domain when it starts,
+//! as the units do: one that an `SELinuxContext=` or a relabel started
+//! elsewhere starts itself again from its copy, and where it still runs
+//! elsewhere it refuses the switch, and on the way back powers off first
+//! ([`nails_teardown::whole_root::transition`]). The way back's last step
+//! gives the copy it leaves for the decoy's first start the label, or leaves
+//! that copy out ([`nails_teardown::whole_root::boot_records::install`]).
 
 use super::guards::GuardHost;
 use super::labels::{Labels, Reason};
