@@ -669,11 +669,14 @@ Layout:
   ([below](#the-unattended-upgrades-scenario)).
 - `lib/admitted.nix`: the test-only build of the release binary in which one
   family's base row of the family table is admitted, for the scenarios of a
-  family not admitted yet (the staged scenarios and the oracle images); never
-  released. `lib/admit-row.awk` makes the change, and the build fails unless
-  it changes that row's `admitted` line alone: a row already admitted, a
-  derivative's row and an id the table lacks each fail it
-  (`ci/tests/test_admit_row.py` runs the script on the family table).
+  family not admitted yet (the staged scenarios, and the oracle images of an
+  image the table does not enable yet); never released. `lib/admit-row.awk`
+  makes the change, and the build fails unless it changes that row's
+  `admitted` line alone: a row already admitted, a derivative's row and an id
+  the table lacks each fail it (`ci/tests/test_admit_row.py` runs the script
+  on the family table). The family's derivatives follow the admitted row, so
+  that build runs one as an untested derivative, with a warning, as the
+  release will once the family is admitted; no scenario boots one.
 - `py/`: the scenarios' host-side helpers, unit-tested by the
   `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
   smoke's reads of a btrfs decoy's image: its zstd frames, decompressed, and

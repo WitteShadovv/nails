@@ -56,13 +56,16 @@
 # paused disk, and system_reset then boots the same disk again.
 #
 # Neither Fedora nor Arch is admitted yet: the release `nails` refuses both
-# (the refusal scenario, refusal.nix, proves that). So this driver runs a
-# test-only build of the release binary in which the one row of the image's
-# family in the family table is admitted, and nothing else changes
-# (lib/admitted.nix). That build is never shipped. The oracle's verdict on the
-# images says what its channels see of a session on that decoy's disk
-# (ci/oracle/README.md lists what they do not), not that NAILS supports the
-# family.
+# (the refusal scenario, refusal.nix, proves that). So for an image the image
+# table does not enable yet this driver runs a test-only build of the release
+# binary in which the base row of the image's family in the family table is
+# admitted, and no other line of the table changes (lib/admitted.nix). The
+# family's derivatives follow that row there, as they will once the family is
+# admitted, and no image of one runs here. That build is never shipped. The
+# commit that admits a family enables its image, and from then on this driver
+# runs the release binary on it. The oracle's verdict on the images says what
+# its channels see of a session on that decoy's disk (ci/oracle/README.md
+# lists what they do not), not that NAILS supports the family.
 #
 # The decoy is prepared before the before image, so all of them hold it alike:
 # its journal volatile and auditd masked (lib/hidden-root.nix's
@@ -91,9 +94,13 @@ let
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   hiddenRoot = import ./lib/hidden-root.nix;
 
-  # The release binary with the base row of the image's family admitted, for
-  # this driver only.
+  # The binary an image's session runs: the release binary once the image
+  # table enables the image, as the commit that admits its family does, and
+  # until then the release binary with the base row of the image's family
+  # admitted, for the scenarios of its admission only. That build fails for a
+  # family whose row is admitted already.
   admitted = import ./lib/admitted.nix { inherit self; };
+  nailsFor = entry: if entry.enabled then self.packages.x86_64-linux.nails else admitted entry.osId;
 
   binShare = {
     tag = "tools";
@@ -107,7 +114,7 @@ let
       target = "driver";
 
       sharedDirs.${binShare.tag} = {
-        source = "${admitted entry.osId}/bin";
+        source = "${nailsFor entry}/bin";
         inherit (binShare) target;
       };
 
