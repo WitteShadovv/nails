@@ -60,6 +60,13 @@
 #   sudo run-scan.sh <workdir>
 #   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
 #
+# In real-image mode ORACLE_EXTRA_CONTROLS may name a JSON file of positive
+# controls the producer of the images planted itself, which merge-controls.sh
+# adds to a run-time copy of controls-real.json: only exact controls of the
+# restore channel, each a file's path and the SHA-256 the producer read back.
+# The btrfs decoy driver (nix/distro-tests/oracle-images.nix) writes such a
+# file, controls-live.json, beside its raws.
+#
 # Needs root (loop mounts, and reading the decoy's root-only files), btrfs-progs,
 # rsync (to copy a btrfs carve),
 # git + the bulk_extractor build chain, jq (to read the verdict), and docker
@@ -160,7 +167,22 @@ if [ -n "$images_src" ]; then
   canary="$canary_default"
   canary_file=/var/lib/nails-oracle/canary
   controls_used="$repo_root/ci/oracle/controls-real.json"
+  # The producer's own controls, added to a run-time copy; a file that names
+  # anything but exact restore-channel controls stops the run.
+  if [ -n "${ORACLE_EXTRA_CONTROLS:-}" ]; then
+    if ! "$here/merge-controls.sh" "$controls_used" "$ORACLE_EXTRA_CONTROLS" \
+      >"$work/controls.effective.json"; then
+      echo "run-scan: could not add the controls of $ORACLE_EXTRA_CONTROLS; failing closed" >&2
+      exit 2
+    fi
+    controls_used="$work/controls.effective.json"
+    echo "==> positive controls: controls-real.json and those of $ORACLE_EXTRA_CONTROLS" >&2
+  fi
 else
+  if [ -n "${ORACLE_EXTRA_CONTROLS:-}" ]; then
+    echo "run-scan: ORACLE_EXTRA_CONTROLS needs ORACLE_IMAGES_DIR: the synthetic images plant their own" >&2
+    exit 2
+  fi
   canary_file=/var/lib/nails-oracle/canary.txt
   controls_src="$repo_root/ci/oracle/controls.json"
   if [ "$canary" = "$canary_default" ]; then

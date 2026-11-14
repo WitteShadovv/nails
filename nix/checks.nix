@@ -214,7 +214,8 @@ in
   # it makes and checks, util-linux, sleuthkit and dosfstools because the
   # oracle's choice of how to compare each partition of a disk is tested on GPT
   # disk images it builds, jq because the tests run the script of ci.yml's
-  # gate job, which reads the results of the jobs with it, and gawk because
+  # gate job, which reads the results of the jobs with it, and the oracle's
+  # merge of the controls a producer of images planted, and gawk because
   # the row flip of the distribution tier's test-only build that admits a
   # family (nix/distro-tests/lib/admit-row.awk) is tested on the family table
   # itself, nails-platform's family.rs.

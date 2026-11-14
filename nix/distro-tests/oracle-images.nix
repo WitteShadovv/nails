@@ -17,20 +17,34 @@
 #
 #   before    the decoy as prepared, powered off;
 #   control   the same disk after one plain reboot, powered off;
-#   control2  the same disk after a second plain reboot, powered off: no
-#             hidden session has run on it;
+#   control2  the same disk after a second plain reboot and the live
+#             controls (below), powered off: no hidden session has run on it;
 #   after     the same disk after one more boot, a full hidden session
 #             (activate, work in the session, deactivate) and the way back,
 #             powered off.
 #
 # The oracle scans before, control and after, and before, control and
 # control2 the same way, with control2 in the place of after. That second
-# scan has no session to find: whatever it reports, two plain reboots made.
+# scan has no session to find: whatever it reports but the live controls, two
+# plain reboots made.
+#
+# The live controls are the restore channel's own positive controls: after
+# the control image, before the second reboot is imaged, the decoy's kernel
+# writes a file of fixed contents (/var/lib/nails-oracle/restore-control) and,
+# on Arch, adds a line to /var/log/pacman.log. control2 and after hold them,
+# and before and control do not, so each scan must find both, at their paths
+# in the root filesystem's top level, where the scan's carve keys them, with
+# the SHA-256 the decoy read back. They are written before the session runs:
+# a session that changed one would leave it with another digest, and the scan
+# would miss the control and fail, instead of taking the change for the
+# control. The driver writes them to controls-live.json beside the raws, which
+# run-scan.sh adds to its controls (ORACLE_EXTRA_CONTROLS).
 #
 # Each image is the whole disk, written as a raw into
 # $NAILS_ORACLE_OUT/forensics (the working directory when it is unset), as
-# before.raw, control.raw, control2.raw and after.raw: the first three and
-# the last are the names run-scan.sh's ORACLE_IMAGES_DIR mode reads. Each raw
+# before.raw, control.raw, control2.raw and after.raw, with
+# controls-live.json: the first three raws and the last are the names
+# run-scan.sh's ORACLE_IMAGES_DIR mode reads. Each raw
 # is replaced by a sparse copy once written (cp --sparse=always), so its zeros
 # take no space on the runner and read the same.
 #
@@ -110,8 +124,10 @@ let
         sys.path.insert(0, "${../e2e-tests/py}")
         from nails_e2e import session  # noqa: E402
 
-        # The distribution scenarios' helpers, for the decoy's disk swap.
+        # The distribution scenarios' helpers, for the decoy's disk swap and
+        # for where a file lies in a btrfs filesystem's top level.
         sys.path.insert(0, "${./py}")
+        import btrfs_scan  # noqa: E402
         import distro_checks  # noqa: E402
 
         nails = "${binShare.target}/nails"
@@ -282,6 +298,78 @@ let
             prepare_boot()
 
 
+        # The restore channel's live controls (see the header): what the
+        # decoy's kernel writes after the control image, and the line added
+        # to pacman's log on Arch.
+        LIVE_FILE = "/var/lib/nails-oracle/restore-control"
+        LIVE_FILE_TEXT = "NAILS forensic-oracle restore-channel control"
+        PACMAN_LOG = "/var/log/pacman.log"
+        PACMAN_LOG_LINE = "[nails-oracle] restore-channel control"
+
+
+        def carve_path(path):
+            # Where the scan's restore carve keys `path`: it mounts the root
+            # filesystem's top level (subvolid=5), each subvolume a folder of
+            # its name there (ci/oracle/run-scan.sh).
+            directory = os.path.dirname(path)
+            fields = vm.succeed(
+                f"findmnt -rn -o TARGET,SOURCE,OPTIONS -T {shlex.quote(directory)}"
+            ).split()
+            target, source, options = fields[0], fields[1], fields[2]
+            assert source.split("[", 1)[0] == root_partition, (
+                f"{path} is not on the decoy root's filesystem: {fields}"
+            )
+            subvol = [
+                o.split("=", 1)[1] for o in options.split(",") if o.startswith("subvol=")
+            ]
+            assert len(subvol) == 1, f"{path}: no one subvol= in {options}"
+            return btrfs_scan.filesystem_path(subvol[0], target, path)
+
+
+        def plant_live_controls():
+            # Written by the decoy's kernel, synced, and keyed by the digest
+            # the decoy reads back, for run-scan.sh (ORACLE_EXTRA_CONTROLS).
+            vm.succeed(f"test ! -e {LIVE_FILE}")
+            vm.succeed(f"printf '%s\\n' {shlex.quote(LIVE_FILE_TEXT)} > {LIVE_FILE}")
+            planted = [
+                (
+                    "live-file",
+                    LIVE_FILE,
+                    "A file of fixed contents the decoy wrote after the control image.",
+                ),
+            ]
+            if "${entry.osId}" == "arch":
+                vm.succeed(f"test -s {PACMAN_LOG}")
+                vm.succeed(
+                    f"printf '%s\\n' {shlex.quote(PACMAN_LOG_LINE)} >> {PACMAN_LOG}"
+                )
+                planted.append(
+                    (
+                        "live-change-pacman-log",
+                        PACMAN_LOG,
+                        "A line the decoy added to pacman's log after the control image.",
+                    )
+                )
+            vm.succeed("sync")
+            controls = []
+            for name, path, note in planted:
+                digest = vm.succeed(f"sha256sum {shlex.quote(path)}").split()[0]
+                assert len(digest) == 64, f"{path}: {digest}"
+                controls.append(
+                    {
+                        "name": name,
+                        "tool": "btrfs_restore",
+                        "path": carve_path(path),
+                        "field": f"sha256:{digest}",
+                        "note": note,
+                    }
+                )
+            print(f"the live controls: {controls}")
+            with open(os.path.join(forensics, "controls-live.json"), "w") as handle:
+                json.dump({"positive_controls": controls}, handle, indent=2)
+                handle.write("\n")
+
+
         def on_partition(token, device):
             # Whether the token's bytes are on the device, read past the page
             # cache.
@@ -332,8 +420,9 @@ let
             settle()
             image("control")
 
-        with subtest("a second plain reboot, imaged: control2"):
+        with subtest("a second plain reboot and the live controls, imaged: control2"):
             boot_again()
+            plant_live_controls()
             settle()
             image("control2")
 
