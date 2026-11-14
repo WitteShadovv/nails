@@ -182,7 +182,10 @@ one it runs in. A fixture is that record as written: copy `<probe>.json` over
 the file here rather than editing it, once its `recorded` is `true`. The
 `distro-checks` flake check fails a fixture that leaves the schema, is not
 named after its probe, is not written the way the probe writes it, or whose
-`recorded` does not follow from its facts.
+`recorded` does not follow from its facts. The Rust tests read the fixtures
+too: those of the `lsm-status` check judge the SELinux mode and the backdoor
+unit's domain of every recorded fixture, so a fixture recorded anew runs the
+Rust tests as well.
 
 On a KVM-capable host, build the driver and run it. The driver keeps the VM
 state and its sockets in `XDG_RUNTIME_DIR`, falling back to `TMPDIR`; point

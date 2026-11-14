@@ -199,6 +199,11 @@ Keep all of it `root`-owned on the hidden volume.
 
 1. It runs the pre-flight checks, among them `platform` (the host is one NAILS
    supports; a Debian or Ubuntu release it has not been tested on warns),
+   `lsm-status` (it names the Linux Security Modules the kernel runs; where
+   SELinux runs, its policy must be the targeted one and NAILS must run
+   unconfined, permissive mode warns, and for now every such host is refused,
+   see [the decoy
+   requirements](decoy-requirements.md#fail-closed-activation-is-refused)),
    `systemd-version` (254 or newer), `soft-reboot-units` (the units that
    implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
    root can be mounted again by device for the way back), `session-state` (no
@@ -1154,6 +1159,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   runs some of the decoy's own tools to ask what they report, such as
   `systemctl` for the systemd version. On a decoy root mounted without
   `noatime`, a read or a program start can update an access time.
+  `lsm-status` reads `/etc/selinux/config`, as root without changing its
+  access time.
 - **No lookup that would mount an automount point.** A lookup that passes an
   automount point that nothing is mounted on yet mounts it: a direct or
   offset one, such as the one systemd makes for an `x-systemd.automount` line

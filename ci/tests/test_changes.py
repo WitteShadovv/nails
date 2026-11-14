@@ -203,6 +203,7 @@ class SelectTest(unittest.TestCase):
             "nix/e2e-tests/tests/session/session-lifecycle.nix",
             "nix/e2e-tests/fixtures/configs/unknown-key.toml",
             "nix/e2e-tests/fixtures/indicators.json",
+            "nix/distro-tests/probe/fedora-44-enforcing.json",
         ):
             with self.subTest(path=path):
                 self.assertEqual(changes.select([path]), only("testdata", "nix"))
@@ -219,6 +220,8 @@ class SelectTest(unittest.TestCase):
             "nix/e2e-tests/lib/helper.sh",
             "nix/e2e-tests/fixtures/forensics/fls-sample.txt",
             "nix/e2e-tests/fixtures/indicators.json.orig",
+            "nix/distro-tests/probe/README.md",
+            "nix/distro-tests/probe/fedora-44.raw.json.orig",
             "fuzz/copy-lint.toml",
             "nails.1.orig",
         ):

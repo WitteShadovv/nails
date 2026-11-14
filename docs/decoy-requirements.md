@@ -146,6 +146,35 @@ write the name of every file on the volume into the decoy's locate database
 (see [The locate database](#the-locate-database), which also names what it
 does not read).
 
+The `lsm-status` check names the Linux Security Modules the kernel runs, from
+`/sys/kernel/security/lsm`, and judges SELinux where it runs; no flag lifts its
+refusals. A host where SELinux does not run passes: AppArmor, Landlock and
+Yama change nothing it judges. Where SELinux runs, the check reads the mode
+from `/sys/fs/selinux/enforce`, `SELINUX=` and `SELINUXTYPE=` from
+`/etc/selinux/config` the way libselinux reads them, and the SELinux context
+of the `nails` process from `/proc/self/attr/current`, and it refuses:
+
+- a policy other than `targeted`, as untested. The name is compared in its
+  case, since it names the directory the policy is loaded from;
+- a context whose level has a sensitivity other than `s0`, which only a
+  multi-level (MLS) policy gives, whatever the file names;
+- a `nails` process in a domain other than `unconfined_t`, which a login
+  whose SELinux user is `unconfined_u` runs in and `sudo` keeps, or
+  `unconfined_service_t`;
+- a fact among these that cannot be read;
+- for now, every host where SELinux runs: NAILS does not yet choose the
+  SELinux domain of the processes systemd and udev start from its copy in
+  `/run` (the transition step at each switch, the watcher, the sleep guard
+  and the disk guard of the hidden session, and the boot-record steps after
+  the way back), so nothing shows that they run unconfined.
+
+Where it refuses nothing, it warns when SELinux is permissive, or runs in
+another mode than `/etc/selinux/config` sets. Where the kernel's list of
+active modules cannot be read, a mounted selinuxfs or an SELinux context of
+the `nails` process means SELinux runs, and `/sys/fs/selinux` or an
+`/etc/selinux/config` that sets a mode or names a policy, without either, is
+refused as a host whose SELinux cannot be judged.
+
 kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
 kernel is loaded), or when `kdump-tools.service` (Ubuntu, Debian) or
 `kdump.service` (Fedora) is enabled or active. The soft-reboot into the hidden
