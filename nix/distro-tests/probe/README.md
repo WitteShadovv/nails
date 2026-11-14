@@ -27,8 +27,8 @@ image, with `-enforcing` added for a Fedora image booted with SELinux enforcing.
   permissive as `../images.json` pins it (recorded)
 - `fedora-44-enforcing.json` -- the same image booted with SELinux enforcing
   (recorded)
-- `fedora-45.json`, `fedora-45-enforcing.json` -- Fedora 45 once its image is
-  pinned
+- `fedora-45.json`, `fedora-45-enforcing.json` -- the pinned Fedora 45 cloud
+  image, booted permissive and enforcing as for Fedora 44 (recorded)
 - `arch-boxes.json` -- the pinned Arch `arch-boxes` image (recorded)
 - `arch-install.json` -- the `archinstall`-built Arch image, once hosted
 
