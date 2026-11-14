@@ -461,7 +461,17 @@ class Cell:
 
     # --- flows -----------------------------------------------------------
 
+    def age_env(self, label: str) -> None:
+        """The decoy's env as one nothing has run for a day, so that the next
+        access through a mount that updates access times shows."""
+        self.sh(
+            label,
+            "touch -a -d '2 days ago' /usr/bin/env; "
+            "stat -c '%x|%y|%z' /usr/bin/env; sleep 1.1",
+        )
+
     def control(self) -> None:
+        self.age_env("control.env-age")
         self.mark("control-start")
         self.sh("control.ref", "touch /run/dsx/ref-0")
         place = self.switch("systemctl soft-reboot", "control")
@@ -470,6 +480,7 @@ class Cell:
             return
         self.mark("control-end")
         self.fact("control.getenforce", "getenforce")
+        self.fact("control.env", "stat -c '%x|%y|%z' /usr/bin/env")
         self.disk_changes("control.disk", "/run/dsx/ref-0")
         self.run_labels("control.run-labels")
 
@@ -477,25 +488,23 @@ class Cell:
         """A second plain soft-reboot, once the sessions are over: what the
         decoy's own services are denied at a switch then is no denial of
         NAILS either."""
+        self.age_env("control2.env-age")
         self.mark("control2-start")
+        self.sh("control2.ref", "touch /run/dsx/ref-9")
         place = self.switch("systemctl soft-reboot", "control2")
         if place == "lost":
             return
         self.mark("control2-end")
         self.fact("control2.getenforce", "getenforce")
+        self.fact("control2.env", "stat -c '%x|%y|%z' /usr/bin/env")
         self.fact("control2.issue-d", "ls -laZ /etc/issue.d/ 2>&1")
+        self.disk_changes("control2.disk", "/run/dsx/ref-9")
 
     def enter(self, n: int) -> bool:
         self.run_labels(f"pre-{n}.run-labels")
         self.fact(f"pre-{n}.run-files", f"ls -Zd {RUN_FILES} 2>&1")
-        # The decoy's env as one nothing has run for a day: a later access
-        # through a mount that updates access times shows.
-        self.sh(
-            f"pre-{n}.env-age",
-            "touch -a -d '2 days ago' /usr/bin/env; "
-            "stat -c '%x|%y|%z' /usr/bin/env; sleep 1.1; "
-            f"touch /run/dsx/ref-{n}",
-        )
+        self.age_env(f"pre-{n}.env-age")
+        self.sh(f"pre-{n}.ref", f"touch /run/dsx/ref-{n}")
         self.fact(
             f"pre-{n}.check",
             self.as_operator(f"{NAILS} --config {CONFIG} check --overlay-only"),
@@ -542,6 +551,14 @@ class Cell:
             "short-monotonic --no-pager | tail -60",
         )
         self.fact(f"session-{n}.trace", "cat /run/dsx/dsxrec/dsxtrace")
+        self.read_kmsg(f"session-{n}")
+
+    def in_session_marker(self, n: int) -> None:
+        """The kernel log marker of a session that does nothing else, which
+        the decoy's journal must not hold after the way back."""
+        self.mark(f"session-{n}")
+        self.vm.execute(f"echo DSXIN-{self.nonce}-{n} > /dev/kmsg", check_return=False)
+        time.sleep(5)
         self.read_kmsg(f"session-{n}")
 
     def leave(self, n: int, how: str) -> None:
@@ -671,7 +688,7 @@ class Cell:
                     if n == 1:
                         self.step(f"session-{n}", self.in_session, n)
                     else:
-                        self.step(f"session-{n}", self.mark, f"session-{n}")
+                        self.step(f"session-{n}", self.in_session_marker, n)
                     self.step(f"{how}-{n}", self.leave, n, how)
                 elif place == "down":
                     self.restart(f"after enter-{n} was lost")
