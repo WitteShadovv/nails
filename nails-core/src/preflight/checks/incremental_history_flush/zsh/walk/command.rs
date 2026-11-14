@@ -392,8 +392,9 @@ impl Walker<'_> {
     /// settings zsh drops, but a write there writes a file all the same (an
     /// `fc`, a redirection, one to a descriptor the shell has open, a word
     /// that names the history file in a function), a function they run there
-    /// can write the history file, and a signal reaches the shell's process
-    /// ([`Event::Ends`]). In a word zsh expands nothing in (`'$(x)'`,
+    /// can write the history file, and an `exit` there writes it too, as a
+    /// signal reaches the shell's process ([`Event::Ends`]). In a word zsh
+    /// expands nothing in (`'$(x)'`,
     /// [`Walker::mention_word`]), only the commands, as before: it is text.
     pub(super) fn substituted(&mut self, text: &str) {
         for code in substitutions(text) {
@@ -406,7 +407,7 @@ impl Walker<'_> {
                     | Event::Fc(_)
                     | Event::HookDoubt { .. }
                     | Event::Names { .. }
-                    | Event::Ends { signal: true, .. } => !literal,
+                    | Event::Ends { forked: true, .. } => !literal,
                     _ => false,
                 }));
         }

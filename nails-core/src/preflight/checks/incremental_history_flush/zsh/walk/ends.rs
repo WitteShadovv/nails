@@ -11,7 +11,9 @@
 //! which zsh runs in the shell's place once it has written the file; and a
 //! signal that may reach the shell's own process (`kill -HUP $$`, `kill 0`,
 //! a pid an expansion makes, `pkill`, `killall`), on which zsh ends the same
-//! way (SIGHUP, SIGALRM), sent from a subshell too. And anywhere, a `TMOUT`
+//! way (SIGHUP, SIGALRM). Each but `exec` and `return` counts in a subshell
+//! too (`$(exit)`, `( exit )`): zsh 5.9 to 5.9.2 write the history file in a
+//! subshell that exits, and a signal reaches the shell. And anywhere, a `TMOUT`
 //! above 0: zsh ends once a prompt has waited that many seconds
 //! (Src/signals.c), with a `TRAPALRM` too, which a later file or a hook may
 //! take away.
@@ -85,12 +87,16 @@ impl Walker<'_> {
             return;
         };
         let program = name.rsplit('/').next().unwrap_or(name);
-        let signal = match program {
-            _ if exec => false,
-            "exit" | "bye" | "logout" => false,
-            "return" if self.top && !self.in_function_body() => false,
-            "kill" if may_signal_shell(args) => true,
-            program if SIGNALLERS.contains(&program) => true,
+        // Whether it signals the shell's process, and whether it ends the
+        // shell from a subshell too: zsh writes the history file in a
+        // subshell that exits (`$(exit)`, `( exit )`), not in one an `exec`
+        // replaces, and a `return` there returns from the function.
+        let (signal, forked) = match program {
+            _ if exec => (false, false),
+            "exit" | "bye" | "logout" => (false, true),
+            "return" if self.top && !self.in_function_body() => (false, false),
+            "kill" if may_signal_shell(args) => (true, true),
+            program if SIGNALLERS.contains(&program) => (true, true),
             _ => return,
         };
         let words: Vec<&str> = std::iter::once(name)
@@ -113,7 +119,7 @@ impl Walker<'_> {
                 self.place
             ),
             function,
-            signal,
+            forked,
         });
     }
 
