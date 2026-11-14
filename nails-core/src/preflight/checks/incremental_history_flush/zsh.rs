@@ -377,7 +377,9 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// The text of the file at `path`, unless it is being followed already,
     /// nothing is there, or the check cannot read it, which is a doubt; zsh
-    /// may run compiled code in its place, which is a doubt too.
+    /// may run compiled code in its place, which is a doubt too, and so is a
+    /// file that holds bytes that are no UTF-8, which zsh keeps as they are
+    /// (in a path too: `ZDOTDIR=~/.d\xff`) where the check reads others.
     fn text(&mut self, path: &Path) -> Option<String> {
         if self.stack.iter().any(|open| open == path) {
             return None;
@@ -386,6 +388,12 @@ impl<F: Filesystem> Reader<'_, F> {
         let text = match read(self.fs, path) {
             Ok(Some(text)) => {
                 self.missing(path, true);
+                if text.contains('\u{fffd}') {
+                    self.doubt(format!(
+                        "it cannot read {} as zsh does, as it holds bytes that are no UTF-8 text",
+                        path.display()
+                    ));
+                }
                 text
             }
             Ok(None) => {

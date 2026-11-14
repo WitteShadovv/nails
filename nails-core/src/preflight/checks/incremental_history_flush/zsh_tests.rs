@@ -62,6 +62,10 @@ mod made_files;
 #[path = "zsh_candidates_tests.rs"]
 mod candidates;
 
+// Where zsh parts words: at a space or a tab alone.
+#[path = "zsh_blanks_tests.rs"]
+mod blanks;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
