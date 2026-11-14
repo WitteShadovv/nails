@@ -473,6 +473,18 @@ class Cell:
         self.disk_changes("control.disk", "/run/dsx/ref-0")
         self.run_labels("control.run-labels")
 
+    def control2(self) -> None:
+        """A second plain soft-reboot, once the sessions are over: what the
+        decoy's own services are denied at a switch then is no denial of
+        NAILS either."""
+        self.mark("control2-start")
+        place = self.switch("systemctl soft-reboot", "control2")
+        if place == "lost":
+            return
+        self.mark("control2-end")
+        self.fact("control2.getenforce", "getenforce")
+        self.fact("control2.issue-d", "ls -laZ /etc/issue.d/ 2>&1")
+
     def enter(self, n: int) -> bool:
         self.run_labels(f"pre-{n}.run-labels")
         self.fact(f"pre-{n}.run-files", f"ls -Zd {RUN_FILES} 2>&1")
@@ -550,9 +562,23 @@ class Cell:
 
     # --- the run ---------------------------------------------------------
 
+    def control_signatures(self) -> list[str]:
+        """The denials of every plain soft-reboot of the run."""
+        found: set[str] = set()
+        for boot in self.boots:
+            markers = [m for m in boot["markers"] if m["seq"] is not None]
+            for start, end in zip(markers, markers[1:], strict=False):
+                if start["label"] in ("control-start", "control2-start"):
+                    found.update(
+                        sc.phase(boot["records"].values(), start["seq"], end["seq"])[
+                            "signatures"
+                        ]
+                    )
+        return sorted(found)
+
     def summarise(self) -> None:
         self.result["boots"] = []
-        control: list[str] = []
+        control = self.control_signatures()
         for index, boot in enumerate(self.boots):
             records = boot["records"]
             seqs = sorted(records)
@@ -569,10 +595,6 @@ class Cell:
             for label, first, last in zip(labels, bounds, bounds[1:], strict=False):
                 summary = sc.phase(records.values(), first, last, control, pids)
                 summary["label"] = label
-                if label == "control-start":
-                    control = summary["signatures"]
-                    summary = sc.phase(records.values(), first, last, control, pids)
-                    summary["label"] = label
                 phases.append(summary)
             labels_seq = {m["label"]: m["seq"] for m in markers}
             cursors = {}
@@ -653,6 +675,8 @@ class Cell:
                     self.step(f"{how}-{n}", self.leave, n, how)
                 elif place == "down":
                     self.restart(f"after enter-{n} was lost")
+            if self.where() == "decoy":
+                self.step("control2", self.control2)
         finally:
             self.write()
 

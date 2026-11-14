@@ -180,12 +180,14 @@ tests
 // records
 // probes
 // cells
+// {
+  # Research only: the binary the SELinux cells share, built once per run.
+  cells-nails = cellSet.nails;
+}
 // refusals
 // oracleImages
 // {
   _metadata = metadata;
-  # Research only: the binary the SELinux cells share.
-  _cellsNails = cellSet.nails;
   # Plain data the `distro-images` check serialises to force evaluation of the
   # whole table and of every entry's image seam. Not read by the CI planner.
   _images = {

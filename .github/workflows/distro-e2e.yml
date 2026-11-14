@@ -248,7 +248,7 @@ jobs:
       # here, so each cell job substitutes it.
       - name: Build the cells' nails
         if: steps.select.outputs.suites == 'cells'
-        run: nix build -L --no-link .#legacyPackages.x86_64-linux.e2e-distro._cellsNails
+        run: nix build -L --no-link .#legacyPackages.x86_64-linux.e2e-distro.cells-nails
 
       # The records and refusal jobs run as the gating job, apart from the
       # others, so that distro-result can tell their failure from a smoke
