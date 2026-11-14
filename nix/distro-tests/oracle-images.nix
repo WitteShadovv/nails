@@ -2,18 +2,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Real btrfs decoy images for the forensic oracle: before / control /
-# control2 / after of a Fedora 44 Cloud decoy and of an arch-boxes decoy,
-# keyed "<name>-oracle-images".
+# control2 / after of a Fedora 44 and a Fedora 45 Cloud decoy and of an
+# arch-boxes decoy, keyed "<name>-oracle-images".
 #
 # The NixOS oracle-images test (nix/e2e-tests/tests/forensic/13-oracle-images.nix)
 # retains an ext4 decoy root. Fedora and Arch keep their root on btrfs, which
 # plaso cannot read, and the oracle scans such images without the timeline
 # (ci/oracle/run-scan.sh). This driver produces the real images that scan
-# needs, on the stock Fedora 44 Cloud image (btrfs, zstd compressed, with the
-# root, /boot, /home and /var subvolumes next to a vfat ESP) and on the stock
-# arch-boxes basic image (btrfs, zstd compressed, mounted from its top level
-# (subvolid=5), next to a vfat ESP that systemd mounts on demand at /efi, and a
-# BIOS boot partition):
+# needs, on the stock Fedora 44 and Fedora 45 Cloud images (btrfs, zstd
+# compressed, with the root, /boot, /home and /var subvolumes next to a vfat
+# ESP) and on the stock arch-boxes basic image (btrfs, zstd compressed, mounted
+# from its top level (subvolid=5), next to a vfat ESP that systemd mounts on
+# demand at /efi, and a BIOS boot partition):
 #
 #   before    the decoy as prepared, powered off;
 #   control   the same disk after one plain reboot, powered off;
@@ -511,5 +511,6 @@ let
 in
 {
   "fedora-44-oracle-images" = oracleImagesFor images."fedora-44";
+  "fedora-45-oracle-images" = oracleImagesFor images."fedora-45";
   "arch-boxes-oracle-images" = oracleImagesFor images."arch-boxes";
 }

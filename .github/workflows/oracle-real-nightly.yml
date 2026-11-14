@@ -16,23 +16,23 @@ name: Oracle real-image nightly
 #
 # produce-btrfs and scan-btrfs-real do the same for REAL btrfs decoys, one per
 # image of the matrix: the <image>-oracle-images distro driver
-# (nix/distro-tests/oracle-images.nix) images a stock Fedora 44 Cloud disk, or
-# a stock arch-boxes disk, before, after a plain reboot (control), after a
-# second plain reboot (control2) and after a full hidden session and the way
-# back (after). run-scan.sh scans before, control and after, and, as a check
-# of the scan itself, before, control and control2, which no session ran on.
-# Before control2 is imaged, the driver also plants the restore channel's own
-# positive controls in the live tree (a file it writes, and on Arch a line it
-# adds to pacman's log), so both scans must find them; it lists them in
-# controls-live.json beside the raws, for run-scan.sh's ORACLE_EXTRA_CONTROLS.
-# Neither Fedora nor Arch is admitted yet, so the driver runs a test-only build
-# that admits the image's family and is never released. On btrfs the timeline
-# cannot run, so each of these scans, like scan-btrfs, passes only on the
-# partial verdict that names it.
+# (nix/distro-tests/oracle-images.nix) images a stock Fedora 44 or Fedora 45
+# Cloud disk, or a stock arch-boxes disk, before, after a plain reboot
+# (control), after a second plain reboot (control2) and after a full hidden
+# session and the way back (after). run-scan.sh scans before, control and after,
+# and, as a check of the scan itself, before, control and control2, which no
+# session ran on. Before control2 is imaged, the driver also plants the restore
+# channel's own positive controls in the live tree (a file it writes, and on
+# Arch a line it adds to pacman's log), so both scans must find them; it lists
+# them in controls-live.json beside the raws, for run-scan.sh's
+# ORACLE_EXTRA_CONTROLS. Neither Fedora nor Arch is admitted yet, so the driver
+# runs a test-only build that admits the image's family and is never released.
+# On btrfs the timeline cannot run, so each of these scans, like scan-btrfs,
+# passes only on the partial verdict that names it.
 #
 # A dispatch can run one image alone (the images input): ext4 runs produce
-# and scan, fedora-44 or arch-boxes the btrfs jobs of that image. The nightly
-# runs every job.
+# and scan, fedora-44, fedora-45 or arch-boxes the btrfs jobs of that image.
+# The nightly runs every job.
 #
 # Two runners, because the two halves need different hosts:
 #   * produce: ubuntu-26.04 exposes /dev/kvm (install-nix-action opens it), so
@@ -55,11 +55,11 @@ on:
       images:
         description: >-
           The real decoy images to produce and scan: all (every job, as the
-          nightly), ext4 (the NixOS decoy), or one btrfs image, fedora-44 or
-          arch-boxes, alone
+          nightly), ext4 (the NixOS decoy), or one btrfs image, fedora-44,
+          fedora-45 or arch-boxes, alone
         type: choice
         default: all
-        options: [all, ext4, fedora-44, arch-boxes]
+        options: [all, ext4, fedora-44, fedora-45, arch-boxes]
 
 permissions: {}
 
@@ -319,12 +319,13 @@ jobs:
           path: ${{ runner.temp }}/oracle-btrfs/verdict.json
           if-no-files-found: warn
 
-  # The real btrfs decoys: a Fedora 44 Cloud disk and an arch-boxes disk, each
-  # imaged whole before, after a plain reboot, after a second one and after a
-  # hidden session and the way back. The distro driver runs directly, as the
-  # oracle-images driver above does, so every night images a fresh session. A
-  # nix-vm-test driver keeps its QEMU state in TMPDIR, which names a directory
-  # on the root disk. A dispatch for one image runs that image's leg alone.
+  # The real btrfs decoys: a Fedora 44 and a Fedora 45 Cloud disk and an
+  # arch-boxes disk, each imaged whole before, after a plain reboot, after a
+  # second one and after a hidden session and the way back. The distro driver
+  # runs directly, as the oracle-images driver above does, so every night
+  # images a fresh session. A nix-vm-test driver keeps its QEMU state in
+  # TMPDIR, which names a directory on the root disk. A dispatch for one image
+  # runs that image's leg alone.
   produce-btrfs:
     name: Produce real btrfs decoy images (${{ matrix.image }})
     if: ${{ inputs.images != 'ext4' }}
@@ -335,7 +336,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ${{ fromJSON((inputs.images == 'fedora-44' || inputs.images == 'arch-boxes') && format('["{0}"]', inputs.images) || '["fedora-44", "arch-boxes"]') }}
+        image: ${{ fromJSON((inputs.images == 'fedora-44' || inputs.images == 'fedora-45' || inputs.images == 'arch-boxes') && format('["{0}"]', inputs.images) || '["fedora-44", "fedora-45", "arch-boxes"]') }}
 
     steps:
       - name: Checkout code
@@ -412,7 +413,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ${{ fromJSON((inputs.images == 'fedora-44' || inputs.images == 'arch-boxes') && format('["{0}"]', inputs.images) || '["fedora-44", "arch-boxes"]') }}
+        image: ${{ fromJSON((inputs.images == 'fedora-44' || inputs.images == 'fedora-45' || inputs.images == 'arch-boxes') && format('["{0}"]', inputs.images) || '["fedora-44", "fedora-45", "arch-boxes"]') }}
         scan: [session, no-session]
         include:
           - scan: session
@@ -548,7 +549,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ${{ fromJSON((inputs.images == 'fedora-44' || inputs.images == 'arch-boxes') && format('["{0}"]', inputs.images) || '["fedora-44", "arch-boxes"]') }}
+        image: ${{ fromJSON((inputs.images == 'fedora-44' || inputs.images == 'fedora-45' || inputs.images == 'arch-boxes') && format('["{0}"]', inputs.images) || '["fedora-44", "fedora-45", "arch-boxes"]') }}
 
     steps:
       - name: Checkout code
