@@ -10,8 +10,9 @@ night it images real ext4 decoy roots in the `oracle-images` E2E test, runs
 `run-scan.sh` over them in `ORACLE_IMAGES_DIR` mode and renders the verdict,
 its `scan-btrfs` job runs `run-scan.sh` over the synthetic btrfs images
 `make-sample-images.sh` builds, and its `produce-btrfs` and `scan-btrfs-real`
-jobs image two real btrfs decoys, Fedora 44 and arch-boxes, and scan them (see
-[Real btrfs images: a Fedora 44 decoy](#real-btrfs-images-a-fedora-44-decoy)
+jobs image three real btrfs decoys, Fedora 44, Fedora 45 and arch-boxes, and
+scan them (see
+[Real btrfs images: Fedora 44 and 45 decoys](#real-btrfs-images-fedora-44-and-45-decoys)
 and [an arch-boxes decoy](#real-btrfs-images-an-arch-boxes-decoy)).
 plaso cannot open btrfs, so a btrfs scan runs no timeline and its verdict is
 `partial` at best, never `clean` (see [btrfs: no timeline](#btrfs-no-timeline)). `oracle-nightly.yml` in this
@@ -145,7 +146,7 @@ No channel stands in for another: the restore channel leaves the journal files
 to plaso, and every self-check the committed controls hold is a bulk_extractor
 finding. The scans of the real btrfs decoys add live controls of the restore
 channel, which their driver plants (see
-[Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)).
+[Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)).
 `run-scan.sh` drops the plaso channel whole when docker is missing, its pinned
 image cannot be pulled, or any image's timeline fails, runs past 20 minutes or
 does not show that plaso read the image (see below), so such a run fails. There
@@ -260,7 +261,7 @@ some not stops the run. `nails-oracle` then:
 What a partial run does not see beyond a full one is what only plaso reads:
 the records it parses out of a file, such as the login records of `wtmp`
 (bulk_extractor still carves those where they are stored uncompressed: see
-[Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)) and the messages of
+[Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)) and the messages of
 a journal (whose file the restore channel then compares whole). A file a reboot rewrites that only
 plaso read records of is named under `reboot_rewritten` instead.
 
@@ -275,13 +276,15 @@ into device space no btrfs chunk is allocated in (see
 [controls.json](#controlsjson--the-scan-self-checks)). The live controls of
 the real btrfs decoys are files the decoy wrote itself (see below).
 
-### Real btrfs images: a Fedora 44 decoy
+### Real btrfs images: Fedora 44 and 45 decoys
 
-The `produce-btrfs` job of the nightly runs `fedora-44-oracle-images`, a host
+The `produce-btrfs` job of the nightly runs `<image>-oracle-images` for
+`fedora-44` and for `fedora-45`, each a host
 driver of the distribution tests (`nix/distro-tests/oracle-images.nix`), on a
-KVM runner. It boots the stock Fedora 44 Cloud image, whose root is a btrfs
-filesystem compressed with zstd, with `root`, `boot`, `home` and `var`
-subvolumes and a vfat ESP beside it, and keeps the whole disk four times,
+KVM runner. It boots the stock Fedora 44 or Fedora 45 Cloud image, whose root
+is a btrfs filesystem compressed with zstd, with `root`, `boot`, `home` and
+`var` subvolumes and a vfat ESP beside it on both releases (the probes of the
+two images record the same layout), and keeps the whole disk four times,
 powered off: before, after one plain reboot (control), after a second plain
 reboot (control2), and after one more boot, a hidden session and the way back
 (after). The run stays in one QEMU process, which pauses at the guest's
@@ -298,8 +301,9 @@ that row there, as they will once Fedora is admitted, and no image of one runs.
 That build is never released, and once the image table enables the image, as
 the commit that admits Fedora does, the driver runs the release binary on it
 instead. The verdict on the images says what the oracle's channels see of a
-session on a Fedora 44 Cloud decoy, with what they do not see listed under
-[What it does not see](#what-it-does-not-see), not that NAILS supports Fedora.
+session on a Fedora Cloud decoy of that release, with what they do not see
+listed under [What it does not see](#what-it-does-not-see), not that NAILS
+supports Fedora.
 
 Before the first image the driver makes the decoy's journal volatile and turns
 auditd off (the posture NAILS requires), creates `/mnt/data` and writes the
@@ -322,7 +326,8 @@ makes the scan blind and fails it. They are planted before the session: a
 session that changed one would leave it with another digest, and the scan
 would fail instead of taking the change for the control.
 
-`scan-btrfs-real` runs `run-scan.sh` twice: over before, control and after,
+For each image `scan-btrfs-real` runs `run-scan.sh` twice: over before,
+control and after,
 and over before, control and control2 in the place of after. No session ran
 on control2, so the second scan has nothing to find but the live controls:
 whatever else it calls residue, plain reboots made, and it fails the job as a
@@ -424,7 +429,7 @@ class with its `kind`, and a clean summary line ends with the same classes
   with `compress`, as Fedora's is), and content a file left there is unseen
   whatever value it carries. The restore carve reads the live tree's files
   decompressed (see
-  [Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)).
+  [Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)).
 - `skipped_carvers`: a database carved from free space (`sqlite_carved`, named
   in `feature_types`), unless its content carries an e-mail address, a URL or
   a domain the value recorders find.
@@ -533,7 +538,7 @@ widen into a blanket residue exemption.
   is seen.) The scans of the real btrfs decoys also take the live controls
   their driver planted, each a file of the live tree pinned by its path and
   its SHA-256 for the restore channel (see
-  [Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)): they prove that
+  [Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)): they prove that
   the carve recovers a file the decoy wrote or changed, with its contents.
 - The **canary** is a reserved address planted on every image at an
   otherwise-uncovered path. Finding it proves the scan read the image's
