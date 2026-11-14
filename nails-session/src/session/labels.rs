@@ -162,12 +162,8 @@ use rustix::io::Errno;
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path};
 
-/// The extended attribute that holds a file's SELinux label.
-pub const LABEL_XATTR: &str = "security.selinux";
-
-/// The largest value the kernel returns for an extended attribute
-/// (`XATTR_SIZE_MAX`): a buffer this size reads any label in one call.
-const LABEL_MAX: usize = 64 * 1024;
+use nails_teardown::whole_root::selinux::LABEL_MAX;
+pub use nails_teardown::whole_root::selinux::LABEL_XATTR;
 
 /// How an upper directory is opened: the directory itself, for its attributes
 /// only. A symlink in the last component is not followed, and it or a file

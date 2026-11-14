@@ -245,7 +245,7 @@ mod kernel_tests {
                 String::from_utf8_lossy(&found).trim_end_matches('\0')
             ));
         }
-        file(root, "etc/os-release", b"ID=fedora\n", 0o644);
+        file(root, "etc/os-release", b"ID=debian\n", 0o644);
         file(root, "usr/lib/systemd/systemd", b"#!/bin/sh\n", 0o755);
         file(root, "var/log/wtmp", &[0u8; 384], 0o664);
         let hidden = ScratchTmpfs::new("");
