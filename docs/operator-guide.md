@@ -1246,9 +1246,9 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   is one it cannot tell about, never a missing one: the check says so, names
   the path, and warns or refuses as it does for what it finds. Some readers
   still take a place they cannot list, read or follow for an empty one: among
-  them the walk of the decoy's `/etc/nixos` in `suspicious-nails-reference`,
-  the lookups of its units below the decoy root in `soft-reboot-units`, and
-  the readers of the sudoers files and of `/proc/swaps`.
+  them the lookups of its units below the decoy root in `soft-reboot-units`,
+  which then refuses as for a missing unit, and the reads activation makes in
+  the operator's home below the next root.
 
 ### Pre-activation checklist
 

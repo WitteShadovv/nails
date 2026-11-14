@@ -139,6 +139,13 @@ follow), and reports:
 | The device below a LUKS mapping keeps a LUKS header the mapping was not opened with | The device starts with a LUKS header whose uuid is not the one the mapping names (cryptsetup writes the volume's uuid into `dm/uuid`); or, for a mapping opened with a detached header, the device holds a LUKS2 secondary header at one of the offsets cryptsetup puts one at, 16 KiB to 4 MiB in | blkid and an examiner identify the device as LUKS. See [Leftover LUKS headers](#leftover-luks-headers). |
 | A loop device over a block device was attached without autoclear | `loop/autoclear` is `0` for a loop device whose `loop/backing_file` is a block device | It stays bound after the volume is closed, after a session too, so `losetup -a` on the decoy names it. Detach it with `losetup -d` once the volume is closed. |
 
+A mount table the check cannot read, or a device or an attribute of the stack
+that sysfs shows but the check cannot read (`dm/uuid`,
+`queue/discard_max_bytes`, `slaves`), leaves it unable to tell whether
+discards reach the hidden volume: it refuses as for discards, naming the
+attributes but, like the discard refusal, no device-mapper node, and
+`--allow-discards` turns that into a warning too.
+
 The check reads the start of the device below each LUKS mapping read-only and
 without changing its access time, which needs root: a LUKS1 or LUKS2 header,
 its uuid, and for LUKS2 the flags and tokens `cryptsetup luksDump` prints. The
