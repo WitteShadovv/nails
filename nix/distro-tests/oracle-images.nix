@@ -70,26 +70,15 @@ let
   hiddenRoot = import ./lib/hidden-root.nix;
 
   # The release binary with the Fedora base row admitted, for this driver
-  # only. The build fails unless exactly that one row changes. It also leaves
-  # out the lsm-status check, which refuses every host where SELinux runs,
-  # this permissive decoy among them, until NAILS chooses the SELinux domains
-  # of the processes systemd and udev start from its copy in /run. The check
-  # only reads, so leaving it out changes nothing a session leaves on the
-  # disk. The build fails unless exactly that one line changes too.
-  nailsFedoraAdmitted = self.packages.x86_64-linux.nails.overrideAttrs (old: {
+  # only (lib/admitted.nix). It also leaves out the lsm-status check, which
+  # refuses every host where SELinux runs, this permissive decoy among them,
+  # until NAILS chooses the SELinux domains of the processes systemd and udev
+  # start from its copy in /run. The check only reads, so leaving it out
+  # changes nothing a session leaves on the disk. The build fails unless
+  # exactly that one line changes.
+  nailsFedoraAdmitted = (import ./lib/admitted.nix { inherit self; } "fedora").overrideAttrs (old: {
     pname = "nails-test-fedora-admitted";
     postPatch = (old.postPatch or "") + ''
-      table=nails-platform/src/platform/family.rs
-      awk '
-        /^        id: "fedora",$/ { row = 1 }
-        row && /^        admitted: false,$/ { sub(/false/, "true"); row = 0; flipped++ }
-        { print }
-        END { if (flipped != 1) exit 1 }
-      ' "$table" > "$table.new" || {
-        echo "the Fedora row of $table did not change exactly once" >&2
-        exit 1
-      }
-      mv "$table.new" "$table"
       registry=nails-core/src/manager/preflight_runner.rs
       awk '
         $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));" {
