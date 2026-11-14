@@ -509,7 +509,7 @@ jobs:
             | .status == "fail" and .blind == false
             and ([.failures[] | select(.kind != "unexplained_residue")] == [])
             and ([.failures[] | .path] | unique) == $want
-            and ([.failures[] | select(.tool == "restore") | .path] | unique) == $want' "$verdict"
+            and ([.failures[] | select(.tool == "btrfs_restore") | .path] | unique) == $want' "$verdict"
           {
             echo "### Real btrfs ($IMAGE) oracle verdict, planted records: residue at each"
             echo
@@ -553,6 +553,11 @@ jobs:
           mkdir -p "$dest"
           if [ -f "$src/verdict.json" ]; then
             cp "$src/verdict.json" "$dest/verdict.json"
+          fi
+          # The records scan's list of what it planted, which its judgment
+          # read.
+          if [ -f "$RUNNER_TEMP/planted.json" ]; then
+            cp "$RUNNER_TEMP/planted.json" "$dest/planted.json"
           fi
           if [ -d "$src/outputs" ]; then
             sudo tar -czf "$dest/outputs.tar.gz" -C "$src" outputs
