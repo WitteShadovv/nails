@@ -1210,8 +1210,8 @@ of this changelog for that version becomes the release notes word for word, and
   zsh does (a `case` in a `$(...)`, a `${ command }`), a command whose name an expansion, brace
   expansion or a glob makes or may make (`$cmd`, `ali$s`), a startup file that is there but cannot
   be read, which it passed over before, and a shell other than bash, zsh, fish and dash. The lexer
-  reads zsh's code as zsh does where that
-  matters for what it can hide: a `<<` in `(( ... ))` is a shift and a quote there a character, a
+  reads zsh's code as zsh does where that matters for what it can hide, white space aside (see
+  Known issues): a `<<` in `(( ... ))` is a shift and a quote there a character, a
   `)` or `}` in quotes closes nothing, a `\'` does not end a `$'...'`, `$$` is a parameter, glob
   flags such as `(#i)` start a word, a command in an arm of a `case` starts after the pattern's `)`,
   the number of a descriptor before a redirection is no command, and zsh's short forms
@@ -1460,7 +1460,9 @@ of this changelog for that version becomes the release notes word for word, and
   unset parameter under `NO_UNSET`, a read-only one, a bad subscript, a division by zero) that may
   come before the assignment, and then reads the home's files: zsh 5.9 to 5.9.2 did so with each,
   where the check read only `ZDOTDIR`'s. Only an assignment that is the first command of a user's
-  file zsh certainly reads, with a value whose expansion cannot fail, drops them: not one in `/etc`,
+  file zsh certainly reads, with a value whose expansion cannot fail, drops them (the check takes a
+  `.zshenv` you cannot read, and a first command a parse error later on its line stops, for ones
+  zsh reads and runs: see Known issues): not one in `/etc`,
   as a zsh reads its stage's file in `/etc` or in `/etc/zsh`, as it was built, nor one in
   `.zprofile` or `.zlogin` for a shell the check cannot tell is a login shell. A `~` a quote or a
   backslash keeps (`ZDOTDIR="~/.zd"`, `\~/.zd`, `source "~/x.zsh"`) is a path below the working
@@ -2251,6 +2253,17 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Known issues
 
+- The history check (`incremental-history-flush`) still passes four kinds of zsh setup with which
+  zsh 5.9 to 5.9.2 wrote the typed lines to its history file in tests: a job or a program the
+  startup files start that signals the shell later (`{ sleep 3; kill -HUP $$ } &!`, or one
+  through `nohup sh -c`), which ends it; a widget that rewrites the line zsh runs (`BUFFER=exit`
+  in a wrapper of `accept-line`, in `zle-line-init` or in `zle-line-finish`); an assignment of
+  `ZDOTDIR` or `XDG_CONFIG_HOME` as the first command of a `.zshenv` that zsh does not run (a file
+  you cannot read, as `sudo $EDITOR ~/.zshenv` can leave it under `umask 077`, or a first line
+  with a parse error after the assignment); and a vertical tab, a form feed, a carriage return (a
+  Windows line end), a no-break space or another Unicode space outside quotes, which the check
+  takes for a space where zsh keeps it in the word, so that a `#` after it starts no comment for
+  zsh. With a zsh started as `zsh -f` only `/etc/zshenv` can hold one. See docs/operator-guide.md.
 - A switch into or out of a hidden session can stop halfway: the programs have closed, but the
   screen stays dark or still and no login screen comes. Once the old system's units have stopped,
   PID 1 can go to sleep with work still queued and wait until something wakes it. This matches a
