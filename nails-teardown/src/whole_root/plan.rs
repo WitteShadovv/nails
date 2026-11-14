@@ -384,6 +384,14 @@ pub struct Plan {
     /// it so) to run the binary copy there; the way back sets it again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub run_noexec: bool,
+    /// The SELinux label every RAM copy of the binary gets right after it is
+    /// written, and the session's copy again before each switch, so that PID 1
+    /// starts NAILS's own steps from it in the domain the loaded policy gives
+    /// a program of that label ([`crate::whole_root::program_label`]). The
+    /// entry records it where the host facts say the kernel runs or may run
+    /// SELinux; elsewhere it is absent, and no copy gets a label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_label: Option<String>,
     /// Decoy filesystems carried into the hidden session, so the way back can
     /// put them in place in the decoy root again (see
     /// [`crate::whole_root::carry`]).
@@ -641,6 +649,7 @@ pub(crate) fn sample() -> Plan {
         }),
         entered_at: None,
         run_noexec: false,
+        program_label: None,
         carried: Vec::new(),
         decoy_mounts: Vec::new(),
         read_only_disks: false,

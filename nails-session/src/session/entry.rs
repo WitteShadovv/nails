@@ -537,6 +537,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         armed: None,
         entered_at: None,
         run_noexec: false,
+        program_label: None,
         carried: Vec::new(),
         decoy_mounts: Vec::new(),
         read_only_disks: inputs.read_only_disks,

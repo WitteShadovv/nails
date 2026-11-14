@@ -41,6 +41,9 @@
 //! - [`logind`]: the soft-reboot request of the entry and the way back, and
 //!   what logind holds of it;
 //! - [`emergency`]: the emergency hot path;
+//! - [`program_label`]: the SELinux label of the RAM copies of the binary,
+//!   which decides the domain PID 1 starts NAILS's own steps in, with
+//!   [`selinux`] (what the running kernel's SELinux answers);
 //! - [`tools`]: the bounded `systemctl`, `dmsetup` and `ip` calls.
 
 pub mod boot_records;
@@ -58,10 +61,12 @@ pub mod network_policy;
 pub mod network_run;
 pub mod nextroot;
 pub mod plan;
+pub mod program_label;
 pub mod ret;
 pub mod run_records;
 pub mod run_scrub;
 pub mod runtime_units;
+pub mod selinux;
 pub mod skips;
 pub mod switch_refusal;
 pub mod tools;

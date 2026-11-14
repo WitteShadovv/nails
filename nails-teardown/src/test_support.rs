@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Test support shared by the crates of the workspace: writing or copying a
-//! program that a test, or the code it tests, then runs, and the procfs files
-//! the way back writes.
+//! program that a test, or the code it tests, then runs, the procfs files
+//! the way back writes, and a stand-in for the running kernel's SELinux.
 //!
 //! It lives in this crate, below every other crate that has such tests, so
 //! that this crate's own tests can use it too; the base crate's `test_support`
@@ -149,6 +149,146 @@ pub fn stage_pid_measure(root: &Path) -> crate::whole_root::fresh_pids::Record {
         }],
         at_switch: Some(9031),
         counter: None,
+    }
+}
+
+/// A stand-in for the running kernel's SELinux
+/// ([`crate::whole_root::selinux::Selinux`]), which records every label it is
+/// given and every question it is asked. [`FakeSelinux::targeted`] answers as
+/// a loaded targeted policy does: PID 1 runs in `init_t` and starts a program
+/// labelled [`PROGRAM_LABEL`](crate::whole_root::program_label::PROGRAM_LABEL)
+/// in `unconfined_service_t`, allowed every permission asked, with the
+/// capability `nnp_nosuid_transition` on. A test changes its fields for
+/// another answer.
+#[derive(Debug, Default)]
+pub struct FakeSelinux {
+    /// PID 1's context; `None` is a kernel with no policy loaded.
+    pub pid1: Option<String>,
+    /// That PID 1's context cannot be read: its error.
+    pub pid1_error: Option<i32>,
+    /// The context every start enters.
+    pub entered: String,
+    /// The permissions the policy denies, as (class, permission), whatever
+    /// the contexts.
+    pub denied: Vec<(&'static str, &'static str)>,
+    /// That the policy cannot be asked: the error of every question.
+    pub policy_error: Option<i32>,
+    /// Whether the policy turns `nnp_nosuid_transition` on.
+    pub capability: bool,
+    /// The error every label written fails with.
+    pub write_error: Option<i32>,
+    /// What a label reads back as, where not the last one written.
+    pub read_back: Option<Vec<u8>>,
+    /// Every label written, in order.
+    pub written: std::sync::Mutex<Vec<Vec<u8>>>,
+    /// Every question asked of the policy, in order: `pid1`,
+    /// `create <source> <file>`, `access <source> <target> <class>`,
+    /// `capability <name>`.
+    pub asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl FakeSelinux {
+    /// A loaded targeted policy, as [`FakeSelinux`] says.
+    pub fn targeted() -> Self {
+        Self {
+            pid1: Some("system_u:system_r:init_t:s0".to_string()),
+            entered: "system_u:system_r:unconfined_service_t:s0".to_string(),
+            capability: true,
+            ..Self::default()
+        }
+    }
+
+    /// A kernel that runs no SELinux, or runs it with no policy loaded.
+    pub fn without_policy() -> Self {
+        Self::default()
+    }
+
+    /// This stand-in for as long as the test process runs, for the hosts
+    /// that hold a `&'static dyn Selinux`.
+    pub fn leak(self) -> &'static Self {
+        Box::leak(Box::new(self))
+    }
+
+    /// The labels written so far.
+    pub fn labels_written(&self) -> Vec<Vec<u8>> {
+        self.written.lock().expect("the labels written").clone()
+    }
+
+    /// The questions asked so far.
+    pub fn questions(&self) -> Vec<String> {
+        self.asked.lock().expect("the questions asked").clone()
+    }
+
+    fn ask(&self, question: String) -> std::io::Result<()> {
+        self.asked
+            .lock()
+            .expect("the questions asked")
+            .push(question);
+        match self.policy_error {
+            Some(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+            None => Ok(()),
+        }
+    }
+}
+
+impl crate::whole_root::selinux::Selinux for FakeSelinux {
+    fn pid1(&self) -> std::io::Result<Option<String>> {
+        self.asked
+            .lock()
+            .expect("the questions asked")
+            .push("pid1".to_string());
+        match self.pid1_error {
+            Some(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+            None => Ok(self.pid1.clone()),
+        }
+    }
+
+    fn exec_context(&self, source: &str, file: &str) -> std::io::Result<String> {
+        self.ask(format!("create {source} {file}"))?;
+        Ok(self.entered.clone())
+    }
+
+    fn denied(
+        &self,
+        source: &str,
+        target: &str,
+        class: &str,
+        perms: &[&'static str],
+    ) -> std::io::Result<Vec<&'static str>> {
+        self.ask(format!("access {source} {target} {class}"))?;
+        Ok(perms
+            .iter()
+            .copied()
+            .filter(|perm| self.denied.contains(&(class, perm)))
+            .collect())
+    }
+
+    fn capability(&self, name: &str) -> std::io::Result<bool> {
+        self.ask(format!("capability {name}"))?;
+        Ok(self.capability)
+    }
+
+    fn set_label(&self, _file: rustix::fd::BorrowedFd<'_>, value: &[u8]) -> std::io::Result<()> {
+        if let Some(errno) = self.write_error {
+            return Err(std::io::Error::from_raw_os_error(errno));
+        }
+        self.written
+            .lock()
+            .expect("the labels written")
+            .push(value.to_vec());
+        Ok(())
+    }
+
+    fn label(&self, _file: rustix::fd::BorrowedFd<'_>) -> std::io::Result<Vec<u8>> {
+        if let Some(value) = &self.read_back {
+            return Ok(value.clone());
+        }
+        self.written
+            .lock()
+            .expect("the labels written")
+            .last()
+            .cloned()
+            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENODATA))
     }
 }
 
