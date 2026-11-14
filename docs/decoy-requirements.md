@@ -544,13 +544,14 @@ not tested yet.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in. arch-boxes keeps a persistent journal,
   which `decoy-persistence` refuses.
-- **No disk swap at activation**: `swap` refuses an active disk swap (RAM-only
-  zram passes). The hidden session keeps the fstab's swap off (see
+- **No disk swap**: `swap` refuses an active disk swap (RAM-only zram
+  passes), and the [threat model](threat-model.md#assumptions) wants none on
+  the decoy at all. The hidden session keeps the fstab's swap off (see
   [Writes that bypass the overlays](#writes-that-bypass-the-overlays)), but the
   decoy turns a swap line it keeps on again at every boot, the way back of a
-  session included. Turn the swap off before each activation
-  (`sudo swapoff /swap/swapfile`), or add `noauto` to the line's options, or
-  remove the line, so that no boot turns it on.
+  session included, so turning the swap off before each activation is not
+  enough. Add `noauto` to the options of the swap file's line in the fstab, or
+  remove the line, and turn the swap off once (`sudo swapoff /swap/swapfile`).
 - **The ESP mounted on demand**: where systemd's GPT auto-generator mounts the
   ESP at `/efi` because the fstab has no line for it, the hidden session gets
   it bound read-only at `/efi`, and the decoy's automount is back after the way
