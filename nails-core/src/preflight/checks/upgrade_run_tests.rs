@@ -357,28 +357,38 @@ fn a_lock_another_process_holds_on_a_scratch_tree_refuses() {
 fn an_open_file_description_lock_on_a_scratch_tree_refuses() {
     // An open file description owns its lock, not the process, so the
     // check meets it in the process that holds it, with no PID to name.
-    use nix::fcntl::{FcntlArg, fcntl};
-    use nix::libc;
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    std::fs::create_dir_all(root.join("run")).unwrap();
-    let file = std::fs::File::create(root.join("run/unattended-upgrades.lock")).unwrap();
-    let lock = libc::flock {
-        l_type: libc::F_WRLCK as libc::c_short,
-        l_whence: libc::SEEK_SET as libc::c_short,
-        l_start: 0,
-        l_len: 0,
-        l_pid: 0,
-    };
-    fcntl(&file, FcntlArg::F_OFD_SETLK(&lock)).unwrap();
-    assert_eq!(
-        upgrade_run(&RealFilesystem, root),
-        UpgradeRun::InProgress(vec![
-            "a process holds /run/unattended-upgrades.lock".to_string()
-        ])
-    );
-    drop(file);
-    assert_eq!(upgrade_run(&RealFilesystem, root), UpgradeRun::Idle);
+    // The body runs in a child of its own: a child that another test thread
+    // forks while the file is open keeps a copy of its descriptor, and so
+    // the lock, until it execs, and the check would still meet it after the
+    // close.
+    let outcome = Rerun::new(crate::test_path!(
+        an_open_file_description_lock_on_a_scratch_tree_refuses
+    ))
+    .run(|| {
+        use nix::fcntl::{FcntlArg, fcntl};
+        use nix::libc;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("run")).unwrap();
+        let file = std::fs::File::create(root.join("run/unattended-upgrades.lock")).unwrap();
+        let lock = libc::flock {
+            l_type: libc::F_WRLCK as libc::c_short,
+            l_whence: libc::SEEK_SET as libc::c_short,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+        };
+        fcntl(&file, FcntlArg::F_OFD_SETLK(&lock)).unwrap();
+        assert_eq!(
+            upgrade_run(&RealFilesystem, root),
+            UpgradeRun::InProgress(vec![
+                "a process holds /run/unattended-upgrades.lock".to_string()
+            ])
+        );
+        drop(file);
+        assert_eq!(upgrade_run(&RealFilesystem, root), UpgradeRun::Idle);
+    });
+    assert_eq!(outcome, Outcome::Ran);
 }
 
 #[test]
