@@ -537,17 +537,21 @@ impl DecoyPersistenceCheck {
         )))
     }
 
-    /// The `/` mount entry's options, if the mount table can be read.
+    /// The `/` mount entry's options, if the mount table lists `/`.
     ///
     /// The root's filesystem type is not judged here: `decoy-root` accepts
     /// only a root on a block device, which is always on a disk, and names its
     /// type.
-    fn root_mount_options<F: Filesystem>(fs: &F) -> Option<String> {
-        let content = fs.read_file_content(Path::new(MOUNTINFO)).ok()?;
-        parse_mountinfo(&content)
+    ///
+    /// # Errors
+    ///
+    /// The mount table cannot be read.
+    fn root_mount_options<F: Filesystem>(fs: &F) -> Result<Option<String>> {
+        let content = fs.read_file_content(Path::new(MOUNTINFO))?;
+        Ok(parse_mountinfo(&content)
             .into_iter()
             .find(|e| e.mount_point == Path::new("/"))
-            .map(|e| e.mount_opts)
+            .map(|e| e.mount_opts))
     }
 
     /// Collect the warning-level findings (atime, crash channels, sudo logging,
@@ -561,19 +565,28 @@ impl DecoyPersistenceCheck {
     ) -> Vec<String> {
         let mut out = Vec::new();
 
-        if let Some(opts) = Self::root_mount_options(fs) {
-            // relatime (the kernel default) and noatime do not record every
-            // read; strictatime (or an explicit atime with neither flag) leaves
-            // a read-access trail on the decoy.
-            let has_noatime = opts.split(',').any(|o| o == "noatime");
-            let has_relatime = opts.split(',').any(|o| o == "relatime");
-            if !has_noatime && !has_relatime {
-                out.push(
-                    "root filesystem records access times (no noatime/relatime); \
-                     reads leave an atime trail on the decoy"
-                        .to_string(),
-                );
+        match Self::root_mount_options(fs) {
+            Ok(Some(opts)) => {
+                // relatime (the kernel default) and noatime do not record every
+                // read; strictatime (or an explicit atime with neither flag)
+                // leaves a read-access trail on the decoy.
+                let has_noatime = opts.split(',').any(|o| o == "noatime");
+                let has_relatime = opts.split(',').any(|o| o == "relatime");
+                if !has_noatime && !has_relatime {
+                    out.push(
+                        "root filesystem records access times (no noatime/relatime); \
+                         reads leave an atime trail on the decoy"
+                            .to_string(),
+                    );
+                }
             }
+            Ok(None) => {}
+            Err(error) if error.nothing_there() => {}
+            Err(error) => out.push(format!(
+                "NAILS cannot tell whether the root filesystem records access times, which leave \
+                 an atime trail of reads on the decoy: {}",
+                describe(MOUNTINFO, &error).sentence
+            )),
         }
 
         out.extend(Self::crash_posture(fs, root, is_nixos, hidden));
@@ -626,7 +639,17 @@ impl DecoyPersistenceCheck {
     ) -> Vec<String> {
         let mut out = Vec::new();
 
-        let live = fs.read_file_content(Path::new(CORE_PATTERN)).ok();
+        let live = match fs.read_file_content(Path::new(CORE_PATTERN)) {
+            Ok(pattern) => Some(pattern),
+            Err(error) if error.nothing_there() => None,
+            Err(error) => {
+                out.push(format!(
+                    "NAILS cannot tell whether the kernel writes core dumps to the decoy disk: {}",
+                    describe(CORE_PATTERN, &error).sentence
+                ));
+                None
+            }
+        };
         let live = live.as_deref().map(str::trim);
         if !live.is_some_and(|pattern| pattern.contains("/apport")) {
             out.extend(services::apport_finding(fs, root, hidden));
@@ -659,14 +682,16 @@ impl DecoyPersistenceCheck {
 
         // A non-empty pstore means crash records are already persisted in
         // firmware/RAM-console storage that survives reboot.
-        if fs
-            .list_directory(Path::new(PSTORE_DIR))
-            .map(|entries| !entries.is_empty())
-            .unwrap_or(false)
-        {
-            out.push(
+        match fs.list_directory(Path::new(PSTORE_DIR)) {
+            Ok(entries) if !entries.is_empty() => out.push(
                 "pstore holds persisted crash records (/sys/fs/pstore is not empty)".to_string(),
-            );
+            ),
+            Ok(_) => {}
+            Err(error) if error.nothing_there() => {}
+            Err(error) => out.push(format!(
+                "NAILS cannot tell whether pstore holds persisted crash records: {}",
+                describe(PSTORE_DIR, &error).sentence
+            )),
         }
 
         out

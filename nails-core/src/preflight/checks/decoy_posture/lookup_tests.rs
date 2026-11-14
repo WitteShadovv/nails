@@ -596,6 +596,66 @@ fn a_warning_part_the_guard_does_not_look_at_warns() {
     assert!(!reached(&fs, "/srv"), "{:?}", fs.mock_lookups());
 }
 
+/// A file or directory a warning reads that cannot be read for another
+/// reason than that it is not there may hide what the warning is about: the
+/// kernel's core pattern, the pstore, the root's mount options and the
+/// sudoers files. Each warns that NAILS cannot tell, where the read that
+/// failed showed nothing and the decoy passed. Where nothing is there, it
+/// passes.
+#[test]
+fn a_warning_part_nails_cannot_read_warns() {
+    for (path, says) in [
+        (
+            CORE_PATTERN,
+            "NAILS cannot tell whether the kernel writes core dumps to the decoy disk: NAILS \
+             cannot look up /proc/sys/kernel/core_pattern (",
+        ),
+        (
+            PSTORE_DIR,
+            "NAILS cannot tell whether pstore holds persisted crash records: NAILS cannot look \
+             up /sys/fs/pstore (",
+        ),
+        (
+            MOUNTINFO,
+            "NAILS cannot tell whether the root filesystem records access times, which leave an \
+             atime trail of reads on the decoy: NAILS cannot look up /proc/self/mountinfo (",
+        ),
+        (
+            "/etc/sudoers",
+            "NAILS cannot tell whether sudoers sets a log file or I/O logging, which record \
+             sudo's commands or whole terminal sessions on the decoy disk: NAILS cannot look up \
+             /etc/sudoers (",
+        ),
+    ] {
+        let fs = decoy("volatile");
+        fs.mock_set_lookup_error(path, ErrorKind::Other);
+        let result = run(&fs, false);
+        assert!(result.is_warn(), "{path}: {result:?}");
+        assert!(result.message().contains(says), "{path}: {result:?}");
+    }
+
+    let fs = decoy("volatile");
+    fs.mock_add_file("/etc/sudoers", "@includedir /etc/sudoers.d\n");
+    fs.mock_set_unreadable_dir("/etc/sudoers.d");
+    let result = run(&fs, false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "NAILS cannot tell whether sudoers sets a log file or I/O logging, which record \
+             sudo's commands or whole terminal sessions on the decoy disk: NAILS cannot look up \
+             /etc/sudoers.d; run the command again with sudo"
+        ),
+        "{result:?}"
+    );
+
+    let fs = decoy("volatile");
+    for path in [CORE_PATTERN, PSTORE_DIR, MOUNTINFO, "/etc/sudoers"] {
+        fs.mock_set_lookup_error(path, ErrorKind::NotFound);
+    }
+    let result = run(&fs, false);
+    assert!(result.is_pass(), "{result:?}");
+}
+
 /// The kdump probe of status reads through the guard too: a unit directory
 /// it did not look up, which the probe itself passes over, may hold an
 /// enabling link, and kdump counts as armed, or NAILS cannot tell.
