@@ -206,6 +206,17 @@ fn an_unset_that_may_take_away_a_parameter_the_check_reads_is_a_doubt() {
             "it cannot tell what `unset -$o ZDOTDI?` in /home/alice/.zshenv does, as zsh may \
              expand `-$o` into any of its options",
         ),
+        // A `]` a backslash keeps in a class, as zsh's tokenizer does.
+        (
+            "unset -m 'ZDOTDI[\\]R]'",
+            "it cannot tell which parameters `unset -m ZDOTDI[\\]R]` in /home/alice/.zshenv \
+             takes away, as its pattern may match one the check reads",
+        ),
+        (
+            "unset -m '[\\]Z]DOTDIR'",
+            "it cannot tell which parameters `unset -m [\\]Z]DOTDIR` in /home/alice/.zshenv \
+             takes away, as its pattern may match one the check reads",
+        ),
     ] {
         let found = found(&format!("ZDOTDIR=~/.zd\n{line}\n"), "");
         assert!(
