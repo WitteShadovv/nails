@@ -142,7 +142,10 @@ database without its rows, or rows without the database, stops the verdict
 tool (exit `2`), and `run-scan.sh` stops when `sqlite3` is missing or cannot
 read the database.
 No channel stands in for another: the restore channel leaves the journal files
-to plaso, and every shipped self-check is a bulk_extractor finding.
+to plaso, and every self-check the committed controls hold is a bulk_extractor
+finding. The scans of the real btrfs decoys add live controls of the restore
+channel, which their driver plants (see
+[Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)).
 `run-scan.sh` drops the plaso channel whole when docker is missing, its pinned
 image cannot be pulled, or any image's timeline fails, runs past 20 minutes or
 does not show that plaso read the image (see below), so such a run fails. There
@@ -300,10 +303,25 @@ checked on the partition in clear. The hidden root is a file on a tmpfs, and
 inside the session the driver writes, syncs and deletes a token whose bytes it
 then finds on the hidden root's device.
 
+After the control image, before the second reboot is imaged, the driver
+plants the restore channel's own positive controls in the live tree: the
+decoy's kernel writes `/var/lib/nails-oracle/restore-control`, a file of
+fixed contents, and on Arch adds a line to `/var/log/pacman.log`. control2
+and after hold them, and before and control do not. The driver lists each in
+`controls-live.json` beside the raws, by its path in the top level, where the
+carve keys it, and the SHA-256 the decoy read back, and `run-scan.sh` adds
+them to its controls (`ORACLE_EXTRA_CONTROLS`, through `merge-controls.sh`,
+which takes exact restore-channel controls of files and nothing else). Each
+scan must find them, so a carve that left the file out or read it otherwise
+makes the scan blind and fails it. They are planted before the session: a
+session that changed one would leave it with another digest, and the scan
+would fail instead of taking the change for the control.
+
 `scan-btrfs-real` runs `run-scan.sh` twice: over before, control and after,
 and over before, control and control2 in the place of after. No session ran
-on control2, so the second scan has nothing to find: whatever it calls
-residue, plain reboots made, and it fails the job as a leak would. Each scan
+on control2, so the second scan has nothing to find but the live controls:
+whatever else it calls residue, plain reboots made, and it fails the job as a
+leak would. Each scan
 passes only on the partial verdict that names the timeline, as `scan-btrfs`
 does. A diagnostic job, `btrfs-wtmp-extents`, shows how each of the four
 images stores `/var/log/wtmp`: its size and which of its bytes btrfs keeps
@@ -369,7 +387,8 @@ family table is admitted, never released. The decoy is prepared and imaged
 as the Fedora one is, and before the first image the driver also makes the
 swap line of its fstab (`/swap/swapfile`) `noauto` and turns the swap off:
 the swap check refuses an active disk swap, and no boot of the run turns it
-on again. `scan-btrfs-real` scans its images as it scans Fedora's. With the
+on again. Its live controls hold the line added to pacman's log as well.
+`scan-btrfs-real` scans its images as it scans Fedora's. With the
 root mounted from the top level, the restore channel keys a file by its own
 path (`/etc/fstab`), and the disk's partitions are compared as on Fedora.
 
@@ -504,7 +523,11 @@ widen into a blanket residue exemption.
   that reads free space sees an e-mail address planted there, as it would one
   a leaked-then-deleted trace holds. It proves neither that a format-aware
   parser understood a record nor that deleted content without such a feature
-  is seen.)
+  is seen.) The scans of the real btrfs decoys also take the live controls
+  their driver planted, each a file of the live tree pinned by its path and
+  its SHA-256 for the restore channel (see
+  [Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)): they prove that
+  the carve recovers a file the decoy wrote or changed, with its contents.
 - The **canary** is a reserved address planted on every image at an
   otherwise-uncovered path. Finding it proves the scan read the image's
   contents. The scan may rotate it per run (`ORACLE_SEED`) and pins whatever it
