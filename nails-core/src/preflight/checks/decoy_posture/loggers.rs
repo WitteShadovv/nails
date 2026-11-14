@@ -26,10 +26,11 @@
 //! `klogd` is not one of them: it only hands the kernel's messages on to the
 //! syslog daemon, which is caught itself.
 //!
-//! The audit daemon counts when it is enabled as well, though it does not run
-//! now, where the service manager can start it: the manager starts it again
-//! when the decoy starts after the way back, and it writes audit records to
-//! the decoy disk from then on. It cannot where its unit is masked in any unit
+//! The audit daemon counts when it is enabled as well, or a timer, path or
+//! socket unit that runs starts it ([`super::triggers`]), though it does not
+//! run now, where the service manager can start it: the manager starts it
+//! again when the decoy starts after the way back, and it writes audit
+//! records to the decoy disk from then on. It cannot where its unit is masked in any unit
 //! directory, as `systemctl mask --runtime` masks it in `/run`, which the way
 //! back keeps, where no unit file is left, or where a `ConditionKernelCommandLine=`
 //! of its unit fails on the kernel's command line, which a soft-reboot keeps:
@@ -254,15 +255,28 @@ pub(super) fn auditd<F: Filesystem>(fs: &F, root: &Path, hidden: &[PathBuf]) -> 
         Activity::Inactive => {}
     }
     let linked = super::unit_linked(fs, root, AUDITD_UNIT);
-    if linked == Ok(false) {
-        return None;
-    }
     let files = DecoyFiles::new(fs, root, hidden);
     let dirs: Vec<PathBuf> = SYSTEM_UNIT_PATH.iter().map(|dir| root.join(dir)).collect();
-    let assignments = match unit_section(&files, &dirs, AUDITD_UNIT, "Unit") {
-        UnitSection::Missing | UnitSection::Masked => return None,
-        UnitSection::Unknown(why) => return Some(Auditd::MayStart(why)),
-        UnitSection::Assignments(assignments) => assignments,
+    // A unit that is not there, or masked, starts by no link and no trigger,
+    // so the triggers are read only for one that is.
+    let section = unit_section(&files, &dirs, AUDITD_UNIT, "Unit");
+    if matches!(section, UnitSection::Missing | UnitSection::Masked) {
+        return None;
+    }
+    // A timer, path or socket that starts it enables it as well.
+    let linked = match linked {
+        Ok(false) => match super::triggers::read(fs, root, hidden).of(AUDITD_UNIT) {
+            None => return None,
+            Some(Ok(_)) => Ok(true),
+            Some(Err(why)) => Err(why),
+        },
+        linked => linked,
+    };
+    let assignments = match (section, &linked) {
+        (UnitSection::Missing | UnitSection::Masked, _) => return None,
+        (UnitSection::Unknown(why), Ok(_)) => return Some(Auditd::MayStart(why)),
+        (UnitSection::Unknown(_), Err(why)) => return Some(Auditd::MayBeEnabled(why.clone())),
+        (UnitSection::Assignments(assignments), _) => assignments,
     };
     if let Err(why) = linked {
         return Some(Auditd::MayBeEnabled(why));

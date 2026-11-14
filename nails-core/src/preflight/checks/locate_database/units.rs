@@ -490,7 +490,7 @@ fn managers<F: Filesystem>(
 /// The unit a trigger starts: the first `Unit=` systemd takes (a unit name
 /// of a type, not the trigger itself; it ignores every later one), else the
 /// service of the trigger's own name.
-fn triggered_unit(
+pub(in crate::preflight::checks) fn triggered_unit(
     assignments: &[Assignment],
     trigger: &str,
     suffix: &str,

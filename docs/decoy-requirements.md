@@ -428,7 +428,8 @@ keeps the journal on the decoy disk, in
 volatile the decoy's own journal is. Other units' namespaces are not read
 here. A unit counts
 when the service manager can start it: it is enabled (a link in a `.wants`,
-`.requires` or `.upholds` directory) or active, and not masked. A process
+`.requires` or `.upholds` directory) or active, or a timer, path or socket
+unit that is enabled or active starts it, and it is not masked. A process
 counts as it runs, by its name (`comm`), or, run through its interpreter as in
 `python3 /usr/sbin/tuned`, by the script Python runs, its options read from its
 command line, so a daemon started by hand, or one still running with the

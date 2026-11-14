@@ -1745,3 +1745,119 @@ fn firewalld_logging_to_syslog_in_a_journal_namespace_that_persists_warns() {
         "{warnings:?}"
     );
 }
+
+#[test]
+fn a_trigger_that_starts_tuned_after_the_way_back_counts() {
+    // A timer the decoy enables starts tuned.service, the service of its own
+    // name, though tuned.service is neither enabled nor active now.
+    let decoy = Decoy::new();
+    decoy
+        .unit("tuned.service", TUNED_UNIT)
+        .unit(
+            "tuned.timer",
+            "[Timer]\nOnBootSec=2min\n\n[Install]\nWantedBy=timers.target\n",
+        )
+        .enable("timers.target", "tuned.timer");
+    assert_eq!(
+        decoy.findings().blockers,
+        [logs_to(
+            "tuned",
+            "/var/log/tuned/tuned.log",
+            "tuned.timer is enabled and starts tuned.service, with -l"
+        )]
+    );
+    // Masked, the timer starts nothing.
+    decoy.mask("tuned.timer");
+    assert_eq!(decoy.findings(), Findings::default());
+
+    // A path unit whose Unit= names firewalld.service, and a socket whose
+    // Service= names abrtd.service.
+    let decoy = Decoy::new();
+    decoy
+        .unit("firewalld.service", FIREWALLD_UNIT)
+        .file("/etc/sysconfig/firewalld", FIREWALLD_SYSCONFIG)
+        .unit("abrtd.service", ABRTD_UNIT_FILE)
+        .file(
+            "/etc/systemd/system/fw-watch.path",
+            "[Path]\nPathExists=/run/fw\nUnit=firewalld.service\n",
+        )
+        .link(
+            "/etc/systemd/system/paths.target.wants/fw-watch.path",
+            "/etc/systemd/system/fw-watch.path",
+        )
+        .file(
+            "/etc/systemd/system/crash.socket",
+            "[Socket]\nListenStream=/run/crash.sock\nService=abrtd.service\n",
+        )
+        .active("crash.socket");
+    let warnings = decoy.findings().warnings;
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with(
+            "firewalld writes its warnings and errors to /var/log/firewalld (fw-watch.path is \
+             enabled and starts firewalld.service, with the log target mixed, the default)"
+        ),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[1].starts_with(
+            "ABRT is in use on the decoy (crash.socket is active and starts abrtd.service)"
+        ),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_trigger_nails_cannot_read_may_start_tuned() {
+    let decoy = Decoy::new();
+    decoy
+        .unit("tuned.service", TUNED_UNIT)
+        .link(
+            "/etc/systemd/system/timers.target.wants/odd.timer",
+            "/etc/systemd/system/odd.timer",
+        )
+        .file(
+            "/etc/systemd/system/odd.timer",
+            "[Timer]\nOnBootSec=1min\nUnit=%N.service\n",
+        );
+    assert_eq!(
+        decoy.findings().blockers,
+        [
+            "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it counts as \
+          one that does (tuned.service would start it with -l, which logs to \
+          /var/log/tuned/tuned.log, and NAILS cannot tell whether a timer, path or socket unit \
+          starts tuned.service: odd.timer names the unit it starts with a specifier, which NAILS \
+          does not expand)"
+        ]
+    );
+}
+
+#[test]
+fn a_timer_that_starts_auditd_after_the_way_back_refuses() {
+    let decoy = Decoy::new();
+    decoy
+        .unit(
+            "auditd.service",
+            "[Service]\nType=forking\nExecStart=/usr/bin/auditd\n",
+        )
+        .file(
+            "/etc/systemd/system/auditd.timer",
+            "[Timer]\nOnBootSec=1min\n",
+        )
+        .link(
+            "/etc/systemd/system/timers.target.wants/auditd.timer",
+            "/etc/systemd/system/auditd.timer",
+        );
+    let result = decoy.check(false);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "auditd is enabled, though it does not run now: the service manager starts it again \
+             when the decoy starts after the way back"
+        ),
+        "{result:?}"
+    );
+    // Masking auditd.service, as the fix says, stops the timer starting it.
+    decoy.mask("auditd.service");
+    assert!(decoy.check(false).is_pass(), "{:?}", decoy.check(false));
+}
