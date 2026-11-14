@@ -10,15 +10,19 @@
 //! One that is a link to `/dev/null`, or empty, masks the unit. The drop-ins
 //! are the `*.conf` files of `<unit>.d`, of the template's `foo@.service.d`,
 //! of the directories of its name's prefixes up to each dash
-//! (`plocate-.service.d` for `plocate-updatedb.service`), and last of
-//! `service.d`, in every unit directory: sorted by file name, where a name
-//! found in a directory systemd looks at earlier shadows the same name
-//! further on, and applied after the unit file.
+//! (`plocate-.service.d` for `plocate-updatedb.service`), then the same for
+//! each of its aliases ([`aliases`]), and last of `service.d`, in every unit
+//! directory: sorted by file name, where a name found in a directory systemd
+//! looks at earlier shadows the same name further on, and applied after the
+//! unit file. The manager takes a unit's names in an order of its own, so a
+//! drop-in name that two of them hold in different files leaves the section
+//! unknown.
 //!
 //! Every file is read with [`DecoyFiles`]: no write, no access time, and no
 //! file that a link leads onto the hidden volume.
 
 use super::super::systemd_conf::{Assignment, decode_config_bytes, parse_section};
+use super::aliases::{Entries, aliases};
 use super::files::{DecoyFile, DecoyFiles};
 use crate::Filesystem;
 use std::collections::BTreeMap;
@@ -58,7 +62,7 @@ pub enum UnitSection {
 }
 
 /// The template of an instance name: `foo@.service` for `foo@bar.service`.
-fn template(unit: &str) -> Option<String> {
+pub(super) fn template(unit: &str) -> Option<String> {
     let (stem, kind) = unit.rsplit_once('.')?;
     let (prefix, instance) = stem.split_once('@')?;
     (!instance.is_empty()).then(|| format!("{prefix}@.{kind}"))
@@ -68,7 +72,7 @@ fn template(unit: &str) -> Option<String> {
 /// unit's own `<unit>.d`, its template's, then `<prefix>-.<type>.d` for each
 /// dash in the name before any `@`, from the last one back, and last
 /// `<type>.d`.
-pub(super) fn dropin_dir_names(unit: &str) -> Vec<String> {
+pub(in crate::preflight::checks) fn dropin_dir_names(unit: &str) -> Vec<String> {
     let mut names = vec![format!("{unit}.d")];
     let Some((stem, kind)) = unit.rsplit_once('.') else {
         return names;
@@ -109,37 +113,68 @@ fn unit_file<F: Filesystem>(
     find(unit).or_else(|| template(unit).and_then(|template| find(&template)))
 }
 
+/// The drop-ins of the directories called `names` in `dirs`, by file name:
+/// in every unit directory in turn, where a file name found earlier shadows
+/// the same name further on.
+fn dropins_in<F: Filesystem>(
+    files: &DecoyFiles<'_, F>,
+    dirs: &[PathBuf],
+    names: &[String],
+) -> Result<BTreeMap<OsString, PathBuf>, String> {
+    let mut found: BTreeMap<OsString, PathBuf> = BTreeMap::new();
+    for dir in dirs {
+        for name in names {
+            for entry in files.list(&dir.join(name))? {
+                let Some(file_name) = entry.file_name() else {
+                    continue;
+                };
+                let bytes = file_name.as_encoded_bytes();
+                if bytes.starts_with(b".") || !bytes.ends_with(b".conf") {
+                    continue;
+                }
+                found.entry(file_name.to_os_string()).or_insert(entry);
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// The drop-ins of `unit` in `dirs`, in the order systemd applies them: the
-/// directories of the unit's names in every unit directory first, then
-/// those of its type.
+/// directories of the unit's names, its aliases' among them, in every unit
+/// directory first, then those of its type.
 fn dropins<F: Filesystem>(
     files: &DecoyFiles<'_, F>,
     dirs: &[PathBuf],
     unit: &str,
 ) -> Result<Vec<PathBuf>, String> {
-    let names = dropin_dir_names(unit);
+    let mut names = dropin_dir_names(unit);
     // The last name is the type's, unless the unit has none.
-    let (specific, kind) = names.split_at(names.len() - usize::from(unit.contains('.')));
-    let mut found: BTreeMap<OsString, PathBuf> = BTreeMap::new();
-    let mut look = |dir: PathBuf| -> Result<(), String> {
-        for entry in files.list(&dir)? {
-            let Some(file_name) = entry.file_name() else {
-                continue;
-            };
-            let bytes = file_name.as_encoded_bytes();
-            if bytes.starts_with(b".") || !bytes.ends_with(b".conf") {
-                continue;
+    let kind = unit.contains('.').then(|| names.pop()).flatten();
+    let mut found = dropins_in(files, dirs, &names)?;
+    let entries = Entries::read(files, dirs)?;
+    for alias in aliases(files, dirs, &entries, unit)? {
+        let mut names = dropin_dir_names(&alias);
+        names.pop();
+        for (file_name, path) in dropins_in(files, dirs, &names)? {
+            match found.get(&file_name) {
+                Some(other) if *other != path => {
+                    return Err(format!(
+                        "NAILS cannot tell which of {} and {} the service manager reads for \
+                         {unit}: both are drop-ins of its names, {alias} among them, which it \
+                         takes in an order of its own",
+                        other.display(),
+                        path.display()
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    found.insert(file_name, path);
+                }
             }
-            found.entry(file_name.to_os_string()).or_insert(entry);
         }
-        Ok(())
-    };
-    for names in [specific, kind] {
-        for dir in dirs {
-            for name in names {
-                look(dir.join(name))?;
-            }
-        }
+    }
+    for (file_name, path) in dropins_in(files, dirs, kind.as_slice())? {
+        found.entry(file_name).or_insert(path);
     }
     Ok(found.into_values().collect())
 }
