@@ -11,10 +11,11 @@ partition, two things more:
   writes each compressed extent as one zstd frame, at the start of its block
   on the disk, or inside a metadata block for an inline extent, and its
   metadata is never compressed. So the raw scan and this read together see
-  every byte the partition holds, of a live file or of one deleted whose
-  blocks were not reused, whatever tree still points at them. A root mounted
-  to compress with another algorithm (zlib, lzo) is outside what it reads,
-  and the scenario fails on one (``compression``);
+  what each extent on the partition holds, plain or compressed with zstd, of
+  a live file or of one deleted whose blocks were not reused, whatever tree
+  still points at them. An extent compressed with zlib or lzo is outside what
+  it reads: the scenario fails on a root mounted to compress with either
+  (``compression``), and sets neither on a file of its own;
 - the older roots of the tree of tree roots that copy-on-write left on the
   disk, the way btrfs-progs reads them, offline and read-only:
   ``btrfs-find-root`` lists them and ``btrfs restore -t`` restores from one

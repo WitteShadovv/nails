@@ -78,25 +78,26 @@
 # names. Before each image it also reads the decoy root's files through the
 # decoy's own kernel, from a read-only bind of / that moves no access time:
 # none of these may be in them, and the positive control's token must be. On a
-# btrfs root, which must compress with zstd or not at all, it also
-# decompresses every zstd frame on the root's partition (py/btrfs_scan.py):
-# btrfs writes each compressed extent as one, so with the raw scan this reads
-# every byte the partition holds, of a file live or deleted, whatever tree
-# still points at it. None may hold a canary or the token, nor a registry
-# token the baseline's frames and raw bytes did not hold. And it reads the
-# older roots of the image's tree that btrfs-find-root lists, the way
-# btrfs-progs does, at the canary paths and the rehearsal's files: none may
-# keep a file at a canary's path or one of the rehearsal's files named after
-# its token, nor a canary or the token, and a restore that could not read a
-# file or a folder it was asked for fails the check. Three planted controls
-# show what each read sees there: a file kept plain, which the raw scan finds;
-# a compressed one, which the raw scan misses and the read through the kernel
-# and the carve find; and a compressed one written and deleted, which the raw
-# scan and the read through the kernel miss and the carve and an older root
-# find. btrfs restore reads the older roots only: it cannot read about 11,000
-# inline zstd extents of the arch-boxes image, which the kernel and the carve
-# read. The positive control of the raw scan carries its token in the file's
-# contents only.
+# btrfs root it also decompresses every zstd frame on the root's partition
+# (py/btrfs_scan.py): btrfs writes each compressed extent as one, so with the
+# raw scan this reads what each extent of the partition holds, plain or
+# compressed with zstd, of a file live or deleted, whatever tree still points
+# at it. The scenario fails on a root mounted to compress with another
+# algorithm, whose extents the carve does not read. No frame may hold a canary
+# or the token, nor a registry token the baseline's frames and raw bytes did
+# not hold. And it reads the older roots of the image's tree that
+# btrfs-find-root lists, the way btrfs-progs does, at the canary paths and the
+# rehearsal's files: none may keep a file at a canary's path or one of the
+# rehearsal's files named after its token, nor a canary or the token, and a
+# restore that could not read a file or a folder it was asked for fails the
+# check. Three planted controls show what each read sees there: a file kept
+# plain, which the raw scan finds; a compressed one, which the raw scan misses
+# and the read through the kernel and the carve find; and a compressed one
+# written and deleted, which the raw scan and the read through the kernel miss
+# and the carve and an older root find. btrfs restore reads the older roots
+# only: it cannot read about 11,000 inline zstd extents of the arch-boxes
+# image, which the kernel and the carve read. The positive control of the raw
+# scan carries its token in the file's contents only.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -1693,8 +1694,9 @@ distroVm.buildVmTest {
             # The raw scan cannot see what a compressed extent holds, and the
             # read of the live tree no file deleted since. The zstd frames on
             # the root's partition hold no canary and no registry token the
-            # baseline did not carry, which with the raw scan reads every
-            # byte the partition holds, whatever tree still points at it. No
+            # baseline did not carry: with the raw scan, this reads what each
+            # extent of the partition holds, plain or compressed with zstd,
+            # whatever tree still points at it. No
             # older root of the tree btrfs-find-root lists keeps a file at a
             # canary's path, nor a canary there, and each of them restores
             # every file and folder of that scope it was asked for.
