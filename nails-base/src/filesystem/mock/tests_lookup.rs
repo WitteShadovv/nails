@@ -261,6 +261,46 @@ fn a_lookup_made_to_fail_alone_leaves_the_others_of_its_path_as_they_are() {
     assert_eq!(fs.read_file_content(file).unwrap(), "x");
 }
 
+/// is_symlink and is_regular_file made to fail alone fail as they were told,
+/// while the other lookups of the path answer as set, mount_root and the
+/// lock query among them, which ask the same of the path on their own.
+#[test]
+fn a_link_or_file_lookup_made_to_fail_alone_leaves_the_others_as_they_are() {
+    use super::{MockFailure, MockLookup};
+    use crate::filesystem::MountRoot;
+    let fs = MockFilesystem::new();
+    let file = Path::new("/srv/data");
+    fs.mock_add_file("/srv/data", "x");
+    fs.mock_fail_only(
+        file,
+        MockLookup::IsSymlink,
+        MockFailure::Io(ErrorKind::Other),
+    );
+    assert_eq!(
+        failure(fs.is_symlink(file)),
+        (file.to_path_buf(), ErrorKind::Other)
+    );
+    assert!(fs.is_regular_file(file).unwrap());
+    assert!(fs.path_exists(file).unwrap());
+    assert_eq!(fs.mount_root(file).unwrap(), MountRoot::Entry(None));
+    fs.mock_fail_only(
+        file,
+        MockLookup::IsRegularFile,
+        MockFailure::Io(ErrorKind::PermissionDenied),
+    );
+    assert_eq!(
+        failure(fs.is_regular_file(file)),
+        (file.to_path_buf(), ErrorKind::PermissionDenied)
+    );
+    assert!(fs.path_exists(file).unwrap());
+    assert!(!fs.is_directory(file).unwrap());
+    assert_eq!(fs.read_file_content(file).unwrap(), "x");
+    assert_eq!(fs.record_lock_holder(file).unwrap(), None);
+    let below = Path::new("/srv/data/below");
+    assert!(!fs.is_symlink(below).unwrap());
+    assert!(!fs.is_regular_file(below).unwrap());
+}
+
 /// An entry is there when the path itself is something, a link to nothing
 /// included, and a link counts without its target being looked up.
 #[test]

@@ -133,7 +133,10 @@ impl MockFilesystem {
     /// lookup after one that succeeded fails, as where the path changed in
     /// between, a file that is there cannot be read, or the automount guard
     /// does not make a read since a point was set up after the lookups
-    /// before it. Only `path` itself is affected, not a path below it.
+    /// before it. Only `path` itself is affected, not a path below it. A
+    /// failing `is_symlink` or `is_regular_file` fails only where it is
+    /// asked, not where another query asks the same of the path on its own,
+    /// as `mount_root` asks whether it is a link.
     pub fn mock_fail_only(&self, path: &Path, lookup: MockLookup, failure: MockFailure) {
         self.failures_only
             .lock()
