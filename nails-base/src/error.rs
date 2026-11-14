@@ -476,6 +476,17 @@ impl NailsError {
         }
     }
 
+    /// Whether this error says nothing is at the path it was asked about: no
+    /// entry on the way (`ENOENT`), or a component on the way that is no
+    /// directory (`ENOTDIR`), below which nothing can be. Any other failure,
+    /// a lookup NAILS did not make among them, leaves what is there untold.
+    pub fn nothing_there(&self) -> bool {
+        matches!(
+            self.io_kind(),
+            Some(std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+        )
+    }
+
     /// The path and the reason of a lookup NAILS did not make, when this is
     /// one ([`NotLookedUp`](NailsError::NotLookedUp)).
     pub fn not_looked_up(&self) -> Option<(&std::path::Path, &Skip)> {
@@ -571,6 +582,32 @@ mod tests {
         );
         assert_eq!(err.io_kind(), Some(std::io::ErrorKind::NotFound));
         assert!(std::error::Error::source(&err).is_some(), "keeps the cause");
+    }
+
+    /// Only a missing entry, or a file on the way, says nothing is there:
+    /// every other failure, and a lookup NAILS did not make, cannot tell.
+    #[test]
+    fn only_a_missing_entry_or_a_file_on_the_way_says_nothing_is_there() {
+        use std::io::ErrorKind;
+        let failed = |kind| NailsError::io("/etc/systemd/system", std::io::Error::from(kind));
+        assert!(failed(ErrorKind::NotFound).nothing_there());
+        assert!(failed(ErrorKind::NotADirectory).nothing_there());
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::Other,
+            ErrorKind::InvalidData,
+            ErrorKind::Unsupported,
+        ] {
+            assert!(!failed(kind).nothing_there(), "{kind:?}");
+        }
+        let skipped = NailsError::NotLookedUp {
+            path: "/usr/local".into(),
+            reason: Skip::Automount {
+                point: "/usr/local".into(),
+            },
+        };
+        assert!(!skipped.nothing_there());
+        assert!(!NailsError::InvalidState("x".into()).nothing_there());
     }
 
     #[test]

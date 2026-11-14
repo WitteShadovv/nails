@@ -205,6 +205,43 @@ fn a_kdump_unit_nails_cannot_tell_is_enabled_refuses_as_armed() {
     );
 }
 
+/// A unit directory whose listing fails for another reason than that it is
+/// not there may hold the link that enables a kdump unit: refused as if
+/// kdump were armed, where the listing that failed read as a directory with
+/// no link, and status counts kdump as armed. A directory that is not there,
+/// or below a file, holds no link, so kdump is not armed. Below a file, a
+/// unit file the check reads there, as tuned's, is one NAILS cannot follow,
+/// which counts against the decoy on its own.
+#[test]
+fn a_unit_directory_nails_cannot_list_refuses_as_armed() {
+    let fs = decoy("volatile");
+    fs.mock_set_unreadable_dir("/usr/lib/systemd/system");
+    let result = run(&fs, false);
+    refused_as_untold(
+        &fs,
+        &result,
+        "cannot tell whether kdump is armed: NAILS cannot tell whether kdump-tools.service is \
+         enabled: NAILS cannot look up /usr/lib/systemd/system; run the command again with sudo",
+    );
+    let kdump = DecoyPersistenceCheck::kdump_on_decoy(&fs).expect("refused as armed");
+    assert!(
+        kdump.untold.as_deref().is_some_and(|why| why.starts_with(
+            "NAILS cannot tell whether kdump-tools.service is enabled: NAILS cannot look up \
+             /usr/lib/systemd/system"
+        )),
+        "{kdump:?}"
+    );
+
+    for kind in [ErrorKind::NotFound, ErrorKind::NotADirectory] {
+        let fs = decoy("volatile");
+        fs.mock_set_lookup_error("/usr/lib/systemd/system", kind);
+        assert_eq!(DecoyPersistenceCheck::kdump_on_decoy(&fs), None, "{kind:?}");
+        let result = run(&fs, false);
+        assert!(!result.message().contains("kdump"), "{kind:?}: {result:?}");
+        assert_eq!(result.is_pass(), kind == ErrorKind::NotFound, "{result:?}");
+    }
+}
+
 /// The `syslog.service` alias names the enabled syslog daemon. One NAILS
 /// cannot look up may name a daemon that writes logs to the decoy disk:
 /// refused, with the override.
@@ -460,11 +497,16 @@ fn the_kdump_probe_of_status_counts_a_directory_it_did_not_look_up() {
     let fs = decoy("volatile");
     with_automounts(&fs, &["/lib"]);
     let kdump = DecoyPersistenceCheck::kdump_on_decoy(&fs).expect("kdump cannot be told");
+    let unlisted = "NAILS does not look up /lib/systemd/system, since the lookup would mount \
+                    the automount point /lib";
     assert_eq!(
         kdump.untold.as_deref(),
         Some(
-            "NAILS does not look up /lib/systemd/system, since the lookup would mount the \
-             automount point /lib"
+            format!(
+                "NAILS cannot tell whether kdump-tools.service is enabled: {unlisted}; NAILS \
+                 cannot tell whether kdump.service is enabled: {unlisted}"
+            )
+            .as_str()
         )
     );
     assert!(DecoyPersistenceCheck::decoy_kdump_armed(&fs));
