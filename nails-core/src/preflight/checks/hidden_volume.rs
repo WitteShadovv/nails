@@ -208,8 +208,7 @@ impl HiddenVolumeCheck {
         // blocks activation — the volume is usable — it only warns so the
         // operator can rename before the name leaks off the box. A source
         // that cannot be read contributes no hints rather than failing the
-        // check, exactly as the backend detector treats an unreadable mount
-        // table.
+        // check.
         let source = fs
             .mount_source(&self.hidden_volume_root)
             .ok()

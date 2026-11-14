@@ -235,9 +235,10 @@ const UNREAD: &str = "Make sure /run/unattended-upgrades.lock, where it exists, 
                       that can be looked up and opened, then activate again.";
 
 /// What to do when `check` cannot read the mount table, and so looks
-/// nothing up.
-const NO_MOUNT_TABLE: &str = "Run the check where /proc is mounted and readable, so that NAILS \
-                              can read the mount table.";
+/// nothing up. backend-detect, which cannot find the hidden root's device
+/// without it, says the same.
+pub(super) const NO_MOUNT_TABLE: &str = "Run the check where /proc is mounted and readable, so \
+                                         that NAILS can read the mount table.";
 
 /// `unattended-upgrade-run`: refuses activation while a daily
 /// unattended-upgrade run is in progress.
