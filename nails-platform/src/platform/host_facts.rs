@@ -363,7 +363,8 @@ mod tests {
         fs.mock_set_lookup_error(SELINUX_FS, std::io::ErrorKind::PermissionDenied);
         let status = read_selinux(&fs).expect("SELinux may be present");
         assert_eq!(status.selinuxfs, Selinuxfs::Unknown);
-        // A mount table that lists no selinuxfs says SELinux does not run.
+        // A mount table that lists no selinuxfs shows none mounted, though the
+        // lookup failed: SELinux may still be on, without a policy.
         fs.mock_set_file_content(SELF_MOUNTS, PLAIN_MOUNTS);
         let status = read_selinux(&fs).expect("SELinux may be present");
         assert_eq!(status.selinuxfs, Selinuxfs::NotMounted);

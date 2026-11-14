@@ -12,8 +12,9 @@
 #     hidden root still holds what it held;
 #   - `check` names the security modules the kernel runs in its lsm-status row.
 #     Where SELinux does not run (Arch) the row passes. Where it runs (Fedora)
-#     the row fails, and its first finding is the one every such host gets for
-#     now, that NAILS does not choose the SELinux domain of its units, so no
+#     the row fails, and its first two findings are the ones every such host
+#     gets for now, that NAILS chooses neither the SELinux domain of the units
+#     systemd starts nor that of the disk guard udev runs, so no
 #     fact it reads there (the mode, /etc/selinux/config, the context of the
 #     nails process) failed to read or failed its rule, and it says SELinux is
 #     permissive exactly when the kernel says so;

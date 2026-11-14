@@ -241,8 +241,8 @@ pub fn build_registry<F: Filesystem>(
     // PID 1 must see /run/nextroot: activation must run in its mount namespace.
     registry.add_check(Box::new(MountNamespaceCheck::new()));
 
-    // The active LSMs. Where SELinux runs, it must enforce the targeted policy
-    // and NAILS must run unconfined: this process, the processes systemd
+    // The active LSMs. Where SELinux runs, it must run the targeted policy
+    // (permissive warns) and NAILS must run unconfined: this process, the processes systemd
     // starts from its copy in /run, and the disk guard udev runs from its rule,
     // each judged by itself, since what NAILS sets on systemd's side does not
     // reach what udev runs. NAILS chooses neither of the last two domains yet,
