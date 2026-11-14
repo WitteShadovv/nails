@@ -377,7 +377,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: false,
         verify: Probe::Check("journal-scan"),
-        mitigation: "The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it.",
+        mitigation: "The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last lines follow it, whose final `Sending SIGKILL to PID N (<name>)` lines name each process of the hidden session still alive then, with the hidden filesystem's unmount line and, on a kernel that audits device-mapper changes (Fedora's does), the audit record of the hidden volume's dm-crypt teardown, and on Fedora 44 a device-mapper line that a device was left open.",
         doc_anchor: "threat-model.md#residual-channels",
         e2e: E2e::Test("soft-reboot-mechanics"),
         residual: true,

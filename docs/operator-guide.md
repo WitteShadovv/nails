@@ -775,8 +775,12 @@ journal that starts late:
   `/etc`, one marked `x-initrd.mount`), such as NixOS's `/etc` overlay.
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's
-own shutdown and start lines appear under one boot ID, together with the kernel's
-`EXT4-fs … unmounting filesystem` line for the hidden filesystem. The decoy's
+own shutdown and start lines appear under one boot ID, together with PID 1's
+last `Sending SIGKILL to PID N (<name>)` lines, which name each process of the
+hidden session still alive then, the kernel's `EXT4-fs … unmounting filesystem`
+line for the hidden filesystem and, on a kernel that audits device-mapper
+changes (Fedora's does), the `audit: … module=crypt op=dtr` record of the
+hidden volume's dm-crypt teardown. The decoy's
 shutdown before entry and its start after the way back write what an ordinary
 shutdown and boot write: the random seed, a wtmp record, the journal if it is
 persistent. With the ESP read-only in the hidden session, `loader/random-seed`
