@@ -21,15 +21,19 @@
 //! - `relabel`: [`Mechanism::Relabel`], the start command names the copy, and
 //!   every RAM copy gets the label of a program in `/usr/bin` when it is
 //!   written ([`relabel_copy`]), so PID 1 makes a domain transition on the
-//!   copy itself.
+//!   copy itself. The way back and the emergency give the session's copy that
+//!   label again right before they ask for the switch, so a relabel during
+//!   the session (a `restorecon` over `/run`) does not decide the domain of
+//!   the way back's step.
 //!
 //! [`trace`] appends the SELinux context of every start of the binary to
 //! [`TRACE_FILE`] when its directory exists, so the harness can read the domain
-//! of a step that ends before anything could look at it. Without the
-//! harness's files neither changes anything.
+//! of a step that ends before anything could look at it, and [`relabel_copy`]
+//! appends what each relabel did and the label read back after it. Without
+//! the harness's files none of this changes anything.
 
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -107,18 +111,76 @@ pub fn service_lines(prefix: &str, command: &str) -> String {
 
 /// Give the RAM copy at `path` [`PROGRAM_LABEL`] when [`CELL_FILE`] names
 /// [`Mechanism::Relabel`]; nothing otherwise. Best effort: a copy that keeps
-/// its label starts as it would with the shipped units.
+/// its label starts as it would with the shipped units. With the trace on,
+/// what the write did and the label read back after it are appended to
+/// [`TRACE_FILE`] ([`relabel_line`]).
 pub fn relabel_copy(path: &Path) {
-    if mechanism() == Mechanism::Relabel {
-        let mut value = PROGRAM_LABEL.as_bytes().to_vec();
-        value.push(0);
-        let _ = rustix::fs::setxattr(
-            path,
-            "security.selinux",
-            &value,
-            rustix::fs::XattrFlags::empty(),
-        );
+    relabel_with(
+        mechanism(),
+        path,
+        Path::new(TRACE_DIR),
+        Path::new(TRACE_FILE),
+    );
+}
+
+/// [`relabel_copy`] for `mechanism`, its line appended to `trace_file` when
+/// `trace_dir` exists.
+pub fn relabel_with(mechanism: Mechanism, path: &Path, trace_dir: &Path, trace_file: &Path) {
+    if mechanism != Mechanism::Relabel {
+        return;
     }
+    let mut value = PROGRAM_LABEL.as_bytes().to_vec();
+    value.push(0);
+    let set = rustix::fs::setxattr(
+        path,
+        "security.selinux",
+        &value,
+        rustix::fs::XattrFlags::empty(),
+    )
+    .map_err(io::Error::from);
+    append(
+        trace_dir,
+        trace_file,
+        &relabel_line(path, &set, &label_of(path)),
+    );
+}
+
+/// The `security.selinux` value of the file at `path`, or the error reading
+/// it gave.
+fn label_of(path: &Path) -> String {
+    let mut value = [0u8; 256];
+    match rustix::fs::getxattr(path, "security.selinux", &mut value[..]) {
+        Ok(len) => String::from_utf8_lossy(&value[..len.min(value.len())])
+            .trim_end_matches('\0')
+            .to_string(),
+        Err(error) => format!("<{}>", io::Error::from(error)),
+    }
+}
+
+/// One line for the trace after a relabel of `path`: the boot clock, the
+/// process and its SELinux context, what the write did (`set`) and the label
+/// read back after it (`now`). It starts with `relabel `, so a reader of the
+/// start lines ([`trace_line`]) passes over it.
+pub fn relabel_line(path: &Path, set: &io::Result<()>, now: &str) -> String {
+    let set = match set {
+        Ok(()) => "ok".to_string(),
+        Err(error) => format!("<{error}>"),
+    };
+    format!(
+        "relabel uptime={} pid={} current={} path={} set={set} now={now}\n",
+        uptime(),
+        std::process::id(),
+        attr("current"),
+        path.display(),
+    )
+}
+
+/// The first field of `/proc/uptime`, or nothing.
+fn uptime() -> String {
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|text| text.split_whitespace().next().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// The text of a `/proc/self/attr` entry, or the error reading it gave.
@@ -134,17 +196,14 @@ fn attr(name: &str) -> String {
 /// One line for [`trace`]: the boot clock, the process and its parent, its
 /// SELinux context now and before its last `execve`, and its arguments.
 pub fn trace_line(argv: &[OsString]) -> String {
-    let uptime = std::fs::read_to_string("/proc/uptime")
-        .ok()
-        .and_then(|text| text.split_whitespace().next().map(str::to_string))
-        .unwrap_or_default();
     let args: Vec<String> = argv
         .iter()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
     format!(
-        "uptime={uptime} pid={} ppid={} current={} prev={} args={}\n",
+        "uptime={} pid={} ppid={} current={} prev={} args={}\n",
+        uptime(),
         std::process::id(),
         rustix::process::Pid::as_raw(rustix::process::getppid()),
         attr("current"),
@@ -155,15 +214,25 @@ pub fn trace_line(argv: &[OsString]) -> String {
 
 /// Append [`trace_line`] to [`TRACE_FILE`] when [`TRACE_DIR`] exists.
 pub fn trace(argv: &[OsString]) {
-    if !Path::new(TRACE_DIR).is_dir() {
+    if Path::new(TRACE_DIR).is_dir() {
+        append(
+            Path::new(TRACE_DIR),
+            Path::new(TRACE_FILE),
+            &trace_line(argv),
+        );
+    }
+}
+
+/// Append `line` to `file` when `dir` exists; best effort.
+fn append(dir: &Path, file: &Path, line: &str) {
+    if !dir.is_dir() {
         return;
     }
-    let line = trace_line(argv);
     let _ = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o666)
-        .open(TRACE_FILE)
+        .open(file)
         .and_then(|mut file| file.write_all(line.as_bytes()));
 }
 
@@ -214,5 +283,53 @@ mod tests {
         let line = trace_line(&["control".into(), "transition".into()]);
         assert!(line.contains(" args=transition\n"), "{line}");
         assert!(line.starts_with("uptime="), "{line}");
+    }
+
+    #[test]
+    fn a_relabel_line_says_what_the_write_did_and_what_reads_back() {
+        let path = Path::new("/run/overlay-runtime/control");
+        let done = relabel_line(path, &Ok(()), PROGRAM_LABEL);
+        assert!(done.starts_with("relabel uptime="), "{done}");
+        assert!(
+            done.ends_with(
+                " path=/run/overlay-runtime/control set=ok now=system_u:object_r:bin_t:s0\n"
+            ),
+            "{done}"
+        );
+        let refused = relabel_line(
+            path,
+            &Err(io::Error::from_raw_os_error(1)),
+            "<No data available (os error 61)>",
+        );
+        assert!(refused.contains(" set=<"), "{refused}");
+        assert!(refused.contains("(os error 1)> now=<No data"), "{refused}");
+    }
+
+    #[test]
+    fn only_the_relabel_mechanism_relabels_and_traces() {
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("control");
+        std::fs::write(&copy, b"x").unwrap();
+        let trace_dir = dir.path().join("rec");
+        let trace_file = trace_dir.join("trace");
+        std::fs::create_dir(&trace_dir).unwrap();
+        for mechanism in [Mechanism::Direct, Mechanism::Env, Mechanism::Context] {
+            relabel_with(mechanism, &copy, &trace_dir, &trace_file);
+        }
+        assert!(!trace_file.exists());
+        // Whether the write takes depends on the host (an LSM, the privilege
+        // to set a security attribute); the line is written either way.
+        relabel_with(Mechanism::Relabel, &copy, &trace_dir, &trace_file);
+        let text = std::fs::read_to_string(&trace_file).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.starts_with("relabel "), "{text}");
+        assert!(
+            text.contains(&format!(" path={} set=", copy.display())),
+            "{text}"
+        );
+        // Without the trace's directory nothing is written.
+        let missing = dir.path().join("missing");
+        relabel_with(Mechanism::Relabel, &copy, &missing, &missing.join("trace"));
+        assert!(!missing.exists());
     }
 }

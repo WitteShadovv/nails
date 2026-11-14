@@ -328,6 +328,14 @@ fn hidden(plan: &mut Plan, host: &Host, report: &mut HotReport) {
             finish = Finish::Poweroff;
         }
     }
+    // Research build only: the label the experiment's mechanism asks for,
+    // again right before the way back's switch, whatever the session did to
+    // the copy.
+    if finish == Finish::Return && host.act {
+        crate::whole_root::research_cell::relabel_copy(
+            &host.runtime_dir.join(crate::whole_root::plan::BINARY_NAME),
+        );
+    }
     // Read before the shells are killed: a killed shell takes its terminal
     // from every process of its session, and its jobs go to PID 1.
     let invocation = host.act.then(|| {

@@ -402,6 +402,9 @@ pub fn leave(
         ));
     }
     let deferred = ret::close_backend_deferred(plan);
+    // Research build only: the label the experiment's mechanism asks for,
+    // again right before the switch, whatever the session did to the copy.
+    nails_teardown::whole_root::research_cell::relabel_copy(&paths.binary_copy());
     let armed = ret::arm_leave(plan, &paths.plan())
         .map_err(|e| NailsError::InvalidState(e.to_string()))
         .and_then(|()| host.start_target(tools::SOFT_REBOOT_TARGET));
