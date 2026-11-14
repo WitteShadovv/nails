@@ -17,6 +17,10 @@ pub enum MockLookup {
     PathExists,
     /// [`Filesystem::is_directory`](crate::Filesystem::is_directory).
     IsDirectory,
+    /// [`Filesystem::is_regular_file`](crate::Filesystem::is_regular_file).
+    IsRegularFile,
+    /// [`Filesystem::is_symlink`](crate::Filesystem::is_symlink).
+    IsSymlink,
     /// [`Filesystem::canonicalize`](crate::Filesystem::canonicalize).
     Canonicalize,
     /// The reads of a file's text or bytes.
