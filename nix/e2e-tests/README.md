@@ -701,7 +701,8 @@ asserts the kernel log names no session drop-in and no failed unmount of the
 hidden volume; runs a second session
 that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
 `blk-availability.service` runs, so that nothing carried below the hidden
-volume keeps the unit's stop from unmounting it; rehearses on that session
+volume keeps the unit's stop from unmounting it, and writing canaries of its
+own; rehearses on that session
 (`rehearse plant` in it, a refused scan there, and after the plain
 `deactivate` a clean scan of the raw decoy devices in the same boot, which on
 Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
@@ -719,12 +720,14 @@ of warnings (the first session's loop device is detached before the second
 entry), an ESP that systemd mounts on demand bound read-only at its mount point
 in each hidden session, with its automount masked there and back on the decoy
 after each way back, and the rehearsal's scan exiting 9 with the blind spot on
-a btrfs root's device, 0 on any other root. Before each image the disk-image
-check also reads the decoy root's files through the decoy's kernel, from a
-read-only bind of `/`: no canary may be in them, and the positive control's
-token must be. On a btrfs root it also reads the older roots of the image's
-tree as btrfs-progs does (`py/btrfs_scan.py`): none may keep a file at a
-canary's path, nor a canary. Three planted controls show what each read sees:
+a btrfs root's device, 0 on any other root. The disk-image check looks for
+the canaries of both sessions and for the token the rehearsal planted. Before
+each image it also reads the decoy root's files through the decoy's kernel,
+from a read-only bind of `/`: none of these may be in them, and the positive
+control's token must be. On a btrfs root it also reads the older roots of the
+image's tree as btrfs-progs does (`py/btrfs_scan.py`): none may keep a file at
+a canary's path or one of the rehearsal's files named after its token, nor a
+canary or the token. Three planted controls show what each read sees:
 a plain file the raw scan finds, a compressed file the raw scan misses and the
 read through the kernel finds, and a compressed file written and deleted that
 only an older root keeps. `btrfs restore` reads the older roots only, since it

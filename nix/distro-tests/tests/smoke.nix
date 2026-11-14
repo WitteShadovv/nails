@@ -67,12 +67,15 @@
 # arch-boxes, is bound read-only at /efi in each hidden session, with its
 # automount masked there at runtime, and the decoy's automount is back after
 # each way back. The rehearsal's scan exits 9 with a blind spot on a btrfs
-# root's device and 0 on any other image. Before each image the leak check
-# also reads the decoy root's files through the decoy's own kernel, from a
-# read-only bind of / that moves no access time: no canary may be in them, and
-# the positive control's token must be. On a btrfs root it also reads the
-# older roots of the image's tree the way btrfs-progs does (py/btrfs_scan.py):
-# none may keep a file at a canary's path, nor a canary. Three planted
+# root's device and 0 on any other image. Each session writes canaries of
+# its own, and the leak check looks for those of both sessions and for the
+# token the rehearsal planted in the second. Before each image it also reads
+# the decoy root's files through the decoy's own kernel, from a read-only bind
+# of / that moves no access time: none of these may be in them, and the
+# positive control's token must be. On a btrfs root it also reads the older
+# roots of the image's tree the way btrfs-progs does (py/btrfs_scan.py): none
+# may keep a file at a canary's path or one of the rehearsal's files named
+# after its token, nor a canary or the token. Three planted
 # controls show what each read sees there: a file kept plain, which the raw
 # scan finds; a compressed one, which the raw scan misses and the read through
 # the kernel finds; and a compressed one written and deleted, which only an
@@ -544,8 +547,12 @@ distroVm.buildVmTest {
 
     def fs_path_on_root(path):
         # Where `path` lies in the decoy root's filesystem, as btrfs restore
-        # writes it out, or None when it lies on another filesystem.
+        # writes it out, or None when it lies on another filesystem. The
+        # filesystem is that of the nearest folder of the path the decoy has:
+        # a file a session planted can name folders the decoy lacks.
         directory = os.path.dirname(path)
+        while vm.execute(f"test -d {shlex.quote(directory)}")[0] != 0:
+            directory = os.path.dirname(directory)
         fields = vm.succeed(
             f"findmnt -rn -o TARGET,SOURCE,OPTIONS -T {shlex.quote(directory)}"
         ).split()
@@ -1424,6 +1431,17 @@ distroVm.buildVmTest {
         assert_timeout_guard("the second session", loaded=True)
         assert_local_fs_reached("the second session")
         assert_skipped_off_the_disk("the second session", boot_mounts, entered_after)
+        # Canaries of their own in the session that ends with deactivate, as
+        # the first session has for the emergency: the leak check reads both.
+        second_mounts = distro_checks.parse_mount_targets(
+            vm.succeed("findmnt -rn -o TARGET")
+        )
+        for tree in canary_trees:
+            name = distro_checks.canary_name(tree)
+            vm.succeed(f"echo NAILS_CANARY2_{tree} > /{tree}/{name}")
+            upper = distro_checks.canary_upper("/mnt/data", tree, second_mounts)
+            vm.succeed(f"test -s {shlex.quote(upper)}")
+        vm.succeed("sync")
         # The rehearsal's first step, and the refusal of a scan in the
         # planting session.
         rc, out, err = rehearse("plant --user root")
@@ -1453,6 +1471,8 @@ distroVm.buildVmTest {
             f"the second entry wrote a stop line to {uu_log} on the decoy disk"
         )
         vm.fail("mountpoint -q /mnt/data")
+        for tree in canary_trees:
+            vm.fail(f"test -e /{tree}/nails-canary-{tree}")
         vm.fail("test -e /run/overlay-runtime")
         # A LUKS-backed hidden root's mapping closed itself (a loop-backed one
         # has none).
@@ -1521,6 +1541,18 @@ distroVm.buildVmTest {
             rc, result, decoy_root_device, rootfs, decoy_root_options
         )
         assert not problems, "\n".join(problems)
+        # The files the plant wrote in the session, for the leak check: the
+        # ones named after the token, and the recent-files list, which holds
+        # it in its contents only. The scan shows each with the token hidden.
+        rehearsal_files = {
+            channel["kind"]: channel["location"].replace("<canary>", token)
+            for channel in json.loads(out)["data"]["channels"]
+            if channel["kind"] in ("overlay-file", "home-file", "recent-files")
+            and "skipped" not in channel
+        }
+        assert set(rehearsal_files) == {"overlay-file", "home-file", "recent-files"}, (
+            f"the rehearsal planted no file of some kind: {sorted(rehearsal_files)}"
+        )
         print(f"clean rehearsal scan of {[d['device'] for d in result['devices']]}")
         # No `rehearse reset`: the root's image file sits on a tmpfs the
         # soft-reboot detached, so the attach gate cannot tell where it lives
@@ -1529,13 +1561,25 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.closeHiddenRoot}""")
 
     with subtest("decoy disk-image leak check: no hidden canaries, positive control caught"):
-        canary_tokens = [f"NAILS_CANARY_{tree}" for tree in canary_trees]
-        # Where each canary would lie on the decoy root's filesystem, for the
-        # read of the older roots of a btrfs root's tree.
+        # The canaries of the session that ended with the emergency and of the
+        # one that ended with deactivate, and the token the rehearsal planted
+        # in the second.
+        canary_tokens = [f"NAILS_CANARY_{tree}" for tree in canary_trees] + [
+            f"NAILS_CANARY2_{tree}" for tree in canary_trees
+        ] + [token]
+        # Where each canary file, and each file of the rehearsal named after
+        # its token, would lie on the decoy root's filesystem, for the read of
+        # the older roots of a btrfs root's tree: none may be there. The
+        # rehearsal's recent-files list is read there for the token alone,
+        # since the decoy may keep a list of its own.
         canary_paths = [
             fs_path_on_root(f"/{tree}/{distro_checks.canary_name(tree)}")
             for tree in canary_trees
+        ] + [
+            fs_path_on_root(rehearsal_files[kind])
+            for kind in ("overlay-file", "home-file")
         ]
+        read_paths = canary_paths + [fs_path_on_root(rehearsal_files["recent-files"])]
 
         # The files of the decoy root, read through its kernel, hold no canary.
         live = live_tokens(canary_tokens)
@@ -1562,8 +1606,9 @@ distroVm.buildVmTest {
             part = btrfs_root_copy(clean, "clean")
             os.remove(clean)
             on_root = [path for path in canary_paths if path is not None]
+            read_on_root = [path for path in read_paths if path is not None]
             older, kept = history(
-                part, "clean", canary_tokens, btrfs_scan.path_filter(on_root), on_root
+                part, "clean", canary_tokens, btrfs_scan.path_filter(read_on_root), on_root
             )
             assert not kept, f"an older root keeps files at canary paths: {sorted(kept)}"
             assert not older, f"an older root keeps hidden canaries: {sorted(older)}"
