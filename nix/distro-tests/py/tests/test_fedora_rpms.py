@@ -50,8 +50,15 @@ class RepositoryTest(unittest.TestCase):
 
     def test_the_key_is_the_file_the_image_ships(self) -> None:
         with tempfile.TemporaryDirectory() as work:
-            keys = Path(work)
-            script = fr.find_key("45").replace("/etc/pki/rpm-gpg", str(keys))
+            keys = Path(work, "keys")
+            repos = Path(work, "repos")
+            keys.mkdir()
+            repos.mkdir()
+            script = (
+                fr.find_key("45")
+                .replace("/etc/pki/rpm-gpg", str(keys))
+                .replace("/etc/yum.repos.d", str(repos))
+            )
             run = ["bash", "-c", script + '; echo "$key"']
             missing = subprocess.run(run, capture_output=True, text=True, check=False)
             self.assertEqual(missing.returncode, 3, missing)
@@ -62,6 +69,18 @@ class RepositoryTest(unittest.TestCase):
                 found.stdout.strip(), str(keys / "RPM-GPG-KEY-fedora-45-primary")
             )
             (keys / "RPM-GPG-KEY-fedora-45-x86_64").write_text("key\n")
+            found = subprocess.run(run, capture_output=True, text=True, check=True)
+            self.assertTrue(found.stdout.strip().endswith("-45-x86_64"))
+            # The image's own repository file names the key it checks with.
+            named = Path(work, "fedora-45-x86_64.key")
+            named.write_text("key\n")
+            (repos / "fedora.repo").write_text(
+                f"[fedora]\ngpgkey=file://{work}/fedora-$releasever-$basearch.key\n"
+            )
+            found = subprocess.run(run, capture_output=True, text=True, check=True)
+            self.assertEqual(found.stdout.strip(), str(named))
+            # A key the file names that the image does not hold is passed over.
+            named.unlink()
             found = subprocess.run(run, capture_output=True, text=True, check=True)
             self.assertTrue(found.stdout.strip().endswith("-45-x86_64"))
 

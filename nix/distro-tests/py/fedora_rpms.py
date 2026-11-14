@@ -70,16 +70,23 @@ def archive_repository(release: str) -> str:
 
 
 def find_key(release: str) -> str:
-    """The guest command that sets ``key`` to the release key file the image
-    ships, or fails naming the ones it has: Fedora 44 ships it as
-    ``RPM-GPG-KEY-fedora-44-x86_64`` and ``-primary``, Fedora 45 only as
-    ``-primary``. ``release`` may be a shell expansion."""
+    """The guest command that sets ``key`` to the release key file the image's
+    own repositories check packages with, or fails naming what it found.
+
+    It takes the first ``gpgkey`` of the image's ``fedora.repo``, with dnf's
+    ``$releasever`` and ``$basearch`` filled in, where that names a file the
+    image holds, and otherwise the first key file of the release the image
+    ships under ``/etc/pki/rpm-gpg``. ``release`` may be a shell expansion."""
     base = "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora"
     return (
-        "key=; "
+        "key=$(sed -n 's|^gpgkey=file://||p' /etc/yum.repos.d/fedora.repo "
+        "2>/dev/null | head -n 1 | cut -d' ' -f1 | "
+        f"sed 's/[$]releasever/{release}/g; s/[$]basearch/x86_64/g'); "
+        '[ -n "$key" ] && [ -e "$key" ] || key=; '
         f"for candidate in {base}-{release}-x86_64 {base}-{release}-primary; do "
-        '[ -e "$candidate" ] && { key=$candidate; break; }; done; '
-        '[ -n "$key" ] || { ls /etc/pki/rpm-gpg >&2; '
+        '[ -n "$key" ] && break; [ -e "$candidate" ] && key=$candidate; done; '
+        '[ -n "$key" ] || { grep -h "^gpgkey" /etc/yum.repos.d/*.repo >&2; '
+        "ls -la /etc/pki/rpm-gpg >&2; "
         f'echo "no release key of Fedora {release}" >&2; exit 3; }}'
     )
 
