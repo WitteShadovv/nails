@@ -1848,9 +1848,12 @@ distroVm.buildVmTest {
                 "control (c): the carve of zstd frames misses the deleted compressed file"
             )
             assert controls_path is not None, "the controls are not on the decoy root"
-            regex = btrfs_scan.path_filter([os.path.dirname(controls_path)], below=True)
+            # The older roots are read as the clean image's are: at the
+            # deleted file's own path, nothing below or beside it.
             deleted = os.path.join(os.path.dirname(controls_path), "compressed", "c")
-            older, kept, _ = history(part, "positive", [c], regex, [deleted])
+            older, kept, _ = history(
+                part, "positive", [c], btrfs_scan.path_filter([deleted]), [deleted]
+            )
             assert c in older and deleted in kept, (
                 "control (c): no older root of the tree keeps the deleted file"
             )
