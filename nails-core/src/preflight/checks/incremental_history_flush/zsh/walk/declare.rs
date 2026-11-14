@@ -382,7 +382,7 @@ impl Walker<'_> {
         for arg in args {
             self.prompts += usize::from(PROMPTS.contains(&arg.text.as_str()));
             self.hooks += usize::from(hook_array(&arg.text));
-            self.mention(&arg.text);
+            self.mention_word(arg);
         }
         let options = options("unset", args);
         // With `-f` it takes functions away, whatever its other words.
@@ -407,6 +407,9 @@ impl Walker<'_> {
                     "it cannot tell which parameter `unset {}` in {} takes away",
                     arg.text, self.place
                 )));
+            } else if !options.has('m') && arg.text == "TMOUT" {
+                // It takes it back to 0, as zsh reads nothing in it.
+                self.tmouts += 1;
             } else if !options.has('m') && arg.text == "XDG_CONFIG_HOME" {
                 self.xdg_config_homes += 1;
                 self.events.push(Event::Assign {

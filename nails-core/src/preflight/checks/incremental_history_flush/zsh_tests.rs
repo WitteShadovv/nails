@@ -45,6 +45,10 @@ mod since;
 #[path = "zsh_parameters_tests.rs"]
 mod parameters;
 
+// What may make a zsh end by itself, writing its history file as it ends.
+#[path = "zsh_ends_tests.rs"]
+mod ends;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.

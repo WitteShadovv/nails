@@ -199,7 +199,7 @@ impl Walker<'_> {
             return false;
         }
         self.fpaths += 1;
-        self.mention(&word.text);
+        self.mention_word(word);
         let parts: Vec<&str> = match value {
             Some(value) if name == "FPATH" => value.split(':').collect(),
             Some(value) => vec![value],

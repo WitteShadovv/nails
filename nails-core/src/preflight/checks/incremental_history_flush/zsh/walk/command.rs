@@ -45,6 +45,13 @@ const PRECOMMANDS: &[&str] = &[
     "!",
 ];
 
+/// How the command after its precommands runs ([`Walker::precommands`]).
+#[derive(Debug, Default)]
+struct Run {
+    /// In the shell's place (`exec`).
+    exec: bool,
+}
+
 /// Whether zsh can expand `value`, an assignment's value as written, with
 /// no error that stops the file it is in: it names no parameter but `HOME`
 /// and those `${...:-...}` gives a default for (`${XDG_CONFIG_HOME:-...}`),
@@ -100,12 +107,51 @@ fn computed_options(text: &str) -> bool {
 /// zsh code: what `$(...)`, a backquote pair or a process substitution
 /// (`<(...)`, `>(...)`, `=(...)`) holds, past the quotes and parentheses in
 /// it, to the end of `text` when it does not close. Arithmetic (`$((`) holds
-/// none of its own.
+/// none of its own, and neither do single quotes or `$'...'` in a `${...}`,
+/// which the lexer keeps as written (`${PS1::='$(x)'}`); elsewhere it took
+/// the quotes off.
 fn substitutions(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut found = Vec::new();
     let mut at = 0;
+    // How deep in `${...}` the scan is, and the quote it is in there: `'`,
+    // `"`, or `$` for `$'...'`, in which a backslash keeps a `'` too.
+    let mut braces = 0usize;
+    let mut quote: Option<char> = None;
     while at < chars.len() {
+        let next = chars.get(at + 1).copied();
+        if braces > 0 {
+            let skip = match (quote, chars[at]) {
+                (Some('\'' | '$'), '\'') | (Some('"'), '"') => {
+                    quote = None;
+                    1
+                }
+                (Some('$'), '\\') | (Some('"') | None, '\\') => 2,
+                (Some('\'' | '$'), _) => 1,
+                (None, '$') if next == Some('\'') => {
+                    quote = Some('$');
+                    2
+                }
+                (None, '\'' | '"') => {
+                    quote = Some(chars[at]);
+                    1
+                }
+                (None, '}') => {
+                    braces -= 1;
+                    1
+                }
+                _ => 0,
+            };
+            if skip > 0 {
+                at += skip;
+                continue;
+            }
+        }
+        if chars[at] == '$' && next == Some('{') && quote.is_none() {
+            braces += 1;
+            at += 2;
+            continue;
+        }
         let opens = match chars[at] {
             '`' => Some(at + 1),
             '$' | '<' | '>' | '=' if chars.get(at + 1) == Some(&'(') => {
@@ -201,18 +247,26 @@ impl Walker<'_> {
     /// followed the code's structure.
     pub(super) fn nested(&mut self, text: &str, unconditional: bool) {
         let outer = self.function();
-        self.nested_in(text, unconditional, outer);
+        let top = self.top && !self.frames.iter().any(|open| open.frame == Frame::Function);
+        self.nested_in(text, unconditional, outer, top);
     }
 
     /// The events of zsh code `text` that a command of the file runs as the
-    /// function `outer` would, when in one ([`Walker::nested`]): a trap's
-    /// code runs as a `TRAP...` function does. What code that runs as a
-    /// function sets, which it may do later or in its own scope, is no
-    /// certain setting where it stands, and no setting comes first in the
-    /// file after a command that ran ([`Event::Assign`]).
-    pub(super) fn nested_in(&mut self, text: &str, unconditional: bool, outer: Option<String>) {
+    /// function `outer` would, when in one ([`Walker::nested`]), where zsh is
+    /// at its top level as it runs it (`top`): a trap's code runs as a
+    /// `TRAP...` function does. What code that runs as a function sets, which
+    /// it may do later or in its own scope, is no certain setting where it
+    /// stands, and no setting comes first in the file after a command that
+    /// ran ([`Event::Assign`]).
+    pub(super) fn nested_in(
+        &mut self,
+        text: &str,
+        unconditional: bool,
+        outer: Option<String>,
+        top: bool,
+    ) {
         let later = outer.is_some();
-        let nested = walk_text_in(text, self.place, outer);
+        let nested = walk_text_in(text, self.place, outer, top);
         self.sources += nested.sources;
         self.evals += nested.evals;
         self.zdotdirs += nested.zdotdirs;
@@ -224,6 +278,7 @@ impl Walker<'_> {
         self.indirects += nested.indirects;
         self.alias_params += nested.alias_params;
         self.function_params += nested.function_params;
+        self.tmouts += nested.tmouts;
         self.may_stop |= nested.may_stop;
         let uncertain = !unconditional || nested.confused || later;
         for mut event in nested.events {
@@ -329,20 +384,38 @@ impl Walker<'_> {
         self.mention_arithmetic(text);
     }
 
-    /// The commands that the command substitutions in `text`, a word of the
-    /// file's code or a here-document's body, run by name ([`Event::Call`]):
-    /// in a subshell, but a function they run there can write the history
-    /// file all the same.
+    /// What the command substitutions in `text`, a word of the file's code
+    /// or a here-document's body, write and run: in a subshell, whose
+    /// settings zsh drops, but a write there writes a file all the same (an
+    /// `fc`, a redirection, one to a descriptor the shell has open, a word
+    /// that names the history file in a function), a function they run there
+    /// can write the history file, and a signal reaches the shell's process
+    /// ([`Event::Ends`]). In a word zsh expands nothing in (`'$(x)'`,
+    /// [`Walker::mention_word`]), only the commands, as before: it is text.
     pub(super) fn substituted(&mut self, text: &str) {
         for code in substitutions(text) {
-            let nested = walk_text_in(&code, self.place, self.function());
-            self.events.extend(
-                nested
-                    .events
-                    .into_iter()
-                    .filter(|event| matches!(event, Event::Call { .. })),
-            );
+            let nested = walk_text_in(&code, self.place, self.function(), false);
+            let literal = self.literal;
+            self.events
+                .extend(nested.events.into_iter().filter(|event| match event {
+                    Event::Call { .. } => true,
+                    Event::Redirect { .. }
+                    | Event::Fc(_)
+                    | Event::HookDoubt { .. }
+                    | Event::Names { .. }
+                    | Event::Ends { signal: true, .. } => !literal,
+                    _ => false,
+                }));
         }
+    }
+
+    /// Note what `word`, a word of the file's code, names
+    /// ([`Walker::mention`]), where a command substitution in one zsh
+    /// expands nothing in (`'$(x)'`) is text ([`Walker::substituted`]).
+    pub(super) fn mention_word(&mut self, word: &Word) {
+        let was = std::mem::replace(&mut self.literal, !word.expands);
+        self.mention(&word.text);
+        self.literal = was;
     }
 
     /// Note a doubt for each assignment in `text`, a word of the file's
@@ -386,10 +459,15 @@ impl Walker<'_> {
     /// the rest of its word or the next word, up to a `--`. zsh expands an
     /// alias named like a precommand that is no builtin in its place (`alias
     /// -- -=...`), as the code of a function of that name the command runs.
-    /// `false` when zsh runs no command: a `command -v` or `-V`, which prints
-    /// what its words are, and an `exec` with a flag it does not know.
-    fn precommands(&mut self, words: &mut std::iter::Peekable<std::vec::IntoIter<Word>>) -> bool {
+    /// `None` when zsh runs no command: a `command -v` or `-V`, which prints
+    /// what its words are, and an `exec` with a flag it does not know; else
+    /// how the command runs ([`Run`]).
+    fn precommands(
+        &mut self,
+        words: &mut std::iter::Peekable<std::vec::IntoIter<Word>>,
+    ) -> Option<Run> {
         let plain = |word: &Word| !word.expands && !word.bare && word.text.len() > 1;
+        let mut run = Run::default();
         while let Some(word) = words.next_if(|word| PRECOMMANDS.contains(&word.text.as_str())) {
             match word.text.as_str() {
                 "-" | "nocorrect" | "time" | "!" => self.events.push(Event::Call {
@@ -409,11 +487,12 @@ impl Walker<'_> {
                         whence |= flags.text.contains(['v', 'V']);
                     }
                     if whence {
-                        return false;
+                        return None;
                     }
                     words.next_if(|word| word.text == "--");
                 }
                 "exec" => {
+                    run.exec = true;
                     while let Some(flags) =
                         words.next_if(|word| plain(word) && word.text.starts_with('-'))
                     {
@@ -425,7 +504,7 @@ impl Walker<'_> {
                             .split_once('a')
                             .map_or((letters, None), |(before, rest)| (before, Some(rest)));
                         if !before.chars().all(|c| matches!(c, 'c' | 'l')) {
-                            return false;
+                            return None;
                         }
                         if argv0 == Some("") {
                             words.next();
@@ -435,7 +514,7 @@ impl Walker<'_> {
                 _ => {}
             }
         }
-        true
+        Some(run)
     }
 
     /// The events of one simple command, `words`, which ran `after` a
@@ -468,18 +547,19 @@ impl Walker<'_> {
         for word in &assignments {
             self.assignment(word, lasting);
         }
-        if !self.precommands(&mut words) {
+        let Some(run) = self.precommands(&mut words) else {
             // `command -v`, which prints what its words are.
             for word in words {
-                self.mention(&word.text);
+                self.mention_word(&word);
             }
             return;
-        }
+        };
         let Some(command) = words.next() else {
             self.computed_assignments(&assignments);
             return;
         };
         let args: Vec<Word> = words.collect();
+        self.ends(&command.text, &args, run.exec);
         self.qualifier(&command.text);
         let function = self.function();
         self.words(&command, &args, function.as_ref());
@@ -491,7 +571,7 @@ impl Walker<'_> {
                 command.text, self.place
             )));
             for arg in &args {
-                self.mention(&arg.text);
+                self.mention_word(arg);
             }
             return;
         }
@@ -553,7 +633,7 @@ impl Walker<'_> {
                 self.print_line(&args);
                 self.print(&args);
             }
-            "return" | "exit" => self.may_stop = true,
+            "return" | "exit" | "bye" | "logout" => self.may_stop = true,
             // `history` takes the flags of `fc`, as `fc -l` does.
             "fc" | "history" => self.fc(&command.text, &args),
             "sysopen" => self.sysopen(&args),
@@ -574,9 +654,9 @@ impl Walker<'_> {
                 self.declare(&command.text, &args, unconditional);
             }
             _ => {
-                self.mention(&command.text);
+                self.mention_word(&command);
                 for arg in &args {
-                    self.mention(&arg.text);
+                    self.mention_word(arg);
                 }
                 if !command.expands {
                     self.events.push(Event::Call {
@@ -673,7 +753,7 @@ impl Walker<'_> {
                 self.events.push(Event::OhMyZsh);
             }
             Some(path) => {
-                self.mention(&path.text);
+                self.mention_word(&path);
                 self.events.push(Event::Source {
                     path,
                     unconditional,
@@ -686,7 +766,7 @@ impl Walker<'_> {
             ))),
         }
         for arg in args {
-            self.mention(&arg.text);
+            self.mention_word(&arg);
         }
     }
 
@@ -705,7 +785,7 @@ impl Walker<'_> {
                 let text = format!("print -P {}", arg.text);
                 self.prompt(&text, arg);
             }
-            self.mention(&arg.text);
+            self.mention_word(arg);
         }
     }
 
@@ -722,6 +802,9 @@ impl Walker<'_> {
             .map_or(word.text.as_str(), |(target, _)| target);
         if READ_AS_NUMBER.contains(&assigned(target)) && !target.contains('[') {
             self.numbers += 1;
+        }
+        if assigned(target) == "TMOUT" {
+            self.tmout(word);
         }
         if self.fpath_assignment(word) {
             return;
@@ -744,7 +827,7 @@ impl Walker<'_> {
                 // An alias, by the parameter that holds them: one added to
                 // (`aliases[h]+=c`), or disabled, the check cannot read.
                 self.alias_params += 1;
-                self.mention(&word.text);
+                self.mention_word(word);
                 if target.contains('[') && !target.ends_with('+') && !name.starts_with("dis_") {
                     let kind = (name == "aliases", name == "galiases");
                     self.alias_value(&word.text, value, word, unconditional, kind);
@@ -760,7 +843,7 @@ impl Walker<'_> {
                 // A function, by the parameter that holds them, whose body
                 // is the value.
                 self.function_params += 1;
-                self.mention(&word.text);
+                self.mention_word(word);
                 self.function_value(target, value, word);
                 return;
             }
@@ -789,7 +872,7 @@ impl Walker<'_> {
                     "XDG_CONFIG_HOME" => self.xdg_config_homes += 1,
                     _ => {}
                 }
-                self.mention(&word.text);
+                self.mention_word(word);
                 return;
             }
         };

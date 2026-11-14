@@ -95,7 +95,12 @@
 //! global, a builtin's flag or name such a word may make, an option that
 //! changes how zsh reads code ([`reading`]), a file the code may
 //! make or write before zsh reads it, and a program a hook runs where a hook
-//! may give it the command line in its environment ([`made`]). A function
+//! may give it the command line in its environment ([`made`]). zsh writes its
+//! history file as it ends, so a hook that may end it (`exit`, `exec zsh`, a
+//! `kill -HUP $$`, from a command substitution too) and a `TMOUT` above 0,
+//! with which zsh ends at a prompt left waiting, are doubts too
+//! ([`walk::ends`]), and so is what a command substitution in a hook writes.
+//! A function
 //! or a regular alias named like the command a NAILS command is typed with
 //! (`sudo`, `nails`) runs with that line, so its code counts as a hook's, and
 //! a global alias named like a word of such a command counts as used
@@ -606,7 +611,12 @@ impl<F: Filesystem> Reader<'_, F> {
                     self.defined.push(name);
                 }
             }
-            Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
+            Event::HookDoubt { function, doubt }
+            | Event::Ends {
+                function, doubt, ..
+            } => {
+                self.in_functions.push((function, Err(doubt)));
+            }
             event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
                 self.reading_event(event, place);
             }
@@ -864,6 +874,23 @@ pub(super) fn zsh<F: Filesystem>(
              environment names run, which zsh expands before a prompt"
                 .to_string(),
         );
+    }
+    // zsh ends by itself once a prompt has waited for the seconds TMOUT
+    // holds, and writes its history file as it ends.
+    for (_, value) in install
+        .env
+        .iter()
+        .flat_map(|env| &env.numbers)
+        .filter(|(name, value)| {
+            name == "TMOUT" && arith::plain_number(value) && !value.chars().all(|c| c == '0')
+        })
+    {
+        scan.doubts.push(format!(
+            "it cannot tell whether zsh writes the history file as it ends by itself, as the \
+             shell's environment sets TMOUT to `{value}`, after which zsh ends once a prompt has \
+             waited that many seconds, and writes the file as it ends (`env -u TMOUT zsh -f` \
+             starts one without it)"
+        ));
     }
     for (name, _) in install
         .env

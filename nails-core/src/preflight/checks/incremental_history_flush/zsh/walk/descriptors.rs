@@ -59,7 +59,7 @@ impl Walker<'_> {
     /// unless `-u` unlocks one.
     pub(super) fn zsystem(&mut self, args: &[Word]) {
         for arg in args {
-            self.mention(&arg.text);
+            self.mention_word(arg);
         }
         if args.first().is_none_or(|sub| sub.text != "flock")
             || args[1..]
@@ -78,7 +78,7 @@ impl Walker<'_> {
     /// hook writes to it, that process may write to any file.
     pub(super) fn connection(&mut self, command: &str, args: &[Word]) {
         for arg in args {
-            self.mention(&arg.text);
+            self.mention_word(arg);
         }
         let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
         self.events.push(Event::Doubt(format!(

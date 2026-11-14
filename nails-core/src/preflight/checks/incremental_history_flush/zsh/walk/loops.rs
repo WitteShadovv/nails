@@ -112,7 +112,7 @@ impl Walker<'_> {
         if let Some(Token::Word(count)) =
             self.tokens.next_if(|token| matches!(token, Token::Word(_)))
         {
-            self.mention(&count.text);
+            self.mention_word(&count);
             self.arith(&count.text, super::Arith::Plain);
         }
         let closer = match self.tokens.peek() {

@@ -615,11 +615,11 @@ fn a_parameter_zsh_reads_as_arithmetic_each_time_it_uses_it_holds_a_number() {
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
     }
-    // A number, declared, made read-only, exported or unset, is none, as a
-    // hardened /etc/profile sets TMOUT.
+    // A number, declared, made read-only, exported or unset, is none (TMOUT
+    // above 0 aside, which may end the shell).
     for rc in [
-        "TMOUT=900\nreadonly TMOUT\nexport TMOUT\n",
-        "typeset -i TMOUT=900\n",
+        "PERIOD=3600\nreadonly PERIOD\nexport PERIOD\n",
+        "typeset -i PERIOD=3600\n",
         "REPORTTIME=10\nPERIOD=3600\nDIRSTACKSIZE=20\n",
         "unset TMOUT\n",
         "TMOUT=\n",
@@ -634,13 +634,17 @@ fn a_parameter_zsh_reads_as_arithmetic_each_time_it_uses_it_holds_a_number() {
     for (value, doubts) in [("pipestatus[$(logit)1]", true), ("900", false)] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", "HISTSIZE=100\n");
-        let install = Install::of(&fs, None, Some(&[("TMOUT".to_string(), value.to_string())]));
+        let install = Install::of(
+            &fs,
+            None,
+            Some(&[("PERIOD".to_string(), value.to_string())]),
+        );
         let found = zsh(&fs, &[PathBuf::from(HOME)], UNKNOWN, &install).doubts;
         assert_eq!(
             found,
             if doubts {
                 vec![
-                    "it cannot tell what code `TMOUT` in the shell's environment runs, which zsh \
+                    "it cannot tell what code `PERIOD` in the shell's environment runs, which zsh \
                      reads as arithmetic each time it uses it"
                         .to_string(),
                 ]

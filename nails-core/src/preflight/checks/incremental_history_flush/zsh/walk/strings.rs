@@ -227,7 +227,7 @@ impl Walker<'_> {
         // (`alias -s {jpg,png}=feh`) stands for those words.
         let mut words = Vec::new();
         for arg in args {
-            self.mention(&arg.text);
+            self.mention_word(arg);
             match brace_list(arg) {
                 Some(listed) => words.extend(listed.into_iter().map(|text| Word {
                     text,
@@ -333,11 +333,11 @@ impl Walker<'_> {
             // stands for it in a redirection.
             self.events.push(Event::Fc(format!("alias {text}")));
         }
-        self.nested_in(value, unconditional, Some(outer));
+        self.nested_in(value, unconditional, Some(outer), false);
         // zsh reads the value with the words where it is used, so one that
         // leaves a function's definition or a structure open (`function`,
         // `function preexec`, `{`) makes them its body or part of it.
-        let walked = walk_text_in(value, self.place, None);
+        let walked = walk_text_in(value, self.place, None, false);
         if walked.confused || walked.unfinished {
             self.events.push(doubt(self.place));
         }
@@ -390,11 +390,11 @@ impl Walker<'_> {
                 let outer = format!("TRAP{signal}");
                 // As a `TRAP...` function of its signal is defined.
                 self.events.push(Event::Define(outer.clone()));
-                self.nested_in(&code.text, unconditional, Some(outer));
+                self.nested_in(&code.text, unconditional, Some(outer), true);
             }
         }
         for arg in args {
-            self.mention(&arg.text);
+            self.mention_word(arg);
         }
     }
 
@@ -428,10 +428,10 @@ impl Walker<'_> {
 
     /// The events of zsh code `text` that zsh runs later as a hook would,
     /// at a time, as a style is looked up or as keys are pressed, read as the
-    /// code of a hook named `hook`.
+    /// code of a hook named `hook`, where zsh is at its top level.
     pub(super) fn hooked(&mut self, text: &str, unconditional: bool, hook: String) {
         self.events.push(Event::Hook(hook.clone()));
-        self.nested_in(text, unconditional, Some(hook));
+        self.nested_in(text, unconditional, Some(hook), true);
     }
 
     /// The events of a `zstyle` of `args`: with `-e`, the code each string
@@ -467,13 +467,13 @@ impl Walker<'_> {
         }
         if args.first().is_none_or(|flag| flag.text != "-e") {
             for arg in args {
-                self.mention(&arg.text);
+                self.mention_word(arg);
             }
             return;
         }
         for (at, arg) in args.iter().enumerate().skip(1) {
             if at < 3 {
-                self.mention(&arg.text);
+                self.mention_word(arg);
             } else if computed(arg) || arg.bare {
                 self.events.push(Event::Doubt(format!(
                     "it cannot tell what code `zstyle -e ... {}` in {} runs",

@@ -110,7 +110,7 @@ impl Walker<'_> {
     pub(super) fn define(&mut self, names: Vec<Word>, paren: bool) {
         let mut first: Option<String> = None;
         for name in names {
-            self.mention(&name.text);
+            self.mention_word(&name);
             self.events.push(Event::Define(name.text.clone()));
             if paren {
                 self.events.push(Event::NamedBody(name.text.clone()));
@@ -137,7 +137,7 @@ impl Walker<'_> {
     /// ([`Event::Hook`]), and autoloads; one an expansion names is a doubt.
     pub(super) fn hook(&mut self, command: &str, args: &[Word]) {
         for arg in args {
-            self.mention(&arg.text);
+            self.mention_word(arg);
         }
         let words: Vec<&Word> = args
             .iter()
@@ -185,7 +185,7 @@ impl Walker<'_> {
     /// copied or deleted may change what typed keys do ([`Event::Rebind`]).
     pub(super) fn zle(&mut self, args: &[Word]) {
         for arg in args {
-            self.mention(&arg.text);
+            self.mention_word(arg);
         }
         let line = || {
             args.iter()
@@ -270,7 +270,7 @@ impl Walker<'_> {
                         keys: true,
                     });
                     self.events.push(Event::Hook(hook.clone()));
-                    self.nested_in(&typed.text, false, Some(hook));
+                    self.nested_in(&typed.text, false, Some(hook), true);
                 }
             }
             return;
