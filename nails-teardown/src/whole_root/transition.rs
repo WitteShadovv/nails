@@ -6,11 +6,10 @@
 //! Activation installs a runtime drop-in that makes this step the `ExecStart=`
 //! of `systemd-soft-reboot.service`, started through the program the plan
 //! records where the host may run SELinux ([`crate::whole_root::exec_prefix`]).
-//! That service is ordered after
-//! `shutdown.target`, `umount.target` and `final.target`, so every unit of the
-//! userspace being left has stopped (journald included) when it runs, and
-//! nothing runs after it but PID 1. It acts only on an **armed** plan
-//! ([`crate::whole_root::plan::Arm`]):
+//! That service is ordered after `shutdown.target`, `umount.target` and
+//! `final.target`, so every unit of the userspace being left has stopped
+//! (journald included) when it runs, and nothing runs after it but PID 1. It
+//! acts only on an **armed** plan ([`crate::whole_root::plan::Arm`]):
 //!
 //! - **Enter** (decoy to hidden): repoint `/run/current-system` to the hidden
 //!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
