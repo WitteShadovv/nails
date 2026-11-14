@@ -27,6 +27,18 @@
 #   5. a plain soft-reboot  -- no NAILS: the positive control, which must still
 #                              carry the trace, so a vacuous pass is impossible.
 #
+# Where the service manager resets the start time across a soft-reboot
+# (systemd 256 and newer) and the decoy keeps classic wtmp, as Arch does, a
+# plain soft-reboot leaves no such trace: its boot record reads as a power
+# cycle's, and step 5 shows that instead. What such a decoy can still be given
+# away by is a record of the hidden session itself, so there a login runs in
+# the session (`login`): a console login through PAM's login stack, which
+# writes a row to lastlog2 (pam_lastlog2) and its records to utmp and wtmp.
+# Step 3 shows the login wrote its row in the session, step 4 that neither it
+# nor any record of it is on the decoy after the way back, and the same login
+# run on the decoy afterwards is the positive control: its row and records are
+# there.
+#
 # Records are read live in the guest and carried to the host-side readers in
 # nix/e2e-tests/lib/records.py (reading live keeps install, power cycle and
 # session in one QEMU process; a disk image would end QEMU and the next boot would
@@ -47,27 +59,36 @@ let
   # The record readers, shared verbatim with the fast-lane unit tests.
   recordsModule = pkgs.writeTextDir "records.py" (builtins.readFile ../../e2e-tests/lib/records.py);
 
-  inherit (self.packages.x86_64-linux) nails;
-
   binShare = {
     tag = "tools";
     target = "/run/tools";
   };
 in
 # `cfg` is one scenario:
-#   entry       {distro,image,release} as in images.nix;
+#   entry       {distro,image,release} as in images.nix, or an entry of
+#               images.nix itself;
 #   install     shell run once after the first boot, to add the record package
 #               the distribution ships but the cloud image omits (may be empty);
-#   assertKind  "wtmpdb" (Debian's SQLite boot writer names soft-reboots) or
-#               "classic-wtmp" (the boot record's time can be backdated).
+#   assertKind  "wtmpdb" (Debian's SQLite boot writer names soft-reboots),
+#               "classic-wtmp" (the boot record's time can be backdated) or
+#               "classic-wtmp-reset" (classic wtmp on a service manager that
+#               resets the start time across a soft-reboot);
+#   login       whether a login runs in the hidden session and, as the
+#               positive control, on the decoy after it (default false);
+#   nails       the binary (default: the release binary), a test-only build
+#               that admits the family for an image not admitted yet;
+#   target      nix-vm-test's output (default "driver": the Debian scenario
+#               installs a package over the guest's network).
 cfg:
 let
   install = cfg.install or "";
+  login = cfg.login or false;
+  nails = cfg.nails or self.packages.x86_64-linux.nails;
   inherit (cfg) assertKind;
 in
 distroVm.buildVmTest {
   inherit (cfg) entry;
-  target = "driver";
+  target = cfg.target or "driver";
 
   sharedDirs.${binShare.tag} = {
     source = "${nails}/bin";
@@ -93,11 +114,19 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${recordsModule}")
     import records  # ty: ignore[unresolved-import]  # noqa: E402
 
+    # The distribution scenarios' helpers, for the decoy's disk swap.
+    sys.path.insert(0, "${../py}")
+    import distro_checks  # noqa: E402
+
     nails = "${binShare.target}/nails"
     config = "/run/nails-records.toml"
     nails_cmd = f"{nails} --config {shlex.quote(config)}"
     assert_kind = ${builtins.toJSON assertKind}
     install_script = ${builtins.toJSON install}
+    run_login = ${if login then "True" else "False"}
+
+    # The terminal of the login the scenario runs (`login`).
+    LOGIN_TTY = "tty5"
 
     # wtmpdb names a boot soft-reboot, kept from the bus, once the kernel has
     # been up for more than this; the way back must happen past it.
@@ -238,6 +267,30 @@ distroVm.buildVmTest {
             qmp("set-action", {"reboot": "shutdown"})
         assert boot_id() != before, f"{label}: the kernel did not restart"
         prepare_boot()
+        swaps = distro_checks.disk_swaps(vm.succeed("cat /proc/swaps"))
+        assert not swaps, f"{label}: a disk swap is on after the reboot: {swaps}"
+
+
+    def pam_login(label: str) -> None:
+        # A console login as root through PAM's login stack, as a getty's
+        # login runs it on a terminal: systemd opens the PAM session and
+        # writes the session's utmp and wtmp records (UtmpMode=user).
+        vm.succeed(
+            f"systemd-run --wait --collect --quiet --unit=records-{label} "
+            + "-p PAMName=login -p User=root "
+            + f"-p TTYPath=/dev/{LOGIN_TTY} -p UtmpIdentifier={LOGIN_TTY} "
+            + "-p UtmpMode=user /bin/true"
+        )
+
+
+    def login_records(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        # The utmp or wtmp records of a session on the login's terminal.
+        return [
+            row
+            for row in rows
+            if row.get("line") == LOGIN_TTY
+            and row.get("type") in ("USER_PROCESS", "LOGIN_PROCESS", "DEAD_PROCESS")
+        ]
 
 
     def wait_for_reconcile() -> None:
@@ -254,6 +307,19 @@ distroVm.buildVmTest {
 
     vm.wait_for_unit("multi-user.target")
     prepare_boot()
+
+    with subtest("the decoy's disk swap off, at every boot"):
+        # The hidden root is backed by a file in RAM, which a disk swap could
+        # take onto the decoy disk, and check refuses an active one. Every
+        # swap line of the fstab is made noauto, so no boot turns it on again:
+        # the power cycle, the way back and the control all boot without it.
+        fstab = vm.succeed("cat /etc/fstab")
+        if distro_checks.fstab_swaps(fstab):
+            noauto = distro_checks.with_swaps_noauto(fstab)
+            vm.succeed(f"printf %s {shlex.quote(noauto)} > /etc/fstab && systemctl daemon-reload")
+        for name in distro_checks.disk_swaps(vm.succeed("cat /proc/swaps")):
+            vm.succeed(f"swapoff {shlex.quote(name)}")
+        print(vm.succeed("cat /proc/swaps"))
 
     if install_script:
         with subtest("install the distribution's record package"):
@@ -282,6 +348,20 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
         session.assert_hidden_root(vm)
+        hidden_wtmp_login = False
+        if run_login:
+            # A login in the hidden session writes its records there.
+            pam_login("hidden")
+            hidden = capture("hidden-login")
+            hidden_rows = records.sql_rows_added(reference.lastlog2, hidden.lastlog2)
+            print(f"=== lastlog2 rows the hidden login wrote ===\n{hidden_rows}")
+            assert hidden_rows, (
+                "the login in the hidden session wrote no lastlog2 row, so its "
+                + "absence from the decoy would prove nothing"
+            )
+            hidden_wtmp = login_records(records.utmp_added(reference.wtmp, hidden.wtmp))
+            print(f"=== wtmp records of the hidden login ===\n{hidden_wtmp}")
+            hidden_wtmp_login = bool(hidden_wtmp)
         # Work in the session until the kernel has been up past wtmpdb's
         # threshold, as any real session does: below it, a writer kept from
         # the bus dates the boot to the cold boot instead.
@@ -365,7 +445,34 @@ distroVm.buildVmTest {
                 f"record (after: {after_boot}, reference: {reference_boot})"
             )
 
+    if run_login:
+        with subtest("no record of the hidden session's login is on the decoy"):
+            # The decoy's lastlog2 and btmp hold what they held before the
+            # session, and its wtmp no record of a session on the login's
+            # terminal: what the way back added is the boot's.
+            rows = records.sql_rows_added(reference.lastlog2, after.lastlog2)
+            assert not rows, f"the decoy's lastlog2 gained rows: {rows}"
+            assert after.lastlog2 == reference.lastlog2, (
+                f"the decoy's lastlog2 changed: {reference.lastlog2} -> {after.lastlog2}"
+            )
+            failed = records.utmp_added(reference.btmp, after.btmp)
+            assert not failed, f"the decoy's btmp gained records: {failed}"
+            leaked = login_records(records.utmp_added(reference.wtmp, after.wtmp))
+            assert not leaked, f"the decoy's wtmp holds the hidden login: {leaked}"
+
+        with subtest("the same login on the decoy is recorded there (positive control)"):
+            pam_login("decoy")
+            decoy = capture("decoy-login")
+            rows = records.sql_rows_added(after.lastlog2, decoy.lastlog2)
+            assert rows, "a login on the decoy wrote no lastlog2 row the reader sees"
+            logged = login_records(records.utmp_added(after.wtmp, decoy.wtmp))
+            print(f"=== the decoy login's wtmp records ===\n{logged}")
+            if hidden_wtmp_login:
+                assert logged, "a login on the decoy wrote no wtmp record the reader sees"
+            after = decoy
+
     with subtest("a plain soft-reboot still carries the trace (positive control)"):
+        before_control = guest_clock()
         follow("systemctl soft-reboot", "control-soft-reboot")
         control = capture("after-control-soft-reboot")
         if assert_kind == "wtmpdb":
@@ -374,6 +481,18 @@ distroVm.buildVmTest {
                 "a plain soft-reboot was expected to leave a wtmpdb soft-reboot "
                 f"boot row, so the test can detect one; rows added: {diff['wtmpdb_added']}"
             )
+        elif assert_kind == "classic-wtmp-reset":
+            # On a service manager that resets the start time across a
+            # soft-reboot, a plain soft-reboot's boot record reads as a power
+            # cycle's: classic wtmp cannot tell one, so the way back needs no
+            # correction there, and the login above is what could give a
+            # session away.
+            wait_for_reconcile()
+            problems = records.classic_way_back_problems(
+                after.wtmp, control.wtmp, (before_control, guest_clock())
+            )
+            print(f"=== classic wtmp after a plain soft-reboot ===\n{control.wtmp}")
+            assert not problems, "\n".join(problems)
         else:
             assert records.last_boot_is_backdated(control.wtmp), (
                 "on this platform a soft-reboot was expected to carry the cold-boot "
