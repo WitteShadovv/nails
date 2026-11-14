@@ -49,6 +49,10 @@ mod parameters;
 #[path = "zsh_ends_tests.rs"]
 mod ends;
 
+// A builtin's name that runs an outside program.
+#[path = "zsh_outside_tests.rs"]
+mod outside;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
