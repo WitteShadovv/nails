@@ -19,13 +19,19 @@
 //! `print`), a function the files define or autoload, whose code the check
 //! reads, and a stock one whose work it reads by its name; a path given in
 //! an option's word counts as given ([`given`]: `sort -o/home/alice/.x`,
-//! `--output=~/.x`, `curl -o.x`). For a file a
+//! `--output=~/.x`, `curl -o.x`). Such a command given a directory a file
+//! the check reads may be in counts as a write of it too, as it may write any
+//! file below it (`cp -r ~/p ~/.zd`, `rsync -a ~/p/ ~/`, `tar -C ~`): one the
+//! check resolves, and for a command known to write the files it names one
+//! whose expansions may be any (`cp -r ~/p $d`, a path below the working
+//! directory, `.`); and a program that unpacks an archive writes any file
+//! ([`extracts`]). For a file a
 //! function's code reads, which a hook may read after every command, any such
 //! write counts, and one whose path an expansion makes at the top or in a
-//! function the top runs. A program that writes a file it is not given the
-//! name of, or that it is given by a path whose last part an expansion makes
-//! where it is not known to write the files it names, the check does not
-//! see. A hook may give the programs it runs the command line in their
+//! function the top runs. A program that writes a file it is given neither
+//! the name of nor a directory above (`chezmoi apply`), or that it is given
+//! by a path an expansion makes where it is not known to write the files it
+//! names, the check does not see. A hook may give the programs it runs the command line in their
 //! environment, once it sets a parameter to what an expansion makes
 //! (`preexec() { LINE=$1; logger }`).
 
@@ -351,6 +357,62 @@ fn named(texts: &[&Forms], bases: &[(&str, bool)]) -> Vec<usize> {
     total
 }
 
+/// The programs that unpack an archive, into the working directory unless a
+/// word names another, whose files the check does not know.
+const EXTRACTORS: &[&str] = &[
+    "tar", "bsdtar", "unzip", "cpio", "7z", "7za", "7zr", "unrar", "ar", "pax",
+];
+
+/// Whether `command` unpacks an archive, whose files may be any
+/// ([`EXTRACTORS`]).
+pub(super) fn extracts(command: &str) -> bool {
+    EXTRACTORS.contains(&program(command))
+}
+
+/// The pattern of the directory `text`, a path a command is given as
+/// written, names, where the check cannot resolve it ([`Reader::under`]):
+/// the value of an option's word past its `=`, each expansion and a `~` at
+/// its start standing for any characters ([`any_expansion`]), and one that
+/// is not absolute below the working directory, which may be any; `.` and
+/// `..` are that or above it, any.
+fn directory_pattern(text: &str) -> String {
+    let text = if text.starts_with('-') {
+        text.rsplit_once('=').map_or(text, |(_, value)| value)
+    } else {
+        text
+    };
+    let mut rest = text;
+    while let Some(after) = rest.strip_prefix("./") {
+        rest = after.trim_start_matches('/');
+    }
+    if matches!(rest, "" | "." | "..") || rest.starts_with("../") {
+        return ANY.to_string();
+    }
+    let pattern = any_expansion(rest);
+    let pattern = if rest.starts_with(['/', '~']) || pattern.starts_with(ANY) {
+        pattern
+    } else {
+        format!("{ANY}/{pattern}")
+    };
+    let trimmed = pattern.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Whether `pattern`, a directory's path where [`ANY`] stands for any
+/// characters, may hold the file at `path`: names it or a directory above
+/// it.
+fn under(pattern: &str, path: &Path) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    path.ancestors().any(|dir| {
+        let dir: Vec<char> = dir.to_string_lossy().chars().collect();
+        matches(&pattern, &dir)
+    })
+}
+
 /// Where in the files read a file that a function's code reads is read: as
 /// the function runs, which may be after any command the files run, a hook's
 /// included.
@@ -461,6 +523,25 @@ impl<F: Filesystem> Reader<'_, F> {
                 (expanded, plain, what, *order, function.as_deref())
             })
             .collect();
+        // Whether a write in the function `function` when in one, `order`,
+        // and to one path (`plain`), runs before zsh reads a file at `at`.
+        // What a function's code reads, zsh reads as the function runs,
+        // which may be after any command the files run: a write to a path as
+        // written anywhere, and one an expansion makes at the top or in a
+        // function the top runs, counts. One a hook makes is a doubt of its
+        // own ([`super::runs`]). A file is read once the events before it
+        // are applied, the one that writes it among them where it is the last
+        // command of the file before (`at` is its order then).
+        let before = |at: usize, order: usize, function: Option<&str>, plain: bool| {
+            if at == IN_FUNCTION {
+                plain || function.is_none_or(|function| first_calls.contains_key(function))
+            } else {
+                match function {
+                    None => order <= at,
+                    Some(function) => first_calls.get(function).is_some_and(|call| *call <= at),
+                }
+            }
+        };
         let mut doubts = Vec::new();
         for (path, at, missing) in &files {
             let Some(base) = path.file_name().and_then(|name| name.to_str()) else {
@@ -475,29 +556,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 writes
                     .iter()
                     .find(|(expanded, plain, _, order, function)| {
-                        // What a function's code reads, zsh reads as the
-                        // function runs, which may be after any command the
-                        // files run: a write to a path as written anywhere,
-                        // and one an expansion makes at the top or in a
-                        // function the top runs, counts. One a hook makes is a
-                        // doubt of its own ([`super::runs`]).
-                        // A file is read once the events before it are
-                        // applied, the one that writes it among them where
-                        // it is the last command of the file before (`at`
-                        // is its order then).
-                        let before = if *at == IN_FUNCTION {
-                            *plain
-                                || function
-                                    .is_none_or(|function| first_calls.contains_key(function))
-                        } else {
-                            match function {
-                                None => order <= at,
-                                Some(function) => {
-                                    first_calls.get(function).is_some_and(|call| call <= at)
-                                }
-                            }
-                        };
-                        before
+                        before(*at, *order, *function, *plain)
                             && if *plain {
                                 expanded == base || *expanded == compiled
                             } else {
@@ -505,6 +564,17 @@ impl<F: Filesystem> Reader<'_, F> {
                             }
                     })
                     .map(|(_, _, what, ..)| format!("{what} before zsh reads it"))
+                    .or_else(|| {
+                        self.under
+                            .iter()
+                            .find(|(pattern, _, order, function)| {
+                                before(*at, *order, function.as_deref(), !pattern.contains(ANY))
+                                    && under(pattern, path)
+                            })
+                            .map(|(_, what, ..)| {
+                                format!("{what}, a directory it may be in, before zsh reads it")
+                            })
+                    })
             };
             if let Some(why) = why {
                 let now = if *missing {
@@ -574,6 +644,48 @@ impl<F: Filesystem> Reader<'_, F> {
         self.writes.push((last, what, self.order, function));
     }
 
+    /// Note that a command given `target`, a path as written, may write in
+    /// the directory it names, any file below it (`cp -r ~/p ~/.zd`,
+    /// `tar -C ~ -xf ~/p.tar`, `rsync -a ~/p/ ~/`), which the warning names
+    /// as `what`, in the function `function` when in one: one the check
+    /// resolves, and, for a command known to write the files its words
+    /// name (`creates`), any other as a pattern ([`directory_pattern`]).
+    pub(super) fn under(
+        &mut self,
+        target: &str,
+        what: &str,
+        function: Option<&String>,
+        creates: bool,
+    ) {
+        let value = if target.starts_with('-') {
+            target.rsplit_once('=').map_or(target, |(_, value)| value)
+        } else {
+            target
+        };
+        let word = super::Word {
+            text: value.to_string(),
+            expands: value.contains(['$', '`']),
+            quoted: false,
+            bare: false,
+        };
+        let patterns: Vec<String> = match self.resolve(&word) {
+            Some(paths) => paths
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+            None if creates => vec![directory_pattern(target)],
+            None => return,
+        };
+        for pattern in patterns {
+            let pattern = match pattern.trim_end_matches('/') {
+                "" => "/".to_string(),
+                trimmed => trimmed.to_string(),
+            };
+            self.under
+                .push((pattern, what.to_string(), self.order, function.cloned()));
+        }
+    }
+
     /// Note a doubt when a hook sets a parameter to what an expansion makes,
     /// which may be the command line (`LINE=$1`), while a hook runs a program
     /// that is no function, alias or builtin: zsh gives each program it runs
@@ -612,7 +724,31 @@ impl<F: Filesystem> Reader<'_, F> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Forms, given, may_name, named, names_among, names_file, names_of};
+    use super::{
+        Forms, directory_pattern, given, may_name, named, names_among, names_file, names_of, under,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn a_directory_a_command_is_given_may_hold_a_file_below_it() {
+        let any = super::ANY;
+        assert_eq!(directory_pattern("~/.zd"), format!("{any}/.zd"));
+        assert_eq!(directory_pattern("~/"), any.to_string());
+        assert_eq!(directory_pattern("$d"), any.to_string());
+        assert_eq!(directory_pattern("."), any.to_string());
+        assert_eq!(directory_pattern("./x/"), format!("{any}/x"));
+        assert_eq!(directory_pattern("../x"), any.to_string());
+        assert_eq!(directory_pattern("p"), format!("{any}/p"));
+        assert_eq!(directory_pattern("--directory=/x/y/"), "/x/y");
+        assert_eq!(directory_pattern("/"), "/");
+        let zshrc = Path::new("/home/alice/.zd/.zshrc");
+        assert!(under(&format!("{any}/.zd"), zshrc));
+        assert!(under("/home/alice", zshrc));
+        assert!(under("/", zshrc));
+        assert!(under(&any.to_string(), zshrc));
+        assert!(!under(&format!("{any}/.cache"), zshrc));
+        assert!(!under("/home/alice/.z", zshrc));
+    }
 
     #[test]
     fn an_option_s_word_gives_a_path_by_its_last_part_or_past_a_letter() {

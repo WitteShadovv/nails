@@ -278,6 +278,10 @@ struct Reader<'a, F: Filesystem> {
     /// function does, and where; and how many events were applied so far,
     /// which orders them ([`Reader::made`]).
     writes: Vec<(String, String, usize, Option<String>)>,
+    /// The directories a command's words may name, in which it may write
+    /// any file ([`Reader::under`]): each as a pattern, what the warning
+    /// names, where and the function it is in.
+    under: Vec<(String, String, usize, Option<String>)>,
     top_calls: Vec<(String, usize)>,
     order: usize,
     /// The parameters a function sets to what an expansion makes: the
@@ -746,14 +750,21 @@ impl<F: Filesystem> Reader<'_, F> {
                 && !self.autoloads.contains(&name)
                 && !walk::STOCK_NAMES.contains(&name.as_str()))
         {
-            // A path an option's word gives counts too (`-o/x/.y`, `-o.y`).
+            // A path an option's word gives counts too (`-o/x/.y`, `-o.y`),
+            // and a directory a file zsh reads may be in.
             for arg in &args {
+                let what = format!("`{name}` in {place} names `{}`", arg.text);
                 for path in made::given(&arg.text) {
                     if creates || !made::computed(path) {
-                        let what = format!("`{name}` in {place} names `{}`", arg.text);
-                        self.makes(path, what, function.clone());
+                        self.makes(path, what.clone(), function.clone());
                     }
+                    self.under(path, &what, function.as_ref(), creates);
                 }
+            }
+            if made::extracts(&name) {
+                // Into the working directory, or one a word names.
+                let what = format!("`{name}` in {place}, which unpacks an archive,");
+                self.under(".", &what, function.as_ref(), true);
             }
         }
         if function.is_none() {
@@ -1037,6 +1048,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         looked: Vec::new(),
         function_code: false,
         writes: Vec::new(),
+        under: Vec::new(),
         top_calls: Vec::new(),
         order: 0,
         computed: Vec::new(),
