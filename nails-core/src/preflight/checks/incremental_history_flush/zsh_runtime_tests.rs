@@ -1273,12 +1273,25 @@ fn a_function_defined_by_each_of_its_names_or_one_zsh_expands_is_read_by_each() 
         );
         assert!(warns(&fs), "{definition}");
     }
-    // Names that are no hook's, and an expanded name whose code writes
-    // nothing, are none.
+    // Names that are no hook's are none. An expanded name whose code writes
+    // nothing may name a builtin by which the walk reads a setting, which
+    // the function then runs in place of (`unset`), a doubt of its own.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "f=$HISTFILE\nn=preexec\nfunction $n { print -Pn '%~' }\n",
+    );
+    assert_eq!(
+        scan(&fs, UNKNOWN).doubts,
+        [
+            "it cannot tell what the files set where they run `$n`, as /home/alice/.zshrc defines \
+          a function or an alias `$n`, which zsh runs in place of the builtin of that name"
+        ]
+    );
     for definition in [
         format!("function x y {write}"),
         format!("x y () {write}"),
-        "n=preexec\nfunction $n { print -Pn '%~' }".to_string(),
         "function { setopt localoptions; : }".to_string(),
     ] {
         let fs = MockFilesystem::new();

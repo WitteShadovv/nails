@@ -327,7 +327,17 @@ impl<F: Filesystem> Reader<'_, F> {
     /// a pattern of `-m`, or any where a word an expansion, brace expansion or
     /// a glob may make stands among them; none with `-a`, `-f`, `-p`, `-r` or
     /// `-s`, which disable aliases, functions, patterns or reserved words.
-    pub(super) fn disable(&mut self, args: &[Word]) {
+    /// One that may take away a builtin by which the walk reads a setting is
+    /// a doubt ([`Reader::disable_setters`]).
+    pub(super) fn disable(&mut self, args: &[Word], place: &str) {
+        let known = self.disabled.len();
+        self.disable_names(args);
+        let added = self.disabled[known..].to_vec();
+        self.disable_setters(&added, place);
+    }
+
+    /// Note the builtins a `disable` of `args` takes away ([`Reader::disable`]).
+    fn disable_names(&mut self, args: &[Word]) {
         let mut at = 0;
         let mut letters = String::new();
         while let Some(word) = args.get(at) {
