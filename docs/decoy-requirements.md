@@ -531,6 +531,47 @@ logind.
 - Nix, if you use it, installed inside a hidden session, not on the decoy
   (`decoy-nix-trace`; see [Nix on the decoy](#nix-on-the-decoy)).
 
+### Arch Linux
+
+Arch is not admitted yet: `nails check` and `nails activate` refuse it
+(`platform`). What follows is what an Arch decoy needs as far as the
+distribution tests show it, on the arch-boxes cloud image (a btrfs root
+compressed with zstd, an ESP that systemd mounts on demand at `/efi` and a swap
+file in the fstab), run with a test-only build that admits Arch. An install
+made with archinstall (btrfs subvolumes, the ESP in the fstab, systemd-boot) is
+not tested yet.
+
+- **Volatile journald**: `Storage=volatile` in `journald.conf` or a
+  `journald.conf.d/*.conf` drop-in. arch-boxes keeps a persistent journal,
+  which `decoy-persistence` refuses.
+- **No disk swap at activation**: `swap` refuses an active disk swap (RAM-only
+  zram passes). The hidden session keeps the fstab's swap off (see
+  [Writes that bypass the overlays](#writes-that-bypass-the-overlays)), but the
+  decoy turns a swap line it keeps on again at every boot, the way back of a
+  session included. Turn the swap off before each activation
+  (`sudo swapoff /swap/swapfile`), or add `noauto` to the line's options, or
+  remove the line, so that no boot turns it on.
+- **The ESP mounted on demand**: where systemd's GPT auto-generator mounts the
+  ESP at `/efi` because the fstab has no line for it, the hidden session gets
+  it bound read-only at `/efi`, and the decoy's automount is back after the way
+  back.
+- With `systemd-coredump` keeping core dumps on the disk, as it does on
+  arch-boxes, `decoy-persistence` warns: set `Storage=none` and
+  `ProcessSizeMax=0` under `[Coredump]` in a `coredump.conf.d/*.conf` drop-in.
+- logind suspends on a closed lid by default, and `sleep-policy` warns (see
+  [Suspend and the lid switch](#suspend-and-the-lid-switch)).
+- The kernel of arch-boxes, Arch's `linux` package, does not zero freed memory,
+  and `memory-wipe` warns: add `init_on_free=1` to the kernel command line.
+- **Login records**: Arch keeps classic wtmp, and lastlog2 through
+  `pam_lastlog2`. A login in a hidden session writes its lastlog2 row and its
+  wtmp records in the hidden session only: after the way back the decoy's
+  lastlog2 and btmp are as they were, and its wtmp holds no record of that
+  login. systemd 262 takes a new start time at a soft-reboot, so the boot
+  record of the way back reads as a power cycle's.
+- **`nails rehearse`**: a raw scan cannot prove a canary absent from the
+  compressed btrfs root, so `rehearse scan` reports the root's device as not
+  checked and exits 9.
+
 ## The sudo-log exposure and its mitigation
 
 Running `sudo nails …` is itself a sensitive event: sudo logs the invoking user,
