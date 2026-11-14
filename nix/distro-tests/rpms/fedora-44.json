@@ -1,0 +1,258 @@
+{
+  "archive": "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/44/Everything/x86_64/os/",
+  "image": "fedora-44",
+  "imageFile": "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+  "inImage": {
+    "abrt": null,
+    "firewalld": null,
+    "tuned": null
+  },
+  "packages": [
+    {
+      "file": "abrt-2.17.8-3.fc44.x86_64.rpm",
+      "nevra": "abrt-2.17.8-3.fc44.x86_64",
+      "path": "Packages/a/abrt-2.17.8-3.fc44.x86_64.rpm",
+      "sha256": "sha256-KT4LvPiLFU5KBYXUTOrZJPl0QWUqVi3nhJRXfMfpFLg=",
+      "size": 547764
+    },
+    {
+      "file": "abrt-dbus-2.17.8-3.fc44.x86_64.rpm",
+      "nevra": "abrt-dbus-2.17.8-3.fc44.x86_64",
+      "path": "Packages/a/abrt-dbus-2.17.8-3.fc44.x86_64.rpm",
+      "sha256": "sha256-IbQAGqkCY0ertqvRuIFOqX8J+sdFgzhII71fdzybzwM=",
+      "size": 64614
+    },
+    {
+      "file": "abrt-libs-2.17.8-3.fc44.x86_64.rpm",
+      "nevra": "abrt-libs-2.17.8-3.fc44.x86_64",
+      "path": "Packages/a/abrt-libs-2.17.8-3.fc44.x86_64.rpm",
+      "sha256": "sha256-o24gr/S87savvxSGcXCMV7HOPcTwdO+Oy3fCHBRT830=",
+      "size": 37467
+    },
+    {
+      "file": "augeas-libs-1.14.2-0.9.20260120gitf4135e3.fc44.x86_64.rpm",
+      "nevra": "augeas-libs-1.14.2-0.9.20260120gitf4135e3.fc44.x86_64",
+      "path": "Packages/a/augeas-libs-1.14.2-0.9.20260120gitf4135e3.fc44.x86_64.rpm",
+      "sha256": "sha256-SQuUMUnI03exbhCo6tn4wtK7ApKTqjCbzASOveRARWE=",
+      "size": 435731
+    },
+    {
+      "file": "dbus-tools-1.16.2-1.fc44.x86_64.rpm",
+      "nevra": "dbus-tools-1:1.16.2-1.fc44.x86_64",
+      "path": "Packages/d/dbus-tools-1.16.2-1.fc44.x86_64.rpm",
+      "sha256": "sha256-vhtk0/ZuIqNtpzsLNfh1XMMg4svsuLjJdsNsVYQxqIM=",
+      "size": 45450
+    },
+    {
+      "file": "dmidecode-3.6-9.fc44.x86_64.rpm",
+      "nevra": "dmidecode-1:3.6-9.fc44.x86_64",
+      "path": "Packages/d/dmidecode-3.6-9.fc44.x86_64.rpm",
+      "sha256": "sha256-WeY4bSCbI8+0tyQPwxHiG5iqfmOBlGDnrr4/95oeO6Y=",
+      "size": 100507
+    },
+    {
+      "file": "duktape-2.7.0-11.fc44.x86_64.rpm",
+      "nevra": "duktape-2.7.0-11.fc44.x86_64",
+      "path": "Packages/d/duktape-2.7.0-11.fc44.x86_64.rpm",
+      "sha256": "sha256-kLSH6ub78mNrV17t2mx1K1i9XktrJMfavLjXTGMZofM=",
+      "size": 176145
+    },
+    {
+      "file": "ethtool-6.19-1.fc44.x86_64.rpm",
+      "nevra": "ethtool-2:6.19-1.fc44.x86_64",
+      "path": "Packages/e/ethtool-6.19-1.fc44.x86_64.rpm",
+      "sha256": "sha256-XStbIS0UxUMnzadq+qtxPGNR86PD17sQU7iotclFFaw=",
+      "size": 336517
+    },
+    {
+      "file": "firewalld-2.4.0-2.fc44.noarch.rpm",
+      "nevra": "firewalld-2.4.0-2.fc44.noarch",
+      "path": "Packages/f/firewalld-2.4.0-2.fc44.noarch.rpm",
+      "sha256": "sha256-tXusnG6l3e9NP0DqJE5sk5vi8BMIsLpx/mearPjz5rc=",
+      "size": 545533
+    },
+    {
+      "file": "firewalld-filesystem-2.4.0-2.fc44.noarch.rpm",
+      "nevra": "firewalld-filesystem-2.4.0-2.fc44.noarch",
+      "path": "Packages/f/firewalld-filesystem-2.4.0-2.fc44.noarch.rpm",
+      "sha256": "sha256-vaa8D2ksVzZDXoXa+xOLlAIY+72FJiYFMpvjT5GbHDI=",
+      "size": 10425
+    },
+    {
+      "file": "hdparm-9.65-10.fc44.x86_64.rpm",
+      "nevra": "hdparm-9.65-10.fc44.x86_64",
+      "path": "Packages/h/hdparm-9.65-10.fc44.x86_64.rpm",
+      "sha256": "sha256-KTYfi01dLEH27DIN7s07PptA6gjnDK+VycthgzONRLc=",
+      "size": 98281
+    },
+    {
+      "file": "libreport-2.17.15-10.fc44.x86_64.rpm",
+      "nevra": "libreport-2.17.15-10.fc44.x86_64",
+      "path": "Packages/l/libreport-2.17.15-10.fc44.x86_64.rpm",
+      "sha256": "sha256-9LALWDIYKEQ1c9XBTY+6k1bMG+d3bzzKovwPDSDufuw=",
+      "size": 542683
+    },
+    {
+      "file": "libreport-filesystem-2.17.15-10.fc44.noarch.rpm",
+      "nevra": "libreport-filesystem-2.17.15-10.fc44.noarch",
+      "path": "Packages/l/libreport-filesystem-2.17.15-10.fc44.noarch.rpm",
+      "sha256": "sha256-YBchAjL+1VFKW6mJjbPly894zYBVTNVGpxnaAiF6ui0=",
+      "size": 9850
+    },
+    {
+      "file": "libreport-plugin-systemd-journal-2.17.15-10.fc44.x86_64.rpm",
+      "nevra": "libreport-plugin-systemd-journal-2.17.15-10.fc44.x86_64",
+      "path": "Packages/l/libreport-plugin-systemd-journal-2.17.15-10.fc44.x86_64.rpm",
+      "sha256": "sha256-XYBvjgO55JnxdcZHV3ZCbOFUUeIdX5+kPuHgkH/3eBw=",
+      "size": 19154
+    },
+    {
+      "file": "libreport-plugin-ureport-2.17.15-10.fc44.x86_64.rpm",
+      "nevra": "libreport-plugin-ureport-2.17.15-10.fc44.x86_64",
+      "path": "Packages/l/libreport-plugin-ureport-2.17.15-10.fc44.x86_64.rpm",
+      "sha256": "sha256-BAZU0airxnKn3qQWrD+QjGY/mKfo/fOLD3V2ZL2SPKs=",
+      "size": 33989
+    },
+    {
+      "file": "libreport-web-2.17.15-10.fc44.x86_64.rpm",
+      "nevra": "libreport-web-2.17.15-10.fc44.x86_64",
+      "path": "Packages/l/libreport-web-2.17.15-10.fc44.x86_64.rpm",
+      "sha256": "sha256-mkX9HOfLh9936L6KcF1uZ/BAbVwmtNPFGmCDsL0vKDM=",
+      "size": 31610
+    },
+    {
+      "file": "polkit-127-2.fc44.2.x86_64.rpm",
+      "nevra": "polkit-127-2.fc44.2.x86_64",
+      "path": "Packages/p/polkit-127-2.fc44.2.x86_64.rpm",
+      "sha256": "sha256-ClTtEq0nu0oDQbB9PcldQc0L3Q7p6h+MSrDp54pD8pE=",
+      "size": 175939
+    },
+    {
+      "file": "polkit-libs-127-2.fc44.2.x86_64.rpm",
+      "nevra": "polkit-libs-127-2.fc44.2.x86_64",
+      "path": "Packages/p/polkit-libs-127-2.fc44.2.x86_64.rpm",
+      "sha256": "sha256-dIQSBHdEvlIW/9epJoTt3epoi17BEjwI3l8fNoTHGdc=",
+      "size": 74525
+    },
+    {
+      "file": "python3-abrt-2.17.8-3.fc44.x86_64.rpm",
+      "nevra": "python3-abrt-2.17.8-3.fc44.x86_64",
+      "path": "Packages/p/python3-abrt-2.17.8-3.fc44.x86_64.rpm",
+      "sha256": "sha256-22xhlHWRF7BjWY6N5pAsRKMO8OhuIlfApj5rtMFb7P0=",
+      "size": 40898
+    },
+    {
+      "file": "python3-augeas-1.2.0-7.fc44.x86_64.rpm",
+      "nevra": "python3-augeas-1.2.0-7.fc44.x86_64",
+      "path": "Packages/p/python3-augeas-1.2.0-7.fc44.x86_64.rpm",
+      "sha256": "sha256-WCV1IQDMbEFkbp0+iFXN8nuhLYGQObIZfNNlCw2WRO0=",
+      "size": 52142
+    },
+    {
+      "file": "python3-cffi-2.0.0-3.fc44.x86_64.rpm",
+      "nevra": "python3-cffi-2.0.0-3.fc44.x86_64",
+      "path": "Packages/p/python3-cffi-2.0.0-3.fc44.x86_64.rpm",
+      "sha256": "sha256-pBNu/AVs/bQ19tzeZTKLw4r6AuWlTLX0FADuKaRssDE=",
+      "size": 332451
+    },
+    {
+      "file": "python3-firewall-2.4.0-2.fc44.noarch.rpm",
+      "nevra": "python3-firewall-2.4.0-2.fc44.noarch",
+      "path": "Packages/p/python3-firewall-2.4.0-2.fc44.noarch.rpm",
+      "sha256": "sha256-LPtHuUXIoTaO3jzQMJDGJ90TC5g0vSPkWDFBdnc/VUo=",
+      "size": 528639
+    },
+    {
+      "file": "python3-gobject-base-3.56.2-1.fc44.x86_64.rpm",
+      "nevra": "python3-gobject-base-3.56.2-1.fc44.x86_64",
+      "path": "Packages/p/python3-gobject-base-3.56.2-1.fc44.x86_64.rpm",
+      "sha256": "sha256-41UzgxYGB91VwR9cifSQvzqmxXr2ujNBmPQP+1BTjA8=",
+      "size": 413594
+    },
+    {
+      "file": "python3-inotify-0.9.6-43.fc44.noarch.rpm",
+      "nevra": "python3-inotify-0.9.6-43.fc44.noarch",
+      "path": "Packages/p/python3-inotify-0.9.6-43.fc44.noarch.rpm",
+      "sha256": "sha256-n5ue8nrSVIyZN98Fr4YS5L7JZCHgKkqgtDn4NVnxX5E=",
+      "size": 67621
+    },
+    {
+      "file": "python3-libreport-2.17.15-10.fc44.x86_64.rpm",
+      "nevra": "python3-libreport-2.17.15-10.fc44.x86_64",
+      "path": "Packages/p/python3-libreport-2.17.15-10.fc44.x86_64.rpm",
+      "sha256": "sha256-yuuQ7vTVobNMAza1d3S1lXK928yG5KT8aG68rViMy4o=",
+      "size": 146803
+    },
+    {
+      "file": "python3-linux-procfs-0.7.4-2.fc44.noarch.rpm",
+      "nevra": "python3-linux-procfs-0.7.4-2.fc44.noarch",
+      "path": "Packages/p/python3-linux-procfs-0.7.4-2.fc44.noarch.rpm",
+      "sha256": "sha256-EFmianJRniM3WZ9ZeaPv3fNJoI8k3ZcmDLNiG5FCXtU=",
+      "size": 38546
+    },
+    {
+      "file": "python3-nftables-1.1.6-2.fc44.noarch.rpm",
+      "nevra": "python3-nftables-1:1.1.6-2.fc44.noarch",
+      "path": "Packages/p/python3-nftables-1.1.6-2.fc44.noarch.rpm",
+      "sha256": "sha256-Qzv3qk/b/EzyQV7Ls9f6hX8T3azkDVgbhxqWIxqK6Yo=",
+      "size": 22151
+    },
+    {
+      "file": "python3-pycparser-2.22-8.fc44.noarch.rpm",
+      "nevra": "python3-pycparser-2.22-8.fc44.noarch",
+      "path": "Packages/p/python3-pycparser-2.22-8.fc44.noarch.rpm",
+      "sha256": "sha256-eX5LmF+kl8flBGfzjBUOnl6ioTNxcxxDO8g85U9VPoY=",
+      "size": 382434
+    },
+    {
+      "file": "python3-pyudev-0.24.4-3.fc44.noarch.rpm",
+      "nevra": "python3-pyudev-0.24.4-3.fc44.noarch",
+      "path": "Packages/p/python3-pyudev-0.24.4-3.fc44.noarch.rpm",
+      "sha256": "sha256-MLJoz8Qfc0h+IwMteXK6fr1qjpey9g7rbXD3CRSaOTk=",
+      "size": 100009
+    },
+    {
+      "file": "satyr-0.43-10.fc44.x86_64.rpm",
+      "nevra": "satyr-0.43-10.fc44.x86_64",
+      "path": "Packages/s/satyr-0.43-10.fc44.x86_64.rpm",
+      "sha256": "sha256-oJzDWtW3dhh16YAFEUFM43jftLlyl8SGuTrP5+k/pD0=",
+      "size": 132468
+    },
+    {
+      "file": "tuned-2.27.0-1.fc44.noarch.rpm",
+      "nevra": "tuned-2.27.0-1.fc44.noarch",
+      "path": "Packages/t/tuned-2.27.0-1.fc44.noarch.rpm",
+      "sha256": "sha256-ED5+jYwjZc/gaGhrjL/tlkTxxNcRz/9nJ5CApQr4g6w=",
+      "size": 549449
+    },
+    {
+      "file": "virt-what-1.27-5.fc44.x86_64.rpm",
+      "nevra": "virt-what-1.27-5.fc44.x86_64",
+      "path": "Packages/v/virt-what-1.27-5.fc44.x86_64.rpm",
+      "sha256": "sha256-Ecx34Mp+yVDIRaeXoTNKfvcw1RQ2eVIbuF/w7F3W17Q=",
+      "size": 40777
+    },
+    {
+      "file": "xmlrpc-c-1.60.04-5.fc44.x86_64.rpm",
+      "nevra": "xmlrpc-c-1.60.04-5.fc44.x86_64",
+      "path": "Packages/x/xmlrpc-c-1.60.04-5.fc44.x86_64.rpm",
+      "sha256": "sha256-t7ERuYlrDEa1dm15tW69m3yNuWQVt0j+QuECdqlEezM=",
+      "size": 194840
+    },
+    {
+      "file": "xmlrpc-c-client-1.60.04-5.fc44.x86_64.rpm",
+      "nevra": "xmlrpc-c-client-1.60.04-5.fc44.x86_64",
+      "path": "Packages/x/xmlrpc-c-client-1.60.04-5.fc44.x86_64.rpm",
+      "sha256": "sha256-BXlhNvggMvVMtyc3jESokgBNOT5k/bRtGwJqauz1984=",
+      "size": 29468
+    }
+  ],
+  "release": "44",
+  "repository": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/",
+  "requested": [
+    "abrt",
+    "firewalld",
+    "tuned"
+  ],
+  "weakDependencies": false
+}
