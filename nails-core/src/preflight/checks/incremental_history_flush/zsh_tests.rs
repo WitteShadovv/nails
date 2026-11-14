@@ -57,6 +57,11 @@ mod outside;
 #[path = "zsh_made_tests.rs"]
 mod made_files;
 
+// The values ZDOTDIR and XDG_CONFIG_HOME may hold where zsh need not read
+// a file that sets them.
+#[path = "zsh_candidates_tests.rs"]
+mod candidates;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
@@ -295,9 +300,14 @@ fn a_path_is_resolved_in_every_home_and_config_home_it_may_be_in() {
             .map(|write| write.what)
             .collect()
     };
+    // A zsh built to read /etc/zsh/zshenv reads no /etc/zshenv, so the
+    // home's .zshrc may be the one it reads too.
     assert_eq!(
         on_in_both(&fs),
-        ["/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY"]
+        [
+            "/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY",
+            "/home/alice/.zsh/history.zsh names SHARE_HISTORY"
+        ]
     );
     seed(&fs, "/etc/zshenv", "");
     assert_eq!(
