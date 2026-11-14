@@ -141,6 +141,10 @@ pub(in super::super) enum Event {
     /// the doubt says, which counts where the files run the stock `compinit`
     /// (`zstyle ':completion:*' menu 'select=1+x'`).
     Style(String),
+    /// A function is defined by the name given, which zsh's own completion
+    /// functions may run as they run a command of that name as you complete
+    /// a word (`ls --help` for `ls <Tab>`).
+    Function(String),
     /// A global alias is defined, named `name` as written, by the word
     /// `text` (`G=| grep`). zsh puts its value in place of any token of code
     /// that is its name, a redirection's target (`/dev/tty`) or an operator

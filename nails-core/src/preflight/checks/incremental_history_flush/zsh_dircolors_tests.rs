@@ -268,9 +268,16 @@ fn a_function_named_like_the_dircolors_program_in_any_form_zsh_reads_changes_it(
         let found = nixos_with(&format!("{zshenv}\n"), "", "", &[]);
         assert!(warned(&found), "{zshenv}");
     }
-    // Two names that are neither.
-    let found = nixos_with(&format!("function x y {body}\n"), "", "", &[]);
+    // Two names that are neither, of a function that writes nothing as a
+    // hook, which it is where compinit runs, as zsh's own completion
+    // functions may run it as they run a command of its name.
+    let found = nixos_with("function x y { print -r -- done }\n", "", "", &[]);
     assert_eq!(found, Scan::default());
+    let found = nixos_with(&format!("function x y {body}\n"), "", "", &[]);
+    assert_eq!(
+        found.writes.first().map(|write| write.what.as_str()),
+        Some("/home/alice/.zshenv names `history` in `x`")
+    );
 }
 
 #[test]

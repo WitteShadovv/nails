@@ -150,7 +150,11 @@ impl<F: Filesystem> Reader<'_, F> {
                 self.stock(stock);
             }
             // The file is the function's code.
-            None => self.code_in(path, &text, false, Some(name.to_string())),
+            None => {
+                self.completion
+                    .function(name.to_string(), &path.to_string_lossy());
+                self.code_in(path, &text, false, Some(name.to_string()));
+            }
         }
     }
 

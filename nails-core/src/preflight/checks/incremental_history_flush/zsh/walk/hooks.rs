@@ -146,6 +146,7 @@ impl Walker<'_> {
         for name in names {
             self.mention(&name.text);
             self.events.push(Event::Define(name.text.clone()));
+            self.events.push(Event::Function(name.text.clone()));
             if paren {
                 self.events.push(Event::NamedBody(name.text.clone()));
             }
@@ -393,6 +394,7 @@ impl Walker<'_> {
             }
             [from, to] if !computed_name(from) => {
                 self.events.push(Event::Define(to.text.clone()));
+                self.events.push(Event::Function(to.text.clone()));
                 // A name zsh may expand into another may be a hook's.
                 if computed_name(to) {
                     self.events.push(Event::Hook(to.text.clone()));

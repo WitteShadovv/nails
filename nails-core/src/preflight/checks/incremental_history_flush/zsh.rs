@@ -591,6 +591,7 @@ impl<F: Filesystem> Reader<'_, F> {
             Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
             Event::Completes { function, what } => self.completion.completes(function, what, place),
             Event::Style(doubt) => self.completion.style(doubt),
+            Event::Function(name) => self.completion.function(name, place),
             event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
                 self.reading_event(event, place);
             }
