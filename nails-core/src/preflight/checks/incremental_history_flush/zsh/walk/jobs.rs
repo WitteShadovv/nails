@@ -29,8 +29,9 @@ use super::{Event, Walker, walk_text_in};
 const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "mksh", "yash", "rbash"];
 
 /// The programs that detach what they run from the shell, or run it later,
-/// so that it may run on after the startup files: in the foreground too,
-/// each is such a job.
+/// so that it may run on after the startup files, and zsh's `zpty`, which
+/// runs a command in a pty beside the shell: in the foreground too, each is
+/// such a job.
 const DETACHERS: &[&str] = &[
     "nohup",
     "setsid",
@@ -39,6 +40,8 @@ const DETACHERS: &[&str] = &[
     "systemd-run",
     "at",
     "batch",
+    "crontab",
+    "zpty",
 ];
 
 /// The precommand words the walk notes as calls ([`super::command`]), which

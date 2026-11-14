@@ -31,7 +31,8 @@ const BUFFERS: &[&str] = &["BUFFER", "LBUFFER", "RBUFFER"];
 /// The widgets of zsh 5.9 to 5.9.2's own that leave the text of the line as
 /// it is, run by their names or with a `.` before them: those that accept
 /// it, redraw it, list completions, beep, drop the line, move the cursor or
-/// switch how keys type.
+/// switch how keys type into it (not `vi-cmd-mode`, after which the keys
+/// typed run vi's commands, `k` fetching a line from the history).
 pub(in super::super) const STRICT_WIDGETS: &[&str] = &[
     "accept-line",
     "accept-and-hold",
@@ -59,7 +60,6 @@ pub(in super::super) const STRICT_WIDGETS: &[&str] = &[
     "vi-backward-word",
     "vi-forward-blank-word",
     "vi-backward-blank-word",
-    "vi-cmd-mode",
     "vi-insert",
     "vi-insert-bol",
     "vi-add-next",

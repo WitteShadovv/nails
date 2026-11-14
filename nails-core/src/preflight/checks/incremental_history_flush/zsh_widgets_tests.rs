@@ -46,6 +46,8 @@ fn a_line_a_widget_sets_that_may_end_the_shell_is_a_doubt() {
         "w() { BUFFER=exi; zle expand-or-complete; zle .accept-line }\nzle -N w\n",
         "u() { zle .yank }\nw() { u; zle .accept-line }\nzle -N w\n",
         "zle -A up-history self-insert\n",
+        "zle-line-init() { zle vi-cmd-mode }\nzle -N zle-line-init\n",
+        "zle-line-init() { zle -K vicmd }\nzle -N zle-line-init\n",
         "zle-line-init() { zle -U $'!1\\n' }\nzle -N zle-line-init\n",
         "zle-line-init() { zle -U '!1\n' }\nzle -N zle-line-init\n",
         "precmd() { print -z '!1' }\n",
@@ -67,6 +69,7 @@ fn a_widget_that_keeps_the_line_it_runs_or_runs_a_known_one_is_none() {
         "BUFFER=exit\n",
         "zle -A run-help logit\n",
         "zle -A .self-insert self-insert\n",
+        "zle-line-init() { zle -K viins; zle .vi-insert }\nzle -N zle-line-init\n",
         "precmd() { print -z 'ls -l' }\n",
     ] {
         assert_eq!(found(rc), Scan::default(), "{rc}");

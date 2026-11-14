@@ -239,6 +239,23 @@ impl Walker<'_> {
             // `zle up-history`: a widget run by its name.
             self.runs_widget(widget);
         }
+        // `zle -K vicmd` in a widget: the keys typed next run as the commands
+        // of that keymap, `k` fetching a line from the history.
+        if op == Some('K')
+            && let Some(keymap) = words.first()
+            && !matches!(keymap.text.as_str(), "main" | "emacs" | "viins")
+            && let Some(function) = self.function()
+        {
+            self.events.push(Event::HookDoubt {
+                doubt: format!(
+                    "it cannot tell what line the keys you type give zsh to run, as `zle {}` in \
+                     `{function}` in {} makes them run as the commands of another keymap",
+                    line(),
+                    self.place
+                ),
+                function,
+            });
+        }
         // `zle -A up-history self-insert`: each key typed runs another
         // widget, which may put other text in the line.
         if op == Some('A')

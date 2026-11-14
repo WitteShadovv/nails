@@ -1852,8 +1852,8 @@ afterwards:
     and writes the file then): a list in the background (`&`, `&!`, `&|`,
     after `&&` and `|` too), a process substitution (`<(...)`, `>(...)`), a
     job a `$(...)` leaves running, what `nohup`, `setsid`, `daemonize`,
-    `start-stop-daemon`, `systemd-run`, `at` and `batch` start, and a job the
-    code a shell is given with `-c` starts
+    `start-stop-daemon`, `systemd-run`, `at`, `batch`, `crontab` and zsh's
+    `zpty` start, and a job the code a shell is given with `-c` starts
     (`sh -c '(sleep 3; kill -HUP $PPID) &'`, code an expansion makes there a
     doubt), where it may signal the shell's process (`kill -HUP $$`, `pkill`,
     a pid an expansion makes), runs code the check does not read as the job's
@@ -1881,10 +1881,13 @@ afterwards:
     `for BUFFER in ...`) is a doubt wherever it stands, and so is a `zle -A`
     that makes the keys you type run such a widget
     (`zle -A up-history self-insert`). A widget that accepts, redraws, lists,
-    beeps, drops the line, moves the cursor or switches how keys type is none,
-    and so is one the files make (`zle -N name`), whose code the check reads;
-    one that inserts the keys typed or completes or expands the word at the
-    cursor is none where no file sets the line as written (`BUFFER=exi`, which
+    beeps, drops the line, moves the cursor or switches how keys type into the
+    line is none (not `vi-cmd-mode`, after which the keys you type run vi's
+    commands, `k` fetching a line from the history, nor a `zle -K` of another
+    keymap than `main`, `emacs` or `viins`, both doubts), and so is one the
+    files make (`zle -N name`), whose code the check reads; one that inserts
+    the keys typed or completes or expands the word at the cursor is none
+    where no file sets the line as written (`BUFFER=exi`, which
     `zle expand-or-complete` may make `exit`). The lines `zle -U`, `print -z`
     and `bindkey -s` type are doubts too where zsh may expand history in them.
     So a wrapper of `accept-line` that only accepts the line passes, and zsh's
@@ -2316,8 +2319,9 @@ afterwards:
   its parent, a script, `env setsid sh -c ...`: it reads the code a shell is
   given with `-c` and what `nohup`, `setsid` and the like start, where they
   run it themselves), a key you type a line with that a file binds to another
-  widget than `self-insert` (`bindkey o beginning-of-history`), which may
-  change the line you type, a security module (SELinux, AppArmor) that keeps
+  widget than `self-insert` (`bindkey o beginning-of-history`), or a keymap a
+  file makes the one you type in (`bindkey -A vicmd main`), which may change
+  the line you type, a security module (SELinux, AppArmor) that keeps
   zsh from opening a startup file you own and may read by its mode, a file a
   bash startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the

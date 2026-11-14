@@ -53,6 +53,8 @@ fn a_job_that_may_signal_the_shell_later_is_a_doubt() {
         "disable kill\n( kill -HUP 1234 ) &\n",
         "( strftime %s 0 ) &\n",
         "cat <(sleep 3; kill -HUP $$)\n",
+        "zmodload zsh/zpty\nzpty later 'sleep 3; kill -HUP $$'\n",
+        "print '* * * * * kill -HUP 1' | crontab -\n",
     ] {
         assert!(job(&doubts(rc, &[])), "{rc}");
     }
