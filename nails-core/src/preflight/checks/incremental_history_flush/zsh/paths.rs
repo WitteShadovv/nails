@@ -171,9 +171,10 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// Read the user's file of the stage `stage` (`zshrc`) from each place
     /// `ZDOTDIR` may put it in: where zsh reads the one there, `ZDOTDIR`
-    /// holds that place, or is unset for the home's. The home's first, so the
-    /// warning names a file of a place the files set.
-    pub(super) fn user_files(&mut self, stage: &str) {
+    /// holds that place, or is unset for the home's; `certain` when zsh
+    /// certainly reads the stage's file. The home's first, so the warning
+    /// names a file of a place the files set.
+    pub(super) fn user_files(&mut self, stage: &str, certain: bool) {
         let mut dirs = self.values.zdotdirs.clone();
         dirs.sort_by_key(Option::is_some);
         let mut after: Vec<Option<PathBuf>> = Vec::new();
@@ -187,7 +188,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 && !read.contains(&path)
             {
                 read.push(path.clone());
-                self.file(&path);
+                self.file(&path, certain);
             }
             add_all(&mut after, std::mem::take(&mut self.values.zdotdirs));
         }
@@ -202,9 +203,10 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// End following a file, before which `ZDOTDIR` and `XDG_CONFIG_HOME`
-    /// held `before`: zsh may have stopped it at an error before any of its
-    /// assignments, so each value from before it may hold too, but for one
-    /// it set before anything that may stop it, and so may each it gave.
+    /// held `before`: zsh may not have read it, or stopped it at an error
+    /// before any of its assignments, so each value from before it may hold
+    /// too, but for one a file zsh certainly reads set before anything that
+    /// may stop it, and so may each it gave.
     pub(super) fn end_file(&mut self, mut before: Candidates) {
         let given = self.given.pop().unwrap_or_default();
         if given.zdotdir_first {
@@ -226,8 +228,8 @@ impl<F: Filesystem> Reader<'_, F> {
     /// (`None`), after which `${XDG_CONFIG_HOME:-...}` is its default; of
     /// `how`, whether the assignment certainly runs where the file runs to
     /// it, which makes it the one value for the rest of the file, and
-    /// whether it comes first, where zsh cannot have stopped the file before
-    /// it ([`super::Event::Assign`]).
+    /// whether it certainly runs, in a file zsh certainly reads, first, where
+    /// zsh cannot have stopped the file before it ([`super::Event::Assign`]).
     pub(super) fn assign(
         &mut self,
         name: &str,
@@ -294,6 +296,41 @@ impl<F: Filesystem> Reader<'_, F> {
         }
     }
 
+    /// Read the file the file at `place` sources as `path`, in the function
+    /// `function` when in one, whose code it then runs as that one's;
+    /// `certain` when zsh certainly runs the `source`. Sourced in a function,
+    /// it is read for every value the files ever give `ZDOTDIR` and
+    /// `XDG_CONFIG_HOME`, as the function runs later ([`Reader::late`]).
+    pub(super) fn source(
+        &mut self,
+        path: &Word,
+        certain: bool,
+        function: Option<String>,
+        place: &str,
+    ) {
+        self.known_files.push(path.text.clone());
+        let later = function.is_some() || self.in_function_code();
+        let files = if later {
+            let late = Late::Source(path.clone(), function.clone(), place.to_string());
+            self.late.push(late);
+            self.resolve_ever(path)
+        } else {
+            self.resolve(path)
+        };
+        match files {
+            Some(files) => {
+                let one = files.len() == 1 && !later;
+                for file in files {
+                    self.file_in(&file, certain && one, function.clone());
+                }
+            }
+            None => self.doubt(format!(
+                "it cannot follow the file {place} sources as `{}`",
+                path.text
+            )),
+        }
+    }
+
     /// Read again what code that may run later names ([`Late`]), for every
     /// value the files ever gave `ZDOTDIR` and `XDG_CONFIG_HOME`, those they
     /// gave after it among them: what a function sources, a directory a
@@ -320,7 +357,7 @@ impl<F: Filesystem> Reader<'_, F> {
                         Some(files) => {
                             for file in files {
                                 if !self.has_read(&file) {
-                                    self.file_in(&file, function.clone());
+                                    self.file_in(&file, false, function.clone());
                                 }
                             }
                         }
