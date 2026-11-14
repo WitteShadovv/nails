@@ -408,37 +408,66 @@ const CANNOT_STORE: &str = "SELinux runs on this host (selinuxfs is mounted), so
      /mnt/data/.probe-1-2/upper must carry the SELinux label of /, but the filesystem of \
      /mnt/data/.probe-1-2/upper cannot store labels";
 
-#[test]
-fn a_label_the_trial_upper_did_not_take_fails_as_the_entry_would_be_refused() {
+/// What the label copy says where SELinux runs and the decoy root has no
+/// label.
+const NO_LABEL: &str = "SELinux runs on this host (selinuxfs is mounted), so \
+     /mnt/data/.probe-1-2/upper must carry the SELinux label of /, but / has no label";
+
+/// The verdict on a label step that failed through `fault` for `why`, on a
+/// hidden root the mount table shows as an `fstype` filesystem.
+fn label_verdict(fault: LabelFault, why: &str, fstype: Option<&str>) -> String {
     let root = PathBuf::from("/mnt/data");
     let fs = MockFilesystem::new();
-    fs.mock_set_filesystem_type(&root, "vfat");
-    let check = UpperFsCapabilityCheck::new(root);
-    let result = check.verdict(&fs, Err(ProbeError::Label(CANNOT_STORE.to_string())));
+    if let Some(fstype) = fstype {
+        fs.mock_set_filesystem_type(&root, fstype);
+    }
+    let result =
+        UpperFsCapabilityCheck::new(root).verdict(&fs, Err(ProbeError::Label(fault, why.into())));
     assert!(result.is_fail(), "{result:?}");
-    let message = result.message();
-    assert!(
-        message.starts_with(
-            "The hidden root cannot keep the SELinux labels activation gives the directories \
-             it creates there, so activation would be refused. The probe's trial upper did \
-             not take and keep the label of the decoy root: SELinux runs on this host"
-        ),
-        "{message}"
-    );
-    assert!(message.contains(CANNOT_STORE), "{message}");
-    assert!(
-        message.contains("The hidden root is on a vfat filesystem."),
-        "{message}"
-    );
-    assert!(message.contains("security.selinux attributes"), "{message}");
+    result.message().to_string()
+}
 
-    // Without a filesystem type in the mount table the message leaves it out.
-    let check = UpperFsCapabilityCheck::new(PathBuf::from("/mnt/data"));
-    let result = check.verdict(
-        &MockFilesystem::new(),
-        Err(ProbeError::Label(CANNOT_STORE.to_string())),
+#[test]
+fn a_label_the_hidden_filesystem_cannot_store_fails_naming_that_filesystem() {
+    let message = label_verdict(LabelFault::CannotStore, CANNOT_STORE, Some("vfat"));
+    assert_eq!(
+        message,
+        format!(
+            "The probe could not give its trial upper the SELinux label of the decoy root, \
+             and activation is refused where it cannot copy a label: {CANNOT_STORE}. The \
+             hidden root is on a vfat filesystem. Where SELinux may run, the hidden volume's \
+             filesystem must store security.selinux attributes, as ext4, xfs and btrfs do."
+        )
     );
-    assert!(!result.message().contains("is on a"), "{result:?}");
+    // Without a filesystem type in the mount table the message leaves it out.
+    let message = label_verdict(LabelFault::CannotStore, CANNOT_STORE, None);
+    assert!(!message.contains("is on a"), "{message}");
+    assert!(message.contains("security.selinux attributes"), "{message}");
+}
+
+#[test]
+fn a_label_refused_for_another_reason_gives_only_that_reason() {
+    // A decoy root without a label, on a hidden root whose filesystem stores
+    // labels: neither the hidden filesystem nor its type is blamed.
+    let message = label_verdict(LabelFault::Refused, NO_LABEL, Some("ext4"));
+    assert_eq!(
+        message,
+        format!(
+            "The probe could not give its trial upper the SELinux label of the decoy root, \
+             and activation is refused where it cannot copy a label: {NO_LABEL}."
+        )
+    );
+    // A read back that does not show the label: the copy itself went through.
+    let why = "reading the label written onto /mnt/data/.probe-1-2/upper back failed: \
+               No data available (os error 61)";
+    let message = label_verdict(LabelFault::Unconfirmed, why, Some("ext4"));
+    assert_eq!(
+        message,
+        format!(
+            "The probe gave its trial upper the SELinux label of the decoy root, but could \
+             not confirm that the upper kept it: {why}."
+        )
+    );
 }
 
 #[test]
@@ -480,7 +509,7 @@ fn the_round_trip_holds_only_for_the_same_label_read_back() {
 
     let other = b"system_u:object_r:unlabeled_t:s0\0".to_vec();
     match round_trip(decoy, upper, Ok(root.clone()), Ok(other)) {
-        Err(ProbeError::Label(why)) => assert_eq!(
+        Err(ProbeError::Label(LabelFault::Unconfirmed, why)) => assert_eq!(
             why,
             "/mnt/data/.probe-1-2/upper reads back the label \
              \"system_u:object_r:unlabeled_t:s0\\0\", not the label \
@@ -494,7 +523,7 @@ fn the_round_trip_holds_only_for_the_same_label_read_back() {
         Ok(root.clone()),
         Err(rustix::io::Errno::NODATA),
     ) {
-        Err(ProbeError::Label(why)) => assert!(
+        Err(ProbeError::Label(LabelFault::Unconfirmed, why)) => assert!(
             why.starts_with(
                 "reading the label written onto /mnt/data/.probe-1-2/upper back failed"
             ),
@@ -503,7 +532,7 @@ fn the_round_trip_holds_only_for_the_same_label_read_back() {
         other => panic!("expected a label refusal, got {other:?}"),
     }
     match round_trip(decoy, upper, Err(rustix::io::Errno::ACCESS), Ok(root)) {
-        Err(ProbeError::Label(why)) => assert!(
+        Err(ProbeError::Label(LabelFault::Unconfirmed, why)) => assert!(
             why.starts_with("reading the label of / again failed"),
             "{why}"
         ),
@@ -573,7 +602,7 @@ fn a_decoy_root_without_a_label_fails_the_label_step_without_privileges() {
     assert_eq!(label_of(decoy.path()), Err(rustix::io::Errno::NODATA));
     let required = Labels::Required(crate::session::labels::Reason::SelinuxRunning);
     match probe_label(decoy.path(), &upper, required) {
-        Err(ProbeError::Label(why)) => assert!(
+        Err(ProbeError::Label(LabelFault::Refused, why)) => assert!(
             why.ends_with(&format!("but {} has no label", decoy.path().display())),
             "{why}"
         ),
@@ -1157,8 +1186,10 @@ mod kernel_tests {
             let hidden = ScratchTmpfs::new("");
             let upper = ramfs(&hidden);
 
+            // The real kernel's answer is the one the check names the hidden
+            // filesystem for.
             match probe_label(decoy.path(), &upper, REQUIRED) {
-                Err(ProbeError::Label(why)) => assert_eq!(
+                Err(ProbeError::Label(LabelFault::CannotStore, why)) => assert_eq!(
                     why,
                     format!(
                         "SELinux runs on this host (selinuxfs is mounted), so {0} must carry \
@@ -1186,8 +1217,9 @@ mod kernel_tests {
             let hidden = ScratchTmpfs::new("");
             let upper = hidden.mkdir("upper");
 
+            // Not the hidden filesystem's fault: it stores labels.
             match probe_label(decoy.path(), &upper, REQUIRED) {
-                Err(ProbeError::Label(why)) => assert!(
+                Err(ProbeError::Label(LabelFault::Refused, why)) => assert!(
                     why.ends_with(&format!("but {} has no label", decoy.path().display())),
                     "{why}"
                 ),

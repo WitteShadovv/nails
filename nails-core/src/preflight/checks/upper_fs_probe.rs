@@ -45,8 +45,23 @@ enum ProbeError {
     /// the check fails closed.
     NoDetachedMount(std::io::Error),
     /// The trial upper did not take or keep the SELinux label of the decoy
-    /// root, which the entry refuses the same way on this host: why.
-    Label(String),
+    /// root: what failed, and why.
+    Label(LabelFault, String),
+}
+
+/// What failed in the probe's label step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LabelFault {
+    /// The entry's own copy refused the label, as it refuses the entry on this
+    /// host, for a reason other than the hidden root's filesystem: a decoy root
+    /// without a label, a policy that denies the relabel, a write that failed.
+    Refused,
+    /// The entry's own copy refused it because the hidden root's filesystem
+    /// cannot store the label.
+    CannotStore,
+    /// The copy went through, but the read back does not show the trial upper
+    /// with the decoy root's label.
+    Unconfirmed,
 }
 
 /// Pre-flight check that the hidden root can back an overlayfs upper layer.
@@ -83,11 +98,13 @@ enum ProbeError {
 /// function under the same rule, which the registry takes from the same host
 /// facts as the activation ([`Labels::for_host`]), so a hidden filesystem that
 /// cannot store the label, a policy that denies the relabel or a decoy root
-/// without a label fails this check as it would refuse the entry. Where a label
-/// is required the probe also reads it back, and fails unless the trial upper
-/// keeps the decoy root's label. Elsewhere the copy is best effort, as at the
-/// entry, and the label is not read back. The decoy root is only read: reading
-/// an extended attribute changes no access time.
+/// without a label fails this check as it would refuse the entry. The failure
+/// gives the copy's own reason, and only where the hidden root's filesystem
+/// cannot store the label does it name that filesystem and what it must store.
+/// Where a label is required the probe also reads it back, and fails unless
+/// the trial upper keeps the decoy root's label. Elsewhere the copy is best
+/// effort, as at the entry, and the label is not read back. The decoy root is
+/// only read: reading an extended attribute changes no access time.
 ///
 /// The trial overlay is mounted detached, through the mount API
 /// (`fsopen`/`fsconfig`/`fsmount`): the kernel hands back a file descriptor for
@@ -185,21 +202,32 @@ fn classify(missing: MissingCapability, fstype: Option<&str>) -> CheckResult {
 }
 
 /// Pure seam: the `Fail` for a trial upper that did not take or keep the decoy
-/// root's SELinux label, for the reason `why`, on a hidden root on a `fstype`
-/// filesystem when the mount table knows it.
-fn label_refusal(why: &str, fstype: Option<&str>) -> CheckResult {
-    let detected = match fstype {
-        Some(fs) => format!(" The hidden root is on a {fs} filesystem."),
-        None => String::new(),
+/// root's SELinux label, through `fault`, for the reason `why`. Only where the
+/// hidden root's filesystem cannot store the label does it name that
+/// filesystem's type, `fstype` when the mount table knows it, and say what the
+/// filesystem must do.
+fn label_refusal(fault: LabelFault, why: &str, fstype: Option<&str>) -> CheckResult {
+    let lead = match fault {
+        LabelFault::Refused | LabelFault::CannotStore => {
+            "The probe could not give its trial upper the SELinux label of the decoy root, \
+             and activation is refused where it cannot copy a label"
+        }
+        LabelFault::Unconfirmed => {
+            "The probe gave its trial upper the SELinux label of the decoy root, but could \
+             not confirm that the upper kept it"
+        }
     };
-    CheckResult::fail(format!(
-        "The hidden root cannot keep the SELinux labels activation gives the \
-         directories it creates there, so activation would be refused. The \
-         probe's trial upper did not take and keep the label of the decoy root: \
-         {why}.{detected} Where SELinux may run, the hidden volume's filesystem \
-         must store security.selinux attributes, as ext4, xfs and btrfs do, and \
-         the policy must let NAILS write them."
-    ))
+    let mut message = format!("{lead}: {why}.");
+    if fault == LabelFault::CannotStore {
+        if let Some(fs) = fstype {
+            message.push_str(&format!(" The hidden root is on a {fs} filesystem."));
+        }
+        message.push_str(
+            " Where SELinux may run, the hidden volume's filesystem must store \
+             security.selinux attributes, as ext4, xfs and btrfs do.",
+        );
+    }
+    CheckResult::fail(message)
 }
 
 /// The text of an error of the label copy, without the error's kind.
@@ -345,7 +373,7 @@ impl UpperFsCapabilityCheck {
                 self.hidden_volume_root.display()
             )),
             Err(ProbeError::Missing(missing)) => classify(missing, fstype().as_deref()),
-            Err(ProbeError::Label(why)) => label_refusal(&why, fstype().as_deref()),
+            Err(ProbeError::Label(fault, why)) => label_refusal(fault, &why, fstype().as_deref()),
             Err(ProbeError::Scaffold(e)) => CheckResult::fail(format!(
                 "Could not verify the hidden root at {} can host an overlayfs upper layer ({e}). \
                  Ensure it is a mounted, writable, local Linux filesystem and retry.",
@@ -474,20 +502,29 @@ fn probe_in_scratch(
 }
 
 /// Give `upper` the SELinux label of `decoy_root` with the entry's own copy,
-/// [`labels::copy_label`], under `labels`, and where the label is required
-/// read it back: the round trip fails unless `upper` then carries exactly the
-/// label `decoy_root` has.
+/// [`labels::copy_label`] (as [`labels::try_copy_label`], which also tells
+/// what refused it), under `labels`, and where the label is required read it
+/// back: the round trip fails unless `upper` then carries exactly the label
+/// `decoy_root` has.
 ///
 /// A copy the entry would refuse is [`ProbeError::Label`] with the copy's own
-/// reason. A best-effort copy ([`Labels::BestEffort`]) is not read back: no
-/// policy reads a label there.
+/// reason, [`LabelFault::CannotStore`] where the hidden root's filesystem
+/// refused to store the label and [`LabelFault::Refused`] otherwise. A
+/// best-effort copy ([`Labels::BestEffort`]) is not read back: no policy reads
+/// a label there.
 fn probe_label(
     decoy_root: &Path,
     upper: &Path,
     labels: Labels,
 ) -> std::result::Result<(), ProbeError> {
-    labels::copy_label(decoy_root, upper, labels)
-        .map_err(|error| ProbeError::Label(refusal_text(error)))?;
+    labels::try_copy_label(decoy_root, upper, labels).map_err(|refused| {
+        let fault = if refused.cannot_store() {
+            LabelFault::CannotStore
+        } else {
+            LabelFault::Refused
+        };
+        ProbeError::Label(fault, refusal_text(refused.into_error()))
+    })?;
     match labels {
         Labels::BestEffort => Ok(()),
         // A required copy that returned wrote the label or found it in place.
@@ -505,22 +542,31 @@ fn round_trip(
 ) -> std::result::Result<(), ProbeError> {
     match (wanted, kept) {
         (Ok(wanted), Ok(kept)) if wanted == kept => Ok(()),
-        (Ok(wanted), Ok(kept)) => Err(ProbeError::Label(format!(
-            "{} reads back the label {:?}, not the label {:?} written onto it",
-            upper.display(),
-            String::from_utf8_lossy(&kept),
-            String::from_utf8_lossy(&wanted)
-        ))),
-        (Err(errno), _) => Err(ProbeError::Label(format!(
-            "reading the label of {} again failed: {}",
-            decoy_root.display(),
-            std::io::Error::from(errno)
-        ))),
-        (_, Err(errno)) => Err(ProbeError::Label(format!(
-            "reading the label written onto {} back failed: {}",
-            upper.display(),
-            std::io::Error::from(errno)
-        ))),
+        (Ok(wanted), Ok(kept)) => Err(ProbeError::Label(
+            LabelFault::Unconfirmed,
+            format!(
+                "{} reads back the label {:?}, not the label {:?} written onto it",
+                upper.display(),
+                String::from_utf8_lossy(&kept),
+                String::from_utf8_lossy(&wanted)
+            ),
+        )),
+        (Err(errno), _) => Err(ProbeError::Label(
+            LabelFault::Unconfirmed,
+            format!(
+                "reading the label of {} again failed: {}",
+                decoy_root.display(),
+                std::io::Error::from(errno)
+            ),
+        )),
+        (_, Err(errno)) => Err(ProbeError::Label(
+            LabelFault::Unconfirmed,
+            format!(
+                "reading the label written onto {} back failed: {}",
+                upper.display(),
+                std::io::Error::from(errno)
+            ),
+        )),
     }
 }
 

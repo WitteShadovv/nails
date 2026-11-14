@@ -319,6 +319,42 @@ fn a_refusal_names_what_failed() {
 }
 
 #[test]
+fn a_refusal_tells_an_upper_filesystem_that_cannot_store_the_label() {
+    // Only a write the upper's filesystem refuses with ENOTSUP: neither a
+    // decoy directory on such a filesystem nor a write the policy denies.
+    for labels in [RUNNING, UNREADABLE, UNDETECTED] {
+        for (failure, cannot_store) in [
+            (Failure::Write(Errno::NOTSUP), true),
+            (Failure::Read(Errno::NOTSUP), false),
+            (Failure::Read(Errno::NODATA), false),
+            (Failure::Upper(Errno::NOTDIR), false),
+            (Failure::Write(Errno::ACCESS), false),
+            (Failure::Write(Errno::NOSPC), false),
+        ] {
+            let refused =
+                judge_copy(Path::new(DECOY), Path::new(UPPER), labels, Err(failure)).unwrap_err();
+            assert_eq!(refused.cannot_store(), cannot_store, "{failure:?}");
+            // The error is the one copy_label returns.
+            assert_eq!(
+                refused.into_error().to_string(),
+                judged(labels, Err(failure)).unwrap_err().to_string()
+            );
+        }
+    }
+    // A copy that went through, or one best effort lets be, is no refusal.
+    assert!(judge_copy(Path::new(DECOY), Path::new(UPPER), RUNNING, Ok(())).is_ok());
+    assert!(
+        judge_copy(
+            Path::new(DECOY),
+            Path::new(UPPER),
+            Labels::BestEffort,
+            Err(Failure::Write(Errno::NOTSUP))
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn a_decoy_directory_that_does_not_exist_leaves_the_upper_alone() {
     // Real calls: every host answers a missing path with ENOENT, SELinux or not.
     let dir = tempfile::tempdir().unwrap();
@@ -338,6 +374,11 @@ fn a_decoy_directory_that_does_not_exist_leaves_the_upper_alone() {
         text.ends_with(&format!("but {} does not exist", decoy.display())),
         "{text}"
     );
+    // The copy that keeps the failed step refuses it the same way, and does
+    // not blame the upper's filesystem.
+    let refused = try_copy_label(&decoy, &upper, RUNNING).unwrap_err();
+    assert!(!refused.cannot_store());
+    assert_eq!(refused.into_error().to_string(), text);
     // Neither copy wrote anything onto the upper.
     assert_eq!(ctime(&upper), before);
 }
