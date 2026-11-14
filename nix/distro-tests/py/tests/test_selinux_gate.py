@@ -203,6 +203,143 @@ class CursorTest(unittest.TestCase):
         )
 
 
+AUDIT_LOG = "\n".join(
+    (
+        # A record of the boot before: left out by its time.
+        "type=DAEMON_START msg=audit(1794686000.000:1): op=start ver=4.1.2 res=1",
+        "type=AVC msg=audit(1794686740.123:57): avc:  denied  { read } for  "
+        'pid=1234 comm="control" name="kmsg" dev="devtmpfs" ino=10 '
+        "scontext=system_u:system_r:init_t:s0 "
+        "tcontext=system_u:object_r:kmsg_device_t:s0 tclass=chr_file "
+        "permissive=0",
+        "type=SYSCALL msg=audit(1794686740.123:57): arch=c000003e syscall=257 "
+        'success=no exit=-13 pid=1234 comm="control" '
+        'exe="/run/overlay-runtime/control"\x1dARCH=x86_64 SYSCALL=openat '
+        'AUID="unset"',
+        "type=USER_AVC msg=audit(1794686741.500:58): pid=1 uid=0 "
+        "auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 "
+        "msg='avc:  denied  { status } for auid=n/a uid=0 gid=0 "
+        'path="/run/x" cmdline="" '
+        "scontext=system_u:system_r:unconfined_service_t:s0 "
+        "tcontext=system_u:system_r:init_t:s0 tclass=system permissive=0 "
+        "exe=\"/usr/lib/systemd/systemd\" sauid=0 hostname=? addr=? "
+        "terminal=?'\x1dUID=\"root\" AUID=\"unset\" SAUID=\"root\"",
+        "type=SELINUX_ERR msg=audit(1794686742.000:59): "
+        "op=security_compute_sid "
+        'invalid_context="system_u:system_r:foo_t:s0" '
+        "scontext=system_u:system_r:init_t:s0 "
+        "tcontext=system_u:object_r:bin_t:s0 tclass=process",
+        "type=SYSCALL msg=audit(1794686742.000:59): arch=c000003e syscall=59 "
+        'success=no exit=-13 pid=999 comm="control" '
+        'exe="/run/overlay-runtime/control"',
+        "not a record",
+    )
+)
+
+
+class AuditLogTest(unittest.TestCase):
+    def test_reads_the_records_of_the_boot_as_the_kernel_log_prints_them(
+        self,
+    ) -> None:
+        found = sg.audit_log(AUDIT_LOG, 1794686700)
+        self.assertEqual([r["serial"] for r in found], [57, 57, 58, 59, 59])
+        self.assertTrue(found[0]["msg"].startswith("audit: type=1400 audit("))
+        self.assertEqual(found[0]["time"], 1794686740.123)
+        self.assertNotIn("ARCH=", found[1]["msg"])
+        self.assertTrue(found[2]["msg"].startswith("audit: type=1107 "))
+
+    def test_its_denials_and_errors_are_judged_as_the_kernel_logs(self) -> None:
+        found = sg.audit_denials(sg.audit_log(AUDIT_LOG, 1794686700))
+        self.assertEqual(
+            [(a["kind"], a["comm"], a["source"]) for a in found],
+            [
+                ("kernel", "control", "nails"),
+                ("user", "/usr/lib/systemd/systemd", "pid1"),
+                ("error", "control", "nails"),
+            ],
+        )
+        self.assertEqual(found[2]["perms"], "security_compute_sid")
+        self.assertEqual(
+            found[2]["signature"].split()[:2], ["error", "{security_compute_sid}"]
+        )
+        self.assertEqual({a["log"] for a in found}, {"audit"})
+        self.assertEqual(found[0]["time"], 1794686740.123)
+
+    def test_a_phase_judges_the_audit_records_with_the_kernel_ones(self) -> None:
+        audit = sg.audit_log(AUDIT_LOG, 1794686700)
+        found = sg.phase(records(OTHER), None, None, audit=audit)
+        self.assertEqual(
+            [avc["log"] for avc in found["denials"]],
+            ["kernel", "audit", "audit", "audit"],
+        )
+        self.assertEqual(len(found["new"]), 4)
+
+
+class SerialTest(unittest.TestCase):
+    def test_the_serials_of_kernel_and_audit_records(self) -> None:
+        self.assertEqual(
+            sg.audit_serials([KERNEL, POLICY_MAP, "no record"]), {123, 124}
+        )
+        early = "audit: type=2000 audit(0.123:1): state=initialized res=1"
+        self.assertEqual(sg.serial_of(early), 1)
+
+    def test_a_boot_numbers_its_records_from_one(self) -> None:
+        self.assertEqual(sg.serial_gaps([1, 2, 3]), [])
+        self.assertEqual(sg.serial_gaps([3, 1, 2, 2]), [])
+        self.assertEqual(sg.serial_gaps([1, 2, 5, 6]), [(3, 4)])
+        self.assertEqual(sg.serial_gaps([4, 5]), [(1, 3)])
+        self.assertEqual(sg.serial_gaps([]), [])
+
+
+class SelinuxErrorTest(unittest.TestCase):
+    def test_a_kernel_error_takes_its_event_s_process(self) -> None:
+        error = (
+            "audit: type=1401 audit(1731571236.000:200): "
+            "op=security_bounded_transition "
+            "seresult=denied oldcontext=system_u:system_r:init_t:s0 "
+            "newcontext=system_u:system_r:unconfined_service_t:s0"
+        )
+        call = (
+            "audit: type=1300 audit(1731571236.000:200): arch=c000003e syscall=59 "
+            'pid=77 comm="control" exe="/run/overlay-runtime/control"'
+        )
+        found = sg.denials(records(error, call), None, None)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(
+            (found[0]["kind"], found[0]["comm"], found[0]["source"], found[0]["seq"]),
+            ("error", "control", "nails", 1),
+        )
+        self.assertEqual(sg.context_type(found[0]["scontext"]), "init_t")
+
+    def test_a_denial_is_no_error_and_a_notice_is_neither(self) -> None:
+        self.assertIsNone(sg.parse_selinux_err(KERNEL))
+        notice = (
+            "audit: type=1107 audit(1.0:3): pid=1 msg='avc:  received policyload "
+            "notice (seqno=2) exe=\"/usr/lib/systemd/systemd\"'"
+        )
+        self.assertIsNone(sg.parse_avc(notice))
+        self.assertIsNone(sg.parse_selinux_err(notice))
+
+
+class SuppressedTest(unittest.TestCase):
+    def test_names_the_kernel_s_notices_of_lost_records(self) -> None:
+        lost = (
+            "kauditd_printk_skb: 12 callbacks suppressed",
+            "audit: audit_lost=1 audit_rate_limit=0 audit_backlog_limit=64",
+            "audit: backlog limit exceeded",
+            "audit: kauditd hold queue overflow",
+        )
+        found = sg.phase(records(*lost), None, None)
+        self.assertEqual(len(found["suppressed"]), len(lost))
+
+    def test_a_backlog_setting_is_no_loss(self) -> None:
+        setting = (
+            "audit: type=1305 audit(1.0:4): op=set audit_backlog_limit=8192 "
+            "old=64 auid=4294967295 ses=4294967295 res=1"
+        )
+        self.assertEqual(sg.phase(records(setting), None, None)["suppressed"], [])
+
+
 class SmallTest(unittest.TestCase):
     def test_the_seqnum_of_the_cursor_file(self) -> None:
         self.assertEqual(sg.seqnum_from_od(" 1234\n"), 1234)

@@ -10,11 +10,17 @@ module holds the pure parts:
 - the reader the guest runs and the parsing of its records (:func:`kmsg_command`,
   :func:`parse_kmsg`), with the sequence gaps that would mean a lost record;
 - the markers (:func:`marker`, :func:`marker_seq`);
-- the denials (:func:`parse_avc`), who they belong to (:func:`source`) and
-  what makes two of them the same (:func:`signature`);
+- the denials and SELinux errors (:func:`parse_avc`, :func:`parse_selinux_err`),
+  who they belong to (:func:`source`) and what makes two of them the same
+  (:func:`signature`);
+- the records auditd wrote while it ran (:func:`audit_log`), which the kernel
+  hands to a running auditd instead of its log, and the audit serial numbers
+  of a boot (:func:`audit_serials`, :func:`serial_gaps`), so that a record
+  that reached neither log shows as a gap;
 - a phase between two markers (:func:`phase`): which of its denials are new,
-  that is NAILS's own, or not among those of the run's plain boots and plain
-  soft-reboots, nor a race of the image's own (:data:`IMAGE_RACES`);
+  that is NAILS's own, or not among those of the decoy before NAILS ran and
+  of the first plain soft-reboot, nor a race of the image's own
+  (:data:`IMAGE_RACES`), and the lines that say the kernel lost records;
 - whether the decoy's journal took kernel records of a hidden session after
   the way back (:func:`cursor`), the leak the transition's kmsg cursor
   prevents.
@@ -65,8 +71,7 @@ KMSG_LIMITS = "sysctl -w kernel.printk_ratelimit=0 kernel.printk_devkmsg=on"
 # The image's own races: a denial with this signature is the image's whatever
 # phase it falls in. agetty reads the console-login helper's issue file while
 # that helper's NetworkManager dispatcher replaces it, at some boots of either
-# root with or without NAILS (the D-SEL-EXP cells saw it in every mechanism's
-# cells, and at plain boots).
+# root, a plain boot of the stock image's included.
 IMAGE_RACES = frozenset(
     {
         "kernel {read} agetty getty_t NetworkManager_dispatcher_console_var_run_t file",
@@ -83,7 +88,28 @@ _STEP_END = (
     "systemd-soft-reboot.service: Main process exited",
     "Soft-rebooting.",
 )
-SUPPRESSED = ("callbacks suppressed", "suppressed due to ratelimiting", "backlog")
+# What the kernel prints when it lost audit records or kernel log lines: a rate
+# limit that suppressed printk callbacks, and the audit subsystem's own notices
+# of a record it dropped (audit_log_lost) or held back past its queue.
+SUPPRESSED = (
+    "callbacks suppressed",
+    "suppressed due to ratelimiting",
+    "audit_lost=",
+    "backlog limit exceeded",
+    "rate limit exceeded",
+    "hold queue overflow",
+    "retry queue overflow",
+    "printk limit exceeded",
+)
+# The numbers the kernel log prints for the record types auditd's log names.
+AUDIT_NUMBERS = {"AVC": "1400", "USER_AVC": "1107", "SELINUX_ERR": "1401"}
+# The record types that report an SELinux error rather than a denial: the
+# kernel's, by its number in the kernel log or its name in auditd's log, and
+# a userspace object manager's, by its name.
+ERROR_TYPES = ("type=1401 ", "type=SELINUX_ERR ", "type=USER_SELINUX_ERR ")
+_AUDIT_LINE = re.compile(r"^type=(\w+) msg=audit\((\d+)\.(\d+):(\d+)\): ?(.*)$")
+_SERIAL = re.compile(r"audit\(\d+\.\d+:(\d+)\)")
+_SYSCALL = "type=1300 "
 
 
 def kmsg_command(first: int) -> str:
@@ -193,6 +219,90 @@ def parse_avc(message: str) -> dict[str, Any] | None:
     }
 
 
+def parse_selinux_err(message: str) -> dict[str, Any] | None:
+    """The SELinux error in a kernel (1401) or userspace record, or None: an
+    invalid context, a transition the policy's bounds refuse. Its operation
+    (``op``) stands where a denial has its permissions. The contexts are the
+    source and target (``scontext``, ``tcontext``) or the old and the new
+    (``oldcontext``, ``newcontext``) of a refused transition."""
+    at = next((message.find(kind) for kind in ERROR_TYPES if kind in message), -1)
+    if at < 0:
+        return None
+    values = fields(message[at:])
+    return {
+        "kind": "error",
+        "perms": values.get("op", ""),
+        "pid": values.get("pid", ""),
+        "comm": values.get("comm", values.get("exe", "")),
+        "name": values.get("name", ""),
+        "path": values.get("path", ""),
+        "dev": values.get("dev", ""),
+        "scontext": values.get("scontext", values.get("oldcontext", "")),
+        "tcontext": values.get(
+            "tcontext", values.get("newcontext", values.get("invalid_context", ""))
+        ),
+        "tclass": values.get("tclass", ""),
+        "permissive": "",
+    }
+
+
+def serial_of(message: str) -> int | None:
+    """The audit serial number of a record (``audit(<time>:<serial>)``)."""
+    match = _SERIAL.search(message)
+    return int(match.group(1)) if match else None
+
+
+def audit_log(text: str, since: float) -> list[dict[str, Any]]:
+    """The records of auditd's log ``text`` written at ``since`` (seconds
+    since the epoch) or later: each one's time, serial number and type, and its
+    message as the kernel log prints a record (``audit: type=1400
+    audit(...): ...``), so that :func:`parse_avc` reads it alike. The
+    interpreted fields of the log's ENRICHED format, after a 0x1d byte, are
+    left out."""
+    found = []
+    for line in text.splitlines():
+        line = line.split("\x1d", 1)[0].strip()
+        match = _AUDIT_LINE.match(line)
+        if match is None:
+            continue
+        kind, seconds, fraction, serial, body = match.groups()
+        time = float(f"{seconds}.{fraction}")
+        if time < since:
+            continue
+        number = AUDIT_NUMBERS.get(kind, kind)
+        found.append(
+            {
+                "time": time,
+                "serial": int(serial),
+                "type": kind,
+                "msg": f"audit: type={number} audit({seconds}.{fraction}:{serial}): "
+                f"{body}",
+            }
+        )
+    return found
+
+
+def audit_serials(messages: Iterable[str]) -> set[int]:
+    """The audit serial numbers the records ``messages`` carry."""
+    return {
+        serial for serial in (serial_of(str(m)) for m in messages) if serial is not None
+    }
+
+
+def serial_gaps(serials: Iterable[int]) -> list[tuple[int, int]]:
+    """The audit serial numbers of a boot that no record carries, as ranges:
+    the kernel numbers the events of a boot from 1 on, each record of an event
+    carries its event's number, and a record reaches the kernel log or the
+    daemon that reads the audit socket, so a number neither shows was lost."""
+    known = sorted(set(serials))
+    if not known:
+        return []
+    missing = gaps(known)
+    if known[0] > 1:
+        missing.insert(0, (1, known[0] - 1))
+    return missing
+
+
 def source(avc: Mapping[str, Any]) -> str:
     """Who a denial belongs to: NAILS (the RAM copy, which runs as
     ``control``, and the CLI, or a path below a NAILS runtime directory), PID
@@ -224,22 +334,76 @@ def signature(avc: Mapping[str, Any]) -> str:
     )
 
 
+def syscalls(records: Iterable[Mapping[str, Any]]) -> dict[int, dict[str, str]]:
+    """The ``comm``, ``exe`` and ``pid`` of each event's SYSCALL record, by
+    the event's serial number: an SELinux error names no process itself."""
+    found = {}
+    for record in records:
+        message = str(record["msg"])
+        if _SYSCALL not in message and "type=SYSCALL " not in message:
+            continue
+        serial = serial_of(message)
+        if serial is not None:
+            values = fields(message)
+            found[serial] = {key: values.get(key, "") for key in ("comm", "exe", "pid")}
+    return found
+
+
+def _judged(
+    records: Sequence[Mapping[str, Any]],
+) -> list[tuple[Mapping[str, Any], dict[str, Any]]]:
+    """Each denial and SELinux error in ``records``, with the record it is in,
+    its source and its signature; an error takes the process of its event's
+    SYSCALL record."""
+    calls = syscalls(records)
+    found = []
+    for record in records:
+        message = str(record["msg"])
+        avc = parse_avc(message) or parse_selinux_err(message)
+        if avc is None:
+            continue
+        serial = serial_of(message)
+        call = calls.get(serial, {}) if serial is not None else {}
+        if not avc["comm"]:
+            avc["comm"] = call.get("comm", "") or call.get("exe", "")
+        if not avc["pid"]:
+            avc["pid"] = call.get("pid", "")
+        avc["serial"] = serial
+        avc["source"] = source(avc)
+        avc["signature"] = signature(avc)
+        found.append((record, avc))
+    return found
+
+
 def denials(
     records: Iterable[Mapping[str, Any]], first: int | None, last: int | None
 ) -> list[dict[str, Any]]:
-    """The denials between the records ``first`` and ``last`` (exclusive),
-    each with its sequence number, source and signature."""
+    """The denials and SELinux errors between the records ``first`` and
+    ``last`` (exclusive), each with its sequence number, source and
+    signature."""
+    inside = [
+        record
+        for record in sorted(records, key=lambda r: int(r["seq"]))
+        if not (first is not None and int(record["seq"]) <= first)
+        and not (last is not None and int(record["seq"]) >= last)
+    ]
     found = []
-    for record in sorted(records, key=lambda r: int(r["seq"])):
-        seq = int(record["seq"])
-        if (first is not None and seq <= first) or (last is not None and seq >= last):
-            continue
-        avc = parse_avc(str(record["msg"]))
-        if avc is None:
-            continue
-        avc["seq"] = seq
-        avc["source"] = source(avc)
-        avc["signature"] = signature(avc)
+    for record, avc in _judged(inside):
+        avc["seq"] = int(record["seq"])
+        avc["log"] = "kernel"
+        found.append(avc)
+    return found
+
+
+def audit_denials(audit: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The denials and SELinux errors among records of auditd's log
+    (:func:`audit_log`), each with its time and serial number."""
+    records = sorted(audit, key=lambda r: (float(r["time"]), int(r["serial"])))
+    found = []
+    for record, avc in _judged(records):
+        avc["seq"] = None
+        avc["time"] = float(record["time"])
+        avc["log"] = "audit"
         found.append(avc)
     return found
 
@@ -249,17 +413,20 @@ def phase(
     first: int | None,
     last: int | None,
     baseline: Iterable[str] = (),
+    audit: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """The denials of the phase between the records ``first`` and ``last``.
+    """The denials of the phase between the records ``first`` and ``last``,
+    with those of ``audit``, the records auditd's log holds of the phase
+    (:func:`audit_log`).
 
     A denial is new when it is NAILS's own, or when its signature is neither
-    in ``baseline`` (the denials of the run's boots and plain soft-reboots
-    before NAILS ran, and of its plain soft-reboots after) nor one of the
-    image's own races. The result also names the lines that say the log
-    dropped something, and the policy loads."""
+    in ``baseline`` (the denials of the decoy before NAILS ran and of the
+    first plain soft-reboot) nor one of the image's own races. The result
+    also names the lines that say the kernel lost records, and the policy
+    loads."""
     records = list(records)
     known = set(baseline)
-    found = denials(records, first, last)
+    found = denials(records, first, last) + audit_denials(audit)
     for avc in found:
         if avc["source"] == "nails":
             avc["new"] = True
