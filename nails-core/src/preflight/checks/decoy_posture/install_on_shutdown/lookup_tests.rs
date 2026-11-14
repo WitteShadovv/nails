@@ -460,6 +460,51 @@ fn a_link_lookup_that_fails_of_what_apt_skips_leaves_the_setting_unknown() {
     }
 }
 
+/// A part of `/etc/apt/apt.conf.d`, or `/etc/apt/apt.conf`, whose kind
+/// alone cannot be told may be a file apt reads, such as a link to one whose
+/// target a check without sudo cannot look up: the setting is unknown, where
+/// the file read as none and the other part's `false` let the decoy pass.
+#[test]
+fn a_kind_lookup_that_fails_of_an_apt_file_leaves_the_setting_unknown() {
+    for (path, parts, main) in [
+        (
+            "/etc/apt/apt.conf.d/99local",
+            &[("50unattended-upgrades", Some(OFF)), ("99local", Some(ON))][..],
+            None,
+        ),
+        (
+            "/etc/apt/apt.conf",
+            &[("50unattended-upgrades", Some(OFF))][..],
+            Some(ON),
+        ),
+    ] {
+        let fs = mock_decoy(true, parts);
+        if let Some(main) = main {
+            fs.mock_add_file(path, main);
+        }
+        assert_eq!(
+            blocker(&finding(&fs, &fs, Path::new("/"), None)).at_the_switch,
+            AtTheSwitch::Installs,
+            "{path}"
+        );
+        fs.mock_fail_only(
+            Path::new(path),
+            MockLookup::IsRegularFile,
+            MockFailure::Io(ErrorKind::Other),
+        );
+        let found = finding(&fs, &fs, Path::new("/"), None);
+        let blocker = blocker(&found);
+        assert_eq!(blocker.at_the_switch, AtTheSwitch::Unknown, "{path}");
+        assert!(
+            blocker
+                .finding
+                .contains(&format!("{path} cannot be looked up (")),
+            "{path}: {}",
+            blocker.finding
+        );
+    }
+}
+
 /// A check run without sudo cannot search the root overlay's upper, which
 /// only root may: where the decoy's helper is stopped but enabled,
 /// decoy-persistence warns that it cannot tell what the session's own copy
