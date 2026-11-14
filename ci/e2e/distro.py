@@ -13,19 +13,24 @@ host is caught instead of passing unseen. It has five suites:
   does not admit;
 - ``probe``: the fact probes of the images not admitted yet whose image is
   pinned;
-- ``staged``: the smoke and records scenarios of each image staged for its
-  family's admission, run with a test-only build of NAILS that admits the
-  family, before the commit that admits it.
+- ``staged``: the scenarios a family's admission needs, run with a test-only
+  build of NAILS that admits the family, before the commit that admits it:
+  the smoke and records scenarios of each image staged for its admission, and
+  the drivers of the admission gate of a family not admitted yet (its gate
+  scenarios, and the resolution of the package closures they install
+  offline).
 
 A records scenario, a refusal and a probe are each a host driver, one job of
 its own that builds the driver and runs it on the runner, outside the sandbox.
-A staged scenario is a job of its own too, but a derivation that ``nix build``
-runs in the sandbox, as a smoke scenario is. ``all`` plans the smoke, records
-and refusal suites together, the default run; the probes boot no NAILS and the
-staged scenarios are no gate of the admitted families, so both run only when
-asked for. The records and refusal jobs gate (:data:`GATING_SUITES`): the
-workflow fails its result on them, while a smoke, staged scenario or probe that
-fails only warns.
+A staged scenario is a job of its own too: one of an image staged for its
+admission is a derivation that ``nix build`` runs in the sandbox, as a smoke
+scenario is, and a driver of an admission gate is a host driver, whose job also
+uploads what it wrote. Every job carries in ``host`` whether it runs a host
+driver. ``all`` plans the smoke, records and refusal suites together, the
+default run; the probes boot no NAILS and the staged scenarios are no gate of
+the admitted families, so both run only when asked for. The records and refusal
+jobs gate (:data:`GATING_SUITES`): the workflow fails its result on them, while
+a smoke, staged scenario or probe that fails only warns.
 
 The distro list is plain data the flake exposes as
 ``legacyPackages.<system>.e2e-distro-metadata``. Each distribution names its
@@ -101,8 +106,10 @@ class DistroMetadata:
     timeout in seconds. ``probes`` maps each probe a run can boot to its
     attribute name, ``records`` each distribution with a records scenario to
     that scenario's attribute, ``refusals`` each image a refusal can boot to
-    the refusal's attribute, and ``staged`` each staged scenario
-    (``arch-boxes-smoke``) to its attribute.
+    the refusal's attribute, ``staged`` each staged scenario that runs in the
+    sandbox (``arch-boxes-smoke``) to its attribute, and ``staged_drivers``
+    each staged scenario that is a host driver (``fedora-44-gate``,
+    ``fedora-44-rpms``) to its attribute.
     """
 
     distros: list[str]
@@ -112,6 +119,7 @@ class DistroMetadata:
     records: dict[str, str] = field(default_factory=dict)
     refusals: dict[str, str] = field(default_factory=dict)
     staged: dict[str, str] = field(default_factory=dict)
+    staged_drivers: dict[str, str] = field(default_factory=dict)
 
     def drivers(self, suite: str) -> dict[str, str]:
         """The jobs of a suite of one job per entry: each name to its attribute."""
@@ -119,7 +127,7 @@ class DistroMetadata:
             PROBE: self.probes,
             RECORDS: self.records,
             REFUSAL: self.refusals,
-            STAGED: self.staged,
+            STAGED: {**self.staged, **self.staged_drivers},
         }
         if suite not in tables:
             raise DistroError(f"{suite} is not a suite of host drivers")
@@ -204,12 +212,19 @@ def parse_distro_metadata(payload: object) -> DistroMetadata:
                 raise DistroError(f"distro metadata has no timeout for {scenario}")
     tables = {
         key: _driver_table(payload, key)
-        for key in ("probes", "records", "refusals", "staged")
+        for key in ("probes", "records", "refusals", "staged", "stagedDrivers")
     }
     for table in tables.values():
         for attr in table.values():
             if attr not in timeouts:
                 raise DistroError(f"distro metadata has no timeout for {attr}")
+    # One name is one job, so it may not run both in the sandbox and outside.
+    both = sorted(tables["staged"].keys() & tables["stagedDrivers"].keys())
+    if both:
+        raise DistroError(
+            "distro metadata names a staged scenario as a host driver too: "
+            + ", ".join(both)
+        )
     return DistroMetadata(
         distros=distros,
         scenarios=scenarios,
@@ -218,6 +233,7 @@ def parse_distro_metadata(payload: object) -> DistroMetadata:
         records=tables["records"],
         refusals=tables["refusals"],
         staged=tables["staged"],
+        staged_drivers=tables["stagedDrivers"],
     )
 
 
@@ -298,6 +314,7 @@ def _smoke_jobs(
                 {
                     "suite": SMOKE,
                     "gating": SMOKE in GATING_SUITES,
+                    "host": False,
                     "distro": distro,
                     "index": index,
                     "count": len(shards),
@@ -314,7 +331,8 @@ def _driver_jobs(
     """One job per driver of ``suite`` among ``names``, in the shape of a shard.
 
     ``seconds`` is the driver's own time limit, which the job puts on it;
-    ``timeout`` is the job's, in minutes.
+    ``timeout`` is the job's, in minutes. ``host`` is false only for a staged
+    scenario that runs in the sandbox.
     """
     drivers = metadata.drivers(suite)
     include: list[dict[str, object]] = []
@@ -325,6 +343,7 @@ def _driver_jobs(
             {
                 "suite": suite,
                 "gating": suite in GATING_SUITES,
+                "host": suite != STAGED or name in metadata.staged_drivers,
                 "distro": name,
                 "index": 1,
                 "count": 1,
@@ -397,9 +416,9 @@ def plan_matrix(
     and so are a suite with nothing to run when no name is given and a plan
     that holds no job. The change that empties a suite, such as admitting the
     last refused family, therefore takes the suite out of the run as well.
-    Every entry carries its ``suite``, and in ``gating`` whether its failure
-    fails the run. ``max_jobs`` bounds the smoke shards; each driver is a job
-    of its own.
+    Every entry carries its ``suite``, in ``gating`` whether its failure fails
+    the run, and in ``host`` whether it runs a host driver outside the sandbox.
+    ``max_jobs`` bounds the smoke shards; each driver is a job of its own.
     """
     if max_jobs < 1:
         raise ValueError("max_jobs must be at least 1")

@@ -9,13 +9,18 @@ name: Distro E2E
 #   refusal  the refusal of each pinned image of a family the family table
 #            does not admit (Fedora, Arch)
 #   probe    the fact probes of the images not admitted yet
-#   staged   the smoke and records scenarios of each image staged for its
-#            family's admission (arch-boxes), with a test-only build that
-#            admits the family
+#   staged   the scenarios a family's admission needs, with a test-only build
+#            that admits the family: the smoke and records scenarios of each
+#            image staged for its admission (arch-boxes), and the drivers of
+#            the admission gate of a family not admitted yet (Fedora): its
+#            gate scenarios and the resolution of the package closures they
+#            install offline, each uploading what it wrote
 #
-# A smoke or staged scenario is a derivation that nix build runs in the Nix
-# build sandbox. A records scenario, a refusal and a probe are host drivers: the
-# job builds the driver and runs it on the runner, outside the sandbox.
+# A smoke scenario is a derivation that nix build runs in the Nix build
+# sandbox, and so is a staged scenario of an image staged for admission. A
+# records scenario, a refusal, a probe and a staged driver of an admission gate
+# are host drivers: the job builds the driver and runs it on the runner,
+# outside the sandbox.
 #
 # The records and refusal jobs gate: distro-result fails when one of them
 # fails. The smoke and staged scenarios and the probes are informational, and
@@ -65,8 +70,9 @@ on:
           one of those three alone, the fact probes of the images not
           admitted yet, each uploading its facts as JSON (distros then names
           probes, such as fedora-44-enforcing), or the scenarios of the images
-          staged for admission (distros then names them, such as
-          arch-boxes-smoke)
+          staged for admission and the drivers of an admission gate, each
+          driver uploading what it wrote (distros then names them, such as
+          arch-boxes-smoke or fedora-44-gate)
         type: choice
         default: all
         options: [all, smoke, records, refusal, probe, staged]
@@ -85,7 +91,9 @@ on:
         type: string
         default: ""
       max-jobs:
-        description: Upper bound on parallel smoke jobs (distros x shards).
+        description: >-
+          Upper bound on parallel smoke jobs (distros x shards), and on the
+          informational jobs of a run that run at once
         type: number
         default: 8
   workflow_call:
@@ -143,6 +151,7 @@ jobs:
       distro-jobs: ${{ steps.matrix.outputs.distro-jobs }}
       gating: ${{ steps.matrix.outputs.gating }}
       gating-jobs: ${{ steps.matrix.outputs.gating-jobs }}
+      max-jobs: ${{ steps.select.outputs.max-jobs }}
 
     steps:
       - name: Checkout repository
@@ -242,7 +251,8 @@ jobs:
 
       # Built once here, so the VM jobs substitute it from the cache instead
       # of each compiling the static binary (when a cache is configured). A
-      # probe boots no nails, and a staged scenario a test-only build of it.
+      # probe boots no nails, and a staged scenario or driver a test-only build
+      # of it.
       - name: Build nails
         if: steps.select.outputs.suites != '' && steps.select.outputs.suites != 'probe' && steps.select.outputs.suites != 'staged'
         run: nix build -L --no-link .#nails
@@ -314,6 +324,10 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
+      # At most max-jobs of these jobs at once, so a run of several drivers
+      # leaves runners for the other workflows. The planner already keeps the
+      # smoke shards at or below it.
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max-jobs) }}
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
@@ -329,9 +343,10 @@ jobs:
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
-      # A staged scenario builds the same way, one per job.
+      # A staged scenario of an image staged for admission builds the same
+      # way, one per job.
       - name: Run the distro smoke scenarios
-        if: matrix.suite == 'smoke' || matrix.suite == 'staged'
+        if: matrix.suite == 'smoke' || (matrix.suite == 'staged' && !matrix.host)
         env:
           TESTS: ${{ join(matrix.tests, ' ') }}
         run: |
@@ -392,6 +407,54 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # A staged driver runs as a probe does: the job builds it and runs it
+      # here, with its VM state on the root disk. It writes what it found
+      # into the directory NAILS_GATE_OUT names, and the step adds its log.
+      # The driver's exit status is the job's, once the upload below has
+      # what it wrote.
+      - name: Run the staged drivers
+        if: matrix.suite == 'staged' && matrix.host
+        env:
+          TESTS: ${{ join(matrix.tests, ' ') }}
+          STAGED_SECONDS: ${{ matrix.seconds }}
+        run: |
+          set -euo pipefail
+          read -ra tests <<< "$TESTS"
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::error::The plan gave this job no staged driver to run."
+            exit 1
+          fi
+          out="$RUNNER_TEMP/staged"
+          scratch="$RUNNER_TEMP/vm"
+          mkdir -p "$out" "$scratch"
+          status=0
+          for test in "${tests[@]}"; do
+            driver="$RUNNER_TEMP/$test"
+            # Quote the attribute, as above: a name may contain a dot.
+            nix build --print-build-logs --out-link "$driver" \
+              ".#legacyPackages.x86_64-linux.e2e-distro.\"$test\""
+            (
+              cd "$scratch"
+              TMPDIR="$scratch" XDG_RUNTIME_DIR="$scratch" NAILS_GATE_OUT="$out" \
+                timeout "$STAGED_SECONDS" "$driver/bin/test-driver" </dev/null
+            ) 2>&1 | tee "$out/$test.log" || status=$?
+            if [ "$status" -eq 124 ]; then
+              echo "::error::$test ran past its time limit of $STAGED_SECONDS s."
+            fi
+          done
+          exit "$status"
+
+      # The artifact holds what each staged driver wrote and its log; a driver
+      # that failed part of the way still leaves both.
+      - name: Upload what the staged drivers wrote
+        if: matrix.suite == 'staged' && matrix.host && !cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: staged-${{ matrix.distro }}
+          path: ${{ runner.temp }}/staged/
+          if-no-files-found: warn
+          retention-days: 30
 
       # The artifact holds the record, the raw output of every query and the
       # driver's log; a probe that failed before its record still leaves the
@@ -522,7 +585,7 @@ jobs:
             if [ "$SUITES" = probe ]; then
               echo "::warning::One or more distro probes failed or did not run ($DISTRO_RESULT)."
             elif [ "$SUITES" = staged ]; then
-              echo "::warning::One or more staged scenarios failed or did not run ($DISTRO_RESULT)."
+              echo "::warning::One or more staged scenarios or drivers failed or did not run ($DISTRO_RESULT)."
             else
               echo "::warning::One or more distro smoke scenarios failed or did not run ($DISTRO_RESULT)."
             fi

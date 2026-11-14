@@ -379,7 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="*",
         help=(
             "distributions, records scenarios, refused images, probes or staged "
-            "scenarios to run, or all of each suite when none are named"
+            "scenarios and drivers to run, or all of each suite when none are named"
         ),
     )
     distro_cmd.add_argument(
@@ -389,8 +389,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "a suite to plan, again for more: the smoke scenarios, the records "
             "scenarios, the refusals, the fact probes of the images not admitted "
-            "yet, the scenarios of the images staged for admission, or all "
-            "(smoke, records and refusal, the default)"
+            "yet, the scenarios of the images staged for admission and the drivers "
+            "of an admission gate, or all (smoke, records and refusal, the default)"
         ),
     )
     distro_cmd.add_argument(
