@@ -13,6 +13,8 @@ use std::path::Path;
 
 #[path = "backend_entries_forms_tests.rs"]
 mod forms;
+#[path = "backend_entries_options_tests.rs"]
+mod options;
 
 const NVME: &str = "/sys/devices/pci0/nvme/nvme0n1";
 const P3: &str = "/sys/devices/pci0/nvme/nvme0n1/nvme0n1p3";

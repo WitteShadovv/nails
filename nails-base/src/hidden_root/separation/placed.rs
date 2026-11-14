@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The lines the claims place by a path they name, judged where that path
-//! reads, with no link in it followed (see the `paths` module): a bind
-//! line's source, the file of a swap or image line, the source a FUSE line
-//! gives its program and the program itself where the line names it by its
-//! path, and the file a crypttab line opens, its key file and its header and
-//! a file its boot mounts for one of these (see the `reads` module).
+//! reads, with no link in it followed (see the `paths` module): a bind line's
+//! source, the file of a swap or image line, the source a FUSE line gives its
+//! program and the program itself where the line names it by its path, the file
+//! a crypttab line opens, its key file and its header and a file its boot
+//! mounts for one of these, and a path an option of a line names (see the
+//! `reads` module).
 //!
 //! A path that lies in the volume, at the root's folder or inside it as the
 //! mount that holds it shows it, makes a finding: a bind line mounts the
@@ -44,25 +45,31 @@ pub(super) enum Named {
     /// What the boot mounts for the header of a crypttab line, the device of
     /// its `header=<path>:<device>`.
     HeaderDevice,
+    /// The path or the device an option of a line names, by the option's
+    /// name (see the `known` module): an overlay's `upperdir=`, say, or a
+    /// crypttab line's `tpm2-device=`.
+    Option(&'static str),
 }
 
 impl Named {
     /// What it is, as the subject of "lies".
-    fn what(self) -> &'static str {
+    fn what(self) -> String {
         match self {
-            Named::Source => "its source",
-            Named::File => "the file it names",
-            Named::Program => "the program it runs",
-            Named::Opened => "the file it opens",
-            Named::KeyFile => "its key file",
-            Named::KeyDevice => "what it mounts for its key file",
-            Named::Header => "its header",
-            Named::HeaderDevice => "what it mounts for its header",
+            Named::Source => "its source".into(),
+            Named::File => "the file it names".into(),
+            Named::Program => "the program it runs".into(),
+            Named::Opened => "the file it opens".into(),
+            Named::KeyFile => "its key file".into(),
+            Named::KeyDevice => "what it mounts for its key file".into(),
+            Named::Header => "its header".into(),
+            Named::HeaderDevice => "what it mounts for its header".into(),
+            Named::Option(option) => format!("the path its option {option}= names"),
         }
     }
 }
 
 /// A line the claims place by a path it names.
+#[derive(Clone)]
 pub(super) struct Line {
     /// The file it is in, the fstab or the crypttab.
     pub file: &'static str,
@@ -131,6 +138,7 @@ fn in_volume(
         boot_needs: line.boot_needs,
         system_folder: None,
         not_plain: false,
+        options: Vec::new(),
     })
 }
 
@@ -149,5 +157,6 @@ fn untold(line: &Line, why: &UntoldPath) -> EntryFinding {
         boot_needs: false,
         system_folder: None,
         not_plain: false,
+        options: Vec::new(),
     }
 }

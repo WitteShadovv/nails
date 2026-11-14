@@ -26,9 +26,10 @@
 #   - the zram swap is masked as disk swap: its device could write pages back
 #     to the backing disk;
 #   - a disk at /srv/later, noauto in the fstab but pulled in by
-#     multi-user.target through x-systemd.wanted-by=, is masked and stays
+#     local-fs.target through x-systemd.wanted-by=, is masked and stays
 #     unchanged: the fstab generator links its mount whatever noauto says;
-#   - a disk at /srv/pa/child, which nails-pull.target requires, is masked
+#   - a disk at /srv/pa/child, noauto in the fstab but required by
+#     nails-pull.target through a link in /run/systemd/system, is masked
 #     rather than skipped: its mount requires that of its noauto parent
 #     /srv/pa, which a skip would mount. Starting the target fails, and the
 #     parent disk stays unmounted and unchanged;
@@ -44,12 +45,15 @@
 # unit active, as activation does: with udev marking the disk not ready, check
 # masks it and warns that local-fs.target will not be reached. check also
 # refuses a bind of a directory on a noauto disk at /srv/bsrc to /srv/bdata,
-# which nails-bind.target requires, while that disk is not mounted:
+# which local-fs.target requires, while that disk is not mounted:
 # backend-entries cannot read what the directory is there, and systemd has a
 # bind mount require the mounts for its source, so it would mount the noauto
 # disk for the bind. With the disk mounted, check reads the directory there
 # and passes the line; the test then removes the bind and the disk's line
-# before the entry.
+# before the entry. A line that x-systemd.wanted-by= or x-systemd.required-by=
+# links into a unit other than local-fs.target, as for these disks, fails
+# backend-entries as one that is not plain, naming the option, so the decoy
+# here has its units pull them in by local-fs.target or a link instead.
 #
 # Back on the decoy, the filesystems are mounted by the decoy's own fstab
 # again, without a trace of the hidden writes, and blk-availability's stop is
@@ -173,11 +177,6 @@ in
         "nails-pull.target".text = ''
           [Unit]
           Description=The child disk below a noauto one
-        '';
-        # Likewise: there it requires the bind of a directory on a noauto disk.
-        "nails-bind.target".text = ''
-          [Unit]
-          Description=The bind of a directory on a noauto disk
         '';
       };
     };
@@ -321,38 +320,42 @@ in
         "echo 32M > /sys/block/zram0/disksize && mkswap /dev/zram0 && touch /run/zram-ready"
     )
     assert machine.succeed("cat /sys/block/zram0/backing_dev").strip() != "none"
-    # A disk the decoy's fstab marks noauto but names multi-user.target to
+    # A disk the decoy's fstab marks noauto but names local-fs.target to
     # pull in: the fstab generator links its mount there whatever noauto
     # says. Not mounted now.
     machine.succeed(
         f"mkfs.ext4 -q {LATER} && "
-        f"echo '{LATER} /srv/later ext4 noauto,x-systemd.wanted-by=multi-user.target 0 2' "
+        f"echo '{LATER} /srv/later ext4 noauto,x-systemd.wanted-by=local-fs.target 0 2' "
         ">> /etc/fstab && systemctl daemon-reload && "
-        f"test -L /run/systemd/generator/multi-user.target.wants/{LATER_UNIT}"
+        f"test -L /run/systemd/generator/local-fs.target.wants/{LATER_UNIT}"
     )
     machine.fail("mountpoint -q /srv/later")
     later_before = later_hash()
-    # A noauto disk at /srv/pa, and below it one that nails-pull.target
-    # requires. systemd has the child's mount require its parent's, so the
-    # child's skip would mount the noauto disk before its condition is tested.
+    # A noauto disk at /srv/pa, and below it a noauto one that
+    # nails-pull.target requires through a link to the unit the generator
+    # makes for its line. systemd has the child's mount require its parent's,
+    # so the child's skip would mount the noauto disk before its condition is
+    # tested.
     machine.succeed(
         f"mkfs.ext4 -q {PARENT} && mkfs.ext4 -q {CHILD} && "
         f"echo '{PARENT} /srv/pa ext4 noauto 0 2' >> /etc/fstab && "
-        f"echo '{CHILD} /srv/pa/child ext4 x-systemd.required-by=nails-pull.target 0 2' "
-        ">> /etc/fstab && systemctl daemon-reload && "
-        f"test -L /run/systemd/generator/nails-pull.target.requires/{CHILD_UNIT}"
+        f"echo '{CHILD} /srv/pa/child ext4 noauto 0 2' >> /etc/fstab && "
+        "systemctl daemon-reload && mkdir -p /run/systemd/system/nails-pull.target.requires && "
+        f"ln -s /run/systemd/generator/{CHILD_UNIT} "
+        f"/run/systemd/system/nails-pull.target.requires/{CHILD_UNIT} && "
+        "systemctl daemon-reload"
     )
     machine.fail("mountpoint -q /srv/pa")
     parent_before = parent_hash()
     # A noauto disk at /srv/bsrc, and a bind of a directory on it that
-    # nails-bind.target requires. systemd has a bind mount require the mounts
+    # local-fs.target requires. systemd has a bind mount require the mounts
     # for its source, so the bind would mount the noauto disk first.
     machine.succeed(
         f"mkfs.ext4 -q {BIND_SOURCE} && "
         f"echo '{BIND_SOURCE} /srv/bsrc ext4 noauto 0 2' >> /etc/fstab && "
-        "echo '/srv/bsrc/data /srv/bdata none bind,x-systemd.required-by=nails-bind.target 0 0' "
-        ">> /etc/fstab && systemctl daemon-reload && "
-        f"test -L /run/systemd/generator/nails-bind.target.requires/{BIND_UNIT}"
+        "echo '/srv/bsrc/data /srv/bdata none bind 0 0' >> /etc/fstab && "
+        "systemctl daemon-reload && "
+        f"test -L /run/systemd/generator/local-fs.target.requires/{BIND_UNIT}"
     )
     machine.fail("mountpoint -q /srv/bsrc")
 
@@ -404,7 +407,35 @@ in
             "systemctl daemon-reload"
         )
         machine.fail("mountpoint -q /srv/bsrc")
-        machine.fail(f"test -e /run/systemd/generator/nails-bind.target.requires/{BIND_UNIT}")
+        machine.fail(f"test -e /run/systemd/generator/local-fs.target.requires/{BIND_UNIT}")
+
+    with subtest("check fails a line linked into another unit as not plain"):
+        # x-systemd.wanted-by= and x-systemd.required-by= that name a unit
+        # other than local-fs.target link the line into that unit in place of
+        # local-fs.target, which NAILS does not read: such a line is not
+        # plain, and the check names the option.
+        machine.succeed("cp /etc/fstab /run/fstab.plain")
+        for option in [
+            "x-systemd.wanted-by=multi-user.target",
+            "x-systemd.required-by=nails-pull.target",
+        ]:
+            machine.succeed(f"echo '{LATER} /srv/later2 ext4 noauto,{option} 0 2' >> /etc/fstab")
+            row = backend_entries(CONFIG)
+            machine.log(json.dumps(row))
+            assert row["status"] == "fail", row
+            name = option.split("=")[0]
+            assert (
+                f"/etc/fstab: '{LATER} /srv/later2 ext4' (NAILS reads only plain lines, and it "
+                f"gives {name} with a value NAILS does not read)"
+            ) in row["message"], row
+            assert (
+                f"NAILS does not read the option {name} as such a line gives it"
+                in row["remediation"]
+            ), row
+            machine.succeed("cp /run/fstab.plain /etc/fstab")
+        row = backend_entries(CONFIG)
+        assert row["status"] == "pass", row
+        machine.succeed("rm /run/fstab.plain")
 
     with subtest("check reports the decision for every decoy filesystem"):
         out = machine.succeed(f"nails --config {CONFIG} check --overlay-only")

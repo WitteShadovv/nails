@@ -1,17 +1,18 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The paths the decoy's fstab and crypttab name, read as they are written:
-//! no link in them is followed. These are a bind line's source, the path of
-//! a swap or image file, of what a FUSE program reads and of that program
-//! itself where a line names it by an absolute path, and the source of a
-//! crypttab line that is no tag and no device's path in `/dev`, such as a
-//! container file, which `systemd-cryptsetup` opens through a loop device,
-//! and so its key file, its header and what the boot mounts for one of these
-//! (see the `reads` module). A device's path in `/dev` that no block device
-//! answers to, written as that path or as a tag whose udev link it is, is
-//! followed through its links only while they stay in `/dev`
-//! ([`follow_in_dev`]): a link that leads out of it is not followed.
+//! The paths the decoy's fstab and crypttab name, read as they are written: no
+//! link in them is followed. These are a bind line's source, the path of a swap
+//! or image file, of what a FUSE program reads and of that program itself where
+//! a line names it by an absolute path, and the source of a crypttab line that
+//! is no tag and no device's path in `/dev`, such as a container file, which
+//! `systemd-cryptsetup` opens through a loop device, and so its key file, its
+//! header and what the boot mounts for one of these, and a path an option of a
+//! line names, such as an overlay's folders (see the `reads` module). A
+//! device's path in `/dev` that no block device answers to, written as that
+//! path or as a tag whose udev link it is, is followed through its links only
+//! while they stay in `/dev` ([`follow_in_dev`]): a link that leads out of it
+//! is not followed.
 //!
 //! Each part of such a path is looked at on its own through the
 //! [`Filesystem`] trait, from `/` down, with one `statx` that follows no link
@@ -257,7 +258,8 @@ pub(super) fn read_all<F: Filesystem>(
                 .filter(|entry| opens_a_file(entry))
                 .map(|entry| entry.source.as_str()),
         )
-        .chain(crypttab_reads(crypttab).filter(|spec| is_file_path(spec)));
+        .chain(crypttab_reads(crypttab).filter(|spec| is_file_path(spec)))
+        .chain(fstab_option_reads(fstab).filter(|spec| is_file_path(spec)));
     let mut paths = NamedPaths::new();
     for path in named {
         paths
@@ -273,6 +275,7 @@ pub(super) fn read_all<F: Filesystem>(
         .filter_map(source)
         .chain(crypttab.iter().map(|entry| entry.source.as_str()))
         .chain(crypttab_reads(crypttab))
+        .chain(fstab_option_reads(fstab))
         .filter(|spec| !devices.by_spec.contains_key(*spec))
         .filter_map(|spec| Some((spec, device_path(spec)?)));
     for (spec, path) in unresolved {
@@ -289,6 +292,16 @@ pub(super) fn crypttab_reads(crypttab: &[CrypttabEntry]) -> impl Iterator<Item =
     crypttab
         .iter()
         .flat_map(|entry| super::reads::reads(entry).into_iter().map(|(_, spec)| spec))
+}
+
+/// The paths the options of the lines of `fstab` name
+/// ([`fstab_reads`](super::reads::fstab_reads)), every line's.
+fn fstab_option_reads(fstab: &[FstabEntry]) -> impl Iterator<Item = &str> {
+    fstab.iter().flat_map(|entry| {
+        super::reads::fstab_reads(entry)
+            .into_iter()
+            .map(|(_, spec)| spec)
+    })
 }
 
 /// Why where `path`, a device's path in `/dev` that no block device here

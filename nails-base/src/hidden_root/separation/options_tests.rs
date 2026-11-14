@@ -30,7 +30,6 @@ fn noauto_and_an_automount_are_read_by_their_names_and_the_last_wins() {
         "auto,noauto=",
         "auto=1,noauto",
         "defaults,noauto=x,nofail",
-        "noauto,x-systemd.wanted-by=",
     ] {
         assert!(fstab_noauto(&fstab_line("btrfs", options)), "{options}");
     }
@@ -50,15 +49,52 @@ fn noauto_and_an_automount_are_read_by_their_names_and_the_last_wins() {
     ] {
         assert!(!fstab_noauto(&fstab_line("btrfs", options)), "{options}");
     }
-    // systemd makes no automount for swap, and reads no unit to pull it in.
+    // systemd makes no automount for swap.
     assert!(fstab_noauto(&fstab_line(
         "swap",
         "noauto,x-systemd.automount=1"
     )));
-    assert!(fstab_noauto(&fstab_line(
-        "swap",
-        "noauto,x-systemd.wanted-by=x.service"
-    )));
+}
+
+/// A line counts as one the boot does not mount only when NAILS reads every
+/// option it gives: an empty `x-systemd.wanted-by=`, which the generator
+/// linked into a unit named by nothing, a unit named on a swap line, which it
+/// reads not at all, and an option no list holds count as mounted.
+#[test]
+fn a_line_with_an_option_nails_does_not_read_counts_as_one_the_boot_mounts() {
+    for (vfstype, options) in [
+        ("btrfs", "noauto,x-systemd.wanted-by="),
+        ("btrfs", "noauto,X-mount.subdir=x"),
+        ("btrfs", "noauto,nofail=1"),
+        ("ext4", "noauto,x-systemd.requires=backup.service"),
+        ("swap", "noauto,x-systemd.wanted-by=x.service"),
+    ] {
+        assert!(!fstab_noauto(&fstab_line(vfstype, options)), "{options}");
+    }
+    for options in [
+        "luks,noauto,foo",
+        "noauto,keyscript=passdev",
+        "noauto,discard=1",
+    ] {
+        assert!(!crypttab_noauto(&crypttab_line(options)), "{options}");
+    }
+}
+
+/// The generator mounts a line for `/` or `/usr` whatever `noauto` says.
+#[test]
+fn a_line_for_slash_or_usr_is_one_the_boot_mounts() {
+    for (at, noauto) in [
+        ("/", false),
+        ("/usr", false),
+        ("/usr/", false),
+        ("/home", true),
+        ("/usr/local", true),
+    ] {
+        let line = parse_fstab(&format!("/dev/vda2 {at} ext4 noauto 0 0\n")).remove(0);
+        assert_eq!(fstab_noauto(&line), noauto, "{at}");
+    }
+    let swap = parse_fstab("/dev/vda3 / swap noauto 0 0\n").remove(0);
+    assert!(fstab_noauto(&swap));
 }
 
 /// The crypttab generator pulled `vn1` (`noauto=1,auto`) into
@@ -81,53 +117,5 @@ fn a_crypttab_noauto_is_read_by_its_name_and_the_last_wins() {
         "noautox",
     ] {
         assert!(!crypttab_noauto(&crypttab_line(options)), "{options}");
-    }
-}
-
-/// An empty `x-systemd.wanted-by=` took the place of local-fs.target: the
-/// generator linked `home.mount` into `.wants/` only. One given alone is no
-/// option to systemd, which reads it only with a `=`.
-#[test]
-fn an_option_with_no_value_where_systemd_or_btrfs_reads_one_is_not_plain() {
-    for (options, why) in [
-        (
-            "subvol=/home,x-systemd.wanted-by=",
-            vec![Unplain::NoValue("x-systemd.wanted-by")],
-        ),
-        (
-            "x-systemd.required-by=,nofail",
-            vec![Unplain::NoValue("x-systemd.required-by")],
-        ),
-        ("subvol,noatime", vec![Unplain::NoValue("subvol")]),
-        ("subvol=", vec![Unplain::NoValue("subvol")]),
-        ("subvolid", vec![Unplain::NoValue("subvolid")]),
-        ("subvol=/home,subvolid=", vec![Unplain::NoValue("subvolid")]),
-        (
-            "x-systemd.wanted-by=,subvol",
-            vec![
-                Unplain::NoValue("x-systemd.wanted-by"),
-                Unplain::NoValue("subvol"),
-            ],
-        ),
-    ] {
-        assert_eq!(
-            unplain_fstab(&fstab_line("btrfs", options)),
-            why,
-            "{options}"
-        );
-    }
-    for options in [
-        "subvol=/home",
-        "subvolid=257",
-        "x-systemd.wanted-by",
-        "x-systemd.wanted-by=backup.service",
-        "x-systemd.required-by=a.service,x-systemd.wanted-by=b.service",
-        "defaults",
-    ] {
-        assert_eq!(
-            unplain_fstab(&fstab_line("btrfs", options)),
-            [],
-            "{options}"
-        );
     }
 }
