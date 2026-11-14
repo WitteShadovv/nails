@@ -213,11 +213,11 @@ fn mock_parts(fs: &MockFilesystem, dir: &str, parts: &[(&str, Option<&str>)]) {
 }
 
 fn find(root: &Path) -> Finding {
-    finding(&RealFilesystem, root, None)
+    finding(&RealFilesystem, &RealFilesystem, root, None)
 }
 
 fn find_with_upper(root: &Path, upper: &Path) -> Finding {
-    finding(&RealFilesystem, root, Some(upper))
+    finding(&RealFilesystem, &RealFilesystem, root, Some(upper))
 }
 
 fn blocker(finding: &Finding) -> &str {
@@ -331,7 +331,11 @@ fn every_spelling_apt_reads_as_true_is_refused() {
                 refusal.finding
             );
             assert_eq!(
-                DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, tmp.path()),
+                DecoyPersistenceCheck::install_at_shutdown_on(
+                    &RealFilesystem,
+                    &RealFilesystem,
+                    tmp.path()
+                ),
                 Some(crate::preflight::InstallAtShutdown::On),
                 "{text:?}"
             );
@@ -569,7 +573,11 @@ fn an_index_apt_loads_leaves_the_setting_unknown_and_what_follows_it() {
             assert!(!refusal.finding.contains("installs nothing"), "{text:?}");
             assert!(!refusal.finding.contains("apt refuses"), "{text:?}");
             assert_eq!(
-                DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, tmp.path()),
+                DecoyPersistenceCheck::install_at_shutdown_on(
+                    &RealFilesystem,
+                    &RealFilesystem,
+                    tmp.path()
+                ),
                 Some(crate::preflight::InstallAtShutdown::Unknown),
                 "{text:?}"
             );
@@ -597,7 +605,7 @@ fn an_index_apt_loads_leaves_the_setting_unknown_and_what_follows_it() {
 #[test]
 fn an_unreadable_or_oversized_file_is_refused_as_if_on() {
     let fs = mock_decoy(true, &[("50unattended-upgrades", None)]);
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     let message = blocker(&found);
     assert!(
         message.contains("/etc/apt/apt.conf.d/50unattended-upgrades cannot be read"),
@@ -606,7 +614,7 @@ fn an_unreadable_or_oversized_file_is_refused_as_if_on() {
 
     let fs = mock_decoy(true, &[("50unattended-upgrades", Some(""))]);
     fs.mock_set_file_size("/etc/apt/apt.conf.d/50unattended-upgrades", FILE_LIMIT + 1);
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     assert!(
         blocker(&found).contains("more than NAILS reads"),
         "{found:?}"
@@ -615,7 +623,7 @@ fn an_unreadable_or_oversized_file_is_refused_as_if_on() {
     // The directory itself cannot be listed.
     let fs = mock_decoy(true, &[]);
     fs.mock_set_unreadable_dir("/etc/apt/apt.conf.d");
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     assert!(
         blocker(&found).contains("/etc/apt/apt.conf.d cannot be listed"),
         "{found:?}"
@@ -852,7 +860,7 @@ fn a_whiteout_in_the_upper_deletes_the_decoys_file() {
         true,
     );
     let upper = Path::new("/hidden/upper");
-    let found = finding(&fs, Path::new("/"), Some(upper));
+    let found = finding(&fs, &fs, Path::new("/"), Some(upper));
     assert!(found.warning.is_some(), "{found:?}");
 
     // A session deleted the decoy's file.
@@ -864,7 +872,7 @@ fn a_whiteout_in_the_upper_deletes_the_decoys_file() {
         vec![PathBuf::from("/hidden/upper/etc/apt/apt.conf.d/99on")],
     );
     fs.mock_set_whiteout("/hidden/upper/etc/apt/apt.conf.d/99on");
-    let found = finding(&fs, Path::new("/"), Some(upper));
+    let found = finding(&fs, &fs, Path::new("/"), Some(upper));
     assert_eq!(found, Finding::default());
 }
 
@@ -1089,7 +1097,7 @@ fn the_window_and_status_do_not_count_it() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    assert!(finding(&fs, Path::new("/"), None).blocker.is_some());
+    assert!(finding(&fs, &fs, Path::new("/"), None).blocker.is_some());
     assert!(DecoyPersistenceCheck::persistence(&fs).is_empty());
     assert!(!DecoyPersistenceCheck::decoy_is_persistent(&fs));
     assert!(!DecoyPersistenceCheck::decoy_kdump_armed(&fs));
@@ -1121,12 +1129,12 @@ fn the_finding_writes_nothing() {
         true,
     );
     assert!(
-        finding(&fs, Path::new("/"), Some(Path::new("/hidden/upper")))
+        finding(&fs, &fs, Path::new("/"), Some(Path::new("/hidden/upper")))
             .warning
             .is_some()
     );
     let before = fs.mock_ops().len();
-    let _ = finding(&fs, Path::new("/"), Some(Path::new("/hidden/upper")));
+    let _ = finding(&fs, &fs, Path::new("/"), Some(Path::new("/hidden/upper")));
     assert!(fs.mock_written_paths().is_empty());
     assert_eq!(fs.mock_ops().len(), before);
 }
@@ -1189,7 +1197,7 @@ fn a_name_or_a_value_apt_reads_by_the_locale_is_refused_as_if_on() {
 fn a_file_of_the_most_nails_reads_is_read() {
     let fs = mock_decoy(true, &[("99local", Some(ON))]);
     fs.mock_set_file_size("/etc/apt/apt.conf.d/99local", FILE_LIMIT);
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     assert!(
         blocker(&found).contains("is on in /etc/apt/apt.conf.d/99local:1"),
         "{found:?}"
@@ -1282,13 +1290,13 @@ fn a_session_without_etc_apt_reads_no_setting() {
         let fs = mock_decoy(false, &[("99on", Some(ON))]);
         mock_enable(&fs);
         assert!(
-            finding(&fs, Path::new("/"), None).warning.is_some(),
+            finding(&fs, &fs, Path::new("/"), None).warning.is_some(),
             "{gone}"
         );
         fs.mock_set_path_type("/hidden/upper/etc", PathKind::Dir);
         fs.mock_set_whiteout(gone);
         assert_eq!(
-            finding(&fs, Path::new("/"), Some(Path::new("/hidden/upper"))),
+            finding(&fs, &fs, Path::new("/"), Some(Path::new("/hidden/upper"))),
             Finding::default(),
             "{gone}"
         );
@@ -1318,9 +1326,9 @@ fn the_session_unmasks_the_decoys_mask_with_anything_but_a_mask() {
     )
     .unwrap();
     let upper = Some(Path::new("/hidden/upper"));
-    assert_eq!(finding(&fs, Path::new("/"), upper), Finding::default());
+    assert_eq!(finding(&fs, &fs, Path::new("/"), upper), Finding::default());
     fs.mock_set_whiteout("/hidden/upper/etc/systemd/system/unattended-upgrades.service");
-    let warning = finding(&fs, Path::new("/"), upper)
+    let warning = finding(&fs, &fs, Path::new("/"), upper)
         .warning
         .expect("a warning");
     assert!(
@@ -1512,11 +1520,11 @@ fn the_earlier_of_the_marker_and_the_process_start_is_when_the_helper_started() 
     let part = "/etc/apt/apt.conf.d/50unattended-upgrades";
     // Nothing changed after either.
     let fs = mock_times(t, t, t - 100, part, t - 100);
-    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+    assert_eq!(finding(&fs, &fs, Path::new("/"), None).blocker, None);
     // A part changed after the marker, before the process started: the
     // clock may have been set back in between.
     let fs = mock_times(t, t + 100, t - 100, part, t + 50);
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     assert!(
         blocker(&found).contains(&format!("but {part} changed after the helper started")),
         "{found:?}"
@@ -1524,19 +1532,19 @@ fn the_earlier_of_the_marker_and_the_process_start_is_when_the_helper_started() 
     // A part changed after the process started, before the marker: the
     // clock may have been set forward.
     let fs = mock_times(t + 100, t, t - 100, part, t + 50);
-    assert!(finding(&fs, Path::new("/"), None).blocker.is_some());
+    assert!(finding(&fs, &fs, Path::new("/"), None).blocker.is_some());
     // The directory, where a deleted part shows.
     let fs = mock_times(t, t, t - 100, "/etc/apt/apt.conf.d", t + 1);
     assert!(
-        blocker(&finding(&fs, Path::new("/"), None))
+        blocker(&finding(&fs, &fs, Path::new("/"), None))
             .contains("but /etc/apt/apt.conf.d changed after the helper started")
     );
     // A change in the second the helper started counts, as a filesystem
     // may keep change times to the second.
     let fs = mock_times(t, t, t - 100, part, t);
-    assert!(finding(&fs, Path::new("/"), None).blocker.is_some());
+    assert!(finding(&fs, &fs, Path::new("/"), None).blocker.is_some());
     let fs = mock_times(t, t, t - 100, part, t - 1);
-    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+    assert_eq!(finding(&fs, &fs, Path::new("/"), None).blocker, None);
 }
 
 #[test]
@@ -1560,7 +1568,7 @@ fn a_link_among_apts_files_leaves_a_setting_no_file_sets_unknown() {
             PathBuf::from("/etc/apt/apt.conf.d/99linked"),
         ],
     );
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     assert!(
         blocker(&found).contains(
             "but /etc/apt/apt.conf.d/99linked is reached through a symbolic link, so NAILS \
@@ -1570,7 +1578,7 @@ fn a_link_among_apts_files_leaves_a_setting_no_file_sets_unknown() {
     );
     // A false set in a file wins, link or not.
     fs.mock_set_file_bytes("/etc/apt/apt.conf.d/99linked", OFF.as_bytes());
-    assert_eq!(finding(&fs, Path::new("/"), None).blocker, None);
+    assert_eq!(finding(&fs, &fs, Path::new("/"), None).blocker, None);
 }
 
 #[test]
@@ -1618,7 +1626,7 @@ fn what_nails_cannot_read_of_the_running_helper_is_refused_as_if_on() {
     let fs = MockFilesystem::new();
     mock_run_helper(&fs, None);
     mock_parts(&fs, "/etc/apt/apt.conf.d", &[("99local", Some(OFF))]);
-    let found = finding(&fs, Path::new("/"), None);
+    let found = finding(&fs, &fs, Path::new("/"), None);
     let refusal = found.blocker.as_ref().expect("a refusal");
     assert!(
         refusal.finding.contains(
@@ -1648,7 +1656,8 @@ fn an_environment_the_kernel_refuses_is_one_only_root_can_tell() {
     let environ = tmp.path().join(format!("proc/{PID}/environ"));
     std::fs::set_permissions(&environ, std::fs::Permissions::from_mode(0o000)).unwrap();
     let found = find(tmp.path());
-    let for_status = DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, tmp.path());
+    let for_status =
+        DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, &RealFilesystem, tmp.path());
     if nix::unistd::geteuid().is_root() {
         // Root reads it whatever its mode, as it reads the helper's.
         assert_eq!(found.blocker, None);
@@ -1696,7 +1705,8 @@ fn an_environment_proc_hides_is_one_only_root_can_tell() {
     let tmp = stock(DEBIAN_13);
     std::fs::remove_file(tmp.path().join(format!("proc/{PID}/environ"))).unwrap();
     let found = find(tmp.path());
-    let for_status = DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, tmp.path());
+    let for_status =
+        DecoyPersistenceCheck::install_at_shutdown_on(&RealFilesystem, &RealFilesystem, tmp.path());
     let refusal = found.blocker.as_ref().expect("a refusal");
     if nix::unistd::geteuid().is_root() {
         // Root finds no process there: gone since its cgroup was listed.
