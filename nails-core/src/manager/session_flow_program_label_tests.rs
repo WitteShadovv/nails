@@ -380,3 +380,100 @@ fn the_way_back_labels_the_copy_again_before_it_marks_the_backend_and_arms() {
         }
     });
 }
+
+/// Under a loaded policy, as a stand-in for the kernel's SELinux tells it,
+/// `deactivate`'s way back asks the policy before it prepares anything, and
+/// gives the copy the label again and asks the policy again right before the
+/// arm. A copy that then reads back another label, as one a relabel of
+/// `/run` gave the label of the files there, refuses the return: the backend
+/// is left as it was, the plan unarmed, the next root detached and nothing
+/// enqueued.
+#[test]
+fn a_way_back_under_a_loaded_policy_asks_it_again_at_the_arm_and_refuses_a_copy_read_back_otherwise()
+ {
+    let _ = Rerun::new(crate::test_path!(
+        a_way_back_under_a_loaded_policy_asks_it_again_at_the_arm_and_refuses_a_copy_read_back_otherwise
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let tools = ScratchTmpfs::new("");
+        let empty = tools.mkdir("empty");
+        let marked = tools.path().join("marked");
+        let dmsetup = tools.path().join("dmsetup");
+        write_executable(
+            &dmsetup,
+            format!("#!/bin/sh\necho \"$*\" >> {}\n", marked.display()),
+            0o755,
+        );
+        let relabelled = b"system_u:object_r:var_run_t:s0\0".to_vec();
+        for read_back in [None, Some(relabelled)] {
+            let scratch = ScratchTmpfs::new("");
+            let run = scratch.mkdir("run");
+            std::fs::create_dir_all(decoy.path().join(run.strip_prefix("/").unwrap())).unwrap();
+            let machine = Machine {
+                paths: Paths {
+                    root: hidden.path().join("root/upper"),
+                    run: run.clone(),
+                },
+                mounts: None,
+            };
+            let mut session = labelled_session(hidden.path(), decoy.path(), &empty, &dmsetup);
+            write_plan(&machine, &session);
+            std::fs::write(machine.paths.binary_copy(), b"\x7fELF").unwrap();
+            let _ = std::fs::remove_file(&marked);
+            let target = FakeTarget {
+                selinux: Some(FakeSelinux {
+                    read_back: read_back.clone(),
+                    ..FakeSelinux::targeted()
+                }),
+                ..FakeTarget::default()
+            };
+
+            let left = crate::session::leave(&machine.paths, &mut session, LeaveTo::Decoy, &target);
+
+            let selinux = target.selinux.as_ref().unwrap();
+            assert_eq!(
+                selinux.labels_written(),
+                [format!("{PROGRAM_LABEL}\0").into_bytes()]
+            );
+            let asked_for_pid1 = || {
+                selinux
+                    .questions()
+                    .iter()
+                    .filter(|question| *question == "pid1")
+                    .count()
+            };
+            let on_disk = Plan::load(&machine.paths.plan()).unwrap();
+            if read_back.is_none() {
+                left.unwrap();
+                assert_eq!(asked_for_pid1(), 2, "before anything and at the arm");
+                assert!(marked.exists(), "the backend is marked");
+                assert_eq!(
+                    on_disk.armed.map(|arm| arm.direction),
+                    Some(Direction::Leave)
+                );
+                assert_eq!(*target.started.borrow(), ["soft-reboot.target"]);
+                nails_teardown::whole_root::nextroot::detach_tree(&machine.paths.nextroot());
+            } else {
+                let error = left.unwrap_err();
+                let NailsError::PreFlightCheckFailed(failures) = &error else {
+                    panic!("expected the program label's refusal, got {error:?}");
+                };
+                assert_eq!(failures[0].0, CHECK, "{error}");
+                assert!(
+                    failures[0]
+                        .1
+                        .contains("reads back as system_u:object_r:var_run_t:s0 after the label"),
+                    "{error}"
+                );
+                assert_eq!(asked_for_pid1(), 1, "refused before it asks again");
+                assert!(!marked.exists(), "the backend is left as it was");
+                assert!(session.armed.is_none() && on_disk.armed.is_none());
+                assert!(!next_root_mounted(&machine), "the next root is detached");
+                assert!(target.started.borrow().is_empty(), "nothing enqueued");
+            }
+        }
+    });
+}
