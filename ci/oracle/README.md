@@ -10,8 +10,8 @@ night it images real ext4 decoy roots in the `oracle-images` E2E test, runs
 `run-scan.sh` over them in `ORACLE_IMAGES_DIR` mode and renders the verdict,
 its `scan-btrfs` job runs `run-scan.sh` over the synthetic btrfs images
 `make-sample-images.sh` builds, and its `produce-btrfs` and `scan-btrfs-real`
-jobs image a real Fedora 44 btrfs decoy and scan it (see
-[Real btrfs images: a Fedora 44 decoy](#real-btrfs-images-a-fedora-44-decoy)).
+jobs image real Fedora 44 and Fedora 45 btrfs decoys and scan them (see
+[Real btrfs images: Fedora 44 and 45 decoys](#real-btrfs-images-fedora-44-and-45-decoys)).
 plaso cannot open btrfs, so a btrfs scan runs no timeline and its verdict is
 `partial` at best, never `clean` (see [btrfs: no timeline](#btrfs-no-timeline)). `oracle-nightly.yml` in this
 directory is a template for the synthetic run alone; it is not installed under
@@ -250,7 +250,7 @@ some not stops the run. `nails-oracle` then:
 What a partial run does not see beyond a full one is what only plaso reads:
 the records it parses out of a file, such as the login records of `wtmp`
 (bulk_extractor still carves those where they are stored uncompressed: see
-[Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)) and the messages of
+[Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)) and the messages of
 a journal (whose file the restore channel then compares whole). A file a reboot rewrites that only
 plaso read records of is named under `reboot_rewritten` instead.
 
@@ -263,13 +263,15 @@ does not take a partial run for one.
 On a real btrfs `after` image the positive controls go into device space no
 btrfs chunk is allocated in (see [controls.json](#controlsjson--the-scan-self-checks)).
 
-### Real btrfs images: a Fedora 44 decoy
+### Real btrfs images: Fedora 44 and 45 decoys
 
-The `produce-btrfs` job of the nightly runs `fedora-44-oracle-images`, a host
+The `produce-btrfs` job of the nightly runs `<image>-oracle-images` for
+`fedora-44` and for `fedora-45`, each a host
 driver of the distribution tests (`nix/distro-tests/oracle-images.nix`), on a
-KVM runner. It boots the stock Fedora 44 Cloud image, whose root is a btrfs
-filesystem compressed with zstd, with `root`, `boot`, `home` and `var`
-subvolumes and a vfat ESP beside it, and keeps the whole disk four times,
+KVM runner. It boots the stock Fedora 44 or Fedora 45 Cloud image, whose root
+is a btrfs filesystem compressed with zstd, with `root`, `boot`, `home` and
+`var` subvolumes and a vfat ESP beside it on both releases (the probes of the
+two images record the same layout), and keeps the whole disk four times,
 powered off: before, after one plain reboot (control), after a second plain
 reboot (control2), and after one more boot, a hidden session and the way back
 (after). The run stays in one QEMU process, which pauses at the guest's
@@ -279,7 +281,8 @@ copy of the paused disk, and a reset boots it again.
 Fedora is not admitted yet, so the driver runs a test-only build of the
 release binary in which only the Fedora row of the family table is admitted.
 That build is never released. The verdict on the images says what the
-oracle's channels see of a session on a Fedora 44 Cloud decoy, with what they
+oracle's channels see of a session on a Fedora Cloud decoy of that release,
+with what they
 do not see listed under [What it does not see](#what-it-does-not-see), not
 that NAILS supports Fedora.
 
@@ -290,7 +293,8 @@ checked on the partition in clear. The hidden root is a file on a tmpfs, and
 inside the session the driver writes, syncs and deletes a token whose bytes it
 then finds on the hidden root's device.
 
-`scan-btrfs-real` runs `run-scan.sh` twice: over before, control and after,
+For each image `scan-btrfs-real` runs `run-scan.sh` twice: over before,
+control and after,
 and over before, control and control2 in the place of after. No session ran
 on control2, so the second scan has nothing to find: whatever it calls
 residue, plain reboots made, and it fails the job as a leak would. Each scan
@@ -372,7 +376,7 @@ class with its `kind`, and a clean summary line ends with the same classes
   with `compress`, as Fedora's is), and content a file left there is unseen
   whatever value it carries. The restore carve reads the live tree's files
   decompressed (see
-  [Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)).
+  [Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)).
 - `skipped_carvers`: a database carved from free space (`sqlite_carved`, named
   in `feature_types`), unless its content carries an e-mail address, a URL or
   a domain the value recorders find.
