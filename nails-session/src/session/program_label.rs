@@ -43,9 +43,13 @@
 //! emergency's way back gives the label again and asks the policy too, and
 //! powers off where either fails
 //! ([`nails_teardown::whole_root::emergency`]); it asks PID 1 nothing, as for
-//! the runtime guards. The way back's last step gives the copy it leaves for
-//! the decoy's first start the label, or leaves that copy out
-//! ([`nails_teardown::whole_root::boot_records::install`]).
+//! the runtime guards, so it does not see an `SELinuxContext=` of that unit,
+//! and a refusal for one names only the power-offs besides deactivating
+//! again. The way back's last step gives the copy it leaves for the decoy's
+//! first start the label, or leaves that copy out
+//! ([`nails_teardown::whole_root::boot_records::install`]). The units PID 1
+//! starts from a copy after a switch check their own domain when they start
+//! ([`nails_teardown::whole_root::program_label::enter_domain`]).
 
 use super::guards::GuardHost;
 use super::labels::{Labels, Reason};
@@ -260,12 +264,35 @@ pub fn check_switch_unit(why: Option<Why>, host: &(impl GuardHost + ?Sized)) -> 
     ))
 }
 
-/// The fix of a refused way back: the two other ways to end the session.
+/// The fix of a way back refused for its copy or for what the policy makes
+/// of its start: the power-off, which a plain emergency also comes to here,
+/// since it gives the copy the label again and asks the policy as well.
 fn way_back_fix() -> String {
     format!(
         "End the session with `{}`, which powers off, as `{}` does here",
         sudo_line(NextStep::DeactivatePoweroff),
         sudo_line(NextStep::Emergency)
+    )
+}
+
+/// The fix of a way back refused for how the hidden session's PID 1 starts
+/// [`SWITCH_UNIT`], or because it could not be asked (`asked` false): a plain
+/// emergency asks PID 1 nothing, and would return through that start, so
+/// only the power-offs are named besides deactivating again.
+fn switch_unit_fix(asked: bool) -> String {
+    let first = if asked {
+        format!(
+            "Remove that setting from the hidden session's drop-in of {SWITCH_UNIT} that sets \
+             it (`systemctl cat {SWITCH_UNIT}` shows where it is) and deactivate again"
+        )
+    } else {
+        "Deactivate again once PID 1 answers".to_string()
+    };
+    format!(
+        "{first}, or end the session with `{}` or `{}`, which power off: a plain emergency \
+         asks PID 1 nothing and would return through that start",
+        sudo_line(NextStep::DeactivatePoweroff),
+        sudo_line(NextStep::EmergencyPoweroff)
     )
 }
 
@@ -311,15 +338,18 @@ pub fn check_way_back(plan: &Plan, host: &(impl GuardHost + ?Sized)) -> Result<(
             way_back_fix(),
         )
     })?;
-    let unheld = match switch_unit_unheld(host) {
+    let (unheld, asked) = match switch_unit_unheld(host) {
         Ok(None) => return Ok(()),
-        Ok(Some(unheld)) => unheld,
-        Err(error) => format!(
-            "the hidden session's PID 1 could not be asked how it starts {SWITCH_UNIT}: {}",
-            match error {
-                NailsError::InvalidState(why) => why,
-                other => other.to_string(),
-            }
+        Ok(Some(unheld)) => (unheld, true),
+        Err(error) => (
+            format!(
+                "the hidden session's PID 1 could not be asked how it starts {SWITCH_UNIT}: {}",
+                match error {
+                    NailsError::InvalidState(why) => why,
+                    other => other.to_string(),
+                }
+            ),
+            false,
         ),
     };
     Err(refusal(
@@ -327,7 +357,7 @@ pub fn check_way_back(plan: &Plan, host: &(impl GuardHost + ?Sized)) -> Result<(
             "PID 1 starts the last step of the way back from the RAM copy of the binary, labelled \
              {label}, but {unheld}: that step could run in a domain the policy confines"
         ),
-        way_back_fix(),
+        switch_unit_fix(asked),
     ))
 }
 

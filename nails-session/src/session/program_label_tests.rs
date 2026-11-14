@@ -357,19 +357,51 @@ fn a_return_needs_the_policy_and_the_switch_unit_to_start_the_step_unconfined() 
     assert!(fix.contains("deactivate --poweroff"), "{fix}");
     assert!(fix.contains("emergency"), "{fix}");
 
-    let error = check_way_back(&labelled, &pid1(Some("system_u:system_r:init_t:s0"))).unwrap_err();
+    // The emergency here gives the label again and asks the policy too: it
+    // powers off where deactivate refuses, so the fix may name it.
     assert!(
-        refused(&error)
-            .0
-            .contains("SELinuxContext=system_u:system_r:init_t:s0")
+        fix.contains(&format!("`{}`", sudo_line(NextStep::Emergency))),
+        "{fix}"
+    );
+
+    // The emergency asks PID 1 nothing: it would return through a start in
+    // that context, so the fixes of the switch's unit name only the
+    // power-offs besides deactivating again.
+    let error = check_way_back(&labelled, &pid1(Some("system_u:system_r:init_t:s0"))).unwrap_err();
+    let (reason, fix) = refused(&error);
+    assert!(
+        reason.contains("SELinuxContext=system_u:system_r:init_t:s0"),
+        "{reason}"
+    );
+    assert!(
+        fix.starts_with(
+            "Remove that setting from the hidden session's drop-in of \
+             systemd-soft-reboot.service that sets it"
+        ),
+        "{fix}"
+    );
+    for named in [NextStep::DeactivatePoweroff, NextStep::EmergencyPoweroff] {
+        assert!(fix.contains(&format!("`{}`", sudo_line(named))), "{fix}");
+    }
+    assert!(
+        !fix.contains(&format!("`{}`", sudo_line(NextStep::Emergency))),
+        "{fix}"
     );
 
     let error = check_way_back(&labelled, &unasked).unwrap_err();
+    let (reason, fix) = refused(&error);
     assert!(
-        refused(&error)
-            .0
-            .contains("the hidden session's PID 1 could not be asked how it starts"),
+        reason.contains("the hidden session's PID 1 could not be asked how it starts"),
         "{error}"
+    );
+    assert!(fix.starts_with("Deactivate again once PID 1 answers, or end the session with"));
+    assert!(
+        fix.contains(&format!("`{}`", sudo_line(NextStep::EmergencyPoweroff))),
+        "{fix}"
+    );
+    assert!(
+        !fix.contains(&format!("`{}`", sudo_line(NextStep::Emergency))),
+        "{fix}"
     );
 }
 
