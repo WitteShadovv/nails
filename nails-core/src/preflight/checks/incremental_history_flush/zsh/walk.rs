@@ -461,7 +461,8 @@ impl Walker<'_> {
     }
 
     /// The name of the function whose body the walk is in, when it is in
-    /// one with a name.
+    /// one with a name: the innermost, as an anonymous function runs as the
+    /// code of the one it is in (`preexec() { () { exit } }`).
     fn function(&self) -> Option<String> {
         if self.pending.body
             && let Some(name) = &self.pending.function_name
@@ -471,8 +472,7 @@ impl Walker<'_> {
         self.frames
             .iter()
             .rev()
-            .find(|open| open.frame == Frame::Function)
-            .and_then(|open| open.name.clone())
+            .find_map(|open| open.name.clone().filter(|_| open.frame == Frame::Function))
             .or_else(|| self.outer.clone())
     }
 

@@ -46,6 +46,11 @@ fn a_hook_that_may_end_the_shell_is_a_doubt() {
         "w() { exit }\nzle -N w\nbindkey '^X' w\n",
         "zmodload zsh/sched\nsched +60 exit\n",
         "zshaddhistory() { [[ $1 == *nails* ]] && exit }\n",
+        "preexec() { () { exit } }\n",
+        "preexec() { function { exit } }\n",
+        "TRAPEXIT() { exit }\n",
+        "preexec() { TRAPEXIT() { exit } }\n",
+        "preexec() { trap exit EXIT }\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
@@ -156,4 +161,26 @@ fn what_a_command_substitution_writes_counts_as_the_hook_s() {
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
     }
+}
+
+#[test]
+fn an_anonymous_function_in_a_hook_runs_as_the_hook_s_code() {
+    // zsh 5.9 to 5.9.2 run it as the hook runs, with the line it gives.
+    for rc in [
+        "preexec() { () { print -r -- \"$1\" >> ~/.zl } \"$1\" }\n",
+        "preexec() { function { print -r -- $1 >> ~/.zl } $1 }\n",
+        "preexec() { () { () { fc -AI } } }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // One at the top runs as zsh reads the file, where no hook runs it.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "() { local x=1; print -r -- $x > /dev/null }\n",
+    );
+    assert_eq!(scan(&fs, UNKNOWN), Scan::default());
 }
