@@ -322,7 +322,8 @@ in
   # linted and typed on every `nix flake check`, not only when a distro VM test
   # runs. The probes load probe_facts the same way, for their queries and for the
   # reading of their output into the fixture record, and the committed probe
-  # fixtures are checked against that record.
+  # fixtures are checked against that record. The access-time scenarios load
+  # access_times to judge the reads, and run atime_walk in the guest.
   distro-checks = lint "distro-checks" {
     files = fs.unions [
       ./distro-tests/py
@@ -339,6 +340,8 @@ in
       python3 -m unittest discover -s nix/distro-tests/py/tests -t nix/distro-tests/py
       ruff check nix/distro-tests/py
       MYPYPATH=nix/distro-tests/py mypy \
+        nix/distro-tests/py/access_times.py \
+        nix/distro-tests/py/atime_walk.py \
         nix/distro-tests/py/btrfs_controls.py \
         nix/distro-tests/py/btrfs_scan.py \
         nix/distro-tests/py/distro_checks.py \
@@ -346,6 +349,7 @@ in
         nix/distro-tests/py/fedora_rpms.py \
         nix/distro-tests/py/probe_facts.py \
         nix/distro-tests/py/selinux_gate.py \
+        nix/distro-tests/py/tests/test_access_times.py \
         nix/distro-tests/py/tests/test_btrfs_controls.py \
         nix/distro-tests/py/tests/test_btrfs_scan.py \
         nix/distro-tests/py/tests/test_distro_checks.py \

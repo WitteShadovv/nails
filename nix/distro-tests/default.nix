@@ -8,11 +8,11 @@
 # nothing that runs today; enabling it is a single flip in images.json. Debian
 # 13 runs the Nix scenario among its smokes, and Debian 13 and both Ubuntu
 # images the unattended-upgrades scenario. Beside the smokes are the host
-# drivers: the records scenarios, the refusals of the families the family table
-# does not admit, the probes, the drivers of Fedora's admission gate and the
-# oracle images. An image staged for its family's admission also runs its
-# smoke and records scenarios, with a test-only build that admits the family,
-# when a run asks for them.
+# drivers: the records scenarios, the access-time scenarios, the refusals of the
+# families the family table does not admit, the probes, the drivers of Fedora's
+# admission gate and the oracle images. An image staged for its family's
+# admission also runs its smoke and records scenarios, with a test-only build
+# that admits the family, when a run asks for them.
 {
   self,
   pkgs,
@@ -146,6 +146,14 @@ let
       (lib.nameValuePair "${name}-staged-records" recordsSet.timeout)
     ]) stagedImages
   );
+  # The access-time scenarios, keyed "<image>-access-times": host drivers as
+  # well, which the records suite runs beside the record scenarios
+  # (access-times.nix).
+  accessTimesSet = import ./access-times.nix { inherit self pkgs nix-vm-test; };
+  accessTimesName = name: "${name}-access-times";
+  accessTimes = lib.mapAttrs' (
+    name: drv: lib.nameValuePair (accessTimesName name) drv
+  ) accessTimesSet.drivers;
 
   # Fact-capture probes for the families not admitted yet, keyed "<name>-probe".
   # Like the records scenarios they are host drivers. The metadata lists the
@@ -201,13 +209,17 @@ let
       )
       // driverTimeouts probeSet probeName
       // driverTimeouts recordsSet recordsName
+      // driverTimeouts accessTimesSet accessTimesName
       // driverTimeouts refusalSet refusalName
       // stagedTimeouts
       // gateSet.timeouts;
     # Probe name -> its attribute, for every probe a run can boot.
     probes = lib.genAttrs probeSet.runnable probeName;
-    # Distribution -> its records scenario's attribute.
-    records = lib.genAttrs recordsSet.runnable recordsName;
+    # Distribution -> its records scenario's attribute, and each access-time
+    # scenario's name -> its attribute (the same name).
+    records =
+      lib.genAttrs recordsSet.runnable recordsName
+      // lib.genAttrs (map accessTimesName accessTimesSet.runnable) lib.id;
     # Image name -> its refusal's attribute, for every refusal a run can boot.
     refusals = lib.genAttrs refusalSet.runnable refusalName;
     # Staged scenario name -> its attribute (stagedImages).
@@ -242,6 +254,7 @@ tests
 // nixTraces
 // aptShutdowns
 // records
+// accessTimes
 // probes
 // refusals
 // stagedScenarios
