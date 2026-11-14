@@ -769,12 +769,14 @@ looks for the canaries of both sessions, for the canary files' names and for
 the token the rehearsal planted, which its files carry in their names. Before
 each image it also reads the decoy root's files through the decoy's kernel,
 from a read-only bind of `/`: none of these may be in them, and the positive
-control's token must be. A btrfs root must compress with zstd or not at all.
-On one the check also decompresses every zstd frame on the root's partition
-(`py/btrfs_scan.py`): btrfs writes each compressed extent as one, so with the
-raw scan this reads every byte the partition holds, of a file live or
-deleted, whatever tree still points at it. None may hold a canary or the
-token, nor a registry token the baseline's frames and raw bytes did not hold.
+control's token must be. On a btrfs root the check also decompresses every
+zstd frame on the root's partition (`py/btrfs_scan.py`): btrfs writes each
+compressed extent as one, so with the raw scan this reads what each extent of
+the partition holds, plain or compressed with zstd, of a file live or deleted,
+whatever tree still points at it. The scenario fails on a root mounted to
+compress with another algorithm, whose extents the carve does not read. No
+frame may hold a canary or the token, nor a registry token the baseline's
+frames and raw bytes did not hold.
 It also reads the older roots of the image's tree that `btrfs-find-root`
 lists, as btrfs-progs does, at the canary paths and the rehearsal's files:
 none may keep a file at a canary's path or one of the rehearsal's files named
