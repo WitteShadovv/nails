@@ -551,6 +551,39 @@ fn a_missing_hidden_root_is_a_scaffold_error_and_creates_nothing() {
 }
 
 #[test]
+fn a_decoy_root_without_a_label_fails_the_label_step_without_privileges() {
+    // No user namespace is needed to read that a directory has no label: a
+    // decoy root without one fails the step where the label is required, as
+    // the entry is refused, and passes it where the copy is best effort, with
+    // nothing written onto the upper. A kernel that labels every file itself
+    // (SELinux active) gives the temporary directories a label, and the
+    // kernel tests below cover that host.
+    let decoy = tempfile::tempdir().unwrap();
+    let hidden = tempfile::tempdir().unwrap();
+    let upper = hidden.path().join("upper");
+    std::fs::create_dir(&upper).unwrap();
+    let mut found = [0; 256];
+    match rustix::fs::lgetxattr(decoy.path(), labels::LABEL_XATTR, &mut found[..]) {
+        Err(rustix::io::Errno::NODATA) => {}
+        other => {
+            eprintln!("skipping: a fresh temporary directory reads {other:?} for its label");
+            return;
+        }
+    }
+    assert_eq!(label_of(decoy.path()), Err(rustix::io::Errno::NODATA));
+    let required = Labels::Required(crate::session::labels::Reason::SelinuxRunning);
+    match probe_label(decoy.path(), &upper, required) {
+        Err(ProbeError::Label(why)) => assert!(
+            why.ends_with(&format!("but {} has no label", decoy.path().display())),
+            "{why}"
+        ),
+        other => panic!("expected the label refusal, got {other:?}"),
+    }
+    probe_label(decoy.path(), &upper, Labels::BestEffort).expect("best effort");
+    assert_eq!(label_of(&upper), Err(rustix::io::Errno::NODATA));
+}
+
+#[test]
 fn a_path_with_a_nul_byte_is_refused_before_any_syscall() {
     use std::os::unix::ffi::OsStrExt;
     let path = Path::new(std::ffi::OsStr::from_bytes(b"/mnt/da\0ta"));
