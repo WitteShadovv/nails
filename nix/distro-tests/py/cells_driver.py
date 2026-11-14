@@ -41,19 +41,10 @@ OPERATOR = "unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023"
 NAILS = "/run/tools/nails"
 RAM = "/run/overlay-runtime/control"
 CONFIG = "/run/nails-cell.toml"
-CONFIG_TEXT = "\n".join(
-    (
-        'hidden_volume_root = "/mnt/data"',
-        "minimum_space_mb = 100",
-        "",
-        "[sleep_policy]",
-        'mode = "block"',
-        "",
-        "[session_mounts]",
-        "read_only = true",
-        "",
-    )
-)
+CONFIG_TEXT = 'hidden_volume_root = "/mnt/data"\nminimum_space_mb = 100\n'
+# The opt-in units that run the RAM copy: the sleep guard and the disk guard.
+OPTIN_TEXT = '\n[sleep_policy]\nmode = "block"\n\n[session_mounts]\nread_only = true\n'
+
 TOOLS_MOUNT = (
     "mkdir -p /run/tools && { mountpoint -q /run/tools || mount -t 9p -o "
     "defaults,trans=virtio,version=9p2000.L,cache=loose,msize=268435456 "
@@ -106,6 +97,7 @@ class Cell:
         self.raw: dict[str, Any] = {}
         self.calls = 0
         self.decoy_source = ""
+        self.lost = False
         self.boot = -1
         self.boots: list[dict[str, Any]] = []
         self.result: dict[str, Any] = {
@@ -186,7 +178,8 @@ class Cell:
         vm = self.vm
         vm.wait_for_unit("multi-user.target")
         vm.succeed(TOOLS_MOUNT)
-        vm.succeed(f"cat > {CONFIG} <<'EOF'\n{CONFIG_TEXT}EOF")
+        text = CONFIG_TEXT + (OPTIN_TEXT if self.settings["optin"] else "")
+        vm.succeed(f"cat > {CONFIG} <<'EOF'\n{text}EOF")
         self.sh("limits", LIMITS)
         self.sh("amnesic", self.scripts["amnesic"], 300)
         if self.settings["dontaudit"] == "off":
@@ -233,12 +226,24 @@ class Cell:
                 "console_avcs": [line for line in lines if "avc:  denied" in line],
             }
             print(f"{label} failed: {error}")
+            self.lost = True
             return "lost"
         self.after_switch()
         fstype = self.vm.execute("findmnt -no FSTYPE /", check_return=False)[1]
         place = "hidden" if fstype.strip() == "overlay" else "decoy"
         self.result["flows"][label] = {"ok": True, "place": place}
         return place
+
+    def where(self) -> str:
+        """Where the machine is: the hidden root, the decoy, or down."""
+        if self.lost:
+            return "down"
+        status, out = self.vm.execute(
+            "findmnt -no FSTYPE /", check_return=False, timeout=60
+        )
+        if status != 0:
+            return "down"
+        return "hidden" if out.strip() == "overlay" else "decoy"
 
     def restart(self, why: str) -> None:
         """A fresh boot of the image after the machine went down."""
@@ -251,6 +256,7 @@ class Cell:
         except Exception as error:  # noqa: BLE001
             print(f"stopping the machine: {error}")
         self.vm.start(allow_reboot=False)
+        self.lost = False
         self.new_boot(why)
         self.prepare()
         self.operator()
@@ -290,6 +296,25 @@ class Cell:
             " && stat -c %C /mnt/data/.dsxrt; rm -f /mnt/data/.dsxrt'",
         )
         self.fact("decoy-root", "findmnt -rn -o SOURCE,OPTIONS /")
+        if self.settings["mechanism"] == "none" and self.settings["dontaudit"] == "on":
+            if not self.settings["optin"]:
+                self.save_policy()
+
+    def save_policy(self) -> None:
+        """The loaded policy's file, for reading its rules on the host."""
+        name = self.fact("policy-file", "ls /etc/selinux/targeted/policy/").split()
+        if not name:
+            return
+        status, out = self.vm.execute(
+            f"base64 -w0 /etc/selinux/targeted/policy/{name[-1]}",
+            check_return=False,
+            timeout=600,
+        )
+        if status == 0:
+            os.makedirs(self.out_dir, exist_ok=True)
+            path = os.path.join(self.out_dir, f"{self.name}.{name[-1]}.b64")
+            with open(path, "w", encoding="ascii") as handle:
+                handle.write(out.strip())
 
     def run_labels(self, label: str) -> None:
         self.fact(
@@ -560,14 +585,15 @@ class Cell:
             self.step("control", self.control)
             for n, how in ((1, "deactivate"), (2, "emergency")):
                 self.sh(f"hidden-root-{n}", self.scripts["setup_hidden_root"], 300)
-                entered = self.step(f"enter-{n}", self.enter, n)
-                if entered:
+                self.step(f"enter-{n}", self.enter, n)
+                place = self.where()
+                if place == "hidden":
                     if n == 1:
                         self.step(f"session-{n}", self.in_session, n)
                     else:
-                        self.mark(f"session-{n}")
+                        self.step(f"session-{n}", self.mark, f"session-{n}")
                     self.step(f"{how}-{n}", self.leave, n, how)
-                elif self.result["flows"].get(f"enter-{n}", {}).get("ok") is False:
+                elif place == "down":
                     self.restart(f"after enter-{n} was lost")
         finally:
             self.write()

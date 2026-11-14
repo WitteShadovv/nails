@@ -15,8 +15,10 @@
 #
 # Each mechanism also runs with the policy's dontaudit rules removed
 # (semodule -DB, which rebuilds the policy store of the test VM only), so a
-# denial a dontaudit rule hides is counted too: "<image>-enforcing-<mechanism>"
-# keeps the rules, "...-noda" removes them.
+# denial a dontaudit rule hides is counted too, and with the opt-in units that
+# run the RAM copy as well (the sleep guard, the disk guard's udev rule):
+# "<image>-enforcing-<mechanism>" keeps the rules and the default
+# configuration, "...-noda" removes the rules, "...-optin" adds the units.
 #
 # py/cells_driver.py runs the flows (a plain soft-reboot as the control, an
 # entry with a command in the session and deactivate, an entry ended by the
@@ -79,28 +81,44 @@ let
     "context"
   ];
 
-  # Cell name -> { image, entry, mechanism, dontaudit }.
+  # How each mechanism runs: with the policy's dontaudit rules ("on") or
+  # without them ("off", -noda), and with the default configuration or with
+  # the opt-in units too (-optin: the sleep guard and the disk guard's udev
+  # rule, which also run the RAM copy).
+  variants = [
+    {
+      suffix = "";
+      dontaudit = "on";
+      optin = false;
+    }
+    {
+      suffix = "-noda";
+      dontaudit = "off";
+      optin = false;
+    }
+    {
+      suffix = "-optin";
+      dontaudit = "on";
+      optin = true;
+    }
+  ];
+
+  # Cell name -> { image, entry, mechanism, dontaudit, optin }.
   cells = lib.listToAttrs (
     lib.concatMap (
       image:
       lib.concatMap (
         mechanism:
-        map
-          (
-            dontaudit:
-            lib.nameValuePair
-              "${image}-enforcing-${mechanism}${lib.optionalString (dontaudit == "off") "-noda"}"
-              {
-                inherit image mechanism dontaudit;
-                entry = fedoraImages.${image} // {
-                  enforcing = true;
-                };
-              }
-          )
-          [
-            "on"
-            "off"
-          ]
+        map (
+          variant:
+          lib.nameValuePair "${image}-enforcing-${mechanism}${variant.suffix}" {
+            inherit image mechanism;
+            inherit (variant) dontaudit optin;
+            entry = fedoraImages.${image} // {
+              enforcing = true;
+            };
+          }
+        ) variants
       ) mechanisms
     ) (builtins.attrNames fedoraImages)
   );
@@ -114,7 +132,12 @@ let
     let
       settings = {
         inherit name;
-        inherit (cell) image mechanism dontaudit;
+        inherit (cell)
+          image
+          mechanism
+          dontaudit
+          optin
+          ;
         inherit (cell.entry) osId release;
       };
       scripts = {
