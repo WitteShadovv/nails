@@ -70,7 +70,7 @@
 # lists what they do not), not that NAILS supports the family.
 #
 # The decoy is prepared before the before image, so all of them hold it alike:
-# its journal volatile and auditd masked (lib/hidden-root.nix's
+# its journal volatile and auditd off (lib/hidden-root.nix's
 # makeDecoyAmnesic, the posture NAILS requires), every swap line of its fstab
 # made noauto and the swap off (arch-boxes swaps to a file on its root, and the
 # swap check refuses an active disk swap), /mnt/data created, and the
