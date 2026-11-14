@@ -103,7 +103,9 @@ The decoy also has to be one the session can enter and leave:
   one line that SELinux is configured but selinuxfs is not mounted. A kernel
   makes `/sys/fs/selinux` only where it started SELinux at boot, so where an
   empty one is left SELinux runs in the kernel, and `lsm-status` refuses the
-  host (see [Fail closed](#fail-closed-activation-is-refused)).
+  host (see [Fail closed](#fail-closed-activation-is-refused)). Such a
+  kernel lists SELinux among its security modules, so the RAM copies of
+  NAILS's own program take their label there too (next item).
   `nails check` tests part of this with the same rule
   (`upper-fs-capability`): it copies the label of the decoy's `/` onto the
   upper of its trial overlay on the hidden volume and, where the labels are
@@ -146,7 +148,9 @@ The decoy also has to be one the session can enter and leave:
     activation is refused before it writes anything to `/run`;
   - `systemd-soft-reboot.service` must not set `SELinuxContext=`, or PID 1
     starts the step in that context: the activation is refused, and so is
-    `deactivate` (a plain emergency does not ask);
+    `deactivate`, whose refusal names `deactivate --poweroff` and
+    `emergency --poweroff`. A plain emergency does not ask, and returns with
+    the step in that context;
   - a copy that does not read its label back refuses the activation, which is
     undone. On the way back `deactivate` refuses a return where the copy does
     not read its label back or the policy would not start the step as above,
@@ -154,12 +158,28 @@ The decoy also has to be one the session can enter and leave:
     returning in the same cases; and the copy for the decoy's first start is
     left out with the units that would start it, so the decoy's records read
     as they would without that fix, and `/run` is `noexec` again at once where
-    the activation had cleared it.
+    the activation had cleared it;
+  - a switch can take the label off again. Where PID 1 loads the policy anew
+    at a switch, as on a host that runs SELinux permissive or whose policy
+    lets PID 1 map its policy file (the boolean `domain_can_mmap_files` on),
+    it gives every file in `/run` the label of the files there before it
+    starts the units of the root it switched to, and a `restorecon` over
+    `/run` does the same at any time. So the watcher, the sleep guard, the
+    one-shot unit and the wtmpdb writer's drop-in check the domain they run
+    in when they start: one that runs outside `unconfined_service_t` gives
+    its copy the label again and starts itself again from it, once, which
+    from `init_t` gives it the domain a start by PID 1 gets. One that then
+    still runs outside it does not do its work there: the watcher and the
+    sleep guard power the machine off, the one-shot only removes NAILS's
+    pieces from `/run` and makes it `noexec` again, leaving the records as
+    they would be without that fix, and the drop-in starts the wtmpdb writer
+    as the decoy runs it.
 
   Elsewhere, as on a stock Debian, Ubuntu or NixOS host, no copy gets a label
-  and nothing is asked of the kernel. The tests check this against stand-ins
-  of the kernel's SELinux and on a kernel without SELinux. Of the tests in
-  this repository only Fedora's [admission
+  and no policy is asked anything: the units started from a copy only find
+  that no policy is loaded. The tests check this against stand-ins of the
+  kernel's SELinux and on a kernel without SELinux. Of the tests in this
+  repository only Fedora's [admission
   gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora) runs these
   steps under an enforcing policy and checks their domains (only a dispatch of
   the staged distribution tests runs it). The Fedora 44 and 45 images of the
