@@ -65,7 +65,7 @@ fn a_name_stands_for_its_program_or_the_one_nixos_wraps() {
     for name in ["tuned-adm", "python3", ".tuned", "tuned-wrapped", ""] {
         assert_eq!(program_of(PROGRAMS, name.as_bytes()), None, "{name}");
     }
-    for name in ["python", "python3", "python3.14"] {
+    for name in ["python", "python3", "python3.14", "platform-python"] {
         assert!(is_python(name), "{name}");
     }
     for name in ["python3-config", "pythonista", "py"] {
@@ -79,4 +79,38 @@ fn a_name_stands_for_its_program_or_the_one_nixos_wraps() {
         Some(words("-l"))
     );
     assert_eq!(own_args("tuned", &words("/usr/bin/tuned-adm -l")), None);
+}
+
+#[test]
+fn a_command_runs_a_daemon_only_as_its_program_or_its_python_script() {
+    for (line, args) in [
+        ("/usr/sbin/tuned -l -P", "-l -P"),
+        ("tuned", ""),
+        ("/usr/bin/python3 -Es /usr/sbin/tuned -P", "-P"),
+        (
+            "/usr/libexec/platform-python -Es /usr/sbin/tuned -l -P",
+            "-l -P",
+        ),
+        ("/nix/store/b-tuned/bin/.tuned-wrapped -l", "-l"),
+    ] {
+        assert_eq!(own_args("tuned", &words(line)), Some(words(args)), "{line}");
+    }
+    // A program that runs tuned in turn may take its output into a file of
+    // its own, as logsave and script do.
+    for line in [
+        "/usr/sbin/logsave -a /var/log/tuned/tuned.log /usr/sbin/tuned -P",
+        "/usr/bin/script -q -a /var/log/tuned/typescript -c /usr/sbin/tuned",
+        "/usr/bin/nice /usr/sbin/tuned -l",
+        "/usr/bin/env python3 /usr/sbin/tuned",
+        "/usr/bin/python3 /usr/local/bin/run /usr/sbin/tuned",
+        "/usr/bin/python3 -m tuned",
+    ] {
+        assert_eq!(own_args("tuned", &words(line)), None, "{line}");
+    }
+    // Whether a unit runs abrtd at all is read from any of its words.
+    assert!(runs_anywhere(
+        "abrtd",
+        &words("/usr/bin/nice /usr/sbin/abrtd -d -s")
+    ));
+    assert!(!runs_anywhere("abrtd", &words("/bin/true")));
 }

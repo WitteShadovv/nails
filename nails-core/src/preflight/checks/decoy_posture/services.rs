@@ -77,7 +77,7 @@ use super::loggers::{self, Activity};
 use super::{Enabled, PersistenceFinding, unit_enabled};
 use crate::Filesystem;
 use options::Log;
-use processes::{Process, own_args};
+use processes::{Process, own_args, runs_anywhere};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -453,7 +453,7 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
                                 let words: Vec<Vec<u8>> = std::iter::once(command.program.clone())
                                     .chain(command.args.iter().cloned())
                                     .collect();
-                                own_args(ABRTD, &words).is_some()
+                                runs_anywhere(ABRTD, &words)
                             })
                         })
                     });
