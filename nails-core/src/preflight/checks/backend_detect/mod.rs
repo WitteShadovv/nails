@@ -11,7 +11,7 @@
 use super::super::{CheckResult, PreFlightCheck};
 use crate::blockdev::{self, DmKind, LoopBacking, LoopFollow};
 use crate::config::get_default_hidden_volume_root;
-use crate::filesystem::mountinfo::{MountEntry, parse_mountinfo};
+use crate::filesystem::mountinfo::{self, MountEntry, parse_mountinfo};
 use crate::hidden_root::separation::{self, Verdict};
 use crate::{Filesystem, Result};
 use nails_api::Allowable;
@@ -484,11 +484,10 @@ fn no_mount_table(error: &crate::NailsError, allow_discards: bool) -> CheckResul
     if allow_discards {
         CheckResult::warn_with(
             format!("{why}. Discards over the hidden volume are accepted for this run."),
-            super::upgrade_run::NO_MOUNT_TABLE,
+            mountinfo::UNREADABLE_FIX,
         )
     } else {
-        CheckResult::fail_with(why, super::upgrade_run::NO_MOUNT_TABLE)
-            .accepted_by(Allowable::Discards)
+        CheckResult::fail_with(why, mountinfo::UNREADABLE_FIX).accepted_by(Allowable::Discards)
     }
 }
 

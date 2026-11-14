@@ -253,7 +253,28 @@ impl<F: Filesystem> PreFlightCheck<F> for SessionStateCheck {
         "not in a hidden session and no interrupted entry"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(judge_session(&probe::probe(&self.paths, &self.hidden_root)))
+        Ok(self.judge(read_mountinfo()))
+    }
+}
+
+impl SessionStateCheck {
+    /// The result for the mount table `mounts`, as it was read. Without it
+    /// NAILS cannot tell whether `/` is the hidden root or an interrupted
+    /// entry left `/run/nextroot` mounted, and refuses.
+    fn judge(&self, mounts: std::io::Result<Vec<MountEntry>>) -> CheckResult {
+        match mounts {
+            Ok(mounts) => {
+                judge_session(&probe::probe_with(&self.paths, &self.hidden_root, &mounts))
+            }
+            Err(error) => CheckResult::fail_with(
+                format!(
+                    "NAILS cannot tell whether the hidden session is already active or an \
+                     interrupted activation left a next root mounted: it cannot read the mount \
+                     table ({error})"
+                ),
+                crate::filesystem::mountinfo::UNREADABLE_FIX,
+            ),
+        }
     }
 }
 
