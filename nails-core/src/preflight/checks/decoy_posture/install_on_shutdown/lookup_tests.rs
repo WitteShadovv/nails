@@ -7,8 +7,8 @@
 
 use super::tests::{OFF, ON, mock_decoy};
 use super::*;
-use crate::filesystem::MockFilesystem;
 use crate::filesystem::automount::mount_fix;
+use crate::filesystem::{MockFailure, MockFilesystem, MockLookup, PathKind};
 use crate::preflight::checks::automount_fixture::{reached, with_automounts};
 use crate::preflight::checks::decoy_posture::DecoyPersistenceCheck;
 use crate::preflight::{CheckResult, InstallAtShutdown, PreFlightCheck};
@@ -253,6 +253,230 @@ fn the_refusal_says_may_keep_only_where_nails_cannot_tell() {
             "decoy keeps, or may keep, a persistent record of the hidden session: NAILS cannot \
              tell whether unattended-upgrades installs the pending updates at activation"
         ),
+        "{result:?}"
+    );
+}
+
+/// The root overlay's upper of the tests that read what the hidden session
+/// sees.
+const UPPER: &str = "/hidden/upper";
+
+/// The warning of the hidden session's own copy of the helper on `fs`, read
+/// with [`UPPER`], where it refuses nothing.
+fn session_warning_of(fs: &MockFilesystem) -> String {
+    let found = finding(fs, fs, Path::new("/"), Some(Path::new(UPPER)));
+    assert_eq!(found.blocker, None, "{found:?}");
+    found
+        .warning
+        .clone()
+        .unwrap_or_else(|| panic!("no warning: {found:?}"))
+}
+
+/// What the session's warning says where NAILS cannot tell what its copy
+/// reads, before why.
+const SESSION_UNKNOWN: &str = "NAILS cannot tell whether Unattended-Upgrade::InstallOnShutdown \
+                               is on there, which would make it install the pending updates \
+                               when the session ends with deactivate: ";
+
+/// In what the hidden session sees, a part of apt's configuration whose
+/// link lookup fails may be a link, which resolves through the overlay
+/// there: the session's setting is unknown, where it read as no link. Every
+/// lookup of the part fails, or only its link lookup, while the part reads
+/// as the file it is.
+#[test]
+fn a_link_lookup_that_fails_in_the_sessions_view_leaves_its_setting_unknown() {
+    let part = "/etc/apt/apt.conf.d/99local";
+    for fails in [None, Some(MockLookup::IsSymlink)] {
+        let fs = mock_decoy(
+            false,
+            &[("50unattended-upgrades", Some(OFF)), ("99local", Some(OFF))],
+        );
+        enable(&fs);
+        let clear = finding(&fs, &fs, Path::new("/"), Some(Path::new(UPPER)));
+        assert_eq!(clear, Finding::default());
+        match fails {
+            None => fs.mock_set_lookup_error(part, ErrorKind::Other),
+            Some(lookup) => {
+                fs.mock_fail_only(Path::new(part), lookup, MockFailure::Io(ErrorKind::Other));
+            }
+        }
+        let warning = session_warning_of(&fs);
+        assert!(
+            warning.contains(&format!("{SESSION_UNKNOWN}{part} cannot be looked up (")),
+            "{fails:?}: {warning}"
+        );
+    }
+}
+
+/// What the session's overlay holds on the way to apt's files, where its
+/// lookup fails, may be a directory, a link or a whiteout: the session's
+/// setting is unknown, where it read as nothing there. Every lookup of the
+/// place fails (its link lookup the first), or only its link lookup, the one
+/// of whether it is there, or the one of whether it is a directory.
+#[test]
+fn what_the_upper_holds_on_the_way_that_cannot_be_looked_up_leaves_its_setting_unknown() {
+    let place = "/hidden/upper/etc";
+    for fails in [
+        None,
+        Some(MockLookup::IsSymlink),
+        Some(MockLookup::PathExists),
+        Some(MockLookup::IsDirectory),
+    ] {
+        let fs = mock_decoy(false, &[("50unattended-upgrades", Some(OFF))]);
+        enable(&fs);
+        match fails {
+            None => fs.mock_set_lookup_error(place, ErrorKind::Other),
+            Some(lookup) => {
+                fs.mock_set_path_type(place, PathKind::Dir);
+                fs.mock_fail_only(Path::new(place), lookup, MockFailure::Io(ErrorKind::Other));
+            }
+        }
+        let warning = session_warning_of(&fs);
+        assert!(
+            warning.contains(&format!(
+                "{SESSION_UNKNOWN}what the hidden session's overlay holds at /etc cannot be read ("
+            )),
+            "{fails:?}: {warning}"
+        );
+    }
+}
+
+/// The upper's apt.conf, where the session's overlay holds `/etc/apt`, whose
+/// lookup fails may be the file the session reads last: its setting is
+/// unknown. Every lookup of it fails, or only the one of whether it is
+/// there, or only its link lookup.
+#[test]
+fn an_upper_apt_conf_that_cannot_be_looked_up_leaves_the_sessions_setting_unknown() {
+    let main = "/hidden/upper/etc/apt/apt.conf";
+    for fails in [
+        None,
+        Some(MockLookup::PathExists),
+        Some(MockLookup::IsSymlink),
+    ] {
+        let fs = mock_decoy(false, &[("50unattended-upgrades", Some(OFF))]);
+        enable(&fs);
+        fs.mock_set_path_type("/hidden/upper/etc", PathKind::Dir);
+        fs.mock_set_path_type("/hidden/upper/etc/apt", PathKind::Dir);
+        assert_eq!(
+            finding(&fs, &fs, Path::new("/"), Some(Path::new(UPPER))),
+            Finding::default()
+        );
+        match fails {
+            None => fs.mock_set_lookup_error(main, ErrorKind::Other),
+            Some(lookup) => {
+                fs.mock_fail_only(Path::new(main), lookup, MockFailure::Io(ErrorKind::Other));
+            }
+        }
+        let warning = session_warning_of(&fs);
+        assert!(
+            warning.contains(&format!(
+                "{SESSION_UNKNOWN}/etc/apt/apt.conf in the hidden session's overlay cannot be \
+                 looked up ("
+            )),
+            "{fails:?}: {warning}"
+        );
+    }
+}
+
+/// What the session's overlay holds in the place of the helper's mask, where
+/// its lookup fails, may unmask it: NAILS cannot tell whether the session
+/// starts its own copy, where it read as nothing there. Every lookup of the
+/// place fails, or only its link lookup, or only the one of whether it is
+/// there.
+#[test]
+fn a_mask_place_in_the_upper_that_cannot_be_looked_up_leaves_the_sessions_copy_unknown() {
+    let place = "/hidden/upper/etc/systemd/system/unattended-upgrades.service";
+    for fails in [
+        None,
+        Some(MockLookup::IsSymlink),
+        Some(MockLookup::PathExists),
+    ] {
+        let fs = mock_decoy(false, &[("99local", Some(ON))]);
+        enable(&fs);
+        match fails {
+            None => fs.mock_set_lookup_error(place, ErrorKind::Other),
+            Some(lookup) => {
+                fs.mock_fail_only(Path::new(place), lookup, MockFailure::Io(ErrorKind::Other));
+            }
+        }
+        let warning = session_warning_of(&fs);
+        assert!(
+            warning.starts_with(
+                "NAILS cannot tell whether the hidden session starts its own copy of \
+                 unattended-upgrades' shutdown helper (what the hidden session's overlay holds \
+                 at /etc/systemd/system/unattended-upgrades.service cannot be read ("
+            ),
+            "{fails:?}: {warning}"
+        );
+        assert!(
+            warning.contains(
+                "Unattended-Upgrade::InstallOnShutdown is on there \
+                 (/etc/apt/apt.conf.d/99local:1): if the session starts it, it installs"
+            ),
+            "{fails:?}: {warning}"
+        );
+    }
+}
+
+/// On the decoy, a part of apt's configuration, or apt.conf, that is no file
+/// may be a link that leads to no file now, which apt skips at the signal
+/// while the running helper may have read through it at its start: one
+/// whose link lookup fails leaves the setting unknown, refused as if on,
+/// where it read as no link.
+#[test]
+fn a_link_lookup_that_fails_of_what_apt_skips_leaves_the_setting_unknown() {
+    for (path, parts) in [
+        (
+            "/etc/apt/apt.conf.d/99local",
+            &[("50unattended-upgrades", Some(OFF)), ("99local", None)][..],
+        ),
+        (
+            "/etc/apt/apt.conf",
+            &[("50unattended-upgrades", Some(OFF))][..],
+        ),
+    ] {
+        let fs = mock_decoy(true, parts);
+        fs.mock_set_path_type(path, PathKind::Dir);
+        assert_eq!(
+            finding(&fs, &fs, Path::new("/"), None).blocker,
+            None,
+            "{path}"
+        );
+        fs.mock_fail_only(
+            Path::new(path),
+            MockLookup::IsSymlink,
+            MockFailure::Io(ErrorKind::Other),
+        );
+        let found = finding(&fs, &fs, Path::new("/"), None);
+        let blocker = blocker(&found);
+        assert_eq!(blocker.at_the_switch, AtTheSwitch::Unknown, "{path}");
+        assert!(
+            blocker
+                .finding
+                .contains(&format!("{path} cannot be looked up (")),
+            "{path}: {}",
+            blocker.finding
+        );
+    }
+}
+
+/// A check run without sudo cannot search the root overlay's upper, which
+/// only root may: where the decoy's helper is stopped but enabled,
+/// decoy-persistence warns that it cannot tell what the session's own copy
+/// reads, where it passed.
+#[test]
+fn a_check_that_cannot_search_the_upper_warns_it_cannot_tell_what_the_session_reads() {
+    let fs = amnesic_with_a_stopped_helper(&[("50unattended-upgrades", Some(OFF))]);
+    let check = DecoyPersistenceCheck::new(false, false).with_upper(PathBuf::from(UPPER));
+    let clear = check.run(&fs).unwrap();
+    assert!(clear.is_pass(), "{clear:?}");
+    fs.mock_set_lookup_error(UPPER, ErrorKind::PermissionDenied);
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(&format!(
+            "{SESSION_UNKNOWN}what the hidden session's overlay holds at /etc cannot be read ("
+        )),
         "{result:?}"
     );
 }
