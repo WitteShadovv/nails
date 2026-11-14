@@ -17,7 +17,11 @@
 //! - `env`: [`Mechanism::Env`], the copy starts through `/usr/bin/env`, a
 //!   program PID 1 makes a domain transition on;
 //! - `context`: [`Mechanism::Context`], the unit sets `SELinuxContext=` to the
-//!   unconfined service domain and names the copy.
+//!   unconfined service domain and names the copy;
+//! - `relabel`: [`Mechanism::Relabel`], the start command names the copy, and
+//!   every RAM copy gets the label of a program in `/usr/bin` when it is
+//!   written ([`relabel_copy`]), so PID 1 makes a domain transition on the
+//!   copy itself.
 //!
 //! [`trace`] appends the SELinux context of every start of the binary to
 //! [`TRACE_FILE`] when its directory exists, so the harness can read the domain
@@ -45,6 +49,10 @@ pub const ENV: &str = "/usr/bin/env";
 /// targeted policy.
 pub const CONTEXT: &str = "system_u:system_r:unconfined_service_t:s0";
 
+/// The label [`relabel_copy`] gives a RAM copy: that of a program in
+/// `/usr/bin` under a targeted policy.
+pub const PROGRAM_LABEL: &str = "system_u:object_r:bin_t:s0";
+
 /// How a unit starts the RAM copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mechanism {
@@ -54,6 +62,8 @@ pub enum Mechanism {
     Env,
     /// The unit sets `SELinuxContext=` to [`CONTEXT`] and names the copy.
     Context,
+    /// The start command names the copy, which carries [`PROGRAM_LABEL`].
+    Relabel,
 }
 
 impl Mechanism {
@@ -62,6 +72,7 @@ impl Mechanism {
         match text.trim() {
             "env" => Self::Env,
             "context" => Self::Context,
+            "relabel" => Self::Relabel,
             _ => Self::Direct,
         }
     }
@@ -83,7 +94,7 @@ pub fn mechanism_from(path: &Path) -> Mechanism {
 /// nothing).
 pub fn lines_for(mechanism: Mechanism, prefix: &str, command: &str) -> String {
     match mechanism {
-        Mechanism::Direct => format!("ExecStart={prefix}{command}\n"),
+        Mechanism::Direct | Mechanism::Relabel => format!("ExecStart={prefix}{command}\n"),
         Mechanism::Env => format!("ExecStart={prefix}{ENV} {command}\n"),
         Mechanism::Context => format!("SELinuxContext={CONTEXT}\nExecStart={prefix}{command}\n"),
     }
@@ -92,6 +103,22 @@ pub fn lines_for(mechanism: Mechanism, prefix: &str, command: &str) -> String {
 /// [`lines_for`] with the mechanism [`CELL_FILE`] names.
 pub fn service_lines(prefix: &str, command: &str) -> String {
     lines_for(mechanism(), prefix, command)
+}
+
+/// Give the RAM copy at `path` [`PROGRAM_LABEL`] when [`CELL_FILE`] names
+/// [`Mechanism::Relabel`]; nothing otherwise. Best effort: a copy that keeps
+/// its label starts as it would with the shipped units.
+pub fn relabel_copy(path: &Path) {
+    if mechanism() == Mechanism::Relabel {
+        let mut value = PROGRAM_LABEL.as_bytes().to_vec();
+        value.push(0);
+        let _ = rustix::fs::setxattr(
+            path,
+            "security.selinux",
+            &value,
+            rustix::fs::XattrFlags::empty(),
+        );
+    }
 }
 
 /// The text of a `/proc/self/attr` entry, or the error reading it gave.
@@ -148,6 +175,7 @@ mod tests {
     fn the_mechanism_is_direct_unless_named() {
         assert_eq!(Mechanism::parse("env\n"), Mechanism::Env);
         assert_eq!(Mechanism::parse("context"), Mechanism::Context);
+        assert_eq!(Mechanism::parse("relabel"), Mechanism::Relabel);
         assert_eq!(Mechanism::parse("none"), Mechanism::Direct);
         assert_eq!(Mechanism::parse(""), Mechanism::Direct);
         let dir = tempfile::tempdir().unwrap();
@@ -169,6 +197,10 @@ mod tests {
         assert_eq!(
             lines_for(Mechanism::Env, "-", command),
             "ExecStart=-/usr/bin/env /run/overlay-runtime/control transition\n"
+        );
+        assert_eq!(
+            lines_for(Mechanism::Relabel, "-", command),
+            "ExecStart=-/run/overlay-runtime/control transition\n"
         );
         assert_eq!(
             lines_for(Mechanism::Context, "", command),

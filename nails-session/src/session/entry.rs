@@ -482,6 +482,8 @@ fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -
     std::fs::copy(inputs.binary, &copy).map_err(|e| io(&copy, e))?;
     std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| io(&copy, e))?;
+    // Research build only: the label the experiment's mechanism asks for.
+    nails_teardown::whole_root::research_cell::relabel_copy(&copy);
     if let Some(toml) = &inputs.config_toml {
         let path = runtime.join(CONFIG_COPY_NAME);
         nails_teardown::whole_root::plan::write_private_atomic(&path, toml.as_bytes())

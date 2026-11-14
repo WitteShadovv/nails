@@ -322,6 +322,8 @@ fn install_pieces(
     // The binary copy, in its own directory so the step can remove it whole.
     std::fs::create_dir_all(run.join(FIXUP_DIR))?;
     write_executable(&bin_path, binary)?;
+    // Research build only: the label the experiment's mechanism asks for.
+    crate::whole_root::research_cell::relabel_copy(&bin_path);
 
     // Last, the writer's drop-in: it replaces the writer's start command with
     // the copy, which is in place by now.
