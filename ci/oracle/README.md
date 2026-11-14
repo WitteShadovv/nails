@@ -355,17 +355,17 @@ carved also depends on where its blocks lie.
 
 The `produce-btrfs` job runs `arch-boxes-oracle-images` as well, the same
 driver on the stock arch-boxes basic image. Its root is a btrfs filesystem
-compressed with zstd that keeps every file in its top level, next to a vfat
-ESP that systemd's GPT auto-generator mounts on demand at `/efi` and a BIOS
-boot partition. Arch is not admitted yet either, so the driver runs a
+compressed with zstd and mounted from its top level, next to a vfat ESP that
+systemd's GPT auto-generator mounts on demand at `/efi` and a BIOS boot
+partition. Arch is not admitted yet either, so the driver runs a
 test-only build of the release binary in which only the Arch row of the
 family table is admitted, never released. The decoy is prepared and imaged
 as the Fedora one is, and before the first image the driver also makes the
 swap line of its fstab (`/swap/swapfile`) `noauto` and turns the swap off:
 the swap check refuses an active disk swap, and no boot of the run turns it
-on again. `scan-btrfs-real` scans its images as it scans Fedora's. With every
-file in the top level, the restore channel keys a file by its own path
-(`/etc/fstab`), and the disk's partitions are compared as on Fedora.
+on again. `scan-btrfs-real` scans its images as it scans Fedora's. With the
+root mounted from the top level, the restore channel keys a file by its own
+path (`/etc/fstab`), and the disk's partitions are compared as on Fedora.
 
 ### What it does not see
 
