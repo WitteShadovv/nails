@@ -1121,6 +1121,185 @@ fn test_block_device_scan_flags_foreign_crypt_and_reports_own_as_info() {
     assert!(foreign_loop.message.contains("other.img"));
 }
 
+/// A hidden volume in a LUKS file container, as `cryptsetup open` attaches
+/// one: the mapping `data` (dm-0) reads from the loop device loop0 over the
+/// container file, which sysfs shows in dm-0's `slaves/`. loop1 is a second
+/// loop device over another file. Each device's directory is under
+/// `/sys/block`, and each `slaves/` entry is a link to one of them.
+fn luks_file_container_fs(
+    slave: &str,
+    slave_target: &str,
+) -> (MockFilesystem, crate::config::Config) {
+    use crate::Filesystem;
+    use crate::config::Config;
+    use std::path::{Path, PathBuf};
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/data"),
+        ..Config::default()
+    };
+    fs.mock_set_file_content(
+        "/proc/self/mountinfo",
+        "36 35 254:0 / /mnt/data rw,relatime shared:1 - ext4 /dev/mapper/data rw\n",
+    );
+    fs.mock_set_directory_contents(
+        Path::new("/sys/block"),
+        vec![
+            PathBuf::from("/sys/block/dm-0"),
+            PathBuf::from("/sys/block/loop0"),
+            PathBuf::from("/sys/block/loop1"),
+        ],
+    );
+    fs.mock_set_file_content("/sys/block/dm-0/dev", "254:0\n");
+    fs.mock_set_file_content("/sys/block/dm-0/dm/uuid", "CRYPT-LUKS2-abc-data\n");
+    fs.mock_set_file_content("/sys/block/dm-0/dm/name", "data\n");
+    let link = format!("/sys/block/dm-0/slaves/{slave}");
+    fs.create_symlink(Path::new(slave_target), Path::new(&link))
+        .unwrap();
+    fs.mock_set_directory_contents(
+        Path::new("/sys/block/dm-0/slaves"),
+        vec![PathBuf::from(link)],
+    );
+    fs.mock_set_file_content("/sys/block/loop0/dev", "7:0\n");
+    fs.mock_set_file_content("/sys/block/loop0/loop/backing_file", "/run/blk/data.img\n");
+    fs.mock_set_file_content("/sys/block/loop1/dev", "7:1\n");
+    fs.mock_set_file_content("/sys/block/loop1/loop/backing_file", "/data.img\n");
+    (fs, config)
+}
+
+fn block_device_findings(result: &VerifyResult) -> Vec<&Finding> {
+    result
+        .findings
+        .iter()
+        .filter(|f| f.category == "block-device")
+        .collect()
+}
+
+#[test]
+fn test_block_device_scan_counts_the_loop_under_the_own_mapper_as_own() {
+    let (fs, config) = luks_file_container_fs("loop0", "/sys/block/loop0");
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+    let block = block_device_findings(&result);
+    assert_eq!(block.len(), 3, "{block:?}");
+
+    // The loop device the mapping reads from backs the hidden volume as the
+    // mapping does: Info, with the same advice to close it.
+    let own_loop = block
+        .iter()
+        .find(|f| f.message.contains("/dev/loop0"))
+        .expect("the container's loop device is reported");
+    assert_eq!(own_loop.severity, Severity::Info, "{own_loop:?}");
+    assert_eq!(
+        own_loop.message,
+        "Open loop device backing the hidden volume: /run/blk/data.img (/dev/loop0)"
+    );
+    let own_mapper = block
+        .iter()
+        .find(|f| f.message.contains("/dev/mapper/data"))
+        .expect("the mapping is reported");
+    assert_eq!(own_mapper.severity, Severity::Info, "{own_mapper:?}");
+
+    // A loop device no device of the hidden volume reads from still warns.
+    let other = block
+        .iter()
+        .find(|f| f.message.contains("/dev/loop1"))
+        .expect("the other loop device is reported");
+    assert_eq!(other.severity, Severity::Warn, "{other:?}");
+    assert_eq!(
+        other.message,
+        "Open loop device not backing the hidden volume: /data.img (/dev/loop1)"
+    );
+}
+
+#[test]
+fn test_decoy_scoped_baseline_leaves_out_the_loop_under_the_own_mapper() {
+    let (fs, config) = luks_file_container_fs("loop0", "/sys/block/loop0");
+    let verifier =
+        Verifier::with_config(fs, config, None, StateFileStatus::NotChecked).scoped_to_decoy();
+    let result = verifier.run(false).unwrap();
+    let block = block_device_findings(&result);
+    // Only the other loop device is left: the mapping and the loop device it
+    // reads from are attached on purpose for the activation.
+    assert_eq!(block.len(), 1, "{block:?}");
+    assert!(block[0].message.contains("/dev/loop1"), "{block:?}");
+    assert_eq!(block[0].severity, Severity::Warn);
+}
+
+#[test]
+fn test_block_device_scan_counts_the_disk_of_a_partition_under_the_own_mapper() {
+    // The mapping reads from the first partition of loop0 (`losetup -P`), and
+    // `/sys/block` lists the loop device, not its partition.
+    let (fs, config) = luks_file_container_fs("loop0p1", "/sys/block/loop0/loop0p1");
+    fs.mock_set_file_content("/sys/block/loop0/loop0p1/dev", "259:0\n");
+    fs.mock_set_file_content("/sys/block/loop0/loop0p1/partition", "1\n");
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+    let block = block_device_findings(&result);
+    let own_loop = block
+        .iter()
+        .find(|f| f.message.contains("/dev/loop0"))
+        .expect("the partitioned loop device is reported");
+    assert_eq!(own_loop.severity, Severity::Info, "{own_loop:?}");
+    let other = block
+        .iter()
+        .find(|f| f.message.contains("/dev/loop1"))
+        .expect("the other loop device is reported");
+    assert_eq!(other.severity, Severity::Warn, "{other:?}");
+}
+
+#[test]
+fn test_block_device_scan_counts_a_mapper_below_the_mounted_one_as_own() {
+    use crate::Filesystem;
+    use std::path::{Path, PathBuf};
+
+    // An LVM volume (dm-1) on the container's mapping (dm-0), mounted at the
+    // hidden root: the crypt mapping is below the mounted device, named by no
+    // mount, and still the hidden volume's.
+    let (fs, config) = luks_file_container_fs("loop0", "/sys/block/loop0");
+    fs.mock_set_file_content(
+        "/proc/self/mountinfo",
+        "36 35 254:1 / /mnt/data rw,relatime shared:1 - ext4 /dev/mapper/vg-hidden rw\n",
+    );
+    fs.mock_set_directory_contents(
+        Path::new("/sys/block"),
+        vec![
+            PathBuf::from("/sys/block/dm-0"),
+            PathBuf::from("/sys/block/dm-1"),
+            PathBuf::from("/sys/block/loop0"),
+            PathBuf::from("/sys/block/loop1"),
+        ],
+    );
+    fs.mock_set_file_content("/sys/block/dm-1/dev", "254:1\n");
+    fs.mock_set_file_content("/sys/block/dm-1/dm/uuid", "LVM-abcdef\n");
+    fs.mock_set_file_content("/sys/block/dm-1/dm/name", "vg-hidden\n");
+    fs.create_symlink(
+        Path::new("/sys/block/dm-0"),
+        Path::new("/sys/block/dm-1/slaves/dm-0"),
+    )
+    .unwrap();
+    fs.mock_set_directory_contents(
+        Path::new("/sys/block/dm-1/slaves"),
+        vec![PathBuf::from("/sys/block/dm-1/slaves/dm-0")],
+    );
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+    let block = block_device_findings(&result);
+    for own in ["/dev/mapper/data", "/dev/loop0"] {
+        let finding = block
+            .iter()
+            .find(|f| f.message.contains(own))
+            .unwrap_or_else(|| panic!("{own} is reported: {block:?}"));
+        assert_eq!(finding.severity, Severity::Info, "{finding:?}");
+    }
+    let other = block
+        .iter()
+        .find(|f| f.message.contains("/dev/loop1"))
+        .expect("the other loop device is reported");
+    assert_eq!(other.severity, Severity::Warn, "{other:?}");
+}
+
 // ========================================================================
 // Config-Aware and State-Aware Verification Tests
 // ========================================================================

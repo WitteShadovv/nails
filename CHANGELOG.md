@@ -892,6 +892,14 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- The residue report of every activation, and `nails verify`, count the loop device under the
+  hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
+  VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
+  file, the report warned "Open loop device not backing the hidden volume" about that loop device
+  and said to close it, since only the device mounted at the hidden root counted. Every device
+  below that one counts now, read through sysfs: the loop device, a crypt mapping below an LVM
+  volume, and the loop device of a partition the mapping reads from. A loop device or crypt mapping
+  that no device of the hidden volume reads from still warns.
 - The check that the state file lies on the hidden volume follows every symlink and `..` on the
   way to the file as the kernel does, and refuses what it cannot settle so: a symlink that leads
   nowhere, a part of the path it may not look at, a `..` after a directory that does not exist yet,

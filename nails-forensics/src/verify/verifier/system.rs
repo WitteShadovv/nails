@@ -5,6 +5,7 @@
 
 use super::session::{HiddenSession, check_decoy_offline};
 use super::*;
+use nails_base::blockdev::{self, LoopFollow};
 
 impl<F: Filesystem> Verifier<F> {
     /// Check for leftover NAILS artifacts drawn from the shared registry.
@@ -125,11 +126,14 @@ impl<F: Filesystem> Verifier<F> {
     ///
     /// Reads `/sys/block`: a `dm-*` device whose `dm/uuid` begins with `CRYPT-`
     /// is a dm-crypt mapper, and a `loop*` device with a non-empty
-    /// `loop/backing_file` is an attached loop device. The device that backs the
-    /// hidden volume (and therefore the running binary) is reported at Info level
-    /// — "close it before handing over the machine" — while any *other* open
-    /// crypt mapper or loop device is a warning, because it can expose a second
-    /// hidden volume regardless of the neutral name it was given.
+    /// `loop/backing_file` is an attached loop device. The devices that back the
+    /// hidden volume (and therefore the running binary) are reported at Info
+    /// level — "close it before handing over the machine" — while any *other*
+    /// open crypt mapper or loop device is a warning, because it can expose a
+    /// second hidden volume regardless of the neutral name it was given. The
+    /// hidden volume's own devices are the one its root is mounted from and
+    /// every device below that one: the loop device a file container's crypt
+    /// mapping reads from is the hidden volume's as much as the mapping is.
     ///
     /// When `/sys/block` cannot be read (an offline scan, a container, or a mock
     /// without the fixture) this reports nothing rather than erroring.
@@ -141,7 +145,7 @@ impl<F: Filesystem> Verifier<F> {
             Err(_) => return Ok(findings),
         };
 
-        let own_sources = self.hidden_volume_backing_sources();
+        let (own_sources, own_devices) = self.hidden_volume_backing();
 
         for entry in entries {
             let Some(name) = entry.file_name().and_then(|name| name.to_str()) else {
@@ -162,9 +166,10 @@ impl<F: Filesystem> Verifier<F> {
                     .map(|name| name.trim().to_string())
                     .unwrap_or_else(|_| name.to_string());
                 let node = format!("/dev/mapper/{mapper_name}");
-                let is_own = own_sources
-                    .iter()
-                    .any(|source| source == &node || source.ends_with(&format!("/{mapper_name}")));
+                let is_own = own_devices.contains(name)
+                    || own_sources.iter().any(|source| {
+                        source == &node || source.ends_with(&format!("/{mapper_name}"))
+                    });
                 // A decoy-scoped baseline excludes the hidden volume's own backing
                 // device: it is attached on purpose for the activation in progress.
                 if is_own && self.scope_to_decoy {
@@ -188,9 +193,10 @@ impl<F: Filesystem> Verifier<F> {
                     continue;
                 }
                 let node = format!("/dev/{name}");
-                let is_own = own_sources
-                    .iter()
-                    .any(|source| source == &node || source == &backing);
+                let is_own = own_devices.contains(name)
+                    || own_sources
+                        .iter()
+                        .any(|source| source == &node || source == &backing);
                 if is_own && self.scope_to_decoy {
                     continue;
                 }
@@ -201,25 +207,51 @@ impl<F: Filesystem> Verifier<F> {
         Ok(findings)
     }
 
-    /// The source device(s) that `/proc/self/mountinfo` reports for the
-    /// configured hidden volume root, used to tell the hidden volume's own
-    /// backing device apart from any other open crypt mapper or loop device.
-    fn hidden_volume_backing_sources(&self) -> Vec<String> {
+    /// What backs the configured hidden volume root, used to tell the hidden
+    /// volume's own devices apart from any other open crypt mapper or loop
+    /// device: the source device(s) `/proc/self/mountinfo` reports for the
+    /// root, and the kernel names of the device each such mount sits on and of
+    /// every device below it.
+    ///
+    /// The devices below are read through `slaves/`, and below a loop device
+    /// over a block device into that device ([`blockdev::stack`]), so the loop
+    /// device under a file container's crypt mapping, or under an LVM volume
+    /// on that mapping, is named, and of a partition in the stack (a partition
+    /// of a loop device) its disk is named too, since `/sys/block` lists the
+    /// disk. The walk stops at a loop device over a file: the filesystem that
+    /// holds the file is no device of the hidden volume.
+    fn hidden_volume_backing(&self) -> (Vec<String>, BTreeSet<String>) {
         let Some(root) = self.hidden_root() else {
-            return Vec::new();
+            return (Vec::new(), BTreeSet::new());
         };
 
         let Ok(mountinfo) = self.filesystem.read_file_content(Path::new(SELF_MOUNTINFO)) else {
-            return Vec::new();
+            return (Vec::new(), BTreeSet::new());
         };
 
         // The shared parser decodes the kernel's octal escapes, so a hidden root
         // whose path holds a space or a backslash still finds its own entry.
-        crate::filesystem::parse_mountinfo(&mountinfo)
+        let mounts: Vec<_> = crate::filesystem::parse_mountinfo(&mountinfo)
             .into_iter()
             .filter(|entry| entry.mount_point == root)
+            .collect();
+        let sources = mounts
+            .iter()
             .map(|entry| entry.source.to_string_lossy().into_owned())
-            .collect()
+            .collect();
+        let mut devices = BTreeSet::new();
+        for mount in &mounts {
+            let Some(top) = blockdev::device_of_mount(&self.filesystem, mount) else {
+                continue;
+            };
+            for layer in blockdev::stack(&self.filesystem, &top, LoopFollow::BlockDevices) {
+                if let Some(disk) = layer.partition.and_then(|partition| partition.disk) {
+                    devices.insert(disk);
+                }
+                devices.insert(layer.name);
+            }
+        }
+        (sources, devices)
     }
 
     /// Check for nails-related processes, distinguishing the real binary from an
