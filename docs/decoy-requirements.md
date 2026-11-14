@@ -617,7 +617,10 @@ history yourself so an interactive shell has nowhere to write:
   `XDG_CONFIG_HOME` expands to or keeps a later assignment from setting it
   (`typeset -l`, `readonly`, `typeset -a XDG_CONFIG_HOME`), an
   `XDG_CONFIG_HOME` set otherwise than by an assignment or an `unset`
-  (`read`, `+=`), an `autoload -X`, `ALIAS_FUNC_DEF` where an alias shares a
+  (`read`, `+=`), a `ZDOTDIR` or `XDG_CONFIG_HOME` whose `~` a quote or a
+  backslash keeps (`ZDOTDIR="~/.zd"`), a function or an alias named like a
+  builtin that sets one (`alias export=:`, `unset() { ... }`) or a `disable`
+  of one, an `autoload -X`, `ALIAS_FUNC_DEF` where an alias shares a
   function's
   name, a prompt with code where `PROMPT_SUBST` (or `PROMPT_VARS`) may be on, a
   `NULLCMD` or `READNULLCMD` of any value in the environment you start the shell

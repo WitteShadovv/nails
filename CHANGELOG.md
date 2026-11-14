@@ -890,7 +890,9 @@ of this changelog for that version becomes the release notes word for word, and
   (`zle -N`, `zle -C`, `zle -F`, a `zle -T` transformation's), which a key bound to it may run as a
   line is typed, a function named like a builtin, which the hooks of zsh's own
   `add-zle-hook-widget` run, or like their dispatcher (`azhw:...`), a prompt theme `prompt` runs from a hook, `command_not_found_handler`, and the code
-  `sched`, `zstyle -e` and `bindkey -s` run. What a `$(...)` in a hook writes counts as the hook's
+  `sched`, `zstyle -e` and `bindkey -s` run, and an anonymous function in a hook, which the check
+  read as code that runs where zsh reads the file (`preexec() { () { exit } }`, which zsh 5.9 to
+  5.9.2 ran as the hook ran). What a `$(...)` in a hook writes counts as the hook's
   (`x=$(print -r -- "$1" >> $f)`, an `fc`, a descriptor). As zsh writes its history file as it ends,
   a hook that may end the shell is a doubt: `exit`, `bye` or `logout`, in a subshell or a `$(...)`
   too, as zsh writes the file in a subshell that exits (`$(cd x || exit 1)`), an `exec` of a
@@ -1048,15 +1050,30 @@ of this changelog for that version becomes the release notes word for word, and
   but once the file ends the values from before it stay too, as zsh stops a file at an error (an
   unset parameter under `NO_UNSET`, a read-only one, a bad subscript, a division by zero) that may
   come before the assignment, and then reads the home's files: zsh 5.9 to 5.9.2 did so with each,
-  where the check read only `ZDOTDIR`'s. Only an assignment that is its file's first command, with
-  a value whose expansion cannot fail, drops them. The user's file of each stage is read in each
+  where the check read only `ZDOTDIR`'s. Only an assignment that is the first command of a user's
+  file zsh certainly reads, with a value whose expansion cannot fail, drops them: not one in `/etc`,
+  as a zsh reads its stage's file in `/etc` or in `/etc/zsh`, as it was built, nor one in
+  `.zprofile` or `.zlogin` for a shell the check cannot tell is a login shell. A `~` a quote or a
+  backslash keeps (`ZDOTDIR="~/.zd"`, `\~/.zd`, `source "~/x.zsh"`) is a path below the working
+  directory, a doubt, and a word with a quote or a backslash before its `=` assigns nothing, as zsh
+  runs it as a command's name (`"ZDOTDIR=$HOME/.zd"`): with each, zsh 5.9 to 5.9.2 read another
+  `.zshrc` than the check did and wrote each line. A function or a regular alias named like a
+  builtin by which the check reads a setting (`alias export=:`, `unset() { ... }`, `source() {
+  ... }`), or whose name an expansion makes, and a `disable` that may take one away, are doubts, as
+  zsh runs another command in its place, which zsh 5.9 to 5.9.2 did, setting nothing; what a builtin
+  after `command` sets, an outside program unless `POSIX_BUILTINS` is on, may be set and need not.
+  In sh's or ksh's mode zsh reads the user's files in the home whatever `ZDOTDIR` holds, as zsh
+  5.9 to 5.9.2 did after `emulate sh` in `.zshenv`, so after an `emulate sh`, `bash` or `ksh` that
+  may last past its command the check reads the home's file of each later stage too. The user's
+  file of each stage is read in each
   place `ZDOTDIR` may hold, with `ZDOTDIR` holding that place, and a path that code run as a
   function sources, adds to `fpath` or autoloads by path, for every value the files ever give
   either, a later one among them. As for `ZDOTDIR`, a line that sets or takes `XDG_CONFIG_HOME`
   away otherwise than as the walk reads it is a doubt (`XDG_CONFIG_HOME+=x`,
   `${XDG_CONFIG_HOME:=...}`, `read`, `print -v`, `unset -m 'XDG_CONFIG_HOM?'`). For a zsh whose
   environment the check does not know, a path that names `XDG_CONFIG_HOME` is one it cannot follow
-  but in a file that sets it first. An assignment before a command (`ZDOTDIR=/x true`), which zsh
+  but after a certain assignment in the same file, or once a user's file sets it as its first
+  command. An assignment before a command (`ZDOTDIR=/x true`), which zsh
   keeps for that command alone (but before a special builtin where `POSIX_BUILTINS` is on), may set
   the parameter and need not, so the check reads the files where it puts them and where they were
   before. A function or a regular alias named `run-help` or `which-command`, which the widgets of

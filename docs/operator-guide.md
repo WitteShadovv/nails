@@ -1395,8 +1395,10 @@ afterwards:
     own `run-help` hands the line's words, the code
     `sched`, `zstyle -e` and `bindkey -s` run and the line `zle -U` and
     `print -z` type, the code of a function's own file and of a file a hook
-    sources, a prompt theme that `prompt` runs from a hook, and a function or
-    an alias a hook runs by name, there or in an `eval` or a `$(...)`. In a
+    sources, a prompt theme that `prompt` runs from a hook, a function or an
+    alias a hook runs by name, there or in an `eval` or a `$(...)`, and an
+    anonymous function in a hook, which runs as the hook does
+    (`preexec() { () { ... } "$1" }`). In a
     hook a word that names that file (`tee -a ~/.zsh_history`) counts as a
     write too, and a redirection there to any other file is a doubt, as it may
     be the one `HISTFILE` names or a link to it (`>> ~/.zlog`, a glob, `$TTY`),
@@ -1576,9 +1578,30 @@ afterwards:
     ends the values from before it stay too, as zsh stops reading a file at
     an error (an unset parameter under `NO_UNSET`, a read-only one, a bad
     subscript) that may come before it, and then reads the user's files where
-    they were: only an assignment that is the file's first command, with a
-    value whose expansion cannot fail (`export ZDOTDIR="$HOME/.config/zsh"`
-    as the first line of `.zshenv`), leaves the home's files out. The user's
+    they were: only an assignment that is the first command of a user's file
+    zsh certainly reads, with a value whose expansion cannot fail
+    (`export ZDOTDIR="$HOME/.config/zsh"` as the first line of `.zshenv`),
+    leaves the home's files out. One in `/etc` does not, as a zsh reads its
+    stage's file in `/etc` or in `/etc/zsh`, as it was built, which the check
+    does not know, nor one in `.zprofile` or `.zlogin` for a shell it cannot
+    tell is a login shell. A `~` a quote or a backslash keeps
+    (`ZDOTDIR="~/.zd"`, `\~/.zd`) is no home but a path below the working
+    directory, as zsh expands no `~` there, a doubt, and a word with a quote
+    or a backslash before its `=` (`"ZDOTDIR=$HOME/.zd"`) assigns nothing, as
+    zsh runs it as a command's name. An assignment, a declaration or an
+    `unset` holds only where its builtin runs as the check reads it: a
+    function or a regular alias your files define or autoload named like a
+    builtin by which the check reads a setting (the `typeset` family,
+    `unset`, `source`, `.`, `builtin`, `command` and the like, as
+    `alias export=:` or `unset() { ... }`), or whose name an expansion
+    makes, and a `disable` that may take one away are doubts, as zsh runs
+    another command in its place, and what a builtin after `command` sets,
+    which runs an outside program unless `POSIX_BUILTINS` is on, may be set
+    and need not. In sh's or ksh's mode zsh reads the user's files in the
+    home whatever `ZDOTDIR` holds, so where your files may run an
+    `emulate sh`, `bash` or `ksh` that lasts past its command (not one with
+    `-c` after its mode, nor an `emulate -L` in a function), the check reads
+    the home's file of each later stage too. The user's
     file of each stage is read in each place `ZDOTDIR` may hold, as zsh reads
     it with `ZDOTDIR` holding that place, and a path that code run as a
     function names, which runs after your files define it, for every value
@@ -1588,7 +1611,8 @@ afterwards:
     `read`, `print -v`, `unset -m 'XDG_CONFIG_HOM?'`) is a doubt. For a zsh
     whose environment it does not know, as one it reads because it found no
     shell you typed into, a path that names `XDG_CONFIG_HOME` is one it
-    cannot follow, but in a file that sets it first. An assignment before a
+    cannot follow, but after a certain assignment in the same file, or once a
+    user's file sets it as its first command. An assignment before a
     command (`ZDOTDIR=/x true`), which zsh keeps for that command alone (but
     before a special builtin where `POSIX_BUILTINS` is on), may set the
     parameter and need not, so the check reads the files both where it puts
@@ -1667,7 +1691,8 @@ afterwards:
     that is no number is a doubt, one your files give one of them and one the
     shell's environment holds, and so is one set in a form the check does not
     read (`read TMOUT`, `print -v TMOUT`). A number passes for all but
-    `TMOUT`: above 0, in your files or in the shell's environment, it is a
+    `TMOUT`: above 0, in your files or in the environment of the shell you
+    typed into, which the check reads, it is a
     doubt, as zsh then ends by itself once a prompt has waited that many
     seconds (a `TRAPALRM` aside, which a later file or a hook may take away)
     and writes its history file as it ends, so the lines you typed before a
@@ -1831,7 +1856,8 @@ afterwards:
   ends the shell by itself (one that signals its parent), a file a bash
   startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
-  environment of a shell it found no command typed into), nor a history tool
+  environment of a shell it found no command typed into), a `TMOUT` the
+  environment of such a shell holds, nor a history tool
   that keeps its own record of each command, such as atuin, as one.
 
   It reads an `eval` of words it can read as code, and so an alias's value, a
