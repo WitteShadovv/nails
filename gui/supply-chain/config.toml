@@ -1432,9 +1432,9 @@ criteria = "safe-to-deploy"
 notes = "Not audited by this project, and no imported audit covers 0.38.44. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.rustix]]
-version = "1.1.5"
+version = "1.1.6"
 criteria = "safe-to-deploy"
-notes = "Not audited by this project, and no imported audit covers 1.1.5. It is in the window through rustix (the window's handling of its standard input) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+notes = "Not audited by this project, and no imported audit covers 1.1.6. It is in the window through rustix (the window's handling of its standard input) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.rustversion]]
 version = "1.0.23"

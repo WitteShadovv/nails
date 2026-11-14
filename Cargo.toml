@@ -48,7 +48,7 @@ signal-hook = { version = "0.4", default-features = false }
 
 # Direct syscalls for extended attributes (overlay opaque markers): rustix's
 # l*xattr functions give us no-follow semantics without spawning attr binaries.
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1.1.6", features = ["fs"] }
 
 # Serialization (AR10)
 serde = { version = "1.0", features = ["derive"] }

@@ -178,8 +178,7 @@ fn a_decoy_directory_without_a_label_leaves_the_upper_as_it_was() {
 
         // Neither wrote anything: the upper has no attribute at all and its
         // status is unchanged.
-        let mut names: [u8; 0] = [];
-        assert_eq!(rustix::fs::llistxattr(&upper, &mut names[..]), Ok(0));
+        assert_eq!(rustix::fs::llistxattr_query(&upper), Ok(0));
         assert_eq!(ctime(&upper), before);
     });
 }
@@ -420,9 +419,8 @@ fn a_walk_over_decoy_directories_without_labels_leaves_the_way_as_it_was() {
         // None of them wrote anything: neither directory has an attribute at
         // all, and their status is unchanged.
         for dir in [&parent, &home] {
-            let mut names: [u8; 0] = [];
             assert_eq!(
-                rustix::fs::llistxattr(dir, &mut names[..]),
+                rustix::fs::llistxattr_query(dir),
                 Ok(0),
                 "{}",
                 dir.display()
