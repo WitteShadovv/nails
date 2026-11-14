@@ -402,7 +402,7 @@ fn evidence(status: &SelinuxStatus) -> String {
     match (&status.config_mode, &status.config_policy) {
         (Some(mode), _) => format!("{SELINUX_CONFIG} sets SELINUX={mode}"),
         (None, Some(policy)) => format!("{SELINUX_CONFIG} names the {policy:?} policy"),
-        (None, None) => "/sys/fs/selinux exists".to_string(),
+        (None, None) => "/sys/fs/selinux is there or cannot be looked up".to_string(),
     }
 }
 

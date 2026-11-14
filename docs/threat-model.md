@@ -263,7 +263,9 @@ upper changes.
   the hidden `/etc/nixos` it makes in the root upper for the hidden NixOS
   configuration, with the hidden `/etc` where it made that too. Where a label
   cannot be copied, activation is refused (see the
-  [decoy requirements](decoy-requirements.md)).
+  [decoy requirements](decoy-requirements.md)). For now `check` and activation
+  refuse every host where SELinux runs before any of this: `lsm-status` fails
+  there until NAILS chooses the SELinux domain of its units.
 - **Remote state, never rolled back.** Deactivation leaves the upper on the
   hidden volume and changes nothing else. Anything the hidden session sent through a
   shared account, token or sync client lives on the remote, and a decoy sync

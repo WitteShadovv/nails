@@ -368,8 +368,8 @@ fn a_mode_that_differs_from_the_configuration_warns() {
         ),
         // A policy loaded by hand, and set to enforce, after a boot with
         // SELINUX=disabled. A kernel told to enforce on its command line while
-        // the configuration turns SELinux off loads no policy at all, and is
-        // refused as SELinux without a policy (tested below), not warned.
+        // the configuration turns SELinux off does not get here: systemd stops
+        // its boot ("Failed to load SELinux policy."), so no nails runs there.
         (
             SelinuxMode::Enforcing,
             "disabled",
@@ -625,7 +625,7 @@ fn selinux_that_cannot_be_ruled_out_without_the_lsm_list_fails() {
                 config_mode: None,
                 config_policy: None,
             },
-            "neither could the mount table (/proc/self/mounts), and /sys/fs/selinux exists",
+            "neither could the mount table (/proc/self/mounts), and /sys/fs/selinux is there or cannot be looked up",
         ),
         (
             SelinuxStatus {
