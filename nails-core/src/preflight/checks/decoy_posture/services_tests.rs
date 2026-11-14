@@ -1477,3 +1477,19 @@ fn a_tuned_whose_standard_error_is_a_pipe_counts_against_the_decoy() {
     assert_eq!(found.programs, ["tuned"]);
     assert!(decoy.check(false).is_fail(), "{:?}", decoy.check(false));
 }
+
+#[test]
+fn a_tuned_that_logs_to_the_null_device_logs_to_no_file() {
+    for dropin in [
+        "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\nStandardError=file:/dev/null\n",
+        "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -l /dev/null -P\n",
+    ] {
+        let decoy = Decoy::new();
+        decoy
+            .unit("tuned.service", TUNED_UNIT)
+            .enable("multi-user.target", "tuned.service")
+            .file("/etc/systemd/system/tuned.service.d/50-null.conf", dropin);
+        assert_eq!(decoy.findings(), Findings::default(), "{dropin}");
+        assert!(decoy.check(false).is_pass(), "{dropin}");
+    }
+}

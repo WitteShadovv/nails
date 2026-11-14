@@ -9,8 +9,8 @@
 //! (systemd.exec(5)). `StandardError=` and `StandardOutput=` count by their
 //! last value that is not empty: systemd ignores an empty one, which leaves
 //! the one before. `file:`, `append:` and `truncate:` write the file they
-//! name, and `null`, `journal`, `kmsg`, `tty` and their `+console` forms
-//! write none. `inherit` sends the standard error where the standard output
+//! name, unless it is a device that keeps nothing ([`log_to_path`]), and
+//! `null`, `journal`, `kmsg`, `tty` and their `+console` forms write none. `inherit` sends the standard error where the standard output
 //! goes, and the standard output where the standard input comes from, which
 //! is no file unless `StandardInput=` names one or a descriptor of a socket
 //! unit. So does `socket`, for a service that no socket starts. Unset, each
@@ -22,8 +22,8 @@
 //! descriptor (`fd:`), leaves it unknown.
 //!
 //! By a running process, as the link of its descriptor in `/proc` leads: a
-//! device or a socket is no file, and a descriptor that is closed takes
-//! nothing. A pipe leads to the process that reads it, which may copy what
+//! socket, or a device that keeps nothing, is no file, and a descriptor that
+//! is closed takes nothing. A pipe leads to the process that reads it, which may copy what
 //! it reads into a file, as `tee` does, so NAILS cannot tell. Only root may
 //! follow the descriptors of another user's process, so an unprivileged
 //! `nails check` cannot tell where they lead.
@@ -87,6 +87,37 @@ const NO_FILE_INPUT: &[&str] = &["null", "tty", "tty-force", "tty-fail", "data",
 
 /// The kinds of value that write the file after them.
 const FILE_KINDS: &[&str] = &["file:", "append:", "truncate:"];
+
+/// Whether `path` is a device that keeps nothing it is given: the null
+/// device and its kin, a terminal or a console, or the kernel's log buffer,
+/// whose lines go where the journal's do.
+fn is_sink(path: &str) -> bool {
+    let numbered = |prefix: &str| {
+        path.strip_prefix(prefix).is_some_and(|rest| {
+            !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+    };
+    matches!(
+        path,
+        "/dev/null" | "/dev/zero" | "/dev/full" | "/dev/console" | "/dev/kmsg" | "/dev/tty"
+    ) || ["/dev/tty", "/dev/pts/", "/dev/hvc"]
+        .into_iter()
+        .any(numbered)
+}
+
+/// Where a daemon logs that writes what it logs to `path`: nowhere for a
+/// device that keeps nothing it is given ([`is_sink`]), unknown for another
+/// device, and otherwise the file `file` gives, one in `/dev/shm`, which is
+/// in RAM, among them.
+pub(super) fn log_to_path(path: &str, file: impl FnOnce() -> Log) -> Log {
+    if is_sink(path) {
+        Log::NoFile
+    } else if path.starts_with("/dev/") && !path.starts_with("/dev/shm/") {
+        Log::Unknown(format!("it logs to {path}, a device NAILS does not judge"))
+    } else {
+        file()
+    }
+}
 
 /// The last value of `key` in `assignments` that is not empty.
 fn setting<'a>(assignments: &'a [Assignment], key: &str) -> Option<&'a str> {
@@ -152,10 +183,12 @@ pub(super) fn of_unit(assignments: &[Assignment], stream: Stream, by: &str) -> L
         return Log::NoFile;
     }
     match FILE_KINDS.iter().find_map(|kind| value.strip_prefix(kind)) {
-        Some(path) => Log::File(FileLog {
-            path: path.to_string(),
-            by: listed(&followed),
-            what: "its log",
+        Some(path) => log_to_path(path, || {
+            Log::File(FileLog {
+                path: path.to_string(),
+                by: listed(&followed),
+                what: "its log",
+            })
         }),
         None => unknown(),
     }
@@ -181,8 +214,7 @@ fn led_to(target: crate::Result<PathBuf>, stream: Stream, by: &str) -> Log {
     match target {
         Ok(target) => {
             let target = target.to_string_lossy().into_owned();
-            let device = target.starts_with("/dev/") && !target.starts_with("/dev/shm/");
-            if device || target.starts_with("socket:") {
+            if target.starts_with("socket:") {
                 Log::NoFile
             } else if target.starts_with("pipe:") {
                 Log::Unknown(format!(
@@ -190,10 +222,12 @@ fn led_to(target: crate::Result<PathBuf>, stream: Stream, by: &str) -> Log {
                      that reads it"
                 ))
             } else if target.starts_with('/') {
-                Log::File(FileLog {
-                    path: target,
-                    by: format!("{by}, its {name} being that file"),
-                    what: "its log",
+                log_to_path(&target, || {
+                    Log::File(FileLog {
+                        path: target.clone(),
+                        by: format!("{by}, its {name} being that file"),
+                        what: "its log",
+                    })
                 })
             } else {
                 Log::Unknown(format!("it logs to its {name}, which leads to {target}"))

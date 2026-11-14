@@ -52,6 +52,10 @@ fn a_stream_the_unit_leaves_alone_goes_to_no_file() {
         "StandardError=socket",
         "StandardOutput=inherit\nStandardInput=tty-force",
         "StandardInput=data",
+        // A device that keeps nothing it is given.
+        "StandardError=file:/dev/null",
+        "StandardError=append:/dev/console",
+        "StandardError=inherit\nStandardOutput=truncate:/dev/tty1",
     ] {
         assert_eq!(
             of_unit(&section(text), Stream::Error, TUNED_BY),
@@ -159,7 +163,15 @@ fn what_nails_cannot_follow_of_a_unit_is_unknown() {
 #[test]
 fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
     let by = TUNED_BY;
-    for target in ["socket:[24680]", "/dev/null", "/dev/pts/1", "/dev/kmsg"] {
+    for target in [
+        "socket:[24680]",
+        "/dev/null",
+        "/dev/pts/1",
+        "/dev/kmsg",
+        "/dev/tty1",
+        "/dev/ttyS0",
+        "/dev/console",
+    ] {
         assert_eq!(
             led_to(Ok(PathBuf::from(target)), Stream::Error, by),
             Log::NoFile,
@@ -189,6 +201,11 @@ fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
             by
         )),
         "it logs to its standard output, which leads to anon_inode:[eventfd]"
+    );
+    // Another device, as a disk's, is not judged.
+    assert_eq!(
+        unknown(led_to(Ok(PathBuf::from("/dev/sda1")), Stream::Error, by)),
+        "it logs to /dev/sda1, a device NAILS does not judge"
     );
     // A pipe leads to its reader, which may copy what it reads into a file.
     assert_eq!(

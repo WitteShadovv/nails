@@ -32,7 +32,7 @@
 //!   which on a systemd host is the journal; `console` writes them to its
 //!   standard output.
 
-use super::streams::Stream;
+use super::streams::{Stream, log_to_path};
 use std::collections::BTreeMap;
 
 /// How an option takes its value, as `argparse` declares it.
@@ -335,10 +335,12 @@ pub(in crate::preflight::checks::decoy_posture) fn tuned(args: &[Vec<u8>]) -> Lo
     let daemon = parsed.contains_key("daemon");
     match log_file(&parsed, TUNED_LOG) {
         Err(why) => Log::Unknown(why),
-        Ok(Some((path, by))) => Log::File(FileLog {
-            path,
-            by,
-            what: "its log",
+        Ok(Some((path, by))) => log_to_path(&path.clone(), || {
+            Log::File(FileLog {
+                path,
+                by,
+                what: "its log",
+            })
         }),
         Ok(None) if daemon => Log::File(FileLog {
             path: TUNED_LOG.to_string(),
@@ -360,10 +362,12 @@ pub(in crate::preflight::checks::decoy_posture) fn tuned_ppd(args: &[Vec<u8>]) -
     };
     match log_file(&parsed, TUNED_PPD_LOG) {
         Err(why) => Log::Unknown(why),
-        Ok(Some((path, by))) => Log::File(FileLog {
-            path,
-            by,
-            what: "its log",
+        Ok(Some((path, by))) => log_to_path(&path.clone(), || {
+            Log::File(FileLog {
+                path,
+                by,
+                what: "its log",
+            })
         }),
         Ok(None) => Log::Stream {
             stream: Stream::Error,
@@ -412,28 +416,25 @@ pub(in crate::preflight::checks::decoy_posture) fn firewalld(args: &[Vec<u8>]) -
         ),
     };
     let every = "every message it logs";
-    match target {
-        "syslog" => Log::NoFile,
-        "console" => Log::Stream {
-            stream: Stream::Output,
-            by: "the log target console",
-        },
-        "file" => Log::File(FileLog {
+    let (by, what) = match target {
+        "syslog" => return Log::NoFile,
+        "console" => {
+            return Log::Stream {
+                stream: Stream::Output,
+                by: "the log target console",
+            };
+        }
+        "file" => (by, every),
+        _ if debug => (format!("{by} and --debug"), every),
+        _ => (by, "its warnings and errors"),
+    };
+    log_to_path(&file.clone(), || {
+        Log::File(FileLog {
             path: file,
             by,
-            what: every,
-        }),
-        _ if debug => Log::File(FileLog {
-            path: file,
-            by: format!("{by} and --debug"),
-            what: every,
-        }),
-        _ => Log::File(FileLog {
-            path: file,
-            by,
-            what: "its warnings and errors",
-        }),
-    }
+            what,
+        })
+    })
 }
 
 #[cfg(test)]

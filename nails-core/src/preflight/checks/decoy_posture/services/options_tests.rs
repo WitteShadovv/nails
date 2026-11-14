@@ -248,3 +248,29 @@ fn what_firewalld_would_read_otherwise_than_nails_is_unknown() {
         assert_eq!(unknown(firewalld(&args(line))), why, "{line}");
     }
 }
+
+#[test]
+fn a_log_to_a_device_that_keeps_nothing_is_no_file() {
+    // Python's RotatingFileHandler writes to the device and rolls nothing
+    // over that is not a regular file.
+    for line in ["-l /dev/null -P", "-l=/dev/null", "--log=/dev/console"] {
+        assert_eq!(tuned(&args(line)), Log::NoFile, "{line}");
+    }
+    assert_eq!(tuned_ppd(&args("-l /dev/null")), Log::NoFile);
+    assert_eq!(
+        firewalld(&args("--log-target=file --log-file=/dev/null")),
+        Log::NoFile
+    );
+    // -d takes the file -l names.
+    assert_eq!(tuned(&args("-d -l /dev/null")), Log::NoFile);
+    // Another device, as a disk's, is not judged; a file in /dev/shm, in
+    // RAM, counts as a file.
+    assert_eq!(
+        unknown(tuned(&args("-l /dev/sda1"))),
+        "it logs to /dev/sda1, a device NAILS does not judge"
+    );
+    assert_eq!(
+        tuned(&args("-l /dev/shm/tuned.log")),
+        file("/dev/shm/tuned.log", "-l /dev/shm/tuned.log", "its log")
+    );
+}
