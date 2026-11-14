@@ -339,6 +339,7 @@ in
       python3 -m unittest discover -s nix/distro-tests/py/tests -t nix/distro-tests/py
       ruff check nix/distro-tests/py
       MYPYPATH=nix/distro-tests/py mypy \
+        nix/distro-tests/py/btrfs_controls.py \
         nix/distro-tests/py/btrfs_scan.py \
         nix/distro-tests/py/distro_checks.py \
         nix/distro-tests/py/fedora_gate.py \
