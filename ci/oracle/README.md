@@ -153,20 +153,26 @@ local run without docker can read what the other channels found.
 
 ### Carving the restore channel
 
-`run-scan.sh` carves the file tree with `btrfs restore` for btrfs (snapshots and
-symlinks included) and `debugfs rdump` for ext{2,3,4}. An image is a bare
-filesystem, or a whole-disk image with exactly one btrfs or ext{2,3,4}
+`run-scan.sh` carves the file tree of a btrfs filesystem through a read-only
+mount of a read-only loop device, of its top level (`subvolid=5`), so every
+subvolume and snapshot is a folder below it, and copies its files, folders and
+symlinks with rsync, each hard link as a file of its own. It carves
+ext{2,3,4} with `debugfs rdump`. btrfs is not carved with `btrfs restore`:
+btrfs-progs stops on an inline zstd extent whose frame holds a whole block of
+which the file uses less ("zstd frame incomplete"), which the kernel reads,
+and on the arch-boxes image it stops so on about 11,000 files. An image is a
+bare filesystem, or a whole-disk image with exactly one btrfs or ext{2,3,4}
 partition, the root. A disk with several (a separate `/boot` or `/home`) fails
 the run, because the root cannot be told apart safely: scan the root
 filesystem's own image instead. So does an image that holds a filesystem at
 byte 0 and a partition table too, which could be either.
 
-Neither carver replays a journal or a log tree: `debugfs rdump` and `btrfs
-restore` read a filesystem as it lies. So an ext{2,3,4} filesystem whose
-journal waits to be replayed (`needs_recovery`) and a btrfs filesystem with a
-log tree (`log_root` not 0) stop the run, since the files they recover would
-be older than the ones the decoy mounts. An image taken after a clean
-shutdown has neither.
+Neither carver replays a journal or a log tree: `debugfs rdump` reads a
+filesystem as it lies, and the btrfs carve mounts it with
+`rescue=nologreplay`. So an ext{2,3,4} filesystem whose journal waits to be
+replayed (`needs_recovery`) and a btrfs filesystem with a log tree (`log_root`
+not 0) stop the run, since the files they recover would be older than the ones
+the decoy mounts. An image taken after a clean shutdown has neither.
 
 Of a whole-disk image, every byte outside the root filesystem is compared too,
 each part at a top-level name of its own (`ci/oracle/partitions.sh`), and
@@ -234,7 +240,7 @@ writes `outputs/plaso/not-run` holding `btrfs` in place of the timelines. The
 three images are one host's disk, so all three must be btrfs; some btrfs and
 some not stops the run. `nails-oracle` then:
 
-- requires the restore carve (`btrfs restore`) and bulk_extractor on every
+- requires the restore carve and bulk_extractor on every
   image, as on any scan, and compares the files, their content, the records
   bulk_extractor decodes and the rows of a Nix store database as always; a
   silent channel, a leak, a missing control or canary fails the run;
@@ -310,7 +316,7 @@ Three things read differently from the ext4 images:
   `/partition-2-vfat` and its structures as `/partition-2-vfat-structures`,
   the btrfs root at `/`, and the GPT with the gaps around the partitions under
   `/outside-partitions`.
-- `btrfs restore` recovers the top level of the filesystem, so a file is keyed
+- The restore carve mounts the top level of the filesystem, so a file is keyed
   by its path there: the root subvolume's `/etc/fstab` reads as
   `/root/etc/fstab`, while `/var` and `/home`, subvolumes of the same name at
   the top level, keep their paths. The canary's `/var/lib/nails-oracle/canary`

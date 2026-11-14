@@ -23,8 +23,9 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tool {
-    /// `btrfs restore` or `debugfs rdump`: an entry (a file, a directory or a
-    /// symlink) recovered from the image's live tree, with what it holds.
+    /// The restore carve (a read-only mount of btrfs, or `debugfs rdump`): an
+    /// entry (a file, a directory or a symlink) recovered from the image's live
+    /// tree, with what it holds.
     BtrfsRestore,
     /// `bulk_extractor`: a feature (an e-mail address, a URL, ...) or a
     /// login record carved from anywhere in the image, including free space

@@ -8,9 +8,10 @@
 //!
 //! It compares three images of one host — `before` the session, a clean
 //! `control` boot cycle, and `after` the session — by what the restore carve
-//! (`btrfs restore` or `debugfs rdump`), `bulk_extractor` and `plaso` recover
-//! from each: the files with what they hold, the records in them, the rows of
-//! the Nix store database and the features carved from anywhere on the disk.
+//! (a read-only mount of btrfs, or `debugfs rdump`), `bulk_extractor` and
+//! `plaso` recover from each: the files with what they hold, the records in
+//! them, the rows of the Nix store database and the features carved from
+//! anywhere on the disk.
 //! A difference in `after`, a trace new in it, changed in it or gone from it,
 //! is a leak unless the clean control cycle shows the same change (scan noise)
 //! or a cited allowlist entry explains it. Three self-checks keep a clean
