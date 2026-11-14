@@ -222,9 +222,7 @@ fn restore_times(dst: &Path, meta: &std::fs::Metadata, is_symlink: bool) {
 /// Best-effort: a filesystem without xattr support or one that rejects a name is
 /// silently skipped.
 fn copy_xattrs(src: &Path, dst: &Path) {
-    // A zero-length buffer turns the list/get calls into a size query.
-    let mut empty: [u8; 0] = [];
-    let Ok(size) = rustix::fs::llistxattr(src, &mut empty[..]) else {
+    let Ok(size) = rustix::fs::llistxattr_query(src) else {
         return;
     };
     if size == 0 {
@@ -238,7 +236,7 @@ fn copy_xattrs(src: &Path, dst: &Path) {
 
     for name in names.split(|b| *b == 0).filter(|n| !n.is_empty()) {
         let name = OsStr::from_bytes(name);
-        let Ok(vsize) = rustix::fs::lgetxattr(src, name, &mut empty[..]) else {
+        let Ok(vsize) = rustix::fs::lgetxattr_query(src, name) else {
             continue;
         };
         let mut value = vec![0u8; vsize];
