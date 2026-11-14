@@ -1200,15 +1200,16 @@ of this changelog for that version becomes the release notes word for word, and
   with no link in it, below mounts that are there, is judged as it is written, and a bind line whose
   source as written lies in the volume fails whatever lies there. For the second-mount rule, a bind
   line whose path cannot be told makes no mount of the decoy's own.
-- `backend-entries` reads only plain fstab lines, which NAILS reads as `libmount` and systemd do,
-  and fails every other line, with `--allow-decoy-storage` or without it, as one that may mount the
-  volume: a line that holds a control character other than a tab, or white space other than a space
-  or a tab, a backslash in its first field or mount point that begins none of the escapes `\040`,
-  `\011`, `\012` and `\134`, a backslash in its type or options, a list of types, or a first field
-  that is neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=` or `PARTLABEL=` tag (an `ID=`
-  tag among them, which `libmount` looks up in `/dev/disk/by-id` and NAILS does not), or that leads
-  into `/dev` but does not start with `/dev/` or holds a `..`, such as `//dev/sdb`, unless it is the
-  line of a RAM, kernel, host-share, network, overlay or ZFS filesystem and no bind line. As
+- `backend-entries` reads only plain fstab lines, whose fields NAILS splits and decodes as
+  `libmount` and systemd do, and fails every other line, with `--allow-decoy-storage` or without it,
+  as one that may mount the volume: a line that holds a control character other than a tab, or
+  white space other than a space or a tab, a backslash in its first field or mount point that
+  begins none of the escapes `\040`, `\011`, `\012` and `\134`, a backslash in its type or options,
+  a list of types, or a first field that is neither an absolute path nor a `UUID=`, `LABEL=`,
+  `PARTUUID=` or `PARTLABEL=` tag (an `ID=` tag among them, which `libmount` looks up in
+  `/dev/disk/by-id` and NAILS does not), or that leads into `/dev` but does not start with `/dev/`
+  or holds a `..`, such as `//dev/sdb`, unless it is the line of a RAM, kernel, host-share,
+  network, overlay or ZFS filesystem and no bind line. As
   `libmount` does, NAILS skips only spaces and tabs before a `#`, so a line that starts with a
   vertical tab or a no-break space before a `#` is a line that is not plain, where it was taken for
   a comment. A FUSE line is read as `mount.fuse` reads it: the source it gives its program, the
@@ -1220,16 +1221,17 @@ of this changelog for that version becomes the release notes word for word, and
   of a line of another type that begins with `fuse`, such as `fuse3`, whose `#` `mount.fuse3` splits
   too. The program `mount.fuse` runs, the part of a `fuse` line's first field before the `#` and the
   `<program>` of a `fuse.<program>` or `fuseblk.<program>` type, is judged by its path where that is
-  absolute, with no link followed, so a program stored in the volume fails the line and makes the
-  attach gate refuse the root, as a swap or image file there does; a program with a `/` that is not
-  absolute, which `/bin/sh` runs from `/`, is not plain, and neither is a `fuse3.<program>` type
-  with a `/`, which `mount.fuse3` runs as it is written. The check names what it could not read and
-  says to write the line plainly. NAILS's parser left the type and options undecoded and read a
-  relative first field only for some types, so `bin\144`, which `libmount` reads as `bind`, and
-  `dev/mapper/data` with the type `ntfs-3g` or `ext4,xfs`, which `mount` looks up from `/`, passed
-  the check, and so did `fuse2fs#/dev/mapper/data` of the type `fuse`, which mounts the volume
-  through FUSE, `srv/x` of the type `fuse.bindfs`, and `ID=` tags. Such a line claims what NAILS
-  reads in it, and for the second-mount rule it makes no mount of the decoy's own.
+  absolute, with no link followed, so a program stored in the volume fails the line and, for a
+  volume of its own, makes the attach gate refuse the root, as a swap or image file there does; a
+  program with a `/` that is not absolute, which `/bin/sh` runs from `/`, is not plain, and neither
+  is a `fuse3.<program>` type with a `/`, which `mount.fuse3` runs as it is written. The check
+  names what it could not read and says to write the line plainly. NAILS's parser left the type
+  and options undecoded and read a relative first field only for some types, so `bin\144`, which
+  `libmount` reads as `bind`, and `dev/mapper/data` with the type `ntfs-3g` or `ext4,xfs`, which
+  `mount` looks up from `/`, passed the check, and so did `fuse2fs#/dev/mapper/data` of the type
+  `fuse`, which mounts the volume through FUSE, `srv/x` of the type `fuse.bindfs`, and `ID=` tags.
+  Such a line claims what NAILS reads in it, and for the second-mount rule it makes no mount of the
+  decoy's own.
 - `backend-entries` reads only plain crypttab lines as well, and fails every other line, with
   `--allow-decoy-storage` or without it, as one that may open the volume, and says to write it
   plainly: a line that holds a control character other than a tab, or white space other than a
@@ -1241,15 +1243,47 @@ of this changelog for that version becomes the release notes word for word, and
   at a lone carriage return or a NUL too, skips only spaces and tabs before a `#`, and the command
   opens a relative source from `/`. NAILS kept the quotes, took a line that starts with other white
   space before a `#` for a comment and resolved no relative source, so such lines passed the check.
-  Of a plain line NAILS reads the name, the source and a few of the options, such as `noauto`, and
-  not the key file. It now reads a source that is no tag and no device's path in `/dev` as the path
-  of a file, as it reads an image file's in the fstab, with no link followed: `systemd-cryptsetup`
-  opens it through the links in it, and a regular file through a loop device. A container in the
-  volume fails the line and makes the attach gate refuse the root, and a source NAILS cannot tell,
-  such as a link to the volume's drive or a device node outside `/dev`, fails with the flag or
-  without it. Such a source resolved to no device before, so `//dev/sdb` and a link elsewhere to
-  `/dev/sdb` passed. A device's path in `/dev` of an fstab or crypttab line that no block device
-  answers to but that leads out of `/dev` through a link cannot be told either, and fails.
+  Of a plain line NAILS reads the name, the source, its key file and header (see below) and a few
+  of the options, such as `noauto`. It now reads a source that is no tag and no device's path in
+  `/dev` as the path of a file, as it reads an image file's in the fstab, with no link followed:
+  `systemd-cryptsetup` opens it through the links in it, and a regular file through a loop device.
+  A container in the volume fails the line and makes the attach gate refuse a volume of its own,
+  and a source NAILS cannot tell, such as a link to the volume's drive or a device node outside
+  `/dev`, fails with the flag or without it. Such a source resolved to no device before, so
+  `//dev/sdb` and a link elsewhere to `/dev/sdb` passed. A device's path in `/dev` of an fstab or
+  crypttab line that no block device answers to and on whose way a link leads out of `/dev` cannot
+  be told either, and fails.
+- `backend-entries` and the attach gate read the options they read, `noauto`, `auto`,
+  `x-systemd.automount` and `comment=systemd.automount`, by their names, given alone or with a
+  value, as systemd's fstab and crypttab generators do, and take the last of `noauto` and `auto`.
+  systemd 260.5 reads `noauto=1` and `auto,noauto=` as `noauto`, mounts `noauto,auto=0` at boot and
+  makes an automount for `x-systemd.automount=0`, while NAILS matched these only as whole words:
+  with `--allow-decoy-storage`, the decoy's own fstab line for `/home` with `noauto=1`, which the
+  boot does not mount, passed the check, and so did its crypttab line with `noauto=1`, which
+  `cryptsetup.target` does not pull in. Both now fail as their plain `noauto` forms do, and a line
+  for the volume with `noauto,auto=1` or `noauto,x-systemd.automount=1`, which the boot mounts,
+  makes the attach gate refuse the root as one with neither option does. An fstab line that gives an
+  `x-systemd.wanted-by=` or `x-systemd.required-by=` naming no unit, which the generator links to a
+  unit named by nothing in place of `local-fs.target`, or `subvol` or `subvolid` with no value, is
+  not plain and fails.
+- `backend-entries` now reads a crypttab line's key file, its `header=` and `tcrypt-keyfile=`
+  options and the device of a `keyfile:keydev` key field or of a `header=<path>:<device>`, as it
+  reads the line's source, with no link followed. systemd's crypttab generator mounts such a device
+  before it opens the line, read-only for a key file and read-write for a header, and
+  `systemd-cryptsetup` reads the files, a device's path in `/dev` as that device. A device of the
+  hidden drive, or a file in the volume or the root's folder, fails the line, with
+  `--allow-decoy-storage` too, where a key device such as `/key:/dev/vda1` mounts the root's own
+  filesystem a second time, and a file in the volume makes the attach gate refuse a volume of its
+  own; a path NAILS cannot tell fails as well. All of these passed both checks. A key file on a
+  mounted device whose path holds a `..`, which can lead out of that mount, a key file or header
+  that leads into `/dev` but does not start with `/dev/` or holds a `..`, and a `keyscript=`, whose
+  program reads the key field in its own way, make the line not plain. A key file elsewhere, `none`,
+  `/dev/urandom` and a key device of another filesystem pass.
+- NAILS now follows a device's path in `/dev` through its links only while they lead to a path in
+  `/dev`, and stops at the first link that leads out of it, so it reads no link and makes no lookup
+  past `/dev`, on the decoy's disk say. It resolved such a path through every link, those on the
+  decoy's disk too, and judged the line by where they led. Such a line now fails `backend-entries`
+  as one whose path cannot be told, naming the link that leads out of `/dev`.
 - `backend-entries` and the attach gate no longer let a device or swap line for the hidden volume's
   device go when it carries `_netdev`, which only has systemd mount it after the network: such a
   line fails `backend-entries` as it does without the option, and the gate counts what it mounts as
