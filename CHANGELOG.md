@@ -1667,10 +1667,11 @@ of this changelog for that version becomes the release notes word for word, and
   follow, for `fpath`, or makes the check warn that it cannot tell, so a `source` or `eval` in an
   `echo`, a string, an alias or a here-document, or an `eval` of what a command prints, warns too.
   bash's files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, outside comments
-  as bash reads them (from a `#` that starts a word after a space, a tab or an operator to the end
-  of its line, a backslash at its end too; bash 5.3 ran the `PROMPT_COMMAND` after `:\v#;` and on
-  the line after `# ... \`, which the check took for comments), a line whose code ends in a
-  backslash going on in the next. It still only warns: such a shell has written the decoy commands
+  as bash reads them (from a `#` that starts a word outside quotes after a space, a tab or an
+  operator to the end of its line, a backslash at its end too, a here-document's body holding none;
+  bash 5.3 ran the `PROMPT_COMMAND` after `:\v#;`, on the line after `# ... \` and in
+  `PROMPT_COMMAND='printf " #"; history -a'`, which the check took for comments), a line whose code
+  ends in a backslash going on in the next. It still only warns: such a shell has written the decoy commands
   before activation starts, so a refusal would take none of them back, and for a shell that writes a
   line once its command ends, a refused activation would add its own.
 - The `incremental-history-flush` check no longer warns that it cannot tell at forms that many zsh
@@ -1725,10 +1726,10 @@ of this changelog for that version becomes the release notes word for word, and
   an `LD_` variable or `ARGV0` in a file read before it or in a function autoloaded and run before
   it, and `ARGV0` or an `LD_` variable in the shell's environment, which the check must know), and
   the loop in `/etc/zshenv` that puts three directories of each Nix profile in front of `fpath`, are
-  known as NixOS writes them, so with `SHARE_HISTORY` taken out of `programs.zsh.setOptions`
-  (`HIST_FCNTL_LOCK` kept there, as by default) and `programs.zsh.enableCompletion` off (or
-  `programs.zsh.enableGlobalCompInit` alone), which leaves out the `compinit` line, a zsh started
-  after the rebuild passes with the files `programs.zsh` generates. On NixOS the check reads the `/etc/zshenv.local` that the
+  known as NixOS writes them, so a zsh started as `zsh -f` passes with the `/etc/zshenv` and the
+  `set-environment` NixOS writes (its generated `/etc/zshrc` runs the `hostname` program and sources
+  `/etc/zinputrc`, which binds keys and makes widgets, none of the commands the check knows to be
+  harmless, see below). On NixOS the check reads the `/etc/zshenv.local` that the
   zshenv nixpkgs builds into zsh reads, and `/etc/set-environment` where there is no `/etc/zshenv`,
   and the fix `zsh -f` names it. A zsh from elsewhere, or one the check reads without a typed shell,
   warns that it cannot tell where the functions the files autoload are, as before.
@@ -1998,6 +1999,53 @@ of this changelog for that version becomes the release notes word for word, and
   the home or its `ZDOTDIR` without that option warns however new it is, and the warning says to
   turn the option on or to keep the history file in a directory of its own. Where the check cannot
   read when the shell started, the fix the warning gives is the usual one, not a new zsh.
+- The `incremental-history-flush` check reads zsh's startup code by a list of the commands it knows
+  to be harmless: every command the startup files run, and every hook, widget, alias, function and
+  job they reach that zsh may run, is read by its name and every word, and any other is a doubt, so
+  that a form the check does not know makes it warn that it cannot tell instead of passing. The list
+  holds the builtins that give a status or print text (but `print -z`, `-s`, `-v`, `-u`, `-p` and
+  `printf -v`), `return`, `exit` and the like, `cd`, `umask`, `hash -d`, `setopt`, `unsetopt` and
+  `set -o` of any option of zsh 5.9 to 5.9.2 by its name but `CSH_JUNKIE_LOOPS`, `emulate` of
+  zsh's, sh's or ksh's mode, the `typeset` family, `unset` and assignments of a parameter that is
+  the user's own, one of zsh's own that steers nothing the check reads (`HISTFILE`, `HISTSIZE`,
+  `PATH`, `LANG`, `TERM`) or one it reads itself (`ZDOTDIR`, `fpath`, the prompts, `TMOUT`),
+  `source`, `eval` of words as written, `autoload`, `alias`, `trap` of code as written, `zstyle`,
+  `let`, `bindkey -e` and `-v`, `fc` and `history` that list, write or read the history file, and
+  `kill -l`. Any other of zsh's own parameters (`histchars`, `STTY`, `POSTEDIT`,
+  `commands[sudo]=...`) is a doubt, as is one the check reads itself assigned in arithmetic
+  (`(( FPATH = 1 ))`), and so is, in a function, one of the line editor's set in any form
+  (`HISTNO=1`, `(( HISTNO = 1 ))`, `${HISTNO::=1}`, `CURSOR`). So an outside program, in the
+  foreground or the background, a key binding other than zsh's own keymaps, a widget, a `zle` that
+  runs or changes one, `add-zle-hook-widget` and a terminal setting are doubts, and a name that is
+  no builtin of zsh's counts as the function or the alias the files define or autoload by it only
+  where the code it stands in certainly defines one before it (at the top level of the same file,
+  or of the file that sources that one, with nothing that may keep the definition from running):
+  else zsh runs the outside program `PATH` finds by that name. A definition in another file, or
+  after the code that runs the name, counts for nothing, as zsh stops a file at an error or a
+  `return` that may come before it. An alias counts the same way, for a name with no quote or
+  backslash in it past no precommand that is a builtin (`noglob`), and one whose value hands the
+  words it is used with to a command that takes them otherwise than harmlessly is a doubt where it
+  is used with words. A function or an alias zsh never runs counts for nothing, and one named like
+  the command a NAILS command is typed with that runs the program of its own name with its words
+  alone (`sudo() { command sudo "$@" }`, `alias sudo=sudo`) passes. zsh 5.9, 5.9.1
+  and 5.9.2 wrote the typed lines, where the check passed, with a widget that sets `HISTNO` (in
+  `accept-line`, `zle-line-init`, `zle-line-finish`, `self-insert`, by arithmetic and in a function
+  the widget runs), `bindkey w beginning-of-history`, `alias k=kill` or `alias kh='kill -HUP'` used
+  in a job, `preexec`, `precmd` or `zle-line-init`, the code a shell is given with `-c` after an
+  option's value or behind an alias (`sh -o errexit -c`, `bash -O extglob -c`,
+  `bash --rcfile /dev/null -c`, `bash -c -o errexit`, `alias s=sh`), a `coproc` in such code, a
+  program that leaves a process of its own (`sh <<'EOF'`, `sh -s <<<`, `env sh -c`, `nice sh -c`,
+  `timeout 20 sh -c`, `env setsid -f sh -c`, `perl -e '... fork ...'`, a script of one's own),
+  `stty eof '^M'`, and a call of a name before or where no function of it is certainly defined, which
+  ran a program of that name in `PATH` (`later; later() { : }`, a definition in an `if`, after `&&`,
+  in a subshell or a `$(...)`, after a `return`, in a function the files run or a hook they define
+  before the definition, in `.zshenv`, in a sourced file or an `eval` that a glob matching nothing
+  stopped before it, in the background or a pipeline, in a file sourced twice, and an alias used as
+  `\later` or `noglob later`). NixOS's generated `/etc/zshrc` runs the `hostname` program and
+  sources `/etc/zinputrc`, which binds keys and makes widgets, so a zsh that reads it warns:
+  `zsh -f` passes there. This makes the check warn at setups zsh 5.9.2 writes nothing with, as at an
+  outside program a hook runs (`precmd() { git status }`), at a definition in an `if` or another
+  file, and at the files NixOS generates.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
@@ -2816,15 +2864,12 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Known issues
 
-- The history check (`incremental-history-flush`) does not see a program the startup files or a hook
-  run in the foreground that leaves a process of its own running that signals the shell later, which
-  ends it and makes it write its history (a script, or `env setsid sh -c ...`; it reads the code a
-  shell is given with `-c` and what `nohup`, `setsid` and the like start where they run it
-  themselves), a key you type a line with that a file binds to another widget than `self-insert`
-  (`bindkey o beginning-of-history`), or a keymap a file makes the one you type in
-  (`bindkey -A vicmd main`), which may change the line you type into one that ends the shell, nor a
-  security module (SELinux, AppArmor) that keeps zsh from opening a startup file you own and may
-  read by its mode. With a zsh started as `zsh -f` only `/etc/zshenv` can hold one. See
+- The history check (`incremental-history-flush`) does not see a security module (SELinux,
+  AppArmor) that keeps zsh from opening a startup file you own and may read by its mode, nor a
+  program named like the command you type that zsh finds first in `PATH` (a `sudo` script in
+  `~/bin`). It reads zsh's startup code by a list of the commands it knows to be harmless, so it
+  warns at an outside program a hook runs (`precmd() { git status }`) and at the `/etc/zshrc` NixOS
+  generates, where zsh writes nothing: type the decoy commands in a zsh started as `zsh -f`. See
   docs/operator-guide.md.
 - A switch into or out of a hidden session can stop halfway: the programs have closed, but the
   screen stays dark or still and no login screen comes. Once the old system's units have stopped,
