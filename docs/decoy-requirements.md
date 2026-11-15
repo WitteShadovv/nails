@@ -1918,26 +1918,34 @@ For a root that is a folder or a btrfs subvolume of such a filesystem, the
 mounted at `/` or at a system folder for another part of that filesystem: lines
 the boot mounts (no `noauto`, read as systemd reads it, and only options NAILS
 reads, see below) for `/`, `/usr`, `/var`, `/home`, `/srv`, `/boot`, `/efi`,
-`/boot/efi`, `/nix` and `/opt`, unless the hidden root is that folder or lies
-above it, that name a device of the filesystem and mount its top or, on btrfs, a
-subvolume above or beside the root's, as their `subvol=` names it or as the
-mount table shows the subvolume their `subvolid=` names. The mount of such a
-line has to be there: the mount the mount table shows at its folder is of that
-filesystem and shows what the line names. NAILS reads what that mount shows, so
-a mount made there by hand that shows the same counts as the line's own, and it
-reads a btrfs line with neither `subvol=` nor `subvolid=` as one for the
-filesystem's top. While the decoy mounts another part of that filesystem at `/`,
-by its mount there, or by such a line, the check also lets be the crypttab lines
-its boot opens for the device the filesystem lies on: a line whose mapping the
-filesystem lies on, one named as such a mapping, or one that opens a device
-below the one the filesystem is mounted from, as the line that unlocks an
-encrypted decoy's root does. So `backend-entries` passes a bind of a folder of
-`/`, or a subvolume beside the fstab's `/home`, as well, on an encrypted decoy
-too, such as Debian's or Ubuntu's LUKS root, with LVM or without, or Fedora's
-btrfs on LUKS. A `noauto` crypttab line, which `cryptsetup.target` does not pull
-in, still fails the check, and so do one with `tcrypt-hidden` and one for any
-other device, such as one that would open a volume on the device the filesystem
-is mounted from. So does the decoy's own crypttab line where its key file or
+`/boot/efi`, `/nix` and `/opt`, for a folder below `/var`, such as the
+`/var/log` and `/var/cache/pacman/pkg` of archinstall's default btrfs layout,
+and for `/.snapshots`, unless the hidden root is that folder or lies above it,
+that name a device of the filesystem and mount its top or, on btrfs, a subvolume
+above or beside the root's, as their `subvol=` names it or as the mount table
+shows the subvolume their `subvolid=` names. The mount of such a line has to be
+there: the mount the mount table shows at its folder is of that filesystem and
+shows what the line names. NAILS reads what that mount shows, so a mount made
+there by hand that shows the same counts as the line's own, and it reads a btrfs
+line with neither `subvol=` nor `subvolid=` as one for the filesystem's top.
+While the decoy mounts another part of that filesystem at `/`, by its mount
+there, or by such a line, the check also lets be the crypttab lines its boot
+opens for the device the filesystem lies on: a line whose mapping the filesystem
+lies on, one named as such a mapping, or one that opens a device below the one
+the filesystem is mounted from, as the line that unlocks an encrypted decoy's
+root does, where the line opens that device as the mapping it makes is open now:
+that mapping is a LUKS one, `systemd-cryptsetup` opens the line as LUKS, and the
+line gives neither `swap` nor `tmp`. So `backend-entries` passes a bind of a
+folder of `/`, or a subvolume beside the fstab's `/home`, as well, on an
+encrypted decoy too, such as Debian's or Ubuntu's LUKS root, with LVM or
+without, or Fedora's btrfs on LUKS. A `noauto` crypttab line, which
+`cryptsetup.target` does not pull in, still fails the check, and so do one with
+`tcrypt-hidden`, one for any other device, such as one that would open a volume
+on the device the filesystem is mounted from, and one that opens the device
+otherwise than its mapping is open: in plain mode, as a TrueCrypt or BitLocker
+volume, or with `swap`, `tmp` or `tmp=`, for which systemd's crypttab generator
+has `systemd-makefs` make swap or a filesystem on the mapping wherever it finds
+none (see below). So does the decoy's own crypttab line where its key file or
 header lies in the root's folder, or where the device the boot mounts for one of
 them is one that filesystem lies on (see below). On NixOS,
 `suspicious-nails-reference` still refuses such a root while the decoy's
@@ -1946,36 +1954,35 @@ them is one that filesystem lies on (see below). On NixOS,
 lists.
 
 Every other line for that filesystem still fails `backend-entries`: a line for
-any other folder, such as `/pool`, `/var/log` or `/.snapshots`, since it may
-name the hidden drive's disk; a line that mounts the volume itself, as any
-line does for a root that is the whole filesystem (the separate drive that the
-fstab mounts at `/srv`, say) and as one for the root's own subvolume or a
-subvolume inside it does; a line whose mount is not there, since nothing then
-shows that the decoy uses that filesystem, such as the line for `/srv` of a
-separate drive that is mounted nowhere but at a folder bound at the root, as
-after it was plugged in, or a line whose automount nothing has reached yet;
-and a btrfs line whose subvolume cannot be told, such as one that gives
-`subvol=` or `subvolid=` twice (btrfs takes the last) or a `subvol=` path with
-`..` in it. A line whose mount shows something else than the line names, such
-as one whose `subvol=` is a link, is no line whose mount is there, and neither
-is a btrfs line with neither option whose mount shows another subvolume than
-the top, as for a filesystem whose default subvolume is not its top. An fstab
-bind line whose source, as it is written, lies in the volume, at the root's
-folder or inside it as the mount that holds the source shows it, mounts the
-volume as well, and fails too, whatever type it gives, and so does a swap or
-image line whose file lies there. So does every crypttab line for a root that
-is the whole filesystem, and one for a filesystem that the decoy mounts
-neither at `/` nor at a system folder, such as an encrypted drive whose fstab
-line is for `/backup` or whose line for `/srv` is not mounted. A line that
-names another device of a btrfs filesystem of several devices counts as one
-for that filesystem. The check says to keep a line the boot mounts (no
-`noauto`) for `/` or a system folder, which the decoy's own boot needs, a line
-for another folder that mounts the filesystem a folder or subvolume root is
-part of, and a crypttab line, whatever its options, that opens the device such
-a line mounts or that one of the decoy's own filesystems lies on, and to put
-the hidden root on storage of its own instead. For a `noauto` fstab line, and
-for an fstab line for another folder that mounts the volume itself, it says to
-remove the line.
+any other folder, such as `/pool` or `/home/u`, since it may name the hidden
+drive's disk; a line that mounts the volume itself, as any line does for a root
+that is the whole filesystem (the separate drive that the fstab mounts at
+`/srv`, say) and as one for the root's own subvolume or a subvolume inside it
+does; a line whose mount is not there, since nothing then shows that the decoy
+uses that filesystem, such as the line for `/srv` of a separate drive that is
+mounted nowhere but at a folder bound at the root, as after it was plugged in,
+or a line whose automount nothing has reached yet; and a btrfs line whose
+subvolume cannot be told, such as one that gives `subvol=` or `subvolid=` twice
+(btrfs takes the last) or a `subvol=` path with `..` in it. A line whose mount
+shows something else than the line names, such as one whose `subvol=` is a link,
+is no line whose mount is there, and neither is a btrfs line with neither option
+whose mount shows another subvolume than the top, as for a filesystem whose
+default subvolume is not its top. An fstab bind line whose source, as it is
+written, lies in the volume, at the root's folder or inside it as the mount that
+holds the source shows it, mounts the volume as well, and fails too, whatever
+type it gives, and so does a swap or image line whose file lies there. So does
+every crypttab line for a root that is the whole filesystem, and one for a
+filesystem that the decoy mounts neither at `/` nor at a system folder, such as
+an encrypted drive whose fstab line is for `/backup` or whose line for `/srv` is
+not mounted. A line that names another device of a btrfs filesystem of several
+devices counts as one for that filesystem. The check says to keep a line the
+boot mounts (no `noauto`) for `/` or a system folder, which the decoy's own boot
+needs, a line for another folder that mounts the filesystem a folder or
+subvolume root is part of, and a crypttab line, whatever its options, that opens
+the device such a line mounts or that one of the decoy's own filesystems lies
+on, and to put the hidden root on storage of its own instead. For a `noauto`
+fstab line, and for an fstab line for another folder that mounts the volume
+itself, it says to remove the line.
 
 NAILS reads only plain lines of the decoy's fstab, whose fields it splits and
 decodes as `libmount` and systemd do. Like `libmount`, it skips only spaces and
@@ -2012,7 +2019,7 @@ does not change whether the boot mounts the line. They hold the generic flags
 `sync`, `async`, `dirsync`), the atime family (`atime`, `noatime`, `diratime`,
 `nodiratime`, `relatime`, `norelatime`, `strictatime`, `nostrictatime`,
 `lazytime`, `nolazytime`), `nofail`, `_netdev`, `user`, `users`, `owner`,
-`group` and their `no` forms, `loop`, `comment=` and `x-gvfs-*`,
+`group` and their `no` forms, `comment=` and `x-gvfs-*`,
 `x-systemd.device-timeout=`, `x-systemd.mount-timeout=` and
 `x-systemd.idle-timeout=`, `x-systemd.automount`, `x-systemd.makefs`,
 `x-systemd.growfs`, `x-initrd.mount` and `X-mount.mkdir`, and the options of
@@ -2036,7 +2043,13 @@ mounts the line only if that unit starts, and one that names none links it to a
 unit named by nothing. Each of these is not plain, and so is `X-mount.subdir=`,
 which has `libmount` mount a folder of the filesystem in place of what the line
 names, and `subvol` or `subvolid` with no value, which btrfs does not mount as
-NAILS would read it.
+NAILS would read it. `loop` has `libmount` 2.42.4 set up a loop device for the
+line's source whatever that source is, so on a line for a device it mounts that
+device's filesystem a second time, through a new loop device, as another
+instance of it. NAILS reads `loop` only alone, on a line whose first field is
+the path of an image or a swap file, which it reads as that line's source (see
+below), and no bind or FUSE line: on any other line, such as the decoy's own
+line for `/home` with `loop`, it is not plain.
 
 Of every line, an option whose value names a path or a device is read as a
 line's source is read, where NAILS knows the option: ext4's `journal_path=` and
@@ -2044,16 +2057,28 @@ line's source is read, where NAILS knows the option: ext4's `journal_path=` and
 and `rtdev=` and btrfs's `device=`, which the filesystem opens and writes to,
 `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`, whose mounts
 systemd makes first, cifs's `credentials=`, a file `mount.cifs` reads, and an
-overlay's `lowerdir=`, `upperdir=` and `workdir=`, the folders it is made of. A
-device of the hidden drive makes the line fail, with the flag too, unless it is
-one of the filesystem the line mounts itself, as `device=` names one of a btrfs
+overlay's `lowerdir=`, `upperdir=` and `workdir=`, the folders it is made of.
+NAILS reads a device's path in `/dev` there as it reads a line's first field,
+through its links only while they stay in `/dev`: ext4 opened the
+`journal_path=` device through a symbolic link, through `/dev/./` and through a
+doubled `/` (util-linux 2.42.4, kernel 6.8), so a udev link such as
+`/dev/disk/by-id/…`, a link in `/dev/block`, a volume group's link such as
+`/dev/vg0/data` and such a path name the device they lead to. A device the
+volume is stored on makes the line fail, with the flag too, unless it is one of
+the filesystem the line mounts itself, as `device=` names one of a btrfs
 filesystem of several devices, and so does a path that lies in the volume, at
 the root's folder or inside it, or whose place NAILS cannot tell (see below).
-Such a value has to be an absolute path, each of `lowerdir=`'s paths apart by
-`:` too, and that of `journal_dev=` a number: any other form is not plain. An
-option NAILS does not know whose value may name a path or a device, one that is
-absolute, a tag, or that holds a `/` or a `:` as a `driver:param` form such as
-`cmd:/bin/prog` does, makes a line of any type not plain, such as sshfs's
+The options that have the boot open the device they name for writing,
+`journal_path=`, `journal_dev=`, `logdev=`, `rtdev=` and `device=`, and a
+crypttab line's `tpm2-device=` and `fido2-device=` (see below), fail the line on
+any other device of the hidden drive as well: its whole disk, a partition of it
+beside the volume's, or a device stacked on one of these, such as a mapping or
+an image file there, since the boot would write to that drive. Such a value has
+to be an absolute path, each of `lowerdir=`'s paths apart by `:` too, and that
+of `journal_dev=` a number: any other form is not plain. An option NAILS does
+not know whose value may name a path or a device, one that is absolute, a tag,
+or that holds a `/` or a `:` as a `driver:param` form such as `cmd:/bin/prog`
+does, makes a line of any type not plain, such as sshfs's
 `IdentityFile=/root/.ssh/id`. A line that is not plain in any of these ways
 fails `backend-entries` with the flag or without it, the check names the options
 NAILS does not read as the line gives them, and the claims count the line as one
@@ -2120,24 +2145,34 @@ Each such line fails `backend-entries`, with the flag or without it, as one that
 may open the volume, the line that unlocks the decoy's own root too, and the
 check says to write it plainly.
 
-Of a plain crypttab line, NAILS reads the name, the source, the key file and
-the `header=` options with what the boot mounts for them, the `tcrypt-keyfile=`
-options (see below), `noauto` and `auto` by their names as in the fstab, and
-the TrueCrypt options. It reads a source that is a tag, or a path that starts
-with `/dev/` and holds no `..`, as the name of a device. `systemd-cryptsetup`
-opens any other source through the links in it, and a regular file, a
-container, through a loop device, so NAILS reads that source as the path of a
-file, as it reads the path of an image file in the fstab (see below): a
-container that lies in the volume, at the root's folder or inside it, makes the
-line fail, and so does a source whose path NAILS cannot tell, such as a link to
-the volume's drive or a device node outside `/dev`, with the flag or without
-it. NAILS follows a
-device's path in `/dev` that no block device answers to, written as that path
-or as a tag whose link udev makes in `/dev/disk`, through its links only while
-they stay in `/dev`: a link that leads out of it, as one that a `tmpfiles.d`
-line makes at boot can, is not followed, so NAILS looks up nothing past
-`/dev`, and the line's path cannot be told, in the fstab as well. One that
-leads nowhere, as for a drive that is not plugged in, names nothing here.
+Of a plain crypttab line, NAILS reads the name, the source, the key file and the
+`header=` options with what the boot mounts for them, the `tcrypt-keyfile=`
+options (see below), `noauto` and `auto` by their names as in the fstab, the
+TrueCrypt options, and how `systemd-cryptsetup` opens the line, as it reads the
+options in their order: the last option that sets a type wins, so that systemd
+260.5 read `luks,discard,swap` as plain dm-crypt and `swap,luks` as LUKS.
+`luks`, `key-slot=` and `keyslot=` set LUKS, `header=` sets it unless the type
+is TrueCrypt, `plain`, `swap`, `tmp` and `tmp=` set plain dm-crypt, `bitlk`
+BitLocker, and `tcrypt`, its other forms and `tcrypt-keyfile=` TrueCrypt, and a
+line that sets none is opened as LUKS. For `swap`, `tmp` and `tmp=`, whatever
+their order, systemd's crypttab generator also has `systemd-makefs` make swap or
+a filesystem on the mapping wherever it finds none. With the flag, the decoy's
+own line is let be only where its mapping is a LUKS one, which it opens as LUKS
+with neither `swap` nor `tmp` (see above). It reads a source that is a tag, or a
+path that starts with `/dev/` and holds no `..`, as the name of a device.
+`systemd-cryptsetup` opens any other source through the links in it, and a
+regular file, a container, through a loop device, so NAILS reads that source as
+the path of a file, as it reads the path of an image file in the fstab (see
+below): a container that lies in the volume, at the root's folder or inside it,
+makes the line fail, and so does a source whose path NAILS cannot tell, such as
+a link to the volume's drive or a device node outside `/dev`, with the flag or
+without it. NAILS follows a device's path in `/dev` that no block device answers
+to, written as that path or as a tag whose link udev makes in `/dev/disk`,
+through its links only while they stay in `/dev`: a link that leads out of it,
+as one that a `tmpfiles.d` line makes at boot can, is not followed, so NAILS
+looks up nothing past `/dev`, and the line's path cannot be told, in the fstab
+as well. One that leads nowhere, as for a drive that is not plugged in, names
+nothing here.
 
 `systemd-cryptsetup` reads a line's key file, its `header=` and its
 `tcrypt-keyfile=` files where their paths lead, a device's path in `/dev` as
@@ -2149,25 +2184,29 @@ systemd's crypttab generator splits the key field and a `header=` at the last
 `/key:/dev/sdb` or `none:UUID=…`: it mounts that device before it opens the
 line, read-only for a key file and read-write for a header, and reads the file
 at the path before the `:` on it. NAILS reads each of these devices and files,
-where it is an absolute path or a tag, as it reads a line's source: a device of
-the hidden drive, or a file that lies in the volume, at the root's folder or
+where it is an absolute path or a tag, as it reads a line's source: a device the
+volume is stored on, or a file that lies in the volume, at the root's folder or
 inside it, makes the line fail, the decoy's own line with the flag too, and so
 does one whose path NAILS cannot tell. NAILS reads a `tpm2-device=`, a
 `fido2-device=`, a `tpm2-signature=` and a `tpm2-pcrlock=` so too, each of which
-has to be an absolute path: `tpm2-device=auto` and `fido2-device=auto`, which
-have `systemd-cryptsetup` find the TPM or FIDO2 device itself, and the TPM's own
-node, such as `/dev/tpmrm0`, name no device of the drive, and any other value,
-such as a `driver:param` form of `tpm2-device=` that loads a TPM driver and can
-run a program (`cmd:…`), is not plain. A key file that is neither an absolute
-path nor a tag, which systemd ignores, names nothing, and neither does a
-`header=` that is neither an absolute path nor a tag, which `systemd-cryptsetup`
-refuses. A line is not plain whose key file or header on a device the boot
-mounts holds a `..`, which can lead out of that mount into this computer's
-folders, whose key file or header leads into `/dev` as written but does not
-start with `/dev/` or holds a `..`, or that gives `keyscript=`, a program that
-Debian's initramfs hands the key field to and that reads it in its own way. A
-key file elsewhere, `none`, `/dev/urandom` and a device of another filesystem
-pass.
+has to be an absolute path, and a `tpm2-device=` or a `fido2-device=`, which the
+boot opens for writing, fails the line on any device of the hidden drive as
+well: on the whole disk the volume's partition lies on, where
+`systemd-cryptsetup` would write TPM commands into the disk's first bytes, on
+another partition of it, and on a device stacked on one of these.
+`tpm2-device=auto` and `fido2-device=auto`, which have `systemd-cryptsetup` find
+the TPM or FIDO2 device itself, and the TPM's own node, such as `/dev/tpmrm0`,
+name no device of the drive, and any other value, such as a `driver:param` form
+of `tpm2-device=` that loads a TPM driver and can run a program (`cmd:…`), is
+not plain. A key file that is neither an absolute path nor a tag, which systemd
+ignores, names nothing, and neither does a `header=` that is neither an absolute
+path nor a tag, which `systemd-cryptsetup` refuses. A line is not plain whose
+key file or header on a device the boot mounts holds a `..`, which can lead out
+of that mount into this computer's folders, whose key file or header leads into
+`/dev` as written but does not start with `/dev/` or holds a `..`, or that gives
+`keyscript=`, a program that Debian's initramfs hands the key field to and that
+reads it in its own way. A key file elsewhere, `none`, `/dev/urandom` and a
+device of another filesystem pass.
 
 Some lines name the volume in a way `backend-entries` does not read, and it lets
 them pass: a FUSE program that takes its sources as a list of folders, as

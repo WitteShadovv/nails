@@ -1155,27 +1155,28 @@ of this changelog for that version becomes the release notes word for word, and
 - `backend-entries` no longer refuses a root that `--allow-decoy-storage` accepted as a folder or a
   btrfs subvolume of a filesystem the decoy uses for the decoy's own fstab lines that the boot
   mounted at `/` or at a system folder for another part of that filesystem (`/usr`, `/var`, `/home`,
-  `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix` and `/opt`, unless the hidden root is that folder or
-  lies above it): its top, or a subvolume above or beside the root's, such as the line for `/` below
-  a bind of a folder of `/`, or the line for the `/home` subvolume beside a btrfs subvolume at the
-  root. Such a line names the root's device, so the check took it for a line that mounts the volume
-  itself and said to remove it, while it mounts the decoy's own filesystem, which removing it would
-  break. The line's mount has to be there: the mount at its folder is of that filesystem and shows
-  what the line names. The check reads what that mount shows, so a mount made there by hand that
-  shows the same counts as the line's own, and it reads a btrfs line with neither `subvol=` nor
-  `subvolid=` as one for the filesystem's top. A line that mounts the volume itself still fails the
-  check, with the flag too: one for the root's own subvolume or a subvolume inside it, by `subvol=`
-  or by the `subvolid=` the mount table shows for it, and any line for a root that is the whole
-  filesystem, such as a separate drive that the fstab mounts at `/srv`. So do a line whose mount is
-  not there, such as the line for `/srv` of a separate drive that is mounted only at a folder bound
-  at the root, a btrfs line whose subvolume cannot be told (one that gives `subvol=` or `subvolid=`
-  twice, of which btrfs takes the last, or a `subvol=` path with `..`), and a line the boot mounts
-  for that filesystem at any other folder, which may name the hidden drive's disk; for a folder or a
-  subvolume root the check now says that it mounts the filesystem the volume is part of and that the
-  decoy's own boot needs it, and to put the hidden root on storage of its own instead. A `noauto`
-  line for that filesystem is still one to remove. A line the boot mounts (no `noauto`) for `/` or a
-  system folder that names the root's filesystem is one the decoy's own boot needs whatever it
-  mounts of it, so the check never says to remove it.
+  `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix` and `/opt`, a folder below `/var`, such as the
+  `/var/log` and `/var/cache/pacman/pkg` of archinstall's default btrfs layout, and `/.snapshots`,
+  unless the hidden root is that folder or lies above it): its top, or a subvolume above or beside
+  the root's, such as the line for `/` below a bind of a folder of `/`, or the line for the `/home`
+  subvolume beside a btrfs subvolume at the root. Such a line names the root's device, so the check
+  took it for a line that mounts the volume itself and said to remove it, while it mounts the
+  decoy's own filesystem, which removing it would break. The line's mount has to be there: the mount
+  at its folder is of that filesystem and shows what the line names. The check reads what that mount
+  shows, so a mount made there by hand that shows the same counts as the line's own, and it reads a
+  btrfs line with neither `subvol=` nor `subvolid=` as one for the filesystem's top. A line that
+  mounts the volume itself still fails the check, with the flag too: one for the root's own
+  subvolume or a subvolume inside it, by `subvol=` or by the `subvolid=` the mount table shows for
+  it, and any line for a root that is the whole filesystem, such as a separate drive that the fstab
+  mounts at `/srv`. So do a line whose mount is not there, such as the line for `/srv` of a separate
+  drive that is mounted only at a folder bound at the root, a btrfs line whose subvolume cannot be
+  told (one that gives `subvol=` or `subvolid=` twice, of which btrfs takes the last, or a `subvol=`
+  path with `..`), and a line the boot mounts for that filesystem at any other folder, which may
+  name the hidden drive's disk; for a folder or a subvolume root the check now says that it mounts
+  the filesystem the volume is part of and that the decoy's own boot needs it, and to put the hidden
+  root on storage of its own instead. A `noauto` line for that filesystem is still one to remove. A
+  line the boot mounts (no `noauto`) for `/` or a system folder that names the root's filesystem is
+  one the decoy's own boot needs whatever it mounts of it, so the check never says to remove it.
 - `backend-entries` now refuses an fstab bind line whose source lies in the hidden volume, at the
   root's folder or inside it as the mount that holds the source shows it, whatever type the line
   gives, with `_netdev` too, and also when it binds by an option with a value, such as `bind=x` or
@@ -1281,7 +1282,7 @@ of this changelog for that version becomes the release notes word for word, and
   `/dev/urandom` and a key device of another filesystem pass.
 - `backend-entries` now reads only the options it lists, each in the forms it lists. The lists, in
   `nails-base/src/hidden_root/separation/known.rs` with why each entry is harmless, hold the generic
-  mount flags and the atime family, `nofail`, `_netdev`, `user` and its kin, `loop`, `comment=` and
+  mount flags and the atime family, `nofail`, `_netdev`, `user` and its kin, `comment=` and
   `x-gvfs-*`, the `x-systemd.device-timeout=`, `mount-timeout=` and `idle-timeout=` timeouts,
   `x-systemd.automount`, `x-systemd.makefs`, `x-systemd.growfs`, `x-initrd.mount` and
   `X-mount.mkdir`, the btrfs, ext2 to ext4, XFS, F2FS, FAT, exFAT, NTFS, swap, FUSE and ZFS options
@@ -1299,21 +1300,32 @@ of this changelog for that version becomes the release notes word for word, and
   root's own too, in place of what the line names. Such a line now also makes no mount of the
   decoy's own, and the attach gate counts it as one the boot mounts. A line for `/` or `/usr`, which
   systemd mounts whatever `noauto` says, NAILS now reads as one the boot mounts too, and options in
-  quotes, inside which `libmount` keeps a comma in one option, are not plain.
+  quotes, inside which `libmount` keeps a comma in one option, are not plain. `loop` NAILS reads
+  only on a line whose first field is the path of an image or a swap file, which it reads as that
+  line's source: `libmount` 2.42.4 sets up a loop device for `loop` whatever the source is, so the
+  decoy's own line for `/home` with `loop` mounts the root's filesystem a second time at the next
+  boot, through a new loop device. On any other line `loop` is not plain, and such a line makes no
+  mount of the decoy's own.
 - `backend-entries` now reads the devices and paths that options name, on every line, as it reads a
-  line's source, with no link followed: ext4's `journal_path=` and `journal_dev=` (a device by its
-  number), XFS's `logdev=` and `rtdev=`, btrfs's `device=`, `x-systemd.requires-mounts-for=` and
-  `x-systemd.wants-mounts-for=`, cifs's `credentials=`, an overlay's `lowerdir=`, `upperdir=` and
-  `workdir=`, and a crypttab line's `tpm2-device=`, `fido2-device=`, `tpm2-signature=` and
-  `tpm2-pcrlock=`. A device of the hidden drive, or a path that lies in the volume or in the root's
-  folder, fails the line, with `--allow-decoy-storage` too, and a path in the volume makes the
-  attach gate refuse a volume of its own. All of these passed both checks, though ext4 and XFS write
-  to their journal and log devices and `systemd-cryptsetup` writes TPM commands to what a
-  `tpm2-device=` names (systemd 260.5 wrote them to the first bytes of a file named so).
-  `tpm2-device=auto`, `fido2-device=auto` and the TPM's own node, such as `/dev/tpmrm0`, pass. A
-  value in another form, such as a relative path or a `driver:param` form of `tpm2-device=`
-  (`cmd:…`), and an option NAILS does not know whose value may name a path or a device, absolute, a
-  tag, or with a `/` or a `:` in it, make the line not plain, on any line.
+  line's source: a path with no link followed, and a device's path in `/dev` through its links that
+  stay in `/dev`, so a udev link, a link in `/dev/block`, a volume group's link and a path with
+  `/dev/./` or a doubled `/` name the device they lead to, as they do for ext4. The options are
+  ext4's `journal_path=` and `journal_dev=` (a device by its number), XFS's `logdev=` and `rtdev=`,
+  btrfs's `device=`, `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`, cifs's
+  `credentials=`, an overlay's `lowerdir=`, `upperdir=` and `workdir=`, and a crypttab line's
+  `tpm2-device=`, `fido2-device=`, `tpm2-signature=` and `tpm2-pcrlock=`. A device the volume is
+  stored on, or a path that lies in the volume or in the root's folder, fails the line, with
+  `--allow-decoy-storage` too, and a path in the volume makes the attach gate refuse a volume of its
+  own. An option that has the boot open the device it names for writing, the device options of ext4,
+  XFS and btrfs and `tpm2-device=` and `fido2-device=`, fails the line on any other device of the
+  hidden drive too: its whole disk, a partition of it beside the volume's, or a device stacked on
+  one of these. All of these passed both checks, though ext4 and XFS write to their journal and log
+  devices and `systemd-cryptsetup` writes TPM commands to what a `tpm2-device=` names (systemd 260.5
+  wrote them to the first bytes of a file named so). `tpm2-device=auto`, `fido2-device=auto` and the
+  TPM's own node, such as `/dev/tpmrm0`, pass. A value in another form, such as a relative path or a
+  `driver:param` form of `tpm2-device=` (`cmd:…`), and an option NAILS does not know whose value may
+  name a path or a device, absolute, a tag, or with a `/` or a `:` in it, make the line not plain,
+  on any line.
 - NAILS now follows a device's path in `/dev` through its links only while they lead to a path in
   `/dev`, and stops at the first link that leads out of it, so it reads no link and makes no lookup
   past `/dev`, on the decoy's disk say, for a tag too, by the link udev makes for it in
@@ -1328,20 +1340,26 @@ of this changelog for that version becomes the release notes word for word, and
   that is no bind line names no storage of this computer's.
 - `backend-entries` no longer says to remove the decoy's crypttab line for the volume that one of
   its own filesystems lies on when the hidden root is on that filesystem too: a bind of a folder of
-  `/` on an encrypted decoy, say, or a subvolume of its encrypted btrfs. Such a line opens the hidden
-  root's own storage, so the check took it for a line only the hidden volume needs, while the
+  `/` on an encrypted decoy, say, or a subvolume of its encrypted btrfs. Such a line opens the
+  hidden root's own storage, so the check took it for a line only the hidden volume needs, while the
   decoy's boot needs it to mount that filesystem at `/`, at a system folder or by an fstab line it
   needs. The check now says to keep it and to put the hidden root on storage of its own instead, as
   it does for the fstab line. With `--allow-decoy-storage` the check lets such a line be for a root
   that is a folder or a subvolume of that filesystem, as it lets the fstab lines for `/` and the
   system folders be, when the boot opens it (no `noauto`) and the decoy mounts another part of the
-  filesystem at `/`, by its mount there, or by such an fstab line. So on an encrypted decoy, such
-  as Debian's or Ubuntu's LUKS root, with LVM or without, or Fedora's btrfs on LUKS, a bind of a
-  folder of `/` or a subvolume beside `/home` passes the check with the flag, as on an unencrypted
-  one. A `noauto` crypttab line, one with `tcrypt-hidden`, one for any other device, every line for
-  a root that is the whole filesystem and one for a filesystem the decoy mounts only at another
-  folder, or by a line whose mount is not there, still fail it. The check says to keep a line with
-  `tcrypt-hidden` too where one of the decoy's own filesystems lies on what it opens.
+  filesystem at `/`, by its mount there, or by such an fstab line, and where the line opens the
+  device as the mapping it makes is open now: that mapping is a LUKS one, `systemd-cryptsetup` opens
+  the line as LUKS, by the last of its options that sets a type, as systemd 260.5 read
+  `luks,discard,swap` as plain dm-crypt, and the line gives neither `swap` nor `tmp`, for which the
+  crypttab generator has `systemd-makefs` make swap or a filesystem on the mapping wherever it finds
+  none. So on an encrypted decoy, such as Debian's or Ubuntu's LUKS root, with LVM or without, or
+  Fedora's btrfs on LUKS, a bind of a folder of `/` or a subvolume beside `/home` passes the check
+  with the flag, as on an unencrypted one. A `noauto` crypttab line, one with `tcrypt-hidden`, one
+  that opens the device in plain mode, as another kind or with `swap` or `tmp`, one for any other
+  device, every line for a root that is the whole filesystem and one for a filesystem the decoy
+  mounts only at another folder, or by a line whose mount is not there, still fail it. The check
+  says to keep a line with `tcrypt-hidden` too where one of the decoy's own filesystems lies on what
+  it opens.
 - `backend-entries` now refuses an fstab or crypttab line that names another device of the hidden
   root's btrfs filesystem than the one its mounts show, by its path or by a link such as `UUID=`
   that leads to it, as it refuses one for the device the mounts show: the volume lies on each of its
