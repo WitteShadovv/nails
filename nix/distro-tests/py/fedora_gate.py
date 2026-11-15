@@ -1321,20 +1321,30 @@ class Gate:
         )
         inside = self.records_capture(f"hidden-{n}")
         before = state["records"]
+        # Each session's own records, dated from its start on: the second
+        # session's files hold the first one's too, from the upper they share.
+        stamp = start.lstrip("@")
+        began = float(stamp) if stamp.replace(".", "", 1).isdigit() else 0.0
         logins = [
             row
             for row in self.records.utmp_added(before.wtmp, inside.wtmp)
-            if row.get("line") == LOGIN_TTY and row.get("type") == "USER_PROCESS"
+            if row.get("line") == LOGIN_TTY
+            and row.get("type") == "USER_PROCESS"
+            and float(str(row.get("tv_sec", 0))) >= int(began)
         ]
         self.check(
             f"session {n}: the session's own wtmp records its login",
-            bool(logins),
+            began > 0 and bool(logins),
             logins or self.records.utmp_added(before.wtmp, inside.wtmp),
         )
-        failures = self.records.utmp_added(before.btmp, inside.btmp)
+        failures = [
+            row
+            for row in self.records.utmp_added(before.btmp, inside.btmp)
+            if float(str(row.get("tv_sec", 0))) >= int(began)
+        ]
         self.check(
             f"session {n}: the session's own btmp records its failed login",
-            bool(failures),
+            began > 0 and bool(failures),
             failures or self.facts[f"hidden-failed-login-{n}"][-500:],
         )
         state["hidden-btmp"] = failures
