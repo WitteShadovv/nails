@@ -17,6 +17,7 @@ use super::lexer::{End, Flaw, Token, Word, lex};
 use std::collections::BTreeMap;
 
 mod arith;
+mod arrays;
 mod autoload;
 mod command;
 mod declare;
@@ -28,6 +29,7 @@ mod fpath;
 mod hooks;
 mod jobs;
 mod keys;
+mod listed;
 mod loops;
 mod names;
 mod options;
@@ -225,6 +227,14 @@ struct Walker<'a> {
     /// The function the code walked runs in, for code a command of a
     /// function runs from a string (`eval`, a trap's).
     outer: Option<String>,
+    /// Whether the command being read certainly runs where it stands, at the
+    /// file's top level ([`Walker::command`]): what it defines, autoloads or
+    /// sources is then there for the commands after it.
+    certain_command: bool,
+    /// Where the events of the chain of commands joined by `&&` alone that
+    /// the command being read is in start, each of which runs where the ones
+    /// before it in the chain did; `None` past an `||` or a `|`.
+    chain: Option<usize>,
     pending: Pending,
     /// Where the events of the list being read start, the commands up to a
     /// `;`, an `&` or a line end past `&&`, `||` and `|`, which an `&` runs in
@@ -245,13 +255,27 @@ impl Walker<'_> {
     /// and not after `&&`, `||`, a `return` or an `exit`, in a pipeline or in
     /// the background.
     fn certain(&self, after_condition: bool, piped: bool) -> bool {
+        !self.may_stop && self.reached(after_condition, piped)
+    }
+
+    /// Whether a command here certainly runs where the file runs to it: as
+    /// [`Walker::certain`], but past a `return` or an `exit` before it, after
+    /// which zsh runs neither it nor the commands after it.
+    fn reached(&self, after_condition: bool, piped: bool) -> bool {
         !after_condition
             && !piped
-            && !self.may_stop
             && self
                 .frames
                 .iter()
                 .all(|open| open.certain && open.frame.runs())
+    }
+
+    /// Whether the code being walked stands at the top level of its text, in
+    /// no function's body defined there: what it defines is there for the
+    /// code after it in the text, a function's file read as its code
+    /// (`prompt_suse_setup () { ... }`, then `prompt_suse_setup "$@"`) too.
+    fn at_top(&self) -> bool {
+        !self.pending.body && !self.in_function_body()
     }
 
     /// Open `frame` where the command being read starts, in its condition
@@ -283,6 +307,7 @@ impl Walker<'_> {
             sublist: self.sublist,
         });
         self.sublist = self.events.len();
+        self.chain = None;
     }
 
     /// Pop the innermost frame, back in the list it started in.
@@ -315,7 +340,10 @@ impl Walker<'_> {
                 {
                     return false;
                 }
-                Some(Token::End(End::Line | End::Condition | End::Arm) | Token::Close) | None => {
+                Some(
+                    Token::End(End::Line | End::Condition | End::Or | End::Arm) | Token::Close,
+                )
+                | None => {
                     return false;
                 }
                 Some(_) => return true,
@@ -372,12 +400,27 @@ impl Walker<'_> {
         if self.runs_elsewhere() {
             self.arrays = open.arrays;
             for event in &mut self.events[open.start..] {
-                match event {
-                    Event::Set { unconditional, .. } | Event::Assign { unconditional, .. } => {
-                        *unconditional = false;
-                    }
-                    _ => {}
+                if let Event::Set { unconditional, .. } | Event::Assign { unconditional, .. } =
+                    event
+                {
+                    *unconditional = false;
                 }
+            }
+            // The definition of a function whose body it is, which comes
+            // before the body (`f() { : } &`), runs elsewhere too.
+            self.elsewhere(self.sublist.min(open.start));
+        }
+    }
+
+    /// Count none of what the events from `start` on define or run as
+    /// certain, as they run elsewhere than in this shell.
+    fn elsewhere(&mut self, start: usize) {
+        for event in &mut self.events[start..] {
+            if let Event::Define { certain, .. }
+            | Event::Autoload { certain, .. }
+            | Event::Unlisted { certain, .. } = event
+            {
+                *certain = false;
             }
         }
     }
@@ -440,6 +483,16 @@ impl Walker<'_> {
                     args: Vec::new(),
                     function: self.function(),
                     input: Input::None,
+                });
+                self.events.push(Event::Unlisted {
+                    function: self.function(),
+                    shown: format!("a redirection with no command, which runs `{name}`"),
+                    name: Some(name.to_string()),
+                    words: false,
+                    certain: false,
+                    chain: None,
+                    alias: false,
+                    why: super::known::outside_program(name),
                 });
             }
         }
@@ -652,89 +705,6 @@ impl Walker<'_> {
         }
     }
 
-    /// The events of an array's assignment, `name=(items)`, or of what
-    /// appends to it, when `name` ends with `+`.
-    fn array(&mut self, name: String, items: Vec<Word>) {
-        for item in &items {
-            self.mention_word(item);
-        }
-        let (name, append) = match name.strip_suffix('+') {
-            Some(name) => (name.to_string(), true),
-            None => (name, false),
-        };
-        // The functions zsh runs as hooks (`precmd_functions+=(name)`).
-        if let Some(hook) = name.strip_suffix("_functions")
-            && HOOKS.contains(&hook)
-        {
-            self.hooks += 1;
-            for item in &items {
-                self.hook_value(item);
-            }
-        }
-        let functions = matches!(name.as_str(), "functions" | "dis_functions");
-        let aliases = command::ALIAS_PARAMETERS.contains(&name.as_str());
-        if functions || aliases {
-            // Function bodies or alias values, each beside its name.
-            self.function_params += usize::from(functions);
-            self.alias_params += usize::from(aliases);
-            self.events.push(Event::Doubt(format!(
-                "it cannot tell what code `{name}=(...)` in {} gives",
-                self.place
-            )));
-        }
-        if name == "mapfile" {
-            // zsh/mapfile writes each file its keys name.
-            self.events.push(Event::Doubt(format!(
-                "it cannot tell which files `mapfile=(...)` in {} writes",
-                self.place
-            )));
-        }
-        if name == "options"
-            && let Some(item) = items.iter().find(|item| item.expands)
-        {
-            // An option whose name an expansion makes.
-            self.events.push(Event::Doubt(format!(
-                "it cannot tell which options `options=(... {} ...)` in {} sets",
-                item.text, self.place
-            )));
-        }
-        self.counted();
-        if name == "FPATH" {
-            // A scalar's value as an array: what zsh makes of it the check
-            // cannot follow.
-            self.fpaths += 1;
-            self.events.push(Event::Fpath {
-                dir: None,
-                first: false,
-                in_function: false,
-            });
-        } else if name == "fpath" {
-            self.fpaths += 1;
-            if append || !self.profiles_fpath(&items) {
-                self.fpath_items(&items, append, fpath::Given::Array);
-            }
-        }
-        let literal: Option<Vec<String>> = items
-            .iter()
-            .map(|item| (!item.expands).then(|| item.text.clone()))
-            .collect();
-        match literal {
-            Some(literal)
-                if self.pending.words.is_empty()
-                    && self.certain(self.pending.after_condition, self.pending.piped) =>
-            {
-                if !append {
-                    self.arrays.insert(name, literal);
-                } else if let Some(known) = self.arrays.get_mut(&name) {
-                    known.extend(literal);
-                }
-            }
-            _ => {
-                self.arrays.remove(&name);
-            }
-        }
-    }
-
     /// The events of a token where a `case` reads a pattern: none but the
     /// names in it, up to the `)` after which a command starts, or the
     /// `esac` or `}` that closes the `case`.
@@ -782,15 +752,23 @@ impl Walker<'_> {
                     open.pattern = true;
                 }
             }
-            End::Condition | End::Pipe => {}
+            End::Condition | End::Or | End::Pipe => {}
         }
         if end == End::Background {
+            self.elsewhere(self.sublist);
             self.background(self.sublist);
         }
         if matches!(end, End::Line | End::Background | End::Arm) {
             self.sublist = self.events.len();
         }
-        self.pending.after_condition = end == End::Condition;
+        // A chain of commands joined by `&&` alone, each of which runs where
+        // the ones before it did; past `||` or `|` none is certain.
+        match end {
+            End::Condition => {}
+            End::Line | End::Background | End::Arm => self.chain = Some(self.events.len()),
+            End::Or | End::Pipe => self.chain = None,
+        }
+        self.pending.after_condition = matches!(end, End::Condition | End::Or);
         self.pending.piped = end == End::Pipe;
     }
 
@@ -978,6 +956,8 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Wa
         buffers: 0,
         numbers: 0,
         outer,
+        certain_command: false,
+        chain: Some(0),
         pending: Pending {
             feeders: Some(Vec::new()),
             ..Pending::default()

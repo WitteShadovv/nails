@@ -1148,8 +1148,11 @@ fn a_warning_gives_the_fix_the_check_can_see() {
              functions the files autoload that no directory they put in front of fpath holds \
              (`compinit` and `promptinit`), which zsh then finds in one it was built with or one \
              FPATH names; it cannot tell what the `eval` of what dircolors prints in /etc/zshrc \
-             runs, as the check does not know the shell's environment, which may set ARGV0. If \
-             it does, {ON_DISK}. {fix}",
+             runs, as the check does not know the shell's environment, which may set ARGV0; it \
+             cannot tell what /etc/zshrc runs past the commands it knows to be harmless: `prompt \
+             suse`, as `prompt` is no function or alias the files certainly define before it \
+             runs, so zsh runs the outside program of that name, which may change the terminal, \
+             signal the shell or leave a process that does later. If it does, {ON_DISK}. {fix}",
             dir("$p/share/zsh/site-functions"),
             dir("$p/share/zsh/$ZSH_VERSION/functions"),
             dir("$p/share/zsh/vendor-completions"),

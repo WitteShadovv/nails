@@ -86,9 +86,14 @@ pub(in super::super) enum Event {
         in_function: bool,
     },
     /// A function is marked to be autoloaded: its name, or the path of its
-    /// file; and whether a function's body marks it, which runs after the
-    /// files define it.
-    Autoload(Word, bool),
+    /// file; whether a function's body marks it, which runs after the files
+    /// define it; and whether the command that marks it certainly runs where
+    /// the file runs to it, at the file's top level.
+    Autoload {
+        function: Word,
+        in_function: bool,
+        certain: bool,
+    },
     /// An `fc` that writes the history file, as written (`fc -AI`).
     Fc(String),
     /// A prompt that holds code zsh runs as it shows it when
@@ -107,8 +112,16 @@ pub(in super::super) enum Event {
         computed: bool,
         kept: bool,
     },
-    /// The files define a function, or a regular alias, named `name`.
-    Define(String),
+    /// The files define a function, or a regular alias, named `name`;
+    /// `certain` when the definition certainly runs where the file runs to
+    /// it, at the file's top level; for a regular alias, whether the command
+    /// its value ends with takes whatever words it is used with harmlessly
+    /// ([`super::super::known::TAKES_ANY_WORDS`]).
+    Define {
+        name: String,
+        certain: bool,
+        alias: Option<bool>,
+    },
     /// A function is defined as `name ()`, where zsh puts the value of an
     /// alias named `name` in place of the name when `ALIAS_FUNC_DEF` is on.
     NamedBody(String),
@@ -243,6 +256,28 @@ pub(in super::super) enum Event {
     /// written (`zle up-history`), which may change the line zsh runs as a
     /// widget accepts it ([`super::widgets`]).
     Edits { function: String, widget: String },
+    /// A command none of those the check knows to be harmless
+    /// ([`super::super::known`]), in the function `function` when in one, as
+    /// written (`shown`): one by a name the files may define as a function
+    /// or an alias, which then runs in its place ([`super::super::known::Verdict::Named`]),
+    /// with whether it is given words and certainly runs where it stands, or
+    /// one the list holds in no form; and why it is a doubt.
+    Unlisted {
+        function: Option<String>,
+        shown: String,
+        name: Option<String>,
+        words: bool,
+        certain: bool,
+        /// The chain of commands joined by `&&` alone it is in, where the
+        /// events of its first start: each one before it there ran where it
+        /// runs.
+        chain: Option<usize>,
+        /// Whether zsh may put the value of an alias of the name in its
+        /// place: not for a name with a quote or a backslash in it, nor past
+        /// a precommand that is a builtin (`noglob`, `-`, `builtin`).
+        alias: bool,
+        why: String,
+    },
     /// A job that may run on after the startup files ([`super::jobs`]): one
     /// in the background, a process substitution, or what a program that
     /// detaches what it runs starts (`nohup`); `what` names it, as the

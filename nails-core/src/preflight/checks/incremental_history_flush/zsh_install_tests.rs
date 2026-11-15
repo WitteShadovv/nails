@@ -71,8 +71,15 @@ pub(super) fn install(fs: &MockFilesystem, vars: &[(&str, &str)]) -> Install {
 }
 
 /// What `fs` sets for a zsh started as `start`, in the home, with `install`,
-/// that runs as alice ([`ALICE`]).
+/// that runs as alice ([`ALICE`]), past the doubts of the commands the list
+/// of those the check knows to be harmless does not hold ([`super::rule`]).
 fn scan_with(fs: &MockFilesystem, start: Start, install: &Install) -> Scan {
+    rule(scan_with_all(fs, start, install))
+}
+
+/// What `fs` sets for a zsh started as `start` that `install` tells of,
+/// every doubt among it ([`super::scan_all`]).
+fn scan_with_all(fs: &MockFilesystem, start: Start, install: &Install) -> Scan {
     let install = Install {
         uid: Some(ALICE),
         ..install.clone()
@@ -680,14 +687,48 @@ const SESSION: [(&str, &str); 4] = [
 ];
 
 #[test]
-fn a_nixos_zsh_without_the_options_or_completion_passes() {
+fn a_nixos_zsh_without_the_options_or_completion_runs_only_its_hostname_and_keys_unread() {
     let fs = MockFilesystem::new();
     nixos(&fs);
     // In a session, and from a login on a console, where /etc/zshenv runs
-    // set-environment, which names the profiles.
+    // set-environment, which names the profiles, no rule finds anything. Of
+    // the commands the check knows to be harmless, /etc/zshrc runs the
+    // hostname program, an outside one, and /etc/zinputrc binds keys, which
+    // the check doubts.
     for vars in [&SESSION[..], &[("USER", "alice")][..]] {
         let known = install(&fs, vars);
         assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{vars:?}");
+        let all = scan_with_all(&fs, UNKNOWN, &known);
+        assert!(all.writes.is_empty(), "{all:?}");
+        assert_eq!(all.doubts.len(), 2, "{all:?}");
+        assert!(
+            all.doubts[0].starts_with(
+                "it cannot tell what /etc/zshrc runs past the commands it knows to be \
+                 harmless: `/nix/store/"
+            ) && all.doubts[0].contains("/bin/hostname --fqdn`, as"),
+            "{all:?}"
+        );
+        assert!(
+            all.doubts[1].starts_with(
+                "it cannot tell what /etc/zinputrc runs past the commands it knows to be \
+                 harmless: `bindkey ^[[H beginning-of-line`, as it binds a key"
+            ),
+            "{all:?}"
+        );
+    }
+    // A zsh started as `zsh -f` reads /etc/zshenv alone, set-environment and
+    // the fpath loop: commands the check knows to be harmless, so it passes.
+    let bare = Start {
+        login: None,
+        rcs: false,
+        global_rcs: true,
+    };
+    for vars in [&SESSION[..], &[("USER", "alice")][..]] {
+        assert_eq!(
+            scan_with_all(&fs, bare, &install(&fs, vars)),
+            Scan::default(),
+            "{vars:?}"
+        );
     }
     // With an empty ~/.zshrc or one with what most hold but compinit.
     seed(

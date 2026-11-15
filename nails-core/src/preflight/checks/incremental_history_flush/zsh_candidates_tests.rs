@@ -109,7 +109,8 @@ fn a_builtin_a_function_an_alias_or_a_disable_runs_something_else_in_place_of_is
         );
     }
     // A reserved word `disable -r` takes away leaves the builtin, and other
-    // names and kinds are none.
+    // names and kinds are none of this rule's (a `disable` is none of the
+    // commands the check knows to be harmless, a doubt of its own).
     for zshenv in [
         "disable -r export\n",
         "disable -a ll\n",
@@ -121,7 +122,7 @@ fn a_builtin_a_function_an_alias_or_a_disable_runs_something_else_in_place_of_is
         seed(&fs, "/etc/zshenv", zshenv);
         seed(&fs, "/home/alice/.zshenv", "export ZDOTDIR=~/.zd\n");
         assert_eq!(
-            zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &as_alice()),
+            rule(zsh(&fs, &[PathBuf::from(HOME)], NOT_LOGIN, &as_alice())),
             Scan::default(),
             "{zshenv}"
         );

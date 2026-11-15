@@ -74,6 +74,11 @@ mod jobs_started;
 #[path = "zsh_widgets_tests.rs"]
 mod widget_lines;
 
+// The list of the commands the check knows to be harmless, which the code
+// zsh may run keeps to.
+#[path = "zsh_listed_tests.rs"]
+mod listed;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
@@ -116,9 +121,33 @@ fn as_alice() -> Install {
     }
 }
 
-/// What `fs` sets for a zsh started as `start`, in the home.
+/// What `fs` sets for a zsh started as `start`, in the home, past the doubts
+/// of the commands the list of those the check knows to be harmless does not
+/// hold ([`rule`]).
 fn scan(fs: &MockFilesystem, start: Start) -> Scan {
+    rule(scan_all(fs, start))
+}
+
+/// What `fs` sets for a zsh started as `start`, in the home, every doubt
+/// among it.
+fn scan_all(fs: &MockFilesystem, start: Start) -> Scan {
     zsh(fs, &[PathBuf::from(HOME)], start, &as_alice())
+}
+
+/// `scan` past the doubts of the commands the list of those the check knows
+/// to be harmless does not hold ([`super::known`]), which a test of another
+/// rule leaves out: a setup that runs an outside program, or a builtin in a
+/// form the list does not hold, gives that doubt beside the rule's own. The
+/// list's own tests read every doubt ([`scan_all`], `zsh_known_tests.rs`).
+fn rule(mut scan: Scan) -> Scan {
+    scan.doubts.retain(|doubt| !unlisted(doubt));
+    scan
+}
+
+/// Whether `doubt` is one of a file's commands the list of those the check
+/// knows to be harmless does not hold.
+fn unlisted(doubt: &str) -> bool {
+    doubt.contains("runs past the commands it knows to be harmless")
 }
 
 /// The settings `fs` turns on, as the warning names them.
@@ -1806,7 +1835,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 bare: false,
                 quoted_at: None,
             }),
-            Token::End(End::Condition),
+            Token::End(End::Or),
             Token::Word(Word {
                 text: "z".to_string(),
                 expands: false,

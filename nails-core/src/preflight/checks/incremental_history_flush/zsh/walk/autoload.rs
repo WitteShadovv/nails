@@ -165,10 +165,12 @@ impl Walker<'_> {
             );
         }
         let in_function = self.function().is_some();
-        self.events.extend(
-            names
-                .into_iter()
-                .map(|name| Event::Autoload(name, in_function)),
-        );
+        let certain = self.certain_command;
+        self.events
+            .extend(names.into_iter().map(|function| Event::Autoload {
+                function,
+                in_function,
+                certain,
+            }));
     }
 }

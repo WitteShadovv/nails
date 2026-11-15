@@ -18,7 +18,10 @@
 //! which zsh writes no line typed after it started. The code a shell is given
 //! to run (`sh -c '(sleep 3; kill -HUP $PPID) &'`) is read for the jobs it
 //! starts as the file's code is, as the shell may leave one running after it
-//! ends; code an expansion makes there is a doubt.
+//! ends; code an expansion makes there is a doubt. Each command of a job
+//! keeps to the list of the commands the check knows to be harmless besides
+//! ([`super::super::known`]), which no outside program and no shell given code
+//! is on.
 
 use super::super::lexer::Word;
 use super::ends::{SIGNALLERS, may_signal_shell};

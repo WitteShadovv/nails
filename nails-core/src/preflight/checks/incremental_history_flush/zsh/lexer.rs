@@ -36,8 +36,10 @@ pub(super) struct Word {
 pub(super) enum End {
     /// `;` or a newline.
     Line,
-    /// `&&` or `||`: the next command may not run.
+    /// `&&`: the next command runs where the one before it succeeded.
     Condition,
+    /// `||`: the next command runs where the one before it failed.
+    Or,
     /// `|`: the commands on both sides run in a pipeline.
     Pipe,
     /// `&`: the command before it runs in the background.
@@ -815,7 +817,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
             '|' => {
                 lexer.end_word();
                 let end = if lexer.chars.next_if_eq(&'|').is_some() {
-                    End::Condition
+                    End::Or
                 } else {
                     lexer.chars.next_if_eq(&'&');
                     End::Pipe
