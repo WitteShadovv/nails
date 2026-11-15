@@ -168,7 +168,7 @@ fn setting<'a>(assignments: &'a [Assignment], key: &str) -> Option<&'a str> {
 }
 
 /// `parts` joined as a list is said: `a`, `a and b`, `a, b and c`.
-fn listed(parts: &[String]) -> String {
+pub(super) fn listed(parts: &[String]) -> String {
     match parts.split_last() {
         None => String::new(),
         Some((last, [])) => last.clone(),
@@ -238,6 +238,7 @@ pub(super) fn of_unit(assignments: &[Assignment], stream: Stream, by: &str) -> L
                 path: path.to_string(),
                 by: listed(&followed),
                 what: "its log",
+                namespace: None,
             })
         }),
         None => unknown(),
@@ -280,6 +281,7 @@ fn led_to(target: crate::Result<PathBuf>, stream: Stream, by: &str) -> Log {
                         path: target.clone(),
                         by: format!("{by}, its {name} being that file"),
                         what: "its log",
+                        namespace: None,
                     })
                 })
             } else {

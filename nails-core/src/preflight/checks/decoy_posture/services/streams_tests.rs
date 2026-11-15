@@ -20,6 +20,7 @@ fn file(path: &str, by: &str) -> Log {
         path: path.to_string(),
         by: by.to_string(),
         what: "its log",
+        namespace: None,
     })
 }
 

@@ -852,6 +852,7 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
             tuned: tuned.blockers,
             tuned_units: tuned.units,
             tuned_programs: tuned.programs,
+            tuned_namespaces: tuned.namespaces,
             upgrade: upgrades.blocker,
         };
         let mut warnings = Self::warnings(&warning, &self.root, self.is_nixos, &hidden);
@@ -940,6 +941,8 @@ struct Blockers {
     tuned_units: Vec<&'static str>,
     /// The programs of those findings that only a process shows.
     tuned_programs: Vec<&'static str>,
+    /// The journal namespaces of those findings, which their fix names.
+    tuned_namespaces: Vec<String>,
     /// unattended-upgrades' finding.
     upgrade: Option<install_on_shutdown::Blocker>,
 }
@@ -1065,6 +1068,7 @@ impl Blockers {
             fixes.push(services::tuned_fix(
                 &self.tuned_units,
                 &self.tuned_programs,
+                &self.tuned_namespaces,
                 is_nixos,
             ));
         }

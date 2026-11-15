@@ -85,8 +85,9 @@ use super::{Enabled, PersistenceFinding, unit_enabled};
 use crate::Filesystem;
 use options::Log;
 use processes::{Processes, own_args, runs_anywhere};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use streams::listed;
 
 /// A daemon judged by its command line.
 struct Daemon {
@@ -151,11 +152,15 @@ pub(super) struct Tuned {
     /// Their fail-closed findings: one NAILS cannot tell about counts as one
     /// that logs to a file.
     pub(super) blockers: Vec<PersistenceFinding>,
-    /// The units of those findings, whose fix the remediation names.
+    /// The units of those findings that show a log file of the daemon's own,
+    /// or what NAILS cannot tell, whose fix the remediation names.
     pub(super) units: Vec<&'static str>,
-    /// The programs of those findings that only a running process shows,
-    /// which the remediation names when no unit does.
+    /// The programs of those findings that only a running process shows so,
+    /// whose restart the remediation names, beside the fix of any unit.
     pub(super) programs: Vec<&'static str>,
+    /// The journal namespaces of those findings whose journal the decoy
+    /// keeps on its disk, whose fix the remediation names.
+    pub(super) namespaces: Vec<String>,
 }
 
 /// How the service manager starts a unit on its own, as [`Decoy::started`]
@@ -197,17 +202,35 @@ struct Logs {
     files: BTreeMap<String, (&'static str, Vec<String>)>,
     /// What NAILS cannot tell, each with what shows it.
     unknown: Vec<String>,
-    /// Whether its unit shows any of them.
+    /// The journal namespaces whose journal on the decoy disk it logs to, or
+    /// would where NAILS cannot tell whether its unit starts.
+    namespaces: BTreeSet<String>,
+    /// Whether its unit shows a file of its own, or what NAILS cannot tell:
+    /// a log to a journal namespace aside.
     by_unit: bool,
+    /// Whether a process shows one so.
+    by_process: bool,
 }
 
 impl Logs {
+    /// Note where `log` leads: to a journal namespace's file, or to one of
+    /// the daemon's own or what NAILS cannot tell, which sets `own`.
+    fn note(&mut self, log: &Log, own: impl FnOnce(&mut Self)) {
+        match log.namespace() {
+            Some(namespace) => {
+                self.namespaces.insert(namespace.to_string());
+            }
+            None if *log != Log::NoFile => own(self),
+            None => {}
+        }
+    }
+
     /// Add where `log` says the daemon logs when its unit starts as `start`
     /// says, `unit` being the unit: one NAILS cannot tell starts counts as
     /// one that does, where it would log to a file or NAILS cannot tell
     /// whether it would.
     fn add_unit(&mut self, unit: &str, start: Start, log: Log) {
-        self.by_unit |= log != Log::NoFile;
+        self.note(&log, |logs| logs.by_unit = true);
         match start {
             Start::Sure(source) => self.add(&source, ", with", log),
             Start::Untold(why) => {
@@ -251,6 +274,12 @@ impl Logs {
                 .push(format!("{source}, and it logs to a journal")),
             Log::Unknown(why) => self.unknown.push(format!("{source}: {why}")),
         }
+    }
+
+    /// Add where `log` says a process logs, as `source` says.
+    fn add_process(&mut self, source: &str, log: Log) {
+        self.note(&log, |logs| logs.by_process = true);
+        self.add(source, " with", log);
     }
 
     fn is_empty(&self) -> bool {
@@ -392,6 +421,7 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
                 "a process NAILS cannot read may run {}: {why}",
                 daemon.program
             ));
+            logs.by_process = true;
         }
         for process in self
             .processes
@@ -427,7 +457,7 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
                     }
                 },
             };
-            logs.add(&source, " with", log);
+            logs.add_process(&source, log);
         }
     }
 
@@ -615,18 +645,30 @@ fn firewalld_warning(logs: &Logs, env_files: &[String], is_nixos: bool) -> Optio
             logs.unknown.join("; ")
         ));
     }
-    let option = match env_files.last() {
-        _ if is_nixos => "set services.firewalld.extraArgs = [ \"--log-target=syslog\" ] in the \
-                          decoy configuration and run nixos-rebuild switch"
-            .to_string(),
-        Some(file) => format!("add --log-target=syslog to FIREWALLD_ARGS in {file}"),
-        None => "add --log-target=syslog to its ExecStart= in a drop-in".to_string(),
-    };
+    let mut fixes = Vec::new();
+    // A journal namespace's file needs that namespace's fix alone.
+    if logs.by_unit || logs.by_process || logs.namespaces.is_empty() {
+        let option = match env_files.last() {
+            _ if is_nixos => "set services.firewalld.extraArgs = [ \"--log-target=syslog\" ] in \
+                              the decoy configuration and run nixos-rebuild switch"
+                .to_string(),
+            Some(file) => format!("add --log-target=syslog to FIREWALLD_ARGS in {file}"),
+            None => "add --log-target=syslog to its ExecStart= in a drop-in".to_string(),
+        };
+        fixes.push(format!(
+            "make it log to the journal: {option}, then restart it (systemctl restart \
+             firewalld.service)"
+        ));
+    }
+    if !logs.namespaces.is_empty() {
+        let namespaces: Vec<String> = logs.namespaces.iter().cloned().collect();
+        fixes.push(namespace_fix(&namespaces, is_nixos));
+    }
     Some(format!(
-        "{}, so {}; make it log to the journal: {option}, then restart it (systemctl restart \
-         firewalld.service)",
+        "{}, so {}; {}",
         what.join(", and "),
-        FIREWALLD.around_a_switch
+        FIREWALLD.around_a_switch,
+        fixes.join(", and ")
     ))
 }
 
@@ -661,15 +703,18 @@ fn abrt_warning(signs: &AbrtSigns) -> Option<String> {
 pub(super) fn blockers<F: Filesystem>(fs: &F, root: &Path, hidden: &[PathBuf]) -> Tuned {
     let decoy = Decoy::new(fs, root, hidden);
     let mut found = Tuned::default();
+    let mut namespaces = BTreeSet::new();
     let (tuned, ppd) = decoy.tuned();
     for (daemon, logs) in [(&TUNED, &tuned), (&TUNED_PPD, &ppd)] {
         found.blockers.extend(tuned_findings(daemon, logs));
+        namespaces.extend(logs.namespaces.iter().cloned());
         if logs.by_unit {
             found.units.push(daemon.unit);
-        } else if !logs.is_empty() {
+        } else if logs.by_process {
             found.programs.push(daemon.program);
         }
     }
+    found.namespaces = namespaces.into_iter().collect();
     found
 }
 
@@ -691,19 +736,81 @@ pub(super) fn warnings<F: Filesystem>(
     out
 }
 
-/// The fix of the tuned findings, `units` being those of the units that
-/// show one and `programs` those of the programs only a process shows, for a
-/// NixOS decoy when `is_nixos`.
-pub(super) fn tuned_fix(units: &[&str], programs: &[&str], is_nixos: bool) -> String {
+/// How to keep the journals of `namespaces` off the decoy disk, on a NixOS
+/// decoy when `is_nixos`: each namespace's journald reads its own
+/// `journald@<namespace>.conf`, never `journald.conf`, and restarts to take a
+/// new `Storage=`.
+fn namespace_fix(namespaces: &[String], is_nixos: bool) -> String {
+    let one = namespaces.len() == 1;
+    let names = listed(namespaces);
+    let files = listed(
+        &namespaces
+            .iter()
+            .map(|namespace| format!("/etc/systemd/journald@{namespace}.conf"))
+            .collect::<Vec<_>>(),
+    );
+    let restart = namespaces
+        .iter()
+        .map(|namespace| format!("systemd-journald@{namespace}.service"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let (journals, units) = if one {
+        (
+            format!("the journal of the namespace {names}"),
+            "the unit that sets it",
+        )
+    } else {
+        (
+            format!("the journals of the namespaces {names}"),
+            "the units that set them",
+        )
+    };
     if is_nixos {
-        return "make tuned log to the journal: set services.tuned.enable = false in the decoy \
-                configuration, or there clear ExecStart= of systemd.services.tuned (and of \
-                systemd.services.tuned-ppd) and set it again without -l, with StandardError= \
-                set to journal, then run nixos-rebuild switch"
-            .to_string();
+        let options = listed(
+            &namespaces
+                .iter()
+                .map(|namespace| {
+                    format!("environment.etc.\"systemd/journald@{namespace}.conf\".text")
+                })
+                .collect::<Vec<_>>(),
+        );
+        return format!(
+            "keep {journals} off the decoy disk: in the decoy configuration, set Storage=volatile \
+             in the [Journal] section of {files} by {options}, or drop LogNamespace from the \
+             serviceConfig of {units}, then run nixos-rebuild switch and systemctl restart \
+             {restart}"
+        );
     }
+    let that = if one { "that unit" } else { "those units" };
+    format!(
+        "keep {journals} off the decoy disk: set Storage=volatile in the [Journal] section of \
+         {files}, then run systemctl restart {restart}, or drop LogNamespace= from {units}, then \
+         run systemctl daemon-reload and restart {that}"
+    )
+}
+
+/// The fix of the tuned findings, `units` being those of the units that
+/// show a log file of their own or what NAILS cannot tell, `programs` those
+/// of the programs only a process shows so, and `namespaces` the journal
+/// namespaces of the findings whose journal the decoy keeps, for a NixOS
+/// decoy when `is_nixos`.
+pub(super) fn tuned_fix(
+    units: &[&str],
+    programs: &[&str],
+    namespaces: &[String],
+    is_nixos: bool,
+) -> String {
     let mut fixes = Vec::new();
-    if !units.is_empty() {
+    if is_nixos && !(units.is_empty() && programs.is_empty()) {
+        fixes.push(
+            "make tuned log to the journal: set services.tuned.enable = false in the decoy \
+             configuration, or there clear ExecStart= of systemd.services.tuned (and of \
+             systemd.services.tuned-ppd) and set it again without -l, with StandardError= set \
+             to journal, then run nixos-rebuild switch"
+                .to_string(),
+        );
+    }
+    if !is_nixos && !units.is_empty() {
         let names = units.join(" ");
         fixes.push(format!(
             "make tuned log to the journal: for each of {names}, add a drop-in (such as \
@@ -715,7 +822,7 @@ pub(super) fn tuned_fix(units: &[&str], programs: &[&str], is_nixos: bool) -> St
             first = units[0]
         ));
     }
-    if !programs.is_empty() {
+    if !is_nixos && !programs.is_empty() {
         let restart: Vec<String> = programs
             .iter()
             .map(|program| format!("{program}.service"))
@@ -733,6 +840,9 @@ pub(super) fn tuned_fix(units: &[&str], programs: &[&str], is_nixos: bool) -> St
             programs.join(" and "),
             restart.join(" ")
         ));
+    }
+    if !namespaces.is_empty() {
+        fixes.push(namespace_fix(namespaces, is_nixos));
     }
     fixes.join(", and ")
 }
