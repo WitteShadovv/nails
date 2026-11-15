@@ -175,6 +175,9 @@ pub(in crate::preflight::checks::decoy_posture) struct FileLog {
     pub(in crate::preflight::checks::decoy_posture) by: String,
     /// What it writes there.
     pub(in crate::preflight::checks::decoy_posture) what: &'static str,
+    /// The journal namespace whose journal the file is, `None` for a file of
+    /// the daemon's own ([`super::namespace`]).
+    pub(in crate::preflight::checks::decoy_posture) namespace: Option<String>,
 }
 
 /// Where a daemon logs, by its command line.
@@ -203,6 +206,16 @@ pub(in crate::preflight::checks::decoy_posture) enum Log {
     },
     /// NAILS cannot tell, for this reason.
     Unknown(String),
+}
+
+impl Log {
+    /// The journal namespace of a file whose journal the decoy keeps.
+    pub(in crate::preflight::checks::decoy_posture) fn namespace(&self) -> Option<&str> {
+        match self {
+            Log::File(file) => file.namespace.as_deref(),
+            Log::NoFile | Log::Stream { .. } | Log::Journal { .. } | Log::Unknown(_) => None,
+        }
+    }
 }
 
 /// Whether `word` is one `argparse` reads as an option, `None` when NAILS
@@ -350,12 +363,14 @@ pub(in crate::preflight::checks::decoy_posture) fn tuned(args: &[Vec<u8>]) -> Lo
                 path,
                 by,
                 what: "its log",
+                namespace: None,
             })
         }),
         Ok(None) if daemon => Log::File(FileLog {
             path: TUNED_LOG.to_string(),
             by: "-d, which logs to a file as -l does".to_string(),
             what: "its log",
+            namespace: None,
         }),
         Ok(None) => Log::Stream {
             stream: Stream::Error,
@@ -377,6 +392,7 @@ pub(in crate::preflight::checks::decoy_posture) fn tuned_ppd(args: &[Vec<u8>]) -
                 path,
                 by,
                 what: "its log",
+                namespace: None,
             })
         }),
         Ok(None) => Log::Stream {
@@ -443,6 +459,7 @@ pub(in crate::preflight::checks::decoy_posture) fn firewalld(args: &[Vec<u8>]) -
             path: file,
             by,
             what,
+            namespace: None,
         })
     })
 }

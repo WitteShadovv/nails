@@ -626,7 +626,7 @@ fn a_tuned_started_by_hand_is_seen_by_its_process() {
 #[test]
 fn tuned_on_nixos_is_fixed_in_the_configuration() {
     assert_eq!(
-        tuned_fix(&["tuned.service"], &[], true),
+        tuned_fix(&["tuned.service"], &[], &[], true),
         "make tuned log to the journal: set services.tuned.enable = false in the decoy \
          configuration, or there clear ExecStart= of systemd.services.tuned (and of \
          systemd.services.tuned-ppd) and set it again without -l, with StandardError= set to \
@@ -634,7 +634,7 @@ fn tuned_on_nixos_is_fixed_in_the_configuration() {
     );
     // A tuned-ppd only its process shows has no -d to drop.
     assert_eq!(
-        tuned_fix(&[], &["tuned-ppd"], false),
+        tuned_fix(&[], &["tuned-ppd"], &[], false),
         "stop each tuned-ppd process that logs to a file and start it again without -l, its \
          standard error sent to no file, as systemctl restart tuned-ppd.service does once its \
          unit no longer makes it log to one"
@@ -1854,6 +1854,128 @@ fn firewalld_on_the_console_reaches_its_journal_namespace_by_an_inherited_standa
             "{output}: {warnings:?}"
         );
     }
+}
+
+/// The fix of a journal namespace `namespace` whose journal persists.
+fn namespace_fix_of(namespace: &str) -> String {
+    format!(
+        "keep the journal of the namespace {namespace} off the decoy disk: set Storage=volatile \
+         in the [Journal] section of /etc/systemd/journald@{namespace}.conf, then run systemctl \
+         restart systemd-journald@{namespace}.service, or drop LogNamespace= from the unit that \
+         sets it, then run systemctl daemon-reload and restart that unit"
+    )
+}
+
+#[test]
+fn the_fix_of_a_journal_namespace_names_its_storage_and_not_the_fix_the_decoy_has() {
+    // tuned already logs to the journal, as the drop-in fix makes it, but
+    // to a namespace whose journal persists.
+    let decoy = Decoy::new();
+    decoy
+        .unit("tuned.service", TUNED_UNIT)
+        .enable("multi-user.target", "tuned.service")
+        .file(
+            "/etc/systemd/system/tuned.service.d/50-journal.conf",
+            TUNED_DROPIN,
+        )
+        .file(
+            "/etc/systemd/system/tuned.service.d/60-namespace.conf",
+            "[Service]\nLogNamespace=tuned\n",
+        );
+    let found = decoy.findings();
+    assert_eq!(found.blockers.len(), 1, "{found:?}");
+    assert!(found.units.is_empty(), "{found:?}");
+    assert!(found.programs.is_empty(), "{found:?}");
+    let mut fix = namespace_fix_of("tuned");
+    fix[..1].make_ascii_uppercase();
+    assert_eq!(
+        decoy.check(false).remediation().unwrap(),
+        format!(
+            "{fix}, or pass --allow-persistent-decoy to allow the risk for this run. See \
+             docs/decoy-requirements.md."
+        )
+    );
+    // A process still running with -l beside it needs its restart too.
+    decoy.process(812, "tuned", TUNED_ARGV);
+    let found = decoy.findings();
+    assert_eq!(found.programs, ["tuned"], "{found:?}");
+    let remediation = decoy.check(false).remediation().unwrap().to_string();
+    assert!(
+        remediation.starts_with(
+            "Stop each tuned process that logs to a file and start it again without -l and -d"
+        ),
+        "{remediation}"
+    );
+    assert!(
+        remediation.contains(&format!(", and {}", namespace_fix_of("tuned"))),
+        "{remediation}"
+    );
+    assert!(!remediation.contains("add a drop-in"), "{remediation}");
+
+    // firewalld logs to syslog, as its fix makes it, or to the console with
+    // its standard output inherited, each in a namespace that persists.
+    for (args, output) in [
+        ("--log-target=syslog", ""),
+        ("--log-target=console", "StandardOutput=inherit\n"),
+    ] {
+        let decoy = Decoy::new();
+        decoy
+            .unit("firewalld.service", FIREWALLD_UNIT)
+            .file(
+                "/etc/sysconfig/firewalld",
+                &format!("FIREWALLD_ARGS={args}\n"),
+            )
+            .enable("multi-user.target", "firewalld.service")
+            .file(
+                "/etc/systemd/system/firewalld.service.d/60-namespace.conf",
+                &format!("[Service]\n{output}LogNamespace=fw\n"),
+            );
+        let warnings = decoy.findings().warnings;
+        assert_eq!(warnings.len(), 1, "{args}: {warnings:?}");
+        assert!(
+            warnings[0].ends_with(&format!(
+                "stays on the decoy disk with the time; {}",
+                namespace_fix_of("fw")
+            )),
+            "{args}: {warnings:?}"
+        );
+        assert!(
+            !warnings[0].contains("--log-target=syslog to FIREWALLD_ARGS"),
+            "{args}: {warnings:?}"
+        );
+    }
+}
+
+#[test]
+fn the_fix_of_journal_namespaces_names_each_and_their_nixos_way() {
+    assert_eq!(
+        tuned_fix(&[], &[], &["a".to_string(), "b".to_string()], false),
+        "keep the journals of the namespaces a and b off the decoy disk: set Storage=volatile in \
+         the [Journal] section of /etc/systemd/journald@a.conf and \
+         /etc/systemd/journald@b.conf, then run systemctl restart systemd-journald@a.service \
+         systemd-journald@b.service, or drop LogNamespace= from the units that set them, then \
+         run systemctl daemon-reload and restart those units"
+    );
+    assert_eq!(
+        tuned_fix(&["tuned-ppd.service"], &[], &["tuned".to_string()], true),
+        "make tuned log to the journal: set services.tuned.enable = false in the decoy \
+         configuration, or there clear ExecStart= of systemd.services.tuned (and of \
+         systemd.services.tuned-ppd) and set it again without -l, with StandardError= set to \
+         journal, then run nixos-rebuild switch, and keep the journal of the namespace tuned off \
+         the decoy disk: in the decoy configuration, set Storage=volatile in the [Journal] \
+         section of /etc/systemd/journald@tuned.conf by \
+         environment.etc.\"systemd/journald@tuned.conf\".text, or drop LogNamespace from the \
+         serviceConfig of the unit that sets it, then run nixos-rebuild switch and systemctl \
+         restart systemd-journald@tuned.service"
+    );
+    assert_eq!(
+        tuned_fix(&[], &[], &["tuned".to_string()], true),
+        "keep the journal of the namespace tuned off the decoy disk: in the decoy configuration, \
+         set Storage=volatile in the [Journal] section of /etc/systemd/journald@tuned.conf by \
+         environment.etc.\"systemd/journald@tuned.conf\".text, or drop LogNamespace from the \
+         serviceConfig of the unit that sets it, then run nixos-rebuild switch and systemctl \
+         restart systemd-journald@tuned.service"
+    );
 }
 
 #[test]

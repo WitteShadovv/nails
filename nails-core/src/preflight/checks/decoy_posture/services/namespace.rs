@@ -154,6 +154,7 @@ pub(super) fn journal_log<F: Filesystem>(
                  decoy disk unless journald@{namespace}.conf sets Storage=volatile"
             ),
             what,
+            namespace: Some(namespace),
         }),
         Err(unread) => Log::Unknown(format!(
             "it logs to the journal of its namespace {namespace}, and NAILS cannot tell where \

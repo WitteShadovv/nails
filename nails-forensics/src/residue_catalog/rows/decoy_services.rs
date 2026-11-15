@@ -88,7 +88,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             paths: &["/var/log/tuned"],
             severity: ProbeSeverity::Warn,
         },
-        mitigation: "Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, started by a timer, path or socket that runs, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file or to a journal namespace the decoy keeps included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, with no LogNamespace= whose journal the decoy keeps, then restart them, or mask them.",
+        mitigation: "Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, started by a timer, path or socket that runs, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file or to a journal namespace the decoy keeps included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, then restart them, or mask them. Where they log to a journal namespace the decoy keeps, set Storage=volatile in its `journald@<namespace>.conf` and restart that namespace's journald, or drop the unit's LogNamespace=.",
         doc_anchor: "decoy-requirements.md#tuned-firewalld-and-abrt",
         e2e: E2e::None(
             "no VM test runs tuned: Fedora, whose units pass -l, is not admitted yet and its cloud image has no tuned; the refusal is unit tested on Fedora 44's own unit files",
@@ -109,7 +109,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             paths: &["/var/log/firewalld"],
             severity: ProbeSeverity::Info,
         },
-        mitigation: "decoy-persistence warns while firewalld is enabled, active or started by a timer, path or socket that runs, or runs, with a log file, a journal namespace the decoy keeps included. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it.",
+        mitigation: "decoy-persistence warns while firewalld is enabled, active or started by a timer, path or socket that runs, or runs, with a log file, a journal namespace the decoy keeps included. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it. Where it logs to a journal namespace the decoy keeps, set Storage=volatile in its `journald@<namespace>.conf` and restart that namespace's journald, or drop the unit's LogNamespace=.",
         doc_anchor: "decoy-requirements.md#tuned-firewalld-and-abrt",
         e2e: E2e::None(
             "no VM test runs firewalld: Fedora, which enables it, is not admitted yet and its cloud image has no firewalld; the warning is unit tested on Fedora 44's own unit and sysconfig file",

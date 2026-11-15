@@ -14,6 +14,7 @@ fn file(path: &str, by: &str, what: &'static str) -> Log {
         path: path.to_string(),
         by: by.to_string(),
         what,
+        namespace: None,
     })
 }
 
