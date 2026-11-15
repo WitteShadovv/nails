@@ -1326,6 +1326,39 @@ of this changelog for that version becomes the release notes word for word, and
   `driver:param` form of `tpm2-device=` (`cmd:…`), and an option NAILS does not know whose value may
   name a path or a device, absolute, a tag, or with a `/` or a `:` in it, make the line not plain,
   on any line.
+- `backend-entries` now fails a line that names the file the hidden volume is stored in, the
+  container file it is opened from or the image it is in, which a loop device of the root's stack
+  reads, with `--allow-decoy-storage` too: a crypttab line that opens it under another name, a
+  `noauto` one among them, one that makes swap over it, an fstab line that mounts the image, with
+  `loop` or without, swaps on it, binds it or has a FUSE program such as `fuse2fs` read it, and a
+  key file that is that file. systemd 260.5's crypttab generator makes a unit for such a line, and
+  `systemd-cryptsetup` of systemd 262 attached it while the root was open, through a second loop
+  device, with a second mapping that showed the hidden files, and `mount` mounted the image a second
+  time. NAILS knows that file by the path the loop driver shows for it and by its device and inode
+  as the driver recorded them, and reads the file a line names with one `stat` of its path, read
+  with no link followed, so a path with `..`, a hard link and a path through another mount of the
+  same folder name it too. Where the driver's record cannot be read, which takes root, whether a
+  file that is there is that one cannot be told, and the line fails as one whose path cannot be
+  told. Another loop device over that file counts as a device the volume is stored on. All of these
+  passed the check.
+- `backend-entries` now fails a line that has the boot write over a device of the hidden volume's
+  drive that the line names itself, on its whole disk by any of its names, a partition of it or a
+  device stacked on one of these, `noauto` lines and `--allow-decoy-storage` included: an fstab line
+  with `x-systemd.makefs`, a mount or a swap line, and a crypttab line with `swap`, `tmp` or `tmp=`
+  or that opens its source in plain mode. systemd 260.5 has `systemd-makefs` format the line's own
+  device, or the mapping over it, wherever it finds no filesystem there, and it probes only for
+  filesystems, so a whole disk with a partition table and nothing at its own start looks empty to
+  it: `systemd-makefs ext4` formatted such a disk, and its partition table and the files of its
+  partition were gone, so a random-key swap line for the kernel name a USB drive gets at one boot
+  would destroy the volume on it. A plain mapping checks no header, so what the boot writes to it,
+  such as an fstab line with `x-systemd.makefs` for it, lands on the source, with an `offset=` into
+  the volume's partition too. The device of a crypttab line's `header=<path>:<device>`, which the
+  crypttab generator mounts read-write, fails the line on any device of the drive as well, as
+  `journal_path=` and `tpm2-device=` do. All of these passed. On a device the volume is stored on
+  such a line fails as before, so the decoy's own line for the filesystem a root accepted with the
+  flag lies in stays its own with `x-systemd.makefs`, as NixOS writes it for `autoFormat`, since
+  that device holds the filesystem. With the flag, a random-key swap line for another partition of
+  the disk such a root lies on fails as well.
 - NAILS now follows a device's path in `/dev` through its links only while they lead to a path in
   `/dev`, and stops at the first link that leads out of it, so it reads no link and makes no lookup
   past `/dev`, on the decoy's disk say, for a tag too, by the link udev makes for it in
@@ -2317,18 +2350,19 @@ of this changelog for that version becomes the release notes word for word, and
   Debian and Ubuntu that directory, named after the volume's label or UUID, is made on the decoy's
   root filesystem. The `hidden-volume` check counts every mount there with the device number of the
   mount at the root, a bind of a folder of the volume and another btrfs subvolume of it included,
-  names each, says a desktop may have mounted it by itself, and gives the `sudo umount` line, the
-  mount over one that this line cannot reach, and the advice to turn the automatic mounting of
-  removable media off long before the next use. No flag lifts it. A bind of the volume at the root
-  itself passes. For a root on a filesystem the decoy uses that `--allow-decoy-storage` accepted,
-  the decoy's own mounts of that filesystem do not count, the one at `/` and those a line of
-  `/etc/fstab` makes (a line that names the mount's device, or the ZFS dataset, and mounts what it
-  shows, on btrfs the subvolume its `subvol=` or `subvolid=` names as the mount table shows that
-  subvolume's path and id, so a `subvolid=` that cannot be read on either side makes none, or a bind
-  line of any type from another of the decoy's own mounts of it whose source has no symbolic link in
-  it, which NAILS does not follow; a line that is not plain makes none), and neither does a mount
-  that shows none of
-  the root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So
+  and a mount through another loop device over the container file or image the volume is stored in,
+  as a disk image mounter can set up when that file is opened from a file manager, names each, says
+  a desktop may have mounted it by itself, and gives the `sudo umount` line, the mount over one that
+  this line cannot reach, and the advice to turn the automatic mounting of removable media off long
+  before the next use. No flag lifts it. A bind of the volume at the root itself passes. For a root
+  on a filesystem the decoy uses that `--allow-decoy-storage` accepted, the decoy's own mounts of
+  that filesystem do not count, the one at `/` and those a line of `/etc/fstab` makes (a line that
+  names the mount's device, or the ZFS dataset, and mounts what it shows, on btrfs the subvolume its
+  `subvol=` or `subvolid=` names as the mount table shows that subvolume's path and id, so a
+  `subvolid=` that cannot be read on either side makes none, or a bind line of any type from another
+  of the decoy's own mounts of it whose source has no symbolic link in it, which NAILS does not
+  follow; a line that is not plain makes none), and neither does a mount that shows none of the
+  root's folder (NixOS's read-only bind of `/nix/store`, another btrfs subvolume). So
   `hidden-volume` passes a bind of a folder of `/` and a subvolume beside the fstab's `/home` with
   the flag's warning, and so does `backend-entries`, which lets be the decoy's own fstab lines for
   `/` and its system folders that mount another part of that filesystem, while their mounts are
