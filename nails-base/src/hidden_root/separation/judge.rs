@@ -976,12 +976,13 @@ fn fstab_finding(
     // filesystem the root is a folder or a subvolume of, and its mount is
     // there: never the volume itself, never a line whose subvolume cannot be
     // told, and never one whose mount is not there now, since nothing then
-    // shows that the decoy uses that filesystem there.
+    // shows that the decoy uses that filesystem there. The folder is named
+    // with no `.` in it, as the mount table shows it.
     let system_folder = (system
         && !fstab_noauto(entry)
         && root_itself == Some(false)
         && line_is_mounted(scene, entry, hidden))
-    .then(|| entry.file.clone());
+    .then(|| entry.file.components().collect());
     EntryFinding {
         system_folder,
         ..blocking(FSTAB, line, why, boot_needs)

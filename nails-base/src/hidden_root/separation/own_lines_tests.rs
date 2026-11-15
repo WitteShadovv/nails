@@ -1087,6 +1087,25 @@ fn archinstalls_lines_below_var_are_the_decoys_own() {
         entry_folders(&judgement)[2],
         ("UUID=a2 /.snapshots btrfs", Some(Path::new("/.snapshots")))
     );
+    // A folder written with a `.` in it is named as the mount table shows
+    // it.
+    let judgement = archinstall(
+        "3 1 0:40 /@log /var/log rw - btrfs /dev/sda2 rw,subvolid=258,subvol=/@log
+",
+        "UUID=a2 /var/./log/. btrfs subvol=/@log 0 0
+",
+    );
+    assert_eq!(
+        entry_folders(&judgement)[2],
+        ("UUID=a2 /var/./log/. btrfs", Some(Path::new("/var/log")))
+    );
+    assert_eq!(
+        judgement.entries[2]
+            .system_folder
+            .as_deref()
+            .map(Path::as_os_str),
+        Some(std::ffi::OsStr::new("/var/log"))
+    );
     // The other limits hold below /var too: a line whose subvolume cannot be
     // told, one whose mount is not there, a noauto line, and one for the
     // root's own subvolume, which the boot needs all the same.
