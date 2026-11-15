@@ -781,6 +781,7 @@ fn a_loop_device_over_a_device_node_outside_dev_lies_on_that_device() {
             Path::new("/dev/loop1"),
             LoopRecord {
                 device: rustix::fs::makedev(on.0, on.1),
+                inode: 12,
                 rdevice: rustix::fs::makedev(major.parse().unwrap(), minor.parse().unwrap()),
             },
         );
@@ -811,6 +812,7 @@ fn a_loop_device_over_a_device_node_outside_dev_lies_on_that_device() {
         Path::new("/dev/loop1"),
         LoopRecord {
             device: rustix::fs::makedev(259, 3),
+            inode: 12,
             rdevice: rustix::fs::makedev(43, 9),
         },
     );

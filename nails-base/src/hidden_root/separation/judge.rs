@@ -4,6 +4,7 @@
 //! The judge: the decoy's claims, then the first verdict that matches.
 
 use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
+use super::loops::{loop_files, with_loops_over_its_files};
 use super::options::{crypttab_noauto, fstab_noauto, opens_as_luks};
 use super::paths::{is_claimed, is_untold_device, names_a_file, opens_a_file, program_path};
 use super::placed::{Line, Named, place};
@@ -253,7 +254,7 @@ fn untraceable(scene: &Scene<'_>, claims: &[Claim], reach: &[String]) -> Option<
                 return Some(Verdict::DiskNotFound);
             }
             NodeKind::Loop {
-                file: Some(LoopFile { path, holder }),
+                file: Some(LoopFile { path, holder, .. }),
             } => {
                 let holder = match holding_mount(scene, path, holder) {
                     Ok(holder) => holder,
@@ -307,7 +308,7 @@ fn images_on_decoy(scene: &Scene<'_>, claims: &[Claim], starts: &[String]) -> Ve
             let Some(Node {
                 kind:
                     NodeKind::Loop {
-                        file: Some(LoopFile { path, holder }),
+                        file: Some(LoopFile { path, holder, .. }),
                     },
                 ..
             }) = devices.nodes.get(node)
@@ -491,14 +492,19 @@ fn claims(
     let members = btrfs_members(devices, top);
     let own_device = |node: &str| top == Some(node) || members.iter().any(|m| m.as_str() == node);
     // An entry is for the hidden drive when it names a device of the root's
-    // stack, or another device of its btrfs filesystem or one below that,
-    // and so is an option that opens any device of the drive for writing:
-    // its whole disk, a partition of it or a device stacked on one of them.
-    let entry_stack = &with_stacks_of(devices, stack, &members)[..];
+    // stack, or another device of its btrfs filesystem or one below that, or
+    // another loop device over a file a loop device of these reads, which
+    // reads the volume's storage as well, and so is an option that opens any
+    // device of the drive for writing: its whole disk, a partition of it or a
+    // device stacked on one of them.
+    let entry_stack =
+        &with_loops_over_its_files(devices, with_stacks_of(devices, stack, &members))[..];
     let disks = drive_disks(scene, entry_stack);
+    let files = loop_files(devices, entry_stack);
     let hidden_drive = HiddenDrive {
         devices: entry_stack,
         disks: &disks,
+        files: &files,
     };
 
     let root_mount = top_mount_at(scene.mounts, Path::new("/"));
@@ -544,7 +550,7 @@ fn claims(
             // that holds it, read as written, with no link followed.
             if let Some(program) = program_path(entry) {
                 let line = fstab_line(hidden, entry, Named::Program);
-                let (finding, holder) = place(scene, hidden, &line, program);
+                let (finding, holder) = place(scene, hidden, &files, &line, program);
                 found.extend(finding);
                 claims.extend(holder.map(|holder| mount_claim(scene, holder, noauto)));
             }
@@ -578,8 +584,8 @@ fn claims(
                 } else {
                     Named::File
                 };
-                let (finding, holder) =
-                    place(scene, hidden, &fstab_line(hidden, entry, named), spec);
+                let line = fstab_line(hidden, entry, named);
+                let (finding, holder) = place(scene, hidden, &files, &line, spec);
                 found.extend(finding);
                 claims.extend(holder.map(|holder| mount_claim(scene, holder, noauto)));
                 break 'line;
@@ -716,7 +722,7 @@ fn crypttab_claims(
                 named: Named::Opened,
                 boot_needs: needed,
             };
-            place(scene, hidden, &line, &entry.source)
+            place(scene, hidden, hidden_drive.files, &line, &entry.source)
         });
         // What it reads besides its source: its key file, its header, or a
         // device the boot mounts for one of them (see the `reads` module).

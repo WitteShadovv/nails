@@ -29,6 +29,8 @@ pub enum MountRoot {
 pub struct LoopRecord {
     /// The device the file is on (its `st_dev`, `lo_device`).
     pub device: u64,
+    /// The file's inode number on that device (its `st_ino`, `lo_inode`).
+    pub inode: u64,
     /// The device the file is, when it is a block device node (its
     /// `st_rdev`, `lo_rdevice`); 0 for a regular file.
     pub rdevice: u64,

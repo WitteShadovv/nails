@@ -35,14 +35,22 @@
 //! ([`unmounted_folders`](super::lines::unmounted_folders)), so what lies
 //! there when systemd mounts it cannot be read now, when a part of it cannot
 //! be looked up, and when the lookup would mount an automount point.
+//!
+//! Of each such path that reads and is there, one `stat(2)` gives the file it
+//! names, its device and inode ([`identify`]): the path holds no link, so the
+//! `stat` follows none, and it changes no access time. A line that names the
+//! file a loop device of the hidden root's stack reads, by any spelling of
+//! its path, names the volume's own storage (see the `placed` module). A path
+//! whose `stat` fails for another reason than that nothing is there cannot be
+//! told either.
 
 #[cfg(test)]
 #[path = "paths_tests.rs"]
 mod tests;
 
-use super::DeviceMap;
 use super::lines::unmounted_folders;
 use super::plain::{fuse_program, source};
+use super::{DeviceMap, FileId, FileIds};
 use crate::Filesystem;
 use crate::blockdev::{OutOfDev, follow_in_dev};
 use crate::crypttab::CrypttabEntry;
@@ -284,6 +292,41 @@ pub(super) fn read_all<F: Filesystem>(
         }
     }
     paths
+}
+
+/// The file each path of `paths` that reads and is there names below `root`,
+/// by the path as the line writes it, as one `stat(2)` of the path as it reads
+/// gives its device and inode. The path holds no link, so the `stat` follows
+/// none. A path whose `stat` fails for another reason than that nothing is
+/// there cannot be told: it turns into [`UntoldPath::Unreadable`] in `paths`.
+pub(super) fn identify<F: Filesystem>(fs: &F, root: &Path, paths: &mut NamedPaths) -> FileIds {
+    let mut files = FileIds::new();
+    for (spec, read) in paths.iter_mut() {
+        let Ok(path) = read else {
+            continue;
+        };
+        let on_disk = root.join(path.strip_prefix("/").unwrap_or(path));
+        match identity(fs, &on_disk) {
+            Ok(Some(file)) => {
+                files.insert(spec.clone(), file);
+            }
+            Ok(None) => {}
+            Err(_) => *read = Err(UntoldPath::Unreadable(path.clone())),
+        }
+    }
+    files
+}
+
+/// The file at `path`, its device and inode as `stat(2)` gives them; `None`
+/// where nothing is there.
+fn identity<F: Filesystem>(fs: &F, path: &Path) -> crate::Result<Option<FileId>> {
+    let Some(inode) = fs.inode(path)? else {
+        return Ok(None);
+    };
+    Ok(Some(FileId {
+        device: fs.device_id(path)?,
+        inode,
+    }))
 }
 
 /// The paths and tags the lines of `crypttab` read besides their sources
