@@ -24,6 +24,9 @@
 //! - [`btrfs_members`] lists every device of a btrfs filesystem, and
 //!   [`btrfs_filesystems`] those of all of them.
 //! - [`classify_dm`] says what a device-mapper uuid and name describe.
+//! - [`Layer::unread`] keeps each [`Attribute`] of a device that sysfs shows
+//!   but NAILS cannot read, so a reader can tell it from one that is not
+//!   there, and count those it decides by.
 //! - [`block_majors`] lists the drivers the kernel names by major number.
 
 mod dev_path;
@@ -95,10 +98,104 @@ pub struct Layer {
     /// Loop data, for a loop device that is bound to a backing file.
     pub loop_device: Option<LoopDevice>,
     /// The attributes and listings of the device that are there but could
-    /// not be read, for another reason than that they are not there, each
-    /// by its path: what they would say is missing from the fields above,
-    /// which keep their defaults.
-    pub unread: Vec<PathBuf>,
+    /// not be read, for another reason than that they are not there: what
+    /// they would say is missing from the fields above, which keep their
+    /// defaults. A reader counts those it decides by
+    /// ([`unread_among`](Self::unread_among)).
+    pub unread: Vec<Unread>,
+}
+
+impl Layer {
+    /// The attributes and listings among `attributes` that are there but
+    /// could not be read.
+    pub fn unread_among<'a>(
+        &'a self,
+        attributes: &'a [Attribute],
+    ) -> impl Iterator<Item = &'a Unread> + 'a {
+        self.unread
+            .iter()
+            .filter(move |unread| attributes.contains(&unread.attribute))
+    }
+}
+
+/// An attribute or listing of a block device that [`walk()`] reads in
+/// sysfs: in the device's own directory, or, for a partition, in its
+/// disk's, the directory above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Attribute {
+    /// `uevent`: the kernel name, and a partition's name and uuid.
+    Uevent,
+    /// `dev`: the device number.
+    Dev,
+    /// `holders/`: the devices built on the device.
+    Holders,
+    /// `slaves/`: the devices below it.
+    Slaves,
+    /// `dm/name`: a device-mapper device's name.
+    DmName,
+    /// `dm/uuid`: a device-mapper device's uuid.
+    DmUuid,
+    /// `ro`: whether the kernel holds the device read-only.
+    ReadOnly,
+    /// `size`.
+    Size,
+    /// `queue/discard_max_bytes`: whether discards reach the device.
+    DiscardMaxBytes,
+    /// `partition`: whether the device is a partition, and its number.
+    Partition,
+    /// `start`: where a partition starts.
+    Start,
+    /// `dev` of a partition's disk, which shows that the directory above is
+    /// that disk.
+    DiskDev,
+    /// `uevent` of a partition's disk: its kernel name.
+    DiskUevent,
+    /// `loop/backing_file`: what a loop device reads. Where it names a
+    /// device node, that node, and the `dev` of the device it leads to,
+    /// which tell a block device from a file, count with it.
+    LoopBackingFile,
+    /// `loop/offset`: where in what it reads a loop device starts.
+    LoopOffset,
+    /// `loop/sizelimit`.
+    LoopSizeLimit,
+    /// `loop/autoclear`: whether a loop device detaches when its last user
+    /// closes it.
+    LoopAutoclear,
+}
+
+impl Attribute {
+    /// Its name in the directory it is read from, as sysfs gives it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Attribute::Uevent | Attribute::DiskUevent => "uevent",
+            Attribute::Dev | Attribute::DiskDev => "dev",
+            Attribute::Holders => "holders",
+            Attribute::Slaves => "slaves",
+            Attribute::DmName => "dm/name",
+            Attribute::DmUuid => "dm/uuid",
+            Attribute::ReadOnly => "ro",
+            Attribute::Size => "size",
+            Attribute::DiscardMaxBytes => "queue/discard_max_bytes",
+            Attribute::Partition => "partition",
+            Attribute::Start => "start",
+            Attribute::LoopBackingFile => "loop/backing_file",
+            Attribute::LoopOffset => "loop/offset",
+            Attribute::LoopSizeLimit => "loop/sizelimit",
+            Attribute::LoopAutoclear => "loop/autoclear",
+        }
+    }
+}
+
+/// An attribute or listing of a device that is there but could not be
+/// read, for another reason than that it is not there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unread {
+    /// Which one it is.
+    pub attribute: Attribute,
+    /// The place that could not be read: the attribute's path in sysfs, or,
+    /// for what a loop device reads, the device node or attribute on the way
+    /// to that device.
+    pub path: PathBuf,
 }
 
 /// A device-mapper device: its name, its uuid and what they describe.

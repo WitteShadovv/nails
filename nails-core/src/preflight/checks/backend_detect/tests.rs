@@ -561,6 +561,14 @@ fn a_device_below_the_hidden_root_that_cannot_be_read_refuses_as_discards_do() {
             "sysfs shows dm/uuid of a device below the hidden root",
         ),
         (
+            "/sys/dev/block/253:3/dm/name",
+            "sysfs shows dm/name of a device below the hidden root",
+        ),
+        (
+            "/sys/dev/block/253:3/slaves/loop0/loop/backing_file",
+            "sysfs shows loop/backing_file of a device below the hidden root",
+        ),
+        (
             "/sys/dev/block/253:3/dev",
             "sysfs shows the device the hidden root is mounted from, but NAILS cannot read it",
         ),
@@ -603,6 +611,55 @@ fn a_device_below_the_hidden_root_that_cannot_be_read_refuses_as_discards_do() {
     );
     let result = assess_offline(&fs, Path::new(ROOT));
     assert!(!result.is_fail(), "{result:?}");
+}
+
+/// An attribute or listing below the hidden root that decides nothing of
+/// what the check finds, there in sysfs but unreadable, changes nothing: no
+/// refusal as for discards, where every unread attribute refused, and the
+/// same result as with it read.
+#[test]
+fn an_attribute_below_the_hidden_root_that_decides_nothing_refuses_nothing() {
+    let readable = assess_offline(&tcrypt_container_fixture("ext4", "0"), Path::new(ROOT));
+    assert!(readable.is_warn(), "{readable:?}");
+    for path in [
+        "/sys/dev/block/253:3/ro",
+        "/sys/dev/block/253:3/size",
+        "/sys/dev/block/253:3/holders",
+        "/sys/dev/block/253:3/partition",
+        "/sys/dev/block/253:3/slaves/loop0/loop/offset",
+        "/sys/dev/block/253:3/slaves/loop0/loop/sizelimit",
+    ] {
+        let fs = tcrypt_container_fixture("ext4", "0");
+        fs.mock_set_lookup_error(path, std::io::ErrorKind::PermissionDenied);
+        assert_eq!(assess_offline(&fs, Path::new(ROOT)), readable, "{path}");
+    }
+}
+
+/// A loop device over a block device whose `loop/autoclear` sysfs shows but
+/// NAILS cannot read warns that it cannot tell, where it would say it was
+/// attached without autoclear: it does not claim what it did not read.
+#[test]
+fn a_loop_whose_autoclear_cannot_be_read_warns_that_it_cannot_tell() {
+    let host = luks_on_a_loop_over_a_partition(true);
+    host.fs.mock_set_lookup_error(
+        "/sys/devices/virtual/block/loop0/loop/autoclear",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let result = detect_on(&host);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "NAILS cannot tell whether loop device loop0 over sdb2 was attached with autoclear: \
+             sysfs shows its loop/autoclear, but NAILS cannot read it. Without autoclear it stays \
+             bound after the hidden volume is closed, after a session too, until losetup -d \
+             detaches it."
+        ),
+        "{result:?}"
+    );
+    assert!(
+        !result.message().contains("was attached without autoclear"),
+        "{result:?}"
+    );
 }
 
 /// The refusal and its remediation name no device-mapper node (`dm-N` or

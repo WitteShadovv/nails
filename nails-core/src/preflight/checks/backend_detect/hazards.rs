@@ -29,13 +29,21 @@ pub(super) fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
         if let Some(meta) = &layer.luks2 {
             found.extend(luks2_hazards(layer, meta));
         }
-        if let (Some(device), false) = (&layer.loop_over, layer.autoclear) {
-            found.push(format!(
+        match (&layer.loop_over, layer.autoclear, layer.autoclear_unread) {
+            (Some(device), _, true) => found.push(format!(
+                "NAILS cannot tell whether loop device {} over {device} was attached with \
+                 autoclear: sysfs shows its loop/autoclear, but NAILS cannot read it. Without \
+                 autoclear it stays bound after the hidden volume is closed, after a session \
+                 too, until losetup -d detaches it.",
+                layer.name
+            )),
+            (Some(device), false, false) => found.push(format!(
                 "Loop device {} over {device} was attached without autoclear, so it stays bound \
                  after the hidden volume is closed, after a session too, until losetup -d \
                  detaches it.",
                 layer.name
-            ));
+            )),
+            _ => {}
         }
 
         let Some(backing_file) = &layer.backing_file else {
