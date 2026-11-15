@@ -1747,6 +1747,116 @@ fn firewalld_logging_to_syslog_in_a_journal_namespace_that_persists_warns() {
 }
 
 #[test]
+fn an_inherited_standard_output_reaches_the_journal_namespace_as_an_unset_one_does() {
+    // systemd gives StandardOutput=inherit the manager's default, the
+    // journal, as it gives an unset one, so the unit's namespace decides
+    // either way, for a tuned that is enabled but does not run now too.
+    for (settings, by) in [
+        (
+            "",
+            "StandardError= not set (inherit) and StandardOutput= not set",
+        ),
+        (
+            "StandardOutput=inherit\n",
+            "StandardError= not set (inherit) and StandardOutput=inherit",
+        ),
+        (
+            "StandardError=inherit\nStandardOutput=inherit\nStandardInput=null\n",
+            "StandardError=inherit and StandardOutput=inherit",
+        ),
+    ] {
+        let decoy = Decoy::new();
+        decoy
+            .unit("tuned.service", TUNED_UNIT)
+            .enable("multi-user.target", "tuned.service")
+            .file(
+                "/etc/systemd/system/tuned.service.d/50-journal.conf",
+                &format!(
+                    "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n{settings}\
+                     LogNamespace=tuned\n"
+                ),
+            );
+        assert_eq!(
+            decoy.findings().blockers,
+            [logs_to(
+                "tuned",
+                "/var/log/journal/<machine-id>.tuned",
+                &format!(
+                    "tuned.service is enabled, with neither -l nor -d, {by}, to the journal of \
+                     its namespace tuned, which journald keeps on the decoy disk unless \
+                     journald@tuned.conf sets Storage=volatile"
+                )
+            )],
+            "{settings:?}"
+        );
+        assert!(decoy.check(false).is_fail(), "{settings:?}");
+        // Kept in RAM, the namespace's journal leaves nothing on the disk.
+        decoy.file(
+            "/etc/systemd/journald@tuned.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        assert_eq!(decoy.findings(), Findings::default(), "{settings:?}");
+    }
+    // Following a terminal, inherit writes there; following the descriptor
+    // a socket unit passes, it leads where NAILS cannot tell.
+    let decoy = Decoy::new();
+    decoy
+        .unit("tuned.service", TUNED_UNIT)
+        .enable("multi-user.target", "tuned.service")
+        .file(
+            "/etc/systemd/system/tuned.service.d/50-journal.conf",
+            "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\nStandardOutput=inherit\n\
+             StandardInput=tty\nLogNamespace=tuned\n",
+        );
+    assert_eq!(decoy.findings(), Findings::default());
+    decoy.file(
+        "/etc/systemd/system/tuned.service.d/60-socket.conf",
+        "[Service]\nStandardInput=socket\n",
+    );
+    assert_eq!(
+        decoy.findings().blockers,
+        [
+            "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it counts as \
+             one that does (tuned.service is enabled: it logs to its standard error, which NAILS \
+             cannot follow past StandardError= not set (inherit), StandardOutput=inherit and \
+             StandardInput=socket)"
+        ]
+    );
+}
+
+#[test]
+fn firewalld_on_the_console_reaches_its_journal_namespace_by_an_inherited_standard_output() {
+    // Fedora's firewalld.service sends its standard output to /dev/null; a
+    // drop-in sets it to inherit, or to the journal, and gives the unit a
+    // namespace, and the console target writes every message there.
+    for output in ["inherit", "journal"] {
+        let decoy = Decoy::new();
+        decoy
+            .unit("firewalld.service", FIREWALLD_UNIT)
+            .file(
+                "/etc/sysconfig/firewalld",
+                "FIREWALLD_ARGS=--log-target=console\n",
+            )
+            .enable("multi-user.target", "firewalld.service")
+            .file(
+                "/etc/systemd/system/firewalld.service.d/60-namespace.conf",
+                &format!("[Service]\nStandardOutput={output}\nLogNamespace=fw\n"),
+            );
+        let warnings = decoy.findings().warnings;
+        assert_eq!(warnings.len(), 1, "{output}: {warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!(
+                "firewalld writes its log to /var/log/journal/<machine-id>.fw (firewalld.service \
+                 is enabled, with the log target console and StandardOutput={output}, to the \
+                 journal of its namespace fw, which journald keeps on the decoy disk unless \
+                 journald@fw.conf sets Storage=volatile)"
+            )),
+            "{output}: {warnings:?}"
+        );
+    }
+}
+
+#[test]
 fn a_trigger_that_starts_tuned_after_the_way_back_counts() {
     // A timer the decoy enables starts tuned.service, the service of its own
     // name, though tuned.service is neither enabled nor active now.

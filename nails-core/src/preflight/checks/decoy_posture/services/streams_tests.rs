@@ -64,9 +64,14 @@ fn a_stream_the_unit_leaves_alone_goes_to_the_journal_or_no_file() {
             "StandardError=syslog",
             "neither -l nor -d and StandardError=syslog",
         ),
+        // The journal keeps what it hands on to the kernel's log buffer.
         (
-            "StandardError=socket",
-            "neither -l nor -d, StandardError=socket and StandardOutput= not set",
+            "StandardError=kmsg",
+            "neither -l nor -d and StandardError=kmsg",
+        ),
+        (
+            "StandardError=kmsg+console",
+            "neither -l nor -d and StandardError=kmsg+console",
         ),
         ("StandardInput=data", unset),
     ] {
@@ -76,15 +81,13 @@ fn a_stream_the_unit_leaves_alone_goes_to_the_journal_or_no_file() {
             "{text:?}"
         );
     }
-    // The standard output follows a standard input of /dev/null where it is
-    // inherit.
     for text in [
-        "StandardOutput=inherit",
         "StandardError=null",
-        "StandardError=kmsg+console",
         "StandardError=tty",
-        "StandardOutput=socket",
+        // A standard output left to inherit follows a terminal it reads.
         "StandardOutput=inherit\nStandardInput=tty-force",
+        "StandardInput=tty",
+        "StandardError=inherit\nStandardInput=tty-fail",
         // A device that keeps nothing it is given.
         "StandardError=file:/dev/null",
         "StandardError=append:/dev/console",
@@ -96,6 +99,52 @@ fn a_stream_the_unit_leaves_alone_goes_to_the_journal_or_no_file() {
             "{text:?}"
         );
     }
+}
+
+#[test]
+fn an_inherited_standard_output_takes_the_default_as_an_unset_one() {
+    // systemd's service_fix_stdio() gives StandardOutput=inherit the
+    // manager's default, the journal, as it gives an unset one, unless the
+    // standard input is a terminal, a socket or a named descriptor: a file
+    // as the standard input is no reason to keep inherit either.
+    for (text, by) in [
+        (
+            "StandardOutput=inherit",
+            "neither -l nor -d, StandardError= not set (inherit) and StandardOutput=inherit",
+        ),
+        (
+            "StandardError=inherit\nStandardOutput=inherit\nStandardInput=null",
+            "neither -l nor -d, StandardError=inherit and StandardOutput=inherit",
+        ),
+        (
+            "StandardOutput=inherit\nStandardInput=data",
+            "neither -l nor -d, StandardError= not set (inherit) and StandardOutput=inherit",
+        ),
+        (
+            "StandardOutput=inherit\nStandardInput=file:/var/log/in.log",
+            "neither -l nor -d, StandardError= not set (inherit) and StandardOutput=inherit",
+        ),
+        // An earlier value is overridden.
+        (
+            "StandardOutput=file:/var/log/out.log\nStandardOutput=inherit",
+            "neither -l nor -d, StandardError= not set (inherit) and StandardOutput=inherit",
+        ),
+    ] {
+        assert_eq!(
+            of_unit(&section(text), Stream::Error, TUNED_BY),
+            journal(by),
+            "{text:?}"
+        );
+    }
+    // firewalld's console target writes to its standard output itself.
+    assert_eq!(
+        of_unit(
+            &section("StandardOutput=inherit"),
+            Stream::Output,
+            "the log target console"
+        ),
+        journal("the log target console and StandardOutput=inherit")
+    );
 }
 
 #[test]
@@ -122,12 +171,6 @@ fn a_stream_the_unit_sends_to_a_file_logs_there() {
             "StandardError=inherit\nStandardOutput=file:/var/log/both.log",
             "/var/log/both.log",
             "neither -l nor -d, StandardError=inherit and StandardOutput=file:/var/log/both.log",
-        ),
-        // No socket starts tuned, so its socket is its standard output.
-        (
-            "StandardError=socket\nStandardOutput=file:/var/log/both.log",
-            "/var/log/both.log",
-            "neither -l nor -d, StandardError=socket and StandardOutput=file:/var/log/both.log",
         ),
         // systemd ignores an empty value, which leaves the one before.
         (
@@ -164,30 +207,52 @@ fn a_stream_the_unit_sends_to_a_file_logs_there() {
 
 #[test]
 fn what_nails_cannot_follow_of_a_unit_is_unknown() {
-    for (text, why) in [
+    let past = |settings: &str| {
+        format!("it logs to its standard error, which NAILS cannot follow past {settings}")
+    };
+    for (text, settings) in [
+        ("StandardError=fd:log", "StandardError=fd:log"),
+        ("StandardError=journall", "StandardError=journall"),
+        // The one descriptor a socket unit passes, a file among them.
+        ("StandardError=socket", "StandardError=socket"),
         (
-            "StandardError=fd:log",
-            "it logs to its standard error, which NAILS cannot follow past StandardError=fd:log",
+            "StandardError=socket\nStandardOutput=file:/var/log/both.log",
+            "StandardError=socket",
         ),
         (
-            "StandardError=journall",
-            "it logs to its standard error, which NAILS cannot follow past StandardError=journall",
+            "StandardOutput=socket",
+            "StandardError= not set (inherit) and StandardOutput=socket",
         ),
+        // A standard output left to inherit follows such an input.
         (
-            "StandardOutput=inherit\nStandardInput=file:/var/log/in.log",
-            "it logs to its standard error, which NAILS cannot follow past StandardError= not \
-             set (inherit), StandardOutput=inherit and StandardInput=file:/var/log/in.log",
+            "StandardOutput=inherit\nStandardInput=socket",
+            "StandardError= not set (inherit), StandardOutput=inherit and StandardInput=socket",
         ),
-        // The default standard output may be inherit, which follows it.
         (
             "StandardInput=fd:input",
-            "it logs to its standard error, which NAILS cannot follow past StandardError= not \
-             set (inherit), StandardOutput= not set and StandardInput=fd:input",
+            "StandardError= not set (inherit), StandardOutput= not set and StandardInput=fd:input",
+        ),
+        // systemd ignores a file it does not take, which leaves the input
+        // before it, and NAILS does not expand a specifier.
+        (
+            "StandardInput=file:in.log",
+            "StandardError= not set (inherit), StandardOutput= not set and \
+             StandardInput=file:in.log",
+        ),
+        (
+            "StandardInput=file:/var/log/../in.log",
+            "StandardError= not set (inherit), StandardOutput= not set and \
+             StandardInput=file:/var/log/../in.log",
+        ),
+        (
+            "StandardInput=file:%t/in.log",
+            "StandardError= not set (inherit), StandardOutput= not set and \
+             StandardInput=file:%t/in.log",
         ),
     ] {
         assert_eq!(
             unknown(of_unit(&section(text), Stream::Error, TUNED_BY)),
-            why,
+            past(settings),
             "{text:?}"
         );
     }

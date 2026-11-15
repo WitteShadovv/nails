@@ -67,8 +67,9 @@ of this changelog for that version becomes the release notes word for word, and
   logging to a file (its default log target, `mixed`, appends its warnings and errors to
   `/var/log/firewalld`), or to a journal namespace the decoy keeps, and ABRT in use (crash reports
   in `/var/spool/abrt`) warn. What NAILS cannot read of their unit files, their commands or their
-  processes, a program that runs the daemon in turn and a pipe on its standard error among it,
-  counts against the decoy, within the limits `docs/decoy-requirements.md` names. The residue
+  processes, a program that runs the daemon in turn, a pipe on its standard error and a
+  descriptor a socket unit passes among it, counts against the decoy, within the limits
+  `docs/decoy-requirements.md` names. The residue
   catalog has a row for each (`tuned-log`, `firewalld-log`, `abrt-spool`), and
   `docs/decoy-requirements.md` says how to fix each, NixOS's firewalld by
   `services.firewalld.extraArgs`. Fedora is not admitted yet, so no VM test runs them; the unit
