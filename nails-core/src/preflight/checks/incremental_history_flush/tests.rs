@@ -454,6 +454,43 @@ fn a_bash_comment_starts_after_a_blank_and_ends_with_its_line() {
 }
 
 #[test]
+fn a_bash_comment_starts_outside_quotes_alone() {
+    // bash 5.3 keeps `history -a` in PROMPT_COMMAND for each (`declare -p`
+    // shows it), and runs it at each prompt: a `#` after a blank in quotes,
+    // after an escaped blank or in a here-document's body starts no
+    // comment.
+    for text in [
+        "PROMPT_COMMAND='printf \" #\" >/dev/null; history -a'\n",
+        "PROMPT_COMMAND=\"printf ' #' >/dev/null; history -a\"\n",
+        "PROMPT_COMMAND=$'printf \" #\\\\n\" >/dev/null; history -a'\n",
+        "PROMPT_COMMAND='printf x\n #\nhistory -a'\n",
+        "x=a\\ #; PROMPT_COMMAND='history -a'\n",
+        "cat <<'EOF' >/dev/null\nit's\nEOF\nPROMPT_COMMAND='printf \" #\"; history -a'\n",
+        "cat <<EOF >/dev/null\n # x\nEOF\nPROMPT_COMMAND='history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(
+            warning(bash(&fs)).contains("/home/alice/.bashrc runs `history -a`"),
+            "{text:?}"
+        );
+    }
+    // A `#` that starts a word outside quotes does, past a closed quote too,
+    // and with interactive_comments off, which bash 5.3 reads for a line
+    // typed alone, not for a startup file.
+    for text in [
+        "shopt -u interactive_comments\ntrue # ; PROMPT_COMMAND='history -a'\n",
+        "x='a'; # PROMPT_COMMAND='history -a'\n",
+        "x=\"a\" #; PROMPT_COMMAND='history -a'\n",
+        "cat <<EOF >/dev/null\nx\nEOF\n# PROMPT_COMMAND='history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(matches!(bash(&fs), CheckResult::Pass(_)), "{text:?}");
+    }
+}
+
+#[test]
 fn bash_reads_the_system_files_too() {
     for path in ["/etc/profile", "/etc/bash.bashrc", "/etc/bashrc"] {
         let fs = MockFilesystem::new();
