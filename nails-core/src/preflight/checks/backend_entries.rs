@@ -41,9 +41,10 @@
 //! A crypttab line's key file and `header=`, which `systemd-cryptsetup` reads,
 //! a `tcrypt-keyfile=`, and the device after the last `:` of its key field or a
 //! `header=`, which systemd's crypttab generator mounts for it
-//! (`/key:/dev/sdb`, `header=/hdr:/dev/sdb`), are read as its source is: a
-//! device of the hidden drive fails the line, as one that the boot reads or
-//! mounts, the decoy's own crypttab line too. So are its `tpm2-device=` and
+//! (`/key:/dev/sdb`, `header=/hdr:/dev/sdb`), are read as its source is, a
+//! device's path in `/dev` through its links that stay in `/dev`: a device of
+//! the hidden drive fails the line, as one that the boot reads or mounts, the
+//! decoy's own crypttab line too. So are its `tpm2-device=` and
 //! `fido2-device=` other than `auto`, which `systemd-cryptsetup` opens and
 //! writes to, and its `tpm2-signature=` and `tpm2-pcrlock=` files, and of every
 //! fstab line the devices and paths its options name: ext4's `journal_path=`

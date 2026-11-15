@@ -615,3 +615,125 @@ fn the_lines_of_stock_installs_pass() {
     let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
     assert!(result.is_pass(), "{result:?}");
 }
+
+/// The names of the volume's device and drive that udev, LVM and the kernel
+/// make in /dev, each a link to the node it names: by-id, by-uuid,
+/// by-partuuid and by-label links, a link in /dev/block by `major:minor`,
+/// and an LVM-style link in a folder of /dev, and a path to the node with `.`
+/// or a doubled `/` in it.
+const DRIVE_NAMES: &[&str] = &[
+    "/dev/disk/by-id/usb-hidden",
+    "/dev/disk/by-uuid/vol",
+    "/dev/disk/by-partuuid/pdrive",
+    "/dev/disk/by-label/vault",
+    "/dev/block/254:9",
+    "/dev/block/8:16",
+    "/dev/vg0/data",
+    "/dev/./sdb",
+    "/dev//sdb",
+    "/dev/mapper/./data",
+];
+
+/// The decoy fixture, with `line` in its fstab and `crypttab`, and the links
+/// of [`DRIVE_NAMES`], with links to sdc and out of /dev beside them.
+fn decoy_with_names(line: &str, crypttab: &str) -> Decoy {
+    let decoy = decoy_with_crypttab(crypttab).file(
+        "/etc/fstab",
+        &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}\n"),
+    );
+    decoy.fs.mock_set_device_node("/dev/sdc");
+    for (link, target) in [
+        ("/dev/disk/by-id/usb-hidden", "../../sdb"),
+        ("/dev/disk/by-uuid/vol", "../../dm-9"),
+        ("/dev/disk/by-partuuid/pdrive", "../../sdb"),
+        ("/dev/disk/by-label/vault", "../../dm-9"),
+        ("/dev/block/254:9", "../dm-9"),
+        ("/dev/block/8:16", "../sdb"),
+        ("/dev/vg0/data", "../dm-9"),
+        ("/dev/disk/by-id/usb-other", "../../sdc"),
+        ("/dev/vlink", "/mnt/img"),
+    ] {
+        decoy.link(link, target);
+    }
+    decoy
+}
+
+#[test]
+fn a_filesystem_option_that_names_the_drive_by_any_of_its_names_fails() {
+    // ext4 opened the journal device that `journal_path=` names through a
+    // link, through /dev/./ and through a doubled `/` (util-linux 2.42.4,
+    // kernel 6.8), and systemd passes the option through unchanged. NAILS
+    // resolves the device an option names as it resolves a line's source:
+    // through links that stay in /dev, so every name of the volume's device
+    // or drive fails the line, for each of the four options that name a
+    // device by its path, with the flag too.
+    for (fstype, option) in [
+        ("ext4", "journal_path"),
+        ("xfs", "logdev"),
+        ("xfs", "rtdev"),
+        ("btrfs", "device"),
+    ] {
+        for name in DRIVE_NAMES {
+            let decoy =
+                decoy_with_names(&format!("/dev/sdc /data {fstype} {option}={name} 0 0"), "");
+            for allow in [Allow::Nothing, Allow::DecoyStorage] {
+                let result = run_allowing(&decoy.fs, allow);
+                assert_eq!(
+                    result.message(),
+                    names_the_volume(&format!(
+                        "/etc/fstab: '/dev/sdc /data {fstype}' (it opens the volume at /mnt or a \
+                         device it is stored on through its option {option}=)"
+                    )),
+                    "{option}={name}"
+                );
+                assert_eq!(result.remediation(), Some(REMEDIATION), "{option}={name}");
+            }
+        }
+        // A link to another drive names none of it, and a link that leads
+        // out of /dev is not followed.
+        let other = decoy_with_names(
+            &format!("/dev/sdc /data {fstype} {option}=/dev/disk/by-id/usb-other 0 0"),
+            "",
+        );
+        assert!(other.run().is_pass(), "{option}: {:?}", other.run());
+        let out = decoy_with_names(
+            &format!("/dev/sdc /data {fstype} {option}=/dev/vlink 0 0"),
+            "",
+        );
+        assert_eq!(
+            out.run().message(),
+            may_name_the_volume(&format!(
+                "/etc/fstab: '/dev/sdc /data {fstype}' (where the path its option {option}= names \
+                 lies cannot be told: /dev/vlink is a symbolic link that leads out of /dev, which \
+                 NAILS does not follow)"
+            )),
+            "{option}"
+        );
+    }
+    // The node itself, and a line's own source by such a link.
+    let direct = decoy_with_names("/dev/sdc /data ext4 journal_path=/dev/sdb 0 2", "");
+    assert!(direct.run().is_fail());
+    let source = decoy_with_names("/dev/disk/by-id/usb-hidden /data ext4 nofail 0 2", "");
+    assert_eq!(
+        source.run().message(),
+        names_the_volume(
+            "/etc/fstab: '/dev/disk/by-id/usb-hidden /data ext4' (it mounts a device the volume \
+             at /mnt is stored on, and the decoy's own boot needs it)"
+        )
+    );
+    // A crypttab line's tpm2-device= by such a name.
+    for name in DRIVE_NAMES {
+        let decoy = decoy_with_names(
+            "",
+            &format!("vault /dev/sdc none luks,tpm2-device={name},nofail\n"),
+        );
+        assert_eq!(
+            decoy.run().message(),
+            names_the_volume(
+                "/etc/crypttab: 'vault /dev/sdc' (it opens the volume at /mnt or a device it is \
+                 stored on through its option tpm2-device=)"
+            ),
+            "{name}"
+        );
+    }
+}

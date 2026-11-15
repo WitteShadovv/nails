@@ -296,7 +296,7 @@ pub(super) fn crypttab_reads(crypttab: &[CrypttabEntry]) -> impl Iterator<Item =
 
 /// The paths the options of the lines of `fstab` name
 /// ([`fstab_reads`](super::reads::fstab_reads)), every line's.
-fn fstab_option_reads(fstab: &[FstabEntry]) -> impl Iterator<Item = &str> {
+pub(super) fn fstab_option_reads(fstab: &[FstabEntry]) -> impl Iterator<Item = &str> {
     fstab.iter().flat_map(|entry| {
         super::reads::fstab_reads(entry)
             .into_iter()

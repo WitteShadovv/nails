@@ -30,15 +30,18 @@
 //!   alone, which systemd ignores: one that names another unit links the line
 //!   into that unit in place of `local-fs.target`.
 //! - Of a path or a device that an option names ([`Form::Reads`]), the judge
-//!   reads where it leads as it reads a line's source (see the `reads`
-//!   module): ext4's `journal_path=` and `journal_dev=` (a device by its
-//!   number), XFS's `logdev=` and `rtdev=` and btrfs's `device=`, which the
-//!   filesystem opens and writes to, `x-systemd.requires-mounts-for=` and
-//!   `x-systemd.wants-mounts-for=`, whose mounts systemd makes first, cifs's
-//!   `credentials=`, a file `mount.cifs` reads, an overlay's `lowerdir=`,
-//!   `upperdir=` and `workdir=`, the folders it is made of, and of a crypttab
-//!   line `tpm2-device=` and `fido2-device=`, which `systemd-cryptsetup`
-//!   opens and writes TPM or FIDO2 commands to unless they are `auto`, and
+//!   reads a path where it leads, with no link followed, and resolves a
+//!   device's path in `/dev` through links that stay in `/dev`, a udev link,
+//!   a link in `/dev/block` or a volume group's link among them, as it reads
+//!   a line's source (see the `reads` module): ext4's `journal_path=` and
+//!   `journal_dev=` (a device by its number), XFS's `logdev=` and `rtdev=`
+//!   and btrfs's `device=`, which the filesystem opens and writes to,
+//!   `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`,
+//!   whose mounts systemd makes first, cifs's `credentials=`, a file
+//!   `mount.cifs` reads, an overlay's `lowerdir=`, `upperdir=` and
+//!   `workdir=`, the folders it is made of, and of a crypttab line
+//!   `tpm2-device=` and `fido2-device=`, which `systemd-cryptsetup` opens and
+//!   writes TPM or FIDO2 commands to unless they are `auto`, and
 //!   `tpm2-signature=` and `tpm2-pcrlock=`, files it reads. `header=` and
 //!   `tcrypt-keyfile=` the `reads` module reads as before.
 //! - The generic flags of `libmount` (`defaults`, `ro`, `rw`, `exec`,

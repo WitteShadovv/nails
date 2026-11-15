@@ -23,11 +23,15 @@
 //! is not there now, and which device's paths in `/dev` no block device answers
 //! to. The path of a swap or image file or of a crypttab line's file is never
 //! resolved as the name of a device, and neither is a bind line's source that
-//! is an absolute path outside `/dev`. A device's path in `/dev` is resolved
-//! only through links that stay in `/dev` (see
-//! [`follow_in_dev`](crate::blockdev::follow_in_dev)). A FUSE line names a
-//! device by the source it gives its program, the part after the `#` of a
-//! `fuse` line's first field.
+//! is an absolute path outside `/dev`. A tag or a device's path in `/dev` that
+//! a line names, an fstab line's first field, a crypttab line's source and its
+//! mapping, what a crypttab line reads besides and the device an option of an
+//! fstab line names, such as ext4's `journal_path=`, is resolved to the block
+//! device it leads to, only through links that stay in `/dev` (see
+//! [`follow_in_dev`](crate::blockdev::follow_in_dev)): a udev link, a link in
+//! `/dev/block`, a volume group's link and a path with `.` or a doubled `/` in
+//! it. A FUSE line names a device by the source it gives its program, the part
+//! after the `#` of a `fuse` line's first field.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -173,9 +177,11 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
     }
 
     // The names the files and the mount table use for devices, a FUSE
-    // line's by the source it gives its program. The path of a file the
-    // fstab names or a crypttab line opens is no name of one: resolved whole,
-    // its links would be read, and a `..` leads out of `/dev`.
+    // line's by the source it gives its program, and those that what a
+    // crypttab line reads and the options of an fstab line name. The path of
+    // a file the fstab names or a crypttab line opens is no name of one:
+    // resolved whole, its links would be read, and a `..` leads out of
+    // `/dev`.
     let specs = collected
         .fstab
         .iter()
@@ -189,6 +195,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         }))
         .chain(
             super::paths::crypttab_reads(&collected.crypttab)
+                .chain(super::paths::fstab_option_reads(&collected.fstab))
                 .filter(|spec| !super::paths::is_file_path(spec))
                 .map(str::to_string),
         )
