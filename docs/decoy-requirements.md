@@ -417,8 +417,12 @@ of its `ExecStart=`, split as systemd splits them, with the variables the unit
 sets itself (`Environment=`, and the files `EnvironmentFile=` names, read as
 systemd reads them). It reads the program's own options as the program does.
 Where a daemon logs to its standard output or standard error, the unit's
-`StandardOutput=` and `StandardError=` say where that goes. Where that is
-the journal, or the daemon logs to syslog, the journal namespace its unit
+`StandardOutput=` and `StandardError=` say where that goes, as systemd reads
+them: `journal`, `syslog` and `kmsg`, alone or with `+console`, send the
+stream to the journal, and so does a standard output left to `inherit` or not
+set, which takes the service manager's default, unless `StandardInput=` is a
+terminal, `socket` or a named descriptor (`fd:`). Where that is the journal,
+or the daemon logs to syslog, the journal namespace its unit
 sets with `LogNamespace=` decides, or, for a running daemon, the one its
 mount table shows: that namespace's journald instance reads
 `journald@<namespace>.conf` and its drop-ins, never `journald.conf`, and
@@ -534,8 +538,9 @@ What NAILS cannot read of these, a unit file or drop-in directory it cannot
 read, a command or option it does not follow, a program that runs the daemon
 in turn (as `logsave` or `script` does, which can copy what it logs into a
 file of their own), a variable the unit does not set, a standard stream it
-cannot follow (a pipe among them), a journal namespace whose configuration it
-cannot read, a drop-in name that two of a unit's names hold in different files
+cannot follow (a pipe, or a descriptor a socket unit passes, among them), a
+journal namespace whose configuration it cannot read, a drop-in name that two
+of a unit's names hold in different files
 (the service manager takes the names in an order of its own), counts against
 the decoy: tuned is refused as if it logged to a file, and firewalld and ABRT
 warn. A log to a device that keeps nothing it is given, as `/dev/null` or a

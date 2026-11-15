@@ -14,8 +14,8 @@
 //!   `tuned.service` passes `-l`, and Fedora enables it by preset wherever it
 //!   is installed (its Cloud image has none). Without a log file it logs
 //!   every line to its standard error, which the journal takes unless its
-//!   unit sends it to a file ([`streams`]); such a file counts as a log file,
-//!   and so does the journal of a namespace that keeps it on the disk
+//!   unit sends it elsewhere ([`streams`]); a file counts as a log file, and
+//!   so does the journal of a namespace that keeps it on the disk
 //!   ([`namespace`]).
 //!   tuned-ppd, which translates the power profiles of desktops for tuned,
 //!   writes its log with `-l` to `/var/log/tuned/tuned-ppd.log`, and to its

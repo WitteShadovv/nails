@@ -5,31 +5,47 @@
 //! daemon that logs there: tuned and tuned-ppd without a log file, firewalld
 //! with the log target `console`.
 //!
-//! By its unit, as the service manager sets the two up when it starts it
-//! (systemd.exec(5)). `StandardError=` and `StandardOutput=` count by their
-//! last value that is not empty: systemd ignores an empty one, which leaves
-//! the one before. `file:`, `append:` and `truncate:` write the file they
-//! name, unless it is a device that keeps nothing ([`log_to_path`]);
-//! `journal`, `syslog` and their `+console` forms send it to the journal,
-//! which may be a namespace's that persists ([`super::namespace`]); and
-//! `null`, `kmsg`, `tty` and the `+console` form of `kmsg` write no file. `inherit` sends the standard error where the standard output
-//! goes, and the standard output where the standard input comes from, which
-//! is no file unless `StandardInput=` names one or a descriptor of a socket
-//! unit. So does `socket`, for a service that no socket starts. Unset, each
-//! takes the service manager's default (`DefaultStandardError=` and
-//! `DefaultStandardOutput=` in `system.conf`), which systemd never lets name
-//! a file, a socket or a descriptor: the default standard error is `inherit`
-//! unless `system.conf` sets another, and NAILS takes `inherit`, the only one
-//! that may lead to a file; the default standard output is the journal, which
-//! NAILS takes where the standard input leads to no file. A value NAILS does
-//! not know, such as a named descriptor (`fd:`), leaves it unknown.
+//! By its unit, as the service manager of systemd 254 and later sets the two
+//! up when it starts it (systemd.exec(5)). `StandardError=` and
+//! `StandardOutput=` count by their last value that is not empty: systemd
+//! ignores an empty one, which leaves the one before.
+//!
+//! - `file:`, `append:` and `truncate:` write the file they name, unless it
+//!   is a device that keeps nothing ([`log_to_path`]).
+//! - `journal`, `syslog`, `kmsg` and their `+console` forms send it to the
+//!   journal, which may be a namespace's that persists
+//!   ([`super::namespace`]): `kmsg` reaches the kernel's log buffer through
+//!   the journal, which keeps each line as it hands it on.
+//! - `null` and `tty` write no file.
+//! - `socket` sends it to the one descriptor a socket unit passes the
+//!   service, without which the service manager does not start it, and a
+//!   named descriptor (`fd:`) to one a socket unit or the descriptor store
+//!   passes. Either may be a file, as one a socket unit's `ListenSpecial=`
+//!   opens is, so NAILS cannot tell where it leads.
+//! - `inherit` sends the standard error where the standard output goes, and
+//!   an unset standard error is `inherit`. Where the standard output takes
+//!   its default, systemd gives such a standard error the default of
+//!   `system.conf`, `DefaultStandardError=`, as well, which NAILS takes for
+//!   `inherit`, systemd's own: a default never names a file, a socket or a
+//!   descriptor, so none leads to a file where `inherit` does not.
+//! - The standard output, `inherit` or unset, takes the service manager's
+//!   default, `DefaultStandardOutput=`, which NAILS takes for the journal,
+//!   systemd's own default and the only kind of default that may lead to a
+//!   file, unless `StandardInput=` is a terminal (`tty`, `tty-force`,
+//!   `tty-fail`), `socket` or a named descriptor: systemd's
+//!   `service_fix_stdio()` gives an explicit `inherit` the default as it
+//!   gives an unset one. After such an input the standard output goes where
+//!   the input comes from, a terminal, which writes no file, or a socket
+//!   unit's descriptor, which NAILS cannot tell of.
+//!
+//! A value NAILS does not know leaves the stream unknown.
 //!
 //! By a running process, as the link of its descriptor in `/proc` leads: a
 //! socket is the journal's, and a device that keeps nothing is no file, and a
-//! descriptor that is closed takes nothing. A pipe leads to the process that reads it, which may copy what
-//! it reads into a file, as `tee` does, so NAILS cannot tell. Only root may
-//! follow the descriptors of another user's process, so an unprivileged
-//! `nails check` cannot tell where they lead.
+//! descriptor that is closed takes nothing. A pipe leads to the process that
+//! reads it, which may copy what it reads into a file, as `tee` does, so
+//! NAILS cannot tell. Only root may follow the descriptors of another user's
+//! process, so an unprivileged `nails check` cannot tell where they lead.
 
 use super::super::super::systemd_conf::Assignment;
 use super::options::{FileLog, Log};
@@ -73,15 +89,40 @@ impl Stream {
 
 /// The values of `StandardOutput=` and `StandardError=` that send a stream
 /// to no file.
-const NO_FILE: &[&str] = &["null", "kmsg", "kmsg+console", "tty"];
+const NO_FILE: &[&str] = &["null", "tty"];
 
 /// The values of `StandardOutput=` and `StandardError=` that send a stream
-/// to the journal.
-const JOURNAL: &[&str] = &["journal", "journal+console", "syslog", "syslog+console"];
+/// to the journal: `kmsg` too, whose lines the journal keeps as it hands
+/// them on to the kernel's log buffer.
+const JOURNAL: &[&str] = &[
+    "journal",
+    "journal+console",
+    "syslog",
+    "syslog+console",
+    "kmsg",
+    "kmsg+console",
+];
 
-/// The values of `StandardInput=` from which a standard output that follows
-/// the input writes to no file.
-const NO_FILE_INPUT: &[&str] = &["null", "tty", "tty-force", "tty-fail", "data", "socket"];
+/// The values of `StandardInput=` that are a terminal, which a standard
+/// output left to `inherit` writes to.
+const TERMINAL_INPUT: &[&str] = &["tty", "tty-force", "tty-fail"];
+
+/// Whether a standard output left to `inherit` takes the service manager's
+/// default after `input`, the value of `StandardInput=`, as systemd's
+/// `service_fix_stdio()` gives it: after `null`, `data` and a file. A file is
+/// one only by an absolute path that names no specifier and no `..`, which
+/// systemd takes; it ignores another, which leaves the value before, so
+/// NAILS cannot tell.
+fn takes_default_output(input: &str) -> bool {
+    match input {
+        "null" | "data" => true,
+        _ => input.strip_prefix("file:").is_some_and(|path| {
+            path.starts_with('/')
+                && !path.contains('%')
+                && !path.split('/').any(|part| part == "..")
+        }),
+    }
+}
 
 /// The kinds of value that write the file after them.
 const FILE_KINDS: &[&str] = &["file:", "append:", "truncate:"];
@@ -149,28 +190,26 @@ pub(super) fn of_unit(assignments: &[Assignment], stream: Stream, by: &str) -> L
             (None, Stream::Error) => format!("{key}= not set (inherit)"),
             (None, Stream::Output) => format!("{key}= not set"),
         });
-        let follows = matches!(
-            (at, value),
-            (_, None | Some("inherit")) | (Stream::Error, Some("socket"))
-        );
-        match (follows, at) {
-            (false, _) => break value,
-            (true, Stream::Error) => at = Stream::Output,
-            // The standard output follows the standard input.
-            (true, Stream::Output) => {
-                let input = setting(assignments, "StandardInput");
-                if input.is_none_or(|input| NO_FILE_INPUT.contains(&input)) {
-                    // Unset, it is the manager's default, the journal.
-                    return match value {
-                        None => Log::Journal {
-                            by: listed(&followed),
-                            what: "its log",
-                        },
-                        Some(_) => Log::NoFile,
-                    };
-                }
-                followed.push(format!("StandardInput={}", input.unwrap_or_default()));
+        if !matches!(value, None | Some("inherit")) {
+            break value;
+        }
+        if at == Stream::Error {
+            at = Stream::Output;
+            continue;
+        }
+        // The standard output takes the manager's default, the journal,
+        // unless it follows a terminal or a socket unit's descriptor.
+        match setting(assignments, "StandardInput") {
+            Some(input) if TERMINAL_INPUT.contains(&input) => return Log::NoFile,
+            Some(input) if !takes_default_output(input) => {
+                followed.push(format!("StandardInput={input}"));
                 break None;
+            }
+            _ => {
+                return Log::Journal {
+                    by: listed(&followed),
+                    what: "its log",
+                };
             }
         }
     };
@@ -184,7 +223,7 @@ pub(super) fn of_unit(assignments: &[Assignment], stream: Stream, by: &str) -> L
     let Some(value) = value else {
         return unknown();
     };
-    if NO_FILE.contains(&value) || (at == Stream::Output && value == "socket") {
+    if NO_FILE.contains(&value) {
         return Log::NoFile;
     }
     if JOURNAL.contains(&value) {
