@@ -1692,10 +1692,82 @@ afterwards:
   NixOS's `/etc/zshrc`, is followed, which can change the link's (see
   [What `check` touches](#what-check-touches)). bash's files it reads for
   `history -a` or `history -w` in a file that names `PROMPT_COMMAND`, outside
-  comments as bash reads them (from a `#` that starts a word, after a space,
-  a tab or an operator, to the end of its line, a backslash at its end too),
-  a line whose code ends in a backslash going on in the next. zsh's it reads
-  as zsh does and fails closed where it cannot follow them:
+  comments as bash reads them (from a `#` that starts a word outside quotes,
+  after a space, a tab or an operator, to the end of its line, a backslash at
+  its end too, a here-document's body holding none), a line whose code ends
+  in a backslash going on in the next. zsh's it reads as zsh does and fails
+  closed where it cannot follow them:
+
+  - every command the startup files run, and every hook, widget, alias,
+    function and job they reach that zsh may run, must be on a list of the
+    commands the check knows to be harmless, each read by its name and every
+    word; any other is a doubt. The list holds the builtins that give a
+    status or print (`:`, `true`, `[[ ... ]]`, `test`, `print`, `echo` and
+    `printf` but for `print -z`, `-s`, `-S`, `-v`, `-u` and `-p`, `printf -v`
+    and a word that may be an option an expansion makes, `whence`, `type`,
+    `jobs`, `pwd`, `wait`), `return`, `break`, `continue`, `shift`, and
+    `exit`, `bye` and `logout` (as the files run, before a line is typed, and
+    read as what may end the shell in a hook), `cd`, `pushd`, `popd`,
+    `umask`, `rehash`, `hash -d` (not `hash cmd=path`), `setopt`, `unsetopt`,
+    `set -o` and `emulate -o` of any option of zsh 5.9 to 5.9.2 by its name
+    but `CSH_JUNKIE_LOOPS` (the three this check is about count as on, as
+    below; `ERR_EXIT` ends zsh as a typed command fails, and zsh writes no
+    history file then), `set -A` and `set --`, `emulate` of zsh's, sh's or
+    ksh's mode, the `typeset` family, `unset` and assignments of parameters
+    that steer nothing the check reads or that it reads itself (see below),
+    `source` and `.` of a file it reads, `eval` of words as written,
+    `autoload`, `alias`, `functions` but `-M`, `trap` of code as written,
+    `zstyle` but the forms that set a parameter, `let`, `bindkey -e`,
+    `bindkey -v` and the forms that list, `zle -l` and `zle -L`, `fc` and
+    `history` that list, write, read, push or pop the history file (not `fc`
+    with no such flag, `fc -e`, `fc -s` or `r`, which run lines from it), and
+    `kill -l`. A parameter is let be when it is the user's own, which no part
+    of zsh reads, or one of zsh's own that sets where and how much history
+    zsh keeps (`HISTFILE`, `HISTSIZE`, `SAVEHIST`), the search paths, the
+    locale, the terminal's name and the like, or one the check reads itself
+    (`ZDOTDIR`, `fpath`, the prompts, `TMOUT`) where a file assigns it outside
+    arithmetic; any other of zsh's own is a doubt (`histchars`, `STTY`,
+    `POSTEDIT`, `zle_bracketed_paste`, `KEYBOARD_HACK`, `commands[sudo]=...`,
+    `(( STTY = 0 ))`, `let FPATH=1`), and so is, in a function, a
+    parameter of the line editor's, set in any form (`HISTNO=1`,
+    `(( HISTNO = 1 ))`, `for HISTNO in ...`, `${HISTNO::=1}`, `BUFFER`,
+    `CURSOR`), as a widget that sets one may run a history line in place of
+    the one typed. So an outside program, in the foreground or the background
+    (`stty eof '^M'`, `perl -e ...`, `sh -c ...` in any form, `env sh -c`,
+    `~/bin/tool`, `git` in `precmd`), a program by its path, one `command` or
+    `exec` runs, a coprocess, a key binding other than zsh's own keymaps
+    (`bindkey w beginning-of-history`, `bindkey -s`), a widget (`zle -N`,
+    `add-zle-hook-widget`), a `zle` that runs or changes one, a terminal
+    setting (`ttyctl`, `echoti`), `read`, `vared`, `zmodload`, `zcompile`,
+    `disable`, `unalias`, `unfunction` and `sched` are doubts. A command by a
+    name that is no builtin of zsh's runs the function or the alias your
+    files define or autoload by that name, whose code the check reads, only
+    where the code it stands in certainly defines one before it: earlier at
+    the top level of the same file, or of the file that sources that one,
+    where nothing may keep the definition from running (an `if`, `&&`, a
+    loop, a subshell, a `$(...)`, an `eval`, the background or a pipeline).
+    zsh stops reading a file at a `return` or at an error, such as a glob
+    that matches nothing, and an error in an `eval` stops the `eval` alone,
+    so a definition in another file (one the code sources, another startup
+    file, the same file sourced before) or after the code that runs the name
+    (a helper a hook runs that the file defines after the hook) counts for
+    nothing: zsh 5.9 to 5.9.2 then ran the outside program `PATH` finds by
+    that name (`later; later() { : }` runs `~/bin/later`), a doubt. What the
+    stock `promptinit` defines and marks counts once a file certainly runs
+    it, or for a command after it in a chain joined by `&&` alone
+    (`promptinit && prompt suse`). A regular alias counts the same way, for a
+    name written with no quote or backslash in it past no precommand that is
+    a builtin, as zsh puts its value in place of the name as it reads the
+    code but not in `\later`, `'later'` or `noglob later`, and one whose value
+    hands the words it is used with to a command other than one that takes any
+    words harmlessly (`echo`, `cd`, `:`) is a doubt where it is used with
+    words (`alias k=kill`, then `k -HUP $$`). A function or an alias zsh never
+    runs, as one you may type by hand (`up() { git pull }`), counts for
+    nothing; one named like the command you type a NAILS command with, or like
+    one a widget runs with the line, that runs the program of its own name with
+    its words alone (`sudo() { command sudo "$@" }`, `alias sudo=sudo`) passes,
+    as it hands that program what typing it would. The rules below read what
+    the commands on the list do;
 
   - in zsh's order, once for each home the shell can run with (for the
     shell you typed the command into, the one its environment names, and a
@@ -1863,21 +1935,23 @@ afterwards:
     module zsh does not load as its name is first run, nor one a file
     disables, nor `zpty` or `clone`) and a function or an alias your files
     define or autoload whose code, and that of each it runs, holds none of
-    that. So `{ sleep 3; kill -HUP $$ } &!` and
-    `( sleep 1; zcompile ~/.zcompdump ) &!` are doubts, and
-    `{ zcompile ~/.zcompdump } &!` is none. An `exit` in such a job ends the
-    job, in which zsh writes no line typed after it started. The line a widget
-    gives zsh to run is read too, as zsh runs what the line editor holds as a
-    widget accepts the line: a value a function gives `BUFFER` as written
-    (`BUFFER=exit` in a wrapper of `accept-line`, in `zle-line-init` or in
-    `zle-line-finish`) is read as a line typed, and is a doubt where zsh may
-    expand history in it (a `!`, a `^` that starts it); any other way a
-    function sets the line (`LBUFFER=exit`, `RBUFFER=`, `BUFFER=$c`,
-    `BUFFER+=x`, `local BUFFER=exit`, `read BUFFER`, `print -v BUFFER`) and a
-    widget of zsh's own that a function runs and that may put other text in
-    the line (`zle up-history`, `zle .yank`, `zle .kill-word`) are doubts
-    should a widget run that function; a line of your files that sets the line
-    where the check reads no such assignment (`: ${BUFFER:=exit}`,
+    that, and such a program is a doubt of the list wherever it runs (above).
+    So `{ sleep 3; kill -HUP $$ } &!` and
+    `( sleep 1; zcompile ~/.zcompdump ) &!` are doubts. An `exit` in such a
+    job ends the job, in which zsh writes no line typed after it started. The
+    line a widget gives zsh to run is read too, as zsh runs what the line
+    editor holds as a widget accepts the line: a value a function gives
+    `BUFFER` as written (`BUFFER=exit` in a wrapper of `accept-line`, in
+    `zle-line-init` or in `zle-line-finish`) is read as a line typed (a widget
+    a file makes, and a `zle` that runs one, being a doubt of the list
+    besides, above), and is a doubt where zsh may expand history in it (a `!`,
+    a `^` that starts it); any other way a function sets the line
+    (`LBUFFER=exit`, `RBUFFER=`, `BUFFER=$c`, `BUFFER+=x`,
+    `local BUFFER=exit`, `read BUFFER`, `print -v BUFFER`) and a widget of
+    zsh's own that a function runs and that may put other text in the line
+    (`zle up-history`, `zle .yank`, `zle .kill-word`) are doubts should a
+    widget run that function; a line of your files that sets the line where
+    the check reads no such assignment (`: ${BUFFER:=exit}`,
     `for BUFFER in ...`) is a doubt wherever it stands, and so is a `zle -A`
     that makes the keys you type run such a widget
     (`zle -A up-history self-insert`). A widget that accepts, redraws, lists,
@@ -1890,10 +1964,9 @@ afterwards:
     where no file sets the line as written (`BUFFER=exi`, which
     `zle expand-or-complete` may make `exit`). The lines `zle -U`, `print -z`
     and `bindkey -s` type are doubts too where zsh may expand history in them.
-    So a wrapper of `accept-line` that only accepts the line passes, and zsh's
-    own `up-line-or-beginning-search` made a widget
-    (`zle -N up-line-or-beginning-search`) is a doubt, as it fetches a line
-    from the history. A
+    So zsh's own `up-line-or-beginning-search` made a widget
+    (`zle -N up-line-or-beginning-search`) is a doubt of this rule too, as it
+    fetches a line from the history. A
     global alias is
     a doubt where a word of the code the check reads holds its name beyond its
     definition, as zsh puts its value in place of that word (`function X`,
@@ -2103,7 +2176,9 @@ afterwards:
     whose completion runs without `compinit`, is a doubt wherever it stands.
     Bash's `complete`, which `bashcompinit` defines, registers what it names
     through `compdef`, which only `compinit` defines, so without `compinit` it
-    makes zsh run nothing. Without `compinit` and `compctl`, a widget that
+    makes zsh run nothing; where no function of that name is certainly defined
+    before it, it is an outside program's name, a doubt of the list. Without
+    `compinit` and `compctl`, a widget that
     completes a word runs zsh's builtin completion, which runs no code of your
     files but the function of a completion widget (`zle -C`), which counts as
     a hook, as above;
@@ -2118,7 +2193,8 @@ afterwards:
     the name of the shell it emulates from `SHELL`, `SH_WORD_SPLIT` (`-y`) or
     `KSH_ARRAYS` turned on there, which may change the directories an expansion
     gives `fpath`, and an option there that changes how zsh reads code (`-I`,
-    `-o ignoreclosebraces`, `--rc-quotes`, `-o aliasfuncdef`, see below);
+    `-o ignoreclosebraces`, `--rc-quotes`, `-o aliasfuncdef`,
+    `-o cshjunkieloops`, see below);
   - arithmetic: zsh evaluates it in `(( ))`, `$(( ))`, `let`, an array's
     subscript (`a[n]=x`, `${a[n]}`, `a=([n]=x)`), an offset or a length
     (`${s:n}`), a flag's number (`${(l:n:)s}`), the operands of
@@ -2312,16 +2388,8 @@ afterwards:
   type it, a global alias
   named like another word you type (the value you give an option or a
   setting, as `5` in `--countdown 5`), which zsh runs as you enter the line, a
-  program named like the command you type that zsh finds first in `PATH` or
-  that `hash` names (a `sudo` script in `~/bin`), a program a hook or the
-  startup files run in the foreground that ends the shell by itself or leaves
-  a process of its own running that signals the shell later (one that signals
-  its parent, a script, `env setsid sh -c ...`: it reads the code a shell is
-  given with `-c` and what `nohup`, `setsid` and the like start, where they
-  run it themselves), a key you type a line with that a file binds to another
-  widget than `self-insert` (`bindkey o beginning-of-history`), or a keymap a
-  file makes the one you type in (`bindkey -A vicmd main`), which may change
-  the line you type, a security module (SELinux, AppArmor) that keeps
+  program named like the command you type that zsh finds first in `PATH` (a
+  `sudo` script in `~/bin`), a security module (SELinux, AppArmor) that keeps
   zsh from opening a startup file you own and may read by its mode, a file a
   bash startup file sources, or a shell started with other startup files
   (`bash --rcfile`, or a `ZDOTDIR` from the
@@ -2359,16 +2427,18 @@ afterwards:
   it warn, and so does an `eval` of what a command prints
   (`eval "$(tool init zsh)"`).
 
-  So zsh passes only when no file it reads names the three options, nothing
-  is left the check cannot tell and, for the zsh you typed the command into,
+  So zsh passes only when no file it reads names the three options, every
+  command it may run is on the list of those the check knows to be harmless,
+  nothing is left the check cannot tell and, for the zsh you typed the
+  command into,
   nothing it read changed after it started (with its history file in your
   home, only with `HIST_FCNTL_LOCK` on, see above): zsh's default, under which a zsh
   writes its history only as it ends, which the kill at activation keeps it
   from doing, unless it ends before that. A hook that may end it, a job the
   startup files start that may signal it later, a widget that may give it a
-  line that ends it and a `TMOUT` above 0 make the check warn (see above), a
-  program that leaves a process of its own that signals it does not (see the
-  limits above), and a shell you end
+  line that ends it, an outside program, which may leave a process of its own
+  that signals it, and a `TMOUT` above 0 make the check warn (see above), and
+  a shell you end
   yourself before activation (`exit`, Ctrl-D, closing its window, which sends
   it SIGHUP) writes its history then, so leave the shell you typed in open
   until activation.
@@ -2382,27 +2452,24 @@ afterwards:
   they name none of the options and hold nothing it cannot follow. When they
   name one, or hold what the check cannot follow, the warning for such a zsh
   tells you to take that out of them and of what they source. On NixOS,
-  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default, and runs
-  `compinit` there with `programs.zsh.enableCompletion` on, as by default. Take
-  the option out of `programs.zsh.setOptions`, keep `HIST_FCNTL_LOCK` there, as
-  by default, so that a zsh does not change your home as it starts, turn
-  `programs.zsh.enableCompletion` off (or just
-  `programs.zsh.enableGlobalCompInit`, which leaves out the `compinit` line
-  and keeps the completions linked) and rebuild: then a zsh you start after
-  the rebuild passes with the files `programs.zsh` generates, when your own
-  files hold nothing the check warns about (no `compinit` among it). One that
-  ran before the rebuild keeps what it read then, and the check warns for it,
-  as `/etc/zshrc` changed after it started. An option
-  that adds lines to them
-  (`enableBashCompletion`, `autosuggestions`, `syntaxHighlighting`) can make it
-  warn again. The check knows the lines NixOS generates there as they are
-  written: in `/etc/zshrc` the `eval` of what coreutils' `dircolors` prints,
-  which then sets `LS_COLORS` alone, when the store path it names holds
-  coreutils' program (its `bin/dircolors` links to the `coreutils` program
-  beside it, which holds what GNU dircolors prints; another `eval`, that line
-  written otherwise or inside a structure, or another program is read as
-  before) and nothing that runs before it may change what it runs: no file read
-  before it (your `.zshenv`, `programs.zsh.shellInit` and
+  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default, runs
+  `compinit` there with `programs.zsh.enableCompletion` on, as by default,
+  runs the `hostname` program there to set `HOST`, and sources
+  `/etc/zinputrc`, which binds the keys the terminal's description names for
+  Home, End, the arrows and the like and makes the widgets that set the
+  keypad's mode: an outside program, key bindings and widgets, which the check
+  doubts whatever the options. So on NixOS a zsh that reads `/etc/zshrc`
+  warns, and the fix is a zsh started as `zsh -f`, which reads `/etc/zshenv`,
+  the `set-environment` it sources and `/etc/zshenv.local`: NixOS writes
+  only commands the check knows to be harmless there, so it passes where you
+  add nothing it warns about. The check knows the lines NixOS generates as
+  they are written: in `/etc/zshrc` the `eval` of what coreutils' `dircolors`
+  prints, which then sets `LS_COLORS` alone, when the store path it names
+  holds coreutils' program (its `bin/dircolors` links to the `coreutils`
+  program beside it, which holds what GNU dircolors prints; another `eval`,
+  that line written otherwise or inside a structure, or another program is
+  read as before) and nothing that runs before it may change what it runs: no
+  file read before it (your `.zshenv`, `programs.zsh.shellInit` and
   `interactiveShellInit`), and no function autoloaded and run before it,
   defines an alias of any kind, a function named `eval`, `export` or like its
   program, a `TRAP...` function (a DEBUG trap prints into the line's command

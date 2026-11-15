@@ -1162,22 +1162,27 @@ history yourself so an interactive shell has nowhere to write:
   `HIST_FCNTL_LOCK` is on,
   so with the history file in your home or `ZDOTDIR` turn that option on, as
   NixOS does by default, or keep the history file in a directory of its own:
-  else the check warns for a zsh however new it is. With NixOS's
-  `programs.zsh`, `SHARE_HISTORY` taken out of `programs.zsh.setOptions`
-  (`HIST_FCNTL_LOCK` kept there) and `programs.zsh.enableCompletion` (or just
-  `programs.zsh.enableGlobalCompInit`) turned off, a zsh you start after the
-  rebuild and type `nails activate` into passes with the files
-  `programs.zsh` generates: the check knows the lines
-  NixOS generates there as they are written, and follows `promptinit` into
-  zsh's own directory and the Nix profiles. It warns wherever your files
-  autoload `compinit`, as NixOS's `/etc/zshrc` does with
-  `programs.zsh.enableCompletion` on, the default, and nearly every `.zshrc`
-  does: zsh's own completion functions run what programs print as code as you
-  complete a word, and the programs and settings that may change what they
-  print cannot all be listed (`tar` with a `LANGUAGE` that names a message
-  catalog of yours, `bash` with a `BASH_ENV`).
-  An option that adds lines to those files (`enableBashCompletion`,
-  `autosuggestions`, `syntaxHighlighting`) can make it warn again, and so can
+  else the check warns for a zsh however new it is. The check reads zsh's
+  files by a list of the commands it knows to be harmless, each read by its
+  name and every word, so any other command your files run where zsh may run
+  it makes it warn: an outside program, in the foreground or the background
+  (`stty`, `git` in `precmd`, `sh -c ...`, a script of yours), a key binding
+  other than `bindkey -e` or `bindkey -v`, a widget, a terminal setting, and a
+  name zsh runs as an outside program because no function of it is certainly
+  defined before it runs (see the operator guide). On NixOS, the
+  `/etc/zshrc` that `programs.zsh` generates runs the `hostname` program and
+  sources `/etc/zinputrc`, which binds keys and makes widgets, so a zsh that
+  reads it warns: type the decoy commands in a zsh started as `zsh -f`, which
+  reads `/etc/zshenv` and the `set-environment` NixOS writes, and passes where
+  you add nothing it warns about. The check knows the lines NixOS generates
+  as they are written, and follows `promptinit` into zsh's own directory and
+  the Nix profiles. It warns wherever your files autoload `compinit`, as
+  NixOS's `/etc/zshrc` does with `programs.zsh.enableCompletion` on, the
+  default, and nearly every `.zshrc` does: zsh's own completion functions run
+  what programs print as code as you complete a word, and the programs and
+  settings that may change what they print cannot all be listed (`tar` with a
+  `LANGUAGE` that names a message catalog of yours, `bash` with a
+  `BASH_ENV`). Beside a command off the list, it warns at
   an alias, a `TRAP...` function, a `trap`, `ARGV0` or a variable of the
   dynamic loader (`LD_...`) in your `.zshenv` or in
   `programs.zsh.shellInit` or `interactiveShellInit`, which run before the
