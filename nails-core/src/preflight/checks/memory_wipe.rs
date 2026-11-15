@@ -27,8 +27,12 @@
 //! `/usr/lib/modules/<release>/config` (Fedora). The check warns when freed
 //! memory is not zeroed and stays an informational pass only when it cannot
 //! tell: a command line that is there but cannot be read lets no config's
-//! default say freed memory is zeroed, since the line may turn it off. It also notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe`
-//! module) when one is installed. Every probe reads; nothing here writes.
+//! default say freed memory is zeroed, since the line may turn it off, and a
+//! release that is there but cannot be read lets only an answer count that
+//! the spellings of every release give, since it says which values the
+//! kernel accepts. It also notes a RAM-wipe-on-shutdown mechanism (the
+//! dracut `ram-wipe` module) when one is installed. Every probe reads;
+//! nothing here writes.
 //!
 //! The config files and dracut's modules are read through the automount
 //! guard ([`crate::filesystem::automount`]): a lookup that would mount an
@@ -177,11 +181,19 @@ impl MemoryWipeCheck {
         }
     }
 
-    /// The booted kernel's release, or `None` when it cannot be read.
-    fn release<F: Filesystem>(&self, fs: &F) -> Option<String> {
-        let release = fs.read_file_content(&self.osrelease_path).ok()?;
-        let release = release.trim();
-        (!release.is_empty()).then(|| release.to_string())
+    /// The booted kernel's release, `None` when it is not there or empty;
+    /// `Err` says why NAILS cannot read it, where it is there.
+    fn release<F: Filesystem>(&self, fs: &F) -> std::result::Result<Option<String>, String> {
+        match fs.read_file_content(&self.osrelease_path) {
+            Ok(release) => {
+                let release = release.trim();
+                Ok((!release.is_empty()).then(|| release.to_string()))
+            }
+            Err(error) if error.nothing_there() => Ok(None),
+            Err(error) => {
+                Err(describe(&self.osrelease_path.display().to_string(), &error).sentence)
+            }
+        }
     }
 
     /// Whether a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module,
@@ -229,10 +241,21 @@ impl<F: Filesystem> PreFlightCheck<F> for MemoryWipeCheck {
             ),
         };
         let release = self.release(fs);
-        let spellings = BoolSpellings::of_release(release.as_deref());
         let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
-        let config = self.config.read(&guarded, release.as_deref());
-        let freed = match freed_memory(cmdline.as_deref(), spellings, config.as_ref()) {
+        let known = release.as_ref().ok().and_then(Option::as_deref);
+        let config = self.config.read(&guarded, known);
+        let judge = |spellings| freed_memory(cmdline.as_deref(), spellings, config.as_ref());
+        let freed = match &release {
+            Ok(release) => judge(BoolSpellings::of_release(release.as_deref())),
+            // A release that cannot be read leaves untold which values the
+            // kernel accepts: only an answer the spellings of every release
+            // give counts.
+            Err(_) => match judge(BoolSpellings::Classic) {
+                freed if freed == judge(BoolSpellings::EnableDisable) => freed,
+                _ => FreedMemory::Unknown,
+            },
+        };
+        let freed = match freed {
             // A command line that cannot be read may turn init_on_free off,
             // or page poisoning on, whatever the config's default.
             FreedMemory::Zeroed if cmdline_unread.is_some() => FreedMemory::Unknown,
@@ -273,9 +296,11 @@ impl<F: Filesystem> PreFlightCheck<F> for MemoryWipeCheck {
                  session rather than leaving the machine running.",
             )),
             FreedMemory::Unknown => {
-                let unread = cmdline_unread
+                let unread: String = [cmdline_unread, release.err()]
+                    .into_iter()
+                    .flatten()
                     .map(|why| format!(" {why}."))
-                    .unwrap_or_default();
+                    .collect();
                 let unlooked = note(&guarded.skipped())
                     .map(|note| format!("\n{note}"))
                     .unwrap_or_default();

@@ -652,11 +652,28 @@ impl<F: Filesystem> PreFlightCheck<F> for DmaProtectionCheck {
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let mut unread = Unread::default();
         let cmdline = unread.text(fs, &self.cmdline_path);
-        let release = fs.read_file_content(&self.osrelease_path).ok();
-        let spellings = BoolSpellings::of_release(release.as_deref());
-        let intent = cmdline.as_deref().map_or(IommuCmdline::Unset, |cmdline| {
-            parse_iommu_cmdline(cmdline, spellings)
-        });
+        let intent = |spellings| {
+            cmdline.as_deref().map_or(IommuCmdline::Unset, |cmdline| {
+                parse_iommu_cmdline(cmdline, spellings)
+            })
+        };
+        let intent = match fs.read_file_content(&self.osrelease_path) {
+            Ok(release) => intent(BoolSpellings::of_release(Some(&release))),
+            Err(error) if error.nothing_there() => intent(BoolSpellings::of_release(None)),
+            // A release that cannot be read leaves untold which values the
+            // kernel accepts: where the spellings of the releases read the
+            // line apart, the line decides nothing, and NAILS could not read
+            // what would decide it.
+            Err(error) => match intent(BoolSpellings::Classic) {
+                same if same == intent(BoolSpellings::EnableDisable) => same,
+                _ => {
+                    unread.0.push(
+                        describe(&self.osrelease_path.display().to_string(), &error).sentence,
+                    );
+                    IommuCmdline::Unset
+                }
+            },
+        };
         let iommu = iommu_state(intent, self.sys_iommu(fs, &mut unread));
         let tb = self.thunderbolt_protection(fs, &mut unread);
         let lockdown = self.lockdown(fs);
