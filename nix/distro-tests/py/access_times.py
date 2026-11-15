@@ -32,8 +32,18 @@ Three kinds of phase are judged:
 
 A path the decoy's own soft-reboot reads at the same point is no finding:
 NAILS reading it too leaves nothing a plain switch does not. Everything else
-is: a program NAILS starts, a file or link it reads, a module the kernel loads
-for it, a unit file the service manager loads because NAILS asked about it.
+is: a program NAILS starts, a file, a directory or a link it reads, a module
+the kernel loads for it, a unit file the service manager loads because NAILS
+asked about it.
+
+A finding that is a symbolic link is of a kind of its own (:func:`split_links`):
+NAILS reads its own files with ``O_NOATIME`` and starts its programs with every
+mount ``noatime``, but a lookup of its own still updates the access time of
+each link it follows or reads on the decoy, which the operator guide names.
+So is a listing of udevd's rule and link directories (:func:`split_udevd`):
+udevd lists them whenever it handles a uevent, every three seconds at most, to
+see whether one changed, so their access times follow the machine's own
+uevents. The scenario lists both kinds and fails on every other finding.
 """
 
 from __future__ import annotations
@@ -165,6 +175,36 @@ def judge_flow(
         elif s.path not in control.stop and s.path not in control.start:
             findings.append(Finding(WAY_BACK, s.path, s.atime, s.kind))
     return sorted(findings, key=lambda f: (f.atime, f.path))
+
+
+def split_links(findings: Iterable[Finding]) -> tuple[list[Finding], list[Finding]]:
+    """The findings that are not symbolic links, and the ones that are."""
+    others: list[Finding] = []
+    links: list[Finding] = []
+    for f in findings:
+        (links if f.kind == "l" else others).append(f)
+    return others, links
+
+
+# The directories udevd lists to see whether its rules (``RULES_DIRS``) or its
+# link files (``NETWORK_DIRS``, which networkd reads too) changed, as they are
+# on a disk: on a merged /usr, and below /lib where it is not merged.
+UDEVD_DIRS = frozenset(
+    f"{prefix}/{below}"
+    for prefix in ("/etc", "/usr/local/lib", "/usr/lib", "/lib")
+    for below in ("udev/rules.d", "systemd/network")
+)
+
+
+def split_udevd(findings: Iterable[Finding]) -> tuple[list[Finding], list[Finding]]:
+    """The findings that are not udevd's listing of its rule and link
+    directories, and the ones that are: the directories themselves, read as
+    directories. A file below one read is a finding as any other."""
+    others: list[Finding] = []
+    udevd: list[Finding] = []
+    for f in findings:
+        (udevd if f.kind == "d" and f.path in UDEVD_DIRS else others).append(f)
+    return others, udevd
 
 
 def describe(findings: Sequence[Finding], marks: Sequence[tuple[str, int]] = ()) -> str:

@@ -120,6 +120,24 @@ class JudgeTest(unittest.TestCase):
         self.assertIn("/b", merged.start)
         self.assertNotIn("/a", merged.start)
 
+    def test_links_are_findings_of_their_own(self) -> None:
+        link = at.Finding(at.CHECK, "/etc/os-release", REF + 1, "l")
+        program = at.Finding(at.WAY_IN, "/usr/bin/nft", REF + 2, "f")
+        folder = at.Finding(at.WAY_IN, "/etc/modprobe.d", REF + 3, "d")
+        self.assertEqual(
+            at.split_links([link, program, folder]), ([program, folder], [link])
+        )
+
+    def test_udevd_s_listings_are_findings_of_their_own(self) -> None:
+        rules = at.Finding(at.CHECK, "/usr/lib/udev/rules.d", REF + 1, "d")
+        links = at.Finding(at.CHECK, "/etc/systemd/network", REF + 1, "d")
+        rule = at.Finding(at.CHECK, "/usr/lib/udev/rules.d/60-block.rules", REF, "f")
+        other = at.Finding(at.WAY_IN, "/etc/udev", REF + 2, "d")
+        self.assertEqual(
+            at.split_udevd([rules, links, rule, other]),
+            ([rule, other], [rules, links]),
+        )
+
     def test_a_finding_names_the_step_before_it(self) -> None:
         finding = at.Finding(at.WAY_IN, "/usr/bin/ip", REF + 3, "f")
         text = at.describe([finding], [("stop", REF + 9), ("activate", REF + 1)])
