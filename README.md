@@ -195,10 +195,11 @@ Also refused by the pre-flight checks:
   the decoy uses, that filesystem; for a root that is a folder or a btrfs
   subvolume of it, the flag lets be only the decoy's own fstab lines that its
   boot mounted at `/` or at a system folder outside the hidden root (`/usr`,
-  `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`, `/opt`) for
-  another part of that filesystem, while the mount there shows it, and, while
-  the decoy mounts another part of it at `/` or by such a line, the crypttab
-  lines without `tcrypt-hidden` that its boot opens for the device that
+  `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`, `/opt`, a
+  folder below `/var` and `/.snapshots`) for another part of that filesystem,
+  while the mount there shows it, and, while the decoy mounts another part of
+  it at `/` or by such a line, the crypttab lines without `tcrypt-hidden`,
+  `swap` or `tmp` that its boot opens as LUKS for the LUKS device that
   filesystem lies on, as on an encrypted decoy (`backend-entries`);
 - a hidden volume on a partition of a disk the decoy boots from that has the
   GPT type of a swap partition, or of a `/home`, `/srv`, `/var` or `/var/tmp`

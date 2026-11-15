@@ -330,10 +330,11 @@ pub struct ActivateArgs {
     /// neither / nor a line of its fstab makes), storage that cannot be judged
     /// (a ZFS volume among it), and a decoy entry that opens the volume (other
     /// than the fstab lines this computer has mounted at / or at a system
-    /// folder for another part of the filesystem that a folder or subvolume it
-    /// accepted lies on, and the crypttab lines without tcrypt-hidden that its
-    /// boot opens for that filesystem's device while it mounts the filesystem
-    /// so) are still refused.
+    /// folder, a folder below /var or /.snapshots among them, for another part
+    /// of the filesystem that a folder or subvolume it accepted lies on, and
+    /// the crypttab lines without tcrypt-hidden, swap or tmp that its boot
+    /// opens as LUKS for that filesystem's LUKS device while it mounts the
+    /// filesystem so) are still refused.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 
