@@ -52,9 +52,14 @@
 //!   the filesystem the line mounts. `nofail` and `_netdev` change only when
 //!   the boot mounts the line, and whether it goes on without it, `user`,
 //!   `users`, `owner`, `group` and their `no` forms only who may mount it by
-//!   hand, and `loop` that `libmount` opens the line's file through a loop
-//!   device, as it does for a regular file anyway: NAILS reads that file as
-//!   the line's source.
+//!   hand.
+//! - `loop` has `libmount` open the line's source through a new loop device,
+//!   whatever that source is: on a line for a device, that device's
+//!   filesystem is mounted a second time, as another instance of it. NAILS
+//!   reads `loop` only alone, on a line whose first field is the path of an
+//!   image or a swap file, which it reads as the line's source, and no bind or
+//!   FUSE line ([`reads_loop`]); on any other line it is not plain
+//!   ([`Unplain::Loop`]).
 //! - `comment=` is a comment to `libmount`, and `x-gvfs-*` hints to the
 //!   desktop's file manager, which shows or names the mount by them.
 //!   `x-systemd.device-timeout=`, `x-systemd.mount-timeout=` and
@@ -98,7 +103,7 @@
 #[path = "known_tests.rs"]
 mod tests;
 
-use super::paths::is_claimed;
+use super::paths::{is_claimed, names_a_path};
 use super::plain::{Unplain, takes_a_remote_source_line};
 use crate::crypttab::CrypttabEntry;
 use crate::fstab::{FstabEntry, option_named};
@@ -161,11 +166,12 @@ const EMPTY: List = List {
     reads: &[],
 };
 
-/// Options any fstab line may give.
+/// Options any fstab line may give. `loop` is read on its own
+/// ([`unread_loop`]).
 const GENERIC: List = List {
     flags: "defaults ro rw exec noexec suid nosuid dev nodev sync async dirsync atime noatime \
             diratime nodiratime relatime norelatime strictatime nostrictatime lazytime \
-            nolazytime nofail _netdev user nouser users nousers owner noowner group nogroup loop",
+            nolazytime nofail _netdev user nouser users nousers owner noowner group nogroup",
     any: "noauto auto bind rbind comment x-systemd.automount x-systemd.makefs x-systemd.growfs \
           x-initrd.mount X-mount.mkdir x-mount.mkdir",
     valued: "x-systemd.device-timeout x-systemd.mount-timeout x-systemd.idle-timeout",
@@ -305,14 +311,20 @@ const CRYPTTAB: List = List {
     ..EMPTY
 };
 
-/// The options of a line of the type `vfstype` besides the generic ones.
-fn of_type(vfstype: &str) -> &'static List {
-    let fuse = ["fuse", "fuse3", "fuseblk"].iter().any(|kind| {
+/// Whether `vfstype` is the type of a FUSE line: `fuse`, `fuse3` or
+/// `fuseblk`, alone or with a `.<program>`.
+fn is_fuse(vfstype: &str) -> bool {
+    ["fuse", "fuse3", "fuseblk"].iter().any(|kind| {
         vfstype == *kind
             || vfstype
                 .strip_prefix(kind)
                 .is_some_and(|rest| rest.starts_with('.'))
-    });
+    })
+}
+
+/// The options of a line of the type `vfstype` besides the generic ones.
+fn of_type(vfstype: &str) -> &'static List {
+    let fuse = is_fuse(vfstype);
     match vfstype {
         "swap" => &SWAP,
         "ext2" | "ext3" | "ext4" => &EXT,
@@ -456,23 +468,48 @@ fn fstab_lists(entry: &FstabEntry) -> [&'static List; 2] {
     [of_type(&entry.vfstype), &GENERIC]
 }
 
+/// Whether NAILS reads `loop`, given alone, on the fstab line `entry`: on a
+/// line the claims place by the file its first field names, the path of an
+/// image or a swap file, which NAILS reads as that line's source, and that
+/// is no bind line and no FUSE line. `libmount` sets up a loop device for
+/// `loop` whatever the source is, so on a line for a device it mounts that
+/// device through a new loop device, a second instance of its filesystem.
+fn reads_loop(entry: &FstabEntry) -> bool {
+    names_a_path(entry) && !entry.is_bind() && !is_fuse(&entry.vfstype)
+}
+
+/// Why `loop`, given with `value`, makes the fstab line `entry` not plain:
+/// with a value, as any flag does, and alone on a line where NAILS does not
+/// read it ([`reads_loop`]). Nothing where NAILS reads it.
+fn unread_loop(entry: &FstabEntry, value: Option<&str>) -> Option<Unplain> {
+    if value.is_some() {
+        Some(Unplain::Unread("loop".to_string()))
+    } else if reads_loop(entry) {
+        None
+    } else {
+        Some(Unplain::Loop)
+    }
+}
+
 /// Why the options of the fstab line `entry` make a line that is not plain
 /// (see the module docs): nothing for a line whose options NAILS reads. Of a
 /// line NAILS does not read every option of, only those that name a path or a
 /// device count: an option it knows that names one in a form it does not
-/// read, and one it does not know whose value may name one.
+/// read, and one it does not know whose value may name one; and `loop` of
+/// every line ([`unread_loop`]).
 pub(super) fn unread_fstab(entry: &FstabEntry) -> Vec<Unplain> {
     let every = reads_every_option(entry);
     let lists = fstab_lists(entry);
     let mut why: Vec<Unplain> = Vec::new();
     for option in entry.options.iter().filter(|option| !option.is_empty()) {
-        let reason = match find(&lists, option) {
-            Some((name, form)) if every || matches!(form, Form::Reads(_)) => {
+        let reason = match (option_named(option, "loop"), find(&lists, option)) {
+            (Some(value), _) => unread_loop(entry, value),
+            (None, Some((name, form))) if every || matches!(form, Form::Reads(_)) => {
                 unread_form(name, form, option)
             }
-            Some(_) => None,
-            None if every => Some(Unplain::Unknown(name_of(option))),
-            None => option
+            (None, Some(_)) => None,
+            (None, None) if every => Some(Unplain::Unknown(name_of(option))),
+            (None, None) => option
                 .split_once('=')
                 .is_some_and(|(_, value)| may_name_a_path(value))
                 .then(|| Unplain::Unknown(name_of(option))),
@@ -513,9 +550,10 @@ pub(super) fn reads_every_known(entry: &FstabEntry) -> bool {
         .options
         .iter()
         .filter(|option| !option.is_empty())
-        .all(|option| {
-            find(&lists, option)
-                .is_some_and(|(name, form)| unread_form(name, form, option).is_none())
+        .all(|option| match option_named(option, "loop") {
+            Some(value) => unread_loop(entry, value).is_none(),
+            None => find(&lists, option)
+                .is_some_and(|(name, form)| unread_form(name, form, option).is_none()),
         })
 }
 

@@ -7,6 +7,7 @@
 //! of stock installs keep to the lists.
 
 use super::*;
+use crate::hidden_root::separation::Unplain;
 
 /// The failure that names `finding`, a line that names the volume, alone.
 fn names_the_volume(finding: &str) -> String {
@@ -736,4 +737,61 @@ fn a_filesystem_option_that_names_the_drive_by_any_of_its_names_fails() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn loop_on_a_line_for_a_device_fails_and_its_mount_is_a_second_one() {
+    // libmount 2.42.4 set up a loop device for `loop` whatever the source
+    // was, so the decoy's own line for /home with `loop` mounts the root's
+    // filesystem at the next boot through a new loop device, as a second
+    // instance of it. The line is not plain, with the flag too, and makes no
+    // mount of the decoy's own: with /home now the top of the root's
+    // filesystem, the gate counts that mount as a second one.
+    let reason = Unplain::Loop.reason();
+    let table = format!("{BIND_OF_ROOT}6 1 8:1 / /home rw - ext4 /dev/vda1 rw\n");
+    let fstab = |line: &str| format!("/dev/vda1 / ext4 defaults 0 1\n{line}\n");
+    let fs = rendered(&table, &fstab("/dev/vda1 /home ext4 loop 0 2"));
+    let gate = hidden_volume_with_the_flag(&fs);
+    assert!(gate.is_fail(), "{gate:?}");
+    assert!(gate.message().contains("/home"), "{gate:?}");
+    let finding = not_plain("/dev/vda1 /home ext4", &reason);
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert_eq!(result.message(), may_name_the_volume(&finding));
+    assert_eq!(result.remediation(), Some(unplain_by(&["loop"]).as_str()));
+    let result = run_allowing(&fs, Allow::Nothing);
+    assert!(result.message().contains(&finding), "{result:?}");
+    // Without `loop` the line is the decoy's own.
+    let fs = rendered(&table, &fstab("/dev/vda1 /home ext4 defaults 0 2"));
+    assert!(hidden_volume_with_the_flag(&fs).is_warn());
+    assert!(run_allowing(&fs, Allow::DecoyStorage).is_pass());
+    // The btrfs line for the /home subvolume beside the root.
+    let fs = home_line("subvol=/home,loop");
+    for allow in [Allow::DecoyStorage, Allow::Nothing] {
+        assert_eq!(
+            run_allowing(&fs, allow).message(),
+            may_name_the_volume(&not_plain("/dev/vda2 /home btrfs", &reason))
+        );
+    }
+    // An image file's line, whose file NAILS reads as its source, keeps
+    // `loop`: elsewhere it names nothing of the volume, and in the root's
+    // folder it mounts a file in the volume.
+    let fs = rendered(
+        BIND_OF_ROOT,
+        &fstab("/srv/disk.img /media/i ext4 loop,nofail 0 0"),
+    );
+    assert_eq!(
+        run_allowing(&fs, Allow::DecoyStorage).message(),
+        only_the_decoys_own_line("/")
+    );
+    let fs = rendered(
+        BIND_OF_ROOT,
+        &fstab("/srv/x/disk.img /media/i ext4 loop,nofail 0 0"),
+    );
+    assert_eq!(
+        run_allowing(&fs, Allow::DecoyStorage).message(),
+        names_the_volume(
+            "/etc/fstab: '/srv/x/disk.img /media/i ext4' (the file it names lies in the volume \
+             at /mnt)"
+        )
+    );
 }

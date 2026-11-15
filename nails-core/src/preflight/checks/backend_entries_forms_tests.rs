@@ -545,7 +545,7 @@ fn a_device_path_written_otherwise_or_leading_out_of_dev_fails_without_the_flag(
     );
     let linked = decoy.file(
         "/etc/fstab",
-        "/dev/nvme0n1p3 / ext4 defaults 0 1\n/dev/img.link /media/i ext4 loop,nofail 0 0\n",
+        "/dev/nvme0n1p3 / ext4 defaults 0 1\n/dev/img.link /media/i ext4 nofail 0 0\n",
     );
     linked.link("/dev/img.link", "/mnt/img.raw");
     fails_as_untold(

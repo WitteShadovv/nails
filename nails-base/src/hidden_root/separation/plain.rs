@@ -119,6 +119,7 @@ impl UnplainLine {
             let option = match why {
                 Unplain::NoValue(option) => (*option).to_string(),
                 Unplain::Unknown(option) | Unplain::Unread(option) => option.clone(),
+                Unplain::Loop => "loop".to_string(),
                 _ => continue,
             };
             if !options.contains(&option) {
@@ -206,6 +207,10 @@ pub enum Unplain {
     /// `x-systemd.wanted-by=` that names a unit other than `local-fs.target`,
     /// say, or a `tpm2-device=` in a `driver:param` form.
     Unread(String),
+    /// It gives `loop` while its first field is no image or swap file's path
+    /// that NAILS reads as its source (see the `known` module): `libmount`
+    /// sets up a loop device for whatever the source is, a device too.
+    Loop,
     /// A crypttab line gives `keyscript=`, a program that reads the line's
     /// key field in its own way.
     Keyscript,
@@ -268,6 +273,11 @@ impl Unplain {
             }
             Unplain::Unread(option) => {
                 format!("it gives {option} with a value NAILS does not read")
+            }
+            Unplain::Loop => {
+                "it gives loop, which NAILS reads only on a line whose first field is \
+                              the path of an image or a swap file"
+                    .to_string()
             }
             Unplain::Keyscript => {
                 "it gives keyscript=, a program that reads its key field in its own way".to_string()
@@ -553,8 +563,15 @@ pub fn unplain(entry: &FstabEntry, line: &str) -> Vec<Unplain> {
         Unplain::TypeBackslash,
         Unplain::TypeList,
     ];
+    // `loop` is read by what the first field names: of a relative one, the
+    // first field's reason says what to write.
+    let relative = why.contains(&Unplain::Relative);
     if !why.iter().any(|reason| unread.contains(reason)) {
-        why.extend(super::known::unread_fstab(entry));
+        why.extend(
+            super::known::unread_fstab(entry)
+                .into_iter()
+                .filter(|reason| !(relative && *reason == Unplain::Loop)),
+        );
     }
     why
 }
