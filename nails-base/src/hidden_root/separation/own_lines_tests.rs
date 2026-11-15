@@ -76,16 +76,16 @@ fn the_lines_the_boot_mounts_at_slash_and_the_system_folders_are_the_decoys_own(
         entry_folders(&subvolume("/dev/sda2 /home btrfs subvol=/home 0 0\n")),
         [("/dev/sda2 /home btrfs", Some(Path::new("/home")))]
     );
-    // A line for any other folder, below a system folder too, and one the
-    // boot does not mount are none.
+    // A line for any other folder, below a system folder other than /var
+    // too, and one the boot does not mount are none.
     assert_eq!(
         entry_folders(&subvolume(
-            "/dev/sda2 /pool btrfs defaults 0 0\n/dev/sda2 /var/log btrfs subvol=/log 0 0\n\
+            "/dev/sda2 /pool btrfs defaults 0 0\n/dev/sda2 /home/u btrfs subvol=/u 0 0\n\
              /dev/sda2 /srv btrfs noauto 0 0\n"
         )),
         [
             ("/dev/sda2 /pool btrfs", None),
-            ("/dev/sda2 /var/log btrfs", None),
+            ("/dev/sda2 /home/u btrfs", None),
             ("/dev/sda2 /srv btrfs", None)
         ]
     );
@@ -979,6 +979,137 @@ fn a_line_that_opens_the_hidden_volume_the_decoys_root_lies_in_is_one_its_boot_n
         entry_needs(&judgement),
         [(EntryKind::Blocking, "vault /dev/sdb", false)]
     );
+}
+
+#[test]
+fn a_line_of_the_roots_filesystem_below_var_or_for_snapshots_counts_as_one_for_a_system_folder() {
+    for at in [
+        "/",
+        "/home",
+        "/var",
+        "/var/log",
+        "/var/cache/pacman/pkg",
+        "/var/lib/docker",
+        "/var/log/",
+        "/.snapshots",
+    ] {
+        assert!(
+            counts_as_system_folder(Path::new(at), Path::new("/mnt")),
+            "{at}"
+        );
+    }
+    for at in [
+        "/pool",
+        "/home/u",
+        "/srv/data",
+        "/.snapshots/1",
+        "/varx/log",
+        "/var/../etc",
+        "/var/log/../../etc",
+        "/mnt/var/log",
+    ] {
+        assert!(
+            !counts_as_system_folder(Path::new(at), Path::new("/mnt")),
+            "{at}"
+        );
+    }
+    // The hidden root's own folder, and a folder inside it, are the root's.
+    assert!(!counts_as_system_folder(
+        Path::new("/var/lib/vault"),
+        Path::new("/var/lib/vault")
+    ));
+    assert!(!counts_as_system_folder(
+        Path::new("/var/log"),
+        Path::new("/var")
+    ));
+}
+
+/// archinstall 4.5's default btrfs layout, as `genfstab -pU` writes it: the
+/// subvolumes `@` at /, `@home`, `@log` at /var/log and `@pkg` at
+/// /var/cache/pacman/pkg, with `mounts` as well and the root the subvolume
+/// /vault at /mnt.
+fn archinstall(mounts: &str, fstab: &str) -> Judgement {
+    const OPTIONS: &str = "rw,relatime,compress=zstd:3,ssd,discard=async,space_cache=v2";
+    World::new(&format!(
+        "1 0 0:40 /@ / rw - btrfs /dev/sda2 {OPTIONS},subvolid=256,subvol=/@\n\
+         2 1 0:40 /@home /home rw - btrfs /dev/sda2 {OPTIONS},subvolid=257,subvol=/@home\n\
+         6 1 8:1 / /boot rw - vfat /dev/sda1 rw\n\
+         7 1 0:40 /vault /mnt rw - btrfs /dev/sda2 rw,subvolid=300,subvol=/vault\n{mounts}"
+    ))
+    .disk("sda", "8:0")
+    .part("sda1", "8:1", "sda")
+    .part("sda2", "8:2", "sda")
+    .btrfs(&["sda2"])
+    .spec("UUID=a2", "sda2")
+    .spec("UUID=b001", "sda1")
+    .fstab(&format!(
+        "UUID=a2 / btrfs {OPTIONS},subvolid=256,subvol=/@ 0 0\n\
+         UUID=b001 /boot vfat rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=ascii,\
+         shortname=mixed,utf8,errors=remount-ro 0 2\n\
+         UUID=a2 /home btrfs {OPTIONS},subvolid=257,subvol=/@home 0 0\n{fstab}"
+    ))
+    .judge("/mnt")
+}
+
+#[test]
+fn archinstalls_lines_below_var_are_the_decoys_own() {
+    const OPTIONS: &str = "rw,relatime,compress=zstd:3,ssd,discard=async,space_cache=v2";
+    let judgement = archinstall(
+        &format!(
+            "3 1 0:40 /@log /var/log rw - btrfs /dev/sda2 {OPTIONS},subvolid=258,subvol=/@log\n\
+             4 1 0:40 /@pkg /var/cache/pacman/pkg rw - btrfs /dev/sda2 \
+             {OPTIONS},subvolid=259,subvol=/@pkg\n"
+        ),
+        &format!(
+            "UUID=a2 /var/log btrfs {OPTIONS},subvolid=258,subvol=/@log 0 0\n\
+             UUID=a2 /var/cache/pacman/pkg btrfs {OPTIONS},subvolid=259,subvol=/@pkg 0 0\n"
+        ),
+    );
+    assert_eq!(
+        entry_folders(&judgement),
+        [
+            ("UUID=a2 / btrfs", Some(Path::new("/"))),
+            ("UUID=a2 /home btrfs", Some(Path::new("/home"))),
+            ("UUID=a2 /var/log btrfs", Some(Path::new("/var/log"))),
+            (
+                "UUID=a2 /var/cache/pacman/pkg btrfs",
+                Some(Path::new("/var/cache/pacman/pkg"))
+            ),
+        ]
+    );
+    assert!(judgement.entries.iter().all(|entry| entry.boot_needs));
+    // So is snapper's line for /.snapshots.
+    let judgement = archinstall(
+        "3 1 0:40 /@snapshots /.snapshots rw - btrfs /dev/sda2 rw,subvolid=260,subvol=/@snapshots\n",
+        "UUID=a2 /.snapshots btrfs subvol=/@snapshots 0 0\n",
+    );
+    assert_eq!(
+        entry_folders(&judgement)[2],
+        ("UUID=a2 /.snapshots btrfs", Some(Path::new("/.snapshots")))
+    );
+    // The other limits hold below /var too: a line whose subvolume cannot be
+    // told, one whose mount is not there, a noauto line, and one for the
+    // root's own subvolume, which the boot needs all the same.
+    let judgement = archinstall(
+        "3 1 0:40 /@log /var/log rw - btrfs /dev/sda2 rw,subvolid=258,subvol=/@log\n\
+         4 1 0:40 /vault /var/lib/vault rw - btrfs /dev/sda2 rw,subvolid=300,subvol=/vault\n",
+        "UUID=a2 /var/log btrfs subvol=/@log,subvol=/@log 0 0\n\
+         UUID=a2 /var/cache/pacman/pkg btrfs subvol=/@pkg 0 0\n\
+         UUID=a2 /var/tmp btrfs subvol=/@tmp,noauto 0 0\n\
+         UUID=a2 /var/lib/vault btrfs subvol=/vault 0 0\n",
+    );
+    assert_eq!(
+        entry_folders(&judgement)[2..],
+        [
+            ("UUID=a2 /var/log btrfs", None),
+            ("UUID=a2 /var/cache/pacman/pkg btrfs", None),
+            ("UUID=a2 /var/tmp btrfs", None),
+            ("UUID=a2 /var/lib/vault btrfs", None),
+        ]
+    );
+    let vault = &judgement.entries[5];
+    assert_eq!(vault.why, "it mounts the volume at /mnt");
+    assert!(vault.boot_needs);
 }
 
 #[test]

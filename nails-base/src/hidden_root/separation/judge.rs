@@ -12,7 +12,7 @@ use super::reads::{HiddenDrive, Reads, drive_disks, fstab_numbers, fstab_reads, 
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
     LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, UnplainLine, Untraced,
-    Verdict, is_system_folder,
+    Verdict, counts_as_system_folder, is_system_folder,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::fstab::FstabEntry;
@@ -918,8 +918,10 @@ fn fstab_finding(
     // A line for the root's own filesystem at / or at a system folder that
     // the boot mounts (no noauto) is one the decoy's boot needs, whatever it
     // mounts of that filesystem, the volume too: never one to remove. A
-    // noauto one is a recipe for the hidden drive, and goes.
-    let system = own && !entry.is_swap() && is_system_folder(&entry.file, &hidden.mount_point);
+    // noauto one is a recipe for the hidden drive, and goes. A line for a
+    // folder below /var or for /.snapshots counts as one for a system folder.
+    let system =
+        own && !entry.is_swap() && counts_as_system_folder(&entry.file, &hidden.mount_point);
     // A line the boot mounts outside the hidden root, for a device below the
     // volume or for the filesystem the root is part of, mounts one of the
     // decoy's own filesystems or its swap, and so does one the boot mounts at

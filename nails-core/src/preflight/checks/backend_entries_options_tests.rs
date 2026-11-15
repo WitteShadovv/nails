@@ -921,3 +921,61 @@ fn an_option_that_opens_the_drive_for_writing_fails_on_its_whole_disk_too() {
         );
     }
 }
+
+#[test]
+fn with_the_flag_archinstalls_default_btrfs_layout_passes() {
+    // archinstall 4.5's default subvolumes, as genfstab -pU writes them: @
+    // at /, @home, @log at /var/log and @pkg at /var/cache/pacman/pkg, with
+    // the root a subvolume beside them. A line of the root's own filesystem
+    // for a folder below /var counts as one for a system folder.
+    const OPTIONS: &str = "rw,relatime,compress=zstd:3,ssd,discard=async,space_cache=v2";
+    let fs = rendered(
+        &format!(
+            "1 0 0:40 /@ / rw - btrfs /dev/vda2 {OPTIONS},subvolid=256,subvol=/@\n\
+             2 1 0:40 /@home /home rw - btrfs /dev/vda2 {OPTIONS},subvolid=257,subvol=/@home\n\
+             3 1 0:40 /@log /var/log rw - btrfs /dev/vda2 {OPTIONS},subvolid=258,subvol=/@log\n\
+             4 1 0:40 /@pkg /var/cache/pacman/pkg rw - btrfs /dev/vda2 \
+             {OPTIONS},subvolid=259,subvol=/@pkg\n\
+             6 1 8:1 / /boot rw - vfat /dev/vda1 rw\n\
+             5 1 0:40 /vault /mnt rw - btrfs /dev/vda2 rw,subvolid=300,subvol=/vault\n"
+        ),
+        &format!(
+            "# /dev/vda2\n\
+             UUID=a2\t/         \tbtrfs     \t{OPTIONS},subvolid=256,subvol=/@\t0 0\n\n\
+             # /dev/vda1\n\
+             UUID=A1E1-0001      \t/boot     \tvfat      \trw,relatime,fmask=0022,dmask=0022,\
+             codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro\t0 2\n\n\
+             # /dev/vda2\n\
+             UUID=a2\t/home     \tbtrfs     \t{OPTIONS},subvolid=257,subvol=/@home\t0 0\n\n\
+             # /dev/vda2\n\
+             UUID=a2\t/var/log  \tbtrfs     \t{OPTIONS},subvolid=258,subvol=/@log\t0 0\n\n\
+             # /dev/vda2\n\
+             UUID=a2\t/var/cache/pacman/pkg\tbtrfs     \t{OPTIONS},subvolid=259,subvol=/@pkg\t0 0\n"
+        ),
+    );
+    for (link, target) in [
+        ("/dev/disk/by-uuid/a2", "../../vda2"),
+        ("/dev/disk/by-uuid/A1E1-0001", "../../vda1"),
+    ] {
+        fs.create_symlink(Path::new(target), Path::new(link))
+            .unwrap();
+    }
+    let finding = |place: &str| {
+        format!(
+            "/etc/fstab: 'UUID=a2 {place} btrfs' (it mounts the filesystem the volume at /mnt is \
+             part of, and the decoy's own boot needs it)"
+        )
+    };
+    passes_with_the_flag_only(
+        &fs,
+        "No fstab or crypttab entry names the volume at /mnt other than the decoy's own lines \
+         for /, /home, /var/log and /var/cache/pacman/pkg, which mount the filesystem that \
+         --allow-decoy-storage accepted it on",
+        &[
+            &finding("/"),
+            &finding("/home"),
+            &finding("/var/log"),
+            &finding("/var/cache/pacman/pkg"),
+        ],
+    );
+}
