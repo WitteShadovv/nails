@@ -257,14 +257,16 @@ pub struct Fix {
 impl Fix {
     /// What the decoy root mounted at `root` needs: `None` when it keeps no
     /// records a soft-reboot gives away (or none this module can act on), so
-    /// nothing is left for its start.
+    /// nothing is left for its start. The root is looked at as a
+    /// [`QuietRoot`](nextroot::QuietRoot), which as root updates no access
+    /// time.
     pub fn for_decoy(root: &Path) -> Option<Self> {
         let fix = Self {
             writer: boot_writer::writer_command(root),
-            classic_wtmp: matches!(
-                std::fs::metadata(root.join(WTMP_PATH)),
-                Ok(meta) if meta.len() >= UTMP_RECORD_SIZE as u64
-            ),
+            classic_wtmp: nextroot::QuietRoot::open(root)
+                .ok()
+                .and_then(|tree| tree.size(Path::new(WTMP_PATH)))
+                .is_some_and(|len| len >= UTMP_RECORD_SIZE as u64),
         };
         (fix.writer.is_some() || fix.classic_wtmp).then_some(fix)
     }

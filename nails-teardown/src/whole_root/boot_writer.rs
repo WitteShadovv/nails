@@ -49,11 +49,11 @@
 //! Linux 6.2), the writer runs as it would without NAILS. On the namespace
 //! path its output, which would only report the missing bus, goes nowhere.
 
-use crate::noatime;
 use crate::whole_root::boot_records::{self, FIXUP_DIR};
+use crate::whole_root::nextroot::QuietRoot;
 use crate::whole_root::plan::{self, SERVICE_CONFIG_MODE};
 use std::ffi::OsString;
-use std::io::{self, Read};
+use std::io;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -104,47 +104,34 @@ const EXEC_ENTERS_TIME_NS: (u32, u32) = (6, 2);
 /// The decoy's wtmpdb boot writer, as the command its unit starts, when the
 /// way back can run it through [`run`]. `root` is the decoy root. `None` when
 /// the decoy keeps no wtmpdb database, has no such unit, changes the unit
-/// with a file of its own, or starts something other than one plain `wtmpdb
-/// boot` command: the writer then runs as the decoy has it. The unit is read
-/// without updating its access time.
+/// with a file of its own (or may: a place there it cannot look up counts),
+/// or starts something other than one plain `wtmpdb boot` command: the writer
+/// then runs as the decoy has it. The decoy root is looked at as a
+/// [`QuietRoot`], as if it were `/`: as root no lookup updates an access
+/// time, the one of a symlink it follows included, and none follows a link
+/// out of it.
 pub fn writer_command(root: &Path) -> Option<Vec<String>> {
-    if !DATABASES.iter().any(|db| root.join(db).is_file()) {
+    let tree = QuietRoot::open(root).ok()?;
+    if !DATABASES.iter().any(|db| tree.is_file(Path::new(db))) {
         return None;
     }
     // An administrator's unit or any drop-in may change the command; only the
     // unit as the package ships it is known.
-    let mut changed = std::iter::once(root.join(ADMIN_UNIT_DIR).join(WRITER_UNIT)).chain(
+    let mut changed = std::iter::once(Path::new(ADMIN_UNIT_DIR).join(WRITER_UNIT)).chain(
         std::iter::once(ADMIN_UNIT_DIR)
             .chain(VENDOR_UNIT_DIRS)
-            .map(|dir| root.join(dir).join(format!("{WRITER_UNIT}.d"))),
+            .map(|dir| Path::new(dir).join(format!("{WRITER_UNIT}.d"))),
     );
-    if changed.any(|path| path.symlink_metadata().is_ok()) {
+    if changed.any(|path| tree.may_exist(&path)) {
         return None;
     }
     let unit = VENDOR_UNIT_DIRS
         .iter()
-        .map(|dir| root.join(dir).join(WRITER_UNIT))
-        .find(|path| path.is_file())?;
-    let command = start_command(&read_noatime(&unit).ok()?)?;
+        .map(|dir| Path::new(dir).join(WRITER_UNIT))
+        .find(|path| tree.is_file(path))?;
+    let command = start_command(&tree.read_to_string(&unit).ok()?)?;
     let program = command.first()?;
-    root.join(program.trim_start_matches('/'))
-        .is_file()
-        .then_some(command)
-}
-
-/// Read `path` as UTF-8 without updating its access time.
-fn read_noatime(path: &Path) -> io::Result<String> {
-    use rustix::fs::{Mode, OFlags, open};
-    let fd = noatime::with_noatime(|flags| {
-        open(
-            path,
-            OFlags::RDONLY | OFlags::CLOEXEC | flags,
-            Mode::empty(),
-        )
-    })?;
-    let mut text = String::new();
-    std::fs::File::from(fd).read_to_string(&mut text)?;
-    Ok(text)
+    tree.is_file(Path::new(program)).then_some(command)
 }
 
 /// The one start command of a unit's `[Service]` section, split into words,
