@@ -790,6 +790,82 @@ pub fn read_in_root(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// The tree at a root, looked up as if the root were `/` (absolute symlinks
+/// and `..` stay inside it) by lookups that change no access time where this
+/// process may make sure of it: through a detached copy of its mounts, each
+/// `noatime` ([`crate::noatime::quiet_copy`]), as root of the system's own
+/// user namespace, and through the root itself elsewhere, where a lookup
+/// that follows a symlink updates the link's access time. The way back looks
+/// at the decoy root at `/run/nextroot` this way after the hidden session
+/// stopped, a moment at which no start of the decoy reads it.
+#[derive(Debug)]
+pub struct QuietRoot(OwnedFd);
+
+impl QuietRoot {
+    /// The tree at `root`.
+    pub fn open(root: &Path) -> io::Result<Self> {
+        match crate::noatime::quiet_copy(root) {
+            Some(copy) => Ok(QuietRoot(copy)),
+            None => open_mount_root(root).map(QuietRoot),
+        }
+    }
+
+    /// The status of what is at `path`, a symlink at its end followed when
+    /// `follow` says so.
+    fn stat(&self, path: &Path, follow: bool) -> io::Result<rustix::fs::Stat> {
+        let flags = if follow {
+            OFlags::PATH
+        } else {
+            OFlags::PATH | OFlags::NOFOLLOW
+        };
+        let fd = open_at(&self.0, path, flags, ResolveFlags::IN_ROOT)?;
+        rustix::fs::fstat(&fd).map_err(to_io)
+    }
+
+    /// Whether `path` leads to a regular file.
+    pub fn is_file(&self, path: &Path) -> bool {
+        self.stat(path, true)
+            .is_ok_and(|stat| (stat.st_mode & libc::S_IFMT) == libc::S_IFREG)
+    }
+
+    /// Whether something is at `path`, a symlink that leads nowhere included,
+    /// or may be: only nothing there (`NotFound`, or a file on the way) is
+    /// `false`, and a lookup that fails otherwise is `true`.
+    pub fn may_exist(&self, path: &Path) -> bool {
+        match self.stat(path, false) {
+            Ok(_) => true,
+            Err(e) => !matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ),
+        }
+    }
+
+    /// The size of what `path` leads to, `None` when the lookup fails.
+    pub fn size(&self, path: &Path) -> Option<u64> {
+        self.stat(path, true)
+            .ok()
+            .and_then(|stat| u64::try_from(stat.st_size).ok())
+    }
+
+    /// The text of the file `path` leads to, opened with `O_NOATIME`
+    /// ([`with_noatime`]), which covers a caller without root.
+    pub fn read_to_string(&self, path: &Path) -> io::Result<String> {
+        let fd = with_noatime(|noatime| {
+            open_at_raw(
+                &self.0,
+                path,
+                noatime | OFlags::RDONLY,
+                ResolveFlags::IN_ROOT,
+            )
+        })
+        .map_err(to_io)?;
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::fs::File::from(fd), &mut text)?;
+        Ok(text)
+    }
+}
+
 /// Why a root failed the pre-switch check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrecheckError {
@@ -829,12 +905,13 @@ impl std::fmt::Display for PrecheckError {
 impl std::error::Error for PrecheckError {}
 
 /// Check that `root` is a root PID 1 can switch into: `init` resolves inside
-/// it to an executable regular file, and it is an OS tree.
+/// it to an executable regular file, and it is an OS tree. The root is
+/// looked at as a [`QuietRoot`], so as root the lookups update no access
+/// time, the ones of the links on the way included.
 pub fn precheck(root: &Path, init: &Path) -> Result<(), PrecheckError> {
-    let fd = open_in_root(root, init)
-        .map_err(|e| PrecheckError::InitMissing(init.to_path_buf(), e.to_string()))?;
-    let stat = rustix::fs::fstat(&fd)
-        .map_err(|e| PrecheckError::InitMissing(init.to_path_buf(), e.to_string()))?;
+    let missing = |e: io::Error| PrecheckError::InitMissing(init.to_path_buf(), e.to_string());
+    let tree = QuietRoot::open(root).map_err(missing)?;
+    let stat = tree.stat(init, true).map_err(missing)?;
     let mode = stat.st_mode;
     let regular = (mode & libc::S_IFMT) == libc::S_IFREG;
     if !regular || mode & 0o111 == 0 {
@@ -842,7 +919,7 @@ pub fn precheck(root: &Path, init: &Path) -> Result<(), PrecheckError> {
     }
     let os_tree = ["/etc/os-release", "/usr/lib/os-release"]
         .iter()
-        .any(|p| open_in_root(root, Path::new(p)).is_ok());
+        .any(|p| tree.stat(Path::new(p), true).is_ok());
     if !os_tree {
         return Err(PrecheckError::NotAnOsTree);
     }

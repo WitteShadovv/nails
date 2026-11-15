@@ -12,20 +12,20 @@
 //! itself is exercised and asserted. `just kernel-tests` turns a host without
 //! user namespaces from a skip into a failure.
 //!
-//! Four tests need `trusted.*` xattrs, which a user namespace cannot set,
-//! and three bind loop devices, which only root of the initial namespace may,
-//! so they alone stay `#[ignore]`d and run as real root in the
-//! privileged-mounts CI job: the whiteout and opaque-directory test, the test
-//! of the `kernel-modules` check against the kernel's own whiteouts and opaque
+//! Four tests need `trusted.*` xattrs, which a user namespace cannot set, and
+//! three bind loop devices, which only root of the initial namespace may, so
+//! they alone stay `#[ignore]`d and run as real root in the privileged-mounts
+//! CI job: the whiteout and opaque-directory test, the test of the
+//! `kernel-modules` check against the kernel's own whiteouts and opaque
 //! directories, the two tests of the whole upper-filesystem probe (with the
-//! label copy the host asks for, and with the SELinux label required), the
-//! two tests of the loop driver's record of the file behind a loop device, one
-//! on a tmpfs and one on a btrfs filesystem it makes with `mkfs.btrfs`, which
-//! must be on `PATH` (btrfs-progs), and the test of the reads that change no
-//! access time, on such a btrfs filesystem too: a child's mount namespace and
-//! the quiet mounts change mounts as only root of the initial namespace may.
-//! The two loop driver tests also mount a FUSE filesystem through
-//! `/dev/fuse`, which no daemon serves:
+//! label copy the host asks for, and with the SELinux label required), the two
+//! tests of the loop driver's record of the file behind a loop device, one on a
+//! tmpfs and one on a btrfs filesystem it makes with `mkfs.btrfs`, which must
+//! be on `PATH` (btrfs-progs), and the test of the reads that change no access
+//! time, on such a btrfs filesystem too: a child's mount namespace, the quiet
+//! mounts and the quiet copy of a tree change mounts as only root of the
+//! initial namespace may. The two loop driver tests also mount a FUSE
+//! filesystem through `/dev/fuse`, which no daemon serves:
 //!
 //! ```sh
 //! cargo test -p nails-core --test privileged_mounts --no-run
@@ -1205,11 +1205,12 @@ fn a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows() {
 /// read, so that a read that counts updates it; a plain read is the control.
 #[test]
 #[ignore = "root only: a child's mount namespace and the quiet mounts need CAP_SYS_ADMIN in the initial namespace, and mkfs.btrfs"]
-fn neither_a_child_nor_a_read_under_quiet_mounts_changes_an_access_time() {
+fn quiet_children_mounts_and_trees_change_no_access_time() {
     use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
     use nails_teardown::noatime::{
         QuietMounts, may_spawn_without_access_times, spawn_without_access_times,
     };
+    use nails_teardown::whole_root::nextroot::QuietRoot;
     use std::os::unix::fs::MetadataExt;
     use std::process::{Command, Stdio};
     use std::time::{Duration, SystemTime};
@@ -1295,6 +1296,45 @@ fn neither_a_child_nor_a_read_under_quiet_mounts_changes_an_access_time() {
     );
     read(&file);
     assert_ne!(atime(), aged, "a read after the quiet mounts updates it");
+
+    // A lookup through a quiet copy of the tree follows a symlink without
+    // updating the link's access time, where a plain lookup updates it.
+    let link = disk.join("link");
+    std::os::unix::fs::symlink("file", &link).expect("make the link");
+    let link_atime = || {
+        let meta = std::fs::symlink_metadata(&link).expect("look at the link");
+        (meta.atime(), meta.atime_nsec())
+    };
+    let age_link = || {
+        use rustix::fs::{AtFlags, CWD, Timespec, Timestamps, UTIME_OMIT, utimensat};
+        let since = (SystemTime::now() - Duration::from_secs(2 * 86_400))
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("a time after the epoch");
+        let times = Timestamps {
+            last_access: Timespec {
+                tv_sec: i64::try_from(since.as_secs()).expect("seconds"),
+                tv_nsec: 0,
+            },
+            last_modification: Timespec {
+                tv_sec: 0,
+                tv_nsec: UTIME_OMIT,
+            },
+        };
+        utimensat(CWD, &link, &times, AtFlags::SYMLINK_NOFOLLOW)
+            .expect("set the link's access time back");
+        link_atime()
+    };
+    let aged = age_link();
+    let tree = QuietRoot::open(&disk).expect("open the tree");
+    assert!(tree.is_file(Path::new("/link")));
+    drop(tree);
+    assert_eq!(link_atime(), aged, "a lookup through the quiet tree");
+    assert!(link.is_file());
+    assert_ne!(
+        link_atime(),
+        aged,
+        "a plain lookup updates the link's access time"
+    );
 
     Mounts
         .unmount(&disk, false)

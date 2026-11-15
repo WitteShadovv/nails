@@ -27,6 +27,11 @@
 //! makes it read that unit's files. [`QuietMounts`] makes the mounts that keep
 //! access times `noatime` for as long as such a request takes, and puts each
 //! back as it was.
+//!
+//! A lookup of NAILS' own updates the access time of every symlink it follows,
+//! and no open flag prevents that. Through a detached copy of a tree whose
+//! every mount is `noatime` ([`quiet_copy`]) no lookup updates one: the way
+//! back looks at the decoy root through such a copy.
 
 use rustix::fs::OFlags;
 use rustix::io::{Errno, Result};
@@ -182,13 +187,28 @@ fn atime_mode(options: &str) -> Option<u64> {
 
 /// Give the mount `fd` refers to the access-time mode `mode`, leaving every
 /// other flag of it as it is.
-#[allow(unsafe_code)]
 fn set_atime_mode(fd: &rustix::fd::OwnedFd, mode: u64) -> std::io::Result<()> {
+    set_attr(fd, libc::AT_EMPTY_PATH, mode, 0)
+}
+
+/// `MS_PRIVATE`, as `mount_setattr(2)` takes a propagation.
+const MS_PRIVATE: u64 = 1 << 18;
+
+/// Give the mount `fd` refers to, and with `AT_RECURSIVE` in `flags` every
+/// mount below it too, the access-time mode `mode` and, unless it is `0`,
+/// the propagation `propagation`, leaving every other flag as it is.
+#[allow(unsafe_code)]
+fn set_attr(
+    fd: &rustix::fd::OwnedFd,
+    flags: libc::c_int,
+    mode: u64,
+    propagation: u64,
+) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     let attr = MountAttr {
         attr_set: mode,
         attr_clr: MOUNT_ATTR_ATIME_MASK,
-        propagation: 0,
+        propagation,
         userns_fd: 0,
     };
     // SAFETY: `mount_setattr(2)` reads `size_of::<MountAttr>()` bytes from
@@ -199,7 +219,7 @@ fn set_atime_mode(fd: &rustix::fd::OwnedFd, mode: u64) -> std::io::Result<()> {
             SYS_MOUNT_SETATTR,
             fd.as_raw_fd(),
             c"".as_ptr(),
-            libc::AT_EMPTY_PATH,
+            flags,
             &raw const attr,
             std::mem::size_of::<MountAttr>(),
         )
@@ -283,6 +303,35 @@ impl Drop for QuietMounts {
     }
 }
 
+/// A detached copy of the mounts at and below `root`, every one `noatime` and
+/// private, where this process may change mounts
+/// ([`may_spawn_without_access_times`]): no lookup through it changes an
+/// access time, a symlink's on the way included, and nothing mounted or
+/// unmounted on the system reaches it. The copy is the tree's, not a view of
+/// files of its own: what is changed through it is changed on the disk. It
+/// goes away with the last descriptor of it. `None` where this process may
+/// not, or a step fails.
+pub fn quiet_copy(root: &std::path::Path) -> Option<rustix::fd::OwnedFd> {
+    use rustix::fs::CWD;
+    use rustix::mount::{OpenTreeFlags, open_tree};
+    if !may_spawn_without_access_times() {
+        return None;
+    }
+    let flags = OpenTreeFlags::OPEN_TREE_CLONE
+        | OpenTreeFlags::OPEN_TREE_CLOEXEC
+        | OpenTreeFlags::AT_RECURSIVE
+        | OpenTreeFlags::AT_NO_AUTOMOUNT;
+    let copy = open_tree(CWD, root, flags).ok()?;
+    set_attr(
+        &copy,
+        libc::AT_EMPTY_PATH | AT_RECURSIVE,
+        MOUNT_ATTR_NOATIME,
+        MS_PRIVATE,
+    )
+    .ok()?;
+    Some(copy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +395,7 @@ mod tests {
         let quiet = QuietMounts::open().unwrap();
         assert!(quiet.is_empty());
         assert_eq!(quiet.len(), 0);
+        assert!(quiet_copy(std::path::Path::new("/")).is_none());
         let mut command = std::process::Command::new("/bin/sh");
         command.args(["-c", "exit 0"]);
         spawn_without_access_times(&mut command);

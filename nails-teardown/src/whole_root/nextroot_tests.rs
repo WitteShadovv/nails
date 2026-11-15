@@ -528,3 +528,51 @@ fn detach_under_takes_the_deepest_mounts_first_and_only_below_the_path() {
     ];
     assert!(detach_under(Path::new("/nonexistent-root"), &points).is_empty());
 }
+
+/// A quiet tree is looked up as if its root were `/`: an absolute symlink in
+/// it leads to a file of the tree, not of the system, a link that leads
+/// nowhere is there but no file, and a place the lookup cannot reach may hold
+/// something.
+#[test]
+fn a_quiet_root_resolves_links_inside_the_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for made in ["var/log", "var/lib/wtmpdb", "usr/lib", "locked"] {
+        std::fs::create_dir_all(root.join(made)).unwrap();
+    }
+    symlink("usr/lib", root.join("lib")).unwrap();
+    std::fs::write(root.join("usr/lib/unit"), "[Service]\n").unwrap();
+    symlink("/var/log/wtmp.db", root.join("var/lib/wtmpdb/wtmp.db")).unwrap();
+    let tree = QuietRoot::open(root).unwrap();
+    let path = Path::new;
+
+    assert!(tree.may_exist(path("/var/lib/wtmpdb/wtmp.db")));
+    assert!(!tree.is_file(path("/var/lib/wtmpdb/wtmp.db")));
+    std::fs::write(root.join("var/log/wtmp.db"), "12345").unwrap();
+    assert!(tree.is_file(path("/var/lib/wtmpdb/wtmp.db")));
+    assert_eq!(tree.size(path("/var/lib/wtmpdb/wtmp.db")), Some(5));
+    assert!(tree.is_file(path("/lib/unit")));
+    assert_eq!(
+        tree.read_to_string(path("/lib/unit")).unwrap(),
+        "[Service]\n"
+    );
+    assert!(!tree.is_file(path("/var/log")));
+    assert!(!tree.may_exist(path("/nothing")));
+    assert!(
+        !tree.may_exist(path("/lib/unit/below")),
+        "a file on the way"
+    );
+    assert_eq!(tree.size(path("/nothing")), None);
+    assert!(tree.read_to_string(path("/nothing")).is_err());
+
+    if !rustix::process::geteuid().is_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = root.join("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(
+            tree.may_exist(path("/locked/unit")),
+            "a place it cannot search"
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
