@@ -56,13 +56,14 @@ Every denial and SELinux error is counted from the boot before NAILS ran, in
 both roots, from the kernel log and, while auditd runs on the stock decoy,
 from its log: one is new when it is NAILS's own, or when neither the decoy
 before the first entry (each check aside) nor the first plain soft-reboot
-logged its signature (``selinux_gate``). The audit serial numbers of the boot
-from the gate's first marker on must leave no gap between the two logs. Each
-assertion is recorded with its outcome and the run goes on where it can, so
-one run says which assertions hold and which do not; ``<name>.json``,
-``<name>.kmsg.txt`` and ``<name>.audit.log`` in the directory
-``NAILS_GATE_OUT`` names hold them, and the run fails at its end when one does
-not hold.
+logged its signature (``selinux_gate``). From the gate's first marker on, the
+audit serial numbers of the boot must leave no gap between the two logs, and
+no phase may hold the kernel's notice of a lost record; what the boot's start
+lost before it is recorded. Each assertion is recorded with its outcome and
+the run goes on where it can, so one run says which assertions hold and which
+do not; ``<name>.json``, ``<name>.kmsg.txt`` and ``<name>.audit.log`` in the
+directory ``NAILS_GATE_OUT`` names hold them, and the run fails at its end
+when one does not hold.
 """
 
 from __future__ import annotations
@@ -147,9 +148,14 @@ mkdir -p {HIDDEN}/root/work {HIDDEN}/config
 # The decoy prepared as its requirements ask, beyond what the gate checks
 # before and after its fix: core dumps discarded, the lid switch locking the
 # screen, freed memory zeroed (init_on_free=1, from the next boot on), and
-# sssd off with the state files its warning looks for removed.
+# sssd off with the state files its warning looks for removed. The kernel log's
+# limits are lifted from the next boot's sysctl step on as well, so that the
+# boot the gate counts from loses as little of its kernel log as it can before
+# the gate lifts them again (selinux_gate.KMSG_LIMITS).
 PREPARE_DECOY = """
 set -eu
+printf '%s\\n' 'kernel.printk_ratelimit = 0' 'kernel.printk_devkmsg = on' \\
+  > /etc/sysctl.d/50-kmsg.conf
 mkdir -p /etc/systemd/coredump.conf.d /etc/systemd/logind.conf.d
 printf '%s\\n' '[Coredump]' Storage=none ProcessSizeMax=0 \\
   > /etc/systemd/coredump.conf.d/50-discard.conf
@@ -1963,11 +1969,19 @@ class Gate:
                 found = sg.phase(records, first, last, known, audit)
                 name = label or "the boot's start"
                 boot.setdefault("phases", []).append({"label": name, **found})
-                self.check(
-                    f"the kernel lost no record from {name} on",
-                    not found["suppressed"],
-                    found["suppressed"][:10],
-                )
+                if label is None:
+                    # Before the gate's first marker, before NAILS ran and
+                    # before the gate could lift printk's rate limit in this
+                    # boot: what the boot's start lost is recorded.
+                    self.facts[f"lost-at-the-boots-start-{boot['why']}"] = found[
+                        "suppressed"
+                    ]
+                else:
+                    self.check(
+                        f"the kernel lost no record from {name} on",
+                        not found["suppressed"],
+                        found["suppressed"][:10],
+                    )
                 new = found["new"]
                 where = f"{'marker ' + label if label else name}"
                 if label is None or label in labels:

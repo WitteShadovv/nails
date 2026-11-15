@@ -1048,7 +1048,8 @@ when the decoy did not log its signature before the first entry (each run of
 check aside) nor at the first plain soft-reboot, a race of the image's own
 aside. The audit serial numbers of the boot from the gate's first marker on,
 once it lifted printk's rate limit, must leave no gap between the two logs,
-and no phase may hold the kernel's notice of a lost record. Each assertion is
+and no phase from that marker on may hold the kernel's notice of a lost
+record; what the boot's start lost before it is recorded. Each assertion is
 recorded with its outcome and the run goes on where it can; the driver writes
 `<image>-gate.json`, `<image>-gate.kmsg.txt` and a copy of auditd's log,
 `<image>-gate.audit.log`, and fails at its end when one does not hold. Where

@@ -320,6 +320,16 @@ class DenialsTest(unittest.TestCase):
             self.failed(self.boot(lost)), ["the kernel lost no record from enter-1 on"]
         )
 
+    def test_what_the_boot_s_start_dropped_is_recorded_only(self) -> None:
+        run = gate()
+        run.boots = [self.boot({5: "kauditd_printk_skb: 2 callbacks suppressed"})]
+        quiet(run.judge_denials)
+        self.assertEqual([c["name"] for c in run.checks if not c["passed"]], [])
+        self.assertEqual(
+            run.facts["lost-at-the-boots-start-reference"],
+            ["kauditd_printk_skb: 2 callbacks suppressed"],
+        )
+
     def test_the_baseline_is_the_decoy_before_the_first_entry(self) -> None:
         self.assertEqual(
             fg.Gate.baseline_labels(self.boot({})),
