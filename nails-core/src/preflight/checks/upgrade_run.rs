@@ -81,6 +81,10 @@ pub enum UpgradeRun {
     InProgress(Vec<String>),
     /// NAILS cannot tell, for this reason.
     Unknown(String),
+    /// NAILS cannot tell whether a daily run's unit is active, for this
+    /// reason: it cannot read what shows it (`/run/systemd/units`, the
+    /// unit's cgroup), and the lock shows no run.
+    UnitUnknown(String),
     /// NAILS cannot tell without root, for this reason: only root can open
     /// the lock file, which a run as root does.
     UnknownWithoutRoot(String),
@@ -102,7 +106,7 @@ impl UpgradeRun {
                 "a daily unattended-upgrade run is in progress ({}): {AT_THE_SWITCH}",
                 signs.join(", and ")
             )),
-            UpgradeRun::Unknown(why) => Some(format!(
+            UpgradeRun::Unknown(why) | UpgradeRun::UnitUnknown(why) => Some(format!(
                 "NAILS cannot tell whether a daily unattended-upgrade run is in progress \
                  ({why}): {AT_THE_SWITCH}"
             )),
@@ -118,6 +122,7 @@ impl UpgradeRun {
     pub fn fix(&self) -> String {
         match self {
             UpgradeRun::Unknown(_) => UNREAD.to_string(),
+            UpgradeRun::UnitUnknown(_) => UNIT_UNREAD.to_string(),
             UpgradeRun::UnknownWithoutRoot(_) => format!(
                 "Run the check as root (`{}`), which can open the lock file to ask the kernel \
                  about its locks.",
@@ -220,7 +225,7 @@ fn upgrade_run_as<F: Filesystem>(fs: &F, root: &Path, as_root: bool) -> UpgradeR
     }
     match untold {
         _ if !signs.is_empty() => UpgradeRun::InProgress(signs),
-        Some(why) => UpgradeRun::Unknown(why),
+        Some(why) => UpgradeRun::UnitUnknown(why),
         None => UpgradeRun::Idle,
     }
 }
@@ -233,6 +238,12 @@ pub const RETRY: &str = "Try again in a few minutes, once the run has ended \
 /// What to do when NAILS cannot tell.
 const UNREAD: &str = "Make sure /run/unattended-upgrades.lock, where it exists, is a plain file \
                       that can be looked up and opened, then activate again.";
+
+/// What to do when NAILS cannot tell whether a daily run's unit is active.
+const UNIT_UNREAD: &str = "Make sure NAILS can read /run/systemd/units and the cgroups of \
+                           apt-daily.service and apt-daily-upgrade.service below \
+                           /sys/fs/cgroup/system.slice (with sudo, where only root can), then \
+                           activate again.";
 
 /// What to do when `check` cannot read the mount table, and so looks
 /// nothing up.
@@ -292,7 +303,10 @@ impl<F: Filesystem> PreFlightCheck<F> for UpgradeRunCheck {
             }
             // Where the guard made no lookup, mounting the point is the fix,
             // which settle gives.
-            Some(why) if !skipped.is_empty() && matches!(run, UpgradeRun::Unknown(_)) => {
+            Some(why)
+                if !skipped.is_empty()
+                    && matches!(run, UpgradeRun::Unknown(_) | UpgradeRun::UnitUnknown(_)) =>
+            {
                 CheckResult::Fail {
                     message: why,
                     remediation: None,
