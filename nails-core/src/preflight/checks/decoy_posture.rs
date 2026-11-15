@@ -853,6 +853,7 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
             tuned_units: tuned.units,
             tuned_programs: tuned.programs,
             tuned_namespaces: tuned.namespaces,
+            tuned_specified: tuned.specified,
             upgrade: upgrades.blocker,
         };
         let mut warnings = Self::warnings(&warning, &self.root, self.is_nixos, &hidden);
@@ -943,6 +944,9 @@ struct Blockers {
     tuned_programs: Vec<&'static str>,
     /// The journal namespaces of those findings, which their fix names.
     tuned_namespaces: Vec<String>,
+    /// The units of those findings whose journal namespace has a specifier,
+    /// which their fix names.
+    tuned_specified: Vec<&'static str>,
     /// unattended-upgrades' finding.
     upgrade: Option<install_on_shutdown::Blocker>,
 }
@@ -1078,6 +1082,7 @@ impl Blockers {
                 &self.tuned_units,
                 &self.tuned_programs,
                 &self.tuned_namespaces,
+                &self.tuned_specified,
                 is_nixos,
             ));
         }

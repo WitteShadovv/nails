@@ -424,26 +424,32 @@ them: `journal`, `syslog` and `kmsg`, alone or with `+console`, send the
 stream to the journal. A standard output left to `inherit` or not set takes
 the service manager's default, which NAILS takes for the journal, systemd's
 own default, wherever `StandardInput=` is not a terminal, `socket` or a named
-descriptor (`fd:`). Where that is the journal,
-or the daemon logs to syslog, the journal namespace its unit
-sets with `LogNamespace=` decides, or, for a running daemon, the one its
-mount table shows: that namespace's journald instance reads
-`journald@<namespace>.conf` and its drop-ins, never `journald.conf`, and
-keeps the journal on the decoy disk, in
+descriptor (`fd:`). Where it is the journal, or the daemon logs to syslog, the journal
+namespace its unit sets with `LogNamespace=` decides, or, for a running
+daemon, the one its mount table shows: that namespace's journald instance
+reads `journald@<namespace>.conf` and its drop-ins, never `journald.conf`,
+and keeps the journal on the decoy disk, in
 `/var/log/journal/<machine-id>.<namespace>`, unless they set another
 `Storage=`, so a namespace that persists counts as a log file, however
-volatile the decoy's own journal is. To keep it off the disk, set
-`Storage=volatile` in the `[Journal]` section of
-`/etc/systemd/journald@<namespace>.conf` (on NixOS through
-`environment.etc."systemd/journald@<namespace>.conf".text`), then run
+volatile the decoy's own journal is. To keep a namespace's journal off the
+disk, set `Storage=volatile` in the `[Journal]` section of
+`/etc/systemd/journald@<namespace>.conf`, then run
 `sudo systemctl restart systemd-journald@<namespace>.service`, or drop the
 unit's `LogNamespace=`, then run `sudo systemctl daemon-reload` and restart
-the unit; what the namespace kept before stays in
-`/var/log/journal/<machine-id>.<namespace>`. Other units' namespaces
-are not read here. A unit counts
-when the service manager can start it: it is enabled (a link in a `.wants`,
-`.requires` or `.upholds` directory) or active, or a timer, path or socket
-unit that is enabled or active starts it, and it is not masked. A process
+the unit. On NixOS set the file through
+`environment.etc."systemd/journald@<namespace>.conf".text`, or drop
+`LogNamespace` from the unit's `serviceConfig`, in the decoy configuration,
+then run `sudo nixos-rebuild switch` and
+`sudo systemctl restart systemd-journald@<namespace>.service`. What the
+namespace kept before stays in `/var/log/journal/<machine-id>.<namespace>`.
+Where NAILS cannot tell whether a namespace keeps its journal on the disk,
+the refusal and the warning give that namespace's fix as well, and where a
+unit names its namespace with a specifier, which NAILS does not expand, they
+say to name it without one or drop it. Other units' namespaces are not read
+here. A unit counts when the service
+manager can start it: it is enabled (a link in a `.wants`, `.requires` or
+`.upholds` directory) or active, or a timer, path or socket unit that is
+enabled or active starts it, and it is not masked. A process
 counts as it runs, by its name (`comm`), or, run through its interpreter as in
 `python3 /usr/sbin/tuned`, by the script Python runs, its options read from its
 command line, so a daemon started by hand, or one still running with the
