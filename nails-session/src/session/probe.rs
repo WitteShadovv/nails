@@ -9,7 +9,7 @@
 //! decoy a populated `/run/nextroot` or a plan without a hidden root means an
 //! entry is under way or was interrupted. A plan file that is there but
 //! cannot be read, or is no plan this build reads, counts as one that was
-//! left behind.
+//! left behind; one below a file is not there.
 
 use super::layout::Paths;
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, root_is_hidden_overlay};
@@ -88,8 +88,16 @@ pub fn probe_with(paths: &Paths, hidden_root: &Path, entries: &[MountEntry]) -> 
                 return SessionView::HiddenWithoutPlan(format!("{why} (upper {upper})"));
             }
             // A plan that is there, but cannot be read or is not one this
-            // build reads, is a leftover of an entry as a plan read is.
-            if nextroot_mounted || !matches!(why, PlanError::Missing) {
+            // build reads, is a leftover of an entry as a plan read is. One
+            // below a file (ENOTDIR) is not there: nothing can be below a
+            // file, which no entry leaves, and which recover would not
+            // remove.
+            let there = match &why {
+                PlanError::Missing => false,
+                PlanError::Unreadable(error) => error.kind() != std::io::ErrorKind::NotADirectory,
+                _ => true,
+            };
+            if nextroot_mounted || there {
                 SessionView::Interrupted {
                     plan: None,
                     nextroot_mounted,
@@ -163,6 +171,29 @@ mod tests {
             SessionView::Interrupted { plan: None, .. }
         ));
         std::fs::remove_dir(p.plan()).unwrap();
+        assert_eq!(
+            probe_with(&p, Path::new("/mnt/data"), &decoy),
+            SessionView::Decoy
+        );
+    }
+
+    /// A file where the runtime directory would be holds no plan: below a
+    /// file nothing is there (ENOTDIR), which no entry leaves. It is the
+    /// plain decoy, where it counted as an interrupted entry whose `recover`
+    /// could not remove the file, and check sent the operator to it in a
+    /// loop.
+    #[test]
+    fn a_plan_below_a_file_is_no_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        let decoy = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+        let runtime = p.plan().parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+        std::fs::write(&runtime, "not a directory").unwrap();
+        assert!(matches!(
+            Plan::load(&p.plan()),
+            Err(PlanError::Unreadable(error)) if error.kind() == std::io::ErrorKind::NotADirectory
+        ));
         assert_eq!(
             probe_with(&p, Path::new("/mnt/data"), &decoy),
             SessionView::Decoy
