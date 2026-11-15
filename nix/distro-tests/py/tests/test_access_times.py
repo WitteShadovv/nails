@@ -164,6 +164,16 @@ class WalkTest(unittest.TestCase):
         self.assertNotIn(os.path.join(top, "covered"), seen)
         self.assertNotIn(os.path.join(top, "covered", "inside"), seen)
 
+    def test_a_skipped_directory_is_neither_aged_nor_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as top:
+            tools = os.path.join(top, "tools")
+            os.makedirs(tools)
+            open(os.path.join(tools, "helper"), "w").close()
+            aged = walk.age(2 * 86400, [top], frozenset({tools}))
+            self.assertEqual(aged["aged"], 1)
+            listed = walk.listing(0, [top], frozenset({tools}))
+        self.assertEqual(listed["walked"], 1)
+
     def test_an_aged_tree_lists_only_what_was_read_after_the_reference(self) -> None:
         with tempfile.TemporaryDirectory() as top:
             old = os.path.join(top, "old")

@@ -26,10 +26,13 @@
 # decoy program the driver itself starts for every command, base64 for its
 # output, runs before each reference is taken, so its own access times, and
 # those of the libraries it loads, are already new when a phase starts.
+# Debian mounts /run noexec, and a switch keeps no mount below /run, so the
+# helper and the walker are copied to a directory of the decoy disk that the
+# walker leaves out (its own start reads the helper's file and nothing else).
 #
-# The scenario runs NAILS as an operator does: the binary from /run, the
-# configuration in /run and the hidden root on a loop device backed by a tmpfs
-# (lib/hidden-root.nix). The decoy is made amnesic, as NAILS requires, its
+# The scenario runs NAILS as an operator does: the binary from the hidden
+# volume, the configuration in /run and the hidden root on a loop device
+# backed by a tmpfs (lib/hidden-root.nix). The decoy is made amnesic, as NAILS requires, its
 # timers are masked and cloud-init is turned off before the first measured
 # phase, so nothing the decoy schedules runs into a phase. Debian's
 # unattended-upgrades helper is restarted after each aging: NAILS compares the
@@ -97,12 +100,15 @@ distroVm.buildVmTest {
     import access_times as at  # noqa: E402
 
     image_name = "${cfg.name}"
-    # The tools are copied from the share into /run, which every switch
-    # carries; the share's own mount does not survive one.
+    # The share's mount does not survive a switch: the binary is kept in /run,
+    # which every switch carries, and copied to the hidden volume, where it
+    # runs; the helper and the walker are kept on the decoy disk, in a
+    # directory the walker leaves out (see the header).
     SHARE = "${share.target}"
-    TOOLS = "/run/atime"
+    STORE = "/run/atime"
+    TOOLS = "/var/lib/atime-harness"
     QUIET = f"{TOOLS}/noatime-run"
-    NAILS = f"{TOOLS}/nails"
+    NAILS = "/mnt/data/nails"
     CONFIG = "/run/nails-atime.toml"
     NAILS_CMD = f"{NAILS} --config {CONFIG}"
     RAM_NAILS_CMD = f"/run/overlay-runtime/control --config {CONFIG}"
@@ -123,7 +129,8 @@ distroVm.buildVmTest {
 
     def walker(args, timeout=900):
         return vm.succeed(
-            f"{QUIET} /usr/bin/python3 -I {TOOLS}/atime_walk.py {args}", timeout=timeout
+            f"{QUIET} /usr/bin/python3 -I {TOOLS}/atime_walk.py --skip {TOOLS} {args}",
+            timeout=timeout,
         )
 
 
@@ -273,13 +280,14 @@ distroVm.buildVmTest {
 
     def flow(label, leave):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed(f"cp {STORE}/nails {NAILS} && chmod 0755 {NAILS}")
         ref = phase_start(f"{label}-check")
         status, _ = vm.execute(
-            f"{NAILS_CMD} check --overlay-only --json > {TOOLS}/{label}-check.json 2>&1"
+            f"{NAILS_CMD} check --overlay-only --json > {STORE}/{label}-check.json 2>&1"
         )
         end = now_ns()
-        print(vm.succeed(f"cat {TOOLS}/{label}-check.json"))
         reads = reads_of(f"{label}-check", ref)
+        print(vm.succeed(quiet(f"cat {STORE}/{label}-check.json")))
         report["phases"][f"{label}-check"].update({"status": status, "end": end})
         check_findings = at.judge_check(reads)
         findings.extend(check_findings)
@@ -316,8 +324,9 @@ distroVm.buildVmTest {
 
     vm.wait_for_unit("multi-user.target")
     vm.succeed(
-        f"mkdir -p {TOOLS} && cp {SHARE}/nails {SHARE}/noatime-run {SHARE}/atime_walk.py "
-        + f"{TOOLS}/ && chmod 0755 {TOOLS}/nails {TOOLS}/noatime-run"
+        f"mkdir -p {STORE} {TOOLS} && cp {SHARE}/nails {STORE}/ && "
+        + f"cp {SHARE}/noatime-run {SHARE}/atime_walk.py {TOOLS}/ && "
+        + f"chmod 0755 {TOOLS}/noatime-run"
     )
     write_config()
     print(vm.succeed("cat /etc/os-release; uname -r; findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS"))

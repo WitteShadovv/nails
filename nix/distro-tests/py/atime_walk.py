@@ -24,7 +24,9 @@ standard library, and its output is one JSON object on standard output.
 
 A walk stays on its filesystem: it does not enter a directory that another
 mount covers (it does enter a btrfs subvolume that is not mounted, which is
-part of the tree), and it lists the root of each walked mount.
+part of the tree), and it lists the root of each walked mount. ``--skip PATH``
+before the command, given any number of times, leaves PATH and everything
+below it out: the scenario's own tools, which the decoy's shell starts.
 """
 
 from __future__ import annotations
@@ -144,19 +146,23 @@ def all_targets() -> frozenset[str]:
         return frozenset(target for target, _, _ in parse_mountinfo(handle.read()))
 
 
-def entries_of(tops: list[str]) -> Iterator[tuple[str, os.stat_result]]:
+def entries_of(
+    tops: list[str], skip: frozenset[str] = frozenset()
+) -> Iterator[tuple[str, os.stat_result]]:
     targets = all_targets()
     for top in tops:
-        yield from walk(top, targets - {top})
+        yield from walk(top, (targets - {top}) | skip)
 
 
-def age(seconds: int, tops: list[str]) -> dict[str, object]:
+def age(
+    seconds: int, tops: list[str], skip: frozenset[str] = frozenset()
+) -> dict[str, object]:
     """Age every entry (see the module docs). The whole walk comes first, so
     that a listing of a directory after its aging cannot update its access
     time again where the namespace keeps access times."""
     when = time.time_ns() - seconds * 1_000_000_000
     count = failed = 0
-    for path, st in list(entries_of(tops)):
+    for path, st in list(entries_of(tops, skip)):
         try:
             os.utime(path, ns=(when, st.st_mtime_ns), follow_symlinks=False)
             count += 1
@@ -165,11 +171,13 @@ def age(seconds: int, tops: list[str]) -> dict[str, object]:
     return {"aged": count, "failed": failed, "to": when}
 
 
-def listing(ref_ns: int, tops: list[str]) -> dict[str, object]:
+def listing(
+    ref_ns: int, tops: list[str], skip: frozenset[str] = frozenset()
+) -> dict[str, object]:
     """The entries read since ``ref_ns`` (see the module docs)."""
     walked = 0
     found = []
-    for path, st in entries_of(tops):
+    for path, st in entries_of(tops, skip):
         walked += 1
         if st.st_atime_ns > ref_ns:
             found.append(
@@ -180,6 +188,11 @@ def listing(ref_ns: int, tops: list[str]) -> dict[str, object]:
 
 
 def main(argv: list[str]) -> int:
+    skipped = []
+    while len(argv) >= 2 and argv[0] == "--skip":
+        skipped.append(argv[1])
+        argv = argv[2:]
+    skip = frozenset(skipped)
     if len(argv) >= 1 and argv[0] == "mounts":
         with open(
             "/proc/self/mountinfo", encoding="utf-8", errors="surrogateescape"
@@ -188,12 +201,13 @@ def main(argv: list[str]) -> int:
                 "mounts": decoy_mounts(parse_mountinfo(handle.read()))
             }
     elif len(argv) >= 3 and argv[0] == "age":
-        result = age(int(argv[1]), argv[2:])
+        result = age(int(argv[1]), argv[2:], skip)
     elif len(argv) >= 3 and argv[0] == "list":
-        result = listing(int(argv[1]), argv[2:])
+        result = listing(int(argv[1]), argv[2:], skip)
     else:
         print(
-            "usage: atime_walk.py mounts | age SECONDS MOUNT... | list REF_NS MOUNT...",
+            "usage: atime_walk.py [--skip PATH]... mounts | age SECONDS MOUNT... "
+            "| list REF_NS MOUNT...",
             file=sys.stderr,
         )
         return 2
