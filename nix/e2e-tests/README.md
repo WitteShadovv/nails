@@ -1001,52 +1001,88 @@ journal volatile and auditd off by `systemctl disable`, `systemctl mask` and
 with every repository disabled and started, then the documented fixes; the
 locate database; lsm-status, enforcing and after `setenforce 0`; check clean;
 a failed console login, which btmp must record); a plain soft-reboot; a
-session ended with `deactivate`; a package the decoy removes after that
-session; a second session as a user through sudo with the fresh-home persona,
-ended with the emergency; and a last plain soft-reboot. Before the first
-entry the decoy makes a bind mount with a userspace option, which libmount
-keeps in utab, and before each entry the operator logs in on the decoy's
-console (tty4), as an operator does before activating.
+second power cycle, so that the first entry starts from a cold boot as an
+operator's does; a session ended with `deactivate`; a package the decoy
+removes after that session; a second session as a user through sudo with the
+fresh-home persona and the sleep guard on (`block`), ended with the
+emergency; and a last plain soft-reboot. Before the first entry the decoy
+makes a bind mount with a userspace option, which libmount keeps in utab, and
+before each entry the operator logs in on the decoy's console (tty4), as an
+operator does before activating.
 In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
 `/var`, the type a copied-up and a new file take, NAILS's processes outside
-`init_t`, the overlay feature options, the canaries in their uppers, the
-failed units, a login and a failed login that the session's own wtmp and btmp
-record, a `security.selinux` round trip on the hidden volume, and a disk
-attached in the session read-only by the disk guard's udev rule, which
-records it: the watcher's sweep, the rule's fallback, runs once an hour in
-the gate's sessions, so it cannot set the disk read-only in the rule's place.
-The first session also plants the rehearsal, whose scan it must refuse. After
-each way back it asserts the session's kernel log marker absent from the
-decoy's journal, which holds no kernel record of the session, the kmsg cursor
-above it; nothing of the session in `/run`, counted from the wall clock right
-before the way back against `/run` right before the entry, the session's file
-there and NAILS's runtime folder gone; `utab` given back, the bind mount's
-line under its new mount ID; `/run/initramfs` unchanged; the attached disk
-writable again; none of the session's files on the decoy; the failed units:
-none of NAILS's, none the hidden root masks, and no other but one a switch is
-known to leave failed (the zram swap's, with the swap each root ran with
-recorded) or one the first plain soft-reboot left failed; and the login and
-boot records changed only
-by the boot a power cycle adds, with no record of a login or a failed login
-made in the session: wtmp keeps the operator's console login, dated before
-the entry, and lastlog2, where the release keeps it (Fedora 45), the
-operator's last login before the entry, since pam_lastlog2 keeps one row a
-user and writes one at each of the operator's commands too, with no row dated
-inside the session. After the first way back the rehearsal's scan must find
-nothing and name the btrfs root, which compresses, as not checked. Across
-each way back the decoy's disk mounts must change only where a plain
-soft-reboot changes them: every file and folder whose contents or inode, its
-labels among its extended attributes, changed since right before the entry,
-held against those that changed across either plain soft-reboot, the login
-record files aside, and a unit's private temporary folder counted by its unit,
-since each start of the unit names a new one. A path the decoy's own start
-changes at every switch therefore shows nothing of a session. Every AVC denial
-and SELinux error is counted from the boot before NAILS ran, from the kernel
-log and, while auditd runs on the stock decoy, from auditd's log, by the wall
-clock of the markers: a denial is new when a NAILS process or path has it, or
-when the decoy did not log its signature before the first entry (each run of
-check aside) nor at the first plain soft-reboot, a race of the image's own
-aside. The audit serial numbers of the boot from the gate's first marker on,
+`init_t` (the watcher's, and the sleep guard's in the second session), the
+overlay feature options, the canaries in their uppers, the failed units, a
+login and a failed login that the session's own wtmp and btmp record, a
+`security.selinux` round trip on the hidden volume, and a disk attached in
+the session read-only by the disk guard's udev rule, which records it: the
+watcher's sweep, the rule's fallback, runs once an hour in the gate's
+sessions, so it cannot set the disk read-only in the rule's place. The first
+session also plants the rehearsal, whose scan it must refuse. Each session
+starts a unit ordered before journald, without the default dependencies, so
+that it stops after the hidden journald and logs a line through each of
+journald's sockets as it does (`/dev/log`, its standard output, the native
+socket), and as its last step runs 8000 programs, which push the kernel's
+process numbers far past a cold boot's. After each way back it asserts the
+session's kernel log marker absent from the decoy's journal, which holds no
+kernel record of the session and none logged before the switch's last step
+ended, the cursor's effect, since the decoy's journald rewrites the cursor
+file before the gate can read it; none of the late unit's lines in the
+decoy's journal, judged only where its stop came after the hidden journald's,
+and no other audit record or line the hidden root sent to journald's sockets
+after its journald stopped, which the soft-reboot keeps open for the decoy's
+journald: audit records numbered up to the hidden root's last before the
+switch's last step, syslog and native lines the kernel took in before that
+step ended, and standard output lines of a process numbered at or above what
+the session pushed the counter to; a line logged after the way back in the
+decoy's journal, the positive control of that reading; `/run` at every depth,
+udev's device database aside, held against `/run` right before the entry and
+the shapes of what the plain soft-reboots added there (a new journal stream,
+session or unit file of the decoy's own start, its numbers left out), with
+`/run/udev/rules.d` and `/run/systemd/system` as the decoy had them, the
+session's file and NAILS's runtime folder gone, and `/run/nextroot` without a
+mount or an entry, the reconcile step's pieces left to their own check; `utab` given back, the bind mount's line under its new
+mount ID; `/run/initramfs` unchanged; the attached disk writable again; none
+of the session's files on the decoy; the SELinux booleans as they were; the
+failed units: none of NAILS's, none the hidden root masks, and no other but
+one a switch is known to leave failed (the zram swap's, with the swap each
+root ran with recorded) or one the first plain soft-reboot left failed; and
+the login and boot records changed only by the boot a power cycle adds, with
+no record of a login or a failed login made in the session: wtmp keeps the
+operator's console login, dated before the entry, and lastlog2, where the
+release keeps it (Fedora 45), the operator's last login before the entry,
+since pam_lastlog2 keeps one row a user and writes one at each of the
+operator's commands too, with no row dated inside the session; and the
+units of the consoles the way back's start ran (a getty on tty1 on Fedora
+44, kmscon on Fedora 45), by their main processes and by the records they
+wrote in wtmp, numbered below what the session pushed the counter to and in
+the power-of-two range the cold boot gave each. After the first way back the
+rehearsal's scan must find nothing and name the btrfs root, which compresses,
+as not checked. Across each way back the decoy's disk mounts must change only
+where a plain soft-reboot changes them: every file and folder whose contents
+or inode, its labels among its extended attributes, changed since right
+before the entry, held against those that changed across either plain
+soft-reboot, the login record files aside, and a unit's private temporary
+folder counted by its unit, since each start of the unit names a new one. A
+path the decoy's own start changes at every switch therefore shows nothing of
+a session. In this driver, once auditd is off, the gate masks
+`audit-rules.service`, which loads the image's rules at every start and with
+them one that keeps every process from being audited, and has the kernel
+record every program run from below `/run`, with the domain it runs in, and
+apart from those every program run from a file labelled as runtime data
+(`var_run_t`, `init_var_run_t`, `tmpfs_t`), the label a copy of NAILS in
+`/run` has where nothing labels it as a program. Each step the
+run has NAILS's copies run must be among them (the watcher, the sleep guard,
+the last step of each switch, the reconcile step and the disk guard, which no
+process listing catches), none in `init_t` and none, run or refused, from a
+copy labelled as runtime data, and a program the gate runs from such a file
+in each root must be recorded as one. Every
+AVC denial and SELinux error is counted from the boot before NAILS ran, from
+the kernel log and, while auditd runs on the stock decoy, from auditd's log,
+by the wall clock of the markers: a denial is new when a NAILS process or
+path has it, or when the reference boot, the decoy prepared and its first
+plain soft-reboot, did not log its signature (each run of check aside), a
+race of the image's own aside. The audit serial numbers of the boot from the gate's first marker on,
 once it lifted printk's rate limit, must leave no gap between the two logs,
 and no phase from that marker on may hold the kernel's notice of a lost
 record; what the boot's start lost before it is recorded. Each assertion is
@@ -1060,7 +1096,8 @@ what it needs.
 off (`semodule -DB` before the reference boot), so that the denials those
 rules keep out of the log are counted too: a new denial of a NAILS process or
 path fails it, as in the gate, while the quiet denials of other programs,
-which show without those rules, are recorded. It writes
+which show without those rules, are recorded. It keeps the image's audit
+rules, as every denial would bring its system call's records with it. It writes
 `<image>-gate-noda.json` and `<image>-gate-noda.kmsg.txt`. Every run of the
 gate makes room for 8192 audit records in the kernel's queue
 (`auditctl -b 8192`): with the kernel's 64, this variant lost records at the

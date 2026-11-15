@@ -23,7 +23,9 @@ module holds the pure parts:
   (:data:`IMAGE_RACES`), and the lines that say the kernel lost records;
 - whether the decoy's journal took kernel records of a hidden session after
   the way back (:func:`cursor`), the leak the transition's kmsg cursor
-  prevents.
+  prevents, and its entries in every transport (:func:`journal_entries`)
+  with the last audit serial number of the hidden root
+  (:func:`last_serial_between`), for what journald's sockets carried.
 
 Nothing here imports Nix or the test driver.
 """
@@ -616,17 +618,77 @@ def cursor(
         for s in seqs
         if step_end is not None and banner is not None and step_end <= s < banner
     ]
+    before_step = [s for s in seqs if step_end is not None and s < step_end]
     by_seq = {int(r["seq"]): str(r["msg"]) for r in records}
     return {
         "known": known,
         "journalKernelRecords": len(journal),
         "matched": len(seqs),
+        "firstImported": seqs[0] if seqs else None,
         "stepEnd": step_end,
         "newUserspace": banner,
         "leakedFromSession": len(session),
+        "beforeStep": len(before_step),
         "afterStep": len(after_step),
         "examples": [f"{s} {by_seq.get(s, '')[:160]}" for s in session[:12]],
     }
+
+
+def journal_entries(text: str) -> list[dict[str, Any]]:
+    """The entries of ``journalctl -o json`` output in every transport, with
+    the fields the reading of what journald's sockets carried needs: the
+    transport, the sender's process number and name, the audit serial number
+    of an audit record, the wall clock the kernel took a datagram in at
+    (``_SOURCE_REALTIME_TIMESTAMP``, microseconds), the one journald read it
+    at, and the message."""
+    found = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        message = entry.get("MESSAGE")
+        if isinstance(message, list):
+            message = bytes(b & 0xFF for b in message).decode("utf-8", "replace")
+
+        def number(key: str, entry: Mapping[str, Any] = entry) -> int | None:
+            value = entry.get(key)
+            return int(value) if isinstance(value, str) and value.isdigit() else None
+
+        found.append(
+            {
+                "transport": str(entry.get("_TRANSPORT", "")),
+                "pid": number("_PID"),
+                "who": str(entry.get("SYSLOG_IDENTIFIER") or entry.get("_COMM") or ""),
+                "unit": str(entry.get("_SYSTEMD_UNIT", "")),
+                "auditId": number("_AUDIT_ID"),
+                "sent": number("_SOURCE_REALTIME_TIMESTAMP"),
+                "received": number("__REALTIME_TIMESTAMP"),
+                "msg": str(message or ""),
+            }
+        )
+    return found
+
+
+def last_serial_between(
+    records: Iterable[Mapping[str, Any]], after: int, before: int
+) -> int | None:
+    """The highest audit serial number of the kernel records logged after
+    ``after`` and before ``before`` (sequence numbers), or None."""
+    found = None
+    for record in records:
+        seq = int(record["seq"])
+        if seq <= after or seq >= before:
+            continue
+        serial = serial_of(str(record["msg"]))
+        if serial is not None and (found is None or serial > found):
+            found = serial
+    return found
 
 
 def seqnum_from_od(text: str) -> int | None:

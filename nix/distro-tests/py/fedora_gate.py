@@ -24,39 +24,56 @@ QEMU process:
    in; the locate database; lsm-status, before and after ``setenforce 0``;
    check clean on the prepared decoy; a failed login, which btmp records;
 3. a plain soft-reboot, the control whose denials, failed units and changes
-   on the decoy disk are no sign of NAILS;
-4. a first session, ended with ``deactivate``: SELinux enforcing in it; the
+   on the decoy disk and in ``/run`` are no sign of NAILS;
+4. a second power cycle, so that the first entry starts from a cold boot as
+   an operator's does: the numbers its consoles' units (a getty, kmscon) get
+   are the ones a way back must give them again;
+5. a first session, ended with ``deactivate``: SELinux enforcing in it; the
    labels of the hidden ``/``, ``/home`` and ``/var``; a copied-up file keeps
    its type and a new one gets the policy's; NAILS's processes never in
    ``init_t``; the overlay feature options pinned; the canaries land in the
    uppers; no NAILS unit and no unit the hidden root masks failed; a login
    and a failed login in the session, each recorded in the session's own
-   files; a kernel log marker and a file in ``/run``; a disk attached in the
-   session read-only by the disk guard's udev rule; the rehearsal planted;
-   and after the way back: enforcing; the marker not in the decoy's journal,
-   which took no kernel record of the session, and the cursor above it;
-   nothing the session made left in ``/run``; ``utab`` given back, a line of
-   a bind mount the decoy made among it; ``/run/initramfs`` unchanged; the
-   attached disk writable again; none of the session's files on the decoy;
-   no failed unit but one a soft-reboot is known to leave; the login and boot
-   records as a power cycle leaves them, with no record of the hidden logins;
+   files; a kernel log marker and a file in ``/run``; a unit that logs
+   through each of journald's sockets as it stops, after journald; a disk
+   attached in the session read-only by the disk guard's udev rule; the
+   rehearsal planted; the kernel's process numbers pushed far past a cold
+   boot's; and after the way back: enforcing; the marker not in the decoy's
+   journal, which took no kernel record of the session and none from before
+   the switch's last step; no line or audit record the hidden root sent to
+   journald's sockets after its journald stopped; nothing the session made
+   left in ``/run``, at any depth; ``utab`` given back, a line of a bind mount
+   the decoy made among it; ``/run/initramfs`` unchanged; the attached disk
+   writable again; none of the session's files on the decoy; the SELinux
+   booleans as they were; no failed unit but one a soft-reboot is known to
+   leave; the login and boot records as a power cycle leaves them, with no
+   record of the hidden logins and the consoles' units numbered as at the
+   cold boot;
    the rehearsal's scan, which names the compressing btrfs root as not
    checked;
-5. a package the decoy removes after a hidden session changed its own copy of
+6. a package the decoy removes after a hidden session changed its own copy of
    the package database: check warns of it with its fix;
-6. a second session, as a user through sudo with the fresh-home persona: its
-   home labelled ``user_home_dir_t``; the same assertions in it, the
-   rehearsal's aside; the entry's drift advisory; ended with the emergency,
-   and the same way-back assertions;
-7. a last plain soft-reboot, the second control; the decoy disk after each way
-   back changed only where a control changed it; and a login on the decoy,
-   the positive control of the login records.
+7. a second session, as a user through sudo with the fresh-home persona and
+   the sleep guard on: its home labelled ``user_home_dir_t``; the same
+   assertions in it, the rehearsal's aside; the entry's drift advisory; ended
+   with the emergency, and the same way-back assertions;
+8. a last plain soft-reboot, the second control; the decoy disk and ``/run``
+   after each way back changed only where a control changed them; and a login
+   on the decoy, the positive control of the login records.
+
+In the variant with the policy's dontaudit rules on, the kernel also records
+every program run from below ``/run`` with its domain, and every program run
+from a file labelled as runtime data (audit rules, which a masked
+``audit-rules.service`` keeps across the switches): each step NAILS's copies
+run must be among them, the reconcile and transition steps and the disk
+guard included, which no process listing catches, none in ``init_t`` and
+none from a copy the policy does not label as a program.
 
 Every denial and SELinux error is counted from the boot before NAILS ran, in
 both roots, from the kernel log and, while auditd runs on the stock decoy,
-from its log: one is new when it is NAILS's own, or when neither the decoy
-before the first entry (each check aside) nor the first plain soft-reboot
-logged its signature (``selinux_gate``). From the gate's first marker on, the
+from its log: one is new when it is NAILS's own, or when the reference boot,
+the decoy prepared and its first plain soft-reboot (each check aside), did
+not log its signature (``selinux_gate``). From the gate's first marker on, the
 audit serial numbers of the boot must leave no gap between the two logs, and
 no phase may hold the kernel's notice of a lost record; what the boot's start
 lost before it is recorded. Each assertion is recorded with its outcome and
@@ -75,7 +92,7 @@ import shlex
 import tempfile
 import traceback
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import distro_checks
@@ -99,7 +116,10 @@ CONFIG_TEXT = (
     "\n[session_mounts]\nread_only = true\n"
     "\n[backend_watch]\npoll_interval_secs = 3600\n"
 )
-FRESH_TEXT = '\n[persona]\nmode = "fresh-home"\n'
+# The second session's: the fresh-home persona, and the sleep guard on, so
+# that its process is among those whose domain the gate reads.
+FRESH_TEXT = '\n[persona]\nmode = "fresh-home"\n\n[sleep_policy]\nmode = "block"\n'
+SLEEP_GUARD = "overlay-runtime-power.service"
 # The disk guard's udev rule in a session, and its record of the disks it set
 # read-only.
 GUARD_RULE = "/run/udev/rules.d/60-overlay-runtime.rules"
@@ -121,6 +141,42 @@ LOGIN_TTY = "tty5"
 OPERATOR_TTY = "tty4"
 # A file each session writes in /run, which its way back must take away.
 RUN_PROBE = "/run/gate-probe"
+# /run at every depth, each entry with its type: the device database udev
+# rebuilds at each start, the credentials and /run/nextroot, the switch's
+# own mount point, aside (:meth:`Gate.nextroot` judges the last).
+RUN_FIND = (
+    "find /run -xdev -mindepth 1 \\( -path /run/udev/data -o -path /run/udev/tags "
+    "-o -path /run/udev/links -o -path /run/udev/watch -o -path /run/credentials "
+    "-o -path /run/nextroot \\) -prune -o -printf '%y %p\\n'"
+)
+# Where a session's udev rules and runtime units go, which the way back must
+# leave as the decoy had them.
+RUN_UNIT_TREES = ("/run/udev/rules.d", "/run/systemd/system")
+# A soft-reboot keeps journald's sockets open, and the decoy's journald reads
+# at its start what waits in them. A unit of each hidden session that stops
+# after the hidden journald (ordered before it, without the default
+# dependencies) logs one line through each of them as it stops: through
+# /dev/log, its standard output and the native socket.
+LATE_UNIT = "gate-late"
+LATE_MARK = "GATELATE"
+LATE_STOP = (
+    '/bin/sh -c "logger -t gatelate {mark}-syslog; echo {mark}-stdout; '
+    "printf 'MESSAGE={mark}-native\\\\nSYSLOG_IDENTIFIER=gatelate\\\\n' "
+    '| logger --journald"'
+)
+# A line logged on the decoy after the way back, the positive control of the
+# reading of its journal in every transport.
+POST_MARK = "GATEPOSTU"
+# The units of the decoy's consoles, whose numbers reach wtmp: the way back
+# sets the kernel's counter back so that each gets a number in the range the
+# cold boot gave it. Fedora 44 runs a getty on tty1, Fedora 45 kmscon, and the
+# cold boot names the ones that run (the serial console is the harness's).
+GETTY_UNITS = ("getty@*", "serial-getty@*", "kmsconvt@*")
+# How many programs each session starts right before its way back, to push the
+# kernel's process numbers far past a cold boot's (as the smoke does): the
+# numbers after the way back show the set-back, and every process the hidden
+# root starts later, its shutdown's included, has a number above them.
+PUSH_FORKS = 8000
 # A bind mount the decoy makes before the first entry with a userspace option,
 # which libmount keeps in utab: the way back must give its line back.
 UTAB_BIND = "/srv/gate-utab"
@@ -185,6 +241,45 @@ NO_DONTAUDIT_STORE = "/var/lib/selinux/targeted"
 # beyond it is lost (audit_lost), as the variant without dontaudit rules showed
 # at the switches with the kernel's 64, so the gate makes room for one.
 AUDIT_BACKLOG = "auditctl -b 8192"
+# The variant with the dontaudit rules on has the kernel record every program
+# executed from a file labelled as runtime data, the label a copy of NAILS in
+# /run has where nothing labels it as a program: whichever domain runs it, the
+# record names the program and that domain. Fedora's audit-rules.service loads
+# its own rules at every start, a rule that keeps every process from being
+# audited among them, so the gate masks it once auditd is off and sets these
+# from the next boot on; the kernel keeps them across the switches. The other
+# variant keeps the images' rule, as its records would grow with every denial.
+# A second rule records every other program run from below /run, with the
+# domain it runs in: the steps of NAILS among them.
+EXEC_KEY = "gate-runexec"
+EXEC_RUN_KEY = f"{EXEC_KEY}-run"
+# (unlabeled_t is no such label: a name that does not exist reads as it, so
+# every miss of a search of PATH would be recorded.)
+EXEC_TYPES = ("var_run_t", "init_var_run_t", "tmpfs_t")
+EXEC_RULES = (
+    "auditctl -D; "
+    + " ".join(
+        f"auditctl -a always,exit -F arch=b64 -S execve,execveat "
+        f"-F obj_type={kind} -k {EXEC_KEY};"
+        for kind in EXEC_TYPES
+    )
+    + " auditctl -a always,exit -F arch=b64 -S execve,execveat -F dir=/run "
+    f"-k {EXEC_RUN_KEY};"
+)
+# The steps the gate's run has NAILS's copies run, each named by the argument
+# that starts it: the watcher and the sleep guard of a session, the last step
+# of each switch, the reconcile step of each way back and the disk guard.
+NAILS_STEPS = (
+    "watch",
+    "sleep-guard",
+    "transition",
+    "reconcile-records",
+    "guard-device",
+)
+AUDIT_RULES_UNIT = "audit-rules.service"
+# The program the gate itself executes from a file labelled as runtime data
+# in each root, the positive control of those records.
+EXEC_PROBE = "/run/gate-exec-probe"
 # A failed console login of the user the script is given: util-linux's login
 # on a terminal of its own, given a wrong password once, which it records in
 # btmp before it says "Login incorrect". The script ends login then and prints
@@ -262,10 +357,12 @@ SOFT_REBOOT_FAILURES = {
     "that root and every later one run without the zram swap until power-off",
 }
 # The pieces the way back leaves in /run for the decoy's first start, which
-# its reconcile step removes.
+# its reconcile step removes: its binary's folder, its unit and the link that
+# pulls the unit in.
 WAY_BACK_PIECES = (
     "/run/overlay-runtime-boot",
     "/run/systemd/system/overlay-runtime-boot.service",
+    "/run/systemd/system/multi-user.target.wants/overlay-runtime-boot.service",
 )
 # The decoy's login and boot record files: the records checks judge them, so
 # the comparison of the decoy disk leaves them out, with the folders sqlite
@@ -289,6 +386,10 @@ NEEDS_LABEL = "the RAM copy labelled as a program (bin_t)"
 NEEDS_POSTURE = "the posture checks of tuned, firewalld and ABRT"
 NEEDS_LSM = "the lsm-status check"
 NEEDS_AUDITD_TEXT = "the corrected auditd text of decoy-persistence"
+NEEDS_SOCKETS = (
+    "a way back that empties what journald's sockets hold before the decoy "
+    "starts, which no branch builds yet"
+)
 TUNED_DROPIN = "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n"
 # What PID 1 logs when the policy of the root it starts in is not loaded, and
 # when a policy is.
@@ -424,6 +525,247 @@ def wall_of(marker: Mapping[str, Any]) -> float | None:
         return None
 
 
+def carried_records(
+    entries: Iterable[Mapping[str, Any]],
+    late: str,
+    last_serial: int | None,
+    switch_us: int | None,
+    reached: int | None,
+) -> dict[str, list[str]]:
+    """What the decoy's journal after a way back holds of what the hidden root
+    sent to journald's sockets once its own journald had stopped, which the
+    soft-reboot keeps open for the decoy's journald to read (entries as
+    :func:`selinux_gate.journal_entries` reads them):
+
+    - ``late``: the lines of the gate's late writer, by its marker ``late``;
+    - ``audit``: the audit records numbered up to ``last_serial``, the hidden
+      root's last before the switch's last step ended;
+    - ``datagram``: the syslog and native lines the kernel took in before
+      ``switch_us``, the wall clock of that end in microseconds;
+    - ``stream``: the lines of a standard output stream of a process numbered
+      ``reached`` or higher, the numbers the hidden session gave out after the
+      gate pushed the counter there.
+
+    A bound that is None judges nothing. The late writer's own records (its
+    unit's stop, say) are left out of the other three."""
+    found: dict[str, list[str]] = {
+        "late": [],
+        "audit": [],
+        "datagram": [],
+        "stream": [],
+    }
+    for entry in entries:
+        message = str(entry.get("msg", ""))
+        transport = str(entry.get("transport", ""))
+        text = (
+            f"{transport} {entry.get('who', '')}[{entry.get('pid')}] "
+            f"sent {entry.get('sent')}: {message[:200]}"
+        )
+        if late in message:
+            found["late"].append(text)
+            continue
+        if f"{LATE_UNIT}-" in message:
+            continue
+        serial, sent, pid = entry.get("auditId"), entry.get("sent"), entry.get("pid")
+        if transport == "audit":
+            if (
+                last_serial is not None
+                and isinstance(serial, int)
+                and serial <= last_serial
+            ):
+                found["audit"].append(text)
+        elif transport in ("syslog", "journal"):
+            if switch_us is not None and isinstance(sent, int) and sent < switch_us:
+                found["datagram"].append(text)
+        elif transport == "stdout":
+            if reached is not None and isinstance(pid, int) and pid >= reached:
+                found["stream"].append(text)
+    return found
+
+
+_UNIT_STOP = re.compile(r"type=1131 .*\bunit=([^ ']+)")
+
+
+def stopped_after(
+    records: Iterable[Mapping[str, Any]], first: str, then: str
+) -> bool | None:
+    """Whether the kernel log has the stop of unit ``then`` after that of unit
+    ``first`` (PID 1's audit records of a unit's stop, by unit name without
+    its suffix), or None when it lacks either."""
+    seen: dict[str, int] = {}
+    for record in sorted(records, key=lambda r: int(r["seq"])):
+        match = _UNIT_STOP.search(str(record["msg"]))
+        if match:
+            seen.setdefault(match.group(1), int(record["seq"]))
+    if first not in seen or then not in seen:
+        return None
+    return seen[then] > seen[first]
+
+
+def pid_range(pid: int) -> tuple[int, int]:
+    """The power-of-two range a process number falls in, as the forensic
+    oracle keys one: 512 to 1023 for 700."""
+    if pid < 1:
+        return (0, 0)
+    low = 1 << (pid.bit_length() - 1)
+    return (low, 2 * low - 1)
+
+
+def getty_logins(records: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """The process number each console's unit wrote into a wtmp at the last
+    start in it: the first record of each line after the last boot record
+    that a console's unit (``INIT_PROCESS``, systemd's for kmscon and for a
+    getty) or a getty (``LOGIN_PROCESS``) writes."""
+    boots = [i for i, r in enumerate(records) if r.get("type") == "BOOT_TIME"]
+    if not boots:
+        return {}
+    found: dict[str, int] = {}
+    for record in records[boots[-1] + 1 :]:
+        kind = record.get("type")
+        if kind in ("INIT_PROCESS", "LOGIN_PROCESS") and record.get("line"):
+            found.setdefault(str(record["line"]), int(record.get("pid") or 0))
+    return found
+
+
+def getty_problems(
+    cold: Mapping[str, int], back: Mapping[str, int], reached: int | None
+) -> list[str]:
+    """Why the consoles' numbers after a way back (``back``, by unit or by wtmp
+    line) do not read as a cold boot's (``cold``, the same keys): each must be
+    there, below ``reached``, the counter the session pushed, and in the
+    power-of-two range the cold boot gave it. Empty when they do."""
+    if not cold:
+        return ["the cold boot ran no console unit to measure by"]
+    problems: list[str] = []
+    if reached is None:
+        problems.append("the session's counter was not read")
+    for key, number in cold.items():
+        now = back.get(key)
+        if now is None:
+            problems.append(f"{key} had {number} at the cold boot, none after it")
+            continue
+        if reached is not None and now >= reached:
+            problems.append(f"{key} is {now}, not below the {reached} it reached")
+        if pid_range(now) != pid_range(number):
+            problems.append(
+                f"{key} is {now}, in {pid_range(now)}; the cold boot gave it "
+                f"{number}, in {pid_range(number)}"
+            )
+    return problems
+
+
+_RUN_ID = re.compile(r"[0-9a-f]{12,}")
+_RUN_NUMBER = re.compile(r"\d+")
+
+
+def run_entries(listing: str) -> set[str]:
+    """The entries of a :data:`RUN_FIND` listing, each as ``<type> <path>``."""
+    return {line.strip() for line in listing.splitlines() if " /run/" in line}
+
+
+def run_shape(entry: str) -> str:
+    """An entry of /run with its numbers and identifiers as ``#``: the shape
+    the decoy's own start gives a new journal stream, session or unit file at
+    every switch, whatever its number."""
+    return _RUN_NUMBER.sub("#", _RUN_ID.sub("#", entry))
+
+
+def run_residue(
+    before: set[str],
+    after: set[str],
+    controls: Iterable[tuple[set[str], set[str]]],
+    pieces: Iterable[str] = (),
+) -> list[str]:
+    """What a way back left in /run: the entries after it that /run did not
+    hold right before the entry, but those of a shape that a plain
+    soft-reboot also added (``controls``, each its /run before and after),
+    and the reconcile step's ``pieces`` that stayed, with what they hold and
+    the folders that hold them, which a check of their own judges."""
+    shapes: set[str] = set()
+    for was, now in controls:
+        shapes |= {run_shape(entry) for entry in now - was}
+    return sorted(
+        entry
+        for entry in after - before
+        if run_shape(entry) not in shapes and not of_pieces(entry, pieces)
+    )
+
+
+def of_pieces(entry: str, pieces: Iterable[str]) -> bool:
+    """Whether a /run entry (``<type> <path>``, or a path) is one of the
+    reconcile step's ``pieces``, lies below one, or is a folder that holds
+    one."""
+    path = entry.split(" ", 1)[-1].split(" -> ", 1)[0]
+    for piece in pieces:
+        if path == piece or path.startswith(piece + "/"):
+            return True
+        if piece.startswith(path + "/"):
+            return True
+    return False
+
+
+_ARG = re.compile(r"a(\d+)")
+
+
+def exec_rules_held(listed: str) -> bool:
+    """Whether ``auditctl -l`` lists every rule of :data:`EXEC_RULES`: one for
+    each runtime label, and the one of /run."""
+    keys = [line.rsplit("key=", 1)[-1].strip() for line in listed.splitlines()]
+    return keys.count(EXEC_KEY) == len(EXEC_TYPES) and keys.count(EXEC_RUN_KEY) == 1
+
+
+def exec_records(
+    records: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """The executions the gate's audit rules recorded (:data:`EXEC_RULES`),
+    each with the rule's key, the program, the domain it ran in, whether it
+    ran, its arguments and the step of NAILS they name (:data:`NAILS_STEPS`),
+    and where the kernel log has it. A run the policy refused names the file
+    it tried, which the system call's path record holds."""
+    calls: dict[int, dict[str, Any]] = {}
+    argv: dict[int, list[str]] = {}
+    tried: dict[int, str] = {}
+    for record in records:
+        message = str(record["msg"])
+        serial = sg.serial_of(message)
+        if serial is None:
+            continue
+        values = sg.fields(message.split("):", 1)[-1])
+        if "type=1300 " in message and values.get("key", "").startswith(EXEC_KEY):
+            calls[serial] = {
+                "seq": int(record["seq"]),
+                "key": values.get("key", ""),
+                "exe": values.get("exe", ""),
+                "comm": values.get("comm", ""),
+                "subj": values.get("subj", ""),
+                "ran": values.get("success") == "yes",
+                "pid": values.get("pid", ""),
+                "ppid": values.get("ppid", ""),
+            }
+        elif "type=1309 " in message:
+            numbered = sorted(
+                (int(match.group(1)), value)
+                for key, value in values.items()
+                if (match := _ARG.fullmatch(key))
+            )
+            argv[serial] = [value for _, value in numbered]
+        elif "type=1302 " in message and values.get("item") == "0":
+            tried[serial] = values.get("name", "")
+    found = []
+    for serial, call in sorted(calls.items()):
+        args = argv.get(serial, [])
+        program = call["exe"] if call["ran"] else tried.get(serial, call["exe"])
+        found.append(
+            {
+                **call,
+                "program": program,
+                "argv": args,
+                "step": next((a for a in args[1:] if a in NAILS_STEPS), ""),
+            }
+        )
+    return found
+
+
 class Gate:
     """One gate run on the machine ``vm``."""
 
@@ -456,9 +798,25 @@ class Gate:
         self.lost = False
         # The changes on the decoy disk across each switch, by its label.
         self.disk: dict[str, set[str]] = {}
+        # /run before and after each switch, by its label, and the reconcile
+        # step's pieces that stayed after each way back.
+        self.runs: dict[str, tuple[set[str], set[str]]] = {}
+        self.pieces: dict[int, list[str]] = {}
         # The failed units a plain soft-reboot left, which a way back may leave
         # too, with why.
         self.allowed_failed: dict[str, str] = dict(SOFT_REBOOT_FAILURES)
+        # The consoles' numbers at the cold boot the first entry starts from, by
+        # unit and by the wtmp line each wrote.
+        self.cold_units: dict[str, int] = {}
+        self.cold_lines: dict[str, int] = {}
+        # The process number each session pushed the counter to.
+        self.reached: dict[int, int | None] = {}
+        # Whether the kernel records the programs run from runtime data
+        # (:data:`EXEC_RULES`), from which boot on, and the gate's own runs of
+        # one, each by the label in its path.
+        self.exec_audit = False
+        self.exec_boot = -1
+        self.exec_probes: list[str] = []
 
     # --- recording -------------------------------------------------------
 
@@ -668,6 +1026,34 @@ class Gate:
         vm.succeed(f"cat > {CONFIG} <<'EOF'\n{CONFIG_TEXT}EOF")
         vm.succeed(f"cat > {FRESH_CONFIG} <<'EOF'\n{CONFIG_TEXT}{FRESH_TEXT}EOF")
         self.sh("limits", f"{sg.KMSG_LIMITS}; {AUDIT_BACKLOG}")
+        self.exec_rules()
+
+    def exec_rules(self) -> None:
+        """The audit rules that record a program run from runtime data, set
+        once a boot: the kernel keeps them across its switches, which the
+        gate checks at each one."""
+        if not self.exec_audit:
+            return
+        if self.exec_boot != self.boot:
+            self.sh("exec-rules", EXEC_RULES)
+            self.exec_boot = self.boot
+        listed = self.fact("exec-rules-listed", "auditctl -l")
+        if not exec_rules_held(listed):
+            self.check("the gate's audit rules hold across the switch", False, listed)
+            self.sh("exec-rules-again", EXEC_RULES)
+
+    def exec_probe(self, label: str) -> None:
+        """The gate runs a program of its own from a file labelled as runtime
+        data, so that its record shows the rules record such a run here."""
+        if not self.exec_audit:
+            return
+        path = f"{EXEC_PROBE}-{label}"
+        self.sh(
+            f"exec-probe-{label}",
+            f"cp /usr/bin/true {path} && chcon -t var_run_t {path} && "
+            f"ls -Z {path} && {path}; echo rc=$?; rm -f {path}",
+        )
+        self.exec_probes.append(path)
 
     def follow(self, trigger: str, label: str) -> str:
         """Follow a soft-reboot; the place after it, or ``lost``."""
@@ -782,8 +1168,54 @@ class Gate:
         self.facts[f"records.{label}"] = capture.as_dict()
         return capture
 
-    def run_listing(self) -> set[str]:
-        return set(self.session.run_entries(self.vm))
+    def run_listing(self, label: str) -> set[str]:
+        """/run at every depth (:data:`RUN_FIND`), kept as a fact."""
+        listing = self.fact(f"run-{label}", f"{RUN_FIND} | sort", 300)
+        return run_entries(listing)
+
+    def unit_trees(self, label: str) -> str:
+        """The udev rules and runtime units in /run, each with its type."""
+        return self.fact(
+            f"unit-trees-{label}",
+            "for d in " + " ".join(RUN_UNIT_TREES) + "; do "
+            'test -e "$d" || { echo "absent $d"; continue; }; '
+            "find \"$d\" -xdev -mindepth 1 -printf '%y %p -> %l\\n'; done | sort",
+        )
+
+    def booleans(self, label: str) -> str:
+        """The SELinux booleans the kernel's policy holds now."""
+        return self.fact(f"booleans-{label}", "getsebool -a")
+
+    def getty_numbers(self, label: str, units: Iterable[str] = ()) -> dict[str, int]:
+        """The main process numbers of the units of the decoy's consoles
+        (:data:`GETTY_UNITS`): at the cold boot those that run once its start
+        has settled, and after a way back those same ``units``, each given a
+        minute to start."""
+        wanted = list(units)
+        if not wanted:
+            listed = self.fact(
+                f"getty-units-{label}",
+                "timeout 120 systemctl is-system-running --wait >/dev/null 2>&1; "
+                "systemctl list-units --type=service --state=active --plain "
+                "--no-legend " + " ".join(f"'{u}'" for u in GETTY_UNITS),
+            )
+            wanted = [
+                line.split()[0]
+                for line in listed.splitlines()
+                if line.split() and line.split()[0].endswith(".service")
+            ]
+        numbers: dict[str, int] = {}
+        for unit in wanted:
+            status, out = self.vm.execute(
+                f"timeout 60 bash -c 'until systemctl is-active -q {unit}; "
+                f"do sleep 1; done'; systemctl show -P MainPID {unit}",
+                timeout=120,
+            )
+            words = out.split()
+            if status == 0 and words and words[-1].isdigit() and int(words[-1]) > 0:
+                numbers[unit] = int(words[-1])
+        self.facts[f"getty-numbers-{label}"] = numbers
+        return numbers
 
     def initramfs(self) -> str:
         return self.fact(
@@ -957,6 +1389,15 @@ class Gate:
         )
         if gone == "gone":
             self.read_audit_log()
+        if self.settings.get("dontaudit") is not False:
+            # The gate's own audit rules from the next switch on, in place of
+            # those the image loads at every start (:data:`EXEC_RULES`).
+            self.sh(
+                "audit-rules-off",
+                f"systemctl mask {AUDIT_RULES_UNIT}; "
+                f"systemctl is-enabled {AUDIT_RULES_UNIT}; auditctl -l",
+            )
+            self.exec_audit = True
         _, rows = self.check_rows("check-auditd-off")
         row = rows.get("decoy-persistence", {})
         self.check(
@@ -1181,6 +1622,8 @@ class Gate:
         state["noexec"] = "noexec" in self.vm.succeed("findmnt -no OPTIONS /run")
         state["failed"] = self.failed_units(f"failed-before-{n}")
         self.fact(f"swap-before-{n}", "swapon --show --noheadings; true")
+        state["booleans"] = self.booleans(f"before-{n}")
+        state["trees"] = self.unit_trees(f"before-{n}")
         return state
 
     def enter(self, n: int, user: str, config: str, state: dict[str, Any]) -> bool:
@@ -1193,9 +1636,9 @@ class Gate:
         drift = rows.get("package-drift", {})
         self.facts[f"drift-{n}"] = drift
         # What the way back is held to, taken as close to the entry as the
-        # harness can: /run as the decoy has it, and the time from which the
-        # decoy disk's changes count.
-        state["run"] = self.run_listing()
+        # harness can: /run as the decoy has it, at every depth, and the time
+        # from which the decoy disk's changes count.
+        state["run"] = self.run_listing(f"before-{n}")
         state["since"] = self.wall()
         self.mark(f"enter-{n}")
         place = self.follow(
@@ -1272,6 +1715,19 @@ class Gate:
                 f"session {n}: the fresh home is user_home_dir_t",
                 bool(first) and sg.context_type(first[0]) == "user_home_dir_t",
                 home,
+            )
+        if state.get("sleep_guard"):
+            guard = self.fact(
+                f"sleep-guard-{n}",
+                f"systemctl is-active {SLEEP_GUARD}; "
+                f"systemctl show -P ExecStart {SLEEP_GUARD}",
+            )
+            self.check(
+                f"session {n}: the sleep guard runs, so its domain is read with "
+                "the watcher's",
+                guard.splitlines()[:1] == ["active"],
+                guard,
+                NEEDS_LABEL,
             )
         processes = self.fact(
             f"processes-{n}",
@@ -1375,6 +1831,19 @@ class Gate:
         self.facts[f"in-session-seq-{n}"] = sg.marker_seq(
             self.boots[self.boot]["records"].values(), f"GATEIN-{self.nonce}-{n}"
         )
+        # The late writer: a unit that stops after the hidden journald and
+        # logs a line through each of its sockets as it does (LATE_STOP).
+        stop = LATE_STOP.format(mark=f"{LATE_MARK}-{self.nonce}-{n}")
+        late = self.fact(
+            f"late-writer-{n}",
+            f"systemd-run --unit={LATE_UNIT}-{n} --remain-after-exit "
+            "-p DefaultDependencies=no -p Conflicts=shutdown.target "
+            "-p Before=shutdown.target -p Before=systemd-journald.service "
+            f"-p ExecStop={shlex.quote(stop)} /bin/true; "
+            f"systemctl is-active {LATE_UNIT}-{n}.service",
+        )
+        state["late"] = late.splitlines()[-1:] == ["active"]
+        self.exec_probe(f"hidden-{n}")
 
     def plant(self) -> None:
         """The rehearsal's first step in the first session, and the refusal
@@ -1485,7 +1954,29 @@ class Gate:
         )
         return disk
 
+    def push(self, n: int) -> None:
+        """Push the kernel's process numbers far past a cold boot's, as the
+        last thing the session does before its way back."""
+        # The last number the kernel gave out once they ran: a shell's own
+        # number would be the subshell's, taken before them.
+        out = self.fact(
+            f"push-{n}",
+            f"for i in $(seq {PUSH_FORKS}); do /bin/sh -c :; done; "
+            "cat /proc/sys/kernel/ns_last_pid",
+            900,
+        )
+        words = out.split()
+        reached = int(words[-1]) if words and words[-1].isdigit() else None
+        self.reached[n] = reached
+        cold = max(self.cold_units.values(), default=0)
+        self.check(
+            f"session {n}: the process numbers run far past the cold boot's",
+            reached is not None and cold > 0 and reached > 4 * cold,
+            {"reached": reached, "cold": self.cold_units},
+        )
+
     def leave(self, n: int, how: str, user: str, config: str) -> bool:
+        self.push(n)
         self.mark(f"leave-{n}")
         self.facts[f"leave-wall-{n}"] = self.session.wall_clock(self.vm)
         if how == "deactivate":
@@ -1503,23 +1994,147 @@ class Gate:
             f"way back {n} ({how}) reaches the decoy", place == "decoy", place
         )
 
-    def run_residue(self, n: int, state: dict[str, Any]) -> list[str]:
-        """What the session left in /run: the entries carried over the way
-        back (changed before it started, :data:`leave-wall`) that /run did not
-        hold right before the entry."""
-        return list(
-            self.session.carried_run_residue(
-                self.vm, state["run"], str(self.facts[f"leave-wall-{n}"])
-            )
+    def wall_us_at(self, seq: int | None, label: str) -> int | None:
+        """The guest's wall clock in microseconds when the kernel logged
+        record ``seq`` of this boot: the marker ``label`` holds the wall clock
+        it was written at, and its record the kernel's time."""
+        boot = self.boots[self.boot]
+        marker = next((m for m in boot["markers"] if m["label"] == label), None)
+        if seq is None or marker is None or marker.get("seq") is None:
+            return None
+        wall = wall_of(marker)
+        mark = boot["records"].get(int(marker["seq"]))
+        at = boot["records"].get(int(seq))
+        if wall is None or mark is None or at is None:
+            return None
+        return int(wall * 1_000_000) - int(mark["us"]) + int(at["us"])
+
+    def carried(
+        self,
+        n: int,
+        state: dict[str, Any],
+        cursor: Mapping[str, Any],
+        records: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """What the decoy's journald read at its start from journald's
+        sockets, which the soft-reboot keeps open: none of what the hidden
+        root sent them after its own journald stopped (:func:`carried_records`),
+        the late writer's lines first, and a line logged after the way back,
+        the positive control of the reading."""
+        _, text = self.sh(
+            f"journal-all-{n}",
+            "journalctl -D /run/log/journal -b 0 -o json --no-pager "
+            "--output-fields=_TRANSPORT,_PID,_COMM,SYSLOG_IDENTIFIER,MESSAGE,"
+            "_AUDIT_ID,_SYSTEMD_UNIT,_SOURCE_REALTIME_TIMESTAMP",
+            600,
+        )
+        entries = sg.journal_entries(text)
+        leave, end = self.seq_of(f"leave-{n}"), cursor.get("stepEnd")
+        last_serial = (
+            sg.last_serial_between(records, leave, end)
+            if leave is not None and isinstance(end, int)
+            else None
+        )
+        switch_us = self.wall_us_at(end if isinstance(end, int) else None, f"leave-{n}")
+        journald = self.fact(
+            f"journald-pid-{n}", "systemctl show -P MainPID systemd-journald.service"
+        )
+        pid = int(journald) if journald.isdigit() else None
+        reached = self.reached.get(n)
+        # The numbers the session gave out from the push on tell its streams
+        # apart only where the decoy's journald, started after the way back,
+        # has one below them.
+        streams = reached if reached and pid and pid < reached else None
+        found = carried_records(
+            entries, f"{LATE_MARK}-{self.nonce}-{n}", last_serial, switch_us, streams
+        )
+        bounds = {
+            "entries": len(entries),
+            "transports": sorted({str(e["transport"]) for e in entries}),
+            "lastHiddenSerial": last_serial,
+            "switchUs": switch_us,
+            "reached": reached,
+            "journald": pid,
+        }
+        self.facts[f"carried-{n}"] = {
+            **bounds,
+            **{kind: lines[:40] for kind, lines in found.items()},
+            "counts": {kind: len(lines) for kind, lines in found.items()},
+        }
+        # The late writer counts only where it stopped after the hidden
+        # journald: before, its lines went to the hidden journal, which the
+        # way back deletes, and its absence would show nothing.
+        window = [
+            r
+            for r in records
+            if leave is not None
+            and isinstance(end, int)
+            and leave < int(r["seq"]) < end
+        ]
+        order = stopped_after(window, "systemd-journald", f"{LATE_UNIT}-{n}")
+        late = bool(state.get("late")) and order is True
+        self.facts[f"late-writer-stopped-after-journald-{n}"] = order
+        self.check(
+            f"way back {n}: the decoy's journal holds none of the late writer's "
+            "lines, logged in the session after its journald stopped",
+            late and bool(entries) and not found["late"],
+            found["late"]
+            or (
+                ""
+                if late
+                else "not judged: the late writer did not run, or not after "
+                f"the hidden journald stopped ({order})"
+            ),
+            NEEDS_SOCKETS,
+        )
+        judged = bool(entries) and None not in (last_serial, switch_us, streams)
+        natural = {kind: found[kind][:20] for kind in ("audit", "datagram", "stream")}
+        self.check(
+            f"way back {n}: the decoy's journal holds no audit record or line the "
+            "hidden root sent to journald's sockets",
+            judged and not any(natural.values()),
+            natural if judged else {"not judged": bounds},
+            NEEDS_SOCKETS,
+        )
+        post = f"{POST_MARK}-{self.nonce}-{n}"
+        seen = self.fact(
+            f"positive-line-{n}",
+            f"logger -t gatepost {post}; sleep 2; journalctl -D /run/log/journal "
+            f"-b 0 -o cat --no-pager | grep -cF {post}; true",
+        )
+        self.check(
+            f"way back {n}: a line logged after it reaches the decoy's journal",
+            seen.splitlines()[-1:] == ["1"],
+            seen,
+        )
+
+    def nextroot(self, n: int) -> None:
+        """/run/nextroot, where the decoy root was mounted for the switch, holds
+        no mount and no entry after the way back."""
+        found = self.fact(
+            f"nextroot-{n}",
+            "test -e /run/nextroot -o -L /run/nextroot || { echo absent; exit 0; }; "
+            "mountpoint -q /run/nextroot && echo mounted; "
+            "find /run/nextroot -xdev -mindepth 1 -maxdepth 2 | head -n 20; "
+            "stat -c '%F %C' /run/nextroot",
+        )
+        lines = found.splitlines()
+        self.check(
+            f"way back {n}: /run/nextroot holds no mount and no entry",
+            lines == ["absent"]
+            or (len(lines) == 1 and lines[0].startswith("directory")),
+            found,
         )
 
     def after(self, n: int, state: dict[str, Any], disk: str | None) -> None:
         """The way-back assertions, on the decoy: taken before any login on it."""
         vm = self.vm
-        # The records first, once the reconcile step is done, before any
-        # login on the decoy writes its own, and the decoy disk's changes
-        # before the harness writes anything.
+        # /run first, once the reconcile step is done and before the harness
+        # adds to it; then the records, before any login on the decoy writes
+        # its own, and the decoy disk's changes before the harness writes
+        # anything.
         self.wait_reconcile()
+        self.runs[f"way-back-{n}"] = (state["run"], self.run_listing(f"after-{n}"))
         after = self.records_capture(f"after-{n}")
         self.disk_changes(f"way-back-{n}", state["since"])
         self.enforcing(f"after way back {n}")
@@ -1550,6 +2165,28 @@ class Gate:
             found,
             NEEDS_LABEL,
         )
+        # The cursor the transition step writes is read and rewritten by the
+        # decoy's journald before the gate can read it: what it did shows in
+        # what the journal took, from the first record on.
+        file = self.fact(
+            f"kernel-seqnum-{n}", "od -An -t u8 /run/systemd/journal/kernel-seqnum"
+        )
+        first, end = found.get("firstImported"), found.get("stepEnd")
+        self.check(
+            f"way back {n}: the first kernel record the decoy's journal took "
+            "follows the switch's last step",
+            found["known"]
+            and isinstance(first, int)
+            and isinstance(end, int)
+            and first >= end,
+            {
+                "first": first,
+                "stepEnd": end,
+                "beforeTheStep": found.get("beforeStep"),
+                "cursorFileNow": sg.seqnum_from_od(file),
+            },
+            NEEDS_LABEL,
+        )
         marker = f"GATEIN-{self.nonce}-{n}"
         shown = self.fact(
             f"marker-in-journal-{n}",
@@ -1560,17 +2197,6 @@ class Gate:
             "is not in the decoy's journal",
             shown.strip() == "0",
             shown,
-        )
-        seqnum = sg.seqnum_from_od(
-            self.fact(
-                f"kernel-seqnum-{n}", "od -An -t u8 /run/systemd/journal/kernel-seqnum"
-            )
-        )
-        marker_seq = self.facts.get(f"in-session-seq-{n}")
-        self.check(
-            f"way back {n}: journald's kmsg cursor is above the session's marker",
-            seqnum is not None and isinstance(marker_seq, int) and seqnum > marker_seq,
-            {"cursor": seqnum, "marker": marker_seq},
         )
         post = f"GATEPOST-{self.nonce}-{n}"
         vm.execute(f"echo {post} > /dev/kmsg", check_return=False)
@@ -1583,6 +2209,7 @@ class Gate:
             seen.strip() == "1",
             seen,
         )
+        self.carried(n, state, found, records)
         gone = self.fact(
             f"run-probe-{n}",
             f"for p in {RUN_PROBE}-{n} {RUNTIME}; do "
@@ -1594,14 +2221,10 @@ class Gate:
             not gone,
             gone,
         )
-        residue = self.run_residue(n, state)
-        self.facts[f"run-residue-{n}"] = residue
-        self.check(
-            f"way back {n}: nothing of the session stays in /run", not residue, residue
-        )
         pieces = [
             p for p in WAY_BACK_PIECES if vm.execute(f"test -e {p} -o -L {p}")[0] == 0
         ]
+        self.pieces[n] = pieces
         # Without the RAM copy's label, the decoy's policy keeps the reconcile
         # unit from running the copy, and the unit's pieces stay.
         self.check(
@@ -1610,6 +2233,20 @@ class Gate:
             pieces,
             NEEDS_LABEL,
         )
+        # The pieces that stayed are judged above; anything else counts.
+        trees = self.unit_trees(f"after-{n}")
+        added = sorted(
+            line
+            for line in set(trees.splitlines()) - set(state["trees"].splitlines())
+            if not of_pieces(line, pieces)
+        )
+        self.check(
+            f"way back {n}: no udev rule and no runtime unit of the session stays "
+            "in /run",
+            not added,
+            {"added": added, "now": trees},
+        )
+        self.nextroot(n)
         noexec = "noexec" in vm.succeed("findmnt -no OPTIONS /run")
         self.check(
             f"way back {n}: /run is "
@@ -1662,9 +2299,20 @@ class Gate:
             not on_decoy,
             on_decoy,
         )
+        # A boolean set in the session would still be the kernel's after the
+        # way back, as a policy loaded there would.
+        now = self.booleans(f"after-{n}")
+        was = state.get("booleans", "")
+        self.check(
+            f"way back {n}: the decoy's SELinux booleans are as they were before "
+            "the entry",
+            bool(now) and now == was,
+            sorted(set(now.splitlines()) ^ set(was.splitlines()))[:40],
+        )
         failed = self.judge_failed(f"way back {n}", f"failed-after-{n}")
         self.facts[f"failed-after-{n}"] = failed
         self.records_judged(n, state, after)
+        self.exec_probe(f"after-{n}")
 
     def session_utab(
         self, state: dict[str, Any], utab_now: str, mountinfo: str
@@ -1757,6 +2405,27 @@ class Gate:
             bool(console),
             console or records.utmp_added(before.wtmp, after.wtmp),
         )
+        # The consoles' units of the way back's start: the numbers the
+        # set-back gave them, in wtmp and as their units run, in the range the
+        # cold boot gave each, and below the counter the session pushed.
+        reached = self.reached.get(n)
+        units = self.getty_numbers(f"after-{n}", self.cold_units)
+        lines = getty_logins(after.wtmp)
+        problems = [
+            *getty_problems(self.cold_units, units, reached),
+            *getty_problems(self.cold_lines, lines, reached),
+        ]
+        self.check(
+            f"way back {n}: the consoles' units it started are numbered in the "
+            "range the cold boot gave them, in wtmp and as they run",
+            not problems,
+            {
+                "problems": problems,
+                "cold": {"units": self.cold_units, "wtmp": self.cold_lines},
+                "back": {"units": units, "wtmp": lines},
+                "reached": reached,
+            },
+        )
         if self.settings.get("lastlog2"):
             # lastlog2 keeps one row a user, the last login: the operator's
             # commands after the console login are logins of theirs too
@@ -1780,6 +2449,7 @@ class Gate:
     # --- the controls ----------------------------------------------------
 
     def control(self, label: str) -> None:
+        run = self.run_listing(f"before-{label}")
         since = self.wall()
         self.mark(f"{label}-start")
         place = self.follow("systemctl soft-reboot", label)
@@ -1787,6 +2457,7 @@ class Gate:
             return
         self.mark(f"{label}-end")
         self.wait_reconcile()
+        self.runs[label] = (run, self.run_listing(f"after-{label}"))
         self.disk_changes(label, since)
         self.enforcing(f"after {label}")
         failed = self.failed_units(f"failed-{label}")
@@ -1828,6 +2499,89 @@ class Gate:
                 if controls
                 else "no control was taken",
             )
+
+    def judge_run(self) -> None:
+        """/run after each way back holds, at every depth, only what it held
+        right before the entry and entries of a shape that a plain soft-reboot
+        also adds: a journal stream, a session or a unit file of the decoy's
+        own start (:func:`run_residue`)."""
+        self.where = "/run"
+        controls = [pair for label, pair in self.runs.items() if "control" in label]
+        for label, (before, after) in self.runs.items():
+            if not label.startswith("way-back-"):
+                continue
+            n = int(label.rsplit("-", 1)[-1])
+            residue = run_residue(before, after, controls, self.pieces.get(n, []))
+            self.facts[f"run-residue-{label}"] = residue
+            self.check(
+                f"{label.replace('-', ' ')}: nothing of the session stays in /run, "
+                "at any depth",
+                bool(controls) and not residue,
+                {"left": residue, "new": sorted(after - before)[:200]}
+                if controls
+                else "no control was taken",
+            )
+
+    def judge_execs(self) -> None:
+        """The programs the kernel recorded as run from below /run
+        (:data:`EXEC_RULES`): the gate's own, run from a file labelled as
+        runtime data in each root, the positive control; none of NAILS's from
+        such a file and none in ``init_t``; and each step of NAILS the run
+        has it run (:data:`NAILS_STEPS`) among them, each with its domain."""
+        if not self.exec_audit:
+            return
+        self.where = "the programs run from /run"
+        found = [
+            {**record, "boot": boot["why"]}
+            for boot in self.boots
+            for record in exec_records(boot["records"].values())
+        ]
+        self.facts["exec-records"] = found
+        seen = {str(r["program"]) for r in found if r["key"] == EXEC_KEY}
+        missing = [path for path in self.exec_probes if path not in seen]
+        self.check(
+            "the kernel recorded the gate's own program run from runtime data, "
+            "in each root",
+            bool(self.exec_probes) and not missing,
+            {"missing": missing, "probes": self.exec_probes},
+        )
+        nails = [r for r in found if str(r["program"]).startswith(RUNTIME)]
+        # A run the policy refused counts here as well: its copy was labelled
+        # so, whatever the domain that tried it.
+        data = [r for r in nails if r["key"] == EXEC_KEY]
+        self.check(
+            "no copy of NAILS labelled as runtime data was run or tried, in "
+            "either root",
+            not data,
+            data,
+            NEEDS_LABEL,
+        )
+        in_init = [
+            r for r in nails if r["ran"] and sg.context_type(str(r["subj"])) == "init_t"
+        ]
+        self.check(
+            "no NAILS program ran in init_t, in either root",
+            not in_init,
+            in_init,
+            NEEDS_LABEL,
+        )
+        domains: dict[str, list[str]] = {}
+        for record in nails:
+            if record["ran"] and record["step"]:
+                domains.setdefault(str(record["step"]), []).append(
+                    sg.context_type(str(record["subj"]))
+                )
+        self.facts["nails-step-domains"] = domains
+        self.check(
+            "the kernel recorded each step of NAILS the run has its copies run, "
+            "with its domain",
+            all(step in domains for step in NAILS_STEPS),
+            {
+                "missing": [s for s in NAILS_STEPS if s not in domains],
+                "domains": domains,
+            },
+            NEEDS_LABEL,
+        )
 
     def records_positive(self) -> None:
         """A login on the decoy is recorded where the reader sees it: the
@@ -2079,6 +2833,16 @@ class Gate:
             except Exception as error:  # noqa: BLE001
                 self.check("the decoy disk is judged", False, str(error))
             try:
+                self.judge_run()
+            except Exception as error:  # noqa: BLE001
+                self.check("/run is judged", False, str(error))
+            try:
+                self.judge_execs()
+            except Exception as error:  # noqa: BLE001
+                self.check(
+                    "the programs run from runtime data are judged", False, str(error)
+                )
+            try:
                 self.judge_denials()
             except Exception as error:  # noqa: BLE001
                 self.check("the denials are judged", False, str(error))
@@ -2100,6 +2864,14 @@ class Gate:
         self.mark("boot-ready")
         self.decoy()
         self.control("control-1")
+        # The first entry starts from a cold boot, as an operator's does: the
+        # numbers its consoles' units get are those a way back must give them again.
+        self.where = "decoy at the cold boot"
+        self.power_cycle("cold")
+        self.mark("prep-cold")
+        self.cold_units = self.getty_numbers("cold")
+        self.cold_lines = getty_logins(self.records_capture("cold").wtmp)
+        self.where = "decoy before the first entry"
         # The first session: shared home, ended with deactivate.
         self.sh("hidden-root-1", HIDDEN_ROOT)
         state = self.before_entry(1)
@@ -2140,6 +2912,7 @@ class Gate:
             row,
         )
         state = self.before_entry(2)
+        state["sleep_guard"] = True
         if self.enter(2, USER, FRESH_CONFIG, state):
             log = self.facts.get("activate-2.log", "")
             self.check(
