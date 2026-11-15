@@ -421,9 +421,10 @@ systemd reads them). It reads the program's own options as the program does.
 Where a daemon logs to its standard output or standard error, the unit's
 `StandardOutput=` and `StandardError=` say where that goes, as systemd reads
 them: `journal`, `syslog` and `kmsg`, alone or with `+console`, send the
-stream to the journal, and so does a standard output left to `inherit` or not
-set, which takes the service manager's default, unless `StandardInput=` is a
-terminal, `socket` or a named descriptor (`fd:`). Where that is the journal,
+stream to the journal. A standard output left to `inherit` or not set takes
+the service manager's default, which NAILS takes for the journal, systemd's
+own default, wherever `StandardInput=` is not a terminal, `socket` or a named
+descriptor (`fd:`). Where that is the journal,
 or the daemon logs to syslog, the journal namespace its unit
 sets with `LogNamespace=` decides, or, for a running daemon, the one its
 mount table shows: that namespace's journald instance reads
@@ -436,8 +437,9 @@ volatile the decoy's own journal is. To keep it off the disk, set
 `/etc/systemd/journald@<namespace>.conf` (on NixOS through
 `environment.etc."systemd/journald@<namespace>.conf".text`), then run
 `sudo systemctl restart systemd-journald@<namespace>.service`, or drop the
-unit's `LogNamespace=` and restart the unit; what the namespace kept before
-stays in `/var/log/journal/<machine-id>.<namespace>`. Other units' namespaces
+unit's `LogNamespace=`, then run `sudo systemctl daemon-reload` and restart
+the unit; what the namespace kept before stays in
+`/var/log/journal/<machine-id>.<namespace>`. Other units' namespaces
 are not read here. A unit counts
 when the service manager can start it: it is enabled (a link in a `.wants`,
 `.requires` or `.upholds` directory) or active, or a timer, path or socket
