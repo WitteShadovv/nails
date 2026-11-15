@@ -2303,6 +2303,64 @@ fn a_running_tuned_on_a_socket_nails_cannot_follow_counts_against_the_decoy() {
 }
 
 #[test]
+fn a_running_tuned_on_a_pseudo_terminal_counts_against_the_decoy() {
+    // tuned started by hand under script(1), which copies all its terminal
+    // shows into the typescript: tuned's streams are the terminal script
+    // made.
+    let decoy = Decoy::new();
+    decoy
+        .process(
+            820,
+            "script",
+            &[
+                "script",
+                "-q",
+                "-a",
+                "/var/log/tuned/typescript",
+                "-c",
+                "/usr/sbin/tuned -P",
+            ],
+        )
+        .link("/proc/820/fd/3", "/var/log/tuned/typescript")
+        .link("/proc/820/fd/4", "/dev/ptmx")
+        .process(
+            822,
+            "tuned",
+            &["/usr/bin/python3", "-Es", "/usr/sbin/tuned", "-P"],
+        )
+        .link("/proc/822/fd/0", "/dev/pts/4")
+        .link("/proc/822/fd/1", "/dev/pts/4")
+        .link("/proc/822/fd/2", "/dev/pts/4");
+    let found = decoy.findings();
+    assert_eq!(
+        found.blockers,
+        [
+            "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it counts as \
+             one that does (process 822 runs: it logs to /dev/pts/4, a pseudo-terminal, whose \
+             other side the program that holds it may copy into a file, as script does into its \
+             typescript)"
+        ]
+    );
+    assert!(decoy.check(false).is_fail(), "{:?}", decoy.check(false));
+    // A virtual console or the console keeps nothing.
+    for terminal in ["/dev/tty2", "/dev/console"] {
+        let decoy = Decoy::new();
+        decoy
+            .process(
+                822,
+                "tuned",
+                &["/usr/bin/python3", "-Es", "/usr/sbin/tuned", "-P"],
+            )
+            .link("/proc/822/fd/2", terminal);
+        assert!(
+            decoy.check(false).is_pass(),
+            "{terminal}: {:?}",
+            decoy.check(false)
+        );
+    }
+}
+
+#[test]
 fn the_fix_where_nails_cannot_tell_the_namespace_names_the_namespace_s_fix() {
     // tuned already logs to the journal, as the drop-in fix makes it, in a
     // namespace its unit names with a specifier, or whose drop-ins NAILS

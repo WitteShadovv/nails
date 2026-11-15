@@ -421,10 +421,12 @@ systemd reads them). It reads the program's own options as the program does.
 Where a daemon logs to its standard output or standard error, the unit's
 `StandardOutput=` and `StandardError=` say where that goes, as systemd reads
 them: `journal`, `syslog` and `kmsg`, alone or with `+console`, send the
-stream to the journal. A standard output left to `inherit` or not set takes
-the service manager's default, which NAILS takes for the journal, systemd's
-own default, wherever `StandardInput=` is not a terminal, `socket` or a named
-descriptor (`fd:`). Where it is the journal, or the daemon logs to syslog, the journal
+stream to the journal, and `tty` to the terminal `TTYPath=` names,
+`/dev/console` unless it names one. A standard output left to `inherit` or
+not set takes the service manager's default, which NAILS takes for the
+journal, systemd's own default, wherever `StandardInput=` is not a terminal,
+`socket` or a named descriptor (`fd:`); after a terminal input it goes to
+that terminal. Where it is the journal, or the daemon logs to syslog, the journal
 namespace its unit sets with `LogNamespace=` decides, or, for a running
 daemon, the one its mount table shows: that namespace's journald instance
 reads `journald@<namespace>.conf` and its drop-ins, never `journald.conf`,
@@ -558,14 +560,21 @@ What NAILS cannot read of these, a unit file or drop-in directory it cannot
 read, a command or option it does not follow, a program that runs the daemon
 in turn (as `logsave` or `script` does, which can copy what it logs into a
 file of their own), a variable the unit does not set, a standard stream it
-cannot follow (a pipe, or a descriptor a socket unit passes, among them), a
-journal namespace whose configuration it cannot read, a drop-in name that two
+cannot follow (a pipe, a pseudo-terminal, or a descriptor a socket unit
+passes, among them), a journal namespace whose configuration it cannot read, a
+drop-in name that two
 of a unit's names hold in different files
 (the service manager takes the names in an order of its own), counts against
 the decoy: tuned is refused as if it logged to a file, and firewalld and ABRT
-warn. A log to a device that keeps nothing it is given, as `/dev/null` or a
-terminal, is no file. Whether a unit is enabled or active NAILS reads from the
-links and markers systemd leaves, without following them. A unit whose link
+warn. A log to a device that keeps nothing it is given, as `/dev/null`, the
+console, a virtual console (`/dev/tty<n>`) or a serial line (`/dev/ttyS<n>`),
+is no file. A pseudo-terminal (`/dev/pts/<n>`), or the controlling terminal
+(`/dev/tty`), which may be one, counts as a pipe does: the program that holds
+its other side may copy all it shows into a file, as `script` does into its
+typescript, `screen -L` into its log or `tmux pipe-pane` into a command.
+Another device NAILS does not judge counts so too. Whether a unit is enabled
+or active NAILS reads from the links and markers systemd leaves, without
+following them. A unit whose link
 or marker NAILS cannot look up, as an unprivileged `nails check` cannot in a
 directory only root may look into, counts as one that starts, wherever its
 commands would make the daemon log to a file or NAILS cannot tell whether

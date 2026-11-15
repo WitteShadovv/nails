@@ -149,6 +149,69 @@ fn an_inherited_standard_output_takes_the_default_as_an_unset_one() {
 }
 
 #[test]
+fn a_stream_the_unit_sends_to_its_terminal_is_judged_by_its_tty_path() {
+    // The console, a virtual console, a serial line and a hypervisor's
+    // console keep nothing; systemd drops empty and `.` parts of the path.
+    for text in [
+        "StandardError=tty\nTTYPath=/dev/tty3",
+        "StandardError=tty\nTTYPath=/dev/ttyS0",
+        "StandardError=tty\nTTYPath=/dev/hvc0",
+        "StandardError=tty\nTTYPath=/dev//./tty2",
+        // An empty value sets the default again, the console.
+        "StandardError=tty\nTTYPath=/dev/pts/3\nTTYPath=",
+        "StandardOutput=inherit\nStandardInput=tty\nTTYPath=/dev/tty1",
+    ] {
+        assert_eq!(
+            of_unit(&section(text), Stream::Error, TUNED_BY),
+            Log::NoFile,
+            "{text:?}"
+        );
+    }
+    let pseudo = "it logs to /dev/pts/3, a pseudo-terminal, whose other side the program that \
+                  holds it may copy into a file, as script does into its typescript";
+    for (text, why) in [
+        ("StandardError=tty\nTTYPath=/dev/pts/3", pseudo),
+        // A standard output left to inherit follows the terminal it reads.
+        ("StandardInput=tty-force\nTTYPath=/dev/pts/3", pseudo),
+        // systemd ignores a path that is not absolute or holds `..`, which
+        // leaves the one before.
+        (
+            "StandardError=tty\nTTYPath=/dev/pts/3\nTTYPath=pts/4",
+            pseudo,
+        ),
+        (
+            "StandardError=tty\nTTYPath=/dev/pts/3\nTTYPath=/dev/../dev/tty1",
+            pseudo,
+        ),
+        ("StandardError=file:/dev/pts/3", pseudo),
+        (
+            "StandardError=tty\nTTYPath=/dev/tty",
+            "it logs to /dev/tty, a pseudo-terminal, whose other side the program that holds it \
+             may copy into a file, as script does into its typescript",
+        ),
+        (
+            "StandardError=tty\nTTYPath=/dev/ttyUSB0",
+            "it logs to /dev/ttyUSB0, a device NAILS does not judge",
+        ),
+        (
+            "StandardError=tty\nTTYPath=/srv/term",
+            "it logs to its standard error, its terminal /srv/term, which NAILS does not judge",
+        ),
+        (
+            "StandardError=tty\nTTYPath=/dev/tty%i",
+            "it logs to its standard error, its terminal, and NAILS does not expand the \
+             specifiers of its TTYPath=/dev/tty%i",
+        ),
+    ] {
+        assert_eq!(
+            unknown(of_unit(&section(text), Stream::Error, TUNED_BY)),
+            why,
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
 fn a_stream_the_unit_sends_to_a_file_logs_there() {
     for (text, path, by) in [
         (
@@ -277,10 +340,10 @@ fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
     );
     for target in [
         "/dev/null",
-        "/dev/pts/1",
         "/dev/kmsg",
         "/dev/tty1",
         "/dev/ttyS0",
+        "/dev/hvc0",
         "/dev/console",
     ] {
         assert_eq!(
@@ -313,11 +376,26 @@ fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
         )),
         "it logs to its standard output, which leads to anon_inode:[eventfd]"
     );
-    // Another device, as a disk's, is not judged.
-    assert_eq!(
-        unknown(led_to(Ok(PathBuf::from("/dev/sda1")), Stream::Error, by)),
-        "it logs to /dev/sda1, a device NAILS does not judge"
-    );
+    // Another device, as a disk's, is not judged, nor a terminal NAILS does
+    // not know, as a pseudo-terminal of the old kind.
+    for target in ["/dev/sda1", "/dev/ttyp0", "/dev/pts/ptmx"] {
+        assert_eq!(
+            unknown(led_to(Ok(PathBuf::from(target)), Stream::Error, by)),
+            format!("it logs to {target}, a device NAILS does not judge")
+        );
+    }
+    // A pseudo-terminal leads to the program that holds its other side,
+    // which may copy what it shows into a file, as script does, and so may
+    // the controlling terminal, which may be one.
+    for target in ["/dev/pts/4", "/dev/tty"] {
+        assert_eq!(
+            unknown(led_to(Ok(PathBuf::from(target)), Stream::Error, by)),
+            format!(
+                "it logs to {target}, a pseudo-terminal, whose other side the program that holds \
+                 it may copy into a file, as script does into its typescript"
+            )
+        );
+    }
     // A pipe leads to its reader, which may copy what it reads into a file.
     assert_eq!(
         unknown(led_to(Ok(PathBuf::from("pipe:[13579]")), Stream::Error, by)),
