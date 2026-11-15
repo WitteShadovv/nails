@@ -19,6 +19,14 @@
 #      way back started must be one a control's stop made, a read after it
 #      one a control's stop or start made.
 #
+# A read of a file or a directory that no control explains fails the
+# scenario. A link NAILS' own lookups follow or read is listed and does not
+# fail it: NAILS reads its own files with O_NOATIME and starts its programs
+# with every mount noatime, but a lookup still updates the access time of a
+# link on the way, which the operator guide names as what is left. Nor does
+# a listing of udevd's rule and link directories: udevd lists them whenever
+# it handles a uevent, every three seconds at most, whatever made the uevent.
+#
 # Every command of the scenario that reads the decoy disk runs through
 # `noatime-run` (lib/noatime-run.c), which runs it in a mount namespace whose
 # every mount is noatime: the walker itself (the guest's python3), the
@@ -370,19 +378,33 @@ distroVm.buildVmTest {
     with subtest("control: a plain soft-reboot after the sessions"):
         controls.append(control("control-2"))
 
-    with subtest("activation and the way back read nothing a plain switch does not"):
+    with subtest("check, activation and the way back read nothing a plain switch does not"):
         merged = at.merge(controls)
         all_marks = []
         for reads, way_back, marks in flows:
             findings.extend(at.judge_flow(reads, way_back, merged))
             all_marks += marks
-        report["findings"] = at.as_json(findings)
+        others, links = at.split_links(findings)
+        others, udevd = at.split_udevd(others)
+        report["findings"] = at.as_json(others)
+        report["links"] = at.as_json(links)
+        report["udevd"] = at.as_json(udevd)
         print("=== ACCESS-TIME REPORT ===")
         print(json.dumps(report, sort_keys=True))
         print("=== END OF ACCESS-TIME REPORT ===")
-        assert not findings, (
-            f"{len(findings)} reads of the decoy disk no plain soft-reboot makes:\n"
-            + at.describe(findings, all_marks)
+        # The links NAILS' own lookups follow or read, which the operator
+        # guide names: listed, not a failure (see access_times.py).
+        print(
+            f"{len(links)} links of the decoy disk NAILS' own lookups followed or read:\n"
+            + at.describe(links, all_marks)
+        )
+        print(
+            f"{len(udevd)} listings of udevd's rule and link directories:\n"
+            + at.describe(udevd, all_marks)
+        )
+        assert not others, (
+            f"{len(others)} reads of the decoy disk no plain soft-reboot makes:\n"
+            + at.describe(others, all_marks)
         )
   '';
 }
