@@ -228,6 +228,36 @@ fn the_collector_reads_the_devices_and_the_names_the_files_use() {
 }
 
 #[test]
+fn the_devices_an_fstab_option_names_are_resolved_as_a_source_is() {
+    // A udev link, a link in /dev/block, an LVM-style link and a path with
+    // `.` or a doubled `/` lead to the device they name, through links that
+    // stay in /dev; a path of a file is none of them.
+    let decoy = lv_in_the_decoys_group().file(
+        "/etc/fstab",
+        "/dev/mapper/vg-root / ext4 defaults 0 1\n\
+         /dev/sdc /a ext4 journal_path=/dev/disk/by-id/usb-vault 0 2\n\
+         /dev/sdc /b xfs logdev=/dev/block/254:4,rtdev=/dev/vg/vault 0 0\n\
+         /dev/sdc /c btrfs device=/dev/./dm-4,device=/dev//nvme0n1p3 0 0\n\
+         /dev/sdc /d ext4 x-systemd.requires-mounts-for=/srv/x 0 2\n",
+    );
+    decoy.link("/dev/disk/by-id/usb-vault", "../../dm-4");
+    decoy.link("/dev/block/254:4", "../dm-4");
+    decoy.link("/dev/vg/vault", "../dm-4");
+    let mounts = decoy.fs.mount_table().unwrap();
+    let devices = collect(&decoy.fs, &mounts, Path::new("/")).devices;
+    for (spec, node) in [
+        ("/dev/disk/by-id/usb-vault", "dm-4"),
+        ("/dev/block/254:4", "dm-4"),
+        ("/dev/vg/vault", "dm-4"),
+        ("/dev/./dm-4", "dm-4"),
+        ("/dev//nvme0n1p3", "nvme0n1p3"),
+    ] {
+        assert_eq!(devices.node_of_spec(spec), Some(node), "{spec}");
+    }
+    assert_eq!(devices.node_of_spec("/srv/x"), None);
+}
+
+#[test]
 fn the_collector_reads_btrfs_members_and_loop_files() {
     let decoy = Decoy::new("1 0 0:30 / / rw - btrfs /dev/nvme0n1p3 rw,subvol=/\n")
         .device(NVME, "nvme0n1", "259:0", &[])

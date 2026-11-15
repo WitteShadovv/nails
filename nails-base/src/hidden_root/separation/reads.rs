@@ -20,9 +20,11 @@
 //! `x-systemd.wants-mounts-for=` first, `mount.cifs` reads the file of
 //! `credentials=`, and an overlay is made of the folders of `lowerdir=`,
 //! `upperdir=` and `workdir=` and writes to its upper one. The judge reads
-//! each that is an absolute path as it reads a source, below, and the device
-//! a number names by its `major:minor`. A device of the filesystem the line
-//! mounts itself, as `device=` names one, names nothing besides.
+//! each that is an absolute path as it reads a source, below, a device's path
+//! in `/dev` through the links that stay in `/dev`, as the collector resolves
+//! a source (see the `collect` module), and the device a number names by its
+//! `major:minor`. A device of the filesystem the line mounts itself, as
+//! `device=` names one, names nothing besides.
 //!
 //! The generator splits the key field and each `header=` at the last `:`
 //! when what follows is an absolute path or a `UUID=`, `LABEL=`, `PARTUUID=`
