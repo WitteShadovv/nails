@@ -477,21 +477,27 @@ of this changelog for that version becomes the release notes word for word, and
   reads its mode from `/sys/fs/selinux/enforce`, `SELINUX=` and `SELINUXTYPE=` from
   `/etc/selinux/config` the way libselinux reads them, the policy name in its case, when that file
   last changed, and the context of the `nails` process from `/proc/self/attr/current`, without
-  libselinux and without writing anything. It refuses a configuration that names a policy other
-  than `targeted`, as untested, and one that names `targeted` but changed after the boot, by its
-  change time against the boot time in `/proc/stat`, or whose change cannot be told, since the
-  policy SELinux loaded may then be another. It refuses a context without a level or whose level
-  has a sensitivity other than `s0`, which Fedora's targeted policy does not give, whatever the
-  file names, and a host whose kernel runs SELinux without a policy (the process is labelled
-  `kernel`, as `SELINUX=disabled` leaves Linux 6.4 and later where the kernel started SELinux at
-  boot), which it says to start with `selinux=0`. It refuses a `nails` process in a domain other
-  than `unconfined_t` or `unconfined_service_t`, and a fact it cannot read. NAILS does not yet
-  choose the SELinux domain of the processes systemd starts from its copy in `/run` (the
-  transition step at each switch, the watcher and the sleep guard of the hidden session, and the
-  boot-record steps after the way back), nor that of the disk guard, which udev runs itself from
-  the rule NAILS installs there, so for now it refuses every host where SELinux runs. It judges
-  the two apart, since what NAILS sets on systemd's side does not reach what udev runs. It warns,
-  where nothing refuses, when SELinux is permissive or runs in another mode than
+  libselinux and writing nothing but the questions below to selinuxfs. It refuses a configuration
+  that names a policy other than `targeted`, as untested, and one that names `targeted` but changed
+  after the boot, by its change time against the boot time in `/proc/stat`, or whose change cannot
+  be told, since the policy SELinux loaded may then be another. It refuses a context without a level
+  or whose level has a sensitivity other than `s0`, which Fedora's targeted policy does not give,
+  whatever the file names, and a host whose kernel runs SELinux without a policy (the process is
+  labelled `kernel`, as `SELINUX=disabled` leaves Linux 6.4 and later where the kernel started
+  SELinux at boot), which it says to start with `selinux=0`. It refuses a `nails` process in a
+  domain other than `unconfined_t` or `unconfined_service_t`, and a fact it cannot read. Where the
+  copies of the binary in `/run` take the label of the system's programs (below), it asks the loaded
+  policy, through selinuxfs, what PID 1's start of such a copy comes to, and refuses a host where it
+  would not start the processes systemd starts from it (the transition step at each switch, the
+  watcher and the sleep guard of the hidden session, and the boot-record steps after the way back)
+  in `unconfined_service_t`, or cannot be asked. Where `[session_mounts] read_only` is on, it also
+  refuses a host whose loaded policy does not grant the domain udevd starts the disk guard in,
+  `udev_t` under a targeted policy, every operation the guard makes, from udevd's reading of the
+  rule that starts it to setting a disk read-only, one where no systemd-udevd runs, and one whose
+  policy cannot be asked. It judges the two apart, since what NAILS sets on systemd's side does not
+  reach what udev runs. Where the copies take no label, NAILS chooses neither domain, and the check
+  refuses every host where SELinux runs. Fedora, whose hosts run SELinux by default, is not admitted
+  yet. It warns, where nothing refuses, when SELinux is permissive or runs in another mode than
   `/etc/selinux/config` sets. Where the kernel's list cannot be read, a mounted selinuxfs or an
   SELinux context of the process means SELinux runs, and without either, `/sys/fs/selinux` or a
   configuration that sets a mode or names a policy is refused without deciding: a mount over `/sys`
@@ -1017,13 +1023,15 @@ of this changelog for that version becomes the release notes word for word, and
   sleep guard power off, the last step refuses its switch and on the way back powers off first, the
   one-shot leaves the records as they are and only removes its pieces from `/run`, and the wtmpdb
   writer runs as the decoy has it. The unit files and drop-ins are the same on every host, and
-  nothing is installed into the decoy's policy. The kernel may run SELinux where the labels of the
-  uppers must be copied, where it lists SELinux among its security modules, and where the host facts
-  report SELinux while that list cannot be read. Elsewhere, as on a stock Debian, Ubuntu or NixOS
-  host, nothing changes. Of the tests in this repository only Fedora's admission gate runs the steps
-  under an enforcing policy and checks their domains, and only a dispatch of the staged distribution
-  tests runs it. The Fedora 44 and 45 images of the oracle run a hidden session and the way back
-  under a permissive policy, without checking the domains; see docs/decoy-requirements.md.
+  nothing is installed into the decoy's policy. `check` and the activation ask the loaded policy the
+  same through `lsm-status` (above), with the disk guard's operations where it is on. The kernel may
+  run SELinux where the labels of the uppers must be copied, where it lists SELinux among its
+  security modules, and where the host facts report SELinux while that list cannot be read.
+  Elsewhere, as on a stock Debian, Ubuntu or NixOS host, nothing changes. Of the tests in this
+  repository only Fedora's admission gate runs the steps under an enforcing policy and checks their
+  domains, and only a dispatch of the staged distribution tests runs it. The Fedora 44 and 45 images
+  of the oracle run a hidden session and the way back under a permissive policy, without checking
+  the domains; see docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new

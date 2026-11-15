@@ -220,12 +220,13 @@ Also refused by the pre-flight checks:
   (`upper-fs-capability`);
 - a host where SELinux runs and `/etc/selinux/config` names a policy other
   than `targeted`, or changed after the boot, where SELinux runs without a
-  policy loaded, where `nails` runs in a confined SELinux domain, or whose
-  SELinux facts cannot be read. NAILS does not yet choose the SELinux domains
-  of the processes systemd and udev start for it, so for now every host where
-  SELinux runs is refused. A host where it does not run, such as Debian or
-  Ubuntu with AppArmor, passes, and the check names the security modules the
-  kernel runs (`lsm-status`);
+  policy loaded, where `nails` runs in a confined SELinux domain, where the
+  loaded policy would not start the processes systemd starts from NAILS's
+  copy in `/run` unconfined or, with `[session_mounts] read_only`, would deny
+  the disk guard udev starts what it does, or whose SELinux facts cannot be
+  read. A host where it does not run, such as Debian or Ubuntu with AppArmor,
+  passes, and the check names the security modules the kernel runs
+  (`lsm-status`);
 - running inside a container or another mount namespace than PID 1's
   (`mount-namespace`).
 
