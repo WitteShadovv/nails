@@ -456,6 +456,7 @@ fn a_place_that_cannot_be_read_turns_a_pass_into_could_not_confirm() {
             .is_pass()
     );
     for path in [
+        IOMMU_CLASS.to_string(),
         IOMMU_GROUPS.to_string(),
         format!("{IOMMU_GROUPS}/1/{IOMMU_GROUP_TYPE}"),
         THUNDERBOLT_DEVICES.to_string(),
@@ -492,6 +493,46 @@ fn a_place_that_cannot_be_read_turns_a_pass_into_could_not_confirm() {
         )),
         "{result:?}"
     );
+}
+
+/// A release that is there but cannot be read leaves untold which values
+/// the kernel accepts. Where the spellings of the releases read the command
+/// line apart, as `iommu.passthrough=disable` after `iommu=pt`, which Linux
+/// 6.16 and later take back and older kernels reject, the line decides
+/// nothing, and a pass becomes the warning that NAILS could not confirm,
+/// naming the release, where the newer reading was taken and the check
+/// passed. Where they agree, the release decides nothing.
+#[test]
+fn a_release_that_cannot_be_read_counts_where_the_spellings_read_the_line_apart() {
+    let machine = |cmdline: &str, release: Option<&str>| {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_CMDLINE, cmdline);
+        match release {
+            Some(release) => fs.mock_add_file(PROC_OSRELEASE, release),
+            None => fs.mock_set_lookup_error(PROC_OSRELEASE, std::io::ErrorKind::Other),
+        }
+        with_active_iommu(&fs);
+        with_groups(&fs, &["DMA-FQ"]);
+        DmaProtectionCheck::new().run(&fs).unwrap()
+    };
+    let apart = "iommu=pt iommu.passthrough=disable\n";
+    assert!(machine(apart, Some("6.16.0\n")).is_pass());
+    let older = machine(apart, Some("6.12.48\n"));
+    assert!(
+        older.is_warn() && older.message().contains("all of system RAM"),
+        "{older:?}"
+    );
+    let unread = machine(apart, None);
+    assert!(unread.is_warn(), "{unread:?}");
+    assert!(
+        unread.message().starts_with(&format!(
+            "Could not confirm the host restricts DMA into RAM: NAILS cannot look up \
+             {PROC_OSRELEASE} ("
+        )),
+        "{unread:?}"
+    );
+    // Read alike by every release.
+    assert!(machine("intel_iommu=on iommu.passthrough=0\n", None).is_pass());
 }
 
 #[test]
