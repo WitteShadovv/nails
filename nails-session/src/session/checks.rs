@@ -160,16 +160,32 @@ impl<F: Filesystem> PreFlightCheck<F> for SoftRebootUnitsCheck {
     }
 }
 
+/// How a check reads the mount table: [`read_mountinfo`] outside tests,
+/// which give one that fails.
+type MountTable = fn() -> std::io::Result<Vec<MountEntry>>;
+
 /// `decoy-root`.
 #[derive(Debug)]
 pub struct DecoyRootCheck {
     root: PathBuf,
+    /// How the check reads the mount table.
+    mount_table: MountTable,
 }
 
 impl DecoyRootCheck {
     /// The check for the decoy root at `root`.
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            mount_table: read_mountinfo,
+        }
+    }
+
+    /// The check, reading the mount table with `mount_table` (tests).
+    #[cfg(test)]
+    fn reading_mounts(mut self, mount_table: MountTable) -> Self {
+        self.mount_table = mount_table;
+        self
     }
 }
 
@@ -198,7 +214,7 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyRootCheck {
         "the decoy root can be mounted again for the way back"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(self.judge(read_mountinfo()))
+        Ok(self.judge((self.mount_table)()))
     }
 }
 
@@ -256,12 +272,25 @@ pub fn judge_session(view: &SessionView) -> CheckResult {
 pub struct SessionStateCheck {
     paths: Paths,
     hidden_root: PathBuf,
+    /// How the check reads the mount table.
+    mount_table: MountTable,
 }
 
 impl SessionStateCheck {
     /// The check under `paths` for the hidden volume at `hidden_root`.
     pub fn new(paths: Paths, hidden_root: PathBuf) -> Self {
-        Self { paths, hidden_root }
+        Self {
+            paths,
+            hidden_root,
+            mount_table: read_mountinfo,
+        }
+    }
+
+    /// The check, reading the mount table with `mount_table` (tests).
+    #[cfg(test)]
+    fn reading_mounts(mut self, mount_table: MountTable) -> Self {
+        self.mount_table = mount_table;
+        self
     }
 }
 
@@ -273,7 +302,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SessionStateCheck {
         "not in a hidden session and no interrupted entry"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(self.judge(read_mountinfo()))
+        Ok(self.judge((self.mount_table)()))
     }
 }
 
@@ -446,12 +475,26 @@ pub fn decoy_units(
 pub struct FstabPolicyCheck {
     root: PathBuf,
     hidden_root: PathBuf,
+    /// How the check reads the decoy's mount table.
+    mount_table: MountTable,
 }
 
 impl FstabPolicyCheck {
     /// The check for the decoy root at `root`.
     pub fn new(root: PathBuf, hidden_root: PathBuf) -> Self {
-        Self { root, hidden_root }
+        Self {
+            root,
+            hidden_root,
+            mount_table: read_mountinfo,
+        }
+    }
+
+    /// The check, reading the decoy's mount table with `mount_table`
+    /// (tests).
+    #[cfg(test)]
+    fn reading_mounts(mut self, mount_table: MountTable) -> Self {
+        self.mount_table = mount_table;
+        self
     }
 }
 
@@ -464,7 +507,7 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
     }
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let snapshot = Snapshot::read(fs, &self.root);
-        Ok(self.judge_read(fs, &snapshot, read_mountinfo()))
+        Ok(self.judge_read(fs, &snapshot, (self.mount_table)()))
     }
 }
 

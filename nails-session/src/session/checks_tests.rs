@@ -4,6 +4,7 @@
 //! Unit tests for the session's pre-flight checks.
 
 use super::*;
+use crate::filesystem::MockFilesystem;
 use crate::session::fstab::parse_fstab;
 use nails_teardown::mountinfo::parse_mountinfo;
 
@@ -145,7 +146,10 @@ fn an_impermanent_root_is_refused() {
 #[test]
 fn decoy_root_refuses_where_the_mount_table_cannot_be_read() {
     let check = DecoyRootCheck::new(PathBuf::from("/"));
-    let result = check.judge(Err(std::io::Error::from(std::io::ErrorKind::Other)));
+    let result = DecoyRootCheck::new(PathBuf::from("/"))
+        .reading_mounts(|| Err(std::io::Error::from(std::io::ErrorKind::Other)))
+        .run(&MockFilesystem::new())
+        .unwrap();
     assert!(result.is_fail(), "{result:?}");
     assert!(
         result.message().starts_with(
@@ -199,9 +203,16 @@ fn session_state_refuses_where_the_mount_table_cannot_be_read() {
         },
         PathBuf::from("/mnt/data"),
     );
-    let result = check.judge(Err(std::io::Error::from(
-        std::io::ErrorKind::PermissionDenied,
-    )));
+    let result = SessionStateCheck::new(
+        Paths {
+            root: dir.path().join("root"),
+            run: dir.path().join("run"),
+        },
+        PathBuf::from("/mnt/data"),
+    )
+    .reading_mounts(|| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)))
+    .run(&MockFilesystem::new())
+    .unwrap();
     assert!(result.is_fail(), "{result:?}");
     assert!(
         result.message().starts_with(
@@ -563,11 +574,10 @@ fn the_policy_check_refuses_where_it_cannot_read_the_mount_table_it_decides_by()
     let check = FstabPolicyCheck::new(root.clone(), PathBuf::from("/mnt/data"));
     let fs = crate::filesystem::RealFilesystem;
     let snapshot = automounts_below(&root, &[]);
-    let result = check.judge_read(
-        &fs,
-        &snapshot,
-        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
-    );
+    let result = FstabPolicyCheck::new(root.clone(), PathBuf::from("/mnt/data"))
+        .reading_mounts(|| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)))
+        .run(&fs)
+        .unwrap();
     assert!(result.is_fail(), "{result:?}");
     assert!(
         result.message().starts_with(
