@@ -11,8 +11,9 @@
 #
 #   1. before each phase every entry of the decoy disk's filesystems is aged
 #      two days, so that each read in the phase shows once;
-#   2. two controls: a plain soft-reboot of the decoy into itself, before and
-#      after the sessions, show what the decoy's own stop and start read;
+#   2. two controls: a plain soft-reboot of the decoy into itself, with the
+#      hidden root mounted as for a session, before and after the sessions,
+#      show what the decoy's own stop and start read;
 #   3. `nails check` on the idle decoy: every read in its window is NAILS';
 #   4. two sessions: an activation, work in the session and the way back,
 #      once with `deactivate` and once with the emergency. A read before the
@@ -266,6 +267,9 @@ distroVm.buildVmTest {
 
 
     def control(label):
+        # The decoy as a session leaves it: the hidden root mounted, so the
+        # control's stop handles that mount as the way in does.
+        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         ref = phase_start(label)
         switch(quiet("systemctl soft-reboot"), label)
         on_decoy()
@@ -276,6 +280,9 @@ distroVm.buildVmTest {
         )
         reads = reads_of(label, ref)
         report["phases"][label].update({"stop": shutdown, "userspace": userspace})
+        # A mapping the plain soft-reboot left open would keep the next hidden
+        # root from taking its name.
+        vm.execute(quiet("if [ -e /dev/mapper/data ]; then cryptsetup close data; fi"))
         return at.control_of(reads, userspace)
 
 
@@ -306,6 +313,10 @@ distroVm.buildVmTest {
 
         ref = phase_start(label)
         marks.append((f"{label} activate", ref))
+        # PID 1 logs at debug level until the switch, and its journal from the
+        # activation on is printed from the hidden session, so a read can be
+        # lined up with what PID 1 did then. Neither reads the decoy disk.
+        vm.succeed(quiet(f"busctl set-property {PID1} LogLevel s debug"))
         log = f"/mnt/data/{label}-activate.log"
         try:
             switch(f"{NAILS_CMD} activate -y > {log} 2>&1", f"{label} in")
@@ -315,6 +326,11 @@ distroVm.buildVmTest {
             raise
         session.assert_hidden_root(vm)
         print(vm.succeed(f"cat /mnt/data/{label}-activate.log"))
+        since = ref // 1_000_000_000 - 1
+        journal = vm.succeed(
+            quiet(f"journalctl _PID=1 -o short-unix --no-pager --since @{since}")
+        )
+        print(f"=== PID 1 JOURNAL {label} ===\n{journal}=== END ===", flush=True)
         stop_in, hidden_start = pid1_times()
         marks += [(f"{label} decoy stop", stop_in), (f"{label} hidden start", hidden_start)]
         vm.succeed(
@@ -389,18 +405,22 @@ distroVm.buildVmTest {
         report["findings"] = at.as_json(others)
         report["links"] = at.as_json(links)
         report["udevd"] = at.as_json(udevd)
-        print("=== ACCESS-TIME REPORT ===")
-        print(json.dumps(report, sort_keys=True))
-        print("=== END OF ACCESS-TIME REPORT ===")
+        # Flushed at once: a driver that fails exits without writing what its
+        # output still holds.
+        print("=== ACCESS-TIME REPORT ===", flush=True)
+        print(json.dumps(report, sort_keys=True), flush=True)
+        print("=== END OF ACCESS-TIME REPORT ===", flush=True)
         # The links NAILS' own lookups follow or read, which the operator
         # guide names: listed, not a failure (see access_times.py).
         print(
             f"{len(links)} links of the decoy disk NAILS' own lookups followed or read:\n"
-            + at.describe(links, all_marks)
+            + at.describe(links, all_marks),
+            flush=True,
         )
         print(
             f"{len(udevd)} listings of udevd's rule and link directories:\n"
-            + at.describe(udevd, all_marks)
+            + at.describe(udevd, all_marks),
+            flush=True,
         )
         assert not others, (
             f"{len(others)} reads of the decoy disk no plain soft-reboot makes:\n"
