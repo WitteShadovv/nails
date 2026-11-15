@@ -17,20 +17,21 @@
 //! does nothing about the network, exactly as a session from before this
 //! existed.
 
-use nails_teardown::whole_root::network::{NetTools, NetworkRecord, Places};
+use nails_teardown::whole_root::network::{NetKernel, Netlink, NetworkRecord, Places};
 use nails_teardown::whole_root::plan::write_private_atomic;
 use std::path::Path;
 
-/// Record the decoy's network state at `places` to `out`, best effort, with
-/// the tools installed. A failure to write removes any partial file and is
-/// otherwise silent.
+/// Record the decoy's network state at `places` to `out`, best effort,
+/// asking the running kernel over netlink for the rules and tables: no
+/// program starts on the decoy for it. A failure to write removes any partial
+/// file and is otherwise silent.
 pub fn record(places: &Places, out: &Path) {
-    record_with(places, &NetTools::find(), out);
+    record_with(places, &Netlink::system(), out);
 }
 
-/// [`record`] with `tools`.
-fn record_with(places: &Places, tools: &NetTools, out: &Path) {
-    let record = NetworkRecord::capture(places, tools);
+/// [`record`] with `kernel`.
+fn record_with(places: &Places, kernel: &dyn NetKernel, out: &Path) {
+    let record = NetworkRecord::capture(places, kernel);
     write_record(out, &record.encode(), write_private_atomic);
 }
 

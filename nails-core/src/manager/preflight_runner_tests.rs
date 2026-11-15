@@ -54,7 +54,6 @@ fn build_registry_includes_the_shared_checks() {
         "dma-protection",
         "kernel-modules",
         "lsm-status",
-        "network-tools",
         "package-drift",
         "state",
     ] {

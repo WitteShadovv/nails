@@ -79,7 +79,9 @@ impl World {
             now,
             mounts: parse_mountinfo(&table),
             network: self.network(),
-            network_tools: Some(network::NetTools::default()),
+            network_kernel: Some(std::sync::Arc::new(
+                crate::test_support::FakeNetKernel::offline(),
+            )),
             power_off: PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: refused_power_off,
@@ -1627,7 +1629,10 @@ fn way_back_with_a_network_record(world: &World) -> Env {
     fs::create_dir_all(env.network.proc_hostname.parent().unwrap()).unwrap();
     fs::write(&env.network.proc_hostname, "decoy-host\n").unwrap();
     add_virtual_link(&env.network.sys_class_net, "lo", 1);
-    let record = network::NetworkRecord::capture(&env.network, &network::NetTools::default());
+    let record = network::NetworkRecord::capture(
+        &env.network,
+        &crate::test_support::FakeNetKernel::offline(),
+    );
     fs::write(world.runtime().join(network::RECORD_NAME), record.encode()).unwrap();
     let mut plan = armed(Direction::Leave);
     plan.entered_at = Some(900);
@@ -1645,8 +1650,8 @@ fn systemctl_calls(world: &World) -> String {
 
 /// A way back that cannot undo what the session did to the network state
 /// powers off instead of returning: the link the session made is still there
-/// (this way back finds no `ip` to delete it with), so it asks PID 1 to power
-/// off at once.
+/// (this way back's kernel takes no change), so it asks PID 1 to power off at
+/// once.
 #[test]
 fn a_way_back_that_cannot_put_the_network_state_back_powers_off() {
     let world = World::new();
@@ -1669,7 +1674,7 @@ fn a_way_back_that_cannot_put_the_network_state_back_powers_off() {
 }
 
 /// A way back that puts the network state back returns and never asks for a
-/// power-off: here its `ip` deletes the link the session made.
+/// power-off: here its kernel deletes the link the session made.
 #[test]
 fn a_way_back_that_puts_the_network_state_back_returns_without_a_power_off() {
     let world = World::new();
@@ -1677,19 +1682,12 @@ fn a_way_back_that_puts_the_network_state_back_returns_without_a_power_off() {
     let sys = env.network.sys_class_net.clone();
     add_virtual_link(&sys, "wg0", 9);
     // Deletes the link from the fake sysfs, as the kernel does.
-    let ip = world.dir.path().join("ip");
-    write_executable(
-        &ip,
-        format!(
-            "#!/bin/sh\nif [ \"$1 $2\" = 'link delete' ]; then rm -r '{}'/\"$4\"; fi\n",
-            sys.display()
+    env.network_kernel = Some(std::sync::Arc::new(
+        crate::test_support::FakeNetKernel::new(
+            Some(&sys),
+            crate::test_support::FakeNet::default(),
         ),
-        0o755,
-    );
-    env.network_tools = Some(network::NetTools {
-        ip: Some(ip),
-        ..network::NetTools::default()
-    });
+    ));
 
     let outcome = run(&env);
 

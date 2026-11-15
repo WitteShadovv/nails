@@ -50,12 +50,12 @@
 //! one of its own (iwd does by default when it starts) has none after the way
 //! back.
 //!
-//! Deleting a link and setting an address go through `ip` (iproute2), the one
-//! tool that speaks to the kernel for both and is present wherever networking
-//! is; a Wi-Fi interface goes through `iw`, since the kernel deletes one only
-//! through its wireless configuration interface. The hostname and the runtime
-//! directories are plain files. Reading the current links and writing nothing
-//! but files makes all of it testable without a privileged network.
+//! Deleting a link, setting an address and deleting a Wi-Fi interface are
+//! asked of the kernel itself, over netlink ([`NetKernel`]), as are the rules
+//! and tables: no program starts, neither on the decoy at entry nor on the
+//! way back. The hostname and the runtime directories are plain files.
+//! Reading the current links from sysfs and asking the kernel through a trait
+//! makes all of it testable without a privileged network.
 //!
 //! Many drivers cannot change the address of a device that is up (USB Ethernet
 //! adapters such as `ax88179_178a` and `asix`, Wi-Fi drivers without powered
@@ -65,8 +65,8 @@
 //! stays down. Every address is read back afterwards.
 //!
 //! Entry records each part on its own, and a part it cannot read (the list of
-//! links, the copy of the runtime state, a tool's list of rules or tables) is
-//! recorded as unknown. The way back leaves an unknown part as the session
+//! links, the copy of the runtime state, the kernel's list of rules or tables)
+//! is recorded as unknown. The way back leaves an unknown part as the session
 //! leaves it: an empty list in its place would read as a decoy without links,
 //! rules or runtime state, and the way back would delete the decoy's. It never
 //! touches anything when no record was taken (an older session, or one whose
@@ -79,13 +79,14 @@
 //! back ([`Kept::failed`]), the transition powers off instead of returning:
 //! that state lives only in the kernel, and a power-off erases it.
 
+use crate::netlink::route::parse_mac;
+pub use crate::whole_root::net_kernel::{NetKernel, Netlink};
 use crate::whole_root::network_policy::Policy;
-use crate::whole_root::{network_run, tools};
+use crate::whole_root::network_run;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// The record's file name inside the runtime directory (neutral, no product
 /// name, like the other runtime files).
@@ -102,18 +103,15 @@ pub const SYS_CLASS_NET: &str = "/sys/class/net";
 /// network ones.
 pub const PROC_SYS: &str = "/proc/sys";
 
-/// How long a single `ip` or `iw` call may take.
-const IP_BUDGET: Duration = Duration::from_secs(3);
-
 /// A link's administrative up flag in its sysfs `flags` (`IFF_UP` in
-/// `<linux/if.h>`), set by `ip link set up` and cleared by `ip link set down`.
+/// `<linux/if.h>`).
 const IFF_UP: u32 = 0x1;
 
 /// The fallback devices the kernel's tunnel modules make when they load
 /// (`ipip` makes `tunl0`, `sit` makes `sit0`, `ip_gre` makes `gre0`, `gretap0`
 /// and `erspan0`). The kernel keeps such a device when it is asked to delete
-/// it: `ip link delete` succeeds and the link stays, so the way back of a
-/// session that loaded one of these modules powers off.
+/// it: the deletion succeeds and the link stays, so the way back of a session
+/// that loaded one of these modules powers off.
 pub const KERNEL_KEPT_LINKS: [&str; 9] = [
     "tunl0", "sit0", "ip6tnl0", "gre0", "gretap0", "erspan0", "ip6gre0", "ip_vti0", "ip6_vti0",
 ];
@@ -143,29 +141,6 @@ impl Places {
     }
 }
 
-/// The tools the record and the way back run, by absolute path. A tool that is
-/// not installed is `None`: the part that needs it is left alone.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NetTools {
-    /// `ip` (iproute2): links, addresses and policy-routing rules.
-    pub ip: Option<PathBuf>,
-    /// `iw`: Wi-Fi interfaces.
-    pub iw: Option<PathBuf>,
-    /// `nft` (nftables): firewall tables.
-    pub nft: Option<PathBuf>,
-}
-
-impl NetTools {
-    /// The tools in the system directories ([`tools::find`]).
-    pub fn find() -> Self {
-        NetTools {
-            ip: tools::find(None, "ip"),
-            iw: tools::find(None, "iw"),
-            nft: tools::find(None, "nft"),
-        }
-    }
-}
-
 /// A link as the kernel lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
@@ -174,7 +149,7 @@ pub struct Link {
     /// The interface name.
     pub name: String,
     /// Whether the kernel made the link (no backing hardware device), so the
-    /// way back may delete it with `ip link delete`.
+    /// way back may delete it.
     pub virtual_link: bool,
     /// The hardware address, lower-case and colon-separated as the kernel
     /// prints it, or `None` when the link has none.
@@ -200,13 +175,13 @@ pub struct NetworkRecord {
 }
 
 impl NetworkRecord {
-    /// Take the record at `places` with `tools`. Reading only; nothing is
-    /// changed.
-    pub fn capture(places: &Places, tools: &NetTools) -> Self {
+    /// Take the record at `places`, asking `kernel` for the rules and
+    /// tables. Reading only; nothing is changed.
+    pub fn capture(places: &Places, kernel: &dyn NetKernel) -> Self {
         NetworkRecord {
             links: observe_links(&places.sys_class_net),
             hostname: read_hostname(&places.proc_hostname),
-            policy: Policy::capture(tools.ip.as_deref(), tools.nft.as_deref(), &places.proc_sys),
+            policy: Policy::capture(kernel, &places.proc_sys),
             run: network_run::snapshot(&places.run),
         }
     }
@@ -230,10 +205,10 @@ impl NetworkRecord {
 /// What the way back does to the live links and hostname.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RestorePlan {
-    /// Virtual links to delete with `ip`: there now, not the decoy's.
+    /// Virtual links to delete: there now, not the decoy's.
     pub delete: Vec<String>,
-    /// Wi-Fi interfaces to delete with `iw`: there now, not the decoy's, on a
-    /// radio the decoy had.
+    /// Wi-Fi interfaces to delete: there now, not the decoy's, on a radio the
+    /// decoy had.
     pub delete_wireless: Vec<String>,
     /// The decoy's devices whose hardware address the way back sets back, by
     /// name.
@@ -256,12 +231,11 @@ pub struct Kept {
     pub tables: Vec<String>,
     /// The network settings that still differ from the decoy's.
     pub settings: Vec<String>,
-    /// The parts entry could not record, or whose tool the way back does not
-    /// find, which it left alone.
+    /// The parts entry could not record, which the way back left alone.
     pub unknown: Vec<&'static str>,
     /// The parts the way back set out to put back but cannot read back: the
     /// links when the kernel's list of them cannot be read now, and the rules
-    /// or tables when the tool it found cannot list them. The session's may
+    /// or tables when the kernel does not list them now. The session's may
     /// still be there.
     pub unverified: Vec<&'static str>,
 }
@@ -270,11 +244,9 @@ impl Kept {
     /// Whether the session left something in the kernel that the way back set
     /// out to undo and could not, or cannot tell it did: a device's changed
     /// MAC address, a link, a policy-routing rule or a firewall table still
-    /// there, or an unverified part. A tool that is missing counts here only
-    /// through what it left that the way back can see without it (a changed
-    /// address, a link still there); a part it cannot see then (rules without
-    /// `ip`, tables without `nft`) is unknown and does not count, and neither
-    /// do the network settings, the hostname and the per-link runtime state.
+    /// there, or an unverified part. A part entry could not record is unknown
+    /// and does not count, and neither do the network settings, the hostname
+    /// and the per-link runtime state.
     /// The transition powers off instead of returning when it did: that state
     /// lives only in the kernel, where a power-off erases it and a return
     /// hands it to the decoy (a changed MAC address can reach a DHCP lease on
@@ -329,43 +301,28 @@ pub fn plan(record: &NetworkRecord, current: &[Link], current_hostname: &[u8]) -
 }
 
 /// What the way back cannot undo, as far as the hidden session can tell
-/// before the switch ([`foresee`]). Each makes it power off instead of
-/// returning, unless it is gone by the time the way back runs: a link the
-/// kernel keeps never is.
+/// before the switch ([`foresee`]). It makes the way back power off instead
+/// of returning: a link the kernel keeps is never gone by then.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Foreseen {
     /// The session's links the kernel keeps when they are deleted
     /// ([`KERNEL_KEPT_LINKS`]).
     pub kernel_kept: Vec<String>,
-    /// The other links of the session's that the way back deletes with `ip`
-    /// and finds none for.
-    pub links_without_ip: Vec<String>,
-    /// The decoy's devices that have another MAC address than at entry,
-    /// which the way back sets back with `ip` and finds none for.
-    pub addresses_without_ip: Vec<String>,
-    /// The session's Wi-Fi interfaces on the decoy's radios, which the way
-    /// back deletes with `iw` and finds none for.
-    pub wifi_without_iw: Vec<String>,
 }
 
 impl Foreseen {
-    /// Whether the way back powers off over what is there now, unless it is
-    /// gone by then.
+    /// Whether the way back powers off over what is there now.
     pub fn powers_off(&self) -> bool {
-        !(self.kernel_kept.is_empty()
-            && self.links_without_ip.is_empty()
-            && self.addresses_without_ip.is_empty()
-            && self.wifi_without_iw.is_empty())
+        !self.kernel_kept.is_empty()
     }
 }
 
-/// What the way back, run now with `tools`, could not undo of the links and
-/// MAC addresses at `places` ([`Foreseen`]): what [`restore_with`] sets out to
-/// undo and finds no tool for, and the links the kernel keeps. Nothing with
-/// no record, or a record without the links, as the way back then leaves them
-/// alone. Reading only; the rules and tables it does not look at, since only
-/// listing them again would tell.
-pub fn foresee(places: &Places, tools: &NetTools, record_bytes: Option<&[u8]>) -> Foreseen {
+/// What the way back, run now, could not undo of the links at `places`
+/// ([`Foreseen`]): the links of the session's it would delete that the
+/// kernel keeps. Nothing with no record, or a record without the links, as
+/// the way back then leaves them alone. Reading only; the rules and tables it
+/// does not look at, since only listing them again would tell.
+pub fn foresee(places: &Places, record_bytes: Option<&[u8]>) -> Foreseen {
     let Some(record) = record_bytes.and_then(NetworkRecord::decode) else {
         return Foreseen::default();
     };
@@ -373,24 +330,12 @@ pub fn foresee(places: &Places, tools: &NetTools, record_bytes: Option<&[u8]>) -
         return Foreseen::default();
     };
     let plan = plan(&record, &current, &record.hostname);
-    let (kernel_kept, deleted): (Vec<String>, Vec<String>) = plan
-        .delete
-        .into_iter()
-        .partition(|name| KERNEL_KEPT_LINKS.contains(&name.as_str()));
-    let without_ip = tools.ip.is_none();
     Foreseen {
-        kernel_kept,
-        links_without_ip: if without_ip { deleted } else { Vec::new() },
-        addresses_without_ip: if without_ip {
-            plan.set_mac.into_iter().map(|(name, _)| name).collect()
-        } else {
-            Vec::new()
-        },
-        wifi_without_iw: if tools.iw.is_none() {
-            plan.delete_wireless
-        } else {
-            Vec::new()
-        },
+        kernel_kept: plan
+            .delete
+            .into_iter()
+            .filter(|name| KERNEL_KEPT_LINKS.contains(&name.as_str()))
+            .collect(),
     }
 }
 
@@ -460,28 +405,28 @@ pub fn read_hostname(proc_hostname: &Path) -> Vec<u8> {
     bytes
 }
 
-/// Put the decoy's network state back at `places` with the tools installed,
-/// the way [the record](NetworkRecord) holds it. `record_bytes` is the
-/// recorded copy, read from the runtime directory before the scrub removed it;
-/// with none, or one that does not parse, nothing is done.
+/// Put the decoy's network state back at `places`, asking the running kernel
+/// over netlink, the way [the record](NetworkRecord) holds it. `record_bytes`
+/// is the recorded copy, read from the runtime directory before the scrub
+/// removed it; with none, or one that does not parse, nothing is done.
 ///
 /// Returns what is still as the session left it ([`Kept`]): the decoy's
 /// devices whose address could not be set back, the session's links, rules
 /// and tables that could not be deleted, the settings that could not be
-/// written back, the parts left alone because entry could not record them or
-/// a tool is missing, and the parts it cannot read back now
-/// ([`Kept::failed`] is what makes the transition power off instead).
+/// written back, the parts left alone because entry could not record them,
+/// and the parts it cannot read back now ([`Kept::failed`] is what makes the
+/// transition power off instead).
 ///
 /// Call it once every hidden unit has stopped: the hidden service manager must
 /// not be running, or it would adopt a link again or rewrite the runtime state.
 #[must_use]
 pub fn restore(places: &Places, record_bytes: Option<&[u8]>) -> Kept {
-    restore_with(places, &NetTools::find(), record_bytes)
+    restore_with(places, &Netlink::system(), record_bytes)
 }
 
-/// [`restore`] with `tools`.
+/// [`restore`] with `kernel`.
 #[must_use]
-pub fn restore_with(places: &Places, tools: &NetTools, record_bytes: Option<&[u8]>) -> Kept {
+pub fn restore_with(places: &Places, kernel: &dyn NetKernel, record_bytes: Option<&[u8]>) -> Kept {
     let Some(record) = record_bytes.and_then(NetworkRecord::decode) else {
         return Kept::default();
     };
@@ -492,12 +437,7 @@ pub fn restore_with(places: &Places, tools: &NetTools, record_bytes: Option<&[u8
         current.as_deref().unwrap_or_default(),
         &current_hostname,
     );
-    let mut kept = apply_links_with(
-        tools.ip.as_deref(),
-        tools.iw.as_deref(),
-        &plan,
-        &places.sys_class_net,
-    );
+    let mut kept = apply_links_with(kernel, &plan, &places.sys_class_net);
     if record.links.is_none() {
         kept.unknown.push("links");
     } else if current.is_none() {
@@ -506,12 +446,7 @@ pub fn restore_with(places: &Places, tools: &NetTools, record_bytes: Option<&[u8
     if let Some(hostname) = &plan.hostname {
         let _ = write_hostname(&places.proc_hostname, hostname);
     }
-    record.policy.restore(
-        tools.ip.as_deref(),
-        tools.nft.as_deref(),
-        &places.proc_sys,
-        &mut kept,
-    );
+    record.policy.restore(kernel, &places.proc_sys, &mut kept);
     match &record.run {
         Some(entries) => network_run::restore(&places.run, entries),
         None => kept.unknown.push("runtime state"),
@@ -519,45 +454,32 @@ pub fn restore_with(places: &Places, tools: &NetTools, record_bytes: Option<&[u8
     kept
 }
 
-/// Run the link part of a plan: delete the Wi-Fi interfaces with `iw` and the
-/// virtual links with `ip`, and set each recorded address back with `ip`,
-/// reading the links' state from `sys_class_net`. Finds the tools only when
-/// there is work. A failed call is silent, as the way back is best effort
-/// throughout; the links still there and the devices whose address is still
-/// not the recorded one are returned. Separated so a real-kernel test can
-/// drive it against a network namespace.
+/// Run the link part of a plan against the running kernel: delete the Wi-Fi
+/// interfaces and the virtual links, and set each recorded address back,
+/// reading the links' state from `sys_class_net`. A failed request is silent,
+/// as the way back is best effort throughout; the links still there and the
+/// devices whose address is still not the recorded one are returned.
+/// Separated so a real-kernel test can drive it against a network namespace.
 #[must_use]
 pub fn apply_links(plan: &RestorePlan, sys_class_net: &Path) -> Kept {
-    if plan.delete.is_empty() && plan.delete_wireless.is_empty() && plan.set_mac.is_empty() {
-        return Kept::default();
-    }
-    let ip = tools::find(None, "ip");
-    let iw = tools::find(None, "iw");
-    apply_links_with(ip.as_deref(), iw.as_deref(), plan, sys_class_net)
+    apply_links_with(&Netlink::system(), plan, sys_class_net)
 }
 
-/// [`apply_links`] with the `ip` and `iw` at those paths, or none. A tool
-/// that is missing changes nothing, and what it would have changed is
-/// returned.
-fn apply_links_with(
-    ip: Option<&Path>,
-    iw: Option<&Path>,
-    plan: &RestorePlan,
-    sys_class_net: &Path,
-) -> Kept {
-    if let Some(iw) = iw {
-        for name in &plan.delete_wireless {
-            let _ = tools::run(iw, &["dev", name.as_str(), "del"], IP_BUDGET);
+/// [`apply_links`] with `kernel`. Each link is asked about by the interface
+/// index sysfs gives its name now; a link whose index cannot be read is gone.
+fn apply_links_with(kernel: &dyn NetKernel, plan: &RestorePlan, sys_class_net: &Path) -> Kept {
+    for name in &plan.delete_wireless {
+        if let Some(index) = index_of(sys_class_net, name) {
+            kernel.delete_wireless(index);
         }
     }
-    if let Some(ip) = ip {
-        for name in &plan.delete {
-            let args = ["link", "delete", "dev", name.as_str()];
-            let _ = tools::run(ip, &args, IP_BUDGET);
+    for name in &plan.delete {
+        if let Some(index) = index_of(sys_class_net, name) {
+            kernel.delete_link(index);
         }
-        for (name, mac) in &plan.set_mac {
-            set_address(ip, sys_class_net, name, mac);
-        }
+    }
+    for (name, mac) in &plan.set_mac {
+        set_address(kernel, sys_class_net, name, mac);
     }
     Kept {
         links: plan
@@ -577,22 +499,30 @@ fn apply_links_with(
     }
 }
 
+/// The interface index of link `name`, as sysfs gives it now.
+fn index_of(sys_class_net: &Path, name: &str) -> Option<u32> {
+    read_trimmed(&sys_class_net.join(name).join("ifindex"))?
+        .parse()
+        .ok()
+}
+
 /// Give link `name` the address `mac`. The address is read back rather than
-/// the exit status trusted: when it did not take on a link that is up, the
+/// the kernel's answer trusted: when it did not take on a link that is up, the
 /// driver may refuse to change a running device (`EBUSY`), so the link is taken
 /// down for the change and brought up again, as NetworkManager does. A link
-/// that is down is never brought up.
-fn set_address(ip: &Path, sys_class_net: &Path, name: &str, mac: &str) {
-    let set = ["link", "set", "dev", name, "address", mac];
-    let _ = tools::run(ip, &set, IP_BUDGET);
+/// that is down is never brought up. An address that is no hardware address
+/// as the kernel prints one is never sent.
+fn set_address(kernel: &dyn NetKernel, sys_class_net: &Path, name: &str, mac: &str) {
+    let (Some(index), Some(bytes)) = (index_of(sys_class_net, name), parse_mac(mac)) else {
+        return;
+    };
+    kernel.set_address(index, &bytes);
     if !keeps_other_address(sys_class_net, name, mac) || !is_up(sys_class_net, name) {
         return;
     }
-    let down = ["link", "set", "dev", name, "down"];
-    let _ = tools::run(ip, &down, IP_BUDGET);
-    let _ = tools::run(ip, &set, IP_BUDGET);
-    let up = ["link", "set", "dev", name, "up"];
-    let _ = tools::run(ip, &up, IP_BUDGET);
+    kernel.set_up(index, false);
+    kernel.set_address(index, &bytes);
+    kernel.set_up(index, true);
 }
 
 /// Whether link `name` is there with another hardware address than `mac`. A

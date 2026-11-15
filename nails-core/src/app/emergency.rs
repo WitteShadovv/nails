@@ -44,10 +44,7 @@ pub fn foresee(report: &HotReport) -> Foreseen {
     if report.side != Side::Hidden || report.dispatched != Some(Finish::Return) {
         return Foreseen::default();
     }
-    let decoy_system = Plan::load(&default_plan_path())
-        .ok()
-        .and_then(|plan| plan.decoy.system);
-    crate::session::leave::way_back_foresees(Path::new("/"), decoy_system.as_deref())
+    crate::session::leave::way_back_foresees(Path::new("/"))
 }
 
 /// The exit status for a hot-path report.

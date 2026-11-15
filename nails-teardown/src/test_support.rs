@@ -404,6 +404,200 @@ impl crate::whole_root::selinux::Selinux for FakeSelinux {
     }
 }
 
+/// A kernel whose network state lives in a test's fake trees: the rules and
+/// tables in memory, the links in a fake `/sys/class/net`, which the record
+/// and the way back read and change as they would the kernel's. It logs every
+/// change asked of it, in order. A list that is `None` stands for a kernel
+/// that cannot list it.
+#[derive(Debug, Default)]
+pub struct FakeNetKernel {
+    /// The fake `/sys/class/net` the link changes act on, `None` for none.
+    pub sys_class_net: Option<std::path::PathBuf>,
+    /// The state and the knobs.
+    pub state: std::sync::Mutex<FakeNet>,
+}
+
+/// The state of a [`FakeNetKernel`], and how it behaves.
+#[derive(Debug, Default, Clone)]
+pub struct FakeNet {
+    /// The IPv4 and the IPv6 rules.
+    pub rules: [Option<Vec<crate::whole_root::net_kernel::Rule>>; 2],
+    /// The nftables tables.
+    pub tables: Option<Vec<crate::whole_root::net_kernel::Table>>,
+    /// Rules the kernel refuses to delete.
+    pub kept_rules: Vec<crate::whole_root::net_kernel::Rule>,
+    /// Names of tables the kernel refuses to delete.
+    pub kept_tables: Vec<String>,
+    /// After this many lists of rules or tables, every list fails.
+    pub lists_left: Option<usize>,
+    /// Links whose driver refuses an address change while they are up.
+    pub busy_while_up: Vec<String>,
+    /// Links whose driver refuses every address change.
+    pub refusing: Vec<String>,
+    /// The changes asked for: `delete rule IPv4 32765`, `delete table inet
+    /// x`, `delete link wg0`, `set eth0 address <mac>`, `set eth0 down`, `set
+    /// eth0 up`, `delete wireless mon0`.
+    pub calls: Vec<String>,
+}
+
+impl FakeNetKernel {
+    /// A kernel that lists nothing and changes nothing: entry records the
+    /// rules and tables as unknown, and the way back leaves them.
+    pub fn offline() -> Self {
+        Self::default()
+    }
+
+    /// A kernel with `state` whose links are in the fake tree `sys_class_net`.
+    pub fn new(sys_class_net: Option<&Path>, state: FakeNet) -> Self {
+        FakeNetKernel {
+            sys_class_net: sys_class_net.map(Path::to_path_buf),
+            state: std::sync::Mutex::new(state),
+        }
+    }
+
+    /// The changes asked for so far.
+    pub fn calls(&self) -> Vec<String> {
+        self.state.lock().unwrap().calls.clone()
+    }
+
+    /// The fake link with interface index `index`: its directory and name.
+    fn link(&self, index: u32) -> Option<(std::path::PathBuf, String)> {
+        let sys = self.sys_class_net.as_ref()?;
+        std::fs::read_dir(sys).ok()?.flatten().find_map(|entry| {
+            let dir = entry.path();
+            let found: u32 = std::fs::read_to_string(dir.join("ifindex"))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
+            (found == index).then(|| (dir, entry.file_name().to_string_lossy().into_owned()))
+        })
+    }
+
+    /// Whether a list may answer now.
+    fn may_list(state: &mut FakeNet) -> bool {
+        match &mut state.lists_left {
+            Some(0) => false,
+            Some(left) => {
+                *left -= 1;
+                true
+            }
+            None => true,
+        }
+    }
+}
+
+impl crate::whole_root::net_kernel::NetKernel for FakeNetKernel {
+    fn rules(
+        &self,
+        family: crate::whole_root::net_kernel::Family,
+    ) -> Option<Vec<crate::whole_root::net_kernel::Rule>> {
+        let mut state = self.state.lock().unwrap();
+        if !Self::may_list(&mut state) {
+            return None;
+        }
+        let at = usize::from(family == crate::whole_root::net_kernel::Family::V6);
+        state.rules[at].clone()
+    }
+
+    fn delete_rule(&self, rule: &crate::whole_root::net_kernel::Rule) {
+        let mut state = self.state.lock().unwrap();
+        let family = if rule.family() == crate::netlink::route::AF_INET6 {
+            "IPv6"
+        } else {
+            "IPv4"
+        };
+        state
+            .calls
+            .push(format!("delete rule {family} {}", rule.priority()));
+        if state.kept_rules.contains(rule) {
+            return;
+        }
+        for list in state.rules.iter_mut().flatten() {
+            if let Some(at) = list.iter().position(|listed| listed == rule) {
+                list.remove(at);
+                return;
+            }
+        }
+    }
+
+    fn tables(&self) -> Option<Vec<crate::whole_root::net_kernel::Table>> {
+        let mut state = self.state.lock().unwrap();
+        if !Self::may_list(&mut state) {
+            return None;
+        }
+        state.tables.clone()
+    }
+
+    fn delete_table(&self, table: &crate::whole_root::net_kernel::Table) {
+        let mut state = self.state.lock().unwrap();
+        state
+            .calls
+            .push(format!("delete table {} {}", table.family, table.name));
+        if state.kept_tables.contains(&table.name) {
+            return;
+        }
+        if let Some(list) = state.tables.as_mut() {
+            list.retain(|listed| listed != table);
+        }
+    }
+
+    fn delete_link(&self, index: u32) {
+        let link = self.link(index);
+        let mut state = self.state.lock().unwrap();
+        let Some((dir, name)) = link else {
+            state.calls.push(format!("delete link {index}"));
+            return;
+        };
+        state.calls.push(format!("delete link {name}"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn set_address(&self, index: u32, mac: &[u8]) {
+        let link = self.link(index);
+        let mut state = self.state.lock().unwrap();
+        let text: Vec<String> = mac.iter().map(|b| format!("{b:02x}")).collect();
+        let text = text.join(":");
+        let Some((dir, name)) = link else {
+            state.calls.push(format!("set {index} address {text}"));
+            return;
+        };
+        state.calls.push(format!("set {name} address {text}"));
+        let up = std::fs::read_to_string(dir.join("flags"))
+            .unwrap_or_default()
+            .trim()
+            == "0x1003";
+        if state.refusing.contains(&name) || (up && state.busy_while_up.contains(&name)) {
+            return;
+        }
+        let _ = std::fs::write(dir.join("address"), format!("{text}\n"));
+    }
+
+    fn set_up(&self, index: u32, up: bool) {
+        let link = self.link(index);
+        let mut state = self.state.lock().unwrap();
+        let word = if up { "up" } else { "down" };
+        let Some((dir, name)) = link else {
+            state.calls.push(format!("set {index} {word}"));
+            return;
+        };
+        state.calls.push(format!("set {name} {word}"));
+        let flags = if up { "0x1003\n" } else { "0x1002\n" };
+        let _ = std::fs::write(dir.join("flags"), flags);
+    }
+
+    fn delete_wireless(&self, index: u32) {
+        let link = self.link(index);
+        let mut state = self.state.lock().unwrap();
+        let Some((dir, name)) = link else {
+            state.calls.push(format!("delete wireless {index}"));
+            return;
+        };
+        state.calls.push(format!("delete wireless {name}"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{copy_executable, write_executable};

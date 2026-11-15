@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
-use crate::test_support::write_executable;
+use crate::test_support::{FakeNet, FakeNetKernel};
 use std::fs;
 
 /// A fake `/sys/class/net` tree. A link with a `device` entry reads as a
@@ -287,7 +287,7 @@ fn world() -> (tempfile::TempDir, Places) {
 #[test]
 fn the_record_round_trips_and_rejects_what_the_way_back_could_not_act_on() {
     let (_dir, places) = world();
-    let record = NetworkRecord::capture(&places, &NetTools::default());
+    let record = NetworkRecord::capture(&places, &FakeNetKernel::offline());
     assert_eq!(NetworkRecord::decode(&record.encode()), Some(record));
     assert!(NetworkRecord::decode(b"not json").is_none());
     let policy = r#"{"rules_v4":null,"rules_v6":null,"tables":null,"settings":[]}"#;
@@ -331,12 +331,13 @@ fn restore_without_a_record_changes_nothing() {
     fs::write(&places.proc_hostname, "live-host\n").unwrap();
     let before = network_run::snapshot(&places.run);
     // No record at all, and an unparsable one: both leave the world untouched.
-    let tools = NetTools::default();
-    assert_eq!(restore_with(&places, &tools, None), Kept::default());
+    let kernel = FakeNetKernel::new(Some(&places.sys_class_net), FakeNet::default());
+    assert_eq!(restore_with(&places, &kernel, None), Kept::default());
     assert_eq!(
-        restore_with(&places, &tools, Some(b"not a record")),
+        restore_with(&places, &kernel, Some(b"not a record")),
         Kept::default()
     );
+    assert!(kernel.calls().is_empty(), "{:?}", kernel.calls());
     assert_eq!(network_run::snapshot(&places.run), before);
     assert_eq!(read_hostname(&places.proc_hostname), b"live-host");
     assert!(places.sys_class_net.join("wg0").exists());
@@ -345,7 +346,7 @@ fn restore_without_a_record_changes_nothing() {
 #[test]
 fn restore_puts_the_hostname_settings_and_runtime_state_back() {
     let (_dir, places) = world();
-    let record = NetworkRecord::capture(&places, &NetTools::default());
+    let record = NetworkRecord::capture(&places, &FakeNetKernel::offline());
     // The session: its hostname, forwarding on, a device file of its own.
     fs::write(&places.proc_hostname, "hidden-host\n").unwrap();
     fs::write(places.proc_sys.join("net/ipv4/ip_forward"), "1\n").unwrap();
@@ -353,7 +354,7 @@ fn restore_puts_the_hostname_settings_and_runtime_state_back() {
     fs::write(devices.join("2"), "[device]\nconnection-uuid=hidden\n").unwrap();
     fs::write(devices.join("9"), "[device]\n").unwrap();
 
-    let kept = restore_with(&places, &NetTools::default(), Some(&record.encode()));
+    let kept = restore_with(&places, &FakeNetKernel::offline(), Some(&record.encode()));
 
     assert_eq!(read_hostname(&places.proc_hostname), b"decoy-host");
     assert_eq!(
@@ -365,8 +366,8 @@ fn restore_puts_the_hostname_settings_and_runtime_state_back() {
         "[device]\nmanaged=true\n"
     );
     assert!(!devices.join("9").exists());
-    // Without `ip` or `nft` at entry the rules and tables are unknown, and
-    // the way back leaves them alone.
+    // A kernel that listed neither at entry leaves the rules and tables
+    // unknown, and the way back leaves them alone.
     assert_eq!(
         kept,
         Kept {
@@ -383,27 +384,24 @@ fn restore_leaves_the_links_and_runtime_state_alone_when_entry_could_not_read_th
     let record = NetworkRecord {
         links: None,
         run: None,
-        ..NetworkRecord::capture(&places, &NetTools::default())
+        ..NetworkRecord::capture(&places, &FakeNetKernel::offline())
     };
     // The decoy's own bridge, the session's change to the decoy's device file.
     add_link(&places.sys_class_net, "br0", 4, "02:00:00:00:00:04", false);
     let devices = places.run.join("NetworkManager/devices");
     fs::write(devices.join("2"), "[device]\nconnection-uuid=hidden\n").unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let tools = NetTools {
-        ip: Some(fake_ip(dir.path(), &places.sys_class_net, &[], &[])),
-        ..NetTools::default()
-    };
+    let kernel = FakeNetKernel::new(Some(&places.sys_class_net), FakeNet::default());
 
-    let kept = restore_with(&places, &tools, Some(&record.encode()));
+    let kept = restore_with(&places, &kernel, Some(&record.encode()));
 
     assert!(places.sys_class_net.join("br0").exists());
     assert!(
-        ip_calls(dir.path())
+        kernel
+            .calls()
             .iter()
-            .all(|call| !call.starts_with("link")),
+            .all(|call| !call.contains("link") && !call.starts_with("set")),
         "{:?}",
-        ip_calls(dir.path())
+        kernel.calls()
     );
     assert_eq!(
         fs::read_to_string(devices.join("2")).unwrap(),
@@ -418,29 +416,24 @@ fn restore_leaves_the_links_and_runtime_state_alone_when_entry_could_not_read_th
 fn restore_deletes_the_sessions_links_and_names_what_it_could_not() {
     let (_dir, places) = world();
     on_radio(&places.sys_class_net, "eth0", "phy0");
-    let record = NetworkRecord::capture(&places, &NetTools::default());
+    let record = NetworkRecord::capture(&places, &FakeNetKernel::offline());
     // The session's tunnel, its tunnel made again under a name the decoy had
     // not, and a monitor interface on the decoy's radio.
     add_link(&places.sys_class_net, "wg0", 9, "", false);
     add_link(&places.sys_class_net, "mon0", 10, "02:00:00:00:00:0a", true);
     on_radio(&places.sys_class_net, "mon0", "phy0");
-    let dir = tempfile::tempdir().unwrap();
-    let mut tools = NetTools {
-        ip: Some(fake_ip(dir.path(), &places.sys_class_net, &[], &[])),
-        iw: None,
-        nft: None,
-    };
 
-    // Without `iw` the monitor interface stays, and is named.
-    let kept = restore_with(&places, &tools, Some(&record.encode()));
+    // A kernel that changes nothing leaves both, and both are named.
+    let kept = restore_with(&places, &FakeNetKernel::offline(), Some(&record.encode()));
+    assert_eq!(kept.links, ["wg0", "mon0"]);
+
+    let kernel = FakeNetKernel::new(Some(&places.sys_class_net), FakeNet::default());
+    let kept = restore_with(&places, &kernel, Some(&record.encode()));
     assert!(!places.sys_class_net.join("wg0").exists());
-    assert_eq!(kept.links, ["mon0"]);
-
-    tools.iw = Some(fake_iw(dir.path(), &places.sys_class_net));
-    let kept = restore_with(&places, &tools, Some(&record.encode()));
     assert!(!places.sys_class_net.join("mon0").exists());
     assert!(kept.links.is_empty(), "{kept:?}");
     assert!(places.sys_class_net.join("eth0").exists());
+    assert_eq!(kernel.calls(), ["delete wireless mon0", "delete link wg0"]);
 }
 
 /// The decoy device's address, as entry recorded it.
@@ -474,101 +467,47 @@ fn set_back(macs: &[(&str, &str)]) -> RestorePlan {
     }
 }
 
-/// A fake `ip` in `dir` that changes the fake `/sys/class/net` tree `sys` as
-/// the kernel would (`link delete dev NAME`, `link set dev NAME up`, `down` or
-/// `address MAC`) and logs each call. A link in `busy_while_up` refuses an
-/// address change while it is up, as a driver without live address change
-/// does (`EBUSY`); a link in `refusing` refuses it always. A link that is not
-/// there fails every call.
-fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) -> PathBuf {
-    let tool = dir.join("ip");
-    write_executable(
-        &tool,
-        format!(
-            "#!/bin/sh\n\
-             echo \"$*\" >> '{calls}'\n\
-             if [ \"$1 $2 $3\" = 'link delete dev' ]; then\n\
-             [ -d '{sys}'/\"$4\" ] && rm -r '{sys}'/\"$4\"; exit $?\n\
-             fi\n\
-             [ \"$1 $2 $3\" = 'link set dev' ] || exit 1\n\
-             link='{sys}'/\"$4\"\n\
-             read -r flags < \"$link/flags\" || exit 1\n\
-             case \"$5\" in\n\
-             up) echo 0x1003 > \"$link/flags\" ;;\n\
-             down) echo 0x1002 > \"$link/flags\" ;;\n\
-             address)\n\
-             case ' {refusing} ' in *\" $4 \"*) exit 2 ;; esac\n\
-             case ' {busy} ' in *\" $4 \"*) [ \"$flags\" = 0x1003 ] && exit 2 ;; esac\n\
-             echo \"$6\" > \"$link/address\" ;;\n\
-             *) exit 1 ;;\n\
-             esac\n",
-            calls = dir.join("calls").display(),
-            sys = sys.display(),
-            refusing = refusing.join(" "),
-            busy = busy_while_up.join(" "),
-        ),
-        0o755,
-    );
-    tool
-}
-
-/// A fake `iw` in `dir` that deletes an interface of the fake tree `sys`
-/// (`dev NAME del`) and logs each call.
-fn fake_iw(dir: &Path, sys: &Path) -> PathBuf {
-    let tool = dir.join("iw");
-    write_executable(
-        &tool,
-        format!(
-            "#!/bin/sh\n\
-             echo \"iw $*\" >> '{calls}'\n\
-             [ \"$1 $3\" = 'dev del' ] && [ -d '{sys}'/\"$2\" ] && rm -r '{sys}'/\"$2\"\n",
-            calls = dir.join("calls").display(),
-            sys = sys.display(),
-        ),
-        0o755,
-    );
-    tool
-}
-
-/// The calls the fake tools in `dir` logged, in order.
-fn ip_calls(dir: &Path) -> Vec<String> {
-    fs::read_to_string(dir.join("calls"))
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
-        .collect()
+/// A kernel that changes the fake tree `sys` as the kernel would, whose
+/// links in `busy_while_up` refuse an address change while they are up, as a
+/// driver without live address change does (`EBUSY`), and whose links in
+/// `refusing` refuse it always.
+fn kernel_for(sys: &Path, busy_while_up: &[&str], refusing: &[&str]) -> FakeNetKernel {
+    let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect();
+    FakeNetKernel::new(
+        Some(sys),
+        FakeNet {
+            busy_while_up: names(busy_while_up),
+            refusing: names(refusing),
+            ..FakeNet::default()
+        },
+    )
 }
 
 #[test]
-fn the_links_are_deleted_with_the_tool_each_one_needs() {
+fn the_links_are_deleted_each_the_way_the_kernel_deletes_it() {
     let sys = sys_with(&[
         ("wg0", 9, "", false),
         ("mon0", 10, "02:00:00:00:00:0a", true),
     ]);
-    let dir = tempfile::tempdir().unwrap();
-    let ip = fake_ip(dir.path(), sys.path(), &[], &[]);
-    let iw = fake_iw(dir.path(), sys.path());
+    let kernel = kernel_for(sys.path(), &[], &[]);
     let plan = RestorePlan {
         delete: vec!["wg0".to_string()],
         delete_wireless: vec!["mon0".to_string()],
         ..RestorePlan::default()
     };
 
-    let kept = apply_links_with(Some(&ip), Some(&iw), &plan, sys.path());
+    let kept = apply_links_with(&kernel, &plan, sys.path());
 
     assert_eq!(kept, Kept::default());
-    assert_eq!(
-        ip_calls(dir.path()),
-        ["iw dev mon0 del", "link delete dev wg0"]
-    );
+    assert_eq!(kernel.calls(), ["delete wireless mon0", "delete link wg0"]);
     assert!(observe_links(sys.path()).unwrap().is_empty());
 
-    // Without the tools nothing goes, and both are named.
+    // A kernel that changes nothing deletes neither, and both are named.
     let sys = sys_with(&[
         ("wg0", 9, "", false),
         ("mon0", 10, "02:00:00:00:00:0a", true),
     ]);
-    let kept = apply_links_with(None, None, &plan, sys.path());
+    let kept = apply_links_with(&FakeNetKernel::offline(), &plan, sys.path());
     assert_eq!(kept.links, ["wg0", "mon0"]);
 }
 
@@ -576,21 +515,15 @@ fn the_links_are_deleted_with_the_tool_each_one_needs() {
 fn an_address_the_driver_changes_live_is_set_without_taking_the_link_down() {
     let sys = sys_with(&[("eth0", 2, SESSION_MAC, true)]);
     set_up(sys.path(), "eth0", true);
-    let dir = tempfile::tempdir().unwrap();
-    let ip = fake_ip(dir.path(), sys.path(), &[], &[]);
+    let kernel = kernel_for(sys.path(), &[], &[]);
 
-    let kept = apply_links_with(
-        Some(&ip),
-        None,
-        &set_back(&[("eth0", DECOY_MAC)]),
-        sys.path(),
-    );
+    let kept = apply_links_with(&kernel, &set_back(&[("eth0", DECOY_MAC)]), sys.path());
 
     assert_eq!(kept, Kept::default());
     assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
     assert_eq!(
-        ip_calls(dir.path()),
-        [format!("link set dev eth0 address {DECOY_MAC}")],
+        kernel.calls(),
+        [format!("set eth0 address {DECOY_MAC}")],
         "one live change, no down and up"
     );
     assert_eq!(flags(sys.path(), "eth0"), "0x1003");
@@ -600,28 +533,17 @@ fn an_address_the_driver_changes_live_is_set_without_taking_the_link_down() {
 fn a_driver_that_refuses_a_live_change_gets_the_address_with_the_link_down_and_up_again() {
     let sys = sys_with(&[("eth0", 2, SESSION_MAC, true)]);
     set_up(sys.path(), "eth0", true);
-    let dir = tempfile::tempdir().unwrap();
     // A USB Ethernet adapter whose driver refuses to change a running device.
-    let ip = fake_ip(dir.path(), sys.path(), &["eth0"], &[]);
+    let kernel = kernel_for(sys.path(), &["eth0"], &[]);
 
-    let kept = apply_links_with(
-        Some(&ip),
-        None,
-        &set_back(&[("eth0", DECOY_MAC)]),
-        sys.path(),
-    );
+    let kept = apply_links_with(&kernel, &set_back(&[("eth0", DECOY_MAC)]), sys.path());
 
     assert_eq!(kept, Kept::default());
     assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
-    let set = format!("link set dev eth0 address {DECOY_MAC}");
+    let set = format!("set eth0 address {DECOY_MAC}");
     assert_eq!(
-        ip_calls(dir.path()),
-        [
-            set.as_str(),
-            "link set dev eth0 down",
-            set.as_str(),
-            "link set dev eth0 up"
-        ]
+        kernel.calls(),
+        [set.as_str(), "set eth0 down", set.as_str(), "set eth0 up"]
     );
     assert_eq!(flags(sys.path(), "eth0"), "0x1003", "up again, as it was");
 }
@@ -634,21 +556,20 @@ fn a_link_that_was_down_stays_down() {
     ]);
     set_up(sys.path(), "eth0", false);
     set_up(sys.path(), "wlan0", false);
-    let dir = tempfile::tempdir().unwrap();
     // eth0's driver refuses a change only while the link runs, so on the down
     // link it takes at once; wlan0's refuses it always.
-    let ip = fake_ip(dir.path(), sys.path(), &["eth0"], &["wlan0"]);
+    let kernel = kernel_for(sys.path(), &["eth0"], &["wlan0"]);
     let plan = set_back(&[("eth0", DECOY_MAC), ("wlan0", "11:22:33:44:55:66")]);
 
-    let kept = apply_links_with(Some(&ip), None, &plan, sys.path());
+    let kept = apply_links_with(&kernel, &plan, sys.path());
 
     assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
     assert_eq!(kept.addresses, ["wlan0"]);
     assert_eq!(
-        ip_calls(dir.path()),
+        kernel.calls(),
         [
-            format!("link set dev eth0 address {DECOY_MAC}"),
-            "link set dev wlan0 address 11:22:33:44:55:66".to_string(),
+            format!("set eth0 address {DECOY_MAC}"),
+            "set wlan0 address 11:22:33:44:55:66".to_string(),
         ],
         "one change each, and neither link is brought up"
     );
@@ -660,30 +581,25 @@ fn a_link_that_was_down_stays_down() {
 fn an_address_that_still_does_not_take_is_reported() {
     let sys = sys_with(&[("eth0", 2, SESSION_MAC, true)]);
     set_up(sys.path(), "eth0", true);
-    let dir = tempfile::tempdir().unwrap();
     // A driver that refuses the change even with the link down.
-    let ip = fake_ip(dir.path(), sys.path(), &[], &["eth0"]);
+    let kernel = kernel_for(sys.path(), &[], &["eth0"]);
     let plan = set_back(&[("eth0", DECOY_MAC)]);
 
-    let kept = apply_links_with(Some(&ip), None, &plan, sys.path());
+    let kept = apply_links_with(&kernel, &plan, sys.path());
 
     assert_eq!(kept.addresses, ["eth0"], "the session's address stayed");
     assert_eq!(address(sys.path(), "eth0"), SESSION_MAC);
-    let set = format!("link set dev eth0 address {DECOY_MAC}");
+    let set = format!("set eth0 address {DECOY_MAC}");
     assert_eq!(
-        ip_calls(dir.path()),
-        [
-            set.as_str(),
-            "link set dev eth0 down",
-            set.as_str(),
-            "link set dev eth0 up"
-        ]
+        kernel.calls(),
+        [set.as_str(), "set eth0 down", set.as_str(), "set eth0 up"]
     );
     assert_eq!(flags(sys.path(), "eth0"), "0x1003", "up again, as it was");
 
-    // Without `ip` nothing changes, and the device is reported all the same.
+    // A kernel that changes nothing leaves it, and the device is reported all
+    // the same.
     assert_eq!(
-        apply_links_with(None, None, &plan, sys.path()).addresses,
+        apply_links_with(&FakeNetKernel::offline(), &plan, sys.path()).addresses,
         ["eth0"]
     );
 }
@@ -692,21 +608,15 @@ fn an_address_that_still_does_not_take_is_reported() {
 fn a_device_that_is_gone_has_no_address_left_to_report() {
     // An adapter pulled after the links were read: its address went with it.
     let sys = tempfile::tempdir().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let ip = fake_ip(dir.path(), sys.path(), &[], &[]);
+    let kernel = kernel_for(sys.path(), &[], &[]);
 
-    let kept = apply_links_with(
-        Some(&ip),
-        None,
-        &set_back(&[("eth1", DECOY_MAC)]),
-        sys.path(),
-    );
+    let kept = apply_links_with(&kernel, &set_back(&[("eth1", DECOY_MAC)]), sys.path());
 
     assert_eq!(kept, Kept::default());
-    assert_eq!(
-        ip_calls(dir.path()),
-        [format!("link set dev eth1 address {DECOY_MAC}")],
-        "no down and up for a link that is not there"
+    assert!(
+        kernel.calls().is_empty(),
+        "nothing is asked of a link that is not there: {:?}",
+        kernel.calls()
     );
 }
 
@@ -716,9 +626,9 @@ fn the_record_name_carries_no_product_name() {
 }
 
 /// A way back whose restore left nothing of the session's and checked it all
-/// has failed nothing, and so is a return; what entry could not record or a
-/// missing tool could not see is left alone and is no failure either, and
-/// neither is a network setting it could not write back.
+/// has failed nothing, and so is a return; what entry could not record is
+/// left alone and is no failure either, and neither is a network setting it
+/// could not write back.
 #[test]
 fn nothing_failed_when_all_is_back_or_only_left_alone() {
     assert!(!Kept::default().failed());
@@ -761,16 +671,16 @@ fn each_part_the_way_back_could_not_undo_or_check_is_a_failure() {
     }
 }
 
-/// Without `ip` the way back changes no link, but it still sees, through the
-/// kernel's list, the address the session gave the decoy's device and the
-/// link it made: those are failures, not a missing tool's silence.
+/// A kernel that takes no change still shows, in its list of links, the
+/// address the session gave the decoy's device and the link it made: those
+/// are failures.
 #[test]
-fn a_missing_ip_fails_where_the_session_changed_what_it_would_have_undone() {
+fn a_kernel_that_takes_no_change_fails_where_the_session_changed_what_it_would_undo() {
     let (_dir, places) = world();
-    let record = NetworkRecord::capture(&places, &NetTools::default());
-    let tools = NetTools::default();
+    let record = NetworkRecord::capture(&places, &FakeNetKernel::offline());
+    let kernel = FakeNetKernel::offline();
     assert!(
-        !restore_with(&places, &tools, Some(&record.encode())).failed(),
+        !restore_with(&places, &kernel, Some(&record.encode())).failed(),
         "nothing to undo"
     );
     fs::write(
@@ -780,7 +690,7 @@ fn a_missing_ip_fails_where_the_session_changed_what_it_would_have_undone() {
     .unwrap();
     add_link(&places.sys_class_net, "wg0", 9, "", false);
 
-    let kept = restore_with(&places, &tools, Some(&record.encode()));
+    let kept = restore_with(&places, &kernel, Some(&record.encode()));
 
     assert!(kept.failed());
     assert_eq!(kept.addresses, ["eth0"]);
@@ -792,10 +702,10 @@ fn a_missing_ip_fails_where_the_session_changed_what_it_would_have_undone() {
 #[test]
 fn links_that_cannot_be_read_on_the_way_back_are_unverified() {
     let (_dir, places) = world();
-    let record = NetworkRecord::capture(&places, &NetTools::default());
+    let record = NetworkRecord::capture(&places, &FakeNetKernel::offline());
     fs::write(places.sys_class_net.join("eth0/ifindex"), "two\n").unwrap();
 
-    let kept = restore_with(&places, &NetTools::default(), Some(&record.encode()));
+    let kept = restore_with(&places, &FakeNetKernel::offline(), Some(&record.encode()));
 
     assert_eq!(kept.unverified, ["links"]);
     assert!(!kept.unknown.contains(&"links"), "{kept:?}");
@@ -803,54 +713,30 @@ fn links_that_cannot_be_read_on_the_way_back_are_unverified() {
 }
 
 /// Before the switch the hidden session tells what the way back could not
-/// undo of the links and addresses as they are now: a fallback tunnel device
-/// whatever the tools, and without `ip` the session's other links and the
-/// decoy's changed addresses, without `iw` its Wi-Fi interfaces on a decoy
-/// radio. A tool it finds is never run: nothing changes.
+/// undo of the links as they are now: a fallback tunnel device the kernel
+/// keeps. Nothing changes.
 #[test]
 fn the_way_back_foresees_what_it_could_not_undo_now() {
     let (_dir, places) = world();
     let sys = &places.sys_class_net;
-    add_link(sys, "wlan0", 3, "02:00:00:00:00:aa", true);
-    on_radio(sys, "wlan0", "phy0");
-    let record = NetworkRecord::capture(&places, &NetTools::default()).encode();
-    let none = NetTools::default();
-    let all = NetTools {
-        ip: Some(PathBuf::from("/nonexistent/ip")),
-        iw: Some(PathBuf::from("/nonexistent/iw")),
-        nft: Some(PathBuf::from("/nonexistent/nft")),
-    };
-    assert_eq!(foresee(&places, &none, Some(&record)), Foreseen::default());
-    assert!(!foresee(&places, &none, Some(&record)).powers_off());
+    let record = NetworkRecord::capture(&places, &FakeNetKernel::offline()).encode();
+    assert_eq!(foresee(&places, Some(&record)), Foreseen::default());
+    assert!(!foresee(&places, Some(&record)).powers_off());
 
     add_link(sys, "tunl0", 7, "", false);
     add_link(sys, "wg0", 9, "", false);
-    add_link(sys, "mon0", 10, "02:00:00:00:00:bb", true);
-    on_radio(sys, "mon0", "phy0");
     fs::write(sys.join("eth0/address"), "02:00:00:00:00:99\n").unwrap();
 
-    let without_tools = foresee(&places, &none, Some(&record));
+    let foreseen = foresee(&places, Some(&record));
     assert_eq!(
-        without_tools,
+        foreseen,
         Foreseen {
             kernel_kept: vec!["tunl0".to_string()],
-            links_without_ip: vec!["wg0".to_string()],
-            addresses_without_ip: vec!["eth0".to_string()],
-            wifi_without_iw: vec!["mon0".to_string()],
         }
     );
-    assert!(without_tools.powers_off());
-    let with_tools = foresee(&places, &all, Some(&record));
-    assert_eq!(
-        with_tools,
-        Foreseen {
-            kernel_kept: vec!["tunl0".to_string()],
-            ..Foreseen::default()
-        }
-    );
-    assert!(with_tools.powers_off());
+    assert!(foreseen.powers_off());
     assert_eq!(address(sys, "eth0"), "02:00:00:00:00:99", "nothing changed");
-    assert!(sys.join("wg0").exists() && sys.join("mon0").exists());
+    assert!(sys.join("wg0").exists());
 }
 
 /// Nothing is foreseen where the way back leaves the links alone: with no
@@ -861,19 +747,19 @@ fn nothing_is_foreseen_where_the_way_back_leaves_the_links_alone() {
     let (_dir, places) = world();
     let sys = &places.sys_class_net;
     add_link(sys, "tunl0", 7, "", false);
-    let none = NetTools::default();
-    assert_eq!(foresee(&places, &none, None), Foreseen::default());
-    let record = NetworkRecord::capture(&places, &none).encode();
-    assert_eq!(foresee(&places, &none, Some(&record)), Foreseen::default());
+    assert_eq!(foresee(&places, None), Foreseen::default());
+    let offline = FakeNetKernel::offline();
+    let record = NetworkRecord::capture(&places, &offline).encode();
+    assert_eq!(foresee(&places, Some(&record)), Foreseen::default());
     let without_links = NetworkRecord {
         links: None,
-        ..NetworkRecord::capture(&places, &none)
+        ..NetworkRecord::capture(&places, &offline)
     };
     add_link(sys, "sit0", 8, "", false);
     assert_eq!(
-        foresee(&places, &none, Some(&without_links.encode())),
+        foresee(&places, Some(&without_links.encode())),
         Foreseen::default()
     );
     fs::write(sys.join("eth0/ifindex"), "two\n").unwrap();
-    assert_eq!(foresee(&places, &none, Some(&record)), Foreseen::default());
+    assert_eq!(foresee(&places, Some(&record)), Foreseen::default());
 }

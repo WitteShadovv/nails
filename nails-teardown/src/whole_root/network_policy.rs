@@ -17,42 +17,40 @@
 //! names often name the provider, and a blocking table left loaded keeps the
 //! decoy offline.
 //!
-//! So [the record](Policy) holds the decoy's rules of both address families
-//! (as `ip -N rule show` lists them), its nftables tables with the handle the
-//! kernel gave each (as `nft -j list tables` lists them: a table made again
-//! under the same name gets a new handle, so it does not pass for the decoy's)
-//! and its network settings for all devices and for new ones:
-//! `net.ipv4.ip_forward` and every key of `net.ipv4.conf.all`,
-//! `net.ipv4.conf.default`, `net.ipv6.conf.all` and `net.ipv6.conf.default`
-//! that every user can read and root can write. The way back
-//! ([`Policy::restore`]) deletes every rule and table that was not there at
-//! entry, reads them back, and writes back every setting that differs, twice,
-//! since writing one setting can change another (turning forwarding off turns
-//! `accept_redirects` on).
+//! So [the record](Policy) holds the decoy's rules of both address families,
+//! each as the kernel lists it ([`Rule`]), its nftables tables with the handle
+//! the kernel gave each (a table made again under the same name gets a new
+//! handle, so it does not pass for the decoy's), and its network settings for
+//! all devices and for new ones: `net.ipv4.ip_forward` and every key of
+//! `net.ipv4.conf.all`, `net.ipv4.conf.default`, `net.ipv6.conf.all` and
+//! `net.ipv6.conf.default` that every user can read and root can write. The
+//! rules and tables are asked of the kernel itself ([`NetKernel`]), with no
+//! program started; where nf_tables is not in the kernel there is no table,
+//! and none is asked for, as the question would make the kernel load it. The
+//! way back ([`Policy::restore`]) deletes every rule and table that was not
+//! there at entry, reads them back, and writes back every setting that
+//! differs, twice, since writing one setting can change another (turning
+//! forwarding off turns `accept_redirects` on).
 //!
-//! A list entry could not read (no `ip` or `nft`, a tool that failed, output
-//! that does not parse) is unknown, and the way back leaves that part as the
-//! session leaves it: without the decoy's list, a rule or table of the decoy's
-//! cannot be told from the session's. So is a part whose tool the way back
-//! does not find. A part whose tool the way back finds but that cannot list
-//! it, before or after the deletions, is unverified: the session's rules or
-//! tables may still be there, and the transition powers off instead of
-//! returning, as it does for a rule or table it could not delete. A rule or table the session deleted is
-//! not made again, and what the session added inside a table the decoy already
-//! had stays.
+//! A list entry could not read (a family the kernel refuses to list, or an
+//! nf_tables of which it cannot be told whether it is in the kernel) is
+//! unknown, and the way back leaves that part as the session leaves it:
+//! without the decoy's list, a rule or table of the decoy's cannot be told from
+//! the session's. A part the way back cannot list, before or after the
+//! deletions, is unverified: the session's rules or tables may still be there,
+//! and the transition powers off instead of returning, as it does for a rule
+//! or table it could not delete. A rule or table the session deleted is not
+//! made again, and what the session added inside a table the decoy already had
+//! stays.
 //!
 //! Nothing here logs: a name written to `/dev/kmsg` would reach the decoy's
 //! ring buffer.
 
+use crate::whole_root::net_kernel::{Family, NetKernel, Rule, Table};
 use crate::whole_root::network::Kept;
-use crate::whole_root::tools;
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
-
-/// How long one `ip` or `nft` call may take.
-const TOOL_BUDGET: Duration = Duration::from_secs(3);
 
 /// The nftables families a table can be in.
 const TABLE_FAMILIES: &[&str] = &["ip", "ip6", "inet", "arp", "bridge", "netdev"];
@@ -73,47 +71,6 @@ const SETTING_DIRS: &[&str] = &[
 /// (`mc_forwarding`) is left out.
 const SETTING_MODE: u32 = 0o204;
 
-/// An address family of the policy-routing rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Family {
-    V4,
-    V6,
-}
-
-impl Family {
-    /// The `ip` option that selects it.
-    fn option(self) -> &'static str {
-        match self {
-            Family::V4 => "-4",
-            Family::V6 => "-6",
-        }
-    }
-
-    /// What its rules are called where they are unknown.
-    fn label(self) -> &'static str {
-        match self {
-            Family::V4 => "IPv4 rules",
-            Family::V6 => "IPv6 rules",
-        }
-    }
-}
-
-/// One policy-routing rule: its priority, and its selector and action as
-/// `ip rule del` takes them back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Rule {
-    priority: u32,
-    spec: Vec<String>,
-}
-
-/// One nftables table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Table {
-    family: String,
-    name: String,
-    handle: u64,
-}
-
 /// One network setting: its key, relative to `/proc/sys`, and its value
 /// without the newline the kernel prints after it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,30 +90,29 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// Read the rules with `ip`, the tables with `nft` and the settings below
-    /// `proc_sys`; a part whose tool is `None` is unknown.
-    pub fn capture(ip: Option<&Path>, nft: Option<&Path>, proc_sys: &Path) -> Self {
+    /// Ask `kernel` for the rules and tables and read the settings below
+    /// `proc_sys`.
+    pub fn capture(kernel: &dyn NetKernel, proc_sys: &Path) -> Self {
         Policy {
-            rules_v4: ip.and_then(|ip| list_rules(ip, Family::V4)),
-            rules_v6: ip.and_then(|ip| list_rules(ip, Family::V6)),
-            tables: nft.and_then(list_tables),
+            rules_v4: kernel.rules(Family::V4),
+            rules_v6: kernel.rules(Family::V6),
+            tables: kernel.tables(),
             settings: read_settings(proc_sys),
         }
     }
 
-    /// Whether every part can be acted on: a table in a known family, a
-    /// setting below the recorded directories, a rule of plain words.
+    /// Whether every part can be acted on: a rule of its list's family as the
+    /// kernel lists one, a table in a known family, a setting below the
+    /// recorded directories.
     pub fn is_valid(&self) -> bool {
-        let words = |rule: &Rule| {
-            rule.spec
+        let rules = |family: Family, rules: &Option<Vec<Rule>>| {
+            rules
                 .iter()
-                .all(|word| !word.is_empty() && !word.contains(char::is_whitespace))
+                .flatten()
+                .all(|rule| rule.is_valid() && family.holds(rule))
         };
-        self.rules_v4
-            .iter()
-            .chain(&self.rules_v6)
-            .flatten()
-            .all(words)
+        rules(Family::V4, &self.rules_v4)
+            && rules(Family::V6, &self.rules_v6)
             && self.tables.iter().flatten().all(|table| {
                 TABLE_FAMILIES.contains(&table.family.as_str()) && !table.name.is_empty()
             })
@@ -167,138 +123,67 @@ impl Policy {
     }
 
     /// Put the policy back: delete the rules and tables that were not there at
-    /// entry with `ip` and `nft`, and write back the settings below `proc_sys`
+    /// entry, through `kernel`, and write back the settings below `proc_sys`
     /// that differ. What is still the session's afterwards goes into `kept`,
-    /// with every part that entry could not read or that has no tool now
-    /// (`unknown`, left alone) and every part whose tool cannot list it now
-    /// (`unverified`, not known to be the decoy's again).
-    pub fn restore(&self, ip: Option<&Path>, nft: Option<&Path>, proc_sys: &Path, kept: &mut Kept) {
+    /// with every part that entry could not read (`unknown`, left alone) and
+    /// every part that cannot be listed now (`unverified`, not known to be the
+    /// decoy's again).
+    pub fn restore(&self, kernel: &dyn NetKernel, proc_sys: &Path, kept: &mut Kept) {
         for (family, recorded) in [(Family::V4, &self.rules_v4), (Family::V6, &self.rules_v6)] {
-            match (recorded, ip) {
-                (Some(recorded), Some(ip)) => restore_rules(ip, family, recorded, kept),
-                _ => kept.unknown.push(family.label()),
+            match recorded {
+                Some(recorded) => restore_rules(kernel, family, recorded, kept),
+                None => kept.unknown.push(family.label()),
             }
         }
-        match (&self.tables, nft) {
-            (Some(recorded), Some(nft)) => restore_tables(nft, recorded, kept),
-            _ => kept.unknown.push("firewall tables"),
+        match &self.tables {
+            Some(recorded) => restore_tables(kernel, recorded, kept),
+            None => kept.unknown.push("firewall tables"),
         }
         kept.settings = restore_settings(proc_sys, &self.settings);
     }
 }
 
-/// The rules of `family` as `ip` lists them, `None` when it fails or prints
-/// something else.
-fn list_rules(ip: &Path, family: Family) -> Option<Vec<Rule>> {
-    let text = tools::run_output(ip, &["-N", family.option(), "rule", "show"], TOOL_BUDGET)?;
-    parse_rules(&text)
-}
-
-/// Parse `ip -N rule show` output, one rule per line (`32765:\tnot from all
-/// fwmark 0xca6c lookup 51820`), into what `ip rule del` takes back: without
-/// the flags it only prints (`[detached]` for an interface that is gone,
-/// `[unresolved]` for a goto without its target), with `l3mdev` for the
-/// `lookup [l3mdev-table]` it prints for one, and with the number for the
-/// `ipproto-6` it prints in numeric mode.
-fn parse_rules(text: &str) -> Option<Vec<Rule>> {
-    let mut rules = Vec::new();
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let (priority, rest) = line.split_once(':')?;
-        let mut spec = Vec::new();
-        let mut words = rest.split_whitespace().peekable();
-        while let Some(word) = words.next() {
-            match word {
-                "[detached]" | "[unresolved]" => {}
-                "lookup" if words.peek() == Some(&"[l3mdev-table]") => {
-                    words.next();
-                    spec.push("l3mdev".to_string());
-                }
-                "ipproto" => {
-                    let proto = words.next()?;
-                    spec.push(word.to_string());
-                    spec.push(proto.strip_prefix("ipproto-").unwrap_or(proto).to_string());
-                }
-                _ => spec.push(word.to_string()),
-            }
-        }
-        rules.push(Rule {
-            priority: priority.trim().parse().ok()?,
-            spec,
-        });
-    }
-    Some(rules)
+/// How a rule the way back could not delete is named.
+fn describe(family: Family, rule: &Rule) -> String {
+    format!(
+        "{} rule {} (table {})",
+        family.name(),
+        rule.priority(),
+        rule.table()
+    )
 }
 
 /// Delete the rules of `family` that are not in `recorded`, then name in
 /// `kept` the ones still there.
-fn restore_rules(ip: &Path, family: Family, recorded: &[Rule], kept: &mut Kept) {
-    let Some(now) = list_rules(ip, family) else {
+fn restore_rules(kernel: &dyn NetKernel, family: Family, recorded: &[Rule], kept: &mut Kept) {
+    let Some(now) = kernel.rules(family) else {
         kept.unverified.push(family.label());
         return;
     };
     for rule in added(recorded, &now) {
-        let priority = rule.priority.to_string();
-        let mut args = vec![family.option(), "rule", "del", "priority", &priority];
-        args.extend(rule.spec.iter().map(String::as_str));
-        let _ = tools::run(ip, &args, TOOL_BUDGET);
+        kernel.delete_rule(rule);
     }
-    match list_rules(ip, family) {
-        Some(after) => kept
-            .rules
-            .extend(added(recorded, &after).into_iter().map(|rule| {
-                format!(
-                    "{} {}: {}",
-                    family.option(),
-                    rule.priority,
-                    rule.spec.join(" ")
-                )
-            })),
+    match kernel.rules(family) {
+        Some(after) => kept.rules.extend(
+            added(recorded, &after)
+                .into_iter()
+                .map(|rule| describe(family, rule)),
+        ),
         None => kept.unverified.push(family.label()),
     }
 }
 
-/// The tables as `nft` lists them, `None` when it fails (as it does when it was
-/// built without JSON) or prints something else.
-fn list_tables(nft: &Path) -> Option<Vec<Table>> {
-    let text = tools::run_output(nft, &["-j", "list", "tables"], TOOL_BUDGET)?;
-    parse_tables(&text)
-}
-
-/// Parse `nft -j list tables` output: a `nftables` list of a `metainfo`
-/// object and one `table` object (family, name, handle) per table.
-fn parse_tables(json: &str) -> Option<Vec<Table>> {
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let mut tables = Vec::new();
-    for item in value.get("nftables")?.as_array()? {
-        let Some(table) = item.get("table") else {
-            continue;
-        };
-        let family = table.get("family")?.as_str()?;
-        if !TABLE_FAMILIES.contains(&family) {
-            return None;
-        }
-        tables.push(Table {
-            family: family.to_string(),
-            name: table.get("name")?.as_str()?.to_string(),
-            handle: table.get("handle")?.as_u64()?,
-        });
-    }
-    Some(tables)
-}
-
 /// Delete the tables that are not in `recorded`, by handle, then name in
 /// `kept` the ones still there.
-fn restore_tables(nft: &Path, recorded: &[Table], kept: &mut Kept) {
-    let Some(now) = list_tables(nft) else {
+fn restore_tables(kernel: &dyn NetKernel, recorded: &[Table], kept: &mut Kept) {
+    let Some(now) = kernel.tables() else {
         kept.unverified.push("firewall tables");
         return;
     };
     for table in added(recorded, &now) {
-        let handle = table.handle.to_string();
-        let args = ["delete", "table", table.family.as_str(), "handle", &handle];
-        let _ = tools::run(nft, &args, TOOL_BUDGET);
+        kernel.delete_table(table);
     }
-    match list_tables(nft) {
+    match kernel.tables() {
         Some(after) => kept.tables.extend(
             added(recorded, &after)
                 .into_iter()

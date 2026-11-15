@@ -42,7 +42,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub use nails_teardown::test_support::{copy_executable, write_executable};
+pub use nails_teardown::test_support::{FakeNet, FakeNetKernel, copy_executable, write_executable};
 
 /// Environment variable naming the test the re-executed child must run.
 pub const CHILD_ENV: &str = "NAILS_TEST_CHILD";
