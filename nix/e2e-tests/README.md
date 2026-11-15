@@ -1038,19 +1038,22 @@ each way back the decoy's disk mounts must change only where a plain
 soft-reboot changes them: every file and folder whose contents or inode, its
 labels among its extended attributes, changed since right before the entry,
 held against those that changed across either plain soft-reboot, the login
-record files aside. Every AVC denial and SELinux error is counted from the
-boot before NAILS ran, from the kernel log and, while auditd runs on the
-stock decoy, from auditd's log, by the wall clock of the markers: a denial is
-new when a NAILS process or path has it, or when the decoy did not log its
-signature before the first entry (each run of check aside) nor at the first
-plain soft-reboot, a race of the image's own aside. The audit serial numbers
-of the boot from the gate's first marker on, once it lifted printk's rate
-limit, must leave no gap between the two logs, and no phase may hold the
-kernel's notice of a lost record. Each assertion is recorded with its outcome
-and the run goes on where it can; the driver writes `<image>-gate.json` and
-`<image>-gate.kmsg.txt` and fails at its end when one does not hold. Where an
-assertion depends on code that is not in the build yet, its record names what
-it needs.
+record files aside, and a unit's private temporary folder counted by its unit,
+since each start of the unit names a new one. A path the decoy's own start
+changes at every switch therefore shows nothing of a session. Every AVC denial
+and SELinux error is counted from the boot before NAILS ran, from the kernel
+log and, while auditd runs on the stock decoy, from auditd's log, by the wall
+clock of the markers: a denial is new when a NAILS process or path has it, or
+when the decoy did not log its signature before the first entry (each run of
+check aside) nor at the first plain soft-reboot, a race of the image's own
+aside. The audit serial numbers of the boot from the gate's first marker on,
+once it lifted printk's rate limit, must leave no gap between the two logs,
+and no phase may hold the kernel's notice of a lost record. Each assertion is
+recorded with its outcome and the run goes on where it can; the driver writes
+`<image>-gate.json`, `<image>-gate.kmsg.txt` and a copy of auditd's log,
+`<image>-gate.audit.log`, and fails at its end when one does not hold. Where
+an assertion depends on code that is not in the build yet, its record names
+what it needs.
 
 `<image>-gate-noda` runs the same scenario with the policy's dontaudit rules
 off (`semodule -DB` before the reference boot), so that the denials those
