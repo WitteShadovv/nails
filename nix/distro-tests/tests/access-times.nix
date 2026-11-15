@@ -34,9 +34,10 @@
 # volume, the configuration in /run and the hidden root on a loop device
 # backed by a tmpfs (lib/hidden-root.nix). The decoy is made amnesic, as NAILS requires, its
 # timers are masked and cloud-init is turned off before the first measured
-# phase, so nothing the decoy schedules runs into a phase. Debian's
-# unattended-upgrades helper is restarted after each aging: NAILS compares the
-# change times of apt's configuration with that helper's start.
+# phase, so nothing the decoy schedules runs into a phase. apt's configuration
+# is not aged: NAILS compares its change times with the start of Debian's
+# unattended-upgrades helper, and refuses where it changed after it (its
+# entries still show a read, as their access times are older than a day).
 #
 # Like the records scenarios it is a host driver: on a KVM host by hand, or in
 # the records suite of distro-e2e.yml.
@@ -127,9 +128,10 @@ distroVm.buildVmTest {
         return f"{QUIET} /bin/sh -c {shlex.quote(command)}"
 
 
-    def walker(args, timeout=900):
+    def walker(args, timeout=900, skip=()):
+        skips = " ".join(f"--skip {shlex.quote(path)}" for path in (TOOLS, *skip))
         return vm.succeed(
-            f"{QUIET} /usr/bin/python3 -I {TOOLS}/atime_walk.py --skip {TOOLS} {args}",
+            f"{QUIET} /usr/bin/python3 -I {TOOLS}/atime_walk.py {skips} {args}",
             timeout=timeout,
         )
 
@@ -225,9 +227,10 @@ distroVm.buildVmTest {
         # Age the decoy disk, let what the aging woke settle, start base64 once
         # (the driver's own program, see the header) and take the reference
         # past all of it.
-        aged = json.loads(walker(f"age {AGE_SECONDS} {MOUNT_ARGS}"))
+        aged = json.loads(
+            walker(f"age {AGE_SECONDS} {MOUNT_ARGS}", skip=("/etc/apt",))
+        )
         assert aged["aged"] > 1000, f"{label}: only {aged} entries aged"
-        vm.succeed(quiet("systemctl try-restart unattended-upgrades.service || :"))
         settle()
         vm.succeed("true")
         time.sleep(1.1)
@@ -295,7 +298,13 @@ distroVm.buildVmTest {
 
         ref = phase_start(label)
         marks.append((f"{label} activate", ref))
-        switch(f"{NAILS_CMD} activate -y > /mnt/data/{label}-activate.log 2>&1", f"{label} in")
+        log = f"/mnt/data/{label}-activate.log"
+        try:
+            switch(f"{NAILS_CMD} activate -y > {log} 2>&1", f"{label} in")
+        except AssertionError:
+            # A refused activation stays on the decoy and says why in its log.
+            print(vm.execute(quiet(f"cat {log}"))[1])
+            raise
         session.assert_hidden_root(vm)
         print(vm.succeed(f"cat /mnt/data/{label}-activate.log"))
         stop_in, hidden_start = pid1_times()
