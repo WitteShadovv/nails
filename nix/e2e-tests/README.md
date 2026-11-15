@@ -1046,8 +1046,9 @@ and a plain soft-reboot does not, on a root mounted `relatime`: before each
 phase it sets the access time of every entry of the decoy disk's filesystems two
 days back, so that each read in the phase updates one, and after it lists the
 entries read and not changed since. Two plain soft-reboots of the decoy into
-itself, one before and one after the sessions, are the controls: what the
-decoy's own stop and start read. Every read in the window of `nails check` is
+itself, one before and one after the sessions, each with the hidden root
+mounted as for a session, are the controls: what the decoy's own stop and start
+read. Every read in the window of `nails check` is
 a finding. In two sessions, one left by `deactivate` and one by the emergency, a
 read before the way back started must be one a control's stop made, and a read
 after it one a control's stop or start made. A link that NAILS' own lookups
@@ -1057,7 +1058,9 @@ scenario; every other finding does. Every command of the scenario that
 reads the decoy runs through `lib/noatime-run.c`, a static helper that runs it
 in a mount namespace whose every mount is noatime, so the scenario's own reads
 never count. The run prints its whole report, every phase's reads with their
-times, between `=== ACCESS-TIME REPORT ===` lines. CI runs it in the records
+times, between `=== ACCESS-TIME REPORT ===` lines, and for each session PID 1's
+journal from the activation to the switch, which PID 1 writes at debug level
+for that time, so a read can be lined up with what PID 1 did. CI runs it in the records
 suite of `distro-e2e.yml`.
 
 ### The refusal of Fedora and Arch
