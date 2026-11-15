@@ -134,6 +134,15 @@ pub struct RegistryInputs {
     /// the systemd-version check judges. `None` (it could not be read, and the
     /// default used by unit tests that build inputs directly) fails that check.
     pub systemd_version: Option<u32>,
+    /// The SELinux domains of the processes systemd and udev start from
+    /// NAILS's copy in `/run`, which the lsm-status check judges: what the
+    /// loaded policy makes of them where the copies take the label of the
+    /// system's programs, as [`NailsManager::preflight_registry`] asks it
+    /// ([`UnitDomains::of_host`](crate::preflight::UnitDomains::of_host)).
+    /// [`UnitDomains::UNKNOWN`](crate::preflight::UnitDomains::UNKNOWN), the
+    /// default used by unit tests that build inputs directly, fails that
+    /// check wherever SELinux runs.
+    pub unit_domains: crate::preflight::UnitDomains,
 }
 
 /// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
@@ -180,7 +189,7 @@ pub fn build_registry<F: Filesystem>(
         InspectedShell, LocateDatabaseCheck, LsmStatusCheck, MemoryWipeCheck, MountNamespaceCheck,
         NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck, OuterVolumeCheck,
         PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
-        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UnitDomains, UpgradeRunCheck,
+        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpgradeRunCheck,
         UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
@@ -262,13 +271,15 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(MountNamespaceCheck::new()));
 
     // The active LSMs. Where SELinux runs, it must run the targeted policy
-    // (permissive warns) and NAILS must run unconfined: this process, the processes systemd
-    // starts from its copy in /run, and the disk guard udev runs from its rule,
-    // each judged by itself, since what NAILS sets on systemd's side does not
-    // reach what udev runs. NAILS chooses neither of the last two domains yet,
-    // so a host where SELinux runs fails. Where it does not run, the row
-    // passes. Read-only.
-    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));
+    // (permissive warns) and NAILS must run unconfined: this process, the
+    // processes systemd starts from its copy in /run, and the disk guard udev
+    // runs from its rule where [session_mounts] read_only is on, each judged
+    // by itself, since what NAILS sets on systemd's side does not reach what
+    // udev runs. The inputs give the domains of the last two as the loaded
+    // policy gives them to the label of the copy, the guard's in a confined
+    // domain that counts only where the policy grants it every operation the
+    // guard makes. Where it does not run, the row passes. Read-only.
+    registry.add_check(Box::new(LsmStatusCheck::new(inputs.unit_domains.clone())));
 
     // Resolves every host tool nails spawns from the detected platform's search
     // list before anything is built: the way back's `ip` among them, and its
@@ -548,12 +559,15 @@ impl<F: Filesystem> NailsManager<F> {
     /// Build the pre-flight registry for this manager's current inputs.
     ///
     /// Assembles the [`RegistryInputs`] from `options`, the manager's
-    /// configuration, builder and current state, and the running systemd's
-    /// version, then delegates to [`build_registry`]. Activation runs the
-    /// result through [`run_preflight_checks`](Self::run_preflight_checks);
-    /// the `nails check` command builds the same registry and runs it itself.
-    /// Routing both through this one function, with the options their flags
-    /// give, is what keeps their check lists identical.
+    /// configuration, builder and current state, the running systemd's version,
+    /// and what the loaded SELinux policy makes of the processes systemd and
+    /// udev start from NAILS's copy in `/run` where the copies take the label
+    /// of the system's programs, then delegates to [`build_registry`].
+    /// Activation runs the result through
+    /// [`run_preflight_checks`](Self::run_preflight_checks); the `nails check`
+    /// command builds the same registry and runs it itself. Routing both
+    /// through this one function, with the options their flags give, is what
+    /// keeps their check lists identical.
     pub fn preflight_registry(&self, options: &PreflightOptions) -> Result<PreFlightRegistry<F>> {
         // The state file, the discovery and most checks look the hidden root
         // up. Where that would mount an automount point that nothing is
@@ -588,6 +602,15 @@ impl<F: Filesystem> NailsManager<F> {
             // An unreadable version fails the systemd-version check.
             systemd_version: crate::session::systemd::running_version(
                 &crate::process::RealProcessRunner,
+            ),
+            // What the loaded policy makes of the processes systemd and udev
+            // start from the copy in /run, where the copies take the label of
+            // the system's programs: asked of the running kernel's selinuxfs,
+            // nothing where no policy is loaded or SELinux does not run.
+            unit_domains: crate::preflight::UnitDomains::of_host(
+                crate::session::program_label::for_host(self.host_profile()).is_some(),
+                self.config.session_mounts.read_only,
+                self.selinux,
             ),
         };
 

@@ -35,6 +35,7 @@ fn build_registry_includes_the_shared_checks() {
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
 
     let registry =
@@ -82,6 +83,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
 
     let registry =
@@ -110,6 +112,7 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
 
     let registry = build_registry(&fs, &config, &inputs, None).expect("registry builds");
@@ -239,6 +242,7 @@ fn read_only_registry_creates_nothing() {
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
 
     let registry =
@@ -689,6 +693,7 @@ fn every_gate_refusal_fails_the_hidden_volume_check_and_skips_its_dependents() {
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
     for (scene, table, unreadable_crypttab) in scenes {
         let fs = MockFilesystem::new();
@@ -1159,6 +1164,7 @@ fn lsm_status_row(fs: &MockFilesystem) -> CheckResult {
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
     build_registry(fs, &explicit_config(), &inputs, None)
         .expect("registry builds")
@@ -1170,26 +1176,10 @@ fn lsm_status_row(fs: &MockFilesystem) -> CheckResult {
         .expect("an lsm-status row")
 }
 
-/// The registry's lsm-status row passes a host where SELinux does not run and
-/// names its modules, and fails one where SELinux enforces the targeted policy
-/// with `nails` unconfined: NAILS does not choose the domain of the processes
-/// systemd starts for it yet, nor that of the disk guard udev starts.
-#[test]
-fn the_lsm_status_row_fails_every_host_where_selinux_runs_for_now() {
-    let fs = MockFilesystem::new();
-    fs.mock_set_file_content(
-        "/sys/kernel/security/lsm",
-        "lockdown,capability,landlock,yama,apparmor",
-    );
-    fs.mock_set_file_content("/proc/self/attr/current", "unconfined\n");
-    let row = lsm_status_row(&fs);
-    assert!(row.is_pass(), "{row:?}");
-    assert_eq!(
-        row.message(),
-        "SELinux does not run. Active LSMs: lockdown, capability, landlock, yama, apparmor."
-    );
-
-    let fs = MockFilesystem::new();
+/// A host where SELinux enforces the targeted policy, as lsm-status reads it
+/// through `fs`, with `nails` unconfined and a configuration that last changed
+/// before the boot.
+fn enforcing_targeted(fs: &MockFilesystem) {
     fs.mock_set_file_content("/sys/kernel/security/lsm", "capability,selinux");
     fs.mock_set_file_content(
         "/proc/self/mounts",
@@ -1210,6 +1200,30 @@ fn the_lsm_status_row_fails_every_host_where_selinux_runs_for_now() {
         "/etc/selinux/config",
         std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_789_000_000),
     );
+}
+
+/// The registry's lsm-status row passes a host where SELinux does not run and
+/// names its modules, and fails one where SELinux enforces the targeted policy
+/// with `nails` unconfined where its inputs give neither domain: NAILS chooses
+/// neither there, the domain of the processes systemd starts for it nor that
+/// of the disk guard udev starts.
+#[test]
+fn the_lsm_status_row_fails_where_selinux_runs_and_its_inputs_know_no_domain() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        "/sys/kernel/security/lsm",
+        "lockdown,capability,landlock,yama,apparmor",
+    );
+    fs.mock_set_file_content("/proc/self/attr/current", "unconfined\n");
+    let row = lsm_status_row(&fs);
+    assert!(row.is_pass(), "{row:?}");
+    assert_eq!(
+        row.message(),
+        "SELinux does not run. Active LSMs: lockdown, capability, landlock, yama, apparmor."
+    );
+
+    let fs = MockFilesystem::new();
+    enforcing_targeted(&fs);
     let row = lsm_status_row(&fs);
     assert!(row.is_fail(), "{row:?}");
     assert!(
@@ -1224,6 +1238,157 @@ fn the_lsm_status_row_fails_every_host_where_selinux_runs_for_now() {
         ),
         "{row:?}"
     );
+}
+
+/// The registry gives lsm-status the domains its inputs carry: with what the
+/// loaded policy makes of the labelled copy, an enforcing targeted host
+/// passes.
+#[test]
+fn the_lsm_status_row_takes_the_domains_its_inputs_carry() {
+    use crate::preflight::{UnitDomain, UnitDomains};
+    let fs = MockFilesystem::new();
+    enforcing_targeted(&fs);
+    let inputs = RegistryInputs {
+        options: PreflightOptions::default(),
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
+        operator: None,
+        caller_path: None,
+        typed_shell: None,
+        host_profile: None,
+        systemd_version: None,
+        unit_domains: UnitDomains {
+            systemd: UnitDomain::Known("unconfined_service_t".to_string()),
+            udev: UnitDomain::Granted("udev_t".to_string()),
+        },
+    };
+    let row = build_registry(&fs, &explicit_config(), &inputs, None)
+        .expect("registry builds")
+        .run_all_detailed(&fs)
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "lsm-status")
+        .map(|(_, result)| result)
+        .expect("an lsm-status row");
+    assert!(row.is_pass(), "{row:?}");
+    assert!(
+        row.message().contains(
+            "the processes systemd starts for it in unconfined_service_t. The disk guard udev \
+             starts runs in udev_t"
+        ),
+        "{row:?}"
+    );
+}
+
+/// A host whose facts show SELinux running enforcing with the targeted
+/// policy, where the RAM copies take the label of the system's programs.
+fn selinux_host() -> crate::platform::HostProfile {
+    let mut profile = crate::platform::FakePlatform::fhs().host_profile();
+    profile.lsms = ["capability", "selinux"].map(str::to_string).to_vec();
+    profile.selinux = Some(crate::platform::SelinuxStatus {
+        selinuxfs: crate::platform::Selinuxfs::Mounted,
+        enforce: Some(crate::platform::SelinuxMode::Enforcing),
+        config_mode: Some("enforcing".to_string()),
+        config_policy: Some("targeted".to_string()),
+    });
+    profile
+}
+
+/// The lsm-status row of the registry a manager builds on `profile`, with the
+/// disk guard on where `guard`, asking `selinux` what the loaded policy makes
+/// of NAILS's processes, over an enforcing targeted host.
+fn manager_lsm_status_row(
+    profile: crate::platform::HostProfile,
+    guard: bool,
+    selinux: &'static nails_teardown::test_support::FakeSelinux,
+) -> CheckResult {
+    let fs = MockFilesystem::new();
+    enforcing_targeted(&fs);
+    let mut manager = manager_with(fs);
+    manager.config.session_mounts.read_only = guard;
+    manager.set_host_profile(profile);
+    manager.set_selinux(selinux);
+    manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .run_all_detailed(manager.filesystem())
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "lsm-status")
+        .map(|(_, result)| result)
+        .expect("an lsm-status row")
+}
+
+/// Activation and `check` build the registry through the manager, which asks
+/// the loaded policy where the copies take their label: the steps systemd
+/// starts count where it starts them in unconfined_service_t, the disk guard
+/// in udev_t only where it is on and the policy grants it every operation it
+/// makes, and where the copies take no label nothing is asked and the row
+/// fails as NAILS chooses no domain there.
+#[test]
+fn the_manager_gives_lsm_status_what_the_loaded_policy_makes_of_the_label() {
+    use nails_teardown::test_support::FakeSelinux;
+    let targeted = FakeSelinux::targeted().leak();
+    let row = manager_lsm_status_row(selinux_host(), false, targeted);
+    assert!(row.is_pass(), "{row:?}");
+    assert_eq!(
+        row.message(),
+        "SELinux enforces, /etc/selinux/config names the targeted policy and has not changed \
+         since the boot, and NAILS runs unconfined: this process in unconfined_t and the \
+         processes systemd starts for it in unconfined_service_t. The disk guard does not run: \
+         [session_mounts] read_only is off. Active LSMs: capability, selinux."
+    );
+    assert!(
+        !targeted.questions().contains(&"udevd".to_string()),
+        "{:?}",
+        targeted.questions()
+    );
+
+    let row = manager_lsm_status_row(selinux_host(), true, FakeSelinux::targeted().leak());
+    assert!(row.is_pass(), "{row:?}");
+    assert!(
+        row.message().contains(
+            "The disk guard udev starts runs in udev_t, which the loaded policy confines but \
+             grants every operation of the guard that this check asks about."
+        ),
+        "{row:?}"
+    );
+
+    let denying = FakeSelinux {
+        denied_on: vec![("udev_t", "capability", "sys_admin")],
+        ..FakeSelinux::targeted()
+    }
+    .leak();
+    let row = manager_lsm_status_row(selinux_host(), true, denying);
+    assert!(row.is_fail(), "{row:?}");
+    assert!(
+        row.message()
+            .starts_with("The disk guard udev starts for NAILS ([session_mounts] read_only)"),
+        "{row:?}"
+    );
+    assert!(
+        row.message().contains("capability permission sys_admin"),
+        "{row:?}"
+    );
+
+    // A host whose facts rule SELinux out takes no label: nothing is asked,
+    // and where the check reads SELinux running all the same, the row fails
+    // as NAILS chooses no domain there.
+    let mut debian = crate::platform::FakePlatform::fhs().host_profile();
+    debian.lsms = ["capability", "apparmor"].map(str::to_string).to_vec();
+    debian.selinux = None;
+    let unasked = FakeSelinux::targeted().leak();
+    let row = manager_lsm_status_row(debian, true, unasked);
+    assert!(row.is_fail(), "{row:?}");
+    assert!(
+        row.message().starts_with(
+            "NAILS does not choose the SELinux domain of the processes systemd starts"
+        ),
+        "{row:?}"
+    );
+    assert!(unasked.questions().is_empty(), "{:?}", unasked.questions());
 }
 
 /// The systemd-version row of the registry built from inputs that carry the
@@ -1243,6 +1408,7 @@ fn systemd_version_row(os_release: Option<&str>, version: Option<u32>) -> CheckR
         host_profile: os_release
             .and_then(|os_release| manager_on_host(os_release).host_profile().cloned()),
         systemd_version: version,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
     build_registry(&fs, &explicit_config(), &inputs, None)
         .expect("registry builds")
@@ -1435,6 +1601,7 @@ fn nix_trace_row(layer: Option<&dyn crate::platform::ConfigLayer<MockFilesystem>
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
     build_registry(&fs, &explicit_config(), &inputs, layer)
         .expect("registry builds")
@@ -1528,6 +1695,7 @@ fn history_row(
         typed_shell,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
     build_registry(&fs, &explicit_config(), &inputs, None)
         .expect("registry builds")
