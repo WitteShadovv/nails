@@ -2,22 +2,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The running kernel's SELinux, as the label of NAILS's program in RAM
-//! ([`crate::whole_root::program_label`]) needs it.
+//! ([`crate::whole_root::program_label`]) and the disk guard's check of the
+//! policy ([`crate::whole_root::guard_policy`]) need it.
 //!
 //! Where SELinux runs with a policy loaded, a program PID 1 starts runs in the
 //! domain the policy gives a start from PID 1's context through the label of
 //! the program's file, and in PID 1's own domain where it gives none.
-//! [`Selinux`] holds what the label's checks ask: PID 1's context and this
-//! process's own, the context the policy gives a start, which permissions the
-//! policy denies, whether a policy capability is on, and the label of a file,
-//! written and read. [`Kernel`] answers them on the running system: the
-//! contexts from `/proc/1/attr/current` and `/proc/self/attr/current`; the
-//! policy's answers from selinuxfs, the kernel's interface to the loaded
-//! policy, through its `create` and `access` files, as libselinux's
-//! `security_compute_create` and `security_compute_av` ask them, and its
-//! `policy_capabilities` directory; and the label from the file's
-//! `security.selinux` attribute, which the kernel answers from its own record
-//! of the file where SELinux runs.
+//! [`Selinux`] holds what the label's checks ask: PID 1's context, this
+//! process's own and that of the running systemd-udevd, the context the policy
+//! gives a start or a new file, which permissions the policy denies, whether a
+//! policy capability is on, and the label of a file, written and read.
+//! [`Kernel`] answers them on the running system: the contexts from
+//! `/proc/1/attr/current`, `/proc/self/attr/current` and that file of the
+//! systemd-udevd process; the policy's answers from selinuxfs, the kernel's
+//! interface to the loaded policy, through its `create` and `access` files, as
+//! libselinux's `security_compute_create_name` and `security_compute_av` ask
+//! them, and its `policy_capabilities` directory; and the label from the
+//! file's `security.selinux` attribute, which the kernel answers from its own
+//! record of the file where SELinux runs.
 //!
 //! No policy gives a domain on a kernel that runs no SELinux, which makes no
 //! mount point for selinuxfs in sysfs at boot ([`SELINUXFS`]), nor on one that
@@ -43,6 +45,17 @@ const PID1_CONTEXT: &str = "/proc/1/attr/current";
 /// This process's own SELinux context.
 const OWN_CONTEXT: &str = "/proc/self/attr/current";
 
+/// Where the kernel lists the running processes, each in a directory named by
+/// its number.
+const PROCFS: &str = "/proc";
+
+/// The name the kernel gives systemd-udevd's process (`comm`), from the file
+/// systemd starts it from, a link to `udevadm` or not.
+pub const UDEVD_COMM: &str = "systemd-udevd";
+
+/// The unit systemd runs udevd in, whose cgroup holds udevd's process.
+pub const UDEVD_UNIT: &str = "systemd-udevd.service";
+
 /// The context of every process on a kernel that runs SELinux with no policy
 /// loaded.
 const NO_POLICY: &str = "kernel";
@@ -63,10 +76,25 @@ pub trait Selinux: std::fmt::Debug {
     /// This process's own context, asked only where [`Selinux::pid1`] tells
     /// of a policy: the domain it runs in.
     fn current(&self) -> io::Result<String>;
+    /// The context of the running systemd-udevd, which starts the programs
+    /// its rules name, or `None` where none runs: asked only where
+    /// [`Selinux::pid1`] tells of a policy.
+    fn udevd(&self) -> io::Result<Option<String>>;
     /// The context the loaded policy gives a process in `source` that starts
     /// a program from a file labelled `file`: `source` again where it gives
     /// none of its own.
     fn exec_context(&self, source: &str, file: &str) -> io::Result<String>;
+    /// The label the loaded policy gives a new object of `class` (`file`,
+    /// `dir`) that a process in `source` makes in a directory labelled
+    /// `parent`, under the name `name` where one is given: the rules for that
+    /// name apply as well as those for any name.
+    fn new_label(
+        &self,
+        source: &str,
+        parent: &str,
+        class: &str,
+        name: Option<&str>,
+    ) -> io::Result<String>;
     /// Those of `perms`, permissions of `class`, that the loaded policy denies
     /// `source` on `target`, in their order.
     fn denied(
@@ -82,6 +110,9 @@ pub trait Selinux: std::fmt::Debug {
     fn set_label(&self, file: BorrowedFd<'_>, value: &[u8]) -> io::Result<()>;
     /// The label of the open file `file`, as the kernel gives it.
     fn label(&self, file: BorrowedFd<'_>) -> io::Result<Vec<u8>>;
+    /// The label of the file at `path`, a link in its last component not
+    /// followed, as the kernel gives it.
+    fn path_label(&self, path: &Path) -> io::Result<String>;
 }
 
 /// The running kernel's SELinux.
@@ -100,8 +131,27 @@ impl Selinux for Kernel {
         own_context(Path::new(OWN_CONTEXT))
     }
 
+    fn udevd(&self) -> io::Result<Option<String>> {
+        udevd_context_in(Path::new(PROCFS))
+    }
+
     fn exec_context(&self, source: &str, file: &str) -> io::Result<String> {
         exec_context_in(Path::new(SELINUXFS), source, file, transact)
+    }
+
+    fn new_label(
+        &self,
+        source: &str,
+        parent: &str,
+        class: &str,
+        name: Option<&str>,
+    ) -> io::Result<String> {
+        new_label_in(
+            Path::new(SELINUXFS),
+            (source, parent, class),
+            name,
+            transact,
+        )
     }
 
     fn denied(
@@ -134,6 +184,13 @@ impl Selinux for Kernel {
         value.truncate(len);
         Ok(value)
     }
+
+    fn path_label(&self, path: &Path) -> io::Result<String> {
+        let mut value = vec![0; LABEL_MAX];
+        let len = rustix::fs::lgetxattr(path, LABEL_XATTR, &mut value[..])?;
+        value.truncate(len);
+        context_text(&value)
+    }
 }
 
 /// A transaction on a selinuxfs file: write the request, read the answer.
@@ -148,12 +205,43 @@ fn exec_context_in(
     file: &str,
     transact: Transact,
 ) -> io::Result<String> {
-    let process = class_index(selinuxfs, "process")?;
-    let answer = transact(
-        &selinuxfs.join("create"),
-        &format!("{source} {file} {process}"),
-    )?;
+    new_label_in(selinuxfs, (source, file, "process"), None, transact)
+}
+
+/// [`Selinux::new_label`] through the selinuxfs at `selinuxfs`: its `create`
+/// file, asked for an object of `class` that a process of `source` makes in
+/// `parent`, with `name` where one is given, answers the label of the object.
+/// The name goes in percent-encoded, as the kernel reads it, wherever it holds
+/// a byte other than a letter, a digit, `.`, `_` or `-`.
+fn new_label_in(
+    selinuxfs: &Path,
+    (source, parent, class): (&str, &str, &str),
+    name: Option<&str>,
+    transact: Transact,
+) -> io::Result<String> {
+    let index = class_index(selinuxfs, class)?;
+    let mut request = format!("{source} {parent} {index}");
+    if let Some(name) = name {
+        request.push(' ');
+        request.push_str(&percent_encoded(name));
+    }
+    let answer = transact(&selinuxfs.join("create"), &request)?;
     context_text(&answer)
+}
+
+/// `name` as selinuxfs's `create` file reads a name: every byte other than a
+/// letter, a digit, `.`, `_` or `-` as `%` and two hexadecimal digits, since
+/// the kernel reads `+` as a blank and a name ends at a blank.
+fn percent_encoded(name: &str) -> String {
+    let mut encoded = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 /// [`Selinux::denied`] through the selinuxfs at `selinuxfs`: its `access`
@@ -221,6 +309,33 @@ fn pid1_context(selinuxfs: &Path, pid1: &Path) -> io::Result<Option<String>> {
 /// from the file `own`.
 fn own_context(own: &Path) -> io::Result<String> {
     context_text(&std::fs::read(own).map_err(|e| at(own, e))?)
+}
+
+/// The context of the running systemd-udevd as [`Kernel`] reads it
+/// ([`Selinux::udevd`]) from the procfs at `proc`: the process named
+/// [`UDEVD_COMM`] in the cgroup of [`UDEVD_UNIT`], whose `attr/current` gives
+/// its context. A process that ends while it is read is not it. `None` where
+/// no such process runs; an error where `proc` cannot be listed or udevd's
+/// context cannot be read.
+fn udevd_context_in(proc: &Path) -> io::Result<Option<String>> {
+    for entry in std::fs::read_dir(proc).map_err(|e| at(proc, e))? {
+        let entry = entry.map_err(|e| at(proc, e))?;
+        let name = entry.file_name();
+        if name.is_empty() || !name.as_encoded_bytes().iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let dir = entry.path();
+        let named_so = std::fs::read_to_string(dir.join("comm"))
+            .is_ok_and(|comm| comm.trim_end_matches('\n') == UDEVD_COMM);
+        let in_unit = named_so
+            && std::fs::read_to_string(dir.join("cgroup")).is_ok_and(|cgroup| {
+                crate::cgroup::service_unit_from_cgroup(&cgroup).as_deref() == Some(UDEVD_UNIT)
+            });
+        if in_unit {
+            return own_context(&dir.join("attr/current")).map(Some);
+        }
+    }
+    Ok(None)
 }
 
 /// A context as the kernel gives it, without the NUL or the newline it ends
