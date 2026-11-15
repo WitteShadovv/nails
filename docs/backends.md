@@ -139,12 +139,16 @@ follow), and reports:
 | The device below a LUKS mapping keeps a LUKS header the mapping was not opened with | The device starts with a LUKS header whose uuid is not the one the mapping names (cryptsetup writes the volume's uuid into `dm/uuid`); or, for a mapping opened with a detached header, the device holds a LUKS2 secondary header at one of the offsets cryptsetup puts one at, 16 KiB to 4 MiB in | blkid and an examiner identify the device as LUKS. See [Leftover LUKS headers](#leftover-luks-headers). |
 | A loop device over a block device was attached without autoclear | `loop/autoclear` is `0` for a loop device whose `loop/backing_file` is a block device | It stays bound after the volume is closed, after a session too, so `losetup -a` on the decoy names it. Detach it with `losetup -d` once the volume is closed. |
 
-A mount table the check cannot read, or a device or an attribute of the stack
-that sysfs shows but the check cannot read (`dm/uuid`,
-`queue/discard_max_bytes`, `slaves`), leaves it unable to tell whether
-discards reach the hidden volume: it refuses as for discards, naming the
-attributes but, like the discard refusal, no device-mapper node, and
-`--allow-discards` turns that into a warning too.
+A mount table the check cannot read, the device the hidden root is mounted
+from that sysfs shows but the check cannot read, or an attribute of the stack
+below it that decides whether discards reach the hidden volume and that sysfs
+shows but the check cannot read (`dm/uuid`, `dm/name`,
+`queue/discard_max_bytes`, `slaves`, `loop/backing_file`), leaves it unable to
+tell whether discards reach the hidden volume: it refuses as for discards,
+naming the attributes but, like the discard refusal, no device-mapper node,
+and `--allow-discards` turns that into a warning too. A `loop/autoclear` it
+cannot read warns that it cannot tell whether the loop device was attached
+with autoclear. The other attributes decide nothing here.
 
 The check reads the start of the device below each LUKS mapping read-only and
 without changing its access time, which needs root: a LUKS1 or LUKS2 header,
@@ -265,7 +269,7 @@ neither.
 | Result | When |
 |---|---|
 | Warns | Such a mapping is writable: the kernel does not hold it read-only (`ro` is `0`). The warning names its topmost mapping (`outer (dm-4)`), the device it is opened from and where it is mounted, read-write or read-only. A mapping that VeraCrypt 1.26.29 or earlier made stays writable even when it mounted the volume read-only. |
-| Warns: cannot check | The mount table cannot be read, the hidden root's filesystem shows no block device, or sysfs does not let the check list the devices below the hidden root, or those built on its storage (`slaves/`, `holders/`, `/sys/class/block`). |
+| Warns: cannot check | The mount table cannot be read, the hidden root's filesystem shows no block device, or sysfs does not let the check list the devices below the hidden root, or those built on its storage (`slaves/`, `holders/`, `/sys/class/block`), or read what decides it: what kind of mapping a device of the stack or one built on its storage is (`dm/uuid`, `dm/name`), and what a loop device reads, or from where (`loop/backing_file`, `loop/offset`). A mapping whose `ro` it cannot read counts as writable, and the warning says it may be. |
 | Passes | Every such mapping is read-only, as `cryptsetup open --readonly` makes it, and as VeraCrypt 1.26.30 and later make theirs for a volume they mount read-only (`veracrypt --mount-options=ro`); there is none; or the hidden root is in no VeraCrypt or TrueCrypt volume. |
 
 Close the outer volume before activating, or, when it has to be shown, open
@@ -347,7 +351,8 @@ generator reads. It judges a partition the same way on each of these disks, as
 its type shows in the partition table on all of them, and its texts say
 whether the generator reads the disk in every systemd from 254 on, only from
 259.1 on, or in none, as for a disk below only the EFI system partition. Where
-sysfs does not list the devices below the root file system, they say the check
+sysfs does not list the devices below the root file system, or shows an
+attribute of one that the check decides by but cannot read, they say the check
 cannot tell. Root discovery takes its disk from the boot loader, so the text
 for a root partition is the same on every disk. The check reads the disk's
 partition table read-only and without changing an access time, and finds the
@@ -359,6 +364,7 @@ partition the decoy uses itself is left to the `hidden-volume` check.
 |---|---|
 | Refuses | The partition has the GPT type of a `/home`, `/srv`, `/var`, `/var/tmp` or swap partition. A swap partition is refused with the no-auto flag too, though systemd leaves it alone then. |
 | Warns | The partition has one of the first four types with the no-auto flag, which systemd honours; or the type of a root, EFI system or extended boot loader partition, which systemd acts on only under the conditions above; or the table does not list the partition where the kernel has it, or is damaged: its header or its entries do not match the checksums it keeps, not every entry could be checked against them, or an entry does not fit within the blocks its partitions may use; or neither the disk nor udev's record of the partition could be read. |
+| Warns: cannot check | The mount table cannot be read; the hidden root's filesystem shows no block device; the disk of the decoy's root file system cannot be found; the hidden root's storage holds more devices than the check reads, or sysfs shows an attribute of one of them that the check decides by but it cannot read it: whether the device is a partition, where it starts and on which disk (`partition`, `start`, the disk's `dev`), and what lies below it (`loop/backing_file`, `slaves/`); or the same holds below the decoy's root file system (`start` aside) while a partition of the hidden root's storage is on a disk the check does not know the decoy boots from. A partition it could judge and refuses is refused all the same. |
 | Passes | Any other type, an MBR, or no partition of a disk the decoy boots from: a disk of its own such as an external drive, a container file, a RAM filesystem. |
 
 The fix is the generic Linux type, given from a live system or where setup
