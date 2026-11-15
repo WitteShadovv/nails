@@ -16,7 +16,14 @@
 //!   journal, which may be a namespace's that persists
 //!   ([`super::namespace`]): `kmsg` reaches the kernel's log buffer through
 //!   the journal, which keeps each line as it hands it on.
-//! - `null` and `tty` write no file.
+//! - `null` writes no file, and `tty` writes to the terminal `TTYPath=`
+//!   names, `/dev/console` unless it names one, which counts as a device
+//!   path does ([`log_to_path`]): the console, a virtual console or a serial
+//!   line keeps nothing, while a pseudo-terminal leaves NAILS unable to
+//!   tell. `TTYPath=` counts by its last value systemd takes: an empty one
+//!   sets the default again, and systemd ignores a path that is not
+//!   absolute or holds `..`, which leaves the one before; NAILS does not
+//!   expand a specifier.
 //! - `socket` sends it to the one descriptor a socket unit passes the
 //!   service, without which the service manager does not start it, and a
 //!   named descriptor (`fd:`) to one a socket unit or the descriptor store
@@ -35,18 +42,20 @@
 //!   `tty-fail`), `socket` or a named descriptor: systemd's
 //!   `service_fix_stdio()` gives an explicit `inherit` the default as it
 //!   gives an unset one. After such an input the standard output goes where
-//!   the input comes from, a terminal, which writes no file, or a socket
-//!   unit's descriptor, which NAILS cannot tell of.
+//!   the input comes from, the terminal, as for `tty`, or a socket unit's
+//!   descriptor, which NAILS cannot tell of.
 //!
 //! A value NAILS does not know leaves the stream unknown.
 //!
 //! By a running process, as the link of its descriptor in `/proc` leads: a
 //! device that keeps nothing is no file, and a descriptor that is closed
 //! takes nothing. A pipe leads to the process that reads it, which may copy
-//! what it reads into a file, as `tee` does, so NAILS cannot tell. A socket
-//! is judged by PID 1's socket table ([`super::sockets`]). Only root may
-//! follow the descriptors of another user's process, so an unprivileged
-//! `nails check` cannot tell where they lead.
+//! what it reads into a file, as `tee` does, so NAILS cannot tell, and so
+//! does a pseudo-terminal, whose other side the program that holds it may
+//! copy into a file, as `script` does into its typescript. A socket is
+//! judged by PID 1's socket table ([`super::sockets`]). Only root may follow
+//! the descriptors of another user's process, so an unprivileged `nails
+//! check` cannot tell where they lead.
 
 use super::super::super::systemd_conf::Assignment;
 use super::options::{FileLog, Log};
@@ -88,9 +97,8 @@ impl Stream {
     }
 }
 
-/// The values of `StandardOutput=` and `StandardError=` that send a stream
-/// to no file.
-const NO_FILE: &[&str] = &["null", "tty"];
+/// The terminal of a unit whose `TTYPath=` names none.
+const DEFAULT_TTY: &str = "/dev/console";
 
 /// The values of `StandardOutput=` and `StandardError=` that send a stream
 /// to the journal: `kmsg` too, whose lines the journal keeps as it hands
@@ -128,34 +136,99 @@ fn takes_default_output(input: &str) -> bool {
 /// The kinds of value that write the file after them.
 const FILE_KINDS: &[&str] = &["file:", "append:", "truncate:"];
 
+/// Whether `path` names a device by `prefix` and a number, as `/dev/tty1`.
+fn numbered(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 /// Whether `path` is a device that keeps nothing it is given: the null
-/// device and its kin, a terminal or a console, or the kernel's log buffer,
-/// whose lines go where the journal's do.
+/// device and its kin, the kernel's log buffer, whose lines go where the
+/// journal's do, the console, a virtual console (`/dev/tty<n>`), a serial
+/// line (`/dev/ttyS<n>`) or a hypervisor's console (`/dev/hvc<n>`).
 fn is_sink(path: &str) -> bool {
-    let numbered = |prefix: &str| {
-        path.strip_prefix(prefix).is_some_and(|rest| {
-            !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_alphanumeric())
-        })
-    };
     matches!(
         path,
-        "/dev/null" | "/dev/zero" | "/dev/full" | "/dev/console" | "/dev/kmsg" | "/dev/tty"
-    ) || ["/dev/tty", "/dev/pts/", "/dev/hvc"]
+        "/dev/null" | "/dev/zero" | "/dev/full" | "/dev/console" | "/dev/kmsg"
+    ) || ["/dev/tty", "/dev/ttyS", "/dev/hvc"]
         .into_iter()
-        .any(numbered)
+        .any(|prefix| numbered(path, prefix))
+}
+
+/// Whether `path` is a pseudo-terminal (`/dev/pts/<n>`), or the controlling
+/// terminal (`/dev/tty`), which may be one: the program that holds its other
+/// side may copy all it shows into a file.
+fn is_pseudo_terminal(path: &str) -> bool {
+    path == "/dev/tty" || numbered(path, "/dev/pts/")
 }
 
 /// Where a daemon logs that writes what it logs to `path`: nowhere for a
-/// device that keeps nothing it is given ([`is_sink`]), unknown for another
+/// device that keeps nothing it is given ([`is_sink`]), unknown for a
+/// pseudo-terminal ([`is_pseudo_terminal`]), as for a pipe, and for another
 /// device, and otherwise the file `file` gives, one in `/dev/shm`, which is
 /// in RAM, among them.
 pub(super) fn log_to_path(path: &str, file: impl FnOnce() -> Log) -> Log {
     if is_sink(path) {
         Log::NoFile
+    } else if is_pseudo_terminal(path) {
+        Log::Unknown(format!(
+            "it logs to {path}, a pseudo-terminal, whose other side the program that holds it may \
+             copy into a file, as script does into its typescript"
+        ))
     } else if path.starts_with("/dev/") && !path.starts_with("/dev/shm/") {
         Log::Unknown(format!("it logs to {path}, a device NAILS does not judge"))
     } else {
         file()
+    }
+}
+
+/// The terminal of the unit whose `[Service]` section is `assignments`, as
+/// systemd takes its `TTYPath=` (see the [module docs](self)).
+///
+/// # Errors
+///
+/// Why NAILS cannot tell: the value it takes has a specifier.
+fn tty_path(assignments: &[Assignment]) -> Result<String, String> {
+    let mut path = Ok(DEFAULT_TTY.to_string());
+    for assignment in assignments
+        .iter()
+        .filter(|assignment| assignment.key == "TTYPath")
+    {
+        let value = assignment.value.as_str();
+        if value.is_empty() {
+            path = Ok(DEFAULT_TTY.to_string());
+        } else if value.contains('%') {
+            path = Err(format!(
+                "NAILS does not expand the specifiers of its TTYPath={value}"
+            ));
+        } else if value.starts_with('/') && !value.split('/').any(|part| part == "..") {
+            // systemd drops empty and `.` parts, as of a doubled slash.
+            let parts: Vec<&str> = value
+                .split('/')
+                .filter(|part| !part.is_empty() && *part != ".")
+                .collect();
+            path = Ok(format!("/{}", parts.join("/")));
+        }
+    }
+    path
+}
+
+/// Where a stream of the unit whose `[Service]` section is `assignments`
+/// leads that it sends to its terminal ([`tty_path`]), as a device path
+/// leads ([`log_to_path`]): a terminal NAILS does not know leaves it unknown,
+/// as systemd writes only to a terminal.
+fn to_terminal(assignments: &[Assignment], stream: Stream) -> Log {
+    match tty_path(assignments) {
+        Ok(path) => log_to_path(&path, || {
+            Log::Unknown(format!(
+                "it logs to its {}, its terminal {path}, which NAILS does not judge",
+                stream.name()
+            ))
+        }),
+        Err(why) => Log::Unknown(format!(
+            "it logs to its {}, its terminal, and {why}",
+            stream.name()
+        )),
     }
 }
 
@@ -201,7 +274,9 @@ pub(super) fn of_unit(assignments: &[Assignment], stream: Stream, by: &str) -> L
         // The standard output takes the manager's default, the journal,
         // unless it follows a terminal or a socket unit's descriptor.
         match setting(assignments, "StandardInput") {
-            Some(input) if TERMINAL_INPUT.contains(&input) => return Log::NoFile,
+            Some(input) if TERMINAL_INPUT.contains(&input) => {
+                return to_terminal(assignments, stream);
+            }
             Some(input) if !takes_default_output(input) => {
                 followed.push(format!("StandardInput={input}"));
                 break None;
@@ -224,8 +299,10 @@ pub(super) fn of_unit(assignments: &[Assignment], stream: Stream, by: &str) -> L
     let Some(value) = value else {
         return unknown();
     };
-    if NO_FILE.contains(&value) {
-        return Log::NoFile;
+    match value {
+        "null" => return Log::NoFile,
+        "tty" => return to_terminal(assignments, stream),
+        _ => {}
     }
     if JOURNAL.contains(&value) {
         return Log::Journal {
