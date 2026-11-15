@@ -163,8 +163,10 @@ fn scan_file<F: Filesystem>(
     if depth > MAX_INCLUDE_DEPTH {
         return;
     }
-    let content = match fs.read_file_content(path) {
-        Ok(content) => content,
+    // sudo reads sudoers as bytes: a comment or a value that is no UTF-8
+    // does not keep it from reading the rest.
+    let content = match fs.read_file_bytes(path) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(error) if passed_over(&error) => return,
         Err(error) => {
             logging.unread.push(unread(path, &error));
@@ -534,5 +536,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let logging = scan_sudoers(&RealFilesystem, &dir.path().join("missing"));
         assert_eq!(logging, SudoLogging::default());
+    }
+
+    /// A sudoers file that holds a byte that is no UTF-8, as a comment in
+    /// Latin-1, is read as sudo reads it, where it counted as one NAILS
+    /// cannot read and warned so.
+    #[test]
+    fn a_sudoers_with_bytes_that_are_no_text_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sudoers");
+        std::fs::write(
+            &path,
+            b"# Ren\xe9's machine\nDefaults logfile=\"/var/log/sudo.log\"\n",
+        )
+        .unwrap();
+        let logging = scan_sudoers(&RealFilesystem, &path);
+        assert!(logging.unread.is_empty(), "{logging:?}");
+        assert_eq!(logging.logfile.as_deref(), Some("/var/log/sudo.log"));
     }
 }

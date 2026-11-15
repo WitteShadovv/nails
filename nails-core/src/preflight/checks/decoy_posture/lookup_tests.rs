@@ -347,6 +347,7 @@ fn processes_nails_cannot_read_refuse() {
     let one_process = || {
         let fs = decoy("volatile");
         fs.mock_set_directory_contents(Path::new("/proc"), vec![PathBuf::from("/proc/731")]);
+        fs.mock_set_path_type("/proc/731", crate::filesystem::PathKind::Dir);
         fs
     };
     let fs = one_process();
@@ -361,8 +362,94 @@ fn processes_nails_cannot_read_refuse() {
 
     // Gone: neither file is there any more.
     let fs = one_process();
+    fs.mock_set_lookup_error("/proc/731", ErrorKind::NotFound);
     let result = run(&fs, false);
     assert!(result.is_pass(), "{result:?}");
+}
+
+/// A process that ends between the open of its `comm` and the read makes the
+/// read fail with `ESRCH`, whose code the error NAILS gets does not keep: a
+/// read that fails while the process's directory is gone when NAILS looks
+/// again is of a process that ended, which hides no daemon, where it was
+/// taken for one NAILS cannot read and refused. A read that fails while the
+/// directory is there still cannot tell.
+#[test]
+fn a_process_whose_directory_is_gone_after_a_failed_read_ended() {
+    let one_process = |there: bool| {
+        let fs = decoy("volatile");
+        fs.mock_set_directory_contents(Path::new("/proc"), vec![PathBuf::from("/proc/731")]);
+        if there {
+            fs.mock_set_path_type("/proc/731", crate::filesystem::PathKind::Dir);
+        }
+        fs.mock_add_file("/proc/731/comm", "rsyslogd\n");
+        fs.mock_fail_only(
+            Path::new("/proc/731/comm"),
+            MockLookup::Read,
+            MockFailure::Io(ErrorKind::Other),
+        );
+        fs.mock_fail_only(
+            Path::new("/proc/731/cmdline"),
+            MockLookup::Read,
+            MockFailure::Io(ErrorKind::Other),
+        );
+        fs
+    };
+    let processes = loggers::running_processes(&one_process(false), Path::new("/"));
+    assert_eq!(processes.untold, None);
+    assert!(processes.names.is_empty(), "{:?}", processes.names);
+    assert!(run(&one_process(false), false).is_pass());
+
+    let fs = one_process(true);
+    let untold = loggers::running_processes(&fs, Path::new("/")).untold;
+    assert!(
+        untold
+            .as_deref()
+            .is_some_and(|why| why.starts_with("NAILS cannot read /proc/731/comm (")),
+        "{untold:?}"
+    );
+    assert!(run(&fs, false).is_fail());
+}
+
+/// A command line or a `comm` that holds a byte that is no UTF-8, as of a
+/// process started with a file name in Latin-1, is read, and the process
+/// is known by its names: it is no process NAILS cannot read, which refused
+/// for as long as it ran. A daemon started so is found by its name.
+#[test]
+fn a_process_whose_command_line_is_no_text_is_read_by_its_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let process = |pid: &str, comm: &[u8], cmdline: &[u8]| {
+        std::fs::create_dir_all(root.join("proc").join(pid)).unwrap();
+        std::fs::write(root.join("proc").join(pid).join("comm"), comm).unwrap();
+        std::fs::write(root.join("proc").join(pid).join("cmdline"), cmdline).unwrap();
+    };
+    process("42", b"vim\n", b"vim\0caf\xe9.txt\0");
+    process(
+        "43",
+        b"rsyslogd\n",
+        b"/usr/sbin/rsyslogd\0-f\0/etc/caf\xe9.conf\0",
+    );
+    process("44", b"caf\xe9\n", b"/opt/caf\xe9\0");
+    let processes = loggers::running_processes(&crate::RealFilesystem, root);
+    assert_eq!(processes.untold, None);
+    for name in ["vim", "rsyslogd", "caf\u{fffd}"] {
+        assert!(
+            processes.names.contains(name),
+            "{name}: {:?}",
+            processes.names
+        );
+    }
+
+    // A file it cannot read, here one that is a directory, while the
+    // process's directory is there, still cannot tell.
+    std::fs::create_dir_all(root.join("proc/45/comm")).unwrap();
+    let untold = loggers::running_processes(&crate::RealFilesystem, root).untold;
+    assert!(
+        untold
+            .as_deref()
+            .is_some_and(|why| why.starts_with("NAILS cannot read /proc/45/comm (")),
+        "{untold:?}"
+    );
 }
 
 /// Without a daemon found by its own names, an enabled `syslog.service`
