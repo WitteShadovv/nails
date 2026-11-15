@@ -42,7 +42,9 @@ fn a_unit_s_namespace_is_its_last_log_namespace_systemd_takes() {
     }
     assert_eq!(
         of_unit(&section("LogNamespace=fw\nLogNamespace=%N")),
-        Err("NAILS does not expand the specifiers of its LogNamespace=%N".to_string())
+        Err(Untold::Specifier(
+            "NAILS does not expand the specifiers of its LogNamespace=%N".to_string()
+        ))
     );
 }
 
@@ -85,22 +87,22 @@ fn a_process_s_namespace_is_the_journal_directory_mounted_over_its_own() {
     );
     assert_eq!(
         of_process(&fs, root, "812"),
-        Err(
+        Err(Untold::Mounts(
             "process 812 has /elsewhere mounted over /run/systemd/journal, which NAILS does not \
              read as the journal of a namespace"
                 .to_string()
-        )
+        ))
     );
     // A process that has ended logs no more.
     assert_eq!(of_process(&fs, root, "900"), Ok(None));
     fs.mock_set_lookup_error("/proc/901/mountinfo", std::io::ErrorKind::PermissionDenied);
     assert_eq!(
         of_process(&fs, root, "901"),
-        Err(
+        Err(Untold::Mounts(
             "NAILS cannot read /proc/901/mountinfo, which shows its journal; run the command \
              again with sudo"
                 .to_string()
-        )
+        ))
     );
 }
 
@@ -117,18 +119,66 @@ fn a_log_to_the_decoy_s_own_journal_is_no_file() {
         ),
         Log::NoFile
     );
+    // NAILS cannot tell the namespace: a specifier is the unit's to name
+    // without one, a mount table NAILS cannot read leaves it unknown.
     assert_eq!(
         journal_log(
             &fs,
             Path::new("/"),
-            Err("NAILS does not expand the specifiers of its LogNamespace=%N".to_string()),
+            Err(Untold::Specifier(
+                "NAILS does not expand the specifiers of its LogNamespace=%N".to_string()
+            )),
+            "neither -l nor -d",
+            "its log"
+        ),
+        Log::UntoldJournal {
+            why: "it logs to the journal, and NAILS does not expand the specifiers of its \
+                  LogNamespace=%N"
+                .to_string(),
+            fix: JournalFix::Specifier,
+        }
+    );
+    assert_eq!(
+        journal_log(
+            &fs,
+            Path::new("/"),
+            Err(Untold::Mounts(
+                "NAILS cannot read /proc/901/mountinfo, which shows its journal ({e})".to_string()
+            )),
             "neither -l nor -d",
             "its log"
         ),
         Log::Unknown(
-            "it logs to the journal, and NAILS does not expand the specifiers of its \
-             LogNamespace=%N"
+            "it logs to the journal, and NAILS cannot read /proc/901/mountinfo, which shows its \
+             journal ({e})"
                 .to_string()
         )
+    );
+}
+
+#[test]
+fn a_namespace_whose_storage_nails_cannot_tell_names_the_namespace_s_fix() {
+    // The namespace is known, and its own fix lets NAILS tell, not the
+    // daemon's.
+    let fs = MockFilesystem::new();
+    fs.mock_set_lookup_error(
+        "/etc/systemd/journald@tn.conf.d",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    assert_eq!(
+        journal_log(
+            &fs,
+            Path::new("/"),
+            Ok(Some("tn".to_string())),
+            "neither -l nor -d",
+            "its log"
+        ),
+        Log::UntoldJournal {
+            why: "it logs to the journal of its namespace tn, and NAILS cannot tell where \
+                  journald keeps it: NAILS cannot read /etc/systemd/journald@tn.conf.d; run the \
+                  command again with sudo"
+                .to_string(),
+            fix: JournalFix::Namespaces(vec!["tn".to_string()]),
+        }
     );
 }

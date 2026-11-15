@@ -50,32 +50,32 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
-- `decoy-persistence` judges tuned, tuned-ppd, firewalld and ABRT by how their units start them,
-  the unit file and every drop-in read as the service manager loads them, those of the unit's
-  aliases included, `ExecStart=` split as systemd splits it with the variables the unit sets
-  itself (`Environment=`, and the files `EnvironmentFile=` names), and by their running
-  processes, one that Python runs as a script or NixOS's wrapper names `.tuned-wrapped` included.
-  tuned or tuned-ppd that logs to a file refuses activation, which `--allow-persistent-decoy`
-  turns into a warning for one run: tuned logs its stop and its start around each switch, with
-  the time, to `/var/log/tuned` on the decoy disk with `-l`, which Fedora's units pass, or `-d`,
-  and to its standard error without them, which counts where the unit's `StandardError=`, or the
-  `StandardOutput=` it follows, or a running process sends it to a file, or to a journal
-  namespace (`LogNamespace=`) whose journal the decoy keeps on its disk; tuned-ppd logs the power
-  profiles it sets then. tuned counts while it is enabled or active, or a timer, path or socket
-  unit that runs starts it, and also while tuned-ppd is installed and not masked, since D-Bus
-  starts tuned-ppd whenever a program asks for power profiles and tuned-ppd needs tuned. firewalld
-  logging to a file (its default log target, `mixed`, appends its warnings and errors to
-  `/var/log/firewalld`), or to a journal namespace the decoy keeps, and ABRT in use (crash reports
-  in `/var/spool/abrt`) warn. What NAILS cannot read of their unit files, their commands or their
-  processes, a program that runs the daemon in turn, a pipe on its standard error and a
-  descriptor a socket unit passes among it, counts against the decoy, within the limits
-  `docs/decoy-requirements.md` names. The residue catalog has a row for each (`tuned-log`,
-  `firewalld-log`, `abrt-spool`), and `docs/decoy-requirements.md` says how to fix each, NixOS's
-  firewalld by `services.firewalld.extraArgs` and a journal namespace by `Storage=volatile` in
-  its `journald@<namespace>.conf`, which the refusal and the warning name too. Fedora is not
-  admitted yet, so no VM test runs them; the unit tests read the units Fedora 44's packages
-  install. The unit reader that `locate-database` uses reads the drop-ins of a unit's aliases,
-  and those systemd builds with an instance's prefixes, too.
+- `decoy-persistence` judges tuned, tuned-ppd, firewalld and ABRT by how their units start them, the
+  unit file and every drop-in read as the service manager loads them, those of the unit's aliases
+  included, `ExecStart=` split as systemd splits it with the variables the unit sets itself
+  (`Environment=`, and the files `EnvironmentFile=` names), and by their running processes, one that
+  Python runs as a script or NixOS's wrapper names `.tuned-wrapped` included. tuned or tuned-ppd
+  that logs to a file refuses activation, which `--allow-persistent-decoy` turns into a warning for
+  one run: tuned logs its stop and its start around each switch, with the time, to `/var/log/tuned`
+  on the decoy disk with `-l`, which Fedora's units pass, or `-d`, and to its standard error without
+  them, which counts where the unit's `StandardError=`, or the `StandardOutput=` it follows, or a
+  running process sends it to a file, or to a journal namespace (`LogNamespace=`) whose journal the
+  decoy keeps on its disk; tuned-ppd logs the power profiles it sets then. tuned counts while it is
+  enabled or active, or a timer, path or socket unit that runs starts it, and also while tuned-ppd
+  is installed and not masked, since D-Bus starts tuned-ppd whenever a program asks for power
+  profiles and tuned-ppd needs tuned. firewalld logging to a file (its default log target, `mixed`,
+  appends its warnings and errors to `/var/log/firewalld`), or to a journal namespace the decoy
+  keeps, and ABRT in use (crash reports in `/var/spool/abrt`) warn. What NAILS cannot read of their
+  unit files, their commands or their processes, a program that runs the daemon in turn, a pipe on
+  its standard error and a descriptor a socket unit passes among it, counts against the decoy,
+  within the limits `docs/decoy-requirements.md` names. The residue catalog has a row for each
+  (`tuned-log`, `firewalld-log`, `abrt-spool`), and `docs/decoy-requirements.md` says how to fix
+  each, NixOS's firewalld by `services.firewalld.extraArgs` and a journal namespace by
+  `Storage=volatile` in its `journald@<namespace>.conf`, which the refusal and the warning name too,
+  also where NAILS cannot tell whether the namespace persists, and a namespace a unit names with a
+  specifier by naming it without one. Fedora is not admitted yet, so no VM test runs them; the unit
+  tests read the units Fedora 44's packages install. The unit reader that `locate-database` uses
+  reads the drop-ins of a unit's aliases, and those systemd builds with an instance's prefixes, too.
 - `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
   `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
   its order and every other key stay as they were, a value already set as asked is not rewritten

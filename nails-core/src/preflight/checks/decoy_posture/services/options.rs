@@ -204,8 +204,30 @@ pub(in crate::preflight::checks::decoy_posture) enum Log {
         /// What it writes there.
         what: &'static str,
     },
+    /// To the journal, which may be that of a journal namespace the decoy
+    /// keeps on its disk: NAILS cannot tell, for `why`, and `fix` is what
+    /// lets it.
+    UntoldJournal {
+        /// Why NAILS cannot tell.
+        why: String,
+        /// What lets NAILS tell.
+        fix: JournalFix,
+    },
     /// NAILS cannot tell, for this reason.
     Unknown(String),
+}
+
+/// What lets NAILS tell where a daemon's journal goes, where it cannot
+/// ([`Log::UntoldJournal`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::preflight::checks::decoy_posture) enum JournalFix {
+    /// The fix of these journal namespaces, which keeps their journals off
+    /// the decoy disk: those it logs to, or may, whose journal the decoy
+    /// keeps or NAILS cannot tell whether it does.
+    Namespaces(Vec<String>),
+    /// A journal namespace its unit names without a specifier, which NAILS
+    /// does not expand, or none.
+    Specifier,
 }
 
 impl Log {
@@ -213,7 +235,11 @@ impl Log {
     pub(in crate::preflight::checks::decoy_posture) fn namespace(&self) -> Option<&str> {
         match self {
             Log::File(file) => file.namespace.as_deref(),
-            Log::NoFile | Log::Stream { .. } | Log::Journal { .. } | Log::Unknown(_) => None,
+            Log::NoFile
+            | Log::Stream { .. }
+            | Log::Journal { .. }
+            | Log::UntoldJournal { .. }
+            | Log::Unknown(_) => None,
         }
     }
 }

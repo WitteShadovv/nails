@@ -83,7 +83,7 @@ use super::loggers::{self, Activity};
 use super::triggers::{self, Triggers};
 use super::{Enabled, PersistenceFinding, unit_enabled};
 use crate::Filesystem;
-use options::Log;
+use options::{JournalFix, Log};
 use processes::{Processes, own_args, runs_anywhere};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -130,6 +130,11 @@ const FIREWALLD: Daemon = Daemon {
                       disk with the time",
 };
 
+/// What becomes of what firewalld logs around a switch where NAILS can only
+/// not tell whether it logs to a file.
+const FIREWALLD_MAY_KEEP: &str =
+    "what it logs when it stops or starts around a switch may stay on the decoy disk with the time";
+
 /// ABRT's daemon, which every other ABRT unit needs running.
 const ABRTD_UNIT: &str = "abrtd.service";
 
@@ -159,8 +164,13 @@ pub(super) struct Tuned {
     /// whose restart the remediation names, beside the fix of any unit.
     pub(super) programs: Vec<&'static str>,
     /// The journal namespaces of those findings whose journal the decoy
-    /// keeps on its disk, whose fix the remediation names.
+    /// keeps on its disk, or NAILS cannot tell whether it does, whose fix the
+    /// remediation names.
     pub(super) namespaces: Vec<String>,
+    /// The units of those findings whose `LogNamespace=` names the
+    /// namespace with a specifier, which NAILS does not expand, whose fix the
+    /// remediation names.
+    pub(super) specified: Vec<&'static str>,
 }
 
 /// How the service manager starts a unit on its own, as [`Decoy::started`]
@@ -187,9 +197,15 @@ fn first_file(logs: Vec<Log>) -> Log {
     for log in logs {
         match log {
             Log::File(_) => return log,
-            Log::Unknown(_) if unknown.is_none() => unknown = Some(log),
+            Log::Unknown(_) | Log::UntoldJournal { .. } if unknown.is_none() => {
+                unknown = Some(log);
+            }
             Log::Stream { .. } | Log::Journal { .. } if stream.is_none() => stream = Some(log),
-            Log::Unknown(_) | Log::Stream { .. } | Log::Journal { .. } | Log::NoFile => {}
+            Log::Unknown(_)
+            | Log::UntoldJournal { .. }
+            | Log::Stream { .. }
+            | Log::Journal { .. }
+            | Log::NoFile => {}
         }
     }
     unknown.or(stream).unwrap_or(Log::NoFile)
@@ -203,8 +219,13 @@ struct Logs {
     /// What NAILS cannot tell, each with what shows it.
     unknown: Vec<String>,
     /// The journal namespaces whose journal on the decoy disk it logs to, or
-    /// would where NAILS cannot tell whether its unit starts.
+    /// may, or would where NAILS cannot tell whether its unit starts, and
+    /// those it logs to, or may, whose storage NAILS cannot tell: their fix
+    /// is the remediation's.
     namespaces: BTreeSet<String>,
+    /// Whether its unit names its journal namespace with a specifier, which
+    /// NAILS does not expand: naming it without one is the remediation's.
+    specifier: bool,
     /// Whether its unit shows a file of its own, or what NAILS cannot tell:
     /// a log to a journal namespace aside.
     by_unit: bool,
@@ -213,15 +234,27 @@ struct Logs {
 }
 
 impl Logs {
-    /// Note where `log` leads: to a journal namespace's file, or to one of
-    /// the daemon's own or what NAILS cannot tell, which sets `own`.
+    /// Note where `log` leads: to a journal namespace's file, or to a
+    /// journal NAILS cannot tell of, whose fix is a namespace's or naming it
+    /// without a specifier, or to one of the daemon's own or what else NAILS
+    /// cannot tell, which sets `own`.
     fn note(&mut self, log: &Log, own: impl FnOnce(&mut Self)) {
-        match log.namespace() {
-            Some(namespace) => {
-                self.namespaces.insert(namespace.to_string());
-            }
-            None if *log != Log::NoFile => own(self),
-            None => {}
+        match log {
+            Log::NoFile => {}
+            Log::UntoldJournal {
+                fix: JournalFix::Namespaces(namespaces),
+                ..
+            } => self.namespaces.extend(namespaces.iter().cloned()),
+            Log::UntoldJournal {
+                fix: JournalFix::Specifier,
+                ..
+            } => self.specifier = true,
+            log => match log.namespace() {
+                Some(namespace) => {
+                    self.namespaces.insert(namespace.to_string());
+                }
+                None => own(self),
+            },
         }
     }
 
@@ -248,7 +281,9 @@ impl Logs {
                     Log::Journal { .. } => {
                         format!("{unit} would start it logging to a journal")
                     }
-                    Log::Unknown(reason) => format!("{unit} would start it, and {reason}"),
+                    Log::Unknown(reason) | Log::UntoldJournal { why: reason, .. } => {
+                        format!("{unit} would start it, and {reason}")
+                    }
                 };
                 self.unknown.push(format!("{would}, and {why}"));
             }
@@ -272,7 +307,9 @@ impl Logs {
             Log::Journal { .. } => self
                 .unknown
                 .push(format!("{source}, and it logs to a journal")),
-            Log::Unknown(why) => self.unknown.push(format!("{source}: {why}")),
+            Log::Unknown(why) | Log::UntoldJournal { why, .. } => {
+                self.unknown.push(format!("{source}: {why}"));
+            }
         }
     }
 
@@ -645,9 +682,16 @@ fn firewalld_warning(logs: &Logs, env_files: &[String], is_nixos: bool) -> Optio
             logs.unknown.join("; ")
         ));
     }
+    let around = if logs.files.is_empty() {
+        FIREWALLD_MAY_KEEP
+    } else {
+        FIREWALLD.around_a_switch
+    };
     let mut fixes = Vec::new();
-    // A journal namespace's file needs that namespace's fix alone.
-    if logs.by_unit || logs.by_process || logs.namespaces.is_empty() {
+    // A journal namespace's file, or a journal NAILS cannot tell of, needs
+    // the namespace's fix alone, or naming the namespace without a
+    // specifier.
+    if logs.by_unit || logs.by_process || (logs.namespaces.is_empty() && !logs.specifier) {
         let option = match env_files.last() {
             _ if is_nixos => "set services.firewalld.extraArgs = [ \"--log-target=syslog\" ] in \
                               the decoy configuration and run nixos-rebuild switch"
@@ -664,10 +708,12 @@ fn firewalld_warning(logs: &Logs, env_files: &[String], is_nixos: bool) -> Optio
         let namespaces: Vec<String> = logs.namespaces.iter().cloned().collect();
         fixes.push(namespace_fix(&namespaces, is_nixos));
     }
+    if logs.specifier {
+        fixes.push(specifier_fix(&[FIREWALLD.unit], is_nixos));
+    }
     Some(format!(
-        "{}, so {}; {}",
+        "{}, so {around}; {}",
         what.join(", and "),
-        FIREWALLD.around_a_switch,
         fixes.join(", and ")
     ))
 }
@@ -708,6 +754,9 @@ pub(super) fn blockers<F: Filesystem>(fs: &F, root: &Path, hidden: &[PathBuf]) -
     for (daemon, logs) in [(&TUNED, &tuned), (&TUNED_PPD, &ppd)] {
         found.blockers.extend(tuned_findings(daemon, logs));
         namespaces.extend(logs.namespaces.iter().cloned());
+        if logs.specifier {
+            found.specified.push(daemon.unit);
+        }
         if logs.by_unit {
             found.units.push(daemon.unit);
         } else if logs.by_process {
@@ -789,15 +838,46 @@ fn namespace_fix(namespaces: &[String], is_nixos: bool) -> String {
     )
 }
 
+/// How to name the journal namespace of `units`, whose `LogNamespace=`
+/// names it with a specifier, without one, which lets NAILS tell where they
+/// log, on a NixOS decoy when `is_nixos`.
+fn specifier_fix(units: &[&str], is_nixos: bool) -> String {
+    let names = units.join(" ");
+    if is_nixos {
+        let services: Vec<String> = units
+            .iter()
+            .map(|unit| {
+                format!(
+                    "systemd.services.{}",
+                    unit.strip_suffix(".service").unwrap_or(unit)
+                )
+            })
+            .collect();
+        return format!(
+            "name the journal namespace in the LogNamespace of the serviceConfig of {} without a \
+             specifier, which NAILS does not expand, or drop it, in the decoy configuration, then \
+             run nixos-rebuild switch",
+            listed(&services)
+        );
+    }
+    format!(
+        "name the journal namespace in the LogNamespace= of {names} without a specifier, which \
+         NAILS does not expand, or drop it, then run systemctl daemon-reload and systemctl \
+         restart {names}"
+    )
+}
+
 /// The fix of the tuned findings, `units` being those of the units that
 /// show a log file of their own or what NAILS cannot tell, `programs` those
-/// of the programs only a process shows so, and `namespaces` the journal
-/// namespaces of the findings whose journal the decoy keeps, for a NixOS
-/// decoy when `is_nixos`.
+/// of the programs only a process shows so, `namespaces` the journal
+/// namespaces of the findings whose journal the decoy keeps or NAILS cannot
+/// tell whether it does, and `specified` the units whose `LogNamespace=`
+/// has a specifier, for a NixOS decoy when `is_nixos`.
 pub(super) fn tuned_fix(
     units: &[&str],
     programs: &[&str],
     namespaces: &[String],
+    specified: &[&str],
     is_nixos: bool,
 ) -> String {
     let mut fixes = Vec::new();
@@ -843,6 +923,9 @@ pub(super) fn tuned_fix(
     }
     if !namespaces.is_empty() {
         fixes.push(namespace_fix(namespaces, is_nixos));
+    }
+    if !specified.is_empty() {
+        fixes.push(specifier_fix(specified, is_nixos));
     }
     fixes.join(", and ")
 }
