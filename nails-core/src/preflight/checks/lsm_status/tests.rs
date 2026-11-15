@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::MockFilesystem;
+use nails_teardown::test_support::{FakeSelinux, UDEVD_CONTEXT};
 
 /// Debian's and Ubuntu's list: AppArmor is the module that labels processes.
 const APPARMOR_LSMS: &str = "lockdown,capability,landlock,yama,apparmor,ima,evm";
@@ -252,8 +253,9 @@ fn units_verdict(systemd: UnitDomain, udev: UnitDomain) -> CheckResult {
 
 #[test]
 fn units_in_an_unknown_domain_fail_where_selinux_runs() {
-    // What the registry gives on every host today: NAILS starts neither kind
-    // in a domain it chose, so an enforcing targeted host fails too.
+    // What the registry gives where the copies take no label: NAILS starts
+    // neither kind in a domain it chose, so an enforcing targeted host fails
+    // too.
     let result = judge(&enforcing(UNCONFINED_LOGIN), &UnitDomains::UNKNOWN);
     assert!(result.is_fail(), "{result:?}");
     assert_eq!(
@@ -292,8 +294,8 @@ fn a_domain_shown_for_what_systemd_starts_does_not_stand_for_the_disk_guard() {
     assert!(result.message().starts_with(UDEV_UNKNOWN), "{result:?}");
     assert!(!result.message().contains("systemd starts"), "{result:?}");
     // udev_t, the domain udev itself runs in, is not one NAILS counts as
-    // unconfined: whether the guard may run there is for a run under the
-    // policy to show, and until the check takes it, the guard fails there.
+    // unconfined: the guard counts there only as granted, where the loaded
+    // policy was asked for every operation the guard makes.
     let result = units_verdict(systemd, UnitDomain::Known("udev_t".to_string()));
     assert!(result.is_fail(), "{result:?}");
     assert_eq!(
@@ -1116,4 +1118,266 @@ fn the_probed_hosts_pass_enforcing_and_warn_permissive() {
             "{name}: {judged:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The domains the registry gives from the label of the RAM copies
+// ---------------------------------------------------------------------------
+
+/// The finding on the processes systemd starts, where the policy does not
+/// start them from the labelled copy as they need, around what it makes of
+/// the start.
+fn systemd_unfit_text(why: &str) -> String {
+    format!(
+        "NAILS gives its copy in /run the label of the system's programs \
+         (system_u:object_r:bin_t:s0), but PID 1's start of a file so labelled {why}, so nothing \
+         shows the processes systemd starts from that copy (the transition step at each switch, \
+         the watcher and the sleep guard of the hidden session, and the boot-record steps after \
+         the way back) run unconfined."
+    )
+}
+
+/// The finding on the disk guard, around what keeps it from its work.
+fn guard_unfit_text(why: &str) -> String {
+    format!(
+        "The disk guard udev starts for NAILS ([session_mounts] read_only) {why}, so nothing \
+         shows it can keep the disks that appear in the session read-only."
+    )
+}
+
+/// What the check passes an enforcing targeted host with, where this process
+/// runs in `unconfined_t`, the processes systemd starts in
+/// `unconfined_service_t`, and `guard` says what of the disk guard.
+fn passed_with(guard: &str) -> String {
+    format!(
+        "SELinux enforces, /etc/selinux/config names the targeted policy and has not changed \
+         since the boot, and NAILS runs unconfined: this process in unconfined_t and the \
+         processes systemd starts for it in unconfined_service_t. {guard} Active LSMs: lockdown, \
+         capability, yama, selinux, bpf, landlock."
+    )
+}
+
+#[test]
+fn where_the_copies_take_no_label_nails_chooses_neither_domain_and_asks_nothing() {
+    let selinux = FakeSelinux::targeted();
+    assert_eq!(
+        UnitDomains::of_host(false, true, &selinux),
+        UnitDomains::UNKNOWN
+    );
+    assert_eq!(
+        UnitDomains::of_host(false, false, &selinux),
+        UnitDomains {
+            systemd: UnitDomain::Unknown,
+            udev: UnitDomain::Off,
+        }
+    );
+    assert!(selinux.questions().is_empty(), "{:?}", selinux.questions());
+    // Where the guard does not run, its finding goes; the steps fail as they
+    // did.
+    let result = judge(
+        &enforcing(UNCONFINED_LOGIN),
+        &UnitDomains::of_host(false, false, &selinux),
+    );
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "{SYSTEMD_UNKNOWN} Active LSMs: lockdown, capability, yama, selinux, bpf, landlock."
+        )
+    );
+}
+
+#[test]
+fn the_steps_count_where_the_policy_starts_the_labelled_copy_unconfined() {
+    let selinux = FakeSelinux::targeted();
+    let units = UnitDomains::of_host(true, false, &selinux);
+    assert_eq!(
+        units,
+        UnitDomains {
+            systemd: UnitDomain::Known(SERVICE.to_string()),
+            udev: UnitDomain::Off,
+        }
+    );
+    // Nothing is asked about a guard that does not run.
+    let questions = selinux.questions();
+    assert!(!questions.contains(&"udevd".to_string()), "{questions:?}");
+    let result = judge(&enforcing(UNCONFINED_LOGIN), &units);
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        passed_with("The disk guard does not run: [session_mounts] read_only is off.")
+    );
+}
+
+#[test]
+fn the_disk_guard_counts_in_udev_t_only_where_the_policy_grants_it_every_operation() {
+    let units = UnitDomains::of_host(true, true, &FakeSelinux::targeted());
+    assert_eq!(
+        units,
+        UnitDomains {
+            systemd: UnitDomain::Known(SERVICE.to_string()),
+            udev: UnitDomain::Granted("udev_t".to_string()),
+        }
+    );
+    let result = judge(&enforcing(UNCONFINED_LOGIN), &units);
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        passed_with(
+            "The disk guard udev starts runs in udev_t, which the loaded policy confines but \
+             grants every operation of the guard that this check asks about."
+        )
+    );
+
+    // A policy that denies the guard what it does fails the host where the
+    // guard runs, and only there.
+    let denying = FakeSelinux {
+        denied_on: vec![("fixed_disk_device_t", "blk_file", "ioctl")],
+        ..FakeSelinux::targeted()
+    };
+    let units = UnitDomains::of_host(true, true, &denying);
+    assert_eq!(units.systemd, UnitDomain::Known(SERVICE.to_string()));
+    let result = judge(&enforcing(UNCONFINED_LOGIN), &units);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "{} Active LSMs: lockdown, capability, yama, selinux, bpf, landlock.",
+            guard_unfit_text(&format!(
+                "runs in {UDEVD_CONTEXT}, and the loaded SELinux policy denies that domain the \
+                 blk_file permission ioctl on system_u:object_r:fixed_disk_device_t:s0, which \
+                 the guard needs to set a disk read-only"
+            ))
+        )
+    );
+    let off = UnitDomains::of_host(true, false, &denying);
+    assert_eq!(off.udev, UnitDomain::Off);
+    assert!(judge(&enforcing(UNCONFINED_LOGIN), &off).is_pass());
+
+    // No udevd to show the guard's domain fails as well.
+    let without_udevd = FakeSelinux {
+        udevd: None,
+        ..FakeSelinux::targeted()
+    };
+    assert_eq!(
+        UnitDomains::of_host(true, true, &without_udevd).udev,
+        UnitDomain::Unfit(guard_unfit_text(
+            "runs in the domain of systemd-udevd, which starts it, but no systemd-udevd runs \
+             here to show that domain"
+        ))
+    );
+
+    // A udevd that runs unconfined starts the guard unconfined too.
+    let unconfined_udevd = FakeSelinux {
+        udevd: Some("system_u:system_r:unconfined_service_t:s0".to_string()),
+        ..FakeSelinux::targeted()
+    };
+    assert_eq!(
+        UnitDomains::of_host(true, true, &unconfined_udevd).udev,
+        UnitDomain::Known(SERVICE.to_string())
+    );
+}
+
+#[test]
+fn steps_the_policy_does_not_start_unconfined_fail_with_what_it_makes_of_the_start() {
+    let own_domain = FakeSelinux {
+        entered: "system_u:system_r:init_t:s0".to_string(),
+        ..FakeSelinux::targeted()
+    };
+    let units = UnitDomains::of_host(true, false, &own_domain);
+    let finding = systemd_unfit_text(
+        "runs in PID 1's own domain (system_u:system_r:init_t:s0): the loaded SELinux policy \
+         gives it no domain of its own",
+    );
+    assert_eq!(units.systemd, UnitDomain::Unfit(finding.clone()));
+    let result = judge(&enforcing(UNCONFINED_LOGIN), &units);
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!("{finding} Active LSMs: lockdown, capability, yama, selinux, bpf, landlock.")
+    );
+
+    // A policy that cannot be asked fails both kinds.
+    let unasked = FakeSelinux {
+        policy_error: Some(rustix::io::Errno::ACCESS.raw_os_error()),
+        ..FakeSelinux::targeted()
+    };
+    let units = UnitDomains::of_host(true, true, &unasked);
+    for (domain, starts) in [
+        (&units.systemd, "NAILS gives its copy in /run the label"),
+        (&units.udev, "The disk guard udev starts for NAILS"),
+    ] {
+        assert!(
+            matches!(domain, UnitDomain::Unfit(finding)
+                if finding.starts_with(starts) && finding.contains("the policy cannot be asked")),
+            "{domain:?}"
+        );
+    }
+}
+
+#[test]
+fn where_no_policy_shows_both_kinds_fail_as_unjudged() {
+    // The facts this check reads may show SELinux running while the kernel
+    // shows no policy: neither kind is then counted.
+    let units = UnitDomains::of_host(true, true, &FakeSelinux::without_policy());
+    let why = "cannot be judged: neither /sys/fs/selinux nor PID 1's context \
+               (/proc/1/attr/current) shows a loaded SELinux policy";
+    assert_eq!(
+        units,
+        UnitDomains {
+            systemd: UnitDomain::Unfit(systemd_unfit_text(why)),
+            udev: UnitDomain::Unfit(guard_unfit_text(why)),
+        }
+    );
+    assert!(judge(&enforcing(UNCONFINED_LOGIN), &units).is_fail());
+    // Where SELinux does not run, the domains do not count either way.
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(host_facts::LSM_LIST, &format!("{APPARMOR_LSMS}\n"));
+    assert!(run_on(&fs, units).is_pass());
+}
+
+#[test]
+fn a_kind_granted_or_off_reads_as_such_in_the_verdict() {
+    // The verdict names each kind by what is known of it: the processes
+    // systemd starts granted, which the registry never gives, read so too.
+    let units = UnitDomains {
+        systemd: UnitDomain::Granted("init_t".to_string()),
+        udev: UnitDomain::Known(SERVICE.to_string()),
+    };
+    let result = judge(&enforcing(UNCONFINED_LOGIN), &units);
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "SELinux enforces, /etc/selinux/config names the targeted policy and has not changed \
+         since the boot, and NAILS runs unconfined: this process in unconfined_t and the disk \
+         guard udev starts in unconfined_service_t. The processes systemd starts for it run in \
+         init_t, which the loaded policy confines but grants every operation they make. Active \
+         LSMs: lockdown, capability, yama, selinux, bpf, landlock."
+    );
+    let units = UnitDomains {
+        systemd: UnitDomain::Off,
+        udev: UnitDomain::Off,
+    };
+    let result = judge(&enforcing(UNCONFINED_LOGIN), &units);
+    assert_eq!(
+        result.message(),
+        "SELinux enforces, /etc/selinux/config names the targeted policy and has not changed \
+         since the boot, and NAILS runs unconfined: this process in unconfined_t. No process \
+         systemd starts for it runs. The disk guard does not run: [session_mounts] read_only is \
+         off. Active LSMs: lockdown, capability, yama, selinux, bpf, landlock."
+    );
+    // A permissive host warns as before, whatever the guard.
+    let mut permissive = enforcing(UNCONFINED_LOGIN);
+    permissive.selinux = Some(status(
+        Some(SelinuxMode::Permissive),
+        Some("permissive"),
+        Some("targeted"),
+    ));
+    let units = UnitDomains::of_host(true, true, &FakeSelinux::targeted());
+    let result = judge(&permissive, &units);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().starts_with("SELinux is permissive"),
+        "{result:?}"
+    );
 }

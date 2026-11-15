@@ -18,7 +18,9 @@
 //!   context of this process shows another: fail**, as untested.
 //! - **SELinux is on in the kernel, but no policy is loaded: fail**, as
 //!   untested, with the remedy to start the kernel with SELinux off.
-//! - **NAILS runs in a confined domain: fail.**
+//! - **NAILS runs in a confined domain: fail**, but for the disk guard in a
+//!   domain the loaded policy confines and grants every operation the guard
+//!   makes.
 //! - **SELinux runs, or may run, and a fact this check needs cannot be read:
 //!   fail.** Where SELinux runs or may run, it never passes on a fact it could
 //!   not read.
@@ -64,7 +66,9 @@
 //! # The domain NAILS runs in
 //!
 //! NAILS runs as three kinds of process, and each must run in a domain NAILS
-//! counts as unconfined ([`UNCONFINED_DOMAINS`]):
+//! counts as unconfined ([`UNCONFINED_DOMAINS`]), but for the disk guard,
+//! which may run in one the loaded policy confines where it grants that
+//! domain every operation the guard makes:
 //!
 //! - the `nails` process that runs this check, and the activation: its domain
 //!   is the type of its context in `/proc/self/attr/current`. A login whose
@@ -83,22 +87,48 @@
 //!   whatever domain the decoy's policy gives a program udev executes, and
 //!   nothing NAILS sets on systemd's side reaches it.
 //!
-//! No fact read at check time shows the domain of the last two. The registry
-//! says what is known of each ([`UnitDomains`]), and the check judges each by
-//! itself, so a domain shown for what systemd starts never stands for the
-//! disk guard. NAILS chooses neither yet, so both are [`UnitDomain::Unknown`],
-//! and on a host where SELinux runs this check fails until a run under the
-//! policy has shown the domain NAILS starts each in.
+//! No fact this check reads shows the domain of the last two. The registry
+//! gives what the loaded policy makes of each ([`UnitDomains::of_host`]), and
+//! the check judges each by itself, so a domain shown for what systemd starts
+//! never stands for the disk guard:
+//!
+//! - where the host may run SELinux, NAILS gives every copy of its binary in
+//!   `/run` the label of the system's programs ([`PROGRAM_LABEL`]), and the
+//!   registry asks the loaded policy, through selinuxfs, what PID 1's start
+//!   of such a copy comes to ([`start_domain`]). Where it enters
+//!   `unconfined_service_t` with every permission the change of domain needs,
+//!   the processes systemd starts count as unconfined there; where it does
+//!   not, or the policy cannot be asked, they fail the check;
+//! - the disk guard runs only where `[session_mounts] read_only` is on;
+//!   elsewhere nothing is asked about it. udevd starts it in udevd's own
+//!   domain, `udev_t` under a targeted policy, which that policy confines.
+//!   The registry asks the loaded policy, through selinuxfs, whether it grants
+//!   that domain every operation the guard makes ([`check_guard`]): the guard
+//!   counts there where it does ([`UnitDomain::Granted`]), and fails the check
+//!   where it does not, where no udevd runs, or where the policy cannot be
+//!   asked;
+//! - where the copies take no label, NAILS chooses neither domain: both are
+//!   [`UnitDomain::Unknown`], and on a host where SELinux runs the check
+//!   fails.
+//!
+//! Fedora, whose hosts run SELinux by default, is not admitted yet: the
+//! `platform` check refuses it, so on the families NAILS admits this applies
+//! only where a host was set up to run SELinux.
 //!
 //! Every SELinux fact is read through the host-fact readers detection uses,
 //! without libselinux; the change time of `/etc/selinux/config` and the boot
-//! time come through the same [`Filesystem`] trait. Everything is only read:
-//! nothing here writes.
+//! time come through the same [`Filesystem`] trait. The check itself only
+//! reads. The registry's questions to the policy write a request to a
+//! transaction file of selinuxfs and read its answer, which changes nothing
+//! either.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::platform::host_facts::{self, LSM_LIST, PROCESS_LABEL, SELINUX_CONFIG, SELINUX_ENFORCE};
 use crate::platform::{SelinuxMode, SelinuxStatus, Selinuxfs};
 use crate::{Filesystem, Result};
+use nails_teardown::whole_root::guard_policy::check_guard;
+use nails_teardown::whole_root::program_label::{PROGRAM_LABEL, start_domain};
+use nails_teardown::whole_root::selinux::{Selinux, type_of};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -132,8 +162,21 @@ pub enum UnitDomain {
     /// whatever domain the decoy's policy gives the program systemd or udev
     /// executes.
     Unknown,
-    /// This domain, as a run under the decoy's policy showed it.
+    /// This domain, as the loaded policy gives their start: counted only where
+    /// it is one NAILS counts as unconfined ([`UNCONFINED_DOMAINS`]).
     Known(String),
+    /// This domain, which the loaded policy confines but, as the policy was
+    /// asked, grants every operation these processes make: counted as for
+    /// them. The registry gives it for the disk guard alone
+    /// ([`check_guard`]).
+    Granted(String),
+    /// NAILS gives their copy the label of the system's programs, but nothing
+    /// shows they run where they may do their work: the finding that says
+    /// why, as a sentence.
+    Unfit(String),
+    /// They do not run: the disk guard where `[session_mounts] read_only` is
+    /// off.
+    Off,
 }
 
 /// The SELinux domains of the processes systemd and udev start from NAILS's
@@ -151,12 +194,99 @@ pub struct UnitDomains {
 }
 
 impl UnitDomains {
-    /// Neither domain known: what the registry gives while NAILS chooses
-    /// neither.
+    /// Neither domain known: what the registry gives where NAILS chooses
+    /// neither, and what tests that build the registry's inputs directly
+    /// give.
     pub const UNKNOWN: Self = Self {
         systemd: UnitDomain::Unknown,
         udev: UnitDomain::Unknown,
     };
+
+    /// The domains the registry gives on this host: where the RAM copies of
+    /// the binary take the label of the system's programs (`labelled`, as
+    /// [`crate::session::program_label::for_host`] decides), what the loaded
+    /// policy, which `selinux` asks, makes of PID 1's start of such a copy
+    /// ([`start_domain`]) and of udevd's start of the disk guard
+    /// ([`check_guard`]); elsewhere [`UnitDomain::Unknown`], as NAILS chooses
+    /// no domain there. The disk guard is [`UnitDomain::Off`] where it does
+    /// not run (`guard` false: `[session_mounts] read_only` is off), and
+    /// nothing is asked about it then.
+    pub fn of_host(labelled: bool, guard: bool, selinux: &dyn Selinux) -> Self {
+        let udev = match (guard, labelled) {
+            (false, _) => UnitDomain::Off,
+            (true, false) => UnitDomain::Unknown,
+            (true, true) => guard_domain(selinux),
+        };
+        let systemd = if labelled {
+            systemd_domain(selinux)
+        } else {
+            UnitDomain::Unknown
+        };
+        Self { systemd, udev }
+    }
+}
+
+/// What the loaded policy, which `selinux` asks, makes of PID 1's start of a
+/// copy labelled [`PROGRAM_LABEL`] ([`start_domain`]): the domain it enters,
+/// or the finding where it does not start it as the processes systemd starts
+/// need.
+fn systemd_domain(selinux: &dyn Selinux) -> UnitDomain {
+    match start_domain(selinux, PROGRAM_LABEL) {
+        Ok(Some(entered)) => match type_of(&entered) {
+            Some(domain) => UnitDomain::Known(domain.to_string()),
+            None => UnitDomain::Unfit(systemd_unfit(&format!(
+                "enters {entered}, which is no SELinux context with a type"
+            ))),
+        },
+        Ok(None) => UnitDomain::Unfit(systemd_unfit(NO_POLICY)),
+        Err(unfit) => UnitDomain::Unfit(systemd_unfit(&unfit.to_string())),
+    }
+}
+
+/// What the loaded policy, which `selinux` asks, lets the disk guard do from
+/// a copy labelled [`PROGRAM_LABEL`] ([`check_guard`]): the domain it runs
+/// in, which counts where the policy grants it every operation the guard
+/// makes, or the finding where it does not.
+fn guard_domain(selinux: &dyn Selinux) -> UnitDomain {
+    match check_guard(selinux, PROGRAM_LABEL) {
+        Ok(Some(context)) => match type_of(&context) {
+            Some(domain) if unconfined(domain) => UnitDomain::Known(domain.to_string()),
+            Some(domain) => UnitDomain::Granted(domain.to_string()),
+            None => UnitDomain::Unfit(guard_unfit(&format!(
+                "runs in {context}, which is no SELinux context with a type"
+            ))),
+        },
+        Ok(None) => UnitDomain::Unfit(guard_unfit(NO_POLICY)),
+        Err(unfit) => UnitDomain::Unfit(guard_unfit(&unfit.to_string())),
+    }
+}
+
+/// Why nothing shows a domain where no policy is loaded to give one, though
+/// this check finds SELinux running: to follow "PID 1's start of a file so
+/// labelled" or "The disk guard udev starts for NAILS" in a sentence.
+const NO_POLICY: &str = "cannot be judged: neither /sys/fs/selinux nor PID 1's context \
+                         (/proc/1/attr/current) shows a loaded SELinux policy";
+
+/// The finding on the processes systemd starts where the loaded policy does
+/// not start them from the labelled copy as they need: `why` follows "PID 1's
+/// start of a file so labelled".
+fn systemd_unfit(why: &str) -> String {
+    format!(
+        "NAILS gives its copy in /run the label of the system's programs ({PROGRAM_LABEL}), but \
+         PID 1's start of a file so labelled {why}, so nothing shows the processes systemd \
+         starts from that copy (the transition step at each switch, the watcher and the sleep \
+         guard of the hidden session, and the boot-record steps after the way back) run \
+         unconfined."
+    )
+}
+
+/// The finding on the disk guard where nothing shows the loaded policy lets
+/// it do its work: `why` follows "The disk guard udev starts for NAILS".
+fn guard_unfit(why: &str) -> String {
+    format!(
+        "The disk guard udev starts for NAILS ([session_mounts] read_only) {why}, so nothing \
+         shows it can keep the disks that appear in the session read-only."
+    )
 }
 
 /// `lsm-status`: the active LSMs, and where SELinux runs, that it enforces the
@@ -578,12 +708,7 @@ fn running(
         && let (Some(process), Some(systemd), Some(udev)) = (process, systemd, udev)
     {
         return if warns.is_empty() {
-            CheckResult::Pass(format!(
-                "SELinux enforces, {SELINUX_CONFIG} names the targeted policy and has not \
-                 changed since the boot, and NAILS runs unconfined: this process in {process}, \
-                 the processes systemd starts for it in {systemd}, and the disk guard udev \
-                 starts in {udev}. {lsms}"
-            ))
+            CheckResult::Pass(passed(process, systemd, udev, lsms))
         } else {
             CheckResult::Warn(format!("{} {lsms}", warns.join(" ")))
         };
@@ -592,33 +717,97 @@ fn running(
     CheckResult::fail(format!("{} {lsms}", fails.join(" ")))
 }
 
-/// The domain `units` gives one kind of NAILS's processes, where it is known.
-/// The finding that fails it goes to `fails`: `unknown` where nothing shows the
-/// domain, and where it is not one NAILS counts as unconfined, that `starts`
-/// (the start of a sentence that names what starts them) puts them in that
-/// domain.
+/// How one kind of NAILS's processes from its copy in `/run` counts where
+/// nothing fails it ([`unit_domain`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Counted<'a> {
+    /// In this domain, which NAILS counts as unconfined.
+    Unconfined(&'a str),
+    /// In this domain, which the loaded policy confines but grants every
+    /// operation they make ([`UnitDomain::Granted`]).
+    Granted(&'a str),
+    /// Not at all: they do not run ([`UnitDomain::Off`]).
+    Off,
+}
+
+/// How `units` counts one kind of NAILS's processes, where nothing fails it.
+/// The finding that fails it goes to `fails`: `unknown` where nothing shows
+/// the domain, the finding [`UnitDomain::Unfit`] carries, and where the domain
+/// is not one NAILS counts as unconfined, that `starts` (the start of a
+/// sentence that names what starts them) puts them in that domain.
 fn unit_domain<'a>(
     units: &'a UnitDomain,
     unknown: &str,
     starts: &str,
     fails: &mut Vec<String>,
-) -> Option<&'a str> {
+) -> Option<Counted<'a>> {
     match units {
         UnitDomain::Unknown => {
             fails.push(unknown.to_string());
             None
         }
-        UnitDomain::Known(domain) => {
-            if !unconfined(domain) {
-                fails.push(format!(
-                    "{starts} the SELinux domain {domain}, not in one NAILS counts as \
-                     unconfined ({}).",
-                    UNCONFINED_DOMAINS.join(", ")
-                ));
-            }
-            Some(domain)
+        UnitDomain::Unfit(finding) => {
+            fails.push(finding.clone());
+            None
         }
+        UnitDomain::Known(domain) if unconfined(domain) => Some(Counted::Unconfined(domain)),
+        UnitDomain::Known(domain) => {
+            fails.push(format!(
+                "{starts} the SELinux domain {domain}, not in one NAILS counts as unconfined \
+                 ({}).",
+                UNCONFINED_DOMAINS.join(", ")
+            ));
+            None
+        }
+        UnitDomain::Granted(domain) => Some(Counted::Granted(domain)),
+        UnitDomain::Off => Some(Counted::Off),
     }
+}
+
+/// The verdict's text on a host where nothing fails and nothing warns: what
+/// runs unconfined, `process` the domain of this process, then a sentence
+/// for each kind of process the loaded policy confines but grants every
+/// operation it makes, and for each that does not run.
+fn passed(process: &str, systemd: Counted<'_>, udev: Counted<'_>, lsms: &str) -> String {
+    let mut unconfined = vec![format!("this process in {process}")];
+    let mut after = Vec::new();
+    match systemd {
+        Counted::Unconfined(domain) => {
+            unconfined.push(format!("the processes systemd starts for it in {domain}"));
+        }
+        Counted::Granted(domain) => after.push(format!(
+            "The processes systemd starts for it run in {domain}, which the loaded policy \
+             confines but grants every operation they make."
+        )),
+        Counted::Off => after.push("No process systemd starts for it runs.".to_string()),
+    }
+    match udev {
+        Counted::Unconfined(domain) => {
+            unconfined.push(format!("the disk guard udev starts in {domain}"));
+        }
+        Counted::Granted(domain) => after.push(format!(
+            "The disk guard udev starts runs in {domain}, which the loaded policy confines but \
+             grants every operation of the guard that this check asks about."
+        )),
+        Counted::Off => after
+            .push("The disk guard does not run: [session_mounts] read_only is off.".to_string()),
+    }
+    let list = match unconfined.as_slice() {
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] if !rest.is_empty() => format!("{}, and {last}", rest.join(", ")),
+        _ => unconfined.concat(),
+    };
+    let mut text = format!(
+        "SELinux enforces, {SELINUX_CONFIG} names the targeted policy and has not changed since \
+         the boot, and NAILS runs unconfined: {list}."
+    );
+    for sentence in after {
+        text.push(' ');
+        text.push_str(&sentence);
+    }
+    text.push(' ');
+    text.push_str(lsms);
+    text
 }
 
 /// The finding on when `/etc/selinux/config`, which names the targeted

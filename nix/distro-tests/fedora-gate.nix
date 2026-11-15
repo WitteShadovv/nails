@@ -45,8 +45,9 @@ let
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   # The binary the gate runs: the release binary once the image table enables
   # the image, as the commit that admits Fedora does, and until then the
-  # release binary with the image's base row admitted and the lsm-status check
-  # left out (lib/admitted.nix), whose build fails for a row admitted already.
+  # release binary with the image's base row admitted (lib/admitted.nix),
+  # whose build fails for a row admitted already. It keeps the lsm-status
+  # check, whose verdict the gate asserts before and after setenforce 0.
   admitted = import ./lib/admitted.nix { inherit self; };
   nailsFor = entry: if entry.enabled then self.packages.x86_64-linux.nails else admitted entry.osId;
 

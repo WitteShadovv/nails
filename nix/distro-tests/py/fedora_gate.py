@@ -381,11 +381,7 @@ DISK_FSTYPES = ("btrfs", "ext4", "xfs", "vfat")
 # compress, and its exit status when it names one and finds nothing.
 COMPRESSED_BLIND_SPOT = "compresses file contents"
 SCAN_WARNINGS_EXIT = 9
-# What a check depends on that the build does not have yet. The build leaves
-# lsm-status out (lib/admitted.nix), which refuses every host where SELinux
-# runs until NAILS chooses the SELinux domains of what starts from its copy
-# in /run.
-NEEDS_LSM = "lsm-status passing on an SELinux host, so the build keeps it"
+# What a check depends on that the build does not have yet.
 NEEDS_SOCKETS = (
     "a way back that empties what journald's sockets hold before the decoy starts"
 )
@@ -1538,7 +1534,6 @@ class Gate:
             "lsm-status passes on the enforcing decoy",
             row is not None and row.get("status") == "pass",
             row,
-            NEEDS_LSM,
         )
         self.sh("permissive", "setenforce 0; getenforce")
         _, rows = self.check_rows("check-lsm-permissive")
@@ -1548,7 +1543,6 @@ class Gate:
             "lsm-status warns once SELinux is permissive",
             row is not None and row.get("status") == "warn",
             row,
-            NEEDS_LSM,
         )
         self.enforcing("again after setenforce 1")
 

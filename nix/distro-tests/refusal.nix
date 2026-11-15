@@ -12,12 +12,14 @@
 #     hidden root still holds what it held;
 #   - `check` names the security modules the kernel runs in its lsm-status row.
 #     Where SELinux does not run (Arch) the row passes. Where it runs (Fedora)
-#     the row fails, and its first two findings are the ones every such host
-#     gets for now, that NAILS chooses neither the SELinux domain of the units
-#     systemd starts nor that of the disk guard udev runs, so no
-#     fact it reads there (the mode, /etc/selinux/config, the context of the
-#     nails process) failed to read or failed its rule, and it says SELinux is
-#     permissive exactly when the kernel says so;
+#     the copies of the binary in /run take the label of the system's
+#     programs, and the loaded policy, asked through selinuxfs, starts the
+#     units systemd starts from them in unconfined_service_t; the disk guard
+#     is off in this configuration. So the row only warns that SELinux is
+#     permissive where the kernel says so, and passes, naming that domain,
+#     where it enforces: no fact it reads there (the mode, /etc/selinux/config,
+#     the context of the nails process, the policy's answers) failed to read or
+#     failed its rule;
 #   - `activate` exits with the unsupported-platform status (8) before it
 #     writes anything to the hidden root, and starts no session: no next root
 #     is mounted, no overlay runtime directory, soft-reboot drop-in or
@@ -386,23 +388,24 @@ let
             print(f"active LSMs: {lsms}; lsm-status row: {row}")
             named = f"Active LSMs: {', '.join(lsms)}."
             if "selinux" in lsms:
-                # The row lists its failures in a fixed order, the domains of
-                # what systemd and udev start for NAILS last: one that starts
-                # with those two failed for nothing else.
-                assert row["status"] == "fail", row
-                units = (
-                    "NAILS does not choose the SELinux domain of the processes systemd "
-                    "starts from its copy in /run (the transition step at each switch, the "
-                    "watcher and the sleep guard of the hidden session, and the boot-record "
-                    "steps after the way back), so nothing shows they run unconfined. "
-                    "NAILS does not choose the SELinux domain of the hidden session's disk "
-                    "guard, which udev runs itself from the rule NAILS installs in /run, so "
-                    "nothing shows it runs unconfined."
-                )
-                assert row["message"].startswith(units), row
+                # A row that warns or passes failed for nothing: every fact
+                # it reads, and what the loaded policy makes of PID 1's start
+                # of the labelled copy, held. It warns exactly for the
+                # permissive mode.
                 permissive = vm.succeed("cat /sys/fs/selinux/enforce").strip() == "0"
-                assert ("SELinux is permissive:" in row["message"]) == permissive, row
-                assert row["message"].endswith(named), (lsms, row)
+                if permissive:
+                    assert row["status"] == "warn", row
+                    assert row["message"] == (
+                        "SELinux is permissive: it logs what its policy would deny and "
+                        f"denies nothing. {named}"
+                    ), row
+                else:
+                    assert row["status"] == "pass", row
+                    assert (
+                        "the processes systemd starts for it in unconfined_service_t. "
+                        "The disk guard does not run: [session_mounts] read_only is off."
+                    ) in row["message"], row
+                    assert row["message"].endswith(named), (lsms, row)
             else:
                 assert row["status"] == "pass", row
                 assert row["message"].startswith("SELinux does not run"), row

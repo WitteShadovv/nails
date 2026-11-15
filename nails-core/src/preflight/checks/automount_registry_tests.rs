@@ -137,6 +137,7 @@ fn checks(fs: &MockFilesystem) -> Vec<(String, CheckResult)> {
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
     let registry = build_registry(fs, &Config::test_default(), &inputs, None).unwrap();
     let (mut results, _) = registry.run_all_detailed(fs);
@@ -284,6 +285,7 @@ fn the_nixos_layer_looks_up_nothing_behind_an_automount_point() {
         typed_shell: None,
         host_profile: None,
         systemd_version: None,
+        unit_domains: crate::preflight::UnitDomains::UNKNOWN,
     };
     let registry = build_registry(
         &fs,

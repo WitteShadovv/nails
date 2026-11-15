@@ -291,18 +291,17 @@ reboot (control2), and after one more boot, a hidden session and the way back
 power-off instead of exiting, so the images are one disk's lineage: each is a
 copy of the paused disk, and a reset boots it again.
 
-Fedora is not admitted yet, so the driver runs a test-only build of the
-release binary in which only the Fedora row of the family table is admitted
+Fedora is not admitted yet, so the driver runs a test-only build of the release
+binary in which only the Fedora row of the family table is admitted
 (`nix/distro-tests/lib/admitted.nix`). It also leaves out the `lsm-status`
-check, which refuses every host where SELinux runs, this permissive decoy among
-them, until NAILS chooses the SELinux domains of the processes systemd and udev
-start from its copy in `/run`; the check only reads. Fedora's derivatives follow
-that row there, as they will once Fedora is admitted, and no image of one runs.
-That build is never released, and once the image table enables the image, as
-the commit that admits Fedora does, the driver runs the release binary on it
-instead. The verdict on the images says what the oracle's channels see of a
-session on a Fedora Cloud decoy of that release, with what they do not see
-listed under [What it does not see](#what-it-does-not-see), not that NAILS
+check, which judges the SELinux this decoy runs, here permissive, so that the
+images do not depend on its verdict; the check only reads. Fedora's derivatives
+follow that row there, as they will once Fedora is admitted, and no image of
+one runs. That build is never released, and once the image table enables the
+image, as the commit that admits Fedora does, the driver runs the release
+binary on it instead. The verdict on the images says what the oracle's channels
+see of a session on a Fedora Cloud decoy of that release, with what they do not
+see listed under [What it does not see](#what-it-does-not-see), not that NAILS
 supports Fedora.
 
 Before the first image the driver makes the decoy's journal volatile and turns
