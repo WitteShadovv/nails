@@ -482,3 +482,41 @@ fn an_option_with_no_value_where_systemd_or_btrfs_reads_one_is_not_plain() {
         assert_eq!(unread_fstab(&fstab_line(&line)), [], "{options}");
     }
 }
+
+/// `libmount` 2.42.4 set up a loop device for `loop` whatever the line's
+/// source was: an ext4 line for a block device got a loop device over that
+/// device and a second instance of its filesystem. NAILS reads `loop` only
+/// on a line whose first field is the path of an image or a swap file, which
+/// it reads as that line's source, and no bind or FUSE line; on any other
+/// line it is not plain, as it is with a value.
+#[test]
+fn loop_is_read_only_on_a_line_that_names_an_image_or_swap_file() {
+    for line in [
+        "/srv/disk.img /media/i ext4 loop,nofail 0 0",
+        "/srv/disk.img /media/i auto loop,ro,noauto 0 0",
+        "/swapfile none swap loop 0 0",
+    ] {
+        assert_eq!(unread_fstab(&fstab_line(line)), [], "{line}");
+        assert!(reads_every_known(&fstab_line(line)), "{line}");
+    }
+    for line in [
+        "/dev/vda1 /home ext4 loop 0 2",
+        "/dev/vda2 /home btrfs subvol=/home,loop 0 0",
+        "UUID=0a1b /home ext4 noauto,loop 0 2",
+        "/dev/disk/by-uuid/0a1b / ext4 loop 0 1",
+        "/dev/img.link /media/i ext4 loop 0 0",
+        "/srv/x /mnt none bind,loop 0 0",
+        "/srv/disk.img /media/f fuse.fuse2fs loop 0 0",
+        "tmpfs /tmp tmpfs loop 0 0",
+        "server:/x /net nfs loop,_netdev 0 0",
+    ] {
+        assert_eq!(unread_fstab(&fstab_line(line)), [Unplain::Loop], "{line}");
+        assert!(!reads_every_known(&fstab_line(line)), "{line}");
+    }
+    assert_eq!(
+        unread_fstab(&fstab_line(
+            "/srv/disk.img /media/i ext4 loop=/dev/loop7 0 0"
+        )),
+        [unread("loop")]
+    );
+}

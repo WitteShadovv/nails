@@ -749,7 +749,7 @@ fn a_device_path_that_leads_out_of_dev_cannot_be_told() {
     // NAILS places the line by it, where it cannot be told.
     let world = external_veracrypt()
         .fstab(&with_the_decoys_lines(
-            "/dev/img.link /media/i ext4 loop,nofail 0 0",
+            "/dev/img.link /media/i ext4 nofail 0 0",
         ))
         .crypttab("box /dev/box.link none luks,nofail\n")
         .link("/dev/img.link", "/mnt/img.raw")

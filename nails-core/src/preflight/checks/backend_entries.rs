@@ -86,9 +86,11 @@
 //! `x-systemd.wanted-by=` or `x-systemd.required-by=` that names a unit other
 //! than `local-fs.target`, which systemd links the line into in place of
 //! `local-fs.target`, one that names none, a flag with a value, or `subvol` or
-//! `subvolid` with no value; and a line of any type with an option no list
-//! holds whose value may name a path or a device, absolute, a tag, or with a
-//! `/` or a `:` in it. A bind line is one with a `bind` or `rbind` option,
+//! `subvolid` with no value; a line with `loop` whose first field is no image
+//! or swap file's path, a device's say, which `libmount` would mount a second
+//! time through a new loop device; and a line of any type with an option no
+//! list holds whose value may name a path or a device, absolute, a tag, or with
+//! a `/` or a `:` in it. A bind line is one with a `bind` or `rbind` option,
 //! `bind=x` too, as `libmount` reads it. A FUSE line is read as `mount.fuse`
 //! reads it: the source it gives its program, the part after the `#` of a
 //! `fuse` line's first field and a `fuse.<program>` line's whole first field,
