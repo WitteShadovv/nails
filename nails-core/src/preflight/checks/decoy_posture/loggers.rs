@@ -29,11 +29,13 @@
 //! The audit daemon counts when it is enabled as well, or a timer, path or
 //! socket unit that runs starts it ([`super::triggers`]), though it does not
 //! run now, where the service manager can start it: the manager starts it
-//! again when the decoy starts after the way back, and it writes audit
-//! records to the decoy disk from then on. It cannot where its unit is masked in any unit
-//! directory, as `systemctl mask --runtime` masks it in `/run`, which the way
-//! back keeps, where no unit file is left, or where a `ConditionKernelCommandLine=`
-//! of its unit fails on the kernel's command line, which a soft-reboot keeps:
+//! again when the decoy starts after the way back, or when such a unit has
+//! it start then, and it writes audit records to the decoy disk from then
+//! on; the finding names the unit that starts it. It cannot where its unit
+//! is masked in any unit directory, as `systemctl mask --runtime` masks it in
+//! `/run`, which the way back keeps, where no unit file is left, or where a
+//! `ConditionKernelCommandLine=` of its unit fails on the kernel's command
+//! line, which a soft-reboot keeps:
 //! every audit package NAILS knows ships `!audit=0` and `!audit=off` there. Its
 //! unit refuses `systemctl stop` on Fedora and Arch (`RefuseManualStop=yes`, as
 //! upstream ships it), so there a plain `systemctl stop` or `systemctl disable
@@ -182,18 +184,30 @@ pub(super) fn active_syslog_blockers<F: Filesystem>(
     out
 }
 
+/// What has the service manager start the audit daemon after the way back,
+/// where it does not run now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum StartedBy {
+    /// Its unit is enabled.
+    Link,
+    /// A timer, path or socket unit that runs starts it, as this says
+    /// (`auditd.timer is enabled and starts auditd.service`).
+    Trigger(String),
+}
+
 /// What the audit daemon does on the decoy, when it writes to its disk or
 /// NAILS cannot tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Auditd {
     /// It runs, as a unit or a process.
     Active,
-    /// It does not run, but its unit is enabled and can start, so the decoy
-    /// starts it again after the way back.
-    Enabled,
-    /// It does not run, its unit is enabled, and NAILS cannot tell whether
-    /// the unit can start, for this reason.
-    MayStart(String),
+    /// It does not run, but the service manager starts its unit as this says,
+    /// and the unit can start, so the decoy starts it after the way back.
+    Starts(StartedBy),
+    /// It does not run, the service manager starts its unit as the first
+    /// says, and NAILS cannot tell whether the unit can start, for the
+    /// second reason.
+    MayStart(StartedBy, String),
     /// It does not run, its unit is installed and not masked, and NAILS
     /// cannot tell whether it is enabled, for this reason, which names the
     /// link it could not look up.
@@ -207,17 +221,29 @@ impl Auditd {
     pub(super) fn finding(&self) -> PersistenceFinding {
         match self {
             Auditd::Active => PersistenceFinding::kept(AUDITD.message),
-            Auditd::Enabled => PersistenceFinding::kept(
+            Auditd::Starts(StartedBy::Link) => PersistenceFinding::kept(
                 "auditd is enabled, though it does not run now: the service manager starts it \
                  again when the decoy starts after the way back, and it writes audit records to \
                  the decoy disk from then on",
             ),
-            Auditd::MayStart(why) => PersistenceFinding::untold_as(
+            Auditd::Starts(StartedBy::Trigger(how)) => PersistenceFinding::kept(format!(
+                "auditd does not run now, but {how}, so the service manager can start auditd \
+                 after the way back, and it writes audit records to the decoy disk from then on"
+            )),
+            Auditd::MayStart(StartedBy::Link, why) => PersistenceFinding::untold_as(
                 format!(
                     "auditd is enabled, though it does not run now, and NAILS cannot tell whether \
                      the service manager starts it again when the decoy starts after the way \
                      back ({why}), so it counts as one that does: it would write audit records \
                      to the decoy disk from then on"
+                ),
+                why.clone(),
+            ),
+            Auditd::MayStart(StartedBy::Trigger(how), why) => PersistenceFinding::untold_as(
+                format!(
+                    "auditd does not run now, but {how}, and NAILS cannot tell whether the \
+                     service manager can start auditd after the way back ({why}), so it counts \
+                     as one that can: it would write audit records to the decoy disk from then on"
                 ),
                 why.clone(),
             ),
@@ -263,18 +289,18 @@ pub(super) fn auditd<F: Filesystem>(fs: &F, root: &Path, hidden: &[PathBuf]) -> 
     if matches!(section, UnitSection::Missing | UnitSection::Masked) {
         return None;
     }
-    // A timer, path or socket that starts it enables it as well.
-    let linked = match linked {
+    // A timer, path or socket that starts it starts it as a link does.
+    let (linked, by) = match linked {
         Ok(false) => match super::triggers::read(fs, root, hidden).of(AUDITD_UNIT) {
             None => return None,
-            Some(Ok(_)) => Ok(true),
-            Some(Err(why)) => Err(why),
+            Some(Ok(how)) => (Ok(true), StartedBy::Trigger(how)),
+            Some(Err(why)) => (Err(why), StartedBy::Link),
         },
-        linked => linked,
+        linked => (linked, StartedBy::Link),
     };
     let assignments = match (section, &linked) {
         (UnitSection::Missing | UnitSection::Masked, _) => return None,
-        (UnitSection::Unknown(why), Ok(_)) => return Some(Auditd::MayStart(why)),
+        (UnitSection::Unknown(why), Ok(_)) => return Some(Auditd::MayStart(by, why)),
         (UnitSection::Unknown(_), Err(why)) => return Some(Auditd::MayBeEnabled(why.clone())),
         (UnitSection::Assignments(assignments), _) => assignments,
     };
@@ -282,9 +308,9 @@ pub(super) fn auditd<F: Filesystem>(fs: &F, root: &Path, hidden: &[PathBuf]) -> 
         return Some(Auditd::MayBeEnabled(why));
     }
     match kernel_command_line_allows(fs, root, &assignments) {
-        Ok(true) => Some(Auditd::Enabled),
+        Ok(true) => Some(Auditd::Starts(by)),
         Ok(false) => None,
-        Err(why) => Some(Auditd::MayStart(why)),
+        Err(why) => Some(Auditd::MayStart(by, why)),
     }
 }
 

@@ -150,7 +150,9 @@ updates on the decoy disk at activation and logs that run there (see
 
 auditd counts while it runs, as a unit or a process, and also while its unit
 is enabled although it does not run, since the service manager starts it again
-when the decoy starts after the way back. An enabled auditd does not count
+when the decoy starts after the way back, and while a timer, path or socket
+unit that is enabled or active starts it, which can start it then too: the
+refusal names that unit. Such an auditd does not count
 where the manager cannot start it: where its unit is masked in any unit
 directory (`systemctl mask --runtime` masks it in `/run`, which the way back
 keeps), where no unit file is left, or where a `ConditionKernelCommandLine=`

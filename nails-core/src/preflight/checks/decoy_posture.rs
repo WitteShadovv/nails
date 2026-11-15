@@ -109,7 +109,7 @@ use super::locate_database::hidden_locations;
 use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle, unnamed};
 use crate::filesystem::parse_mountinfo;
 use crate::{Filesystem, NailsError, Result};
-use loggers::Auditd;
+use loggers::{Auditd, StartedBy};
 use nails_api::Allowable;
 use std::path::{Path, PathBuf};
 
@@ -997,15 +997,24 @@ impl Blockers {
             );
         }
         match &self.auditd {
-            Some(Auditd::Enabled) => msg.push_str(
+            Some(Auditd::Starts(StartedBy::Link)) => msg.push_str(
                 " When the decoy starts after the way back, auditd starts with it and writes \
                  audit records to /var/log/audit on the decoy disk.",
             ),
-            Some(Auditd::MayStart(_) | Auditd::MayBeEnabled(_) | Auditd::MayRun(_)) => msg
-                .push_str(
-                    " When the decoy starts after the way back, auditd may start with it and write \
+            Some(Auditd::Starts(StartedBy::Trigger(how))) => msg.push_str(&format!(
+                " After the way back, auditd can start, as {how}, and write audit records to \
+                 /var/log/audit on the decoy disk."
+            )),
+            Some(Auditd::MayStart(StartedBy::Trigger(how), _)) => msg.push_str(&format!(
+                " After the way back, auditd may start, as {how}, and write audit records to \
+                 /var/log/audit on the decoy disk."
+            )),
+            Some(
+                Auditd::MayStart(StartedBy::Link, _) | Auditd::MayBeEnabled(_) | Auditd::MayRun(_),
+            ) => msg.push_str(
+                " When the decoy starts after the way back, auditd may start with it and write \
                  audit records to /var/log/audit on the decoy disk.",
-                ),
+            ),
             Some(Auditd::Active) | None => {}
         }
         if self.kdump.is_some() {
