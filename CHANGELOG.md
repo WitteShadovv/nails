@@ -2641,6 +2641,24 @@ of this changelog for that version becomes the release notes word for word, and
   own mount gone. `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the
   setting, which is not verified for every release. A VM test records whether udiskie mounts a drive
   that cryptsetup unlocked, and in it udiskie did.
+- On a decoy root mounted `relatime`, `nails check`, activation and the way back no longer leave the
+  moment they ran in the access times of the decoy's programs, libraries, data files and unit files.
+  The network record and the way back ask the kernel over netlink for the links, rules and firewall
+  tables instead of starting the decoy's `ip`, `nft` and `iw`, and never make the kernel load
+  nf_tables or cfg80211: where `nft` made it load nf_tables, the decoy's modprobe read its settings
+  and the module's file. Run as root, NAILS starts `systemctl`, `busctl` and `loginctl` in a mount
+  namespace whose every mount is `noatime`, and the service manager's reload at entry, which reads
+  every unit file again, runs while every mount that keeps access times is `noatime`; activation
+  refuses where it cannot make them so. The way back looks at the decoy's init, release file and
+  boot records through a `noatime` copy of the decoy root's mounts, where it followed the decoy's
+  `/var/lib/wtmpdb/wtmp.db` link with access times on. So the decoy needs no `ip`, `nft` or `iw` any
+  more: `host-tools` no longer requires `ip`, the `network-tools` warnings of `check` and `activate`
+  are gone, and so are `deactivate`'s warnings about a missing tool. A symbolic link a lookup of
+  NAILS' own follows still gets a new access time, as do the files of the overlay module's first
+  load and what an unprivileged `check` reads (What `check` touches in docs/operator-guide.md). The
+  new access-time scenario of the distribution tests ages a Debian 13 decoy disk, and a Fedora 44
+  one with a test build, and fails on any other read by `check`, an activation or a way back that a
+  plain soft-reboot does not make.
 - A switch into or out of a hidden session that hangs until `soft-reboot.target`'s job timeout
   (30 minutes) now powers the machine off. systemd ended such a switch by force
   (`JobTimeoutAction=soft-reboot-force` in every series from 254 to 262), which never runs

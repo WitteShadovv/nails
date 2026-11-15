@@ -654,8 +654,8 @@ journal that starts late:
   - the links: it deletes the virtual links the session brought up (a tunnel,
     a dummy, the bridges and virtual ports of containers and virtual machines)
     and the Wi-Fi interfaces it added on one of the decoy's radios (a monitor
-    or access point interface, or the one iwd makes in place of the decoy's;
-    this needs `iw` on the decoy, see below). A link counts as the decoy's
+    or access point interface, or the one iwd makes in place of the decoy's).
+    A link counts as the decoy's
     only with the index it had at entry, and a link made again gets a new one,
     so a tunnel the session brought up under the name of one of the decoy's,
     which the decoy's own stop took down, goes too, while a link of the
@@ -669,9 +669,12 @@ journal that starts late:
   - the policy-routing rules (`ip rule`, IPv4 and IPv6) and the nftables
     firewall tables the session added, such as those of a WireGuard full
     tunnel (wg-quick or NetworkManager), a VPN app, a container runtime or
-    libvirt. Activation lists the decoy's own tables with `nft` and the way
-    back lists them again with it, so this needs nftables installed on the
-    decoy (see below);
+    libvirt. Activation lists the decoy's own rules and tables, and the way
+    back lists them again, by asking the kernel itself over netlink: no
+    `ip`, `nft` or `iw` runs, so neither needs them on the decoy. Where
+    nf_tables is not in the kernel at entry, the decoy has no table, and the
+    tables are not asked for, since the question would make the kernel load
+    nf_tables;
   - the network settings for all devices and for new ones
     (`net.ipv4.ip_forward`, `net.ipv4.conf.all.*`, `net.ipv4.conf.default.*`,
     `net.ipv6.conf.all.*` and `net.ipv6.conf.default.*`), such as the
@@ -687,23 +690,16 @@ journal that starts late:
   has another MAC address after the retry, a virtual link or Wi-Fi interface
   the session added that is still there, a policy-routing rule or firewall
   table the session added that is still loaded, or a part it cannot read back
-  (the kernel's list of links, or `ip` or `nft` failing to list the rules or
-  tables). The rules and tables count only where activation listed the decoy's
-  own and the way back finds `ip` and `nft` (see below). That state lives only
-  in the kernel, so a power-off erases it, where a return would hand it to the
-  decoy. A missing tool counts the same way wherever the way back can see what
-  the session left without it: without `ip` a changed MAC address or a link
-  the session made, without `iw` a Wi-Fi interface it added, the one iwd makes
-  in place of the decoy's by default when it starts included, so on a decoy
-  without `iw` a session that runs iwd ends in a power-off. The machine turns
-  off as with `--poweroff`, and the next boot is the plain decoy. Nothing on
-  the screen says why: a line there would tell anyone watching that a hidden
-  session had just ended. A missing tool with nothing to undo (the stock NixOS
-  decoy without `nft`, a session that added no Wi-Fi interface and ran no iwd)
-  returns as before. The network settings, the hostname and the per-link state
-  below `/run` do not count: the way back writes them back and does not power
-  off over them, also when a write fails. Neither does what it leaves alone,
-  listed below.
+  (the kernel's list of the links, rules or tables does not answer, or it
+  cannot tell whether nf_tables is in the kernel). The rules and tables count
+  only where activation listed the decoy's own. That state lives only in the
+  kernel, so a power-off erases it, where a return would hand it to the decoy.
+  The machine turns off as with `--poweroff`, and the next boot is the plain
+  decoy. Nothing on the screen says why: a line there would tell anyone
+  watching that a hidden session had just ended. The network settings, the
+  hostname and the per-link state below `/run` do not count: the way back
+  writes them back and does not power off over them, also when a write fails.
+  Neither does what it leaves alone, listed below.
 
   The decoy's NetworkManager therefore does not adopt a session link as
   connected externally or record a profile for it in
@@ -717,47 +713,30 @@ journal that starts late:
   routes the session gave the decoy's own devices; what it added inside a
   firewall table the decoy already had (a container runtime's chains in a
   table the decoy's own firewall uses) and the firewall rules it made with
-  legacy iptables, outside nftables; every firewall table it added on a decoy
-  without `nft`, where the way back cannot tell the session's tables from the
-  decoy's, so a VPN app's table that blocks all traffic outside its tunnel
-  keeps the decoy offline; the settings of a single device
+  legacy iptables, outside nftables; the nf_tables module and the others
+  the session loaded, which stay loaded; the settings of a single device
   (`net.ipv4.conf.eth0.*`) and the network settings not listed above; any
   link, rule or table the session deleted, which is not made again, and the
   name it gave one of the decoy's links; a Wi-Fi interface of the decoy's
   that software in the session replaced with one of its own, as iwd does by
   default when it starts and airmon-ng does when it starts monitor mode: the
-  way back deletes the replacement (without `iw` it cannot, and powers off
-  instead) but does not make the decoy's interface again, so the decoy has no
-  Wi-Fi on that radio; the policy-routing rules the session added where `ip`
-  (iproute2) is not installed; and the MAC address the session gave a device
+  way back deletes the replacement but does not make the decoy's interface
+  again, so the decoy has no Wi-Fi on that radio; and the MAC address the
+  session gave a device
   that was plugged in, or unplugged and plugged in again, during the session,
   which makes it a new link. The decoy's NetworkManager goes on using such an
   address unless the decoy's profile sets one, so it can reach the decoy disk
   (in a DHCP lease, for one). The way back also leaves alone a part of the
   network state that activation could not read in full, rather than take the
-  decoy's for the session's: activation lists the decoy's own firewall tables
-  with the decoy's `nft`, so a session that starts on a decoy without it
-  leaves every table it adds even where the way back finds an `nft` later.
+  decoy's for the session's: the IPv6 rules where the kernel would not list
+  them (a kernel without IPv6), and the firewall tables where activation could
+  not tell whether nf_tables was in the kernel (neither its `/sys/module`
+  directory nor the kernel's list of its symbols could be read).
 
-  `check` and `activate` warn before a session when the decoy has no `nft`,
-  or has a Wi-Fi interface and no `iw` (the `network-tools` check), and name
-  the package to install ([the decoy
-  requirements](decoy-requirements.md#nixos) say how on NixOS). They warn and
-  do not refuse, since a stock NixOS decoy has no `nft`.
-  Before it asks, `deactivate` warns when the way back's last step will find
-  no `ip` (iproute2), no `nft` (nftables) or, on a machine with a Wi-Fi
-  interface, no `iw`, in the hidden session's system directories or, on NixOS,
-  the decoy's system: without `ip` the policy-routing rules the session added
-  stay, and a virtual link it made or a MAC address it changed makes the
-  machine power off instead of returning; without `nft` the nftables tables it
-  added stay; and without `iw` a Wi-Fi interface it added on the decoy's
-  radios, the one iwd makes in place of the decoy's included, makes the
-  machine power off instead. It also says first when the way back is bound to
-  power off over what is there now: a link the kernel keeps when it is deleted
-  (the fallback device a tunnel module makes when it loads, `tunl0` for
-  `ipip`), which never goes, or a link or MAC address of the session's it
-  finds no `ip` or `iw` for, unless that changes before it runs; a plain
-  `emergency` says the same in its report. Beyond that, the step runs with no
+  Before it asks, `deactivate` says when the way back is bound to power off
+  over what is there now: a link the kernel keeps when it is deleted (the
+  fallback device a tunnel module makes when it loads, `tunl0` for `ipip`),
+  which never goes; a plain `emergency` says the same in its report. Beyond that, the step runs with no
   output after the session has ended, so nothing tells you what it left, or
   why it powered off: take a VPN connection down with its own tool
   (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
@@ -1187,14 +1166,57 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   happens only with that parameter set: it is off by default, also in the
   kernels NixOS, Debian and Ubuntu ship.
 - **Reads on the decoy.** `check` reads the decoy's configuration and state and
-  runs some of the decoy's own tools to ask what they report, such as
-  `systemctl` for the systemd version. On a decoy root mounted without
-  `noatime`, a read or a program start can update an access time.
-  `upper-fs-capability` reads the SELinux label of the decoy's `/`, which
-  changes no access time, and `lsm-status` reads `/etc/selinux/config`, as
-  root without changing its access time, and looks up when it last changed,
+  runs three of the decoy's own programs to ask what they report: `systemctl`
+  (the systemd version, the units), `busctl` (the service manager's
+  properties) and `loginctl` (the sessions). Activation does the same and
+  more. `upper-fs-capability` reads the SELinux label of the decoy's `/`,
+  which changes no access time, and `lsm-status` reads `/etc/selinux/config`,
+  as root without changing its access time, and looks up when it last changed,
   which changes nothing. The questions it asks the loaded policy go through
-  selinuxfs, `/proc` and `/run`, none of them on the decoy disk.
+  selinuxfs, `/proc` and `/run`, none of them on the decoy disk. On a decoy
+  root mounted without `noatime`, a read updates an access time that is older
+  than a day, or older than the file's last change, to the moment of the read,
+  so run as root NAILS keeps its reads off them:
+  - it reads the decoy's files and lists its directories with `O_NOATIME`;
+  - it starts each of those programs in a mount namespace of its own whose
+    every mount is `noatime`, so neither the program's file nor its loader,
+    libraries and data files, nor what it reads, get a new access time, while
+    its question reaches the system as before;
+  - while activation has the service manager reload its units and asks it
+    about the units the switch depends on, every mount that keeps access
+    times is `noatime`, and each gets its own mode back right after: the
+    reload makes PID 1 run every generator and read every unit file again.
+    Where activation cannot make the mounts `noatime` for it, it refuses;
+  - it asks the kernel itself for the network state over netlink: no `ip`,
+    `nft` or `iw` runs. It asks for the firewall tables only where nf_tables
+    is in the kernel already, and deletes a Wi-Fi interface only where
+    cfg80211 is: asking otherwise makes the kernel load the module, and the
+    decoy's modprobe then reads its settings and the module's file;
+  - on the way back it looks at the decoy root, its init, its release file
+    and its boot records, through a detached copy of its mounts whose every
+    mount is `noatime`, before the decoy starts.
+
+  What still gets a new access time:
+  - every symbolic link a lookup of NAILS' own follows or reads on the decoy
+    root during `check` and activation, such as `/bin`, `/sbin` and `/lib` on
+    a merged `/usr`, `/etc/os-release` and the links in the unit directories
+    (the units enabled, the masks): no open flag covers a link on the way;
+  - the files modprobe and udevd read for the overlay module's first load,
+    where it is not loaded yet (see above);
+  - the directories udevd lists for its rules and link files, which it does
+    whenever it handles a kernel event, whatever made the event, every three
+    seconds at most;
+  - without root, all of it: an unprivileged `check` reads the files it does
+    not own with their access times updated, and starts the programs as they
+    are. Run `check` with `sudo`.
+
+  The access-time scenario of the distribution tests checks this on a Debian
+  13 decoy mounted `relatime`, and on a Fedora 44 one with a test build that
+  admits Fedora: it ages every entry of the decoy disk, runs `check` and two
+  sessions with their ways back, lists the links and udevd's directories,
+  and fails on any other read of the decoy disk that a plain soft-reboot of
+  the decoy does not make. Mount the decoy root `noatime` to leave no access
+  time at all, the links' included.
 - **No lookup that would mount an automount point.** A lookup that passes an
   automount point that nothing is mounted on yet mounts it: a direct or
   offset one, such as the one systemd makes for an `x-systemd.automount` line
@@ -3319,8 +3341,8 @@ real hardware:
   whose driver refuses the change in the same way, not on such an adapter or
   card;
 - the way back deleting a Wi-Fi interface the session added on one of the
-  decoy's radios (a monitor or access point interface): tested against a
-  simulated `iw` and radio, not a real card;
+  decoy's radios (a monitor or access point interface): unit-tested against a
+  fake kernel, not over nl80211 on a real card or a simulated radio;
 - decoy roots unlocked with a TPM-sealed key (the mapping survives the
   soft-reboot, but anything in the hidden session that measures into PCRs changes
   them for the rest of the uptime);

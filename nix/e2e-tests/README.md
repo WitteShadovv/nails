@@ -1050,7 +1050,10 @@ itself, one before and one after the sessions, are the controls: what the
 decoy's own stop and start read. Every read in the window of `nails check` is
 a finding. In two sessions, one left by `deactivate` and one by the emergency, a
 read before the way back started must be one a control's stop made, and a read
-after it one a control's stop or start made. Every command of the scenario that
+after it one a control's stop or start made. A link that NAILS' own lookups
+follow or read, and udevd's listing of its rule and link directories, which it
+makes whenever it handles a kernel event, are listed and do not fail the
+scenario; every other finding does. Every command of the scenario that
 reads the decoy runs through `lib/noatime-run.c`, a static helper that runs it
 in a mount namespace whose every mount is noatime, so the scenario's own reads
 never count. The run prints its whole report, every phase's reads with their

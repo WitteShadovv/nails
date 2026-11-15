@@ -32,34 +32,14 @@ The decoy also has to be one the session can enter and leave:
   (impermanence), an overlay root (overlayroot, bilibop-lockfs) and ZFS are
   refused.
 - **The tools NAILS runs** (`host-tools`): `systemctl` and `loginctl`
-  (systemd), `ip` (iproute2), `dmsetup` when the hidden volume is on
-  device-mapper (dm-crypt, LUKS or a VeraCrypt mapping) or its backend cannot be
-  read, and on NixOS `nix`. The way back deletes the links a session made and
-  sets hardware addresses back with `ip`, and closes the hidden volume's mapping
-  with `dmsetup`. Without them it would leave both behind, so activation is
-  refused while one is missing; `nails check` names it and the package that
-  provides it.
-- **The tools the way back runs where they are installed**
-  (`network-tools`): `nft` (nftables), with which activation lists the
-  decoy's own firewall tables and the way back deletes the ones a session
-  added, and, on a machine with a Wi-Fi interface, `iw`, with which the way
-  back deletes a Wi-Fi interface a session added on one of the decoy's radios
-  (a monitor or access point interface, or the one iwd makes in place of the
-  decoy's). Without `nft` every nftables table a session adds stays on the
-  decoy until power-off: root lists it with `nft list tables`, a table's name
-  can name the VPN that made it, and a VPN app's table that blocks all traffic
-  outside its tunnel keeps the decoy offline. Without `iw` such a Wi-Fi
-  interface makes the way back power off instead of returning, as does every
-  link, MAC address, policy-routing rule or nftables table it sets out to undo
-  that is still the session's afterwards (the network settings and the
-  hostname do not count). A decoy that runs iwd needs `iw`: a session that
-  runs iwd as well ends in a power-off without it, as iwd makes its own
-  interface in place of the decoy's by default when it starts.
-  `nails check` and activation warn and name the package to install; they do
-  not refuse, since a stock NixOS decoy has no `nft`. NAILS looks for both
-  where the way back does, never in `PATH`: in `/run/current-system/sw/bin`
-  (on NixOS, the decoy's system), `/usr/bin`, `/bin`, `/usr/sbin` and
-  `/sbin`.
+  (systemd), `dmsetup` when the hidden volume is on device-mapper (dm-crypt,
+  LUKS or a VeraCrypt mapping) or its backend cannot be read, and on NixOS
+  `nix`. The way back closes the hidden volume's mapping with `dmsetup`.
+  Without it, it would leave the mapping behind, so activation is refused while
+  one is missing; `nails check` names it and the package that provides it. The
+  network state the way back puts back (the links, MAC addresses,
+  policy-routing rules and nftables tables a session added) it asks of the
+  kernel itself, so it needs no `ip`, `nft` or `iw` on the decoy.
 - **SELinux labels on the hidden volume**, where the host may run SELinux:
   where the mount table (`/proc/self/mounts`) lists a selinuxfs, where it
   cannot be read while `/sys/fs/selinux` exists or `/etc/selinux/config` sets
@@ -863,11 +843,6 @@ logind.
   `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
 - **No swap / hibernation**: leave `swapDevices` empty and do not configure
   `boot.resumeDevice` or a resume kernel parameter.
-- **nftables, and iw on a machine with Wi-Fi** (`network-tools`):
-  `environment.systemPackages = [ pkgs.nftables pkgs.iw ];`, so the way back
-  can delete the firewall tables and Wi-Fi interfaces a session adds.
-  `networking.nftables.enable` installs `nft` as well, and moves the decoy's
-  firewall to nftables.
 - **Nothing in `/etc/nixos` names the hidden environment**. The
   `suspicious-nails-reference` check reads every `.nix` file there and refuses
   activation with the file, the line and the text it found, in comments as in
@@ -1012,9 +987,6 @@ logind.
   `PRUNEPATHS` in `/etc/updatedb.conf`, or mask and stop
   `plocate-updatedb.timer` (`sudo systemctl mask --now`)
   (`locate-database`; see [The locate database](#the-locate-database)).
-- Keep `nftables` installed, and `iw` on a machine with Wi-Fi
-  (`apt install nftables iw`), so the way back can delete the firewall tables
-  and Wi-Fi interfaces a session adds (`network-tools`).
 - Install Nix inside a hidden session, not on the decoy (`decoy-nix-trace`;
   see [Nix on the decoy](#nix-on-the-decoy)).
 
@@ -1043,9 +1015,6 @@ logind.
   `PRUNEPATHS` of `/etc/updatedb.conf`, or `plocate-updatedb.timer` masked and
   stopped (`locate-database`; see
   [The locate database](#the-locate-database)).
-- `nftables`, and `iw` on a machine with Wi-Fi (`apt install nftables iw`), so
-  the way back can delete the firewall tables and Wi-Fi interfaces a session
-  adds (`network-tools`).
 - Nix, if you use it, installed inside a hidden session, not on the decoy
   (`decoy-nix-trace`; see [Nix on the decoy](#nix-on-the-decoy)).
 
@@ -1848,9 +1817,11 @@ The check writes nothing. It opens each file it reads with `O_NOATIME`, so run
 as root it changes none of their access times (an unprivileged `nails check`
 cannot ask for that, and the links a lookup follows still get theirs), and it
 reads no file that a link leads onto the hidden volume. It runs `systemctl
-list-units`, which does change the access time of `systemctl` and the libraries
-it loads, at most once a day under the default `relatime`, as activation's own
-`systemctl` calls do.
+list-units`. Run as root, every program NAILS starts runs in a mount namespace
+of its own whose every mount is `noatime`, so neither `systemctl` nor what it
+loads gets a new access time; started by an unprivileged `nails check`, it
+can update the access time of `systemctl` and the libraries it loads, at most
+once a day under the default `relatime`.
 
 Make updatedb skip the directory the volume is mounted in long before you use
 the volume again, since a change made just before a session dates it, and keep
@@ -2705,7 +2676,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [An interrupted entry's runtime files in /run](threat-model.md#residual-channels) (`interrupted-entry`) | an activation killed before the soft-reboot leaves /run/nextroot, the session plan and the transition drop-in | all | `session-state` (refuses) | `session-leftovers` | The transition drop-in is installed before the next root is populated, so an unarmed entry is disarmed by any soft-reboot; `nails recover` removes the leftovers. | `session-interrupted-entry` |
 | [Hidden kernel records imported by the decoy journal](threat-model.md#residual-channels) (`kmsg-import`) | journald reads /dev/kmsg from its stored sequence number after every soft-reboot | all | `decoy-persistence` | `journal-scan` | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last lines follow it, whose final `Sending SIGKILL to PID N (<name>)` lines name each process of the hidden session still alive then, with the hidden filesystem's unmount line and, on a kernel that audits device-mapper changes (Fedora's does), the audit record of the hidden volume's dm-crypt teardown, and on Fedora 44 a device-mapper line that a device was left open. | `soft-reboot-mechanics` |
 | [Hidden records journald's sockets carry into the decoy journal](#what-the-decoy-journal-keeps) (`journal-socket-carry`) | journald's sockets, which a soft-reboot keeps open, so that the decoy's journald reads at its start what waits in them | all | none: the hidden root sends them during its shutdown, after activation | none: they name the hidden root's units and processes, which no check tells from the decoy's own | None yet: no way back empties those sockets. Keep the decoy journal volatile, so they never reach the decoy disk, and end the session with `deactivate --poweroff` or `emergency --poweroff` where they must not reach the decoy at all. | none: asserted on Fedora 44 and 45 by the Fedora admission gate under nix/distro-tests, a suite run by hand, which fails there on it; no test looks for these records on the other families |
-| [Network state the hidden session created or changed](operator-guide.md#how-it-works) (`network-state`) | a soft-reboot keeps the kernel's network state across the switch, so the links, addresses, routes, policy-routing rules, firewall tables and network settings the hidden session set up, and any MAC address or hostname it changed, are still live when the way back begins | all | none: the hidden session creates them after activation | none: a link the decoy adopted looks like one the decoy made itself | A deactivate or a plain emergency puts most of it back on its own. Stop VPN apps, containers and virtual machines in the session before you deactivate (wg-quick down, nmcli connection down, the app's own disconnect), keep nftables installed on the decoy so the way back sees the firewall tables, and end the session with `--poweroff` when none of its network state may reach the decoy. | `session-dns-records`, `session-nixos-hidden-system`, `session-mac-restore`, `session-wayback-poweroff` |
+| [Network state the hidden session created or changed](operator-guide.md#how-it-works) (`network-state`) | a soft-reboot keeps the kernel's network state across the switch, so the links, addresses, routes, policy-routing rules, firewall tables and network settings the hidden session set up, and any MAC address or hostname it changed, are still live when the way back begins | all | none: the hidden session creates them after activation | none: a link the decoy adopted looks like one the decoy made itself | A deactivate or a plain emergency puts most of it back on its own. Stop VPN apps, containers and virtual machines in the session before you deactivate (wg-quick down, nmcli connection down, the app's own disconnect), and end the session with `--poweroff` when none of its network state may reach the decoy. | `session-dns-records`, `session-nixos-hidden-system`, `session-mac-restore`, `session-wayback-poweroff` |
+| [Access times of the decoy's links NAILS follows](operator-guide.md#what-check-touches) (`decoy-link-access-times`) | the access times of the symbolic links on the decoy root that check and activation follow or read, on a root mounted relatime or strictatime | all | none: check makes these reads itself | none: an access time a session left looks like one any other read left | Mount the decoy root noatime, which leaves the links' access times alone too, and run check as root. | none: asserted by the access-time scenario under nix/distro-tests (a Debian 13 decoy mounted relatime, and a Fedora 44 one with a test build that admits Fedora), run on a KVM host outside the NixOS e2e suite: it lists these links and fails on any other read of the decoy disk by check, activation and the way back that a plain soft-reboot does not make |
 | [Soft-reboot counter and boot ID](threat-model.md#residual-channels) (`soft-reboot-counter`) | SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl, and the empty /run/nextroot each way back leaves | all | none: kernel and PID 1 state, not a file | none: RAM only, gone at power-off | Power off after the session; keep the decoy journal volatile. | `soft-reboot-mechanics` |
 | [Login and boot records around a switch](threat-model.md#residual-channels) (`login-boot-records`) | the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records) | all | none: the records are written by the decoy's own units after the switch, not before it | none: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran | The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. As its last step before the decoy starts, the way back also sets the kernel's process-number counter back: the entry records the number the decoy's boot gave its getty (else logind), the hidden session's own start shows how many numbers a start uses up to its copy of it, and the counter goes that many below. Where the getty is what it measures by, the decoy's getty gets about the number its own boot gave it, as far as the hidden start runs about as many processes up to its getty as the decoy's does. A getty or logind started more than a minute after the oldest process of its start that still runs, such as a getty started again after a logout, is passed over. When the getty is passed over, the measure goes by logind, or, without logind either, the counter goes to just below the lowest number the decoy's own userspace held at entry, and no test checks where the getty lands then. The decoy's other units are not measured. That step is best effort: where it cannot write the counter, deactivate warns before the switch and the numbers continue from the decoy's boot, and where it has neither a getty nor logind to measure by, deactivate warns as well; only ending the session with --poweroff, which has no way back, leaves none of them then. | none: asserted against a power cycle past five minutes of uptime by the cross-distro login- and boot-record test under nix/distro-tests (Debian 13 and Ubuntu 24.04), run on a KVM host outside the NixOS e2e suite; the process numbers of the getty and its records after the way back, in a first session and in a second one beside a unit every soft-reboot leaves running, are asserted against two fresh boots by the NixOS test session-fresh-pids |
 | [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) (`decoy-mount-table`) | the mount table after the way back: the decoy's mounts made again with new mount IDs and peer groups, its root and its initrd's mounts (the store bind) included; /run/credentials a mount of its own; the boot's mounts below /run gone | all | none: the mount table is kernel state; activation warns about a decoy mount the way back cannot make again at a place the session carries, and about one a plain soft-reboot keeps | none: RAM only, gone at power-off | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | `session-decoy-mount-table`, `session-emergency` |
