@@ -12,7 +12,7 @@
 //! the automount guard, look nothing up on it and say so.
 //!
 //! Some checks of the registry skip themselves in tests, such as
-//! mount-namespace, host-tools and network-tools, and binary-location and
+//! mount-namespace and host-tools, and binary-location and
 //! locate-database run again with test inputs. fstab-policy reads the decoy
 //! with nextroot, not through the mock, so its own tests cover it.
 //! kernel-modules reads the running kernel's module tree in `/usr/lib/modules`

@@ -120,7 +120,7 @@ fn the_units_outside_the_fstab_are_kept_off_in_the_hidden_root_as_fstab_lines() 
             mounts: read_mountinfo().unwrap(),
             pid_places: None,
             network: nails_teardown::whole_root::network::Places::system(&paths.run),
-            network_tools: None,
+            network_kernel: None,
             power_off: transition::PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,

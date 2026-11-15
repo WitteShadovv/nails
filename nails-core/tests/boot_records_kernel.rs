@@ -143,7 +143,7 @@ mod kernel_tests {
                 now: nails_teardown::whole_root::plan::unix_now(),
                 mounts: read_mountinfo().unwrap(),
                 network: nails_teardown::whole_root::network::Places::system(run),
-                network_tools: None,
+                network_kernel: None,
                 power_off: transition::PowerOff {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
@@ -269,7 +269,7 @@ mod kernel_tests {
             now: nails_teardown::whole_root::plan::unix_now(),
             mounts: read_mountinfo().unwrap(),
             network: nails_teardown::whole_root::network::Places::system(run),
-            network_tools: None,
+            network_kernel: None,
             power_off: transition::PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,

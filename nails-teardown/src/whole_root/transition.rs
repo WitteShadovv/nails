@@ -375,10 +375,9 @@ pub struct Env {
     /// Where the way back reads and writes the network state
     /// ([`network::Places::system`]).
     pub network: network::Places,
-    /// The tools the way back puts the network state back with, or `None` to
-    /// find them where [`network::restore`] does when it runs: in the system
-    /// directories, once `/run/current-system` names the decoy's system.
-    pub network_tools: Option<network::NetTools>,
+    /// What the way back asks to put the network state back, or `None` for
+    /// the running kernel, over netlink, as [`network::restore`] does.
+    pub network_kernel: Option<std::sync::Arc<dyn network::NetKernel>>,
     /// How the way back powers off when it cannot put the network state back.
     pub power_off: PowerOff,
     /// What gives the copy the way back leaves for the decoy's first start
@@ -426,7 +425,7 @@ impl Env {
             now: unix_now(),
             mounts: read_mountinfo().unwrap_or_default(),
             pid_places: Some(fresh_pids::Places::system()),
-            network_tools: None,
+            network_kernel: None,
             power_off: PowerOff::system(),
             selinux: &selinux::KERNEL,
             start,
@@ -754,8 +753,8 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // network settings back, and put the service manager's per-link runtime
     // state back. A no-op without a record. What could not be put back goes
     // into the outcome, as nothing here may log.
-    let network_kept = match &env.network_tools {
-        Some(tools) => network::restore_with(&env.network, tools, network.as_deref()),
+    let network_kept = match &env.network_kernel {
+        Some(kernel) => network::restore_with(&env.network, kernel.as_ref(), network.as_deref()),
         None => network::restore(&env.network, network.as_deref()),
     };
     // What the restore could not undo, or cannot tell it undid, lives only in

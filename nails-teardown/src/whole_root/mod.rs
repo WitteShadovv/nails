@@ -16,7 +16,7 @@
 //!   recorded at entry and put back on the way back, with
 //!   [`network_policy`] (policy-routing rules, firewall tables and network
 //!   settings) and [`network_run`] (the service manager's per-link runtime
-//!   state);
+//!   state), asked of the kernel through [`net_kernel`];
 //! - [`boot_records`]: making the decoy's login and boot records read as one
 //!   clean power cycle after the way back;
 //! - [`boot_writer`]: starting the decoy's wtmpdb boot writer so it records
@@ -45,7 +45,7 @@
 //! - [`program_label`]: the SELinux label of the RAM copies of the binary,
 //!   which decides the domain PID 1 starts NAILS's own steps in, with
 //!   [`selinux`] (what the running kernel's SELinux answers);
-//! - [`tools`]: the bounded `systemctl`, `dmsetup` and `ip` calls.
+//! - [`tools`]: the bounded `systemctl` and `dmsetup` calls.
 
 pub mod boot_records;
 pub mod boot_writer;
@@ -58,6 +58,7 @@ pub mod guard_policy;
 pub mod kernel_helpers;
 pub mod kill;
 pub mod logind;
+pub mod net_kernel;
 pub mod network;
 pub mod network_policy;
 pub mod network_run;

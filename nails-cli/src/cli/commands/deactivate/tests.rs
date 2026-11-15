@@ -120,33 +120,21 @@ fn subprocess_deactivate_entrypoint() {
         yes: true,
         poweroff: false,
     };
-    // Which of the network tools the way back's last step runs on a machine
-    // without Wi-Fi are where it looks.
-    let (all, only_nft): (&[&str], &[&str]) = (&["ip", "nft"], &["nft"]);
-    if let Some((settings, args, tools)) = match case.as_str() {
-        "human-ready-without-ip" => Some((ascii, yes, only_nft)),
-        "human-ready-without-tools" => Some((ascii, yes, &[][..])),
-        "human-ready-with-tools" => Some((ascii, yes, all)),
-        "json-ready-without-ip" => Some((json(), yes, only_nft)),
-        "json-ready-without-tools" => Some((json(), yes, &[][..])),
-        "json-ready-with-tools" => Some((json(), yes, all)),
+    if let Some((settings, args)) = match case.as_str() {
+        "human-ready" | "human-ready-kernel-kept" => Some((ascii, yes)),
+        "json-ready" | "json-ready-kernel-kept" => Some((json(), yes)),
         "json-ready-poweroff" => Some((
             json(),
             DeactivateArgs {
                 yes: true,
                 poweroff: true,
             },
-            &[][..],
         )),
-        "json-ready-unconfirmed" => Some((json(), DeactivateArgs::default(), &[][..])),
-        "human-ready-kernel-kept" => Some((ascii, yes, all)),
-        "json-ready-kernel-kept" => Some((json(), yes, all)),
+        "json-ready-unconfirmed" => Some((json(), DeactivateArgs::default())),
         _ => None,
     } {
+        // The hidden root holds no program: the way back starts none.
         let root = tempfile::tempdir().unwrap();
-        for tool in tools {
-            put(root.path(), &format!("usr/bin/{tool}"));
-        }
         if case.ends_with("kernel-kept") {
             put_kernel_kept_link(root.path());
         }
@@ -235,19 +223,12 @@ fn subprocess_deactivate_entrypoint() {
 }
 
 /// A warning given before the question.
-const EARLIER_WARNING: &str = "The return finds no `ip` (iproute2) in the hidden session's system \
-                               directories";
-
-/// Put an empty file at `path` below `root`.
-fn put(root: &Path, path: &str) {
-    let file = root.join(path);
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(file, "").unwrap();
-}
+const EARLIER_WARNING: &str = "The return finds no getty or logind to measure the decoy's process \
+                               numbers by";
 
 /// A deactivation ready to leave a hidden session whose decoy runs no NixOS,
 /// with its hidden volume, its state file and the root the way back's last
-/// step runs in, where it looks for its network tools, all below `root`.
+/// step runs in all below `root`.
 fn ready_at(root: &Path) -> ReadyDeactivation {
     use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
     let plan = serde_json::json!({
@@ -268,32 +249,6 @@ fn ready_at(root: &Path) -> ReadyDeactivation {
     let mut plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
     plan.pids = nails_teardown::test_support::stage_pid_measure(root);
     ReadyDeactivation::for_test(config, plan, root)
-}
-
-/// What a person reads before the question when the way back's last step
-/// finds no `ip` in a hidden root whose decoy runs no NixOS.
-fn no_ip_warning() -> String {
-    use nails_core::next_step::{NextStep, sudo_line};
-    format!(
-        "The return finds no `ip` (iproute2) in the hidden session's system directories, so the \
-         policy-routing rules the session added stay on the decoy until power-off, and a virtual \
-         link it made or a MAC address it changed makes the machine power off instead of \
-         returning. `{}` leaves none of them.",
-        sudo_line(NextStep::DeactivatePoweroff)
-    )
-}
-
-/// What a person reads before the question when the way back's last step
-/// finds no `nft` in a hidden root whose decoy runs no NixOS.
-fn no_nft_warning() -> String {
-    use nails_core::next_step::{NextStep, sudo_line};
-    format!(
-        "The return finds no `nft` (nftables) in the hidden session's system directories, so the \
-         nftables tables the session added stay on the decoy until power-off (a VPN app's table \
-         that blocks all traffic outside its tunnel keeps the decoy offline). `{}` leaves none \
-         of them.",
-        sudo_line(NextStep::DeactivatePoweroff)
-    )
 }
 
 /// The lines a person reads of a return to the decoy, up to the switch.
@@ -329,7 +284,7 @@ fn kernel_kept_warning() -> String {
 /// Give the tree at `root` the record entry takes of its links (`lo` alone)
 /// and then the link `tunl0` the kernel keeps once a session loads `ipip`.
 fn put_kernel_kept_link(root: &Path) {
-    use nails_teardown::whole_root::network::{self, NetTools, NetworkRecord, Places};
+    use nails_teardown::whole_root::network::{self, NetworkRecord, Places};
     let link = |name: &str, index: u32| {
         let dir = root.join("sys/class/net").join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -342,7 +297,10 @@ fn put_kernel_kept_link(root: &Path) {
         proc_hostname: root.join("proc/sys/kernel/hostname"),
         proc_sys: root.join("proc/sys"),
     };
-    let record = NetworkRecord::capture(&places, &NetTools::default());
+    let record = NetworkRecord::capture(
+        &places,
+        &nails_teardown::test_support::FakeNetKernel::offline(),
+    );
     let at = root.join("run/overlay-runtime").join(network::RECORD_NAME);
     std::fs::create_dir_all(at.parent().unwrap()).unwrap();
     std::fs::write(at, record.encode()).unwrap();
@@ -380,51 +338,25 @@ fn a_person_reads_before_the_question_that_the_way_back_powers_off() {
     );
 }
 
-/// A person reads that the return leaves the session's network state on the
-/// decoy where its last step finds no `ip`, or no `nft`, one line each on
-/// the question's stream before the lines of the return; where it finds both
-/// there is nothing to read.
+/// The return asks the kernel for the network state itself, so it needs no
+/// program in the hidden session's system directories: where they hold none,
+/// a person reads nothing before the lines of the return.
 #[test]
-fn a_person_reads_the_network_tool_warnings_before_the_return() {
-    for (case, warned) in [
-        ("human-ready-without-ip", vec![no_ip_warning()]),
-        (
-            "human-ready-without-tools",
-            vec![no_ip_warning(), no_nft_warning()],
-        ),
-        ("human-ready-with-tools", Vec::new()),
-    ] {
-        let output = run_subprocess(case);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let expected: Vec<String> = warned
-            .iter()
-            .map(|warning| format!("[WARN] {warning}"))
-            .collect();
-        assert_eq!(stderr.lines().collect::<Vec<_>>(), expected, "{case}");
-        assert_eq!(stdout_lines(&output), RETURN_LINES, "{case}: {output:?}");
-        assert_eq!(output.status.code(), Some(0), "{case}: {output:?}");
-    }
+fn a_person_reads_no_network_tool_warning_before_the_return() {
+    let output = run_subprocess("human-ready");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(stdout_lines(&output), RETURN_LINES, "{output:?}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
-/// Under `--json` nothing is written before the question: the one envelope
-/// carries the warnings in `warnings` where the return finds no `ip` or no
-/// `nft`, and has no `warnings` where it finds both or for a power-off,
-/// after which the decoy starts afresh.
+/// Under `--json` the one envelope of a return, or of a power-off, after
+/// which the decoy starts afresh, has no `warnings` where the hidden
+/// session's system directories hold no program.
 #[test]
-fn the_envelope_carries_the_network_tool_warnings() {
-    for (case, status, warnings) in [
-        (
-            "json-ready-without-ip",
-            "return_requested",
-            Some(serde_json::json!([no_ip_warning()])),
-        ),
-        (
-            "json-ready-without-tools",
-            "return_requested",
-            Some(serde_json::json!([no_ip_warning(), no_nft_warning()])),
-        ),
-        ("json-ready-with-tools", "return_requested", None),
-        ("json-ready-poweroff", "poweroff_requested", None),
+fn the_envelope_carries_no_network_tool_warning() {
+    for (case, status) in [
+        ("json-ready", "return_requested"),
+        ("json-ready-poweroff", "poweroff_requested"),
     ] {
         let output = run_subprocess(case);
         assert!(output.stderr.is_empty(), "{case}: {output:?}");
@@ -438,11 +370,7 @@ fn the_envelope_carries_the_network_tool_warnings() {
         let value = envelope("deactivate", &lines[1]);
         assert_eq!(value["ok"], true, "{case}: {value}");
         assert_eq!(value["data"]["status"], status, "{case}: {value}");
-        assert_eq!(
-            value["data"].get("warnings"),
-            warnings.as_ref(),
-            "{case}: {value}"
-        );
+        assert_eq!(value["data"].get("warnings"), None, "{case}: {value}");
         assert_eq!(output.status.code(), Some(0), "{case}: {output:?}");
     }
 }

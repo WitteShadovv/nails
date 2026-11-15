@@ -122,7 +122,8 @@ fn a_deactivation_with_a_way_back_is_planned_for_each_ending() {
         assert_eq!(token.len(), nails_api::protocol::TOKEN_HEX_DIGITS);
         assert!(engine.has_plan());
     }
-    // Without tools below the root, the return warns and the power-off not.
+    // Without a getty or logind below the root to measure the process
+    // numbers by, the return warns and the power-off does not.
     let ready = ready_at(root.path());
     assert!(
         !ready
@@ -138,11 +139,9 @@ fn a_deactivation_with_a_way_back_is_planned_for_each_ending() {
 
 /// A tree at `root` as the way back reads it: the entry's record of the
 /// decoy's links (`lo` alone), and now `lo` and `link`, which the session
-/// made. No `ip` lies below `root`.
+/// made.
 fn links_at(root: &Path, link: &str) {
-    use nails_teardown::whole_root::network::{
-        NetTools, NetworkRecord, Places, RECORD_NAME, SYS_CLASS_NET,
-    };
+    use nails_teardown::whole_root::network::{NetworkRecord, Places, RECORD_NAME, SYS_CLASS_NET};
     use nails_teardown::whole_root::plan::RUNTIME_DIR;
     let below = |path: &str| root.join(path.trim_start_matches('/'));
     let add = |name: &str, index: u32| {
@@ -157,21 +156,29 @@ fn links_at(root: &Path, link: &str) {
         proc_hostname: below("/proc/sys/kernel/hostname"),
         proc_sys: below("/proc/sys"),
     };
-    let record = NetworkRecord::capture(&places, &NetTools::default()).encode();
+    let offline = nails_teardown::test_support::FakeNetKernel::offline();
+    let record = NetworkRecord::capture(&places, &offline).encode();
     std::fs::create_dir_all(below(RUNTIME_DIR)).unwrap();
     std::fs::write(below(RUNTIME_DIR).join(RECORD_NAME), record).unwrap();
     add(link, 2);
 }
 
 /// A return the way back turns into a power-off says why in a field of its
-/// own, as the CLI's question says it: certain for a link the kernel keeps,
-/// unless that changes for one it deletes with an `ip` it does not find. The
-/// plan of a power-off has none.
+/// own, as the CLI's question says it: certain, for a link the kernel keeps.
+/// A link the way back deletes is no reason, and the plan of a power-off has
+/// none.
 #[test]
 fn a_return_bound_to_power_off_says_why_in_its_plan() {
     use nails_core::app::deactivate::{Prepared, power_off_reason};
     let env = RuntimeEnv::default();
-    for (link, certain) in [("tunl0", true), ("veth0", false)] {
+    let root = tempfile::tempdir().unwrap();
+    links_at(root.path(), "veth0");
+    assert_eq!(
+        power_off_reason(&ready_at(root.path()).foresee(LeaveTo::Decoy)),
+        None
+    );
+    {
+        let (link, certain) = ("tunl0", true);
         let root = tempfile::tempdir().unwrap();
         links_at(root.path(), link);
         let mut engine = Engine::new(&env, None);

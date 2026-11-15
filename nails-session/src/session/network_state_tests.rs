@@ -35,9 +35,16 @@ fn the_record_is_written_privately_and_matches_what_was_captured() {
     let out = dir.path().join("runtime/net-identity");
     fs::create_dir_all(out.parent().unwrap()).unwrap();
 
-    record_with(&places, &NetTools::default(), &out);
+    record_with(
+        &places,
+        &nails_teardown::test_support::FakeNetKernel::offline(),
+        &out,
+    );
 
-    let expected = NetworkRecord::capture(&places, &NetTools::default());
+    let expected = NetworkRecord::capture(
+        &places,
+        &nails_teardown::test_support::FakeNetKernel::offline(),
+    );
     let written = NetworkRecord::decode(&fs::read(&out).unwrap()).unwrap();
     assert_eq!(written, expected);
     // Private: the record names the decoy's hardware address and hostname.
@@ -52,7 +59,11 @@ fn a_write_to_a_missing_directory_creates_no_file() {
     // creates `out`. This does NOT exercise the stale-record cleanup: `out`
     // never existed, so there is nothing to remove (see the next test).
     let out = dir.path().join("no-such-dir/net-identity");
-    record_with(&places, &NetTools::default(), &out);
+    record_with(
+        &places,
+        &nails_teardown::test_support::FakeNetKernel::offline(),
+        &out,
+    );
     assert!(!out.exists());
 }
 
