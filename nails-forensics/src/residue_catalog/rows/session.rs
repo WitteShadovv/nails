@@ -721,7 +721,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         mitigation: "Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean.",
         doc_anchor: "threat-model.md#residual-channels",
         e2e: E2e::None(
-            "the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems",
+            "the compressed-storage verdict is unit-tested, and the rehearsal of the Fedora admission gate under nix/distro-tests, a suite run by hand, gives it after a clean session on the compressing btrfs roots of Fedora 44 and 45; a live rehearsal on an f2fs decoy is a follow-up on hardware with that filesystem",
         ),
         residual: true,
         conclusion: None,
