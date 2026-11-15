@@ -196,6 +196,16 @@ class CursorTest(unittest.TestCase):
         self.assertFalse(found["known"])
         self.assertEqual(found["leakedFromSession"], 0)
 
+    def test_the_first_record_taken_shows_where_the_cursor_stood(self) -> None:
+        # The decoy's own boot record before the entry, read again: no record
+        # of the session, but the cursor did not stand past the step.
+        found = sg.cursor(self.session(), self.journal(1, 5, 6, 7), 2, 4, 7)
+        self.assertEqual(found["leakedFromSession"], 0)
+        self.assertEqual((found["firstImported"], found["beforeStep"]), (1, 1))
+        found = sg.cursor(self.session(), self.journal(5, 6, 7), 2, 4, 7)
+        self.assertEqual((found["firstImported"], found["beforeStep"]), (5, 0))
+        self.assertIsNone(sg.cursor(self.session(), "", 2, 4, 7)["firstImported"])
+
     def test_a_list_message_is_decoded(self) -> None:
         entry = {"_SOURCE_MONOTONIC_TIMESTAMP": "5000", "MESSAGE": [104, 105]}
         self.assertEqual(
@@ -235,6 +245,53 @@ AUDIT_LOG = "\n".join(
         "not a record",
     )
 )
+
+
+class JournalEntriesTest(unittest.TestCase):
+    def test_reads_every_transport(self) -> None:
+        text = "\n".join(
+            json.dumps(entry)
+            for entry in (
+                {
+                    "_TRANSPORT": "audit",
+                    "_PID": "1",
+                    "_AUDIT_ID": "1272",
+                    "_SOURCE_REALTIME_TIMESTAMP": "1794710733126000",
+                    "SYSLOG_IDENTIFIER": "audit",
+                    "MESSAGE": "SERVICE_STOP pid=1",
+                },
+                {
+                    "_TRANSPORT": "stdout",
+                    "_PID": "5391",
+                    "_COMM": "zram-generator",
+                    "_SYSTEMD_UNIT": "systemd-zram-setup@zram0.service",
+                    "__REALTIME_TIMESTAMP": "1794710734760000",
+                    "MESSAGE": [69, 114, 114],
+                },
+            )
+        )
+        first, second = sg.journal_entries(text + "\nnot json\n[1]")
+        self.assertEqual(
+            (first["transport"], first["auditId"], first["sent"], first["who"]),
+            ("audit", 1272, 1794710733126000, "audit"),
+        )
+        self.assertEqual(
+            (second["pid"], second["who"], second["sent"], second["msg"]),
+            (5391, "zram-generator", None, "Err"),
+        )
+        self.assertEqual(second["received"], 1794710734760000)
+
+    def test_the_last_serial_between_two_records(self) -> None:
+        found = records(
+            "audit: type=1131 audit(1.0:1272): unit=systemd-journald",
+            "systemd[1]: Stopped x.",
+            "audit: type=1131 audit(1.1:1279): unit=systemd-soft-reboot",
+            "systemd[1]: systemd-soft-reboot.service: Deactivated successfully.",
+            "audit: type=1400 audit(1.2:1282): avc:  denied  { map }",
+        )
+        self.assertEqual(sg.last_serial_between(found, 0, 4), 1279)
+        self.assertEqual(sg.last_serial_between(found, 3, 6), 1282)
+        self.assertIsNone(sg.last_serial_between(found, 1, 3))
 
 
 class AuditLogTest(unittest.TestCase):
