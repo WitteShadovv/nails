@@ -58,14 +58,14 @@ Whatever the backend, the filesystem at the hidden root must:
   such a line, the check also lets be the crypttab lines its boot opens (no
   `noauto` and no `tcrypt-hidden`) as LUKS, with neither `swap` nor `tmp`, for
   the LUKS device that filesystem lies on, as an encrypted decoy's crypttab
-  does. A
-  line for that filesystem at any other folder, since it may name the hidden
-  drive's disk, a line whose mount is not there, a line that mounts the volume
-  itself (the root's own subvolume, a bind line from the root's folder, or any
-  line for a root that is the whole filesystem), and any other crypttab line
-  still fail `backend-entries` (see
-  [Attaching the drive](decoy-requirements.md#attaching-the-drive)). An
-  encrypted container
+  does. A line for that filesystem at any other folder, since it may name the
+  hidden drive's disk, a line whose mount is not there, a line that mounts the
+  volume itself (the root's own subvolume, a bind line from the root's folder,
+  or any line for a root that is the whole filesystem), and any other crypttab
+  line still fail `backend-entries` (see
+  [Attaching the drive](decoy-requirements.md#attaching-the-drive)), and so
+  does a line that names the container file or image the volume is stored in,
+  or that has the boot write to a device of its drive. An encrypted container
   file on a filesystem the decoy uses is accepted with a warning: that
   filesystem's journal and copy-on-write snapshots (btrfs, snapper) can keep old
   copies of the parts of the container that changed, so a whole device or a

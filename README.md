@@ -185,14 +185,18 @@ Also refused by the pre-flight checks:
   cannot be judged (`hidden-volume`);
 - a hidden volume whose filesystem is also mounted at another place in the
   decoy's mount table, as a desktop that mounts drives by itself can mount it
-  once it is unlocked; no flag lifts this refusal, and for a root on a
-  filesystem the decoy uses that `--allow-decoy-storage` accepted, only the
-  decoy's own mounts of it, at `/` and by its fstab, and mounts that show none
-  of the root's folder are left out (`hidden-volume`, see
+  once it is unlocked, through another loop device over its container file or
+  image too; no flag lifts this refusal, and for a root on a filesystem the
+  decoy uses that `--allow-decoy-storage` accepted, only the decoy's own mounts
+  of it, at `/` and by its fstab, and mounts that show none of the root's folder
+  are left out (`hidden-volume`, see
   [Attaching the drive](docs/decoy-requirements.md#attaching-the-drive));
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
-  volume or, for a root that `--allow-decoy-storage` accepted on a filesystem
-  the decoy uses, that filesystem; for a root that is a folder or a btrfs
+  volume, its container file or image by any path, or, for a root that
+  `--allow-decoy-storage` accepted on a filesystem the decoy uses, that
+  filesystem, or that has the boot write to a device of the hidden volume's
+  drive (`x-systemd.makefs`, a random-key swap, `journal_path=`,
+  `tpm2-device=` and the like); for a root that is a folder or a btrfs
   subvolume of it, the flag lets be only the decoy's own fstab lines that its
   boot mounted at `/` or at a system folder outside the hidden root (`/usr`,
   `/var`, `/home`, `/srv`, `/boot`, `/efi`, `/boot/efi`, `/nix`, `/opt`, a
