@@ -30,6 +30,25 @@
 //! `swap`, and a filesystem for `tmp` or `tmp=`, on the mapping, whatever their
 //! order ([`opens_as_luks`]). The decoy's own crypttab line is let be only
 //! where it opens its LUKS mapping as LUKS and makes neither.
+//!
+//! Some options have the boot write over the device a line names itself
+//! ([`overwrites`], [`formats_its_device`]): of a crypttab line `swap`, `tmp`
+//! and `tmp=`, for which `systemd-makefs` makes swap or a filesystem on the
+//! mapping, and so over its source, and plain mode, which opens the source
+//! with no header to check, so whatever writes to the mapping writes over the
+//! source at the offset the line gives; and of an fstab line
+//! `x-systemd.makefs`, alone or with a value, for which the generator has
+//! `systemd-makefs` make a filesystem, or swap on a swap line, on the line's
+//! device wherever it finds no filesystem there. It probes for filesystems
+//! only, so a whole disk with a partition table and nothing at its own start
+//! looks empty to it, and systemd 262's formatted one. The judge fails such
+//! a line on any device of the hidden drive, as an option that opens a device
+//! for writing fails (see the `reads` module): its whole disk, a partition of
+//! it and a device stacked on one of them. A line for a device the volume is
+//! stored on fails as one that opens or mounts it, as before, and so the
+//! decoy's own fstab line for the filesystem a root on its storage lies in,
+//! which formats nothing there, as that filesystem is found on its device,
+//! stays the decoy's own line for its folder.
 
 use super::known::{reads_every_known, reads_every_known_crypttab};
 use super::paths::as_written;
@@ -111,8 +130,10 @@ enum CryptType {
     Luks,
     /// As a TrueCrypt or VeraCrypt volume.
     Tcrypt,
-    /// As plain dm-crypt, with no header, or as a BitLocker volume.
-    Other,
+    /// As plain dm-crypt, with no header.
+    Plain,
+    /// As a BitLocker volume.
+    Bitlk,
 }
 
 /// How `systemd-cryptsetup` opens the crypttab line `entry`, as it reads the
@@ -130,10 +151,11 @@ fn crypt_type(entry: &CrypttabEntry) -> CryptType {
             "luks" => Some(CryptType::Luks),
             "tcrypt" | "tcrypt-hidden" | "tcrypthidden" | "tcrypt-system" | "tcrypt-veracrypt"
             | "veracrypt" => Some(CryptType::Tcrypt),
-            "plain" | "swap" | "tmp" | "bitlk" => Some(CryptType::Other),
+            "plain" | "swap" | "tmp" => Some(CryptType::Plain),
+            "bitlk" => Some(CryptType::Bitlk),
             _ if valued("key-slot") || valued("keyslot") => Some(CryptType::Luks),
             _ if valued("tcrypt-keyfile") => Some(CryptType::Tcrypt),
-            _ if valued("tmp") => Some(CryptType::Other),
+            _ if valued("tmp") => Some(CryptType::Plain),
             _ if valued("header") && set != Some(CryptType::Tcrypt) => Some(CryptType::Luks),
             _ => set,
         };
@@ -148,6 +170,38 @@ fn crypt_type(entry: &CrypttabEntry) -> CryptType {
 /// filesystem on the mapping wherever it finds none.
 pub(super) fn opens_as_luks(entry: &CrypttabEntry) -> bool {
     crypt_type(entry) == CryptType::Luks && !has_named(&entry.options, &["swap", "tmp"])
+}
+
+/// How the boot writes over the device a crypttab line opens, its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Overwrite {
+    /// `systemd-makefs` makes swap on the mapping (`swap`).
+    Swap,
+    /// `systemd-makefs` makes a filesystem on the mapping (`tmp`, `tmp=`).
+    Filesystem,
+    /// The line opens it as plain dm-crypt, with no header to check, so
+    /// whatever writes to the mapping writes over the source.
+    Plain,
+}
+
+/// How the boot writes over the source of the crypttab line `entry`, if it
+/// may: `swap` and `tmp`, by name, whatever the order of the options, and
+/// else plain mode, by the last option that sets a type ([`crypt_type`]).
+pub(super) fn overwrites(entry: &CrypttabEntry) -> Option<Overwrite> {
+    if has_named(&entry.options, &["swap"]) {
+        Some(Overwrite::Swap)
+    } else if has_named(&entry.options, &["tmp"]) {
+        Some(Overwrite::Filesystem)
+    } else {
+        (crypt_type(entry) == CryptType::Plain).then_some(Overwrite::Plain)
+    }
+}
+
+/// Whether the boot formats the device of the fstab line `entry` where it
+/// finds no filesystem there: an option named `x-systemd.makefs`, alone or
+/// with a value, as systemd's fstab generator reads it.
+pub(super) fn formats_its_device(entry: &FstabEntry) -> bool {
+    has_named(&entry.options, &["x-systemd.makefs"])
 }
 
 #[cfg(test)]

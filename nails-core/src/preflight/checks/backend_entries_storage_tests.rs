@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The backend-entries check on the lines that name the file the volume is
-//! stored in, which a loop device of its stack reads: they fail with the flag
-//! and without it.
+//! stored in, which a loop device of its stack reads, and on the lines that
+//! have the boot write over a device of the hidden drive: they fail with the
+//! flag and without it.
 
 use super::*;
 
@@ -264,4 +265,239 @@ fn a_line_that_names_the_veracrypt_container_of_the_root_fails() {
     );
     let result = container("vc /home/op/other.hc /etc/vc.key tcrypt-veracrypt\n").run();
     assert!(result.is_pass(), "{result:?}");
+}
+
+/// The decoy with the volume `data` (dm-9) on sdb1 of the partitioned sdb,
+/// sdb2 beside it, sdc another drive and loop5 over the whole of sdb, with
+/// the links `/dev/disk/by-id/usb-whole` and `/dev/block/8:16` of sdb, and
+/// `fstab` and `crypttab`.
+fn on_a_partition(fstab: &str, crypttab: &str) -> Decoy {
+    let decoy = Decoy::new(
+        "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
+         5 1 254:9 / /mnt rw - ext4 /dev/mapper/data rw\n",
+    )
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .device(SDB, "sdb", "8:16", &[])
+    .partition(SDB1, "sdb1", "8:17")
+    .partition(SDB2, "sdb2", "8:18")
+    .device(SDC, "sdc", "8:32", &[])
+    .device(
+        "/sys/devices/virtual/block/loop5",
+        "loop5",
+        "7:5",
+        &[("sdb", SDB)],
+    )
+    .mapping("dm-9", "254:9", "data", ("sdb1", SDB1))
+    .file(
+        "/etc/fstab",
+        &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{fstab}"),
+    )
+    .file("/etc/crypttab", crypttab)
+    .encrypted();
+    decoy.link("/dev/disk/by-id/usb-whole", "../../sdb");
+    decoy.link("/dev/block/8:16", "../sdb");
+    for node in ["dm-9", "sdb", "sdb1", "sdb2", "sdc", "loop5"] {
+        decoy.fs.mock_set_device_node(&format!("/dev/{node}"));
+    }
+    decoy
+}
+
+#[test]
+fn a_line_that_has_the_boot_write_over_a_device_of_the_drive_fails() {
+    // systemd 260.5 made systemd-makefs@dev-sdb.service for an
+    // x-systemd.makefs line on the whole disk sdb, systemd-mkswap@dev-sdb
+    // for a swap line, and had `systemd-makefs swap` run on the plain
+    // mapping of a crypttab swap line, or make a filesystem for tmp;
+    // systemd-makefs probes only for filesystems, so on a real kernel it
+    // formatted a whole disk with a partition table on it. A plain
+    // mapping of the disk, with an offset into the volume's partition or
+    // none, checks no header, so a write to it, an fstab makefs line for its
+    // mapping say, lands on the volume. Each fails, with the flag too, on
+    // the whole disk by any of its names, on a loop device over it and on
+    // the partition beside the volume.
+    let makefs = |shown: &str| {
+        format!(
+            "/etc/fstab: '{shown}' (it has the boot format a device of the drive the volume at \
+             /mnt is stored on where it finds no filesystem, through its option x-systemd.makefs)"
+        )
+    };
+    let made = |shown: &str, what: &str, option: &str| {
+        format!(
+            "/etc/crypttab: '{shown}' (it has the boot make {what} over a device of the drive \
+             the volume at /mnt is stored on through its option {option})"
+        )
+    };
+    let plain = |shown: &str| {
+        format!(
+            "/etc/crypttab: '{shown}' (it opens a device of the drive the volume at /mnt is \
+             stored on as plain dm-crypt, which checks no header, so what the boot writes to its \
+             mapping lands on that drive)"
+        )
+    };
+    for (fstab, crypttab, finding) in [
+        (
+            "/dev/sdb /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+            "",
+            makefs("/dev/sdb /media/x ext4"),
+        ),
+        (
+            "/dev/disk/by-id/usb-whole /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+            "",
+            makefs("/dev/disk/by-id/usb-whole /media/x ext4"),
+        ),
+        (
+            "/dev/block/8:16 /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+            "",
+            makefs("/dev/block/8:16 /media/x ext4"),
+        ),
+        (
+            "/dev/sdb none swap sw,x-systemd.makefs 0 0\n",
+            "",
+            makefs("/dev/sdb none swap"),
+        ),
+        (
+            "/dev/loop5 /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+            "",
+            makefs("/dev/loop5 /media/x ext4"),
+        ),
+        (
+            "/dev/sdb2 /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+            "",
+            makefs("/dev/sdb2 /media/x ext4"),
+        ),
+        (
+            "/dev/sdb /media/x ext4 noauto,x-systemd.makefs 0 0\n",
+            "",
+            makefs("/dev/sdb /media/x ext4"),
+        ),
+        (
+            "",
+            "swapcrypt /dev/sdb /dev/urandom swap,cipher=aes-xts-plain64,size=512\n",
+            made("swapcrypt /dev/sdb", "swap", "swap"),
+        ),
+        (
+            "",
+            "tmpcrypt /dev/sdb /dev/urandom tmp\n",
+            made("tmpcrypt /dev/sdb", "a filesystem", "tmp"),
+        ),
+        (
+            "",
+            "tmpcrypt /dev/sdb /dev/urandom tmp=ext2\n",
+            made("tmpcrypt /dev/sdb", "a filesystem", "tmp"),
+        ),
+        (
+            "",
+            "swapcrypt /dev/disk/by-id/usb-whole /dev/urandom swap\n",
+            made("swapcrypt /dev/disk/by-id/usb-whole", "swap", "swap"),
+        ),
+        (
+            "",
+            "swapcrypt /dev/loop5 /dev/urandom swap\n",
+            made("swapcrypt /dev/loop5", "swap", "swap"),
+        ),
+        (
+            "",
+            "swapcrypt /dev/sdb2 /dev/urandom swap\n",
+            made("swapcrypt /dev/sdb2", "swap", "swap"),
+        ),
+        (
+            "",
+            "swapcrypt /dev/sdb /dev/urandom swap,noauto\n",
+            made("swapcrypt /dev/sdb", "swap", "swap"),
+        ),
+        (
+            "",
+            "px /dev/sdb /etc/plainkey plain,offset=2048,cipher=aes-xts-plain64,size=512\n",
+            plain("px /dev/sdb"),
+        ),
+        (
+            "/dev/mapper/plainx /data ext4 x-systemd.makefs,nofail 0 0\n",
+            "plainx /dev/sdb /etc/plainkey plain,cipher=aes-xts-plain64,size=512\n",
+            plain("plainx /dev/sdb"),
+        ),
+    ] {
+        let decoy = on_a_partition(fstab, crypttab);
+        fails_naming(&decoy, &finding);
+    }
+    // Another drive, a line that writes nothing over its device, and one
+    // that opens the disk as LUKS, which loads its header or fails, pass.
+    for (fstab, crypttab) in [
+        ("", "swapcrypt /dev/sdc /dev/urandom swap\n"),
+        ("/dev/sdc /media/x ext4 x-systemd.makefs,nofail 0 0\n", ""),
+        ("/dev/sdb none swap sw 0 0\n", ""),
+        ("/dev/sdb /media/g ext4 x-systemd.growfs,nofail 0 0\n", ""),
+        ("", "vault /dev/sdb none luks,nofail\n"),
+    ] {
+        let result = on_a_partition(fstab, crypttab).run();
+        assert!(result.is_pass(), "{fstab}{crypttab}: {result:?}");
+    }
+    // On the volume's own partition, the line opens or mounts a device the
+    // volume is stored on, as before.
+    for (fstab, crypttab, finding) in [
+        (
+            "",
+            "swapcrypt /dev/sdb1 /dev/urandom swap\n",
+            "/etc/crypttab: 'swapcrypt /dev/sdb1' (it opens the volume at /mnt or a device it is \
+             stored on)",
+        ),
+        (
+            "/dev/sdb1 /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+            "",
+            "/etc/fstab: '/dev/sdb1 /media/x ext4' (it mounts a device the volume at /mnt is \
+             stored on, and the decoy's own boot needs it)",
+        ),
+    ] {
+        let result = on_a_partition(fstab, crypttab).run();
+        assert_eq!(
+            result.message(),
+            names_the_volume(finding),
+            "{fstab}{crypttab}"
+        );
+    }
+}
+
+#[test]
+fn a_header_device_on_the_drive_fails() {
+    // systemd's crypttab generator mounts the device of
+    // `header=<path>:<device>` read-write ("LUKS2 recovery requires rw header
+    // access"): on the volume's drive, the partition beside it or the whole
+    // disk by any of its names, that is a write to it at boot, with the flag
+    // too.
+    let header = |shown: &str| {
+        format!(
+            "/etc/crypttab: '{shown}' (it mounts a device of the drive the volume at /mnt is \
+             stored on read-write for its header)"
+        )
+    };
+    for crypttab in [
+        "vault /dev/sdc none luks,header=/hdr.img:/dev/sdb2,nofail\n",
+        "vault /dev/sdc none luks,header=/hdr.img:/dev/sdb,nofail\n",
+        "vault /dev/sdc none luks,header=/hdr.img:/dev/disk/by-id/usb-whole,nofail\n",
+    ] {
+        let decoy = on_a_partition("", crypttab);
+        fails_naming(&decoy, &header("vault /dev/sdc"));
+    }
+    // The volume's own partition is a device it is stored on.
+    let result = on_a_partition(
+        "",
+        "vault /dev/sdc none luks,header=/hdr.img:/dev/sdb1,nofail\n",
+    )
+    .run();
+    assert_eq!(
+        result.message(),
+        names_the_volume(
+            "/etc/crypttab: 'vault /dev/sdc' (it mounts the volume at /mnt or a device it is \
+             stored on for its header)"
+        )
+    );
+    // Another drive, and a key device, which the boot mounts read-only,
+    // pass.
+    for crypttab in [
+        "vault /dev/sdc none luks,header=/hdr.img:/dev/sdc,nofail\n",
+        "vault /dev/sdc /k:/dev/sdb2 luks,nofail\n",
+    ] {
+        let result = on_a_partition("", crypttab).run();
+        assert!(result.is_pass(), "{crypttab}: {result:?}");
+    }
 }

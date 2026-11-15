@@ -59,7 +59,12 @@
 //! boot open the device it names for writing, `tpm2-device=`, `fido2-device=`
 //! and the devices of ext4, XFS and btrfs, fails the line on any device of the
 //! hidden drive: its whole disk, a partition of it, or a device stacked on one
-//! of them.
+//! of them. So does the device of a `header=<path>:<device>`, which the
+//! crypttab generator mounts read-write, and a line that has the boot write
+//! over a device it names itself, by `x-systemd.makefs` on an fstab line, for
+//! which `systemd-makefs` formats a device where it finds no filesystem, or by
+//! a crypttab line's `swap`, `tmp` or plain mode, which writes over its source
+//! or lets whatever writes to its mapping do so.
 //!
 //! A bind line's source, the path of a swap or image file, of what a FUSE
 //! program reads and of a FUSE program named by its path, and a crypttab source

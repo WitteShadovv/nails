@@ -1178,3 +1178,62 @@ fn the_crypttab_line_is_the_decoys_own_only_where_it_opens_the_device_as_its_map
         ]
     );
 }
+
+#[test]
+fn on_the_disk_of_a_root_on_the_decoys_storage_a_line_that_writes_over_a_device_is_one() {
+    // A subvolume root beside /home: the drive the root lies on is the
+    // decoy's own disk. The decoy's own line for /home, which formats its
+    // device only where systemd-makefs finds no filesystem there, mounts
+    // the root's own filesystem and stays the decoy's own line. A line that
+    // has the boot write over another device of that disk, a random-key swap
+    // on another partition, say, is an entry, which no flag lets be.
+    let world = |fstab: &str, crypttab: &str| {
+        World::new(
+            "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+             2 1 0:40 /home /home rw - btrfs /dev/sda2 rw,subvol=/home\n\
+             5 1 0:40 /vault /mnt rw - btrfs /dev/sda2 rw,subvol=/vault\n",
+        )
+        .disk("sda", "8:0")
+        .part("sda1", "8:1", "sda")
+        .part("sda2", "8:2", "sda")
+        .part("sda3", "8:3", "sda")
+        .btrfs(&["sda2"])
+        .fstab(fstab)
+        .crypttab(crypttab)
+        .judge("/mnt")
+    };
+    assert_eq!(
+        entry_folders(&world(
+            "/dev/sda2 /home btrfs subvol=/home,x-systemd.makefs 0 0\n",
+            ""
+        )),
+        [("/dev/sda2 /home btrfs", Some(Path::new("/home")))]
+    );
+    let judgement = world(
+        "/dev/sda2 /home btrfs subvol=/home 0 0\n",
+        "cryptswap /dev/sda3 /dev/urandom swap,cipher=aes-xts-plain64,size=512\n",
+    );
+    assert_eq!(
+        entry_folders(&judgement),
+        [
+            ("/dev/sda2 /home btrfs", Some(Path::new("/home"))),
+            ("cryptswap /dev/sda3", None)
+        ]
+    );
+    assert_eq!(
+        judgement.entries[1].why,
+        "it has the boot make swap over a device of the drive the volume at /mnt is stored on \
+         through its option swap"
+    );
+    let judgement = world(
+        "/dev/sda2 /home btrfs subvol=/home 0 0\n/dev/sda3 /data ext4 x-systemd.makefs 0 2\n",
+        "",
+    );
+    assert_eq!(
+        entry_folders(&judgement),
+        [
+            ("/dev/sda2 /home btrfs", Some(Path::new("/home"))),
+            ("/dev/sda3 /data ext4", None)
+        ]
+    );
+}
