@@ -4,7 +4,7 @@
 //! The judge: the decoy's claims, then the first verdict that matches.
 
 use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
-use super::options::{crypttab_noauto, fstab_noauto};
+use super::options::{crypttab_noauto, fstab_noauto, opens_as_luks};
 use super::paths::{is_claimed, is_untold_device, names_a_file, opens_a_file, program_path};
 use super::placed::{Line, Named, place};
 use super::plain::source;
@@ -747,9 +747,17 @@ fn crypttab_claims(
                 // A line the boot opens that makes a device of that
                 // filesystem, while the decoy mounts another part of it at /
                 // or at a system folder, is the decoy's own line for that
-                // place too. Never one that opens the hidden volume of a
-                // container, whatever it names.
-                let own = makes_own && !crypttab_noauto(entry) && !entry.is_tcrypt_hidden();
+                // place too, where it opens the device as the mapping it
+                // makes is open now: a LUKS mapping, and a line that
+                // `systemd-cryptsetup` opens as LUKS and on which the boot
+                // makes no swap and no filesystem. Never one that opens the
+                // hidden volume of a container, whatever it names.
+                let as_mapped = devices
+                    .made_mapping(entry_stack, &entry.name, mapping, source)
+                    .is_some_and(Node::is_luks)
+                    && opens_as_luks(entry);
+                let own =
+                    makes_own && as_mapped && !crypttab_noauto(entry) && !entry.is_tcrypt_hidden();
                 let system_folder = own_place.filter(|_| own).map(Path::to_path_buf);
                 found.push(EntryFinding {
                     system_folder,

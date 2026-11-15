@@ -980,3 +980,70 @@ fn a_line_that_opens_the_hidden_volume_the_decoys_root_lies_in_is_one_its_boot_n
         [(EntryKind::Blocking, "vault /dev/sdb", false)]
     );
 }
+
+#[test]
+fn the_crypttab_line_is_the_decoys_own_only_where_it_opens_the_device_as_its_mapping_is() {
+    // systemd-cryptsetup opens the line as the last of its options that sets
+    // a type says, and the crypttab generator has systemd-makefs make swap
+    // or a filesystem on the mapping for `swap`, `tmp` and `tmp=`. A line
+    // that opens the decoy's LUKS volume in plain mode, as TrueCrypt or as
+    // BitLocker, or that makes swap or a filesystem on it, is none of the
+    // decoy's own, and its boot needs it all the same.
+    for options in ["luks,discard", "discard", "plain,luks", "luks,key-slot=1"] {
+        assert_eq!(
+            crypttab_lines(&debian_luks("/srv/x", CRYPTROOT_LINE, options)),
+            [("cryptroot UUID=e1", true, Some(Path::new("/")))],
+            "{options}"
+        );
+    }
+    for options in [
+        "luks,discard,swap",
+        "luks,discard,tmp",
+        "luks,tmp=ext2",
+        "swap,luks",
+        "plain,discard",
+        "luks,plain",
+        "luks,tcrypt",
+        "luks,veracrypt",
+        "luks,bitlk",
+    ] {
+        assert_eq!(
+            crypttab_lines(&debian_luks("/srv/x", CRYPTROOT_LINE, options)),
+            [("cryptroot UUID=e1", true, None)],
+            "{options}"
+        );
+    }
+    // Nor is a LUKS line for a mapping that is open in another mode now.
+    let plain = World::new(
+        "1 0 254:0 / / rw - ext4 /dev/mapper/cryptroot rw\n\
+         5 1 254:0 /srv/x /mnt rw - ext4 /dev/mapper/cryptroot rw\n",
+    )
+    .disk("nvme0n1", "259:0")
+    .part("nvme0n1p3", "259:3", "nvme0n1")
+    .crypt_as("dm-0", "254:0", "cryptroot", false, &["nvme0n1p3"])
+    .spec("UUID=e1", "nvme0n1p3")
+    .fstab(CRYPTROOT_LINE)
+    .crypttab("cryptroot UUID=e1 none luks\n")
+    .judge("/mnt");
+    assert_eq!(crypttab_lines(&plain), [("cryptroot UUID=e1", true, None)]);
+    // A line that opens the device below the mapping under another name is
+    // read by that mapping.
+    let renamed = World::new(
+        "1 0 254:0 / / rw - ext4 /dev/mapper/cryptroot rw\n\
+         5 1 254:0 /srv/x /mnt rw - ext4 /dev/mapper/cryptroot rw\n",
+    )
+    .disk("nvme0n1", "259:0")
+    .part("nvme0n1p3", "259:3", "nvme0n1")
+    .crypt("dm-0", "254:0", "cryptroot", &["nvme0n1p3"])
+    .spec("UUID=e1", "nvme0n1p3")
+    .fstab(CRYPTROOT_LINE)
+    .crypttab("luks-e1 UUID=e1 none luks\nother UUID=e1 none luks,swap\n")
+    .judge("/mnt");
+    assert_eq!(
+        crypttab_lines(&renamed),
+        [
+            ("luks-e1 UUID=e1", true, Some(Path::new("/"))),
+            ("other UUID=e1", true, None)
+        ]
+    );
+}

@@ -119,3 +119,51 @@ fn a_crypttab_noauto_is_read_by_its_name_and_the_last_wins() {
         assert!(!crypttab_noauto(&crypttab_line(options)), "{options}");
     }
 }
+
+/// systemd 260.5's `systemd-cryptsetup` logged type=PLAIN for
+/// `luks,discard,swap` and type=LUKS for `swap,luks`: of the options that set
+/// how it opens a line, the last one wins, and a line with none it opens as
+/// LUKS. The crypttab generator has `systemd-makefs` make swap for `swap` and
+/// a filesystem for `tmp` or `tmp=` on the mapping, whatever their order.
+#[test]
+fn a_crypttab_line_is_opened_as_luks_by_the_last_option_that_sets_its_type() {
+    for options in [
+        "none",
+        "luks",
+        "discard",
+        "luks,discard",
+        "plain,luks",
+        "tcrypt,luks",
+        "bitlk,luks",
+        "plain,key-slot=1",
+        "plain,keyslot=0",
+        "plain,header=/etc/hdr",
+        "luks,header=/etc/hdr",
+        "luks,tpm2-device=auto,tpm2-pcrs=7",
+        "luks,veracrypt-pim=485",
+    ] {
+        assert!(opens_as_luks(&crypttab_line(options)), "{options}");
+    }
+    for options in [
+        "plain",
+        "luks,plain",
+        "luks,discard,swap",
+        "luks,discard,tmp",
+        "luks,tmp=ext2",
+        "luks,tmp=",
+        "swap,luks",
+        "tmp,luks",
+        "tmp=btrfs,luks",
+        "luks,tcrypt",
+        "luks,tcrypt-hidden",
+        "luks,tcrypthidden",
+        "luks,tcrypt-system",
+        "luks,tcrypt-veracrypt",
+        "luks,veracrypt",
+        "luks,tcrypt-keyfile=/etc/k",
+        "tcrypt,header=/etc/hdr",
+        "luks,bitlk",
+    ] {
+        assert!(!opens_as_luks(&crypttab_line(options)), "{options}");
+    }
+}

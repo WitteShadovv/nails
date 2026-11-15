@@ -22,6 +22,14 @@
 //! reads every option it gives (see the `known` module): any other line may
 //! be pulled in at boot by an option NAILS does not read, so the claims count
 //! it as one the boot mounts or opens.
+//!
+//! How `systemd-cryptsetup` opens a crypttab line the judge reads by the
+//! options that set its type, in their order, of which the last one wins, as
+//! systemd 260.5 logged type=PLAIN for `luks,discard,swap` and type=LUKS for
+//! `swap,luks`; the crypttab generator also has `systemd-makefs` make swap for
+//! `swap`, and a filesystem for `tmp` or `tmp=`, on the mapping, whatever their
+//! order ([`opens_as_luks`]). The decoy's own crypttab line is let be only
+//! where it opens its LUKS mapping as LUKS and makes neither.
 
 use super::known::{reads_every_known, reads_every_known_crypttab};
 use super::paths::as_written;
@@ -94,6 +102,52 @@ pub(super) fn fstab_noauto(entry: &FstabEntry) -> bool {
 /// line gives only options NAILS reads ([`reads_every_known_crypttab`]).
 pub(super) fn crypttab_noauto(entry: &CrypttabEntry) -> bool {
     last_is(&entry.options, "noauto", "auto") && reads_every_known_crypttab(entry)
+}
+
+/// How `systemd-cryptsetup` opens a crypttab line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CryptType {
+    /// As a LUKS volume: it loads the LUKS header, or fails.
+    Luks,
+    /// As a TrueCrypt or VeraCrypt volume.
+    Tcrypt,
+    /// As plain dm-crypt, with no header, or as a BitLocker volume.
+    Other,
+}
+
+/// How `systemd-cryptsetup` opens the crypttab line `entry`, as it reads the
+/// options in their order, of which the last that sets a type wins (systemd
+/// 260.5 `parse_one_option()`): `luks`, `key-slot=` and `keyslot=` set LUKS,
+/// `header=` sets it unless the type is TrueCrypt, `tcrypt`, its `tcrypt-*`
+/// forms, `veracrypt` and `tcrypt-keyfile=` set TrueCrypt, `plain`, `swap`,
+/// `tmp` and `tmp=` plain dm-crypt, and `bitlk` BitLocker. A line that sets
+/// none it opens as LUKS: it loads a LUKS header, or fails.
+fn crypt_type(entry: &CrypttabEntry) -> CryptType {
+    let mut set = None;
+    for option in &entry.options {
+        let valued = |name: &str| option_named(option, name).flatten().is_some();
+        set = match option.as_str() {
+            "luks" => Some(CryptType::Luks),
+            "tcrypt" | "tcrypt-hidden" | "tcrypthidden" | "tcrypt-system" | "tcrypt-veracrypt"
+            | "veracrypt" => Some(CryptType::Tcrypt),
+            "plain" | "swap" | "tmp" | "bitlk" => Some(CryptType::Other),
+            _ if valued("key-slot") || valued("keyslot") => Some(CryptType::Luks),
+            _ if valued("tcrypt-keyfile") => Some(CryptType::Tcrypt),
+            _ if valued("tmp") => Some(CryptType::Other),
+            _ if valued("header") && set != Some(CryptType::Tcrypt) => Some(CryptType::Luks),
+            _ => set,
+        };
+    }
+    set.unwrap_or(CryptType::Luks)
+}
+
+/// Whether the boot opens the crypttab line `entry` as a LUKS volume and
+/// leaves what it opens as it is: `systemd-cryptsetup` opens it as LUKS
+/// ([`crypt_type`]), and it gives neither `swap` nor `tmp`, by name, for which
+/// systemd's crypttab generator has `systemd-makefs` make swap or a
+/// filesystem on the mapping wherever it finds none.
+pub(super) fn opens_as_luks(entry: &CrypttabEntry) -> bool {
+    crypt_type(entry) == CryptType::Luks && !has_named(&entry.options, &["swap", "tmp"])
 }
 
 #[cfg(test)]

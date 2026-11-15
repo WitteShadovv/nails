@@ -83,7 +83,7 @@ impl World {
     /// A device `name` with `major:minor` `dev`, found as `/dev/<name>` and,
     /// for a mapping, as `/dev/mapper/<dm name>`.
     fn node(mut self, name: &str, dev: &str, kind: NodeKind, below: &[&str]) -> Self {
-        if let NodeKind::Crypt { name: dm } | NodeKind::Mapper { name: dm } = &kind {
+        if let NodeKind::Crypt { name: dm, .. } | NodeKind::Mapper { name: dm } = &kind {
             self.devices
                 .by_spec
                 .insert(format!("/dev/mapper/{dm}"), name.to_string());
@@ -115,9 +115,17 @@ impl World {
         self.node(name, dev, kind, &[])
     }
 
+    /// A LUKS mapping `dm`, as cryptsetup opens one.
     fn crypt(self, name: &str, dev: &str, dm: &str, below: &[&str]) -> Self {
+        self.crypt_as(name, dev, dm, true, below)
+    }
+
+    /// An encrypting mapping `dm`, a LUKS one when `luks`, and otherwise a
+    /// plain, TrueCrypt or VeraCrypt one.
+    fn crypt_as(self, name: &str, dev: &str, dm: &str, luks: bool, below: &[&str]) -> Self {
         let kind = NodeKind::Crypt {
             name: dm.to_string(),
+            luks,
         };
         self.node(name, dev, kind, below)
     }
@@ -235,7 +243,7 @@ fn plain_decoy(extra: &str) -> World {
 fn external_veracrypt() -> World {
     plain_decoy("5 1 254:9 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n")
         .disk("sdb", "8:16")
-        .crypt("dm-9", "254:9", "veracrypt1", &["sdb"])
+        .crypt_as("dm-9", "254:9", "veracrypt1", false, &["sdb"])
 }
 
 // ---------------------------------------------------------------------------
@@ -616,7 +624,7 @@ fn an_image_whose_loop_record_cannot_be_read_cannot_be_judged() {
 fn an_encrypted_container_on_home_follows_the_container_setting() {
     let world = plain_decoy("5 1 254:8 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n")
         .loop_file("loop0", "7:0", "/home/op/vault.hc")
-        .crypt("dm-8", "254:8", "veracrypt1", &["loop0"]);
+        .crypt_as("dm-8", "254:8", "veracrypt1", false, &["loop0"]);
     let verdict = world.verdict("/mnt");
     assert_eq!(
         verdict,
@@ -1044,7 +1052,7 @@ fn a_tcrypt_hidden_line_for_another_partition_of_the_hidden_drive_blocks() {
         .disk("sdb", "8:16")
         .part("sdb1", "8:17", "sdb")
         .part("sdb2", "8:18", "sdb")
-        .crypt("dm-9", "254:9", "veracrypt1", &["sdb2"])
+        .crypt_as("dm-9", "254:9", "veracrypt1", false, &["sdb2"])
         .crypttab("other /dev/sdb1 none tcrypt-hidden,noauto\n")
         .judge("/mnt");
     assert_eq!(
@@ -1112,7 +1120,7 @@ fn a_tcrypt_line_for_another_volume_on_the_same_drive_warns() {
         .disk("sdb", "8:16")
         .part("sdb1", "8:17", "sdb")
         .part("sdb2", "8:18", "sdb")
-        .crypt("dm-9", "254:9", "veracrypt1", &["sdb2"])
+        .crypt_as("dm-9", "254:9", "veracrypt1", false, &["sdb2"])
         .crypttab("outer /dev/sdb1 none tcrypt-veracrypt\n");
     let judgement = world.judge("/mnt");
     assert_eq!(judgement.verdict, Verdict::Separate);
@@ -1484,7 +1492,7 @@ fn a_container_on_a_zfs_dataset_outside_the_system_mounts_is_refused() {
          5 1 254:8 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n",
     )
     .loop_file("loop0", "7:0", "/data/vault.hc")
-    .crypt("dm-8", "254:8", "veracrypt1", &["loop0"]);
+    .crypt_as("dm-8", "254:8", "veracrypt1", false, &["loop0"]);
     assert_eq!(
         world.verdict("/mnt"),
         Verdict::UntracedStorage {
@@ -1505,7 +1513,7 @@ fn a_container_on_a_zfs_home_follows_the_container_setting() {
     .part("sda1", "8:1", "sda")
     .fstab("/dev/sda1 / ext4 defaults 0 1\n")
     .loop_file("loop0", "7:0", "/home/op/vault.hc")
-    .crypt("dm-8", "254:8", "veracrypt1", &["loop0"]);
+    .crypt_as("dm-8", "254:8", "veracrypt1", false, &["loop0"]);
     assert_eq!(
         world.verdict("/mnt"),
         Verdict::ContainerOnDecoy {
@@ -1524,7 +1532,7 @@ fn a_container_on_a_zfs_dataset_the_fstab_lists_follows_the_container_setting() 
     )
     .fstab("/dev/sda1 / ext4 defaults 0 1\ntank/data /data zfs defaults 0 0\n")
     .loop_file("loop0", "7:0", "/data/vault.hc")
-    .crypt("dm-8", "254:8", "veracrypt1", &["loop0"]);
+    .crypt_as("dm-8", "254:8", "veracrypt1", false, &["loop0"]);
     assert_eq!(
         world.verdict("/mnt"),
         Verdict::ContainerOnDecoy {

@@ -83,8 +83,11 @@
 //!   line. An option of one filesystem on a line of another, such as `errors=`
 //!   on a btrfs line, which btrfs refuses, is no option NAILS reads there.
 //! - Of a crypttab line, the formats (`luks`, `plain`, `bitlk` and the
-//!   TrueCrypt ones, which the judge reads), `discard`, `swap` and `tmp`
-//!   (swap or a filesystem made on the mapping), `nofail`, `_netdev`,
+//!   TrueCrypt ones) and `swap` and `tmp`, which set plain dm-crypt and have
+//!   the boot make swap or a filesystem on the mapping, the judge reads in
+//!   their order, as `systemd-cryptsetup` does (see the `options` module),
+//!   and lets the decoy's own line be only where it opens its LUKS mapping as
+//!   LUKS, with neither `swap` nor `tmp`; and `discard`, `nofail`, `_netdev`,
 //!   `x-initrd.attach` and Debian's `initramfs` (when it is opened),
 //!   `readonly`, the cipher, sizes and offsets in the source, the key slot and
 //!   key file size and offset, `keyfile-erase`, the crypt workers, and how
