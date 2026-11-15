@@ -431,7 +431,11 @@ reads `journald@<namespace>.conf` and its drop-ins, never `journald.conf`,
 and keeps the journal on the decoy disk, in
 `/var/log/journal/<machine-id>.<namespace>`, unless they set another
 `Storage=`, so a namespace that persists counts as a log file, however
-volatile the decoy's own journal is. To keep a namespace's journal off the
+volatile the decoy's own journal is. A program can also connect a running
+daemon's stream to a namespace's socket itself, as `systemd-cat
+--namespace=` does, with no mount that shows it, so a socket on that stream
+counts as NAILS cannot tell while PID 1's socket table lists a socket of a
+namespace that persists (see below). To keep a namespace's journal off the
 disk, set `Storage=volatile` in the `[Journal]` section of
 `/etc/systemd/journald@<namespace>.conf`, then run
 `sudo systemctl restart systemd-journald@<namespace>.service`, or drop the
@@ -445,8 +449,8 @@ namespace kept before stays in `/var/log/journal/<machine-id>.<namespace>`.
 Where NAILS cannot tell whether a namespace keeps its journal on the disk,
 the refusal and the warning give that namespace's fix as well, and where a
 unit names its namespace with a specifier, which NAILS does not expand, they
-say to name it without one or drop it. Other units' namespaces are not read
-here. A unit counts when the service
+say to name it without one or drop it. NAILS does not judge the namespaces
+of other units for what those units log. A unit counts when the service
 manager can start it: it is enabled (a link in a `.wants`, `.requires` or
 `.upholds` directory) or active, or a timer, path or socket unit that is
 enabled or active starts it, and it is not masked. A process
@@ -567,8 +571,19 @@ directory only root may look into, counts as one that starts, wherever its
 commands would make the daemon log to a file or NAILS cannot tell whether
 they would; a unit directory NAILS cannot list at all hides the links in it.
 A socket on a running daemon's standard output or standard error counts as
-the journal's. A unit that another unit pulls in with `Wants=` or `Requires=`
-in its own file is not followed, tuned-ppd's need of tuned aside, and a unit
+one to the decoy's own journal, which the journal's own check judges, where
+PID 1's socket table, `/proc/1/net/unix`, lists it as a connected local
+stream socket bound to no path, as the service manager connects one to the
+journal, and lists no socket of a journal namespace that persists, or whose
+configuration NAILS cannot read. While it lists one, the socket counts as
+NAILS cannot tell, and the fix is that namespace's. A socket the table lists
+otherwise, or not at all, as one of another network namespace or a network
+socket, counts as NAILS cannot tell, and so does a table NAILS cannot read.
+The table does not show what holds the other end of a socket, so one of that
+kind whose other end a program other than journald holds, as the other end
+of a socket pair, counts as one to the journal, though that program may copy
+what it reads into a file. A unit that another unit pulls in with `Wants=`
+or `Requires=` in its own file is not followed, tuned-ppd's need of tuned aside, and a unit
 of another name that runs one of these programs is seen only by its process,
 while it runs. Where `/proc` is mounted with `hidepid=1`, a process an
 unprivileged `nails check` cannot read counts against the decoy wherever the

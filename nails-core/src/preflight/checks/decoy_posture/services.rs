@@ -49,8 +49,9 @@
 //! their command line, so a daemon started by hand, or still running with
 //! options its unit no longer has, is seen too. A daemon that logs to its
 //! standard output or standard error is judged by where its unit sends that
-//! stream, or by where the stream of the process leads ([`streams`]), and one
-//! that logs to the journal by the journal namespace of its unit or process
+//! stream, or by where the stream of the process leads ([`streams`]): a
+//! socket by PID 1's socket table ([`sockets`]). One that logs to the
+//! journal is judged by the journal namespace of its unit or process
 //! ([`namespace`]).
 //!
 //! What NAILS cannot read of a unit's files, of a command or of a process,
@@ -70,6 +71,7 @@ mod environment;
 mod namespace;
 mod options;
 mod processes;
+mod sockets;
 mod streams;
 
 pub(super) use coredump_hooks::{apport_finding, finding as coredump_hook_finding};
@@ -87,7 +89,7 @@ use options::{JournalFix, Log};
 use processes::{Processes, own_args, runs_anywhere};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use streams::listed;
+use streams::{Stream, listed};
 
 /// A daemon judged by its command line.
 struct Daemon {
@@ -200,11 +202,14 @@ fn first_file(logs: Vec<Log>) -> Log {
             Log::Unknown(_) | Log::UntoldJournal { .. } if unknown.is_none() => {
                 unknown = Some(log);
             }
-            Log::Stream { .. } | Log::Journal { .. } if stream.is_none() => stream = Some(log),
+            Log::Stream { .. } | Log::Journal { .. } | Log::Socket { .. } if stream.is_none() => {
+                stream = Some(log);
+            }
             Log::Unknown(_)
             | Log::UntoldJournal { .. }
             | Log::Stream { .. }
             | Log::Journal { .. }
+            | Log::Socket { .. }
             | Log::NoFile => {}
         }
     }
@@ -278,7 +283,7 @@ impl Logs {
                     Log::Stream { stream, .. } => {
                         format!("{unit} would start it logging to its {}", stream.name())
                     }
-                    Log::Journal { .. } => {
+                    Log::Journal { .. } | Log::Socket { .. } => {
                         format!("{unit} would start it logging to a journal")
                     }
                     Log::Unknown(reason) | Log::UntoldJournal { why: reason, .. } => {
@@ -304,7 +309,7 @@ impl Logs {
             Log::Stream { stream, .. } => self
                 .unknown
                 .push(format!("{source}, and it logs to its {}", stream.name())),
-            Log::Journal { .. } => self
+            Log::Journal { .. } | Log::Socket { .. } => self
                 .unknown
                 .push(format!("{source}, and it logs to a journal")),
             Log::Unknown(why) | Log::UntoldJournal { why, .. } => {
@@ -338,6 +343,8 @@ struct Decoy<'a, F: Filesystem> {
     /// What the decoy's timers, paths and sockets start, read once it is
     /// asked.
     triggers: std::cell::OnceCell<Triggers>,
+    /// What PID 1's socket table shows, read once it is asked.
+    sockets: std::cell::OnceCell<Result<sockets::Sockets, String>>,
 }
 
 impl<'a, F: Filesystem> Decoy<'a, F> {
@@ -350,6 +357,7 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
             processes: processes::processes(fs, root, PROCESS_NAMES, PYTHON_SCRIPTS),
             hidden,
             triggers: std::cell::OnceCell::new(),
+            sockets: std::cell::OnceCell::new(),
         }
     }
 
@@ -489,12 +497,37 @@ impl<'a, F: Filesystem> Decoy<'a, F> {
                                 &by,
                                 what,
                             ),
+                            Log::Socket { stream, inode, by } => {
+                                self.socket_log(&process.pid, stream, inode, &by)
+                            }
                             log => log,
                         }
                     }
                 },
             };
             logs.add_process(&source, log);
+        }
+    }
+
+    /// Where `stream` of process `pid` leads, a socket whose inode is
+    /// `inode`, for a daemon that logs to it as `by` says: to the journal of
+    /// its own namespace, as its mount table shows it, and where that keeps
+    /// nothing on the decoy disk, as PID 1's socket table shows ([`sockets`]).
+    fn socket_log(&self, pid: &str, stream: Stream, inode: u64, by: &str) -> Log {
+        match namespace::journal_log(
+            self.fs,
+            self.root,
+            namespace::of_process(self.fs, self.root, pid),
+            by,
+            "its log",
+        ) {
+            Log::NoFile => sockets::judge(
+                self.sockets
+                    .get_or_init(|| sockets::read(self.fs, self.root)),
+                stream,
+                inode,
+            ),
+            log => log,
         }
     }
 

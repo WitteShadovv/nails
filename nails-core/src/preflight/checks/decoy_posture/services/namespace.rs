@@ -22,7 +22,8 @@
 //! unknown. For a running process the namespace is read from the mount
 //! systemd sets up for it, of `/run/systemd/journal.<namespace>` over
 //! `/run/systemd/journal`, in its own mount table, which every user may
-//! read.
+//! read; a process can reach a namespace's journal without that mount too,
+//! by a socket on its standard stream ([`super::sockets`]).
 
 use super::super::super::journald_storage::namespace_persistence_at;
 use super::super::super::systemd_conf::Assignment;
@@ -39,7 +40,7 @@ const JOURNAL_RUN_DIR: &str = "/run/systemd/journal";
 /// name that is not `.` or `..`, of the characters a unit instance may hold
 /// but a backslash, which `log_namespace_name_valid()` refuses. NAILS sets
 /// no bound on its length, so a longer one than systemd takes counts.
-fn valid(name: &str) -> bool {
+pub(super) fn valid(name: &str) -> bool {
     !name.is_empty()
         && name != "."
         && name != ".."

@@ -204,6 +204,17 @@ pub(in crate::preflight::checks::decoy_posture) enum Log {
         /// What it writes there.
         what: &'static str,
     },
+    /// To a socket, the standard stream of a running process, which may
+    /// lead to a journal ([`super::sockets`]).
+    Socket {
+        /// The stream.
+        stream: Stream,
+        /// The socket's inode, as the link of the descriptor names it.
+        inode: u64,
+        /// The options that make it log there, and the socket, as a finding
+        /// names them.
+        by: String,
+    },
     /// To the journal, which may be that of a journal namespace the decoy
     /// keeps on its disk: NAILS cannot tell, for `why`, and `fix` is what
     /// lets it.
@@ -238,6 +249,7 @@ impl Log {
             Log::NoFile
             | Log::Stream { .. }
             | Log::Journal { .. }
+            | Log::Socket { .. }
             | Log::UntoldJournal { .. }
             | Log::Unknown(_) => None,
         }
