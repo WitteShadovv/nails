@@ -467,10 +467,10 @@ jobs:
             libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
             libabsl-dev libgcrypt20-dev libgpg-error-dev
 
-      # The records scan plants a row in the decoy's login databases and a
-      # file in dnf's state folder into its copy of after.raw
-      # (plant-records.sh), and must fail on exactly those: the collector's
-      # record-level positive controls.
+      # The records scan plants a row in a login database (a new lastlog2.db
+      # where the image has none) and a file below /var/lib/dnf into its copy
+      # of after.raw (plant-records.sh), and must fail on exactly those: the
+      # collector's record-level positive controls.
       - name: Plant the record controls
         if: matrix.scan == 'records'
         run: |

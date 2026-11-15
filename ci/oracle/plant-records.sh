@@ -4,12 +4,15 @@
 #
 # Plant record-level positive controls into a real Fedora btrfs decoy image:
 # the changes a hidden session would make if it reached the decoy's login and
-# package records, written where the decoy keeps them. The oracle nightly scans
+# package records, written where a decoy keeps them. The oracle nightly scans
 # such a planted copy of after.raw in the place of after, and the verdict must
 # fail on exactly these paths: that shows the independent collector sees a
-# login database and a package manager's state the session changed or added,
-# which the free-space controls (plant-in-free-space.sh) do not show. The
-# collector compares each by its file's digest, not a database by its rows.
+# login database and a file below /var/lib/dnf that the session changed or
+# added, which the free-space controls (plant-in-free-space.sh) do not show.
+# The collector compares each by its file's digest, not a database by its
+# rows. On the oracle's Fedora decoys, which hold no login database, both are
+# new files; dnf5 keeps its history in /usr/lib/sysimage/libdnf5, which this
+# does not touch.
 #
 #   sudo plant-records.sh <image> <out.json>
 #
@@ -24,7 +27,9 @@
 #                                 image has none);
 #   the wtmpdb database           a login row, where the image has one
 #                                 (/var/lib/wtmpdb/wtmp.db or /var/log/wtmp.db);
-#   /var/lib/dnf/<seed>.json      a file in the package manager's state folder.
+#   /var/lib/dnf/<seed>.json      a file in the folder older dnf kept its
+#                                 state in (the folder made when the image
+#                                 has none).
 #
 # The values are plain words: no address, domain or URL that bulk_extractor
 # would record, so the controls show the restore channel alone. It writes
@@ -132,7 +137,7 @@ for wtmpdb in ("/var/lib/wtmpdb/wtmp.db", "/var/log/wtmp.db"):
 else:
     absent.append("wtmpdb")
 
-# dnf: a file in the package manager's state folder.
+# dnf: a file in the folder older dnf kept its state in.
 dnf = f"/var/lib/dnf/{seed}.json"
 folder(dnf)
 with open(where(dnf), "w", encoding="utf-8") as handle:

@@ -348,17 +348,21 @@ which `plant-records.sh` has planted the record-level positive controls,
 before the scan's free-space controls: a row in
 `/var/lib/lastlog/lastlog2.db`, the table pam_lastlog2 keeps (the file made
 where the image has none), a login row in wtmpdb's database where the image
-has one, and a file in `/var/lib/dnf`, each with a plain value no image holds,
-no address, domain or URL. It mounts the copy's btrfs read-write from its top
+has one, and a file below `/var/lib/dnf`, each with a plain value no image
+holds, no address, domain or URL. It mounts the copy's btrfs read-write from its top
 level for that, which rewrites the filesystem's own metadata, so the copy is
 this scan's alone. The verdict must fail, not blind, with residue of the
 restore channel at exactly the planted paths (a folder the planting had to
 make among them) and nothing else, as the free-space controls cannot show.
 The oracle's Fedora decoys hold neither database, since nothing logs in on
-them through PAM, so on them the planting makes `lastlog2.db` and its folder
-new and plants no wtmpdb row: the scan shows that the collector sees a login
-database a session would add, and a file a session would add to the package
-manager's state. It compares a file by its digest, not a database by its
+them through PAM, so on them the planting makes `lastlog2.db` new, in the
+`/var/lib/lastlog` the images already have, and plants no wtmpdb row. The
+file below `/var/lib/dnf`, the folder older dnf kept its state in, is new
+too, and so is that folder on Fedora 44, where it is missing; dnf5 keeps its
+history in `/usr/lib/sysimage/libdnf5`, which no control touches. So the scan
+shows that the collector sees a new login database and a new file where
+there was none, not a row added to a database or a change to where dnf5
+writes. It compares a file by its digest, not a database by its
 rows, so a row added to a database the control cycle changed as well would
 read as noise; the distribution tests' records checks judge the rows of the
 decoy's login records instead
