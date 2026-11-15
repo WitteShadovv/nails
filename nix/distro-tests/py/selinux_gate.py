@@ -65,8 +65,19 @@ out.flush()
 # The prefix of every marker line the scenario writes to /dev/kmsg.
 MARK = "GATEMARK"
 
-# Every message reaches the kernel log and no rate limit drops one.
-KMSG_LIMITS = "sysctl -w kernel.printk_ratelimit=0 kernel.printk_devkmsg=on"
+# Every message reaches the kernel log and no rate limit drops one. The kernel
+# prints only its warnings and worse to the console: what it prints there
+# bypasses the terminal and can split a program's line in two, such as the
+# backdoor's announcement the test driver waits for after a soft-reboot
+# (nails_e2e.session.BACKDOOR_MARKER), and the serial console's pace held
+# back the kernel's queue of audit records. Every record stays in the kernel
+# log the gate reads.
+KMSG_SETTINGS = (
+    ("kernel.printk_ratelimit", "0"),
+    ("kernel.printk_devkmsg", "on"),
+    ("kernel.printk", "5 4 1 7"),
+)
+KMSG_LIMITS = "sysctl -w " + " ".join(f"'{k}={v}'" for k, v in KMSG_SETTINGS)
 
 # The image's own races: a denial with this signature is the image's whatever
 # phase it falls in. agetty reads the console-login helper's issue file while

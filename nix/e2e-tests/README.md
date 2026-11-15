@@ -1064,7 +1064,12 @@ which show without those rules, are recorded. It writes
 `<image>-gate-noda.json` and `<image>-gate-noda.kmsg.txt`. Every run of the
 gate makes room for 8192 audit records in the kernel's queue
 (`auditctl -b 8192`): with the kernel's 64, this variant lost records at the
-switches.
+switches. It also has the kernel print only its warnings and worse to the
+console, from the start of the boot it counts from (`/etc/sysctl.d`): a
+kernel line printed in the middle of the backdoor's announcement on the
+serial console split it, and the driver, waiting for that line after a
+soft-reboot, did not see it. Every record stays in the kernel log the gate
+reads.
 
 `<image>-btrfs` plants the btrfs scan controls on the stock image, made
 amnesic first as NAILS requires (journal volatile, auditd off, the run

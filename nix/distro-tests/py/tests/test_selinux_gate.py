@@ -380,6 +380,14 @@ class SuppressedTest(unittest.TestCase):
         self.assertEqual(sg.phase(records(setting), None, None)["suppressed"], [])
 
 
+class LimitsTest(unittest.TestCase):
+    def test_the_kernel_prints_only_warnings_and_worse_to_the_console(self) -> None:
+        # Its notices, the audit records among them, would split the
+        # backdoor's announcement on the serial console.
+        self.assertIn("'kernel.printk=5 4 1 7'", sg.KMSG_LIMITS)
+        self.assertIn("'kernel.printk_ratelimit=0'", sg.KMSG_LIMITS)
+
+
 class SmallTest(unittest.TestCase):
     def test_the_seqnum_of_the_cursor_file(self) -> None:
         self.assertEqual(sg.seqnum_from_od(" 1234\n"), 1234)

@@ -41,6 +41,13 @@ def quiet(call: Any, *args: Any) -> Any:
         return call(*args)
 
 
+class PrepareTest(unittest.TestCase):
+    def test_every_start_takes_the_gate_s_kernel_log_settings(self) -> None:
+        for key, value in sg.KMSG_SETTINGS:
+            self.assertIn(f"'{key} = {value}'", fg.PREPARE_DECOY)
+        self.assertIn("/etc/sysctl.d/", fg.PREPARE_DECOY)
+
+
 class RowTest(unittest.TestCase):
     def test_a_row_is_judged_only_with_a_verdict(self) -> None:
         rows = {
