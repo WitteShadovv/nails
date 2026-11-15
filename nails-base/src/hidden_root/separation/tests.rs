@@ -22,6 +22,8 @@ mod path_lines;
 mod plain_lines;
 #[path = "reach_tests.rs"]
 mod reach;
+#[path = "write_options_tests.rs"]
+mod write_options;
 
 /// One scene: the inputs of the judge, built up in the test. The paths the
 /// fstab names are read on `files`, which holds no link and no device node

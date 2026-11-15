@@ -8,7 +8,7 @@ use super::options::{crypttab_noauto, fstab_noauto, opens_as_luks};
 use super::paths::{is_claimed, is_untold_device, names_a_file, opens_a_file, program_path};
 use super::placed::{Line, Named, place};
 use super::plain::source;
-use super::reads::{Reads, fstab_numbers, fstab_reads, judge_reads};
+use super::reads::{HiddenDrive, Reads, drive_disks, fstab_numbers, fstab_reads, judge_reads};
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
     LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, UnplainLine, Untraced,
@@ -491,8 +491,15 @@ fn claims(
     let members = btrfs_members(devices, top);
     let own_device = |node: &str| top == Some(node) || members.iter().any(|m| m.as_str() == node);
     // An entry is for the hidden drive when it names a device of the root's
-    // stack, or another device of its btrfs filesystem or one below that.
+    // stack, or another device of its btrfs filesystem or one below that,
+    // and so is an option that opens any device of the drive for writing:
+    // its whole disk, a partition of it or a device stacked on one of them.
     let entry_stack = &with_stacks_of(devices, stack, &members)[..];
+    let disks = drive_disks(scene, entry_stack);
+    let hidden_drive = HiddenDrive {
+        devices: entry_stack,
+        disks: &disks,
+    };
 
     let root_mount = top_mount_at(scene.mounts, Path::new("/"));
     let system = SYSTEM_MOUNTS.iter().filter_map(|point| {
@@ -525,7 +532,7 @@ fn claims(
         // root's own filesystem one the decoy's boot needs: first what any
         // line names by its options, whose files and folders it claims.
         let noauto = fstab_noauto(entry);
-        let (mut found, holders) = option_reads(scene, hidden, entry, entry_stack);
+        let (mut found, holders) = option_reads(scene, hidden, entry, &hidden_drive);
         claims.extend(holders.into_iter().map(|h| mount_claim(scene, h, noauto)));
         let mut needs_own = false;
         'line: {
@@ -617,6 +624,7 @@ fn claims(
     let drive = Drive {
         stack,
         entry_stack,
+        hidden_drive: &hidden_drive,
         stack_names: &stack_names,
         entry_names: &entry_names,
         own_device: &own_device,
@@ -642,6 +650,9 @@ struct Drive<'a> {
     /// The devices an entry for the hidden drive names: the root's stack,
     /// the other devices of its btrfs filesystem and those below them.
     entry_stack: &'a [String],
+    /// Those devices and the whole disks they lie on, against which what a
+    /// line reads besides its source is judged.
+    hidden_drive: &'a HiddenDrive<'a>,
     /// The names of the mappings in `stack`.
     stack_names: &'a [&'a str],
     /// The names of the mappings in `entry_stack`.
@@ -669,6 +680,7 @@ fn crypttab_claims(
     let Drive {
         stack,
         entry_stack,
+        hidden_drive,
         stack_names,
         entry_names,
         own_device,
@@ -709,7 +721,7 @@ fn crypttab_claims(
         // What it reads besides its source: its key file, its header, or a
         // device the boot mounts for one of them (see the `reads` module).
         let (read, read_holders) =
-            super::reads::judged(scene, hidden, entry, &line, entry_stack, needed);
+            super::reads::judged(scene, hidden, entry, &line, hidden_drive, needed);
         // The findings for this line, and whether it claims what it opens.
         let mut found = Vec::new();
         let claimed = 'line: {
@@ -935,15 +947,15 @@ fn fstab_finding(
 }
 
 /// The findings of what the fstab line `entry` names by its options (see the
-/// `reads` module), judged against `hidden` and the devices of its drive,
-/// `drive`, and the mounts that hold the files and folders among them, which
-/// the line claims. A device of the filesystem the line mounts itself, as
-/// btrfs's `device=` names one, makes none.
+/// `reads` module), judged against `hidden` and its drive, `drive`, and the
+/// mounts that hold the files and folders among them, which the line claims.
+/// A device of the filesystem the line mounts itself, as btrfs's `device=`
+/// names one, makes none.
 fn option_reads<'a>(
     scene: &Scene<'a>,
     hidden: &MountEntry,
     entry: &FstabEntry,
-    drive: &[String],
+    drive: &HiddenDrive<'_>,
 ) -> (Vec<EntryFinding>, Vec<&'a MountEntry>) {
     let devices = scene.devices;
     let mounted = source(entry).and_then(|spec| devices.node_of_spec(spec));
@@ -1031,22 +1043,12 @@ fn boot_needs(
 
 /// Whether the device `node` is on a disk the hidden stack also uses.
 fn same_drive(devices: &DeviceMap, node: &str, stack: &[String]) -> bool {
-    let disk_of = |name: &str| match devices.nodes.get(name).map(|n| &n.kind) {
-        Some(NodeKind::Partition { disk }) => Some(disk.clone()),
-        Some(
-            NodeKind::Disk
-            | NodeKind::Served(_)
-            | NodeKind::Untraced(_)
-            | NodeKind::Unidentified(_),
-        ) => Some(name.to_string()),
-        _ => None,
-    };
-    let disks: BTreeSet<String> = stack.iter().filter_map(|n| disk_of(n)).collect();
+    let disks: BTreeSet<&str> = stack.iter().filter_map(|n| devices.disk_of(n)).collect();
     devices
         .stack(node)
         .iter()
-        .filter_map(|n| disk_of(n))
-        .any(|disk| disks.contains(&disk))
+        .filter_map(|n| devices.disk_of(n))
+        .any(|disk| disks.contains(disk))
 }
 
 /// A claim on a live mount: its superblock, its device and the devices its

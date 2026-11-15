@@ -42,7 +42,10 @@
 //!   `workdir=`, the folders it is made of, and of a crypttab line
 //!   `tpm2-device=` and `fido2-device=`, which `systemd-cryptsetup` opens and
 //!   writes TPM or FIDO2 commands to unless they are `auto`, and
-//!   `tpm2-signature=` and `tpm2-pcrlock=`, files it reads. `header=` and
+//!   `tpm2-signature=` and `tpm2-pcrlock=`, files it reads. Of these, an
+//!   option that has the boot open the device it names for writing
+//!   ([`OPENS_FOR_WRITING`]) fails its line on any device of the hidden
+//!   drive, not only one the volume is stored on. `header=` and
 //!   `tcrypt-keyfile=` the `reads` module reads as before.
 //! - The generic flags of `libmount` (`defaults`, `ro`, `rw`, `exec`,
 //!   `noexec`, `suid`, `nosuid`, `dev`, `nodev`, `sync`, `async`, `dirsync`)
@@ -313,6 +316,28 @@ const CRYPTTAB: List = List {
     ],
     ..EMPTY
 };
+
+/// The options that have the boot open the device they name for writing:
+/// ext4's journal device, by its path or its number, XFS's log and realtime
+/// devices and a device of a btrfs filesystem, which the filesystem writes
+/// to, and of a crypttab line the TPM2 and FIDO2 devices, which
+/// `systemd-cryptsetup` opens read-write and writes TPM2 or FIDO2 commands
+/// to.
+const OPENS_FOR_WRITING: &[&str] = &[
+    "journal_path",
+    "journal_dev",
+    "logdev",
+    "rtdev",
+    "device",
+    "tpm2-device",
+    "fido2-device",
+];
+
+/// Whether the option named `option`, which names a device, has the boot
+/// open that device for writing ([`OPENS_FOR_WRITING`]).
+pub(super) fn opens_for_writing(option: &str) -> bool {
+    OPENS_FOR_WRITING.contains(&option)
+}
 
 /// Whether `vfstype` is the type of a FUSE line: `fuse`, `fuse3` or
 /// `fuseblk`, alone or with a `.<program>`.
