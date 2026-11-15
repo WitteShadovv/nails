@@ -596,9 +596,10 @@ logind.
   root that starts next cannot set it up again (`zram: Cannot change disksize
   for initialized device`). The decoy then lists that unit as failed and runs
   without the zram swap until power-off, which hints that a soft-reboot
-  happened. The gate saw it after a way back, records where it does, and
-  fails on any other unit failed there that a plain soft-reboot did not leave
-  failed. End a session with
+  happened. The gate's runs saw it after a way back and after a plain
+  `systemctl soft-reboot` alike. The gate records where it does, and fails on
+  any other unit failed after a way back that a plain soft-reboot did not
+  leave failed. End a session with
   `deactivate --poweroff` or `emergency --poweroff` where that hint must not
   reach the decoy.
 - With plocate installed (the Cloud images have none), the directory the
