@@ -205,7 +205,8 @@ fn the_collector_reads_the_devices_and_the_names_the_files_use() {
     assert_eq!(
         devices.nodes["dm-0"].kind,
         NodeKind::Crypt {
-            name: "cryptroot".to_string()
+            name: "cryptroot".to_string(),
+            luks: true,
         }
     );
     assert_eq!(devices.nodes["dm-0"].below, vec!["nvme0n1p3".to_string()]);
@@ -225,6 +226,38 @@ fn the_collector_reads_the_devices_and_the_names_the_files_use() {
     assert_eq!(devices.node_of_spec("UUID=e1"), Some("nvme0n1p3"));
     assert_eq!(devices.node_of_spec("/dev/mapper/vault"), Some("dm-4"));
     assert_eq!(devices.by_dev["254:4"], "dm-4");
+}
+
+#[test]
+fn a_mapping_is_known_as_luks_by_its_device_mapper_uuid() {
+    // cryptsetup names a LUKS mapping CRYPT-LUKS1-… or CRYPT-LUKS2-…, a
+    // plain one CRYPT-PLAIN-…; the VeraCrypt application gives none.
+    let crypt = |dm: &str, uuid: &str| {
+        let decoy = Decoy::new("1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n")
+            .device(NVME, "nvme0n1", "259:0", &[])
+            .partition(P3, "nvme0n1p3", "259:3")
+            .mapping(DM0, "dm-0", "254:0", (dm, uuid), &[("nvme0n1p3", P3)]);
+        let mounts = decoy.fs.mount_table().unwrap();
+        collect(&decoy.fs, &mounts, Path::new("/")).devices.nodes["dm-0"]
+            .kind
+            .clone()
+    };
+    for (dm, uuid, luks) in [
+        ("cryptroot", "CRYPT-LUKS2-0a-cryptroot", true),
+        ("old", "CRYPT-LUKS1-0a-old", true),
+        ("cryptswap", "CRYPT-PLAIN-cryptswap", false),
+        ("tc", "CRYPT-TCRYPT-tc", false),
+        ("veracrypt1", "", false),
+    ] {
+        assert_eq!(
+            crypt(dm, uuid),
+            NodeKind::Crypt {
+                name: dm.to_string(),
+                luks
+            },
+            "{uuid}"
+        );
+    }
 }
 
 #[test]

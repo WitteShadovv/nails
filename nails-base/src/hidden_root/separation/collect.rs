@@ -290,9 +290,14 @@ fn add_layer<F: Filesystem>(
         // Nothing shows what lies below it.
         NodeKind::Unidentified(layer.sysfs.join("slaves"))
     } else if let Some(dm) = &layer.dm {
-        match dm.kind {
-            DmKind::Crypt(_) | DmKind::CryptSubdev | DmKind::VeraCrypt => NodeKind::Crypt {
+        match &dm.kind {
+            DmKind::Crypt(format) => NodeKind::Crypt {
                 name: dm.name.clone(),
+                luks: format.starts_with("LUKS"),
+            },
+            DmKind::CryptSubdev | DmKind::VeraCrypt => NodeKind::Crypt {
+                name: dm.name.clone(),
+                luks: false,
             },
             _ => NodeKind::Mapper {
                 name: dm.name.clone(),

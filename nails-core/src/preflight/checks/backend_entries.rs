@@ -20,12 +20,16 @@
 //! ([`EntryFinding::system_folder`]), and neither are the crypttab lines its
 //! boot opens that make a device that filesystem lies on while the decoy mounts
 //! another part of it at `/` or by such an fstab line, as on an encrypted
-//! decoy. A line that mounts that filesystem at any other folder still is one,
-//! since it may name the hidden drive's disk, and so are a line whose mount is
-//! not there, a line that mounts the volume itself (a bind line of any type
-//! from the root's folder among them), a swap or image line whose file lies in
-//! the root's folder, a `noauto` crypttab line, one with `tcrypt-hidden`, one
-//! for any other device and every line for a root that is the whole filesystem.
+//! decoy, where the mapping they make is a LUKS one and `systemd-cryptsetup`
+//! opens the line as LUKS, by the last of its options that sets a type, with
+//! neither `swap` nor `tmp`. A line that mounts that filesystem at any other
+//! folder still is one, since it may name the hidden drive's disk, and so are
+//! a line whose mount is not there, a line that mounts the volume itself (a
+//! bind line of any type from the root's folder among them), a swap or image
+//! line whose file lies in the root's folder, a `noauto` crypttab line, one
+//! with `tcrypt-hidden`, one that opens the device in plain mode or as another
+//! kind, or has the boot make swap or a filesystem on it, one for any other
+//! device and every line for a root that is the whole filesystem.
 //! `_netdev` lets no line go. The check reads `noauto`, `auto` and the
 //! automount options by their names, alone or with a value, as systemd's
 //! generators do: `noauto=1` and `auto,noauto=` are `noauto`, `noauto,auto=0`
@@ -108,9 +112,10 @@
 //! a form NAILS does not read, such as a `tpm2-device=` in a `driver:param`
 //! form, fails with or without the flag. Of a plain crypttab line it reads the
 //! name, the source, the key file, the `header=`, `tcrypt-keyfile=` and token
-//! options and what the boot mounts for them, `noauto`, `auto` and the
-//! TrueCrypt options. The check names what it could not read, and the options
-//! it does not read, and says to write the line plainly.
+//! options and what the boot mounts for them, `noauto`, `auto`, the options
+//! that set how `systemd-cryptsetup` opens it, `swap` and `tmp` among them, and
+//! the TrueCrypt options. The check names what it could not read, and the
+//! options it does not read, and says to write the line plainly.
 //!
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot

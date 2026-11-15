@@ -795,3 +795,26 @@ fn loop_on_a_line_for_a_device_fails_and_its_mount_is_a_second_one() {
         )
     );
 }
+
+#[test]
+fn on_an_encrypted_decoy_its_own_line_that_opens_the_volume_otherwise_fails() {
+    // systemd-cryptsetup took the last of the type options: type=PLAIN for
+    // `luks,discard,swap`, and the crypttab generator had systemd-makefs
+    // make swap, or ext4 for `tmp`, on the mapping, which formats it where it
+    // finds no filesystem. With the flag, the decoy's own line that opens
+    // its LUKS root as swap or tmp, in plain mode or as BitLocker, is none
+    // of its own, and the boot needs it.
+    for options in [
+        "luks,discard,swap",
+        "luks,discard,tmp",
+        "plain,discard",
+        "swap,luks",
+        "luks,tmp=ext2",
+        "luks,bitlk",
+    ] {
+        let decoy = encrypted_decoy_with("/srv/x", options);
+        let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
+        assert_eq!(result.message(), names_the_volume(CRYPTROOT), "{options}");
+        assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{options}");
+    }
+}

@@ -97,9 +97,14 @@
 //! that mounts the volume itself, whose subvolume cannot be told or whose mount
 //! is not there never is. So is a crypttab line the boot opens that makes a
 //! device that filesystem lies on, while the decoy mounts another part of it at
-//! `/`, by its mount there, or at a system folder, by such an fstab line; a
-//! `noauto` one, one with `tcrypt-hidden`, one for any other device and every
-//! line for a root that is the whole filesystem never are.
+//! `/`, by its mount there, or at a system folder, by such an fstab line, where
+//! it opens that device as the mapping it makes is open now: that mapping is a
+//! LUKS one, and `systemd-cryptsetup` opens the line as LUKS, by the last of
+//! its options that sets a type, with neither `swap` nor `tmp`, for which the
+//! boot makes swap or a filesystem on the mapping (see the `options` module). A
+//! `noauto` one, one with `tcrypt-hidden`, one that opens the device in another
+//! mode, one for any other device and every line for a root that is the whole
+//! filesystem never are.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read, or
 //! what a claimed filesystem keeps data on besides its device cannot be told;
@@ -223,6 +228,9 @@ pub enum NodeKind {
     Crypt {
         /// The name under `/dev/mapper`.
         name: String,
+        /// Whether cryptsetup opened it as a LUKS volume: its device-mapper
+        /// uuid is `CRYPT-LUKS1-…` or `CRYPT-LUKS2-…`.
+        luks: bool,
     },
     /// Another device-mapper mapping (LVM, dm-integrity, …).
     Mapper {
@@ -332,9 +340,14 @@ impl Node {
     /// The device-mapper name, for a mapping.
     fn dm_name(&self) -> Option<&str> {
         match &self.kind {
-            NodeKind::Crypt { name } | NodeKind::Mapper { name } => Some(name),
+            NodeKind::Crypt { name, .. } | NodeKind::Mapper { name } => Some(name),
             _ => None,
         }
+    }
+
+    /// Whether it is a LUKS mapping ([`NodeKind::Crypt`]).
+    fn is_luks(&self) -> bool {
+        matches!(self.kind, NodeKind::Crypt { luks: true, .. })
     }
 }
 
@@ -480,6 +493,34 @@ impl DeviceMap {
         self.btrfs
             .iter()
             .any(|members| members.contains(a) && members.contains(b))
+    }
+
+    /// The mapping among `devices` that a crypttab line named `name` makes,
+    /// as it is open now: the one its name leads to, `mapping` (by
+    /// `/dev/mapper/<name>`), or one named so, and else an encrypting mapping
+    /// opened from the device its source names, `source`. `None` when
+    /// `devices` holds none of these.
+    fn made_mapping(
+        &self,
+        devices: &[String],
+        name: &str,
+        mapping: Option<&str>,
+        source: Option<&str>,
+    ) -> Option<&Node> {
+        let held = || {
+            devices
+                .iter()
+                .filter_map(|n| Some((n.as_str(), self.nodes.get(n)?)))
+        };
+        held()
+            .find(|(n, node)| mapping == Some(*n) || node.dm_name() == Some(name))
+            .or_else(|| {
+                held().find(|(_, node)| {
+                    matches!(node.kind, NodeKind::Crypt { .. })
+                        && source.is_some_and(|s| node.below.iter().any(|b| b == s))
+                })
+            })
+            .map(|(_, node)| node)
     }
 }
 
@@ -801,8 +842,10 @@ pub struct EntryFinding {
     /// `noauto`) that makes a device that filesystem lies on (its mapping is
     /// one of them, or one's name, or it opens a device below the one the
     /// filesystem is mounted from) and opens no hidden volume of a container
-    /// (no `tcrypt-hidden`), while the decoy mounts another part of
-    /// the filesystem at `/` (by its mount there) or at a system folder (by
+    /// (no `tcrypt-hidden`), and that opens it as the mapping it makes is open
+    /// now, a LUKS mapping that `systemd-cryptsetup` opens the line as LUKS
+    /// for, with neither `swap` nor `tmp`, while the decoy mounts another part
+    /// of the filesystem at `/` (by its mount there) or at a system folder (by
     /// such an fstab line), the first such folder. Such a line is the
     /// decoy's own, and a root that `--allow-decoy-storage` accepted on that
     /// filesystem lies there anyway. `None` for a line that mounts the volume
