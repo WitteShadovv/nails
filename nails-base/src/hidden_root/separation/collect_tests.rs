@@ -505,6 +505,75 @@ fn a_container_veracrypt_1_26_30_or_later_opened_counts_as_encrypted() {
     assert_container_warning(&decoy);
 }
 
+/// The container root of [`container_on_home`], and loop1 over `file`, whose
+/// record names the inode `inode` on /home, with the mapping `vault2` (dm-10)
+/// over it mounted at /media/op/x when `mounted`. loop0's record names the
+/// inode 77 on /home.
+fn second_loop(file: &str, inode: u64, mounted: bool) -> Decoy {
+    let mount = if mounted {
+        "7 1 254:10 / /media/op/x rw,nosuid,nodev - ext4 /dev/mapper/vault2 rw\n"
+    } else {
+        ""
+    };
+    let loop1 = "/sys/devices/virtual/block/loop1";
+    let decoy = container_on_home(mount)
+        .device(loop1, "loop1", "7:1", &[])
+        .mapping(
+            "/sys/devices/virtual/block/dm-10",
+            "dm-10",
+            "254:10",
+            ("vault2", "CRYPT-TCRYPT-vault2"),
+            &[("loop1", loop1)],
+        );
+    decoy.attr(loop1, "loop/backing_file", file);
+    for (node, inode) in [(LOOP0_NODE, 77), ("/dev/loop1", inode)] {
+        decoy.fs.mock_set_loop_record(
+            Path::new(node),
+            crate::filesystem::LoopRecord {
+                device: rustix::fs::makedev(259, 4),
+                inode,
+                rdevice: 0,
+            },
+        );
+    }
+    decoy
+}
+
+#[test]
+fn a_mount_through_a_second_loop_device_over_the_container_is_a_second_mount() {
+    // A disk image mounter can set up another loop device over the container
+    // when the file is opened from a file manager, and mount what it unlocks
+    // there: the mount table shows that mount with another device number,
+    // though it is the volume's filesystem a second time. The second loop
+    // device names the file by its path, or by its device and inode, as
+    // through a bind of /home's folder.
+    let elsewhere = |decoy: &Decoy| {
+        HiddenRoot::mounted_elsewhere(&decoy.fs, Path::new("/mnt"))
+            .unwrap()
+            .map(|found| {
+                found
+                    .mounts
+                    .into_iter()
+                    .map(|mount| mount.mount_point)
+                    .collect::<Vec<_>>()
+            })
+    };
+    for (file, inode) in [("/home/op/vault.hc", 78), ("/srv/h/vault.hc", 77)] {
+        assert_eq!(
+            elsewhere(&second_loop(file, inode, true)),
+            Some(vec![PathBuf::from("/media/op/x")]),
+            "{file}"
+        );
+    }
+    // Another file mounted so, and the same file with nothing mounted from
+    // it, are no second mount.
+    assert_eq!(elsewhere(&second_loop("/home/op/other.hc", 78, true)), None);
+    assert_eq!(
+        elsewhere(&second_loop("/home/op/vault.hc", 77, false)),
+        None
+    );
+}
+
 #[test]
 fn a_mount_over_the_containers_folder_does_not_hide_where_it_lives() {
     // A tmpfs mounted over /home/op later leads the path elsewhere; the loop

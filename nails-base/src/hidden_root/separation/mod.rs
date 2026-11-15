@@ -173,7 +173,10 @@
 //! hold, for a check that weighs the hidden root's own stack against them.
 //! [`decoys_own_mount`] tells whether the decoy makes a mount itself, at `/`
 //! or by a line of its fstab, for the rule that leaves the decoy's own mounts
-//! of an accepted root's filesystem out of its second mounts.
+//! of an accepted root's filesystem out of its second mounts, and
+//! [`mounts_through_another_loop`] finds the mounts that show the root's
+//! filesystem through another loop device over the file it is stored in,
+//! which count among them.
 
 mod collect;
 mod extra;
@@ -192,6 +195,7 @@ mod tests;
 pub use collect::{Collected, collect, judge_storage};
 pub use judge::{claimed_devices, judge, shown_fstype};
 pub use lines::{decoys_own_mount, sharing};
+pub use loops::mounts_through_another_loop;
 pub use paths::{NamedPaths, UntoldPath};
 pub use plain::{Unplain, UnplainLine, UnplainLines, read_crypttab, read_fstab};
 

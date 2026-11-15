@@ -403,11 +403,15 @@ impl HiddenRoot {
 
     /// Where else the filesystem at `root` is mounted on the decoy: its
     /// [`second_mounts`] in this process's mount table, in the order the table
-    /// lists them, with what the mount at `root` shows of it. `None` when it is
-    /// mounted nowhere else, when nothing is mounted at `root`, which
-    /// [`assess`] refuses by itself, and in the hidden session, which enters
-    /// with the volume bound at its own path and where the decoy's desktop does
-    /// not run. Reads the mount table through `fs`.
+    /// lists them, then each mount of it through another loop device over the
+    /// container file it is opened from or the image it is in, which the table
+    /// shows with another device number
+    /// ([`separation::mounts_through_another_loop`]), with what the mount at
+    /// `root` shows of it. `None` when it is mounted nowhere else, when
+    /// nothing is mounted at `root`, which [`assess`] refuses by itself, and in
+    /// the hidden session, which enters with the volume bound at its own path
+    /// and where the decoy's desktop does not run. Reads the mount table and
+    /// the block devices through `fs` ([`separation::collect`]).
     ///
     /// [`assess`]: Self::assess
     pub fn mounted_elsewhere<F: Filesystem>(
@@ -462,8 +466,8 @@ fn found_elsewhere<F: Filesystem>(
         return Ok(None);
     };
     let mut second = second_mounts(&table, visible);
+    let collected = separation::collect(fs, &table, Path::new("/"));
     if decoy_filesystem {
-        let collected = separation::collect(fs, &table, Path::new("/"));
         if !collected.unreadable.is_empty() {
             let unreadable: Vec<String> = collected
                 .unreadable
@@ -482,6 +486,17 @@ fn found_elsewhere<F: Filesystem>(
             shows_some_of(mount, visible) && !separation::decoys_own_mount(&scene, mount, visible)
         });
     }
+    // A second loop device over the container file the volume is opened from,
+    // or over the image it is in, as a disk image mounter can set up when that
+    // file is opened from a file manager, shows the filesystem a second time
+    // under another device number.
+    let nextroot = Path::new(NEXTROOT);
+    let next_root_mounted = table.iter().any(|m| m.mount_point == nextroot);
+    second.extend(
+        separation::mounts_through_another_loop(&collected.devices, &table, visible)
+            .into_iter()
+            .filter(|m| !(next_root_mounted && m.mount_point.starts_with(nextroot))),
+    );
     let mounts: Vec<SecondMount> = second
         .into_iter()
         .map(|mount| SecondMount {

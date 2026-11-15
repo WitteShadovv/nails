@@ -88,7 +88,10 @@ pub fn claimed_devices(scene: &Scene<'_>, hidden: &MountEntry) -> BTreeMap<Strin
 /// into an md array below a partition too, then the same of each device its
 /// filesystem keeps data on besides that one (an XFS log, say): the stack the
 /// judge walks, and the one the claims are built from.
-fn hidden_stack(devices: &DeviceMap, hidden: &MountEntry) -> (Option<String>, Vec<String>) {
+pub(super) fn hidden_stack(
+    devices: &DeviceMap,
+    hidden: &MountEntry,
+) -> (Option<String>, Vec<String>) {
     // A stacked filesystem names no device of its own: whatever its source
     // says, its storage is elsewhere.
     let top = (!is_stacked(&hidden.fstype))
@@ -448,7 +451,7 @@ pub(super) fn is_ram(fstype: &str) -> bool {
 /// Whether `fstype` is stacked on other filesystems or on a process (an
 /// overlay, an encrypting stack, FUSE), so a device in its source names
 /// nothing it stores data on. `fuseblk` sits on a block device of its own.
-fn is_stacked(fstype: &str) -> bool {
+pub(super) fn is_stacked(fstype: &str) -> bool {
     matches!(fstype, "overlay" | "aufs" | "ecryptfs" | "fuse") || fstype.starts_with("fuse.")
 }
 
