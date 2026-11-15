@@ -1023,9 +1023,10 @@ of this changelog for that version becomes the release notes word for word, and
 - `decoy-persistence` refuses an enabled auditd that does not run, as it refuses a running one:
   the service manager starts it again when the decoy starts after the way back, unless its unit is
   masked in any unit directory, no unit file is left, or its `ConditionKernelCommandLine=` fails,
-  as `!audit=0` does on a kernel booted with `audit=0`. One a timer, path or socket unit that runs
-  starts counts as enabled. Its fix is now the same on Debian, Ubuntu, Fedora and Arch, with no
-  reboot: `systemctl disable` and `systemctl mask auditd.service`, then `auditctl --signal stop`.
+  as `!audit=0` does on a kernel booted with `audit=0`. So does one that only a timer, path or
+  socket unit that runs starts, and the refusal names that unit and does not call auditd enabled.
+  Its fix is now the same on Debian, Ubuntu, Fedora and Arch, with no reboot: `systemctl disable`
+  and `systemctl mask auditd.service`, then `auditctl --signal stop`.
   auditd.service refuses `systemctl stop` on Fedora and Arch, so turning it off the usual way,
   with `systemctl disable --now`, left it running there. On NixOS the fix is
   `security.auditd.enable = false`, `auditctl --signal stop` and a rebuild.

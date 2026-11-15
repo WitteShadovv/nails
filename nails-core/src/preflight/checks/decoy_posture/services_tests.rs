@@ -2082,14 +2082,65 @@ fn a_timer_that_starts_auditd_after_the_way_back_refuses() {
         );
     let result = decoy.check(false);
     assert!(result.is_fail(), "{result:?}");
+    // It is not enabled, and the finding names what starts it.
     assert!(
         result.message().contains(
-            "auditd is enabled, though it does not run now: the service manager starts it again \
-             when the decoy starts after the way back"
+            "auditd does not run now, but auditd.timer is enabled and starts auditd.service, so \
+             the service manager can start auditd after the way back, and it writes audit \
+             records to the decoy disk from then on"
         ),
         "{result:?}"
+    );
+    assert!(
+        !result.message().contains("auditd is enabled"),
+        "{result:?}"
+    );
+    let allowed = decoy.check(true);
+    assert!(
+        allowed.message().contains(
+            "After the way back, auditd can start, as auditd.timer is enabled and starts \
+             auditd.service, and write audit records to /var/log/audit on the decoy disk."
+        ),
+        "{allowed:?}"
+    );
+    assert!(
+        !allowed.message().contains("auditd starts with it"),
+        "{allowed:?}"
     );
     // Masking auditd.service, as the fix says, stops the timer starting it.
     decoy.mask("auditd.service");
     assert!(decoy.check(false).is_pass(), "{:?}", decoy.check(false));
+
+    // A socket that runs, and a kernel command line NAILS cannot read where
+    // the unit's condition needs it.
+    let decoy = Decoy::new();
+    decoy
+        .unit(
+            "auditd.service",
+            "[Unit]\nConditionKernelCommandLine=!audit=0\n\n[Service]\nType=forking\n\
+             ExecStart=/usr/bin/auditd\n",
+        )
+        .file(
+            "/etc/systemd/system/audit-kick.socket",
+            "[Socket]\nListenStream=/run/audit-kick.sock\nService=auditd.service\n",
+        )
+        .active("audit-kick.socket");
+    let result = decoy.check(false);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "auditd does not run now, but audit-kick.socket is active and starts \
+             auditd.service, and NAILS cannot tell whether the service manager can start auditd \
+             after the way back (NAILS cannot read /proc/cmdline"
+        ),
+        "{result:?}"
+    );
+    assert!(
+        decoy.check(true).message().contains(
+            "After the way back, auditd may start, as audit-kick.socket is active and starts \
+             auditd.service, and write audit records to /var/log/audit on the decoy disk."
+        ),
+        "{:?}",
+        decoy.check(true)
+    );
 }
