@@ -599,9 +599,8 @@ logind.
   happened. The gate's runs saw it after a way back and after a plain
   `systemctl soft-reboot` alike. The gate records where it does, and fails on
   any other unit failed after a way back that a plain soft-reboot did not
-  leave failed. End a session with
-  `deactivate --poweroff` or `emergency --poweroff` where that hint must not
-  reach the decoy.
+  leave failed. End a session with `deactivate --poweroff` or
+  `emergency --poweroff` where that hint must not reach the decoy.
 - With plocate installed (the Cloud images have none), the directory the
   hidden volume is mounted in in `PRUNEPATHS` of `/etc/updatedb.conf`, or
   `plocate-updatedb.timer` masked and stopped (`locate-database`; see
@@ -630,10 +629,9 @@ logind.
   key of Fedora 45,
   `rpm -q gpg-pubkey --qf '%{NAME}-%{VERSION}-%{RELEASE} %{SUMMARY}\n'` lists
   it as `Fedora (45) <fedora-45-primary@fedoraproject.org> public key`.
-  cryptsetup
-  opens VeraCrypt volumes as well (see [backends](backends.md)), but the Cloud
-  images do not install it, and no test opens a VeraCrypt or LUKS volume on
-  Fedora. The Cloud images run with FIPS mode off
+  cryptsetup opens VeraCrypt volumes as well (see [backends](backends.md)),
+  but the Cloud images do not install it, and no test opens a VeraCrypt or
+  LUKS volume on Fedora. The Cloud images run with FIPS mode off
   (`/proc/sys/crypto/fips_enabled` is `0`); their kernels list AES in XTS
   mode (`xts(aes)`) in `/proc/crypto` and ship Serpent, Twofish and Camellia
   as modules. No test runs a session with FIPS mode on.
