@@ -137,15 +137,20 @@ The decoy also has to be one the session can enter and leave:
   on any other host, and NAILS installs nothing into the decoy's policy. The
   udev rule of `[session_mounts] read_only` runs the copy too, but udevd
   starts it, and a targeted policy gives udevd's start of a program of this
-  label no domain of its own: it runs in udevd's domain, `udev_t`. So on such
-  a host:
+  label no domain of its own: it runs in udevd's domain, `udev_t`, which such
+  a policy confines. So on such a host:
   - the loaded policy must let PID 1 start a program labelled `bin_t`, give
     that start the domain `unconfined_service_t` and let PID 1 change into it,
     also from a `nosuid` mount, as `/run` is, and under `NoNewPrivileges=`
     (the policy capability `nnp_nosuid_transition` on, `nnp_transition` and
     `nosuid_transition` allowed), and NAILS must be able to ask it: selinuxfs
-    mounted, and `nails` run as root from an unconfined domain. Otherwise the
-    activation is refused before it writes anything to `/run`;
+    mounted, and `nails` run as root from an unconfined domain. Otherwise
+    `lsm-status` fails `check` and the activation, and the activation is also
+    refused before it writes anything to `/run`;
+  - where `[session_mounts] read_only` is on, the loaded policy must grant
+    udevd's domain every operation the disk guard makes, or `lsm-status`
+    fails `check` and the activation (see
+    [Fail closed](#fail-closed-activation-is-refused));
   - `systemd-soft-reboot.service` must not set `SELinuxContext=`, or PID 1
     starts the step in that context: the activation is refused, and so is
     `deactivate`, whose refusal names `deactivate --poweroff` and
@@ -194,8 +199,11 @@ The decoy also has to be one the session can enter and leave:
   steps under an enforcing policy and checks their domains (only a dispatch of
   the staged distribution tests runs it). The Fedora 44 and 45 images of the
   [oracle](../ci/oracle/README.md) run a hidden session and the way back under a
-  permissive policy, without checking the domains. `nails check` does not test
-  any of this yet.
+  permissive policy, without checking the domains. The refusal scenario of the
+  distribution tests runs `nails check` on Fedora's stock image, whose loaded
+  policy `lsm-status` asks what PID 1's start of the labelled copy comes to.
+  Fedora is not admitted yet, so on the families NAILS admits all of this
+  applies only where a host was set up to run SELinux.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The
@@ -314,14 +322,36 @@ changed, and the SELinux context of the `nails` process from
   whose SELinux user is `unconfined_u` runs in and `sudo` keeps, or
   `unconfined_service_t`;
 - a fact among these that cannot be read;
-- for now, every host where SELinux runs: NAILS does not yet choose the
-  SELinux domain of the processes systemd starts from its copy in `/run`
-  (the transition step at each switch, the watcher and the sleep guard of
-  the hidden session, and the boot-record steps after the way back), nor
-  that of the hidden session's disk guard, which udev runs itself from the
-  rule NAILS installs there, so nothing shows that they run unconfined. The
-  check judges the two apart: what NAILS sets on systemd's side does not
-  reach what udev runs.
+- where the copies of NAILS's program in RAM take the label of the system's
+  programs (the item on that label at the top of this document), a loaded
+  policy that does not start such a copy from PID 1 in `unconfined_service_t`
+  with every permission the change of domain needs, or that cannot be asked
+  through selinuxfs: then nothing shows that the processes systemd starts from
+  it (the transition step at each switch, the watcher and the sleep guard of
+  the hidden session, and the boot-record steps after the way back) run
+  unconfined. Where the copies take no label, NAILS chooses no domain for
+  those processes, and the check refuses every host where SELinux runs;
+- where `[session_mounts] read_only` is on, a disk guard that could not do its
+  work. udevd starts it from the same copy, in udevd's own domain, `udev_t`
+  under a targeted policy, which that policy confines. The check asks the
+  loaded policy, through selinuxfs, whether it grants that domain every
+  operation the guard makes: udevd's reading of the rule NAILS installs in
+  `/run/udev/rules.d` to start it, starting from the copy without a change of
+  domain, reaching `/run` and the runtime directory, reading the session plan,
+  adding to or creating its record of the disks it sets read-only, opening the
+  node of a disk under each label a targeted policy gives one
+  (`fixed_disk_device_t`, `removable_device_t`, `device_t`) and setting it
+  read-only, with the capability `sys_admin`, and reading sysfs, the links in
+  `/dev` and its own mount table. It asks with the labels the policy gives
+  what NAILS writes in `/run`, from the label of `/run` and the domains that
+  write there. It refuses a policy that denies one of them, a start of the
+  copy from udevd that enters another domain than udevd's own, a host where no
+  systemd-udevd runs, and a policy it cannot ask. It does not ask the policy's
+  rules for single `ioctl` numbers, which selinuxfs does not answer, nor the
+  labels a relabel of `/run` would give those files. Where the guard is off,
+  nothing about it is asked. The check judges the guard apart from the
+  processes systemd starts: what NAILS sets on systemd's side does not reach
+  what udev runs.
 
 Where it refuses nothing, it warns when SELinux is permissive, or runs in
 another mode than `/etc/selinux/config` sets. Where the kernel's list of

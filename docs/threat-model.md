@@ -267,9 +267,10 @@ upper changes.
   the hidden `/etc/nixos` it makes in the root upper for the hidden NixOS
   configuration, with the hidden `/etc` where it made that too. Where a label
   cannot be copied, activation is refused (see the
-  [decoy requirements](decoy-requirements.md)). For now `check` and activation
-  refuse every host where SELinux runs before any of this: `lsm-status` fails
-  there until NAILS chooses the SELinux domain of its units.
+  [decoy requirements](decoy-requirements.md)). Before any of this, `check`
+  and activation refuse a host where SELinux runs unless `lsm-status` finds it
+  running the targeted policy with NAILS's processes where they can do their
+  work (next item).
 - **The SELinux label of NAILS's program in RAM.** On a host whose kernel may
   run SELinux, NAILS gives every copy of its binary that PID 1 starts its
   steps from, in `/run`, the label of the system's programs, so that the
@@ -281,7 +282,14 @@ upper changes.
   last step would run where the policy confines it could not take the kernel
   log's cursor, and the decoy's journal would take in the hidden session's
   kernel log: so `deactivate` refuses such a return, and the activation is
-  refused where the loaded policy would not start the steps as they need. The
+  refused where the loaded policy would not start the steps as they need.
+  `check` and activation ask the loaded policy the same before anything else
+  (`lsm-status`), and where `[session_mounts] read_only` is on, also whether
+  it grants the domain udevd starts the disk guard in, `udev_t` under a
+  targeted policy, every operation the guard makes: where it does not, the
+  guard could leave a disk that appears in the session writable, and the host
+  is refused. Fedora, whose hosts run SELinux by default, is not admitted yet,
+  so this applies only where a host of a family NAILS admits runs SELinux. The
   emergency, which asks PID 1 nothing, powers off instead of returning where
   the copy does not take its label again or the loaded policy would not start
   the step from it; it does not see an `SELinuxContext=` the hidden session
