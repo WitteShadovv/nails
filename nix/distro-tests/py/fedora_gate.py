@@ -149,12 +149,16 @@ mkdir -p {HIDDEN}/root/work {HIDDEN}/config
 # before and after its fix: core dumps discarded, the lid switch locking the
 # screen, freed memory zeroed (init_on_free=1, from the next boot on), and
 # sssd off with the state files its warning looks for removed. The kernel log's
-# limits are lifted from the next boot's sysctl step on as well, so that the
-# boot the gate counts from loses as little of its kernel log as it can before
-# the gate lifts them again (selinux_gate.KMSG_LIMITS).
-PREPARE_DECOY = """
+# settings (selinux_gate.KMSG_SETTINGS) hold from the sysctl step of every
+# later start on as well, so that the boot the gate counts from loses as little
+# of its kernel log as it can, and no start's console line is split, before the
+# gate sets them again.
+PREPARE_DECOY = (
+    """
 set -eu
-printf '%s\\n' 'kernel.printk_ratelimit = 0' 'kernel.printk_devkmsg = on' \\
+printf '%s\\n' """
+    + " ".join(f"'{key} = {value}'" for key, value in sg.KMSG_SETTINGS)
+    + """ \\
   > /etc/sysctl.d/50-kmsg.conf
 mkdir -p /etc/systemd/coredump.conf.d /etc/systemd/logind.conf.d
 printf '%s\\n' '[Coredump]' Storage=none ProcessSizeMax=0 \\
@@ -169,6 +173,7 @@ rm -f /var/lib/sss/db/config.ldb /var/lib/sss/db/config_kcm.ldb \\
   /var/lib/sss/mc/sid /var/lib/sss/secrets/secrets.ldb \\
   /var/lib/sss/pipes/nss /var/lib/sss/pipes/pam
 """
+)
 # The policy without its dontaudit rules, for the variant that counts the
 # denials those rules keep out of the log: libsemanage rebuilds and loads it,
 # and keeps the setting in its store as a flag file, so the next boot loads it
