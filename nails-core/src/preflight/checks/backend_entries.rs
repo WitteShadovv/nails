@@ -46,15 +46,19 @@
 //! a `tcrypt-keyfile=`, and the device after the last `:` of its key field or a
 //! `header=`, which systemd's crypttab generator mounts for it
 //! (`/key:/dev/sdb`, `header=/hdr:/dev/sdb`), are read as its source is, a
-//! device's path in `/dev` through its links that stay in `/dev`: a device of
-//! the hidden drive fails the line, as one that the boot reads or mounts, the
-//! decoy's own crypttab line too. So are its `tpm2-device=` and
+//! device's path in `/dev` through its links that stay in `/dev`: a device the
+//! volume is stored on fails the line, as one that the boot reads or mounts,
+//! the decoy's own crypttab line too. So are its `tpm2-device=` and
 //! `fido2-device=` other than `auto`, which `systemd-cryptsetup` opens and
 //! writes to, and its `tpm2-signature=` and `tpm2-pcrlock=` files, and of every
 //! fstab line the devices and paths its options name: ext4's `journal_path=`
 //! and `journal_dev=`, XFS's `logdev=` and `rtdev=`, btrfs's `device=`,
 //! `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`, cifs's
-//! `credentials=` and an overlay's folders.
+//! `credentials=` and an overlay's folders. Of these, an option that has the
+//! boot open the device it names for writing, `tpm2-device=`, `fido2-device=`
+//! and the devices of ext4, XFS and btrfs, fails the line on any device of the
+//! hidden drive: its whole disk, a partition of it, or a device stacked on one
+//! of them.
 //!
 //! A bind line's source, the path of a swap or image file, of what a FUSE
 //! program reads and of a FUSE program named by its path, and a crypttab source

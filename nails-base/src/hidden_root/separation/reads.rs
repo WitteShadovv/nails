@@ -26,6 +26,15 @@
 //! `major:minor`. A device of the filesystem the line mounts itself, as
 //! `device=` names one, names nothing besides.
 //!
+//! An option that has the boot open the device it names for writing (see the
+//! `known` module), these devices of an fstab line and `tpm2-device=` and
+//! `fido2-device=`, fails its line on any device of the hidden drive, not only
+//! on one the volume is stored on: on the drive's whole disk, a partition of
+//! it, or a device whose data reaches one of these, as a mapping or an image
+//! file there does ([`drive_disks`]). `systemd-cryptsetup` would write TPM
+//! commands into the first bytes of a whole disk given so, and a filesystem
+//! writes its journal or its log onto what lies on the device it names.
+//!
 //! The generator splits the key field and each `header=` at the last `:`
 //! when what follows is an absolute path or a `UUID=`, `LABEL=`, `PARTUUID=`
 //! or `PARTLABEL=` tag ([`split_location`]): that is a device it mounts, a
@@ -42,7 +51,7 @@
 //! The judge reads each device and each file so, that is absolute or a tag, as
 //! it reads a line's source: a tag or a device's path in `/dev` as a device's
 //! name, and any other path as the path of a file, with no link followed (see
-//! the `paths` and `placed` modules). A device of the hidden drive, as the
+//! the `paths` and `placed` modules). A device the volume is stored on, as the
 //! root's stack holds it, makes the line a finding, since the boot mounts it or
 //! reads it, and so does a file in the volume or in the root's folder, whose
 //! holder the line claims, and one whose place cannot be told. A key file that
@@ -56,7 +65,10 @@
 //! program Debian's initramfs hands the key field to, which reads it in its own
 //! way.
 
-use super::known::{Reading, crypttab_option_reads, device_number, fstab_option_reads};
+use super::judge::reach;
+use super::known::{
+    Reading, crypttab_option_reads, device_number, fstab_option_reads, opens_for_writing,
+};
 use super::paths::{is_file_path, is_untold_device};
 use super::placed::{Line, Named, place};
 use super::plain::{Unplain, is_read};
@@ -64,6 +76,7 @@ use super::{EntryFinding, EntryKind, Scene};
 use crate::crypttab::{CrypttabEntry, split_location};
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::{FstabEntry, option_named};
+use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
 /// The values of the options of `entry` named `name` with a value.
@@ -170,6 +183,48 @@ pub(super) fn unplain(entry: &CrypttabEntry) -> Vec<Unplain> {
     why
 }
 
+/// The hidden drive, against which what a line reads is judged.
+pub(super) struct HiddenDrive<'a> {
+    /// The devices an entry for the hidden drive names: the root's stack,
+    /// the other devices of its btrfs filesystem and those below them.
+    pub devices: &'a [String],
+    /// The whole disks the root's data lies on ([`drive_disks`]).
+    pub disks: &'a BTreeSet<String>,
+}
+
+/// The whole disks the data of the devices `devices` lies on: the disk of
+/// each partition and each whole disk among the devices their data reaches
+/// ([`reach`]), as far down as it goes, through the files of loop devices
+/// too.
+pub(super) fn drive_disks(scene: &Scene<'_>, devices: &[String]) -> BTreeSet<String> {
+    reach(scene, devices, &BTreeSet::new())
+        .iter()
+        .filter_map(|node| scene.devices.disk_of(node))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether the data of the device `node` reaches one of `disks`: it is one
+/// of them, a partition of one, or a device stacked on one, as far down as
+/// its data goes ([`drive_disks`]).
+fn reaches_a_disk_of(scene: &Scene<'_>, node: &str, disks: &BTreeSet<String>) -> bool {
+    drive_disks(scene, &[node.to_string()])
+        .iter()
+        .any(|disk| disks.contains(disk))
+}
+
+/// Why a device that a line opens for writing through its option `option`
+/// makes a finding when it lies on the drive of the volume at `root`, its
+/// whole disk, a partition of it or a device stacked on it, though not on a
+/// device the volume is stored on.
+fn drive_why(option: &str, root: &Path) -> String {
+    format!(
+        "it opens a device of the drive the volume at {} is stored on for writing through its \
+         option {option}=",
+        root.display()
+    )
+}
+
 /// Why a device that a line reads `named` lies on the hidden drive, the
 /// volume at `root` or a device it is stored on, makes a finding.
 fn device_why(named: Named, root: &Path) -> String {
@@ -208,28 +263,47 @@ pub(super) struct Reads<'a, 'b> {
 }
 
 /// The findings of what a line reads besides its source (`reads`), judged
-/// against `hidden`, the visible mount at the hidden root, whose drive's
-/// devices `drive` holds, and the mounts that hold the files it reads, which
-/// the line claims.
+/// against `hidden`, the visible mount at the hidden root, and its drive,
+/// `drive`, and the mounts that hold the files it reads, which the line
+/// claims. A device the volume is stored on makes a finding, and so does
+/// any other device of its drive that an option opens for writing
+/// ([`opens_for_writing`]): the drive's whole disk, a partition of it or a
+/// device stacked on one of them.
 pub(super) fn judge_reads<'a>(
     scene: &Scene<'a>,
     hidden: &MountEntry,
     reads: &Reads<'_, '_>,
-    drive: &[String],
+    drive: &HiddenDrive<'_>,
 ) -> (Vec<EntryFinding>, Vec<&'a MountEntry>) {
     let mut findings = Vec::new();
     let mut holders = Vec::new();
-    let finding = |named: Named| EntryFinding {
+    let finding = |why: String| EntryFinding {
         kind: EntryKind::Blocking,
         file: reads.line.file,
         line: reads.line.shown.clone(),
-        why: device_why(named, &hidden.mount_point),
+        why,
         boot_needs: reads.line.boot_needs,
         system_folder: None,
         not_plain: false,
         options: Vec::new(),
     };
-    let on_drive = |node: &str| drive.iter().any(|n| n == node) && !(reads.own)(node);
+    // Why the device `node` that `named` names makes a finding, if it does.
+    let why = |named: Named, node: &str| {
+        if (reads.own)(node) {
+            None
+        } else if drive.devices.iter().any(|n| n == node) {
+            Some(device_why(named, &hidden.mount_point))
+        } else {
+            match named {
+                Named::Option(option)
+                    if opens_for_writing(option) && reaches_a_disk_of(scene, node, drive.disks) =>
+                {
+                    Some(drive_why(option, &hidden.mount_point))
+                }
+                _ => None,
+            }
+        }
+    };
     for (named, spec) in &reads.specs {
         if is_file_path(spec) || is_untold_device(scene.paths, spec) {
             let line = Line {
@@ -239,18 +313,22 @@ pub(super) fn judge_reads<'a>(
             let (found, holder) = place(scene, hidden, &line, spec);
             findings.extend(found);
             holders.extend(holder);
-        } else if scene.devices.node_of_spec(spec).is_some_and(on_drive) {
-            findings.push(finding(*named));
+        } else if let Some(why) = scene
+            .devices
+            .node_of_spec(spec)
+            .and_then(|node| why(*named, node))
+        {
+            findings.push(finding(why));
         }
     }
     for (named, dev) in &reads.numbers {
-        if scene
+        if let Some(why) = scene
             .devices
             .by_dev
             .get(dev)
-            .is_some_and(|node| on_drive(node))
+            .and_then(|node| why(*named, node))
         {
-            findings.push(finding(*named));
+            findings.push(finding(why));
         }
     }
     (findings, holders)
@@ -258,15 +336,15 @@ pub(super) fn judge_reads<'a>(
 
 /// The findings of what the crypttab line `entry`, shown as `shown`, reads
 /// besides its source ([`reads`]), judged against `hidden`, the visible
-/// mount at the hidden root, whose drive's devices `drive` holds, and the
-/// mounts that hold the files it reads, which the line claims. `boot_needs`
-/// tells whether the decoy's own boot needs the line.
+/// mount at the hidden root, and its drive, `drive` ([`judge_reads`]), and
+/// the mounts that hold the files it reads, which the line claims.
+/// `boot_needs` tells whether the decoy's own boot needs the line.
 pub(super) fn judged<'a>(
     scene: &Scene<'a>,
     hidden: &MountEntry,
     entry: &CrypttabEntry,
     shown: &str,
-    drive: &[String],
+    drive: &HiddenDrive<'_>,
     boot_needs: bool,
 ) -> (Vec<EntryFinding>, Vec<&'a MountEntry>) {
     let reads = Reads {

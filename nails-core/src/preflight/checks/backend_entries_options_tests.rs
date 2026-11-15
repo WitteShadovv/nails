@@ -818,3 +818,106 @@ fn on_an_encrypted_decoy_its_own_line_that_opens_the_volume_otherwise_fails() {
         assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN), "{options}");
     }
 }
+
+/// The decoy with the volume `data` (dm-9) on sdb1 of the partitioned sdb,
+/// sdb2 beside it, and sdc another drive, with `fstab` and `crypttab`.
+fn partitioned_drive(fstab: &str, crypttab: &str) -> Decoy {
+    let decoy = Decoy::new(
+        "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
+         5 1 254:9 / /mnt rw - ext4 /dev/mapper/data rw\n",
+    )
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .device(SDB, "sdb", "8:16", &[])
+    .partition(SDB1, "sdb1", "8:17")
+    .partition(SDB2, "sdb2", "8:18")
+    .device(SDC, "sdc", "8:32", &[])
+    .mapping("dm-9", "254:9", "data", ("sdb1", SDB1))
+    .file(
+        "/etc/fstab",
+        &format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{fstab}"),
+    )
+    .file("/etc/crypttab", crypttab)
+    .encrypted();
+    for node in ["dm-9", "sdb", "sdb1", "sdb2", "sdc"] {
+        decoy.fs.mock_set_device_node(&format!("/dev/{node}"));
+    }
+    decoy
+}
+
+#[test]
+fn an_option_that_opens_the_drive_for_writing_fails_on_its_whole_disk_too() {
+    // systemd-cryptsetup writes TPM commands to the first bytes of what
+    // `tpm2-device=` names, and ext4 its journal to the `journal_path=`
+    // device: with the volume on sdb1, the whole disk sdb or the partition
+    // beside it, sdb2, is a write to the volume's drive at boot, with the
+    // flag too.
+    for (fstab, crypttab, shown, option) in [
+        (
+            "",
+            "vault /dev/sdc none luks,tpm2-device=/dev/sdb,nofail\n",
+            "/etc/crypttab: 'vault /dev/sdc'",
+            "tpm2-device",
+        ),
+        (
+            "/dev/sdc /data ext4 journal_path=/dev/sdb 0 2\n",
+            "",
+            "/etc/fstab: '/dev/sdc /data ext4'",
+            "journal_path",
+        ),
+        (
+            "",
+            "vault /dev/sdc none luks,fido2-device=/dev/sdb2,nofail\n",
+            "/etc/crypttab: 'vault /dev/sdc'",
+            "fido2-device",
+        ),
+        (
+            "/dev/sdc /data xfs logdev=/dev/sdb2 0 0\n",
+            "",
+            "/etc/fstab: '/dev/sdc /data xfs'",
+            "logdev",
+        ),
+        (
+            "/dev/sdc /data ext4 journal_dev=2066 0 2\n",
+            "",
+            "/etc/fstab: '/dev/sdc /data ext4'",
+            "journal_dev",
+        ),
+    ] {
+        let decoy = partitioned_drive(fstab, crypttab);
+        for allow in [Allow::Nothing, Allow::DecoyStorage] {
+            let result = run_allowing(&decoy.fs, allow);
+            assert_eq!(
+                result.message(),
+                names_the_volume(&format!(
+                    "{shown} (it opens a device of the drive the volume at /mnt is stored on for \
+                     writing through its option {option}=)"
+                )),
+                "{fstab}{crypttab}"
+            );
+            assert_eq!(result.remediation(), Some(REMEDIATION), "{fstab}{crypttab}");
+        }
+    }
+    // The partition the volume lies on is a device it is stored on.
+    let decoy = partitioned_drive("/dev/sdc /data ext4 journal_path=/dev/sdb1 0 2\n", "");
+    assert_eq!(
+        decoy.run().message(),
+        names_the_volume(
+            "/etc/fstab: '/dev/sdc /data ext4' (it opens the volume at /mnt or a device it is \
+             stored on through its option journal_path=)"
+        )
+    );
+    // Another drive, and a key device the boot mounts read-only, pass.
+    for (fstab, crypttab) in [
+        ("", "vault /dev/sdc none luks,tpm2-device=/dev/sdc,nofail\n"),
+        ("", "vault /dev/sdc /key:/dev/sdb2 luks,nofail\n"),
+        ("/dev/sdc /data ext4 journal_path=/dev/sdc 0 2\n", ""),
+    ] {
+        let decoy = partitioned_drive(fstab, crypttab);
+        assert!(
+            decoy.run().is_pass(),
+            "{fstab}{crypttab}: {:?}",
+            decoy.run()
+        );
+    }
+}
