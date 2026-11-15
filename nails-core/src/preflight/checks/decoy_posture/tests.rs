@@ -1291,12 +1291,20 @@ fn an_enabled_kdump_unit_that_is_stopped_is_refused() {
 #[test]
 fn a_kdump_unit_counts_as_enabled_by_any_link_that_pulls_it_in() {
     // A link in a .wants, .requires or .upholds directory of any unit
-    // directory systemd reads, whatever unit the directory belongs to.
+    // directory systemd reads, whatever unit the directory belongs to: the
+    // generators' and /usr/local's among them.
     for rel in [
         "etc/systemd/system/sysinit.target.wants/kdump-tools.service",
         "run/systemd/system/multi-user.target.requires/kdump-tools.service",
         "usr/lib/systemd/system/basic.target.wants/kdump-tools.service",
         "lib/systemd/system/default.target.upholds/kdump-tools.service",
+        "usr/local/lib/systemd/system/multi-user.target.wants/kdump-tools.service",
+        "run/systemd/generator.early/default.target.wants/kdump-tools.service",
+        "run/systemd/generator/multi-user.target.wants/kdump-tools.service",
+        "run/systemd/generator.late/multi-user.target.wants/kdump-tools.service",
+        "etc/systemd/system.attached/multi-user.target.wants/kdump-tools.service",
+        "etc/systemd/system.control/multi-user.target.wants/kdump-tools.service",
+        "run/systemd/transient/multi-user.target.wants/kdump-tools.service",
     ] {
         let tmp = amnesic_tree();
         let root = tmp.path();
@@ -1309,6 +1317,22 @@ fn a_kdump_unit_counts_as_enabled_by_any_link_that_pulls_it_in() {
             "{rel}: {finding:?}"
         );
     }
+    // A systemd.wants= on the kernel's command line, which the generator
+    // links again at each start of the manager.
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    write(
+        root,
+        "proc/cmdline",
+        "BOOT_IMAGE=/vmlinuz root=/dev/vda3 systemd.wants=kdump-tools quiet\n",
+    );
+    let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root);
+    assert!(
+        finding
+            .as_ref()
+            .is_some_and(|f| f.sentence.contains("(kdump-tools.service is enabled)")),
+        "{finding:?}"
+    );
     // systemd takes only links from those directories, and only those
     // directories pull a unit in: a drop-in directory does not.
     let tmp = amnesic_tree();
