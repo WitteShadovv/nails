@@ -55,6 +55,8 @@ use super::PersistenceFinding;
 use crate::filesystem::automount::describe;
 use crate::{Filesystem, NailsError};
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// Directory systemd populates with an `invocation:<unit>` marker per *active*
@@ -593,11 +595,16 @@ pub(super) struct Processes {
 /// basenames.
 ///
 /// Reads `comm` and `cmdline` only, both world-readable, so an unprivileged
-/// `nails check` sees daemons that run as root. A `/proc` that is not there
-/// holds no process, and a process that ended since the listing is gone. A
-/// `/proc` NAILS cannot list, or a process whose `comm` or `cmdline` it
-/// cannot read, as where `/proc` is mounted `hidepid=noaccess` for a check
-/// that is not root, may hide one: [`Processes::untold`] says why.
+/// `nails check` sees daemons that run as root. Both are read as bytes: a
+/// process may be started with an argument that is no UTF-8, and a byte
+/// that is none is replaced in its name. A `/proc` that is not there holds
+/// no process, and a process that ended since the listing is gone: the read
+/// finds nothing there, or fails for another reason (`ESRCH`, where the
+/// process ended between the open and the read) and the process's directory
+/// is gone when NAILS looks again. A `/proc` NAILS cannot list, or a process
+/// whose `comm` or `cmdline` it cannot read while its directory is there, as
+/// where `/proc` is mounted `hidepid=noaccess` for a check that is not root,
+/// may hide one: [`Processes::untold`] says why.
 pub(super) fn running_processes<F: Filesystem>(fs: &F, root: &Path) -> Processes {
     let mut processes = Processes {
         names: BTreeSet::new(),
@@ -630,9 +637,9 @@ pub(super) fn running_processes<F: Filesystem>(fs: &F, root: &Path) -> Processes
         }
         let mut read = |name: &str| {
             let path = entry.join(name);
-            match fs.read_file_content(&path) {
-                Ok(text) => Some(text),
-                Err(error) if ended(&error) => None,
+            match fs.read_file_bytes(&path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if ended(fs, &entry, &error) => None,
                 Err(error) => {
                     processes
                         .untold
@@ -644,23 +651,26 @@ pub(super) fn running_processes<F: Filesystem>(fs: &F, root: &Path) -> Processes
         let comm = read("comm");
         let cmdline = read("cmdline");
         if let Some(comm) = comm {
-            processes.names.insert(comm.trim().to_string());
+            processes
+                .names
+                .insert(String::from_utf8_lossy(&comm).trim().to_string());
         }
         if let Some(cmdline) = cmdline
-            && let Some(argv0) = cmdline.split('\0').find(|arg| !arg.is_empty())
-            && let Some(base) = Path::new(argv0).file_name().and_then(|name| name.to_str())
+            && let Some(argv0) = cmdline.split(|&byte| byte == 0).find(|arg| !arg.is_empty())
+            && let Some(base) = Path::new(OsStr::from_bytes(argv0)).file_name()
         {
-            processes.names.insert(base.to_string());
+            processes.names.insert(base.to_string_lossy().into_owned());
         }
     }
     processes
 }
 
-/// Whether `error`, of a read of a file in a process's `/proc` directory,
-/// says the process ended: the directory is gone (`ENOENT`), or the kernel
-/// no longer has the task (`ESRCH`).
-fn ended(error: &NailsError) -> bool {
-    error.nothing_there()
-        || matches!(error, NailsError::IoError { source, .. }
-            if source.raw_os_error() == Some(nix::libc::ESRCH))
+/// Whether `error`, of a read of a file in the process directory `dir`,
+/// says the process ended: nothing is there (`ENOENT`), or the read failed
+/// for another reason and `dir` is gone when NAILS looks again. A process
+/// that ends between the open of a file and its read makes the read fail
+/// with `ESRCH`, whose code the error does not keep, and leaves no
+/// directory behind.
+fn ended<F: Filesystem>(fs: &F, dir: &Path, error: &NailsError) -> bool {
+    error.nothing_there() || matches!(fs.path_exists(dir), Ok(false))
 }
