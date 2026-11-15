@@ -31,22 +31,23 @@
 //!   into that unit in place of `local-fs.target`.
 //! - Of a path or a device that an option names ([`Form::Reads`]), the judge
 //!   reads a path where it leads, with no link followed, and resolves a
-//!   device's path in `/dev` through links that stay in `/dev`, a udev link,
-//!   a link in `/dev/block` or a volume group's link among them, as it reads
-//!   a line's source (see the `reads` module): ext4's `journal_path=` and
-//!   `journal_dev=` (a device by its number), XFS's `logdev=` and `rtdev=`
-//!   and btrfs's `device=`, which the filesystem opens and writes to,
-//!   `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`,
-//!   whose mounts systemd makes first, cifs's `credentials=`, a file
-//!   `mount.cifs` reads, an overlay's `lowerdir=`, `upperdir=` and
-//!   `workdir=`, the folders it is made of, and of a crypttab line
-//!   `tpm2-device=` and `fido2-device=`, which `systemd-cryptsetup` opens and
-//!   writes TPM or FIDO2 commands to unless they are `auto`, and
-//!   `tpm2-signature=` and `tpm2-pcrlock=`, files it reads. Of these, an
-//!   option that has the boot open the device it names for writing
-//!   ([`OPENS_FOR_WRITING`]) fails its line on any device of the hidden
-//!   drive, not only one the volume is stored on. `header=` and
-//!   `tcrypt-keyfile=` the `reads` module reads as before.
+//!   device's path in `/dev` through links that stay in `/dev`, a udev link, a
+//!   link in `/dev/block` or a volume group's link among them, as it reads a
+//!   line's source (see the `reads` module): ext4's `journal_path=` and
+//!   `journal_dev=` (a device by its number), XFS's `logdev=` and `rtdev=` and
+//!   btrfs's `device=`, which the filesystem opens and writes to,
+//!   `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`, whose
+//!   mounts systemd makes first, cifs's `credentials=`, a file `mount.cifs`
+//!   reads, an overlay's `lowerdir=`, `upperdir=` and `workdir=`, the folders
+//!   it is made of, and of a crypttab line `tpm2-device=` and `fido2-device=`,
+//!   which `systemd-cryptsetup` opens and writes TPM or FIDO2 commands to
+//!   unless they are `auto`, and `tpm2-signature=` and `tpm2-pcrlock=`, files
+//!   it reads. Of these, an option that has the boot open the device it names
+//!   for writing ([`OPENS_FOR_WRITING`]) fails its line on any device of the
+//!   hidden drive, not only one the volume is stored on. `header=` and
+//!   `tcrypt-keyfile=` the `reads` module reads as before, and the device of a
+//!   `header=<path>:<device>`, which the crypttab generator mounts read-write,
+//!   fails its line on any device of the hidden drive as well.
 //! - The generic flags of `libmount` (`defaults`, `ro`, `rw`, `exec`,
 //!   `noexec`, `suid`, `nosuid`, `dev`, `nodev`, `sync`, `async`, `dirsync`)
 //!   and the atime family (`atime`, `noatime`, `diratime`, `nodiratime`,
@@ -67,11 +68,14 @@
 //!   desktop's file manager, which shows or names the mount by them.
 //!   `x-systemd.device-timeout=`, `x-systemd.mount-timeout=` and
 //!   `x-systemd.idle-timeout=` set how long systemd waits for the device or the
-//!   mount and when it unmounts an idle automount. `x-systemd.makefs` and
-//!   `x-systemd.growfs` make or grow a filesystem on the line's own device,
-//!   which NAILS reads as its source, `x-initrd.mount` has the initrd mount the
-//!   line, which the boot then still mounts, and `X-mount.mkdir` has
-//!   `libmount` make the mount point, as systemd does for every mount.
+//!   mount and when it unmounts an idle automount. `x-systemd.growfs` grows the
+//!   filesystem the line mounts to fill the line's own device, which NAILS
+//!   reads as its source. `x-systemd.makefs` has `systemd-makefs` make a
+//!   filesystem, or swap, on that device wherever it finds none there, a write
+//!   over the device, which the judge reads by the drive the device is on (see
+//!   the `options` module). `x-initrd.mount` has the initrd mount the line,
+//!   which the boot then still mounts, and `X-mount.mkdir` has `libmount` make
+//!   the mount point, as systemd does for every mount.
 //! - The options of a filesystem that the stock lines of the supported
 //!   families carry tune how that filesystem writes to its own device, or
 //!   whose its files are: btrfs's compression, free-space cache, SSD and
@@ -88,17 +92,20 @@
 //! - Of a crypttab line, the formats (`luks`, `plain`, `bitlk` and the
 //!   TrueCrypt ones) and `swap` and `tmp`, which set plain dm-crypt and have
 //!   the boot make swap or a filesystem on the mapping, the judge reads in
-//!   their order, as `systemd-cryptsetup` does (see the `options` module),
-//!   and lets the decoy's own line be only where it opens its LUKS mapping as
-//!   LUKS, with neither `swap` nor `tmp`; and `discard`, `nofail`, `_netdev`,
-//!   `x-initrd.attach` and Debian's `initramfs` (when it is opened),
-//!   `readonly`, the cipher, sizes and offsets in the source, the key slot and
-//!   key file size and offset, `keyfile-erase`, the crypt workers, and how
-//!   often, how long and how the boot asks for the passphrase (`tries=`,
-//!   `timeout=`, `keyfile-timeout=`, `password-echo=`, `headless`,
-//!   `token-timeout=`, `try-empty-password`, `tpm2-pcrs=`): none names a
-//!   device or a file besides the line's source and key file. `keyscript=`
-//!   is not plain for its own reason (see the `reads` module).
+//!   their order, as `systemd-cryptsetup` does (see the `options` module), and
+//!   lets the decoy's own line be only where it opens its LUKS mapping as LUKS,
+//!   with neither `swap` nor `tmp`. A line with `swap` or `tmp`, or one it
+//!   opens in plain mode, which checks no header, writes over its source, or
+//!   lets whatever writes to its mapping do so, which the judge reads by the
+//!   drive the source is on (see the `options` module). Of the others,
+//!   `discard`, `nofail`, `_netdev`, `x-initrd.attach` and Debian's `initramfs`
+//!   (when it is opened), `readonly`, the cipher, sizes and offsets in the
+//!   source, the key slot and key file size and offset, `keyfile-erase`, the
+//!   crypt workers, and how often, how long and how the boot asks for the
+//!   passphrase (`tries=`, `timeout=`, `keyfile-timeout=`, `password-echo=`,
+//!   `headless`, `token-timeout=`, `try-empty-password`, `tpm2-pcrs=`): none
+//!   names a device or a file besides the line's source and key file.
+//!   `keyscript=` is not plain for its own reason (see the `reads` module).
 //!
 //! NAILS reads a flag only alone: one given with a value, such as `nofail=1`,
 //! is not plain, as no stock line gives one and `libmount` releases read it

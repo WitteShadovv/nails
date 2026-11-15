@@ -5,11 +5,15 @@
 
 use super::lines::{in_fstab, line_is_mounted, mounts_the_root, sharing};
 use super::loops::{loop_files, with_loops_over_its_files};
-use super::options::{crypttab_noauto, fstab_noauto, opens_as_luks};
+use super::options::{
+    crypttab_noauto, formats_its_device, fstab_noauto, opens_as_luks, overwrites,
+};
 use super::paths::{is_claimed, is_untold_device, names_a_file, opens_a_file, program_path};
 use super::placed::{Line, Named, place};
 use super::plain::source;
-use super::reads::{HiddenDrive, Reads, drive_disks, fstab_numbers, fstab_reads, judge_reads};
+use super::reads::{
+    HiddenDrive, Reads, drive_disks, fstab_numbers, fstab_reads, judge_reads, overwrite_why,
+};
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
     LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, UnplainLine, Untraced,
@@ -558,6 +562,17 @@ fn claims(
             // it gives its program.
             let spec = source(entry);
             let node = spec.and_then(|spec| devices.node_of_spec(spec));
+            // One the boot formats where it finds no filesystem, a device of
+            // the hidden drive outside the root's stack, its whole disk say:
+            // a write over the drive at boot, or when a unit pulls in a
+            // `noauto` one. A device of the stack is a finding below.
+            if let Some(why) = node
+                .filter(|n| formats_its_device(entry) && !entry_stack.iter().any(|s| s == n))
+                .and_then(|n| overwrite_why(scene, n, &disks, None, &hidden.mount_point))
+            {
+                let needs = fstab_line(hidden, entry, Named::File).boot_needs;
+                found.push(blocking(FSTAB, shown(entry), why, needs));
+            }
             if let Some(node) = node.filter(|n| entry_stack.iter().any(|s| s == n)) {
                 let finding = fstab_finding(scene, hidden, entry, own_device(node));
                 needs_own = own_device(node) && finding.boot_needs;
@@ -784,6 +799,22 @@ fn crypttab_claims(
                 // One that opens only another device of the root's btrfs
                 // filesystem claims it all the same.
                 break 'line !opens(stack, stack_names);
+            }
+            // One that has the boot write over its source, a device of the
+            // hidden drive outside the root's stack, its whole disk say, or
+            // one that opens it with no header to check: a write over the
+            // drive at boot, or when a unit pulls in a `noauto` one.
+            if let Some(why) = overwrites(entry).and_then(|how| {
+                overwrite_why(
+                    scene,
+                    source?,
+                    hidden_drive.disks,
+                    Some(how),
+                    &hidden.mount_point,
+                )
+            }) {
+                found.push(blocking(CRYPTTAB, line, why, needed));
+                break 'line true;
             }
             if entry.is_tcrypt() && source.is_some_and(|s| same_drive(devices, s, stack)) {
                 found.push(outer_warning(line));
