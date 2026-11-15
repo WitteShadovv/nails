@@ -498,12 +498,15 @@ fn a_daily_unit_nails_cannot_tell_runs_refuses() {
     );
     let unknown = upgrade_run(&fs, Path::new("/"));
     assert!(
-        matches!(&unknown, UpgradeRun::Unknown(why)
+        matches!(&unknown, UpgradeRun::UnitUnknown(why)
             if why.starts_with("NAILS cannot tell whether apt-daily.service runs: NAILS cannot \
                                 look up /run/systemd/units/invocation:apt-daily.service")),
         "{unknown:?}"
     );
-    assert!(check(&fs).is_fail());
+    let result = check(&fs);
+    assert!(result.is_fail(), "{result:?}");
+    // The fix is about what shows the unit, not the lock file.
+    assert_eq!(result.remediation(), Some(UNIT_UNREAD));
     // A sign of a run says more.
     fs.create_symlink(
         Path::new("8028a17235414b4e80c950b24a7487d7"), // pragma: allowlist secret
@@ -514,6 +517,35 @@ fn a_daily_unit_nails_cannot_tell_runs_refuses() {
         upgrade_run(&fs, Path::new("/")),
         UpgradeRun::InProgress(vec!["apt-daily-upgrade.service is active".to_string()])
     );
+}
+
+/// What shows a daily run's unit that cannot be read, a listing of
+/// `/run/systemd/units` or the unit's `cgroup.events`, leaves NAILS unable to
+/// tell whether it runs: the check refuses, and the fix is to let NAILS read
+/// those, where it pointed at the lock file, which the reads were not of.
+#[test]
+fn a_daily_unit_whose_signs_cannot_be_read_says_to_let_nails_read_them() {
+    for unreadable in [
+        "/run/systemd/units",
+        "/sys/fs/cgroup/system.slice/apt-daily-upgrade.service/cgroup.events",
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_lookup_error(unreadable, std::io::ErrorKind::Other);
+        let unknown = upgrade_run(&fs, Path::new("/"));
+        assert!(
+            matches!(&unknown, UpgradeRun::UnitUnknown(why) if why.contains(unreadable)),
+            "{unreadable}: {unknown:?}"
+        );
+        let result = check(&fs);
+        assert!(result.is_fail(), "{result:?}");
+        assert!(
+            result.message().starts_with(
+                "NAILS cannot tell whether a daily unattended-upgrade run is in progress"
+            ),
+            "{result:?}"
+        );
+        assert_eq!(result.remediation(), Some(UNIT_UNREAD), "{unreadable}");
+    }
 }
 
 /// `check` asks the automount guard before each lookup: below a `/var` that
