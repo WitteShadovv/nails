@@ -67,7 +67,9 @@
 //!
 //! The udev rule that keeps unused disks read-only
 //! ([`crate::whole_root::disk_guard`]) runs the copy too, but udevd starts
-//! it, not PID 1, and keeps its own domain for a program of this label.
+//! it, not PID 1, and keeps its own domain for a program of this label: what
+//! the loaded policy lets the guard do there is asked apart
+//! ([`crate::whole_root::guard_policy`]).
 //!
 //! [`Plan::program_label`]: crate::whole_root::plan::Plan::program_label
 
@@ -330,12 +332,19 @@ impl std::fmt::Display for Unfit {
 /// question that fails, as with no selinuxfs mounted, fails the check too
 /// ([`Unfit::Unjudged`]).
 pub fn check_start(selinux: &dyn Selinux, label: &str) -> Result<(), Unfit> {
+    start_domain(selinux, label).map(|_| ())
+}
+
+/// [`check_start`], with the context the start enters where it passes: in
+/// [`DOMAIN`]. `None` where no policy is loaded ([`Selinux::pid1`]), which
+/// gives no start a domain.
+pub fn start_domain(selinux: &dyn Selinux, label: &str) -> Result<Option<String>, Unfit> {
     let unjudged = |what: &str, e: io::Error| Unfit::Unjudged(format!("{what}: {e}"));
     let Some(pid1) = selinux
         .pid1()
         .map_err(|e| unjudged("PID 1's context cannot be read", e))?
     else {
-        return Ok(());
+        return Ok(None);
     };
     let asked = |e| unjudged("the policy cannot be asked", e);
     let start = selinux
@@ -381,7 +390,7 @@ pub fn check_start(selinux: &dyn Selinux, label: &str) -> Result<(), Unfit> {
     if !selinux.capability(NNP_NOSUID).map_err(asked)? {
         return Err(Unfit::Capability);
     }
-    Ok(())
+    Ok(Some(entered))
 }
 
 /// Why a copy is not ready for a switch.

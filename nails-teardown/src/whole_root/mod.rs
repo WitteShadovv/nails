@@ -36,7 +36,8 @@
 //! - [`switch_refusal`]: why the last switch was refused, kept on the hidden
 //!   volume (a refused entry) or in the runtime directory (a refused way
 //!   back) so `status` can say so;
-//! - [`disk_guard`]: unused disks read-only for the session (opt-in);
+//! - [`disk_guard`]: unused disks read-only for the session (opt-in), with
+//!   [`guard_policy`] (what the loaded SELinux policy lets the guard do);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
 //! - [`logind`]: the soft-reboot request of the entry and the way back, and
 //!   what logind holds of it;
@@ -53,6 +54,7 @@ pub mod decoy_mounts;
 pub mod disk_guard;
 pub mod emergency;
 pub mod fresh_pids;
+pub mod guard_policy;
 pub mod kernel_helpers;
 pub mod kill;
 pub mod logind;

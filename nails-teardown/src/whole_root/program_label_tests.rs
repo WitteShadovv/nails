@@ -81,8 +81,20 @@ fn a_label_that_cannot_be_read_back_fails() {
         fn current(&self) -> io::Result<String> {
             self.0.current()
         }
+        fn udevd(&self) -> io::Result<Option<String>> {
+            self.0.udevd()
+        }
         fn exec_context(&self, source: &str, file: &str) -> io::Result<String> {
             self.0.exec_context(source, file)
+        }
+        fn new_label(
+            &self,
+            source: &str,
+            parent: &str,
+            class: &str,
+            name: Option<&str>,
+        ) -> io::Result<String> {
+            self.0.new_label(source, parent, class, name)
         }
         fn denied(
             &self,
@@ -101,6 +113,9 @@ fn a_label_that_cannot_be_read_back_fails() {
         }
         fn label(&self, _file: BorrowedFd<'_>) -> io::Result<Vec<u8>> {
             Err(io::Error::from_raw_os_error(libc::EIO))
+        }
+        fn path_label(&self, path: &Path) -> io::Result<String> {
+            self.0.path_label(path)
         }
     }
     let file = tempfile::tempfile().unwrap();

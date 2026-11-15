@@ -347,3 +347,164 @@ fn the_running_kernel_reads_the_own_context_from_procfs() {
         }
     }
 }
+
+/// A new object's label is asked of the `create` file with the number of
+/// its class, and with its name where one is given: in the clear where it
+/// holds only letters, digits, `.`, `_` and `-`, else percent-encoded, as the
+/// kernel reads `+` as a blank and a name ends at one.
+#[test]
+fn a_new_object_s_label_is_asked_with_its_class_and_its_name() {
+    let dir = tempfile::tempdir().unwrap();
+    classes(dir.path(), "file", "6\n", &[("read", "4")]);
+    classes(dir.path(), "dir", "7\n", &[("search", "16")]);
+    fn create(path: &Path, request: &str) -> io::Result<Vec<u8>> {
+        assert!(path.ends_with("create"), "{}", path.display());
+        Ok(match request {
+            "system_u:system_r:udev_t:s0 system_u:object_r:var_run_t:s0 6 read-only-devices" => {
+                b"system_u:object_r:udev_var_run_t:s0\0".to_vec()
+            }
+            "unconfined_u:unconfined_r:unconfined_t:s0 system_u:object_r:var_run_t:s0 7" => {
+                b"unconfined_u:object_r:var_run_t:s0\0".to_vec()
+            }
+            "a:b:c d:e:f 6 a%20b%2Bc%25d%2F.e_f-9" => b"g:h:i".to_vec(),
+            other => panic!("unexpected request {other:?}"),
+        })
+    }
+    let ask = |source: &str, class: &str, name: Option<&str>| {
+        new_label_in(
+            dir.path(),
+            (source, "system_u:object_r:var_run_t:s0", class),
+            name,
+            create,
+        )
+    };
+    assert_eq!(
+        ask(
+            "system_u:system_r:udev_t:s0",
+            "file",
+            Some("read-only-devices")
+        )
+        .unwrap(),
+        "system_u:object_r:udev_var_run_t:s0"
+    );
+    assert_eq!(
+        ask("unconfined_u:unconfined_r:unconfined_t:s0", "dir", None).unwrap(),
+        "unconfined_u:object_r:var_run_t:s0"
+    );
+    assert_eq!(
+        new_label_in(
+            dir.path(),
+            ("a:b:c", "d:e:f", "file"),
+            Some("a b+c%d/.e_f-9"),
+            create
+        )
+        .unwrap(),
+        "g:h:i"
+    );
+    // A class the policy does not define is no answer, nor is an answer that
+    // reads as no context.
+    assert_eq!(
+        ask("a:b:c", "no_class", None).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    fn blank(_: &Path, _: &str) -> io::Result<Vec<u8>> {
+        Ok(b"\0".to_vec())
+    }
+    assert_eq!(
+        new_label_in(dir.path(), ("a:b:c", "d:e:f", "dir"), None, blank)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+/// A process directory in a stand-in procfs: `comm`, `cgroup` and the
+/// context in `attr/current`, each where given.
+fn process(proc: &Path, pid: &str, comm: &str, cgroup: Option<&str>, context: Option<&str>) {
+    let dir = proc.join(pid);
+    std::fs::create_dir_all(dir.join("attr")).unwrap();
+    std::fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
+    if let Some(cgroup) = cgroup {
+        std::fs::write(dir.join("cgroup"), cgroup).unwrap();
+    }
+    if let Some(context) = context {
+        std::fs::write(dir.join("attr/current"), format!("{context}\0")).unwrap();
+    }
+}
+
+/// udevd is the process named `systemd-udevd` in its unit's cgroup, its
+/// subgroup included: a worker, a program of the same name elsewhere, a
+/// process whose cgroup cannot be read and the entries of procfs that are no
+/// process are passed over, and where none is left none runs.
+#[test]
+fn udevd_is_the_process_of_its_name_in_its_unit() {
+    let dir = tempfile::tempdir().unwrap();
+    let proc = dir.path();
+    std::fs::create_dir_all(proc.join("self")).unwrap();
+    std::fs::write(proc.join("uptime"), "1.0 1.0\n").unwrap();
+    assert_eq!(udevd_context_in(proc).unwrap(), None);
+
+    const UDEV: &str = "system_u:system_r:udev_t:s0-s0:c0.c1023";
+    process(
+        proc,
+        "412",
+        "(udev-worker)",
+        Some("0::/system.slice/systemd-udevd.service/udev\n"),
+        Some(UDEV),
+    );
+    process(
+        proc,
+        "500",
+        "systemd-udevd",
+        Some("0::/user.slice/user-1000.slice/session-2.scope\n"),
+        Some("unconfined_u:unconfined_r:unconfined_t:s0"),
+    );
+    process(proc, "501", "systemd-udevd", None, Some("a:b:c"));
+    assert_eq!(udevd_context_in(proc).unwrap(), None);
+
+    process(
+        proc,
+        "411",
+        "systemd-udevd",
+        Some("0::/system.slice/systemd-udevd.service/udev\n"),
+        Some(UDEV),
+    );
+    assert_eq!(udevd_context_in(proc).unwrap().as_deref(), Some(UDEV));
+
+    // udevd's context that cannot be read is an error, not "none runs".
+    std::fs::remove_file(proc.join("411/attr/current")).unwrap();
+    let error = udevd_context_in(proc).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .starts_with(&proc.join("411/attr/current").display().to_string()),
+        "{error}"
+    );
+    // A procfs that cannot be listed is an error too.
+    let missing = proc.join("none");
+    assert_eq!(
+        udevd_context_in(&missing).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
+/// The running kernel of a test host without SELinux: a file there carries no
+/// label to read by its path either, and a path that is not there fails as
+/// the kernel fails it.
+#[test]
+fn the_running_kernel_without_selinux_gives_no_label_by_path() {
+    if Path::new(SELINUXFS).exists() {
+        return;
+    }
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let error = Kernel.path_label(file.path()).unwrap_err();
+    assert!(
+        matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)),
+        "{error}"
+    );
+    let missing = file.path().with_extension("missing");
+    assert_eq!(
+        Kernel.path_label(&missing).unwrap_err().raw_os_error(),
+        Some(libc::ENOENT)
+    );
+}
