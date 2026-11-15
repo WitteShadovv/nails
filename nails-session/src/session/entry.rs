@@ -87,6 +87,7 @@ use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
 use crate::reporter::progress::{ActivationPhase, activation_step};
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
+use nails_teardown::noatime::QuietMounts;
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
     Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount, PolicyMountKind, RootSide,
@@ -925,10 +926,15 @@ impl HomeWay {
     }
 }
 
-/// Install the transition drop-in and reload the service manager, and refuse
-/// the entry when a guard does not hold once loaded, or PID 1 starts the
-/// transition's unit outside the domain the copy's label gives it
-/// ([`super::program_label::check_switch_unit`]).
+/// Install the transition drop-in, reload the service manager and ask it
+/// whether the guards hold, and refuse the entry when a guard does not hold
+/// once loaded, or PID 1 starts the transition's unit outside the domain the
+/// copy's label gives it ([`super::program_label::check_switch_unit`]). PID 1
+/// reads the decoy's unit files and runs its generators for the reload, and
+/// reads the files of a unit it has not loaded for a question about it, so
+/// the decoy's mounts that keep access times are `noatime` for all of it
+/// ([`QuietMounts`]); where they cannot be made so, the entry is refused
+/// before anything is reloaded.
 fn install_transition(
     paths: &Paths,
     inputs: &EntryInputs<'_>,
@@ -942,6 +948,12 @@ fn install_transition(
         Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
             .join(nails_teardown::whole_root::plan::BINARY_NAME)
     };
+    let _quiet = QuietMounts::open().map_err(|e| {
+        NailsError::InvalidState(format!(
+            "NAILS cannot keep the service manager's reload from setting access times on the \
+             decoy disk: making its mounts noatime for it failed ({e})"
+        ))
+    })?;
     transition::install_dropin(&paths.run, &binary).map_err(|e| io(&paths.run, e))?;
     *dropin = true;
     host.daemon_reload()?;

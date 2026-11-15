@@ -4,7 +4,7 @@
 //! Real overlay and teardown behaviour against the kernel.
 //!
 //! These tests drive the overlay, bind and tmpfs mounts the session builds
-//! against a real overlayfs. All but six run in the normal test run, each as
+//! against a real overlayfs. All but seven run in the normal test run, each as
 //! root of its own unprivileged user + mount namespace (`rootless`, built on
 //! `nails_core::test_support::Rerun`), so every mount is private to the child
 //! and vanishes with it, even after a panic. Each test still builds its own
@@ -13,15 +13,18 @@
 //! user namespaces from a skip into a failure.
 //!
 //! Four tests need `trusted.*` xattrs, which a user namespace cannot set,
-//! and two bind loop devices, which only root of the initial namespace may,
+//! and three bind loop devices, which only root of the initial namespace may,
 //! so they alone stay `#[ignore]`d and run as real root in the
 //! privileged-mounts CI job: the whiteout and opaque-directory test, the test
 //! of the `kernel-modules` check against the kernel's own whiteouts and opaque
 //! directories, the two tests of the whole upper-filesystem probe (with the
-//! label copy the host asks for, and with the SELinux label required), and the
-//! two tests of the loop driver's record of the file behind a loop device, one on
-//! a tmpfs and one on a btrfs filesystem it makes with `mkfs.btrfs`, which
-//! must be on `PATH` (btrfs-progs). Both also mount a FUSE filesystem through
+//! label copy the host asks for, and with the SELinux label required), the
+//! two tests of the loop driver's record of the file behind a loop device, one
+//! on a tmpfs and one on a btrfs filesystem it makes with `mkfs.btrfs`, which
+//! must be on `PATH` (btrfs-progs), and the test of the reads that change no
+//! access time, on such a btrfs filesystem too: a child's mount namespace and
+//! the quiet mounts change mounts as only root of the initial namespace may.
+//! The two loop driver tests also mount a FUSE filesystem through
 //! `/dev/fuse`, which no daemon serves:
 //!
 //! ```sh
@@ -1190,5 +1193,112 @@ fn a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows() {
         .unmount(&volume, false)
         .expect("unmount the btrfs volume");
     drop(volume_device);
+    root.teardown();
+}
+
+/// What NAILS reads on the decoy leaves its access times alone: a program it
+/// starts runs with every mount of a namespace of its own `noatime`, and while
+/// it asks PID 1 for something that makes PID 1 read the decoy, the mounts
+/// that keep access times are `noatime` and get their own mode back after.
+/// Both on a btrfs filesystem in an image on a loop device, mounted
+/// `relatime`, with a file whose access time is set two days back before each
+/// read, so that a read that counts updates it; a plain read is the control.
+#[test]
+#[ignore = "root only: a child's mount namespace and the quiet mounts need CAP_SYS_ADMIN in the initial namespace, and mkfs.btrfs"]
+fn neither_a_child_nor_a_read_under_quiet_mounts_changes_an_access_time() {
+    use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
+    use nails_teardown::noatime::{
+        QuietMounts, may_spawn_without_access_times, spawn_without_access_times,
+    };
+    use std::os::unix::fs::MetadataExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, SystemTime};
+
+    assert!(
+        may_spawn_without_access_times(),
+        "run as root of the initial user namespace"
+    );
+    let root = TmpfsRoot::new();
+    let at = root.root.canonicalize().expect("canonical tmpfs root");
+    let image = at.join("disk.img");
+    std::fs::File::create(&image)
+        .and_then(|file| file.set_len(256 << 20))
+        .expect("create the image file");
+    let made = Command::new("mkfs.btrfs")
+        .arg("-q")
+        .arg(&image)
+        .status()
+        .expect("run mkfs.btrfs, from btrfs-progs");
+    assert!(made.success(), "mkfs.btrfs: {made}");
+    let device = LoopDevice::attach(&image);
+    let disk = at.join("disk");
+    mkdir(&disk);
+    nix::mount::mount(
+        Some(device.node.as_path()),
+        &disk,
+        Some("btrfs"),
+        MsFlags::MS_RELATIME,
+        None::<&str>,
+    )
+    .expect("mount the btrfs disk");
+    let file = disk.join("file");
+    write(&file, "decoy");
+    let age = || {
+        let two_days_ago = SystemTime::now() - Duration::from_secs(2 * 86_400);
+        std::fs::File::open(&file)
+            .and_then(|handle| {
+                handle.set_times(std::fs::FileTimes::new().set_accessed(two_days_ago))
+            })
+            .expect("set the access time back");
+        let meta = std::fs::metadata(&file).expect("stat the file");
+        (meta.atime(), meta.atime_nsec())
+    };
+    let atime = || {
+        let meta = std::fs::metadata(&file).expect("stat the file");
+        (meta.atime(), meta.atime_nsec())
+    };
+    let options = || {
+        top_mount_at(&read_mountinfo().expect("read mountinfo"), &disk)
+            .expect("the disk's mount")
+            .mount_opts
+            .clone()
+    };
+    let has = |word: &str| options().split(',').any(|option| option == word);
+    let cat = |quiet: bool| {
+        let mut command = Command::new("/bin/cat");
+        command.arg(&file).stdout(Stdio::null());
+        if quiet {
+            spawn_without_access_times(&mut command);
+        }
+        assert!(command.status().expect("run cat").success());
+    };
+
+    let aged = age();
+    cat(true);
+    assert_eq!(atime(), aged, "a child without access times read the file");
+    cat(false);
+    assert_ne!(atime(), aged, "a plain child updates the access time");
+
+    let aged = age();
+    assert!(has("relatime"), "{}", options());
+    {
+        let quiet = QuietMounts::open().expect("quiet the mounts");
+        assert!(!quiet.is_empty());
+        assert!(has("noatime"), "{}", options());
+        read(&file);
+        assert_eq!(atime(), aged, "a read under quiet mounts");
+    }
+    assert!(
+        has("relatime"),
+        "the mount has its own mode back: {}",
+        options()
+    );
+    read(&file);
+    assert_ne!(atime(), aged, "a read after the quiet mounts updates it");
+
+    Mounts
+        .unmount(&disk, false)
+        .expect("unmount the btrfs disk");
+    drop(device);
     root.teardown();
 }
