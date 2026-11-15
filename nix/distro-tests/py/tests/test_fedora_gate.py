@@ -13,21 +13,10 @@ import fedora_gate as fg
 import selinux_gate as sg
 
 
-class FakeSession:
-    """The e2e package's session helpers, as far as the judgments use them."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[set[str], str]] = []
-
-    def carried_run_residue(self, vm: Any, before: set[str], since: str) -> list[str]:
-        self.calls.append((set(before), since))
-        return ["/run/left"]
-
-
-def gate(session: Any = None, **settings: Any) -> fg.Gate:
+def gate(**settings: Any) -> fg.Gate:
     return fg.Gate(
         None,
-        session or FakeSession(),
+        None,
         None,
         None,
         {"image": "fedora-44", **settings},
@@ -197,15 +186,366 @@ class RehearseScanTest(unittest.TestCase):
 
 
 class RunResidueTest(unittest.TestCase):
-    def test_counts_from_the_wall_clock_of_the_way_back(self) -> None:
-        # What the session made in /run changed after the entry, so a wall
-        # clock from before the entry would let every one of them pass.
-        session = FakeSession()
-        run = gate(session)
-        run.facts["leave-wall-1"] = "1794687000"
-        state = {"run": {"/run/a"}, "since": "1794686900.5"}
-        self.assertEqual(run.run_residue(1, state), ["/run/left"])
-        self.assertEqual(session.calls, [({"/run/a"}, "1794687000")])
+    BEFORE = {
+        "d /run/systemd",
+        "f /run/systemd/journal/streams/10:100",
+        "f /run/nails-gate.toml",
+    }
+
+    def test_an_entry_the_session_left_at_any_depth_is_residue(self) -> None:
+        link = "l /run/systemd/system/multi-user.target.wants/overlay-runtime-boot"
+        after = {*self.BEFORE, link, "f /run/gate-probe-1"}
+        self.assertEqual(
+            fg.run_residue(self.BEFORE, after, []), ["f /run/gate-probe-1", link]
+        )
+
+    def test_a_shape_a_plain_soft_reboot_adds_is_no_residue(self) -> None:
+        # Each start of the decoy opens new journal streams, named by their
+        # device and inode.
+        control = (
+            {"f /run/systemd/journal/streams/10:200"},
+            {
+                "f /run/systemd/journal/streams/10:200",
+                "f /run/systemd/journal/streams/10:345",
+            },
+        )
+        after = {*self.BEFORE, "f /run/systemd/journal/streams/10:29536"}
+        self.assertEqual(fg.run_residue(self.BEFORE, after, [control]), [])
+        # A folder of the same name is another shape.
+        odd = {*self.BEFORE, "d /run/systemd/journal/streams/10:29536"}
+        self.assertEqual(
+            fg.run_residue(self.BEFORE, odd, [control]),
+            ["d /run/systemd/journal/streams/10:29536"],
+        )
+
+    def test_the_reconcile_pieces_that_stayed_are_left_to_their_check(
+        self,
+    ) -> None:
+        wants = "/run/systemd/system/multi-user.target.wants"
+        pieces = ["/run/overlay-runtime-boot", f"{wants}/overlay-runtime-boot.service"]
+        after = {
+            *self.BEFORE,
+            "d /run/overlay-runtime-boot",
+            "f /run/overlay-runtime-boot/control",
+            f"d {wants}",
+            f"l {wants}/overlay-runtime-boot.service",
+            "f /run/left",
+        }
+        self.assertEqual(
+            fg.run_residue(self.BEFORE, after, [], pieces), ["f /run/left"]
+        )
+        self.assertTrue(fg.of_pieces("l /run/overlay-runtime-boot -> x", pieces))
+        self.assertFalse(fg.of_pieces("d /run/overlay-runtime-bootx", pieces))
+
+    def test_reads_the_listing(self) -> None:
+        listing = "d /run/a\nf /run/a/b c\n\nfind: oops\n"
+        self.assertEqual(fg.run_entries(listing), {"d /run/a", "f /run/a/b c"})
+        self.assertEqual(
+            fg.run_shape("f /run/log/journal/0123456789abcdef0123/system@5.journal"),
+            "f /run/log/journal/#/system@#.journal",
+        )
+
+    def test_judges_each_way_back_against_the_controls(self) -> None:
+        run = gate()
+        run.runs = {
+            "control-1": ({"d /run/a"}, {"d /run/a", "f /run/s/1"}),
+            "way-back-1": ({"d /run/a"}, {"d /run/a", "f /run/s/7", "f /run/left"}),
+            "way-back-2": ({"d /run/a"}, {"d /run/a", "d /run/overlay-runtime-boot/x"}),
+        }
+        run.pieces = {2: ["/run/overlay-runtime-boot"]}
+        quiet(run.judge_run)
+        name = "nothing of the session stays in /run, at any depth"
+        self.assertEqual(
+            [(c["name"], c["passed"]) for c in run.checks],
+            [(f"way back 1: {name}", False), (f"way back 2: {name}", True)],
+        )
+        self.assertEqual(run.facts["run-residue-way-back-1"], ["f /run/left"])
+        # Without a control nothing is judged, so nothing passes.
+        run = gate()
+        run.runs = {"way-back-1": ({"d /run/a"}, {"d /run/a"})}
+        quiet(run.judge_run)
+        self.assertFalse(run.checks[0]["passed"])
+
+
+def entry(
+    transport: str,
+    msg: str,
+    pid: int | None = 1,
+    serial: int | None = None,
+    sent: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "transport": transport,
+        "pid": pid,
+        "who": "x",
+        "unit": "",
+        "auditId": serial,
+        "sent": sent,
+        "received": None,
+        "msg": msg,
+    }
+
+
+class CarriedTest(unittest.TestCase):
+    LATE = "GATELATE-n-1"
+    ENTRIES = (
+        entry("driver", "Journal started", pid=640),
+        # The hidden root's last records, waiting in the sockets.
+        entry("audit", "SERVICE_STOP unit=systemd-journald", serial=1272),
+        entry("audit", "SERVICE_STOP unit=gate-late-1", serial=1276),
+        entry("syslog", f"{LATE}-syslog", pid=12001, sent=733_126_747),
+        entry("journal", f"{LATE}-native", pid=12003, sent=733_128_735),
+        entry("stdout", f"{LATE}-stdout", pid=12001),
+        entry("stdout", "Error: Device or resource busy", pid=12007),
+        entry("syslog", "a hidden daemon's last line", pid=11990, sent=733_200_000),
+        # The decoy's own start, after the switch.
+        entry("audit", "AVC map policy.35", serial=1282),
+        entry("journal", "Finished lvm2-monitor.service", sent=734_764_503),
+        entry("stdout", "zram0: formatted", pid=650),
+    )
+
+    def test_sorts_what_the_hidden_root_sent_after_its_journald_stopped(self) -> None:
+        found = fg.carried_records(self.ENTRIES, self.LATE, 1281, 734_000_000, 12000)
+        self.assertEqual(len(found["late"]), 3)
+        self.assertEqual(
+            [line.split(":", 1)[1].strip() for line in found["audit"]],
+            ["SERVICE_STOP unit=systemd-journald"],
+        )
+        self.assertEqual(len(found["datagram"]), 1)
+        self.assertIn("a hidden daemon's last line", found["datagram"][0])
+        self.assertEqual(len(found["stream"]), 1)
+        self.assertIn("resource busy", found["stream"][0])
+
+    def test_a_bound_it_lacks_judges_nothing_of_its_kind(self) -> None:
+        found = fg.carried_records(self.ENTRIES, self.LATE, None, None, None)
+        self.assertEqual(len(found["late"]), 3)
+        self.assertEqual(
+            (found["audit"], found["datagram"], found["stream"]), ([], [], [])
+        )
+
+    def test_the_late_writer_stops_after_the_hidden_journald(self) -> None:
+        stop = "audit: type=1131 audit(1.0:{s}): pid=1 uid=0 msg='unit={u} comm=x'"
+        log = [
+            kmsg(1, stop.format(s=1, u="systemd-journald")),
+            kmsg(2, stop.format(s=2, u="gate-late-1")),
+            kmsg(3, "audit: type=1130 audit(1.0:3): msg='unit=gate-late-2 comm=x'"),
+        ]
+        self.assertIs(fg.stopped_after(log, "systemd-journald", "gate-late-1"), True)
+        self.assertIs(fg.stopped_after(log, "gate-late-1", "systemd-journald"), False)
+        # A start is no stop.
+        self.assertIsNone(fg.stopped_after(log, "systemd-journald", "gate-late-2"))
+
+    def test_the_late_writer_logs_through_each_socket(self) -> None:
+        stop = fg.LATE_STOP.format(mark="M")
+        self.assertIn("logger -t gatelate M-syslog", stop)
+        self.assertIn("echo M-stdout", stop)
+        self.assertIn("MESSAGE=M-native", stop)
+        self.assertIn("logger --journald", stop)
+        # systemd reads the line with its own quoting: one argument for sh.
+        self.assertTrue(stop.startswith('/bin/sh -c "') and stop.endswith('"'))
+
+
+def utmp(kind: str, pid: int = 0, line: str = "") -> dict[str, Any]:
+    return {"type": kind, "pid": pid, "line": line}
+
+
+class GettyTest(unittest.TestCase):
+    def test_the_power_of_two_range(self) -> None:
+        self.assertEqual(fg.pid_range(700), (512, 1023))
+        self.assertEqual(fg.pid_range(1024), (1024, 2047))
+        self.assertEqual(fg.pid_range(3175), (2048, 4095))
+        self.assertEqual(fg.pid_range(0), (0, 0))
+
+    def test_reads_the_consoles_of_the_last_start(self) -> None:
+        wtmp = [
+            utmp("BOOT_TIME"),
+            utmp("INIT_PROCESS", 921, "tty1"),
+            utmp("LOGIN_PROCESS", 921, "tty1"),
+            utmp("BOOT_TIME"),
+            utmp("RUN_LVL"),
+            # kmscon on Fedora 45: the unit's record alone.
+            utmp("INIT_PROCESS", 644, "tty1"),
+            utmp("LOGIN_PROCESS", 671, "hvc0"),
+            utmp("USER_PROCESS", 990, "tty1"),
+            utmp("DEAD_PROCESS", 644, "tty1"),
+            utmp("INIT_PROCESS", 3000, "tty1"),
+        ]
+        self.assertEqual(fg.getty_logins(wtmp), {"tty1": 644, "hvc0": 671})
+        self.assertEqual(fg.getty_logins([utmp("LOGIN_PROCESS", 5, "tty1")]), {})
+
+    def test_a_getty_numbered_from_the_session_fails(self) -> None:
+        cold = {"ttyS0": 670}
+        self.assertEqual(fg.getty_problems(cold, {"ttyS0": 702}, 12000), [])
+        # No set-back: the number continues from the session's.
+        self.assertEqual(len(fg.getty_problems(cold, {"ttyS0": 12040}, 12000)), 2)
+        # Set back from a soft-reboot's numbers, not a cold boot's.
+        soft = fg.getty_problems(cold, {"ttyS0": 3175}, 12000)
+        self.assertIn("in (2048, 4095)", soft[0])
+        self.assertTrue(fg.getty_problems(cold, {}, 12000))
+        self.assertTrue(fg.getty_problems({}, {"ttyS0": 702}, 12000))
+        self.assertTrue(fg.getty_problems(cold, {"ttyS0": 702}, None))
+
+
+SYSCALL = (
+    "audit: type=1300 audit(1794705307.950:{serial}): arch=c000003e syscall=59 "
+    "success={success} exit=0 items=2 ppid=1 pid=4146 auid=4294967295 uid=0 "
+    'comm="{comm}" exe="{exe}" subj=system_u:system_r:{domain}:s0 key="{key}"'
+)
+EXECVE = "audit: type=1309 audit(1794705307.950:{serial}): argc={argc} {args}"
+PATH = (
+    "audit: type=1302 audit(1794705307.950:{serial}): item=0 "
+    'name="{name}" inode=4311 obj=system_u:object_r:init_var_run_t:s0'
+)
+
+
+def run(
+    serial: int,
+    exe: str,
+    domain: str,
+    *args: str,
+    key: str = fg.EXEC_RUN_KEY,
+    ran: bool = True,
+) -> list[str]:
+    """The kernel's records of one run: its system call and its arguments."""
+    argv = [exe, *args]
+    return [
+        SYSCALL.format(
+            serial=serial,
+            success="yes" if ran else "no",
+            comm=exe.rsplit("/", 1)[-1],
+            exe=exe if ran else "/usr/lib/systemd/systemd-executor",
+            domain=domain,
+            key=key,
+        ),
+        EXECVE.format(
+            serial=serial,
+            argc=len(argv),
+            args=" ".join(f'a{i}="{a}"' for i, a in enumerate(argv)),
+        ),
+        PATH.format(serial=serial, name=exe),
+    ]
+
+
+COPY = "/run/overlay-runtime/control"
+BOOT_COPY = "/run/overlay-runtime-boot/control"
+
+
+def every_step(domain: str = "unconfined_service_t") -> list[str]:
+    """A run of each step of NAILS from its copy in /run."""
+    lines: list[str] = []
+    for serial, step in enumerate(fg.NAILS_STEPS, 100):
+        copy = BOOT_COPY if step == "reconcile-records" else COPY
+        lines += run(serial, copy, domain, "--config", "/run/x.toml", step)
+    return lines
+
+
+class ExecTest(unittest.TestCase):
+    def boot(self, *messages: str) -> dict[str, Any]:
+        return {
+            "why": "cold",
+            "records": {seq: kmsg(seq, m) for seq, m in enumerate(messages, 1)},
+        }
+
+    def test_reads_what_the_rules_recorded(self) -> None:
+        records = self.boot(
+            *run(800, BOOT_COPY, "init_t", "reconcile-records", key=fg.EXEC_KEY),
+            *run(801, "/usr/bin/true", "init_t", key="other"),
+            *run(802, BOOT_COPY, "init_t", "reconcile-records", ran=False),
+            "audit: type=1400 audit(1.0:803): avc:  denied  { map }",
+        )["records"].values()
+        found = fg.exec_records(records)
+        self.assertEqual(
+            [(r["key"], r["program"], r["step"], r["ran"]) for r in found],
+            [
+                (fg.EXEC_KEY, BOOT_COPY, "reconcile-records", True),
+                (fg.EXEC_RUN_KEY, BOOT_COPY, "reconcile-records", False),
+            ],
+        )
+        self.assertEqual(found[0]["subj"], "system_u:system_r:init_t:s0")
+
+    def judged(self, *messages: str, probes: tuple[str, ...]) -> list[bool]:
+        run_ = gate()
+        run_.exec_audit = True
+        run_.exec_probes = list(probes)
+        run_.boots = [self.boot(*messages)]
+        quiet(run_.judge_execs)
+        self.judged_facts = run_.facts
+        return [c["passed"] for c in run_.checks]
+
+    PROBE = f"{fg.EXEC_PROBE}-hidden-1"
+
+    def probe(self) -> list[str]:
+        return run(5, self.PROBE, "unconfined_service_t", key=fg.EXEC_KEY)
+
+    def test_every_step_outside_init_t_passes(self) -> None:
+        self.assertEqual(
+            self.judged(*self.probe(), *every_step(), probes=(self.PROBE,)),
+            [True, True, True, True],
+        )
+        self.assertEqual(
+            self.judged_facts["nails-step-domains"]["guard-device"],
+            ["unconfined_service_t"],
+        )
+
+    def test_a_copy_labelled_as_runtime_data_fails(self) -> None:
+        data = run(6, COPY, "init_t", "watch", key=fg.EXEC_KEY)
+        self.assertEqual(
+            self.judged(*self.probe(), *every_step(), *data, probes=(self.PROBE,)),
+            [True, False, False, True],
+        )
+
+    def test_a_step_in_init_t_fails(self) -> None:
+        self.assertEqual(
+            self.judged(*self.probe(), *every_step("init_t"), probes=(self.PROBE,)),
+            [True, True, False, True],
+        )
+
+    def test_a_step_the_kernel_never_recorded_fails(self) -> None:
+        # The policy refused the reconcile step: it never ran, so its domain
+        # is unknown, and the copy it tried was labelled as runtime data.
+        steps = [
+            line
+            for line in every_step()
+            if "reconcile-records" not in line and BOOT_COPY not in line
+        ]
+        steps += run(
+            104, BOOT_COPY, "init_t", "reconcile-records", key=fg.EXEC_KEY, ran=False
+        )
+        self.assertEqual(
+            self.judged(*self.probe(), *steps, probes=(self.PROBE,)),
+            [True, False, True, False],
+        )
+
+    def test_without_the_probe_s_record_nothing_shows_the_rules_work(self) -> None:
+        missing = self.judged(*every_step(), probes=(f"{fg.EXEC_PROBE}-after-1",))
+        self.assertEqual(missing[0], False)
+        self.assertEqual(self.judged(*every_step(), probes=())[0], False)
+
+    def test_the_variant_without_the_rules_judges_nothing(self) -> None:
+        run_ = gate(dontaudit=False)
+        quiet(run_.judge_execs)
+        self.assertEqual(run_.checks, [])
+
+    def test_the_listed_rules_hold_only_with_each_one_there(self) -> None:
+        rule = "-a always,exit -F arch=b64 -S execve,execveat"
+        listed = [
+            f"{rule} -F obj_type={kind} -F key={fg.EXEC_KEY}" for kind in fg.EXEC_TYPES
+        ]
+        listed.append(f"{rule} -F dir=/run -F key={fg.EXEC_RUN_KEY}")
+        self.assertTrue(fg.exec_rules_held("\n".join(listed)))
+        self.assertFalse(fg.exec_rules_held("\n".join(listed[1:])))
+        self.assertFalse(fg.exec_rules_held("\n".join(listed[:-1])))
+        self.assertFalse(fg.exec_rules_held("No rules"))
+
+    def test_the_rules_record_each_runtime_label_and_all_of_run(self) -> None:
+        for kind in fg.EXEC_TYPES:
+            self.assertIn(f"-F obj_type={kind} -k {fg.EXEC_KEY};", fg.EXEC_RULES)
+        self.assertTrue(fg.EXEC_RULES.startswith("auditctl -D;"))
+        # The labels' rules come first: the first rule a run matches names it.
+        self.assertLess(
+            fg.EXEC_RULES.index(fg.EXEC_KEY + ";"),
+            fg.EXEC_RULES.index(f"-F dir=/run -k {fg.EXEC_RUN_KEY};"),
+        )
 
 
 def kmsg(seq: int, msg: str) -> dict[str, Any]:
