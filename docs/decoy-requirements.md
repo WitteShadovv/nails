@@ -542,11 +542,16 @@ logind.
   [Fedora's admission gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora)
   on the Cloud images of Fedora 44 and 45, with SELinux enforcing.
 - **SELinux enforcing, with the targeted policy**, as Fedora installs it: the
-  gate runs its sessions so. In them the watcher NAILS starts runs in
-  `unconfined_service_t`, and neither root logs a denial or an SELinux error
-  of a NAILS process or path, those the policy's dontaudit rules keep out of
-  the log included, which a run of the gate with those rules off counts. Do
-  not update `selinux-policy`, load a policy module or create
+  gate runs its sessions so. The kernel, which the gate has record every
+  program run from below `/run` with its domain, shows the programs NAILS
+  runs from its copies there in `unconfined_service_t` (the watcher, the
+  sleep guard where one is set, the last step of each switch and the
+  reconcile step after the way back), and the disk guard, which udev runs, in
+  `udev_t`. None of them runs from a copy labelled as runtime data. Neither
+  root logs a denial or an SELinux error of a NAILS process or path, those
+  the policy's dontaudit rules keep out of the log included, which a run of
+  the gate with those rules off counts. Do
+  not update `selinux-policy`, load a policy module, set a boolean or create
   `/.autorelabel` in a hidden session (see
   [The SELinux policy and the kernel log](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
 - **Volatile journald.** Fedora's journald keeps a persistent journal, which

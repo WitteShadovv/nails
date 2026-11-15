@@ -249,24 +249,33 @@ upper changes.
   and nothing reports it: end such a session with `deactivate --poweroff` or
   `emergency --poweroff` when that address must never reach the decoy.
 - **The SELinux policy and the kernel log.** A soft-reboot keeps the kernel,
-  and with it the SELinux policy the decoy loaded at its boot: at each switch
-  PID 1 does not load the policy of the root it starts in, and logs `Failed to
-  load new SELinux policy. Continuing with old policy.` after a denial of its
-  `map` on the policy file, as at a plain `systemctl soft-reboot`. The hidden
-  session runs under the decoy's policy, and the decoy after the way back
-  under the policy the kernel holds then. So do not update `selinux-policy`,
-  load a policy module or create `/.autorelabel` in a hidden session: a policy
-  loaded there would still be the kernel's after the way back, and no test
-  covers either. With auditd off, as the decoy requirements ask, the kernel
-  writes to its log the SELinux denials the policy does not keep quiet with a
-  dontaudit rule, and the audit records programs send, such as the record rpm
-  sends of every package it installs; printk's rate limit can drop some of a
-  burst. That log outlives both switches, in RAM, until power-off. The way
-  back moves the decoy journal's kmsg cursor past the hidden session's
-  records (see [Residual channels](#residual-channels)). On Fedora 44 and 45
-  with SELinux enforcing the distribution tests find none of those records in
-  the decoy's journal after either way back, and no new denial or SELinux
-  error of a NAILS process or path in either root.
+  and with it the SELinux policy it holds. With the targeted policy of the
+  Fedora 44 and 45 Cloud images (`selinux-policy-targeted` 43.3-1.fc44 and
+  45.23-1.fc45), the policy denies PID 1 the `map` of the policy file at each
+  switch, so PID 1 does not load the policy of the root it starts in and logs
+  `Failed to load new SELinux policy. Continuing with old policy.`, as at a
+  plain `systemctl soft-reboot`: the hidden session runs under the policy the
+  decoy loaded at its boot, and the decoy after the way back under the policy
+  the kernel holds then. No test runs an updated policy, which could let PID 1
+  map that file and load each root's own policy at the switch. So do not
+  update `selinux-policy`, load a policy module, set a boolean or create
+  `/.autorelabel` in a hidden session: what the kernel's policy takes in there
+  would still be the kernel's after the way back. The distribution tests find
+  the decoy's booleans as they were after each way back of a session that
+  sets none, and no test covers either of the others. With auditd off, as the
+  decoy requirements ask, the kernel writes to its log the SELinux denials the
+  policy does not keep quiet with a dontaudit rule, and the audit records
+  programs send, such as the record rpm sends of every package it installs;
+  printk's rate limit can drop some of a burst. That log outlives both
+  switches, in RAM, until power-off. The way back moves the decoy journal's
+  kmsg cursor past the hidden session's records (see
+  [Residual channels](#residual-channels)). On Fedora 44 and 45 with SELinux
+  enforcing the distribution tests find none of those records among the
+  kernel records of the decoy's journal after either way back, and no new
+  denial or SELinux error of a NAILS process or path in either root. The
+  audit records the hidden root sends after its journald stopped reach the
+  decoy's journal another way, through journald's audit socket, which the
+  switch keeps open (see [Residual channels](#residual-channels)).
 - **SELinux labels.** On a host that runs SELinux, activation gives two kinds
   of directory on the hidden volume the label of the decoy directory they
   stand for: the root of each upper, which becomes the hidden `/` or the root
