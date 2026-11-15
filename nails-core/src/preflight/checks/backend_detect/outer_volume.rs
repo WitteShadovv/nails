@@ -26,9 +26,9 @@
 //! read-only (`ro`). It reads sysfs and the mount table alone, never a
 //! mapping's table.
 
-use super::graph::{Graph, filesystem_devices};
+use super::graph::{Graph, filesystem_devices, unread_names, unread_reason};
 use super::luks2::names_a_volume;
-use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
+use crate::blockdev::{self, Attribute, DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::config::get_default_hidden_volume_root;
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::hidden_root::separation::{self, SYS_CLASS_BLOCK};
@@ -42,6 +42,24 @@ mod tests;
 
 /// Where the outer volume is explained.
 const DOC: &str = "docs/backends.md";
+
+/// The attributes of a device of the hidden root's stack the check decides
+/// by, beside `slaves/`, which [`Graph::complete`] counts: what kind of
+/// mapping it is (`dm/uuid`, and `dm/name` for one the VeraCrypt application
+/// made) and what a loop device reads.
+const STACK: &[Attribute] = &[
+    Attribute::DmName,
+    Attribute::DmUuid,
+    Attribute::LoopBackingFile,
+];
+
+/// Those of a loop device that may hold the same data: what it reads, and
+/// from where.
+const LOOP: &[Attribute] = &[Attribute::LoopBackingFile, Attribute::LoopOffset];
+
+/// Those of a device built on the hidden root's storage: what kind of
+/// mapping it is.
+const KIND: &[Attribute] = &[Attribute::DmName, Attribute::DmUuid];
 
 /// What the operator does about an outer volume open read-write.
 const FIX: &str = "Unmount it and close it before activating (cryptsetup close <name>, or \
@@ -63,7 +81,10 @@ const FIX: &str = "Unmount it and close it before activating (cryptsetup close <
 /// not let it list the devices below the hidden root or built on its
 /// storage. It passes when every such mapping is read-only, when there is
 /// none, and when the hidden root's stack holds no VeraCrypt or TrueCrypt
-/// mapping. It never fails.
+/// mapping. It never fails. Where sysfs shows an attribute that decides it
+/// (what kind of mapping a device is, the devices below or built on it, what
+/// a loop device reads and from where), but NAILS cannot read it, it warns
+/// that it cannot look.
 #[derive(Debug, Clone)]
 pub struct OuterVolumeCheck {
     hidden_volume_root: PathBuf,
@@ -132,6 +153,11 @@ impl<F: Filesystem> PreFlightCheck<F> for OuterVolumeCheck {
             &roots,
             LoopFollow::BlockDevices,
         );
+        // An attribute the check decides by that sysfs shows but NAILS
+        // cannot read keeps it from telling where it passes: a mapping it
+        // could judge warns all the same.
+        let unread = graph.unread(STACK);
+        let mut untold = (!unread.is_empty()).then(|| unread_reason(&unread, "below it"));
         if !graph.complete() {
             return Ok(unchecked(root, "the devices below it cannot all be listed"));
         }
@@ -148,15 +174,21 @@ impl<F: Filesystem> PreFlightCheck<F> for OuterVolumeCheck {
             })
             .collect();
         if below.is_empty() {
-            return Ok(CheckResult::Pass(format!(
-                "The hidden root at {shown} is in no VeraCrypt or TrueCrypt volume, so no outer \
-                 volume of it can be open."
-            )));
+            return Ok(match untold {
+                Some(why) => unchecked(root, &why),
+                None => CheckResult::Pass(format!(
+                    "The hidden root at {shown} is in no VeraCrypt or TrueCrypt volume, so no \
+                     outer volume of it can be open."
+                )),
+            });
         }
 
         let Some(devices) = Devices::read(fs) else {
             return Ok(unchecked(root, "the block devices cannot be listed"));
         };
+        if !devices.unread.is_empty() {
+            untold.get_or_insert_with(|| unread_reason(&devices.unread, "that may hold its data"));
+        }
         let mut others: BTreeMap<String, Other> = BTreeMap::new();
         for device in &below {
             let Some(holders) = devices.holders_of_data(device, &graph) else {
@@ -172,6 +204,11 @@ impl<F: Filesystem> PreFlightCheck<F> for OuterVolumeCheck {
                 let Some(layer) = devices.layer(&holder) else {
                     continue;
                 };
+                let unread = unread_names([&layer], KIND);
+                if !unread.is_empty() {
+                    untold.get_or_insert_with(|| unread_reason(&unread, "built on its storage"));
+                    continue;
+                }
                 if let Some(kind) = outer_kind(&layer) {
                     let top = devices.top(&holder);
                     others.insert(
@@ -180,6 +217,10 @@ impl<F: Filesystem> PreFlightCheck<F> for OuterVolumeCheck {
                             kind,
                             device: on,
                             writable: !layer.read_only,
+                            writable_untold: layer
+                                .unread_among(&[Attribute::ReadOnly])
+                                .next()
+                                .is_some(),
                             mounts: mounts_of(fs, &table, &top),
                             name: top_name(&top),
                         },
@@ -187,7 +228,11 @@ impl<F: Filesystem> PreFlightCheck<F> for OuterVolumeCheck {
                 }
             }
         }
-        Ok(verdict(root, &below, &others))
+        let result = verdict(root, &below, &others);
+        Ok(match untold {
+            Some(why) if result.is_pass() => unchecked(root, &why),
+            _ => result,
+        })
     }
 }
 
@@ -223,8 +268,12 @@ struct Other {
     kind: OuterKind,
     /// The device it is opened from, as the hidden volume is.
     device: String,
-    /// Whether the kernel lets it be written.
+    /// Whether the kernel lets it be written: so where NAILS cannot read
+    /// `ro`, as `writable_untold` says.
     writable: bool,
+    /// Whether sysfs shows `ro` of it, but NAILS cannot read it, so it
+    /// counts as writable.
+    writable_untold: bool,
     /// Where it, or a device built on it, is mounted, each read-only or not.
     mounts: Vec<(PathBuf, bool)>,
     /// The topmost mapping built on it, as the operator knows it:
@@ -237,6 +286,10 @@ struct Devices<'a, F: Filesystem> {
     fs: &'a F,
     /// Every bound loop device.
     loops: Vec<Layer>,
+    /// The attributes of a loop device that sysfs shows but NAILS cannot
+    /// read and that say what it reads, or from where ([`LOOP`]): it may
+    /// hold the same data as a device the check looks at.
+    unread: Vec<&'static str>,
 }
 
 impl<'a, F: Filesystem> Devices<'a, F> {
@@ -245,7 +298,7 @@ impl<'a, F: Filesystem> Devices<'a, F> {
     fn read(fs: &'a F) -> Option<Self> {
         let mut entries = fs.list_directory(Path::new(SYS_CLASS_BLOCK)).ok()?;
         entries.sort();
-        let loops = entries
+        let read: Vec<Layer> = entries
             .iter()
             .filter(|entry| {
                 entry
@@ -257,9 +310,13 @@ impl<'a, F: Filesystem> Devices<'a, F> {
                     })
             })
             .filter_map(|entry| one(fs, entry))
+            .collect();
+        let unread = unread_names(&read, LOOP);
+        let loops = read
+            .into_iter()
             .filter(|layer| layer.loop_device.is_some())
             .collect();
-        Some(Self { fs, loops })
+        Some(Self { fs, loops, unread })
     }
 
     /// The device `name`, read alone.
@@ -419,9 +476,18 @@ fn verdict(root: &Path, below: &BTreeSet<String>, others: &BTreeMap<String, Othe
                          for a volume they mount read-only."
                     }
                 };
+                let open = if other.writable_untold {
+                    format!(
+                        "Another VeraCrypt or TrueCrypt mapping is open on {storage}, maybe \
+                         read-write: sysfs shows its ro, but NAILS cannot read it"
+                    )
+                } else {
+                    format!(
+                        "Another VeraCrypt or TrueCrypt mapping is open read-write on {storage}"
+                    )
+                };
                 format!(
-                    "Another VeraCrypt or TrueCrypt mapping is open read-write on {storage}: {}, \
-                     on {}, {}. {protection}",
+                    "{open}: {}, on {}, {}. {protection}",
                     other.name,
                     other.device,
                     mounted(&other.mounts)

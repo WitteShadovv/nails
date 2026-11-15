@@ -23,7 +23,7 @@
 //!   storage is the hidden root's.
 
 use crate::Filesystem;
-use crate::blockdev::{self, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
+use crate::blockdev::{self, Attribute, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::filesystem::mountinfo::MountEntry;
 use crate::hidden_root::separation::{
     Claimed, DeviceMap, FileHolder, LoopFile, NodeKind, SYS_CLASS_BLOCK,
@@ -91,6 +91,13 @@ impl Graph {
     /// The devices the check goes on into below the device `name`.
     pub(super) fn children<'a>(&'a self, name: &str, layer: &'a Layer) -> &'a [String] {
         self.below.get(name).unwrap_or(&layer.below)
+    }
+
+    /// The names of the attributes and listings among `among` that sysfs
+    /// shows of a device of the graph but NAILS could not read, sorted and
+    /// each once: what they would say is missing from the graph.
+    pub(super) fn unread(&self, among: &[Attribute]) -> Vec<&'static str> {
+        unread_names(self.layers.values(), among)
     }
 
     /// Whether the graph read every device a layer of it goes on into, and
@@ -223,11 +230,49 @@ fn disk_keeping_data_elsewhere<F: Filesystem>(fs: &F, layer: &Layer) -> Option<(
         .and(layer.sysfs.parent())?;
     let walk = blockdev::walk(fs, dir, LoopFollow::Never, 1);
     let disk = walk.layers.first()?;
+    // A disk whose kind sysfs shows but NAILS cannot read may keep its data
+    // elsewhere: the way goes on into it, where what is unread shows.
     let elsewhere = disk.dm.is_some()
         || disk.loop_device.is_some()
         || !disk.slaves.is_empty()
-        || leaf_kind(&key(disk)).is_some();
+        || leaf_kind(&key(disk)).is_some()
+        || disk.unread_among(KIND).next().is_some();
     elsewhere.then(|| (dir.to_path_buf(), key(disk)))
+}
+
+/// The attributes and listings that say what kind of device a disk is: a
+/// device-mapper or loop device, or one built on others.
+const KIND: &[Attribute] = &[
+    Attribute::DmName,
+    Attribute::DmUuid,
+    Attribute::LoopBackingFile,
+    Attribute::Slaves,
+];
+
+/// The names of the attributes and listings among `among` that sysfs shows
+/// of one of `layers` but NAILS could not read, sorted and each once.
+pub(super) fn unread_names<'a>(
+    layers: impl IntoIterator<Item = &'a Layer>,
+    among: &[Attribute],
+) -> Vec<&'static str> {
+    let names: BTreeSet<&'static str> = layers
+        .into_iter()
+        .flat_map(|layer| layer.unread_among(among))
+        .map(|unread| unread.attribute.name())
+        .collect();
+    names.into_iter().collect()
+}
+
+/// Why a check cannot tell, where sysfs shows `names` of a device `place`
+/// (`below it`), but NAILS cannot read them; the device is not named.
+pub(super) fn unread_reason(names: &[&str], place: &str) -> String {
+    let listed = match names {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    };
+    let them = if names.len() == 1 { "it" } else { "them" };
+    format!("sysfs shows {listed} of a device {place}, but NAILS cannot read {them}")
 }
 
 /// `claimed`, the devices the decoy claims, with what the rule for
