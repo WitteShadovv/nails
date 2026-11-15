@@ -702,3 +702,91 @@ fn a_place_of_the_storages_names_that_cannot_be_read_is_kept() {
         .mock_set_lookup_error("/run/udev/data/b8:18", std::io::ErrorKind::NotFound);
     assert!(sysfs.below(DATA_MOUNT).unread.is_empty());
 }
+
+/// Only an attribute or listing that gives a name, or a layer, is kept as
+/// unread: the scan refused on one that gives none, such as a layer's
+/// discard limit, its read-only flag or its size.
+#[test]
+fn an_attribute_that_gives_no_name_is_not_kept_unread() {
+    for path in [
+        format!("{DM0}/queue/discard_max_bytes"),
+        format!("{DM0}/ro"),
+        format!("{SDB2}/size"),
+        format!("{SDB2}/start"),
+    ] {
+        let sysfs = luks_on_a_partition();
+        sysfs
+            .0
+            .mock_set_lookup_error(&path, std::io::ErrorKind::PermissionDenied);
+        let storage = sysfs.below(DATA_MOUNT);
+        assert!(storage.unread.is_empty(), "{path}: {:?}", storage.unread);
+        assert_eq!(storage, luks_on_a_partition().below(DATA_MOUNT), "{path}");
+    }
+    for path in [
+        format!("{SDB2}/uevent"),
+        format!("{SDB2}/partition"),
+        format!("{SDB2}/holders"),
+        format!("{SDB2}/dev"),
+        format!("{DM0}/dm/name"),
+        format!("{DM0}/slaves"),
+    ] {
+        let sysfs = luks_on_a_partition();
+        sysfs
+            .0
+            .mock_set_lookup_error(&path, std::io::ErrorKind::PermissionDenied);
+        assert_eq!(sysfs.below(DATA_MOUNT).unread, vec![path.clone()], "{path}");
+    }
+}
+
+/// The device the volume is mounted from, where sysfs shows its number but
+/// NAILS cannot read it and no other way finds it, is kept as unread: the
+/// scan knows none of the storage's names then.
+#[test]
+fn a_mount_device_that_cannot_be_read_is_kept_unread() {
+    let sysfs = luks_on_a_partition();
+    sysfs
+        .0
+        .mock_set_lookup_error(&format!("{DM0}/dev"), std::io::ErrorKind::PermissionDenied);
+    let storage = sysfs.below(DATA_MOUNT);
+    assert_eq!(storage.unread, vec![format!("{DM0}/dev")]);
+    assert!(storage.names.is_empty() && storage.markers.is_empty());
+}
+
+/// A `/dev/disk` link NAILS cannot resolve, for another reason than that it
+/// leads to nothing, may name the storage: it is kept as unread. One that
+/// leads to nothing names nothing.
+#[test]
+fn a_dev_disk_link_that_cannot_be_resolved_is_kept_unread() {
+    let link = "/dev/disk/by-label/vault";
+    for (kind, kept) in [
+        (std::io::ErrorKind::PermissionDenied, vec![link.to_string()]),
+        (std::io::ErrorKind::NotFound, Vec::new()),
+    ] {
+        let sysfs = luks_on_a_partition();
+        sysfs.dev_disk(&[(link, "/dev/sdb2")]);
+        sysfs.0.mock_fail_only(
+            Path::new(link),
+            crate::filesystem::MockLookup::Canonicalize,
+            crate::filesystem::MockFailure::Io(kind),
+        );
+        assert_eq!(sysfs.below(DATA_MOUNT).unread, kept, "{kind:?}");
+    }
+}
+
+/// A loop device's file whose name is no UTF-8 is read, by its bytes, and
+/// counts as a name of the storage: the scan kept it as unread and refused.
+#[test]
+fn an_image_file_whose_name_is_no_text_is_named_and_not_unread() {
+    let sysfs = tcrypt_on_an_image();
+    sysfs.0.mock_set_file_bytes(
+        &format!("{LOOP0}/loop/backing_file"),
+        b"/var/lib/caf\xe9.img\n",
+    );
+    let storage = sysfs.below(DATA_MOUNT);
+    assert!(storage.unread.is_empty(), "{:?}", storage.unread);
+    assert!(
+        storage.markers.contains(&path("/var/lib/caf\u{fffd}.img")),
+        "{:?}",
+        storage.markers
+    );
+}

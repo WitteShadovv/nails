@@ -29,7 +29,7 @@
 
 use super::nix_text::Pattern;
 use crate::filesystem::Filesystem;
-use nails_base::blockdev::{self, DeviceMapper, DmKind, Layer, LoopBacking, LoopFollow};
+use nails_base::blockdev::{self, Attribute, DeviceMapper, DmKind, Layer, LoopBacking, LoopFollow};
 use nails_base::filesystem::MountEntry;
 use std::path::{Path, PathBuf};
 
@@ -37,6 +37,24 @@ use std::path::{Path, PathBuf};
 const UDEV_DATA: &str = "/run/udev/data";
 /// The directories of links udev makes for block devices.
 const DEV_DISK: &str = "/dev/disk";
+
+/// The attributes and listings of a layer in sysfs that give a name the
+/// scan looks for, or the layers it looks at: the kernel name and the
+/// partition's uuid (`uevent`), the device number that names the udev
+/// record and the `/dev/block` link (`dev`), the device-mapper name and
+/// uuid, whether it is a partition, the file a loop device reads, and the
+/// devices built on it and below it (`holders/`, `slaves/`). The others give
+/// no name.
+const NAMES: &[Attribute] = &[
+    Attribute::Uevent,
+    Attribute::Dev,
+    Attribute::DmName,
+    Attribute::DmUuid,
+    Attribute::Partition,
+    Attribute::LoopBackingFile,
+    Attribute::Holders,
+    Attribute::Slaves,
+];
 
 /// The storage below the hidden volume's mount, lowercased like the text it
 /// is matched against.
@@ -53,8 +71,8 @@ pub(super) struct Storage {
     /// The places that are there but could not be read, for another reason
     /// than that they are not there, each of which may give a name above:
     /// the device the volume is mounted from, an attribute or listing of a
-    /// layer in sysfs, a layer's udev record, a `/dev/disk` directory or a
-    /// link in it.
+    /// layer in sysfs that gives a name ([`NAMES`]), a layer's udev record,
+    /// a `/dev/disk` directory or a link in it.
     pub(super) unread: Vec<String>,
 }
 
@@ -83,8 +101,8 @@ pub(super) fn below<F: Filesystem>(fs: &F, mounts: &[MountEntry], root: &Path) -
         blockdev::MAX_STACK_DEVICES,
     )
     .layers;
-    for path in layers.iter().flat_map(|layer| &layer.unread) {
-        storage.keep_unread(path);
+    for unread in layers.iter().flat_map(|layer| layer.unread_among(NAMES)) {
+        storage.keep_unread(&unread.path);
     }
     let mut own: Vec<&str> = Vec::new();
     for (index, layer) in layers.iter().enumerate() {

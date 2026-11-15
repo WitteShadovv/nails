@@ -108,6 +108,9 @@ struct Layer {
     loop_over: Option<String>,
     /// Whether a loop device detaches when its last user closes it.
     autoclear: bool,
+    /// Whether sysfs shows `loop/autoclear` of a loop device, but NAILS
+    /// cannot read it, so `autoclear` keeps its default.
+    autoclear_unread: bool,
     /// `queue/discard_max_bytes`; non-zero means discards reach this device.
     discard_max_bytes: u64,
     /// The device-mapper name (`dm/name`), for a device-mapper device.
@@ -162,6 +165,10 @@ impl Layer {
                 .loop_device
                 .as_ref()
                 .is_some_and(|loop_device| loop_device.autoclear),
+            autoclear_unread: device
+                .unread_among(&[blockdev::Attribute::LoopAutoclear])
+                .next()
+                .is_some(),
             discard_max_bytes: device.discard_max_bytes,
             dm_name: device.dm.as_ref().map(|dm| dm.name.clone()),
             dm_uuid: device.dm.as_ref().map(|dm| dm.uuid.clone()),
@@ -533,10 +540,24 @@ enum Unread {
     /// The device the hidden root is mounted from, which could not be
     /// found.
     Device,
-    /// This attribute or listing of a device below it, by its path in the
-    /// device's sysfs directory (`queue/discard_max_bytes`, `slaves`).
-    Attribute(String),
+    /// This attribute or listing of a device below it, one of those the
+    /// check decides by ([`DECIDES`]).
+    Attribute(blockdev::Attribute),
 }
+
+/// The attributes and listings of a device below the hidden root that
+/// decide whether discards reach the hidden volume: what kind of mapping it
+/// is (`dm/uuid`, and `dm/name` for one the VeraCrypt application made),
+/// whether it forwards discards (`queue/discard_max_bytes`), and the devices
+/// below it (`slaves/`, and what a loop device reads). The others decide
+/// nothing here, but `loop/autoclear`, which decides a warning.
+const DECIDES: &[blockdev::Attribute] = &[
+    blockdev::Attribute::DmName,
+    blockdev::Attribute::DmUuid,
+    blockdev::Attribute::DiscardMaxBytes,
+    blockdev::Attribute::Slaves,
+    blockdev::Attribute::LoopBackingFile,
+];
 
 /// Why NAILS cannot tell whether discards reach the hidden volume, where
 /// `unread` could not be read.
@@ -544,7 +565,7 @@ fn unread_stack(unread: &[Unread]) -> String {
     let mut attributes: Vec<&str> = unread
         .iter()
         .filter_map(|place| match place {
-            Unread::Attribute(name) => Some(name.as_str()),
+            Unread::Attribute(attribute) => Some(attribute.name()),
             Unread::Device => None,
         })
         .collect();
@@ -648,7 +669,8 @@ fn header_device<'a>(layers: &'a [Layer], layer: &'a Layer) -> Option<&'a str> {
 /// the hidden volume's data, and no further than a loop over a file, a file
 /// container, whose filesystem is not the hidden volume's
 /// ([`LoopFollow::BlockDevices`]). With it, the attributes and listings of
-/// its devices that are there but could not be read.
+/// its devices that are there but could not be read, of those the check
+/// decides by ([`DECIDES`]).
 fn device_layers<F: Filesystem>(fs: &F, top: &Path) -> (Vec<Layer>, Vec<Unread>) {
     let walk = blockdev::walk(
         fs,
@@ -659,16 +681,8 @@ fn device_layers<F: Filesystem>(fs: &F, top: &Path) -> (Vec<Layer>, Vec<Unread>)
     let unread = walk
         .layers
         .iter()
-        .flat_map(|device| {
-            device.unread.iter().map(|path| {
-                // The path in the device's own directory, else its last name:
-                // a directory's path can name a device-mapper node.
-                let name = path
-                    .strip_prefix(&device.sysfs)
-                    .unwrap_or_else(|_| Path::new(path.file_name().unwrap_or_default()));
-                Unread::Attribute(name.display().to_string())
-            })
-        })
+        .flat_map(|device| device.unread_among(DECIDES))
+        .map(|unread| Unread::Attribute(unread.attribute))
         .collect();
     (walk.layers.iter().map(Layer::from_device).collect(), unread)
 }
