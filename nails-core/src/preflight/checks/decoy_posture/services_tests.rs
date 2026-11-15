@@ -2447,3 +2447,99 @@ fn the_fix_where_nails_cannot_tell_the_namespace_names_the_namespace_s_fix() {
          does not expand, or drop it, in the decoy configuration, then run nixos-rebuild switch"
     );
 }
+
+#[test]
+fn a_daemon_linked_in_any_unit_directory_or_wanted_on_the_command_line_counts() {
+    // The service manager reads the .wants, .requires and .upholds links of
+    // every directory of its unit path, and systemd-debug-generator links a
+    // unit that systemd.wants= on the kernel command line names into
+    // /run/systemd/generator.early at each start of the manager.
+    let auditd = "[Service]\nType=forking\nExecStart=/usr/bin/auditd\n";
+    for dir in [
+        "/etc/systemd/system/multi-user.target.wants",
+        "/etc/systemd/system.control/multi-user.target.wants",
+        "/run/systemd/transient/multi-user.target.wants",
+        "/run/systemd/generator.early/default.target.wants",
+        "/etc/systemd/system.attached/multi-user.target.wants",
+        "/run/systemd/system.attached/multi-user.target.wants",
+        "/run/systemd/generator/multi-user.target.wants",
+        "/usr/local/lib/systemd/system/multi-user.target.wants",
+        "/run/systemd/generator.late/multi-user.target.requires",
+    ] {
+        let decoy = Decoy::new();
+        decoy.unit("auditd.service", auditd).link(
+            &format!("{dir}/auditd.service"),
+            "/usr/lib/systemd/system/auditd.service",
+        );
+        let result = decoy.check(false);
+        assert!(
+            result
+                .message()
+                .contains("auditd is enabled, though it does not run now"),
+            "{dir}: {result:?}"
+        );
+    }
+    // Wanted on the command line, though the generator's link is gone.
+    let decoy = Decoy::new();
+    decoy.unit("auditd.service", auditd).file(
+        "/proc/cmdline",
+        "BOOT_IMAGE=/vmlinuz root=/dev/vda3 systemd.wants=auditd.service\n",
+    );
+    assert!(
+        decoy
+            .check(false)
+            .message()
+            .contains("auditd is enabled, though it does not run now"),
+        "{:?}",
+        decoy.check(false)
+    );
+    // tuned, firewalld and ABRT count the same way.
+    let decoy = Decoy::new();
+    decoy.unit("tuned.service", TUNED_UNIT).link(
+        "/usr/local/lib/systemd/system/multi-user.target.wants/tuned.service",
+        "/usr/lib/systemd/system/tuned.service",
+    );
+    assert_eq!(
+        decoy.findings().blockers,
+        [logs_to(
+            "tuned",
+            "/var/log/tuned/tuned.log",
+            "tuned.service is enabled, with -l"
+        )]
+    );
+    for (how, path, text) in [
+        (
+            "link",
+            "/run/systemd/generator.early/default.target.wants/firewalld.service",
+            "",
+        ),
+        ("command line", "/proc/cmdline", "systemd.wants=firewalld\n"),
+    ] {
+        let decoy = Decoy::new();
+        decoy
+            .unit("firewalld.service", FIREWALLD_UNIT)
+            .file("/etc/sysconfig/firewalld", FIREWALLD_SYSCONFIG);
+        if how == "link" {
+            decoy.link(path, "/usr/lib/systemd/system/firewalld.service");
+        } else {
+            decoy.file(path, text);
+        }
+        let warnings = decoy.findings().warnings;
+        assert_eq!(warnings.len(), 1, "{how}: {warnings:?}");
+        assert!(
+            warnings[0].starts_with("firewalld writes its warnings and errors to /var/log/firewalld (firewalld.service is enabled"),
+            "{how}: {warnings:?}"
+        );
+    }
+    let decoy = Decoy::new();
+    decoy.unit("abrtd.service", ABRTD_UNIT_FILE).link(
+        "/usr/local/lib/systemd/system/multi-user.target.wants/abrtd.service",
+        "/usr/lib/systemd/system/abrtd.service",
+    );
+    let warnings = decoy.findings().warnings;
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with("ABRT is in use on the decoy (abrtd.service is enabled)"),
+        "{warnings:?}"
+    );
+}

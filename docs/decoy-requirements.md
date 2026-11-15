@@ -248,9 +248,15 @@ session starts the decoy's enabled units, so an enabled unit that was stopped
 before activation, with no crash kernel loaded, starts again there and loads
 it. An active unit counts too, because the check cannot tell whether it is
 still loading the crash kernel. A unit is enabled when a link to it sits in a
-`.wants`, `.requires` or `.upholds` directory under `/etc/systemd/system`,
-`/run/systemd/system`, `/usr/lib/systemd/system` or `/lib/systemd/system`,
-unless a link to `/dev/null` in `/etc/systemd/system` masks it. If the
+`.wants`, `.requires` or `.upholds` directory of any directory the service
+manager loads units from (`/etc/systemd/system.control`,
+`/run/systemd/system.control`, `/run/systemd/transient`, the generator
+directories, `/etc/systemd/system`, `/run/systemd/system`, their `.attached`
+siblings, `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system` and
+`/lib/systemd/system`), or when a `systemd.wants=` on the kernel command line
+names it, for which systemd-debug-generator links it again each time the
+service manager starts, unless a link to `/dev/null` in `/etc/systemd/system`
+masks it. If the
 kernel crashes during a hidden session, the crash kernel mounts the decoy root
 by its device, outside the session's overlay, and writes a dump of kernel
 memory, which can hold the hidden volume's encryption key and the names of the
@@ -454,8 +460,10 @@ unit names its namespace with a specifier, which NAILS does not expand, they
 say to name it without one or drop it. NAILS does not judge the namespaces
 of other units for what those units log. A unit counts when the service
 manager can start it: it is enabled (a link in a `.wants`, `.requires` or
-`.upholds` directory) or active, or a timer, path or socket unit that is
-enabled or active starts it, and it is not masked. A process
+`.upholds` directory of any directory the service manager loads units from,
+or a `systemd.wants=` on the kernel command line, as for kdump above) or
+active, or a timer, path or socket unit that is enabled or active starts it,
+and it is not masked. A process
 counts as it runs, by its name (`comm`), or, run through its interpreter as in
 `python3 /usr/sbin/tuned`, by the script Python runs, its options read from its
 command line, so a daemon started by hand, or one still running with the
@@ -574,7 +582,7 @@ its other side may copy all it shows into a file, as `script` does into its
 typescript, `screen -L` into its log or `tmux pipe-pane` into a command.
 Another device NAILS does not judge counts so too. Whether a unit is enabled
 or active NAILS reads from the links and markers systemd leaves, without
-following them. A unit whose link
+following them, and from the kernel command line. A unit whose link
 or marker NAILS cannot look up, as an unprivileged `nails check` cannot in a
 directory only root may look into, counts as one that starts, wherever its
 commands would make the daemon log to a file or NAILS cannot tell whether

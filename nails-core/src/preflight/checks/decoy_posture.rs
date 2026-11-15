@@ -106,6 +106,7 @@ use super::super::{CheckResult, PreFlightCheck};
 use super::journald_storage::journald_persistence_at;
 use super::locate_database::files::DecoyFiles;
 use super::locate_database::hidden_locations;
+use super::locate_database::unit::SYSTEM_UNIT_PATH;
 use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle, unnamed};
 use crate::filesystem::parse_mountinfo;
 use crate::{Filesystem, NailsError, Result};
@@ -113,6 +114,7 @@ use loggers::{Auditd, StartedBy};
 use nails_api::Allowable;
 use std::path::{Path, PathBuf};
 
+mod command_line;
 mod coredump;
 mod install_on_shutdown;
 mod loggers;
@@ -712,13 +714,16 @@ enum Enabled {
 }
 
 /// Whether `unit` is enabled under `root`: a link to it sits in a dependency
-/// directory ([`DEPENDENCY_DIR_SUFFIXES`]) of a unit directory, and
-/// `/etc/systemd/system` does not mask it.
+/// directory ([`DEPENDENCY_DIR_SUFFIXES`]) of a unit directory, or a
+/// `systemd.wants=` on the kernel's command line names it
+/// ([`command_line`]), and `/etc/systemd/system` does not mask it.
 ///
 /// Only a link counts, as `systemctl enable` makes one. The unit directories
-/// are the ones [`loggers::UNIT_DIRS`] names, the packages' ones among them,
-/// where a package ships the links that pull a unit in without an
-/// `enable`. A mask (`systemctl mask`) is a link to `/dev/null` in
+/// are every one the service manager loads units from, [`SYSTEM_UNIT_PATH`]:
+/// the packages' ones among them, where a package ships the links that pull
+/// a unit in without an `enable`, `/usr/local/lib/systemd/system`, and the
+/// generators' ones, where a generator links what it pulls in each time the
+/// manager starts. A mask (`systemctl mask`) is a link to `/dev/null` in
 /// `/etc/systemd/system`, which outranks every link to the unit. It is followed
 /// only once an enabling link was found, so on a decoy without one no unit
 /// link is followed. A place where a link may be whose lookup failed, or that
@@ -737,19 +742,21 @@ fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> Enabled {
 }
 
 /// Whether a link to `unit` sits in a dependency directory of a unit
-/// directory under `root`, a mask aside (see [`unit_enabled`]).
+/// directory under `root`, or the kernel's command line has the service
+/// manager start it, a mask aside (see [`unit_enabled`]).
 ///
 /// # Errors
 ///
 /// Why NAILS cannot tell, where no link was found and the lookup of a place
-/// where one may be failed or was not made.
+/// where one may be failed or was not made, or the command line cannot be
+/// read.
 fn unit_linked<F: Filesystem>(
     fs: &F,
     root: &Path,
     unit: &str,
 ) -> std::result::Result<bool, String> {
     let mut untold = None;
-    let linked = loggers::UNIT_DIRS.iter().any(|dir| {
+    let linked = SYSTEM_UNIT_PATH.iter().any(|dir| {
         fs.list_directory(&root.join(dir)).is_ok_and(|entries| {
             entries.iter().any(|entry| {
                 let dependency_dir = entry
@@ -774,9 +781,13 @@ fn unit_linked<F: Filesystem>(
             })
         })
     });
-    match untold {
-        Some(why) if !linked => Err(why),
-        _ => Ok(linked),
+    if linked {
+        return Ok(true);
+    }
+    match command_line::wants(fs, root, unit) {
+        Ok(true) => Ok(true),
+        Ok(false) => untold.map_or(Ok(false), Err),
+        Err(why) => Err(untold.unwrap_or(why)),
     }
 }
 

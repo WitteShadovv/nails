@@ -1035,6 +1035,12 @@ of this changelog for that version becomes the release notes word for word, and
   auditd.service refuses `systemctl stop` on Fedora and Arch, so turning it off the usual way,
   with `systemctl disable --now`, left it running there. On NixOS the fix is
   `security.auditd.enable = false`, `auditctl --signal stop` and a rebuild.
+- `decoy-persistence` reads the links that enable a unit in every directory the service manager
+  loads units from, the generators' and `/usr/local/lib/systemd/system` among them, where it read
+  four, and counts a `systemd.wants=` on the kernel command line, for which systemd-debug-generator
+  links the unit again each time the service manager starts, the start after the way back among
+  them. A kdump unit enabled only so did not count as armed before, nor unattended-upgrades'
+  shutdown helper as enabled.
 - The check that the state file lies on the hidden volume follows every symlink and `..` on the
   way to the file as the kernel does, and refuses what it cannot settle so: a symlink that leads
   nowhere, a part of the path it may not look at, a `..` after a directory that does not exist yet,
