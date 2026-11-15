@@ -793,6 +793,7 @@ fn a_path_that_was_not_looked_up_cannot_be_told() {
         devices: &DeviceMap::default(),
         unreadable: &[],
         paths: &paths,
+        files: &FileIds::new(),
         unplain: &UnplainLines::new(),
         unplain_crypttab: &UnplainLines::new(),
     };

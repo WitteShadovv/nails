@@ -21,13 +21,14 @@
 //! part at a time, with no link in them followed (see the `paths` module), once
 //! the block devices are known, which tell the folders of its lines whose mount
 //! is not there now, and which device's paths in `/dev` no block device answers
-//! to. The path of a swap or image file or of a crypttab line's file is never
-//! resolved as the name of a device, and neither is a bind line's source that
-//! is an absolute path outside `/dev`. A tag or a device's path in `/dev` that
-//! a line names, an fstab line's first field, a crypttab line's source and its
-//! mapping, what a crypttab line reads besides and the device an option of an
-//! fstab line names, such as ext4's `journal_path=`, is resolved to the block
-//! device it leads to, only through links that stay in `/dev` (see
+//! to; of each that is there, one `stat` reads the file it names, its device
+//! and inode. The path of a swap or image file or of a crypttab line's file is
+//! never resolved as the name of a device, and neither is a bind line's source
+//! that is an absolute path outside `/dev`. A tag or a device's path in `/dev`
+//! that a line names, an fstab line's first field, a crypttab line's source and
+//! its mapping, what a crypttab line reads besides and the device an option of
+//! an fstab line names, such as ext4's `journal_path=`, is resolved to the
+//! block device it leads to, only through links that stay in `/dev` (see
 //! [`follow_in_dev`](crate::blockdev::follow_in_dev)): a udev link, a link in
 //! `/dev/block`, a volume group's link and a path with `.` or a doubled `/` in
 //! it. A FUSE line names a device by the source it gives its program, the part
@@ -46,12 +47,13 @@
 //! device the loop driver recorded for it (see [`FileHolder`]): a mount with
 //! that `major:minor`, or, on btrfs, whose files report a subvolume's own
 //! device that no mount line shows, the mount the path leads to when the file
-//! there is on that device. A loop whose record cannot be read (its node is
-//! readable by root only) is marked so, and only counts when the hidden
-//! root's data reaches it. A record that shows the file is a block device
-//! node, which its path outside `/dev` does not tell, puts that device below
-//! the loop device, and a loop device whose record names a device sysfs does
-//! not show is [`Untraced::NotFound`].
+//! there is on that device. The record names the file itself too, by that
+//! device and its inode, as `stat` names a file. A loop whose record cannot be
+//! read (its node is readable by root only) is marked so, and only counts when
+//! the hidden root's data reaches it. A record that shows the file is a block
+//! device node, which its path outside `/dev` does not tell, puts that device
+//! below the loop device, and a loop device whose record names a device sysfs
+//! does not show is [`Untraced::NotFound`].
 //!
 //! A whole disk with nothing below it in sysfs is told apart by the driver
 //! `/proc/devices` lists for its major number: `nbd` is a network block
@@ -84,7 +86,7 @@
 mod tests;
 
 use super::{DeviceMap, NamedPaths, SYS_CLASS_BLOCK, Served, UnplainLines, Untraced};
-use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge};
+use super::{FileHolder, FileId, FileIds, Judgement, LoopFile, Node, NodeKind, Scene, judge};
 use super::{read_crypttab, read_fstab};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
@@ -108,6 +110,8 @@ pub struct Collected {
     pub unreadable: Vec<PathBuf>,
     /// The paths the fstab names, as they read.
     pub paths: NamedPaths,
+    /// The file each of these paths names, where it is there.
+    pub files: FileIds,
     /// The lines of the fstab that are not plain, by the index of their
     /// entry in `fstab`.
     pub unplain: UnplainLines,
@@ -126,6 +130,7 @@ impl Collected {
             devices: &self.devices,
             unreadable: &self.unreadable,
             paths: &self.paths,
+            files: &self.files,
             unplain: &self.unplain,
             unplain_crypttab: &self.unplain_crypttab,
         }
@@ -237,6 +242,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         &collected.crypttab,
         &collected.devices,
     );
+    collected.files = super::paths::identify(fs, etc_root, &mut collected.paths);
     collected
 }
 
@@ -322,6 +328,10 @@ fn add_layer<F: Filesystem>(
                     record => NodeKind::Loop {
                         file: Some(LoopFile {
                             path: file.clone(),
+                            id: record.as_ref().ok().map(|record| FileId {
+                                device: record.device,
+                                inode: record.inode,
+                            }),
                             holder: file_holder(fs, mounts, file, record.map_err(|_| node)),
                         }),
                     },

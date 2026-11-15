@@ -72,7 +72,7 @@ use super::known::{
 use super::paths::{is_file_path, is_untold_device};
 use super::placed::{Line, Named, place};
 use super::plain::{Unplain, is_read};
-use super::{EntryFinding, EntryKind, Scene};
+use super::{EntryFinding, EntryKind, LoopFile, Scene};
 use crate::crypttab::{CrypttabEntry, split_location};
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::{FstabEntry, option_named};
@@ -190,6 +190,9 @@ pub(super) struct HiddenDrive<'a> {
     pub devices: &'a [String],
     /// The whole disks the root's data lies on ([`drive_disks`]).
     pub disks: &'a BTreeSet<String>,
+    /// The files the loop devices among `devices` read: the container file
+    /// the volume is opened from, or the image it is in.
+    pub files: &'a [&'a LoopFile],
 }
 
 /// The whole disks the data of the devices `devices` lies on: the disk of
@@ -310,7 +313,7 @@ pub(super) fn judge_reads<'a>(
                 named: *named,
                 ..reads.line.clone()
             };
-            let (found, holder) = place(scene, hidden, &line, spec);
+            let (found, holder) = place(scene, hidden, drive.files, &line, spec);
             findings.extend(found);
             holders.extend(holder);
         } else if let Some(why) = scene

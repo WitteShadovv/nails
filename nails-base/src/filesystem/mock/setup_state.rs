@@ -324,12 +324,19 @@ impl MockFilesystem {
 
     /// Set the device of the regular file the loop device `node` is bound
     /// to, as [`Filesystem::loop_record`](crate::Filesystem::loop_record)
-    /// reports it. Unset, the node cannot be read, as without root.
+    /// reports it, with an inode of `node`'s own, which no other loop device
+    /// and no file the mock reports has. Unset, the node cannot be read, as
+    /// without root.
     pub fn mock_set_loop_backing_device(&self, node: &Path, device_id: u64) {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        ("loop record", node).hash(&mut hasher);
         self.mock_set_loop_record(
             node,
             crate::filesystem::LoopRecord {
                 device: device_id,
+                inode: hasher.finish() | 1,
                 rdevice: 0,
             },
         );

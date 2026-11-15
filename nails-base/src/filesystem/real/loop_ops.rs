@@ -14,6 +14,7 @@ pub(super) fn loop_record(node: &Path) -> Result<LoopRecord> {
     let record = nails_teardown::loop_device::record(node).at_path(node)?;
     Ok(LoopRecord {
         device: record.device,
+        inode: record.inode,
         rdevice: record.rdevice,
     })
 }

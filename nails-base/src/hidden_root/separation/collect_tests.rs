@@ -8,7 +8,7 @@
 //! directory under `/sys/devices`, and `/sys/class/block/<name>` and every
 //! `slaves/` entry are symlinks to it.
 
-use super::super::{FileHolder, LoopFile, NodeKind, Verdict};
+use super::super::{FileHolder, FileId, LoopFile, NodeKind, Verdict};
 use super::collect;
 use crate::filesystem::mountinfo::parse_mountinfo;
 use crate::filesystem::{Filesystem, MockFilesystem};
@@ -334,13 +334,19 @@ fn the_collector_reads_btrfs_members_and_loop_files() {
     assert_eq!(devices.nodes["loop1"].kind, NodeKind::Loop { file: None });
     assert_eq!(devices.nodes["loop1"].below, vec!["sdb".to_string()]);
     // A loop over a file is held by the filesystem on the device the loop
-    // driver recorded.
+    // driver recorded, and names that file by the device and inode it
+    // recorded.
+    let record = decoy.fs.loop_record(Path::new("/dev/loop0")).unwrap();
     assert_eq!(
         devices.nodes["loop0"].kind,
         NodeKind::Loop {
             file: Some(LoopFile {
                 path: PathBuf::from("/home/op/vault.hc"),
                 holder: FileHolder::Mount("0:30".into()),
+                id: Some(FileId {
+                    device: rustix::fs::makedev(0, 30),
+                    inode: record.inode,
+                }),
             })
         }
     );

@@ -16,8 +16,21 @@
 //! lead anywhere, the volume included. Either way the line claims the
 //! filesystem that holds its path, where it reads or, where that cannot be
 //! told, where its text places it.
+//!
+//! A path that names the file a loop device of the root's stack reads, the
+//! container file the volume is opened from or the image it is in, makes a
+//! finding too, as a line that opens the volume does: the boot opens that file
+//! again, through a loop device of its own as `systemd-cryptsetup` does for a
+//! crypttab line's file and `mount` for an image file, or swaps on it, and so
+//! makes a second mapping or a second mount of the volume, or writes over it.
+//! It names that file when it is the path the loop driver shows for it, as it
+//! reads, or when the file it names there is that file, by its device and inode
+//! as the loop driver recorded them ([`FileId`]): a hard link or a path through
+//! another mount of the same folder names it too. Where the record of such a
+//! loop device could not be read, whether a file that is there is that one
+//! cannot be told.
 
-use super::{EntryFinding, EntryKind, Scene, UntoldPath};
+use super::{EntryFinding, EntryKind, FileId, LoopFile, Scene, UntoldPath};
 use crate::filesystem::mountinfo::MountEntry;
 use crate::hidden_root::mount_holding;
 use std::path::Path;
@@ -83,20 +96,23 @@ pub(super) struct Line {
 }
 
 /// `written`, the path `line` names, judged where it reads below `hidden`,
-/// the visible mount at the hidden root: the finding it makes, if any, and
-/// the mount that holds it, which the line claims. Where it lies cannot be
-/// told when [`Scene::paths`] says so, or holds no reading of it: the
-/// finding says why, and the mount is the one its text leads to.
+/// the visible mount at the hidden root, whose stack reads the files `files`
+/// through its loop devices: the finding it makes, if any, and the mount that
+/// holds it, which the line claims. Where it lies cannot be told when
+/// [`Scene::paths`] says so, or holds no reading of it: the finding says why,
+/// and the mount is the one its text leads to.
 pub(super) fn place<'a>(
     scene: &Scene<'a>,
     hidden: &MountEntry,
+    files: &[&LoopFile],
     line: &Line,
     written: &str,
 ) -> (Option<EntryFinding>, Option<&'a MountEntry>) {
     match scene.named_path(written) {
         Ok(path) => {
             let holder = mount_holding(scene.mounts, path);
-            let finding = holder.and_then(|holder| in_volume(hidden, line, path, holder));
+            let finding = stored_in(hidden, files, line, path, scene.files.get(written))
+                .or_else(|| holder.and_then(|holder| in_volume(hidden, line, path, holder)));
             (finding, holder)
         }
         Err(why) => (
@@ -136,6 +152,56 @@ fn in_volume(
         line: line.shown.clone(),
         why,
         boot_needs: line.boot_needs,
+        system_folder: None,
+        not_plain: false,
+        options: Vec::new(),
+    })
+}
+
+/// The finding for `line`, whose path reads as `path` and names the file
+/// `named` there, if anything is there, when it is one of `files`, which the
+/// stack of the volume of `hidden` reads through its loop devices: the path
+/// the loop driver shows for one of them, or the file one is by its device
+/// and inode. The boot then opens the file the volume is stored in a second
+/// time. Where the record of one of `files` could not be read, whether a file
+/// that is there is that one cannot be told.
+fn stored_in(
+    hidden: &MountEntry,
+    files: &[&LoopFile],
+    line: &Line,
+    path: &Path,
+    named: Option<&FileId>,
+) -> Option<EntryFinding> {
+    let root = hidden.mount_point.display();
+    let what = line.named.what();
+    let same = files
+        .iter()
+        .any(|file| file.path == path || (named.is_some() && file.id.as_ref() == named));
+    if same {
+        return Some(EntryFinding {
+            kind: EntryKind::Blocking,
+            file: line.file,
+            line: line.shown.clone(),
+            why: format!("{what} is the file the volume at {root} is stored in"),
+            boot_needs: line.boot_needs,
+            system_folder: None,
+            not_plain: false,
+            options: Vec::new(),
+        });
+    }
+    // A path at which nothing is there names no file: none of these.
+    named?;
+    let unread = files.iter().find(|file| file.id.is_none())?;
+    Some(EntryFinding {
+        kind: EntryKind::Untold,
+        file: line.file,
+        line: line.shown.clone(),
+        why: format!(
+            "whether {what} is the file the volume at {root} is stored in cannot be told: the \
+             loop driver's record of {} could not be read",
+            unread.path.display()
+        ),
+        boot_needs: false,
         system_folder: None,
         not_plain: false,
         options: Vec::new(),

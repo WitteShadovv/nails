@@ -22,6 +22,8 @@ mod path_lines;
 mod plain_lines;
 #[path = "reach_tests.rs"]
 mod reach;
+#[path = "stored_in_tests.rs"]
+mod stored_in;
 #[path = "write_options_tests.rs"]
 mod write_options;
 
@@ -148,12 +150,32 @@ impl World {
         self.loop_file_held(name, dev, file, holder)
     }
 
-    /// A loop device over `file`, held as `holder` says.
+    /// A loop device over `file`, held as `holder` says, whose record names
+    /// a file of its own, which no other loop device and nothing in `files`
+    /// is.
     fn loop_file_held(self, name: &str, dev: &str, file: &str, holder: FileHolder) -> Self {
+        let inode = name.bytes().fold(1_u64, |inode, byte| {
+            inode.wrapping_mul(257).wrapping_add(u64::from(byte))
+        });
+        let id = Some(FileId { device: 0, inode });
+        self.loop_file_as(name, dev, file, holder, id)
+    }
+
+    /// A loop device over `file`, held as `holder` says, whose record names
+    /// the file `id`: `None` where it could not be read.
+    fn loop_file_as(
+        self,
+        name: &str,
+        dev: &str,
+        file: &str,
+        holder: FileHolder,
+        id: Option<FileId>,
+    ) -> Self {
         let kind = NodeKind::Loop {
             file: Some(LoopFile {
                 path: PathBuf::from(file),
                 holder,
+                id,
             }),
         };
         self.node(name, dev, kind, &[])
@@ -191,7 +213,7 @@ impl World {
         let mounts = parse_mountinfo(&self.mountinfo);
         let (fstab, unplain) = read_fstab(&self.fstab);
         let (crypttab, unplain_crypttab) = read_crypttab(&self.crypttab);
-        let paths = paths::read_all(
+        let mut paths = paths::read_all(
             &self.files,
             &mounts,
             Path::new("/"),
@@ -199,6 +221,7 @@ impl World {
             &crypttab,
             &self.devices,
         );
+        let files = paths::identify(&self.files, Path::new("/"), &mut paths);
         let hidden = top_mount_at(&mounts, Path::new(root)).expect("a mount at the root");
         ask(
             &Scene {
@@ -208,6 +231,7 @@ impl World {
                 devices: &self.devices,
                 unreadable: &self.unreadable,
                 paths: &paths,
+                files: &files,
                 unplain: &unplain,
                 unplain_crypttab: &unplain_crypttab,
             },
