@@ -10,7 +10,9 @@
 //! no other text in it than typing does ([`walk::COMPLETING_WIDGETS`]) where
 //! no file sets the line as written (`BUFFER=exi`, which a completion may
 //! make `exit`), and one the files make (`zle -N name`), whose code the check
-//! reads as a hook's, are none.
+//! reads as a hook's, are none here; a widget the files make, and a `zle` that
+//! runs one, are doubts of the list of the commands the check knows to be
+//! harmless besides ([`super::known`]).
 
 use super::{Reader, walk};
 use crate::Filesystem;

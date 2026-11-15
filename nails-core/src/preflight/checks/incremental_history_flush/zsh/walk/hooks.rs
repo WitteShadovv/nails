@@ -54,6 +54,18 @@ pub(in super::super) const STOCK_NAMES: &[&str] = &[
     "set_prompt",
 ];
 
+/// The hooks the stock `add-zsh-hook` of zsh 5.9 to 5.9.2 adds a function
+/// to, which it returns before it autoloads one for any other.
+const ADD_ZSH_HOOKS: &[&str] = &[
+    "chpwd",
+    "precmd",
+    "preexec",
+    "periodic",
+    "zshaddhistory",
+    "zshexit",
+    "zsh_directory_name",
+];
+
 /// The letters `zle` takes as options (Src/Zle/zle_main.c).
 const ZLE_FLAGS: &str = "aAcCDfFgGIKlLmMNrRTUw";
 
@@ -110,9 +122,17 @@ impl Walker<'_> {
     /// may an alias's in the second form ([`Event::NamedBody`]).
     pub(super) fn define(&mut self, names: Vec<Word>, paren: bool) {
         let mut first: Option<String> = None;
+        // A definition at the file's top level that certainly runs where the
+        // file runs to it, after which zsh runs the function by its name.
+        let certain =
+            self.reached(self.pending.after_condition, self.pending.piped) && self.at_top();
         for name in names {
             self.mention_word(&name);
-            self.events.push(Event::Define(name.text.clone()));
+            self.events.push(Event::Define {
+                name: name.text.clone(),
+                certain,
+                alias: None,
+            });
             if paren {
                 self.events.push(Event::NamedBody(name.text.clone()));
             }
@@ -160,14 +180,37 @@ impl Walker<'_> {
         self.events.push(Event::Hook(function.text.clone()));
         // Both autoload the function they add, which zsh then loads from
         // `fpath` unless the files define it; with `-d`, `-D` or `-L` they
-        // take one away or list them.
+        // take one away or list them. The stock `add-zsh-hook` certainly
+        // does only where its words are flags that change how it autoloads
+        // alone, then a hook of its list and a function: it returns before
+        // the autoload for any other.
         if !args
             .iter()
             .any(|arg| arg.text.starts_with('-') && arg.text.contains(['d', 'D', 'L']))
         {
+            let flags = args
+                .iter()
+                .take_while(|arg| arg.text.starts_with('-'))
+                .all(|arg| {
+                    !arg.expands
+                        && !arg.bare
+                        && arg.text.len() > 1
+                        && arg.text[1..].chars().all(|c| matches!(c, 'U' | 'z' | 'k'))
+                });
+            let plain = args.iter().skip_while(|arg| arg.text.starts_with('-'));
+            let valid = command == "add-zsh-hook"
+                && flags
+                && matches!(
+                    plain.collect::<Vec<_>>().as_slice(),
+                    [hook, function] if ADD_ZSH_HOOKS.contains(&hook.text.as_str())
+                        && !computed_name(function)
+                );
             let in_function = self.function().is_some();
-            self.events
-                .push(Event::Autoload((*function).clone(), in_function));
+            self.events.push(Event::Autoload {
+                function: (*function).clone(),
+                in_function,
+                certain: self.certain_command && valid,
+            });
         }
     }
 
@@ -367,7 +410,13 @@ impl Walker<'_> {
                 )));
             }
             [from, to] if !computed_name(from) => {
-                self.events.push(Event::Define(to.text.clone()));
+                // A copy of a function zsh does not have defines none, so it
+                // is no certain definition.
+                self.events.push(Event::Define {
+                    name: to.text.clone(),
+                    certain: false,
+                    alias: None,
+                });
                 // A name zsh may expand into another may be a hook's.
                 if computed_name(to) {
                     self.events.push(Event::Hook(to.text.clone()));

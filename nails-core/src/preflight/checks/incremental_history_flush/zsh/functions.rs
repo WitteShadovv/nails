@@ -10,6 +10,47 @@ use crate::Filesystem;
 use std::path::PathBuf;
 
 impl<F: Filesystem> Reader<'_, F> {
+    /// Apply the autoload of `function` by the file at `place`, in a
+    /// function's body where `in_function`; `here` where the command that
+    /// marks it certainly runs where the file runs to it, at its top level
+    /// ([`super::walk::Event::Autoload`]).
+    pub(super) fn autoload_event(
+        &mut self,
+        function: Word,
+        in_function: bool,
+        here: bool,
+        place: &str,
+    ) {
+        let name = function
+            .text
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        self.defined_at(&name, here, None);
+        if function.text.contains('/') {
+            self.known_files.push(function.text.clone());
+        }
+        self.shadow_function(&name, place, "autoloads");
+        // One whose name an expansion makes is a doubt of its own.
+        if !super::walk::may_expand(&name) {
+            self.shadow_setter(&name, &format!("{place} autoloads a function"));
+        }
+        if name == "compinit" && !self.compinit_places.iter().any(|known| known == place) {
+            self.compinit_places.push(place.to_string());
+        }
+        if let Some(Some(outer)) = self.outers.last()
+            && !function.text.contains('/')
+        {
+            let edge = (outer.clone(), name);
+            if !self.autoloaded_by.contains(&edge) {
+                self.autoloaded_by.push(edge);
+            }
+        }
+        let later = in_function || self.in_function_code();
+        self.autoload(function, place, later);
+    }
+
     /// Note the function `function` that the file at `place` autoloads: by
     /// name, to be looked for where the files add to `fpath`, or by the path
     /// of its file, which is read at once ([`Reader::autoload_path`]); `later`

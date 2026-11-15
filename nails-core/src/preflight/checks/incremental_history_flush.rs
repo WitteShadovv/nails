@@ -7,8 +7,9 @@
 //! a shell that writes its history only when it ends never writes the decoy
 //! commands ([`nails_teardown::shells`]), unless it ends before that: of zsh,
 //! a hook that may end it, a job the startup files start that may signal it
-//! later, a line a widget may give it to run and a `TMOUT` above 0 are doubts
-//! too ([`zsh`]). A shell that writes each command
+//! later, a line a widget may give it to run, a `TMOUT` above 0 and any
+//! command its startup code runs that is none of those the check knows to be
+//! harmless are doubts too ([`zsh`]). A shell that writes each command
 //! line to its history file as it runs has written them before activation
 //! starts, and no kill takes that back: zsh with `INC_APPEND_HISTORY` or
 //! `SHARE_HISTORY` as each line is entered, with `INC_APPEND_HISTORY_TIME`

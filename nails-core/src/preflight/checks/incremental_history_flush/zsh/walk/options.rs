@@ -101,6 +101,7 @@ impl Walker<'_> {
                 values = true;
                 // The array it sets, by a name an expansion may make.
                 if let Some(name) = args.next() {
+                    self.listed_parameter(&name.text, &format!("set {} {}", arg.text, name.text));
                     if name.expands || name.bare || name.text.contains(['$', '`']) {
                         self.events.push(Event::Doubt(format!(
                             "it cannot tell which parameter `set {} {}` in {} sets",
