@@ -91,23 +91,25 @@
 //! system folder or by a line its boot needs), is marked so: the hidden root
 //! then lies on the decoy's own storage and has to move, since removing the
 //! entry would break the decoy. An fstab line the boot mounts at `/` or at a
-//! system folder for another part of the filesystem the root is a folder or a
-//! subvolume of, its top or a subvolume above or beside the root's, whose mount
-//! is there (the mount at its folder is of that filesystem and shows what the
-//! line names), is marked as the decoy's own line for it
-//! ([`EntryFinding::system_folder`]), which `backend-entries` lets be for a
-//! root that `--allow-decoy-storage` accepted on that filesystem; one that
-//! mounts the volume itself, whose subvolume cannot be told or whose mount is
-//! not there never is. So is a crypttab line the boot opens that makes a device
-//! that filesystem lies on, while the decoy mounts another part of it at `/`,
-//! by its mount there, or at a system folder, by such an fstab line, where it
-//! opens that device as the mapping it makes is open now: that mapping is a
-//! LUKS one, and `systemd-cryptsetup` opens the line as LUKS, by the last of
-//! its options that sets a type, with neither `swap` nor `tmp`, for which the
-//! boot makes swap or a filesystem on the mapping (see the `options` module). A
-//! `noauto` one, one with `tcrypt-hidden`, one that opens the device in another
-//! mode, one for any other device and every line for a root that is the whole
-//! filesystem never are.
+//! system folder, which for a line of the root's own filesystem a folder below
+//! `/var` and `/.snapshots` count as ([`counts_as_system_folder`]), for another
+//! part of the filesystem the root is a folder or a subvolume of, its top or a
+//! subvolume above or beside the root's, whose mount is there (the mount at its
+//! folder is of that filesystem and shows what the line names), is marked as
+//! the decoy's own line for it ([`EntryFinding::system_folder`]), which
+//! `backend-entries` lets be for a root that `--allow-decoy-storage` accepted
+//! on that filesystem; one that mounts the volume itself, whose subvolume
+//! cannot be told or whose mount is not there never is. So is a crypttab line
+//! the boot opens that makes a device that filesystem lies on, while the decoy
+//! mounts another part of it at `/`, by its mount there, or at a system folder,
+//! by such an fstab line, where it opens that device as the mapping it makes is
+//! open now: that mapping is a LUKS one, and `systemd-cryptsetup` opens the
+//! line as LUKS, by the last of its options that sets a type, with neither
+//! `swap` nor `tmp`, for which the boot makes swap or a filesystem on the
+//! mapping (see the `options` module). A `noauto` one, one with
+//! `tcrypt-hidden`, one that opens the device in another mode, one for any
+//! other device and every line for a root that is the whole filesystem never
+//! are.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read, or
 //! what a claimed filesystem keeps data on besides its device cannot be told;
@@ -187,7 +189,7 @@ use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::FstabEntry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// How an encrypted container file on a claimed filesystem is judged: it only
 /// warns, a deliberate default (`severity_with(Severity::Refuse)` is the
@@ -850,25 +852,26 @@ pub struct EntryFinding {
     /// below one of them. The hidden root then lies on the decoy's storage.
     pub boot_needs: bool,
     /// For an fstab line that the decoy's boot mounts at `/` or at a system
-    /// folder ([`is_system_folder`]) for the filesystem the volume is a folder
-    /// or a subvolume of, one that names a device of it and mounts another
-    /// part of it than the volume (its top, or a subvolume above or beside
-    /// the volume's), while its mount is there (the mount at that folder is of
-    /// that filesystem and shows what the line names), that folder. For a
-    /// crypttab line the boot opens (no
-    /// `noauto`) that makes a device that filesystem lies on (its mapping is
-    /// one of them, or one's name, or it opens a device below the one the
-    /// filesystem is mounted from) and opens no hidden volume of a container
-    /// (no `tcrypt-hidden`), and that opens it as the mapping it makes is open
-    /// now, a LUKS mapping that `systemd-cryptsetup` opens the line as LUKS
-    /// for, with neither `swap` nor `tmp`, while the decoy mounts another part
-    /// of the filesystem at `/` (by its mount there) or at a system folder (by
-    /// such an fstab line), the first such folder. Such a line is the
-    /// decoy's own, and a root that `--allow-decoy-storage` accepted on that
-    /// filesystem lies there anyway. `None` for a line that mounts the volume
-    /// itself (a bind line among them), for one whose subvolume cannot be
-    /// told or whose mount is not there, for every line of a volume that is
-    /// the whole filesystem, and for any other crypttab line.
+    /// folder, a folder below `/var` or `/.snapshots` among them
+    /// ([`counts_as_system_folder`]), for the filesystem the volume is a
+    /// folder or a subvolume of, one that names a device of it and mounts
+    /// another part of it than the volume (its top, or a subvolume above or
+    /// beside the volume's), while its mount is there (the mount at that
+    /// folder is of that filesystem and shows what the line names), that
+    /// folder. For a crypttab line the boot opens (no `noauto`) that makes a
+    /// device that filesystem lies on (its mapping is one of them, or one's
+    /// name, or it opens a device below the one the filesystem is mounted
+    /// from) and opens no hidden volume of a container (no `tcrypt-hidden`),
+    /// and that opens it as the mapping it makes is open now, a LUKS mapping
+    /// that `systemd-cryptsetup` opens the line as LUKS for, with neither
+    /// `swap` nor `tmp`, while the decoy mounts another part of the
+    /// filesystem at `/` (by its mount there) or at a system folder (by such
+    /// an fstab line), the first such folder. Such a line is the decoy's own,
+    /// and a root that `--allow-decoy-storage` accepted on that filesystem
+    /// lies there anyway. `None` for a line that mounts the volume itself (a
+    /// bind line among them), for one whose subvolume cannot be told or whose
+    /// mount is not there, for every line of a volume that is the whole
+    /// filesystem, and for any other crypttab line.
     pub system_folder: Option<PathBuf>,
     /// Whether the entry is an fstab or crypttab line that is not plain (see
     /// [`read_fstab`], [`read_crypttab`]), an [`EntryKind::Untold`] one: NAILS
@@ -890,6 +893,23 @@ pub fn is_system_folder(at: &Path, hidden_root: &Path) -> bool {
     at == Path::new("/")
         || (SYSTEM_MOUNTS.iter().any(|point| Path::new(point) == at)
             && !at.starts_with(hidden_root))
+}
+
+/// Whether a line of the decoy's fstab for the folder `at` that names the
+/// filesystem the hidden root at `hidden_root` is part of counts as one for a
+/// system folder: at `/` or a system folder ([`is_system_folder`]), at a folder
+/// below `/var`, as archinstall mounts its `@log` and `@pkg` subvolumes at
+/// `/var/log` and `/var/cache/pacman/pkg`, or at `/.snapshots`, where snapper
+/// mounts its own. A folder below `/var` or `/.snapshots` counts only when it
+/// is written with no `..` and is neither the hidden root nor a folder inside
+/// it.
+pub fn counts_as_system_folder(at: &Path, hidden_root: &Path) -> bool {
+    if is_system_folder(at, hidden_root) {
+        return true;
+    }
+    let plain = !at.components().any(|part| part == Component::ParentDir);
+    let below_var = at.starts_with("/var") && at != Path::new("/var");
+    plain && (below_var || at == Path::new("/.snapshots")) && !at.starts_with(hidden_root)
 }
 
 /// The judge's answer: the verdict and the entries for the hidden drive.
