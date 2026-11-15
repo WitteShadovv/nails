@@ -1217,9 +1217,143 @@ fn a_device_whose_devices_below_cannot_be_listed_warns() {
     assert_eq!(
         warning(&result),
         format!(
-            "Could not check the partition type of the hidden root at {ROOT}: its storage holds \
-             more devices than the check reads."
+            "Could not check the partition type of the hidden root at {ROOT}: sysfs shows slaves \
+             of a device below it, but NAILS cannot read it."
         )
+    );
+}
+
+/// An attribute the check decides by that sysfs shows of a device of the
+/// hidden root's storage, or of the decoy's root file system where the
+/// hidden root's partition is on a disk the check does not know the decoy
+/// boots from, but NAILS cannot read leaves the check unable to tell, and
+/// it warns so, where the hidden root's partition whose `partition` cannot
+/// be read was taken for no partition, or the decoy's root partition for a
+/// whole disk, and the check passed. A refusal of a partition it could
+/// judge stands. An attribute that decides nothing here, or one that is not
+/// there, changes nothing.
+#[test]
+fn an_attribute_the_check_decides_by_that_cannot_be_read_warns() {
+    let p5 = "/sys/devices/pci0/nvme0n1/nvme0n1p5";
+    let run = |path: &str, kind, type_id| {
+        let host = on_the_decoys_disk();
+        host.fs.mock_set_lookup_error(path, kind);
+        check(&host.fs, &devices("nvme0n1", &gpt(type_id, 0)))
+    };
+    let denied = std::io::ErrorKind::PermissionDenied;
+    for (path, shown) in [
+        (format!("{p5}/partition"), "partition of a device below it"),
+        (format!("{p5}/start"), "start of a device below it"),
+        (
+            "/sys/devices/pci0/nvme0n1/dev".to_string(),
+            "dev of a device below it",
+        ),
+        (
+            "/sys/devices/pci0/nvme0n1/nvme0n1p3/partition".to_string(),
+            "partition of a device below the decoy's root file system",
+        ),
+    ] {
+        let could_not = format!(
+            "Could not check the partition type of the hidden root at {ROOT}: sysfs shows \
+             {shown}, but NAILS cannot read it."
+        );
+        for type_id in [LINUX_FILESYSTEM, HOME] {
+            assert_eq!(warning(&run(&path, denied, type_id)), could_not, "{path}");
+        }
+        // Not there, it shows what it shows, and nothing is unread.
+        let result = run(&path, std::io::ErrorKind::NotFound, LINUX_FILESYSTEM);
+        assert!(
+            !result.message().contains("cannot read"),
+            "{path}: {result:?}"
+        );
+    }
+    // What decides nothing here: the hidden partition is judged as it is.
+    for path in [
+        format!("{p5}/ro"),
+        format!("{p5}/size"),
+        format!("{p5}/holders"),
+        format!("{p5}/queue/discard_max_bytes"),
+        "/sys/devices/virtual/block/dm-9/dm/uuid".to_string(),
+        "/sys/devices/virtual/block/dm-9/dm/name".to_string(),
+        "/sys/devices/virtual/block/dm-0/dm/uuid".to_string(),
+    ] {
+        let result = run(&path, denied, HOME);
+        assert!(result.is_fail(), "{path}: {result:?}");
+        assert!(run(&path, denied, LINUX_FILESYSTEM).is_pass(), "{path}");
+    }
+}
+
+/// A doubt about the disks the decoy boots from matters where the hidden
+/// root's partition is on a disk the check does not know the decoy boots
+/// from: there it warns that it could not check, where the partition on a
+/// disk it knows is judged as it is, as with a root whose devices below
+/// cannot be listed.
+#[test]
+fn a_doubt_about_the_boot_disks_matters_for_a_partition_off_the_known_ones() {
+    // The decoy root's partition whose `partition` cannot be read is taken
+    // for a whole disk, so nvme0n1 is no disk the check knows.
+    let host = on_the_decoys_disk();
+    host.fs.mock_set_lookup_error(
+        "/sys/devices/pci0/nvme0n1/nvme0n1p3/partition",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    assert!(check(&host.fs, &devices("nvme0n1", &gpt(HOME, 0))).is_warn());
+    // With the EFI system partition on nvme0n1 mounted, the disk is known.
+    let host = Host::with_mounts(
+        "3 1 259:1 / /boot/efi rw,relatime - vfat /dev/nvme0n1p1 rw\n\
+         40 1 254:9 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
+    )
+    .partition_at("nvme0n1p1", "259:1", "nvme0n1", 1, 2048)
+    .partition_at("nvme0n1p5", "259:5", "nvme0n1", 5, P5_START)
+    .luks("dm-9", "254:9", "data", &["nvme0n1p5"]);
+    host.fs.mock_set_lookup_error(
+        "/sys/devices/pci0/nvme0n1/nvme0n1p3/partition",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    assert!(check(&host.fs, &devices("nvme0n1", &gpt(HOME, 0))).is_fail());
+    assert!(check(&host.fs, &devices("nvme0n1", &gpt(LINUX_FILESYSTEM, 0))).is_pass());
+}
+
+/// Where sysfs shows the device of the decoy's root file system, or one on
+/// the way down from it, but NAILS cannot read what decides it, the check
+/// cannot tell which disk systemd-gpt-auto-generator reads. A mapping's
+/// dm/uuid decides nothing there.
+#[test]
+fn the_generators_disk_is_unknown_where_its_way_down_cannot_be_read() {
+    let host = on_the_decoys_disk();
+    let table = host.fs.mount_table().unwrap();
+    assert_eq!(
+        GeneratorDisk::read(&host.fs, &table).discovery("nvme0n1"),
+        judge::Discovery::Every
+    );
+    for path in [
+        "/sys/devices/pci0/nvme0n1/nvme0n1p3/partition",
+        "/sys/devices/pci0/nvme0n1/dev",
+        "/sys/devices/virtual/block/dm-0/dev",
+    ] {
+        let host = on_the_decoys_disk();
+        host.fs
+            .mock_set_lookup_error(path, std::io::ErrorKind::PermissionDenied);
+        if path.ends_with("dm-0/dev") {
+            // Nor can it find the device by its mapper name.
+            host.fs.mock_set_unreadable_dir("/sys/block");
+        }
+        let generator = GeneratorDisk::read(&host.fs, &table);
+        assert_eq!(
+            generator.discovery("nvme0n1"),
+            judge::Discovery::Unknown,
+            "{path}"
+        );
+        assert_eq!(generator.disks().count(), 0, "{path}");
+    }
+    let host = on_the_decoys_disk();
+    host.fs.mock_set_lookup_error(
+        "/sys/devices/virtual/block/dm-0/dm/uuid",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    assert_eq!(
+        GeneratorDisk::read(&host.fs, &table).discovery("nvme0n1"),
+        judge::Discovery::Every
     );
 }
 

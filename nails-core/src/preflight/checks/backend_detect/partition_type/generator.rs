@@ -19,10 +19,15 @@
 
 use super::judge::Discovery;
 use crate::Filesystem;
-use crate::blockdev::{self, Layer, LoopFollow, MAX_STACK_DEVICES};
+use crate::blockdev::{self, Attribute, Layer, LoopFollow, MAX_STACK_DEVICES};
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+/// The attributes of a device on the generator's way down that decide where
+/// it ends: whether the device is a partition and of which disk, and the
+/// devices below it.
+const WAY_DOWN: &[Attribute] = &[Attribute::Partition, Attribute::DiskDev, Attribute::Slaves];
 
 /// The disk the generator reads the table of, as older and newer systemd
 /// find it.
@@ -45,19 +50,28 @@ enum End {
     Nowhere,
     /// At this disk, by kernel name.
     Disk(String),
-    /// Where sysfs does not show: a `slaves/` that cannot be listed.
+    /// Where sysfs does not show: a `slaves/` that cannot be listed, or an
+    /// attribute on the way that sysfs shows but NAILS cannot read.
     Unknown,
 }
 
 impl GeneratorDisk {
     /// The disk as the mount table `mounts` and sysfs show it.
     pub(super) fn read<F: Filesystem>(fs: &F, mounts: &[MountEntry]) -> Self {
-        let Some(top) = device(fs, mounts, "/").or_else(|| device(fs, mounts, "/usr")) else {
-            return Self::default();
+        let top = match device(fs, mounts, "/") {
+            Ok(None) => device(fs, mounts, "/usr"),
+            found => found,
         };
-        Self {
-            older: way_down(fs, &top, 1),
-            newer: way_down(fs, &top, MAX_STACK_DEVICES),
+        match top {
+            Ok(Some(top)) => Self {
+                older: way_down(fs, &top, 1),
+                newer: way_down(fs, &top, MAX_STACK_DEVICES),
+            },
+            Ok(None) => Self::default(),
+            Err(()) => Self {
+                older: End::Unknown,
+                newer: End::Unknown,
+            },
         }
     }
 
@@ -90,12 +104,26 @@ impl GeneratorDisk {
 /// The block device systemd takes the filesystem mounted at `point` to be
 /// on, as its sysfs directory: the one the mount reports, `None` for a
 /// btrfs filesystem of several devices and for a mount with no block
-/// device.
-fn device<F: Filesystem>(fs: &F, mounts: &[MountEntry], point: &str) -> Option<PathBuf> {
-    let mount = top_mount_at(mounts, Path::new(point))?;
-    let dir = blockdev::device_of_mount(fs, mount)?;
-    let name = dir.file_name()?.to_string_lossy().into_owned();
-    (mount.fstype != "btrfs" || blockdev::btrfs_members(fs, &name).len() < 2).then_some(dir)
+/// device, `Err` where sysfs shows a place that may show the device but
+/// NAILS cannot read it.
+fn device<F: Filesystem>(
+    fs: &F,
+    mounts: &[MountEntry],
+    point: &str,
+) -> Result<Option<PathBuf>, ()> {
+    let Some(mount) = top_mount_at(mounts, Path::new(point)) else {
+        return Ok(None);
+    };
+    let Some(dir) = blockdev::device_of_mount_or_unread(fs, mount).map_err(|_| ())? else {
+        return Ok(None);
+    };
+    let Some(name) = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+    else {
+        return Ok(None);
+    };
+    Ok((mount.fstype != "btrfs" || blockdev::btrfs_members(fs, &name).len() < 2).then_some(dir))
 }
 
 /// Where the generator ends from the device in the sysfs directory `top`,
@@ -109,17 +137,24 @@ fn way_down<F: Filesystem>(fs: &F, top: &Path, layers: usize) -> End {
             .next()
             .unwrap_or_default()
     };
+    // A device whose way down or whose disk sysfs shows but NAILS cannot
+    // read leaves the end unknown.
+    let untold =
+        |layer: &Layer| layer.slaves_unread || layer.unread_among(WAY_DOWN).next().is_some();
     let start = read(top);
+    if untold(&start) {
+        return End::Unknown;
+    }
     let mut current = start.clone();
     for _ in 0..layers {
-        if current.slaves_unread {
-            return End::Unknown;
-        }
         let below: Vec<Layer> = current
             .slaves
             .iter()
             .map(|slave| read(&current.sysfs.join("slaves").join(slave)))
             .collect();
+        if below.iter().any(untold) {
+            return End::Unknown;
+        }
         if below.iter().map(whole_disk).collect::<BTreeSet<_>>().len() > 1 {
             // systemd gives the way up and keeps the root file system's own
             // device (ENOTUNIQ from block_device_get_originating).
