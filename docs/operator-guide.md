@@ -742,7 +742,10 @@ journal that starts late:
   decoy's own records from before the session (the activation's sudo line, the
   hidden build's progress, its shutdown) are gone with the hidden ones, and the
   kernel's boot messages are not read in again. `uptime` and `dmesg` still go
-  back to the boot.
+  back to the boot. The new journal does take in what waits in journald's
+  sockets, which the switch keeps open: the hidden root's last audit records
+  and the lines its last units logged after its journald stopped (see
+  [What the decoy journal keeps](decoy-requirements.md#what-the-decoy-journal-keeps)).
 - the decoy's root and the mounts its initrd made (NixOS's store bind) as new
   mounts, where a plain soft-reboot keeps them; it unmounts the decoy's other
   mounts and mounts again what its fstab and units name, under new mount IDs

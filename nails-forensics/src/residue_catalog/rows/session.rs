@@ -384,6 +384,28 @@ pub(super) const ROWS: &[ResidueClass] = &[
         conclusion: None,
     },
     ResidueClass {
+        id: "journal-socket-carry",
+        title: "Hidden records journald's sockets carry into the decoy journal",
+        kind: ResidueKind::Session,
+        channel: Channel::Mechanism(
+            "journald's sockets, which a soft-reboot keeps open, so that the decoy's journald reads at its start what waits in them",
+        ),
+        platforms: Platforms::ALL,
+        risk: "What the hidden root sends journald after its own journald stopped waits in the sockets the soft-reboot keeps open, and the decoy's journald writes it into the decoy journal as it starts, after the way back deleted the runtime journal: the hidden root's last audit records, such as the stops of its last units, and the lines its last units log through /dev/log, their standard output or the native socket. They stay in RAM on a volatile decoy until power-off, and a persistent journal would write them to the decoy disk.",
+        preflight: Probe::None("the hidden root sends them during its shutdown, after activation"),
+        preflight_blocks: false,
+        verify: Probe::None(
+            "they name the hidden root's units and processes, which no check tells from the decoy's own",
+        ),
+        mitigation: "None yet: no way back empties those sockets. Keep the decoy journal volatile, so they never reach the decoy disk, and end the session with `deactivate --poweroff` or `emergency --poweroff` where they must not reach the decoy at all.",
+        doc_anchor: "decoy-requirements.md#what-the-decoy-journal-keeps",
+        e2e: E2e::None(
+            "asserted on Fedora 44 and 45 by the Fedora admission gate under nix/distro-tests, a suite run by hand, which fails there on it; no test looks for these records on the other families",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
         id: "network-state",
         title: "Network state the hidden session created or changed",
         kind: ResidueKind::Session,

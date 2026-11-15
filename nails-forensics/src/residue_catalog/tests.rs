@@ -344,6 +344,27 @@ fn the_unattended_upgrades_rows_say_how_they_are_caught() {
 }
 
 #[test]
+fn the_journal_socket_row_is_a_residual_channel_the_fedora_gate_asserts() {
+    // What the hidden root sends journald after its journald stopped reaches
+    // the decoy journal through the sockets the soft-reboot keeps open: no
+    // check sees it and no way back empties them, so it is listed, and only
+    // the Fedora gate looks for it.
+    let row = class("journal-socket-carry").expect("the journal-socket-carry row");
+    assert_eq!(row.kind, ResidueKind::Session);
+    assert!(row.residual);
+    assert!(!row.preflight.detects() && !row.verify.detects());
+    assert_eq!(
+        row.doc_anchor,
+        "decoy-requirements.md#what-the-decoy-journal-keeps"
+    );
+    assert!(
+        matches!(row.e2e, E2e::None(reason) if reason.contains("Fedora admission gate")),
+        "{:?}",
+        row.e2e
+    );
+}
+
+#[test]
 fn the_locate_database_row_says_how_it_is_caught() {
     // An updatedb that would list the hidden volume refuses activation
     // through its own check, which no flag lifts; verify notes a database it
