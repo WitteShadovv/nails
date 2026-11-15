@@ -119,10 +119,11 @@ const KCM_SOCKET: &str = "run/.heim_org.h5l.kcm-socket";
 /// The socket table of PID 1's network namespace, relative to the root: the
 /// one systemd and the decoy's daemons listen in, whichever one `nails` runs
 /// in.
-const SOCKET_TABLE: &str = "proc/1/net/unix";
+pub(super) const SOCKET_TABLE: &str = "proc/1/net/unix";
 
 /// The first line of the socket table, as the kernel prints it.
-const SOCKET_TABLE_HEADER: &[u8] = b"Num       RefCount Protocol Flags    Type St Inode Path";
+pub(super) const SOCKET_TABLE_HEADER: &[u8] =
+    b"Num       RefCount Protocol Flags    Type St Inode Path";
 
 /// The paths a listening KCM socket is bound at, as the socket table names
 /// them: the path its daemon gave, in `/run` or in `/var/run`, which links

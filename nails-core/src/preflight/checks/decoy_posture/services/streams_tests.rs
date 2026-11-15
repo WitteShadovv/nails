@@ -262,10 +262,18 @@ fn what_nails_cannot_follow_of_a_unit_is_unknown() {
 #[test]
 fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
     let by = TUNED_BY;
-    // A socket is the journal's, which may be a namespace's.
+    // A socket is judged by PID 1's socket table.
     assert_eq!(
         led_to(Ok(PathBuf::from("socket:[24680]")), Stream::Error, by),
-        journal("neither -l nor -d, its standard error being a socket, the journal's")
+        Log::Socket {
+            stream: Stream::Error,
+            inode: 24680,
+            by: "neither -l nor -d, its standard error being a socket, the journal's".to_string(),
+        }
+    );
+    assert_eq!(
+        unknown(led_to(Ok(PathBuf::from("socket:[x]")), Stream::Error, by)),
+        "it logs to its standard error, which leads to socket:[x]"
     );
     for target in [
         "/dev/null",

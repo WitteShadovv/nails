@@ -153,6 +153,27 @@ impl Decoy {
         self.link(&format!("/etc/systemd/system/{unit}"), "/dev/null")
     }
 
+    /// Write PID 1's socket table: journald's listening stream socket, the
+    /// sockets of `inodes` as those the service manager connects to the
+    /// journal, and the lines `more`.
+    fn sockets(&self, inodes: &[u64], more: &[&str]) -> &Self {
+        let mut table = String::from(
+            "Num       RefCount Protocol Flags    Type St Inode Path\n\
+             0000000000000000: 00000002 00000000 00010000 0001 01 20001 \
+             /run/systemd/journal/stdout\n",
+        );
+        for inode in inodes {
+            table.push_str(&format!(
+                "0000000000000000: 00000003 00000000 00000000 0001 03 {inode}\n"
+            ));
+        }
+        for line in more {
+            table.push_str(line);
+            table.push('\n');
+        }
+        self.file("/proc/1/net/unix", &table)
+    }
+
     /// Run a process `pid` named `comm` with the command line `argv`.
     fn process(&self, pid: u32, comm: &str, argv: &[&str]) -> &Self {
         self.file(&format!("/proc/{pid}/comm"), &format!("{comm}\n"));
@@ -381,7 +402,8 @@ fn the_documented_drop_ins_clear_the_refusal_once_tuned_runs_again() {
             "tuned-ppd",
             &["/usr/bin/python3", "-Es", "/usr/sbin/tuned-ppd"],
         )
-        .link("/proc/900/fd/2", "socket:[24681]");
+        .link("/proc/900/fd/2", "socket:[24681]")
+        .sockets(&[24680, 24681], &[]);
     assert_eq!(decoy.findings(), Findings::default());
     assert!(decoy.check(false).is_pass(), "{:?}", decoy.check(false));
 }
@@ -1245,7 +1267,8 @@ fn processes_are_read_in_the_order_of_their_numbers_and_only_by_their_names() {
                 "/nix/store/def-tuned-2.27.0/bin/.tuned-ppd-wrapped",
             ],
         )
-        .link("/proc/301/fd/2", "socket:[24682]");
+        .link("/proc/301/fd/2", "socket:[24682]")
+        .sockets(&[24682], &[]);
     let processes = processes::processes(&decoy.fs, Path::new("/"), PROCESS_NAMES, PYTHON_SCRIPTS);
     assert_eq!(processes.unread, None);
     let found = processes.found;
@@ -1515,7 +1538,8 @@ fn a_tuned_whose_standard_error_is_a_pipe_counts_against_the_decoy() {
             "tuned-ppd",
             &["/usr/bin/python3", "-Es", "/usr/sbin/tuned-ppd"],
         )
-        .link("/proc/900/fd/2", "socket:[24681]");
+        .link("/proc/900/fd/2", "socket:[24681]")
+        .sockets(&[24681], &[]);
     let found = decoy.findings();
     assert_eq!(
         found.blockers,
@@ -2149,6 +2173,133 @@ fn a_timer_that_starts_auditd_after_the_way_back_refuses() {
         "{:?}",
         decoy.check(true)
     );
+}
+
+/// The sockets of the journald of the namespace `tn`, as PID 1's socket
+/// table lists them: its listening stream socket and the end of a stream it
+/// accepted, which shows the listener's path.
+const TN_SOCKETS: &[&str] = &[
+    "0000000000000000: 00000002 00000000 00010000 0001 01 30001 /run/systemd/journal.tn/stdout",
+    "0000000000000000: 00000003 00000000 00000000 0001 03 30002 /run/systemd/journal.tn/stdout",
+];
+
+/// tuned without a log file, started by hand as `systemd-cat --namespace=tn
+/// /usr/sbin/tuned -P` starts it: its standard error is a socket, and its
+/// mount table, `mounts` added to the root's, shows no namespace unless they
+/// mount one.
+fn tuned_on_a_socket(decoy: &Decoy, mounts: &str) {
+    decoy
+        .process(
+            812,
+            "tuned",
+            &["/usr/bin/python3", "-Es", "/usr/sbin/tuned", "-P"],
+        )
+        .link("/proc/812/fd/2", "socket:[4242]")
+        .file(
+            "/proc/812/mountinfo",
+            &format!("36 35 0:32 / / rw,noatime shared:1 - btrfs /dev/vda3 rw\n{mounts}"),
+        );
+}
+
+#[test]
+fn a_running_tuned_on_a_socket_counts_while_a_journal_namespace_that_persists_listens() {
+    let decoy = Decoy::new();
+    tuned_on_a_socket(&decoy, "");
+    decoy.sockets(&[4242], TN_SOCKETS);
+    let found = decoy.findings();
+    assert_eq!(
+        found.blockers,
+        [
+            "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it counts as \
+             one that does (process 812 runs: it logs to its standard error, a socket, which \
+             NAILS does not follow to the journal at its other end, while PID 1's socket table \
+             lists a socket of the journal namespace tn, which journald keeps on the decoy disk \
+             unless journald@tn.conf sets Storage=volatile)"
+        ]
+    );
+    // The namespace's fix clears it, and no restart does.
+    assert!(found.units.is_empty(), "{found:?}");
+    assert!(found.programs.is_empty(), "{found:?}");
+    let mut fix = namespace_fix_of("tn");
+    fix[..1].make_ascii_uppercase();
+    assert_eq!(
+        decoy.check(false).remediation().unwrap(),
+        format!(
+            "{fix}, or pass --allow-persistent-decoy to allow the risk for this run. See \
+             docs/decoy-requirements.md."
+        )
+    );
+    // Its journal kept in RAM, the namespace keeps nothing.
+    decoy.file(
+        "/etc/systemd/journald@tn.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    assert_eq!(decoy.findings(), Findings::default());
+    assert!(decoy.check(false).is_pass(), "{:?}", decoy.check(false));
+
+    // With no namespace listening, the socket is one to the decoy's own
+    // journal.
+    let decoy = Decoy::new();
+    tuned_on_a_socket(&decoy, "");
+    decoy.sockets(&[4242], &[]);
+    assert!(decoy.check(false).is_pass(), "{:?}", decoy.check(false));
+
+    // Its own namespace, which its mount table shows, keeps nothing, while
+    // another that persists listens.
+    let decoy = Decoy::new();
+    tuned_on_a_socket(
+        &decoy,
+        "612 590 0:25 /systemd/journal.ram /run/systemd/journal ro,nosuid,nodev - tmpfs tmpfs \
+         rw,mode=755\n",
+    );
+    decoy
+        .file(
+            "/etc/systemd/journald@ram.conf",
+            "[Journal]\nStorage=volatile\n",
+        )
+        .sockets(&[4242], TN_SOCKETS);
+    let found = decoy.findings();
+    assert_eq!(found.blockers.len(), 1, "{found:?}");
+    assert!(
+        found.blockers[0].contains("lists a socket of the journal namespace tn"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_running_tuned_on_a_socket_nails_cannot_follow_counts_against_the_decoy() {
+    // A socket the table does not list as one the service manager connects
+    // to the journal, and a table NAILS cannot read.
+    for (table, why) in [
+        (
+            true,
+            "a socket that PID 1's socket table does not list as a connected local stream socket \
+             bound to no path, as one the service manager connects to the journal is, so NAILS \
+             cannot tell where it leads",
+        ),
+        (
+            false,
+            "a socket, and NAILS cannot read PID 1's socket table, /proc/1/net/unix, which shows \
+             where it leads (",
+        ),
+    ] {
+        let decoy = Decoy::new();
+        tuned_on_a_socket(&decoy, "");
+        if table {
+            decoy.sockets(&[], &[]);
+        }
+        let found = decoy.findings();
+        assert_eq!(found.blockers.len(), 1, "{found:?}");
+        assert!(
+            found.blockers[0].starts_with(&format!(
+                "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it \
+                 counts as one that does (process 812 runs: it logs to its standard error, {why}"
+            )),
+            "{found:?}"
+        );
+        // Started again by its unit, it gets a socket the table lists.
+        assert_eq!(found.programs, ["tuned"], "{found:?}");
+    }
 }
 
 #[test]

@@ -41,11 +41,12 @@
 //! A value NAILS does not know leaves the stream unknown.
 //!
 //! By a running process, as the link of its descriptor in `/proc` leads: a
-//! socket is the journal's, and a device that keeps nothing is no file, and a
-//! descriptor that is closed takes nothing. A pipe leads to the process that
-//! reads it, which may copy what it reads into a file, as `tee` does, so
-//! NAILS cannot tell. Only root may follow the descriptors of another user's
-//! process, so an unprivileged `nails check` cannot tell where they lead.
+//! device that keeps nothing is no file, and a descriptor that is closed
+//! takes nothing. A pipe leads to the process that reads it, which may copy
+//! what it reads into a file, as `tee` does, so NAILS cannot tell. A socket
+//! is judged by PID 1's socket table ([`super::sockets`]). Only root may
+//! follow the descriptors of another user's process, so an unprivileged
+//! `nails check` cannot tell where they lead.
 
 use super::super::super::systemd_conf::Assignment;
 use super::options::{FileLog, Log};
@@ -265,10 +266,15 @@ fn led_to(target: crate::Result<PathBuf>, stream: Stream, by: &str) -> Log {
     match target {
         Ok(target) => {
             let target = target.to_string_lossy().into_owned();
-            if target.starts_with("socket:") {
-                Log::Journal {
+            let socket = target
+                .strip_prefix("socket:[")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|inode| inode.parse().ok());
+            if let Some(inode) = socket {
+                Log::Socket {
+                    stream,
+                    inode,
                     by: format!("{by}, its {name} being a socket, the journal's"),
-                    what: "its log",
                 }
             } else if target.starts_with("pipe:") {
                 Log::Unknown(format!(

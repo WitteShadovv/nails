@@ -68,14 +68,18 @@ of this changelog for that version becomes the release notes word for word, and
   keeps, and ABRT in use (crash reports in `/var/spool/abrt`) warn. What NAILS cannot read of their
   unit files, their commands or their processes, a program that runs the daemon in turn, a pipe on
   its standard error and a descriptor a socket unit passes among it, counts against the decoy,
-  within the limits `docs/decoy-requirements.md` names. The residue catalog has a row for each
-  (`tuned-log`, `firewalld-log`, `abrt-spool`), and `docs/decoy-requirements.md` says how to fix
-  each, NixOS's firewalld by `services.firewalld.extraArgs` and a journal namespace by
-  `Storage=volatile` in its `journald@<namespace>.conf`, which the refusal and the warning name too,
-  also where NAILS cannot tell whether the namespace persists, and a namespace a unit names with a
-  specifier by naming it without one. Fedora is not admitted yet, so no VM test runs them; the unit
-  tests read the units Fedora 44's packages install. The unit reader that `locate-database` uses
-  reads the drop-ins of a unit's aliases, and those systemd builds with an instance's prefixes, too.
+  within the limits `docs/decoy-requirements.md` names. A socket on a running daemon's standard
+  error counts as one to the decoy's own journal only where PID 1's socket table lists it as the
+  service manager connects one and lists no socket of a journal namespace that persists, since a
+  program can connect it to a namespace's journal itself, as `systemd-cat --namespace=` does. The
+  residue catalog has a row for each (`tuned-log`, `firewalld-log`, `abrt-spool`), and
+  `docs/decoy-requirements.md` says how to fix each, NixOS's firewalld by
+  `services.firewalld.extraArgs` and a journal namespace by `Storage=volatile` in its
+  `journald@<namespace>.conf`, which the refusal and the warning name too, also where NAILS cannot
+  tell whether the namespace persists, and a namespace a unit names with a specifier by naming it
+  without one. Fedora is not admitted yet, so no VM test runs them; the unit tests read the units
+  Fedora 44's packages install. The unit reader that `locate-database` uses reads the drop-ins of a
+  unit's aliases, and those systemd builds with an instance's prefixes, too.
 - `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
   `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
   its order and every other key stay as they were, a value already set as asked is not rewritten
