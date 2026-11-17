@@ -2666,9 +2666,16 @@ of this changelog for that version becomes the release notes word for word, and
   `allow_other` for an owner other than root's (its `user_id` and `group_id` not both 0), where
   FUSE's `allow_sys_admin_access` parameter is `N`, as it is by default. The second is a mount at or
   below such a FUSE mount whose mount point root's lookup cannot reach through it, such as an fstab
-  mount inside a home that a user's FUSE mount covers. Where FUSE has no `allow_sys_admin_access`
-  (a kernel before Linux 6.0, below the `kernel-version` floor), activation refuses at such a mount
-  and names the parameter. It writes those mounts
+  mount inside a home that a user's FUSE mount covers. A kernel before Linux 6.0, whose FUSE has no
+  `allow_sys_admin_access`, is below the `kernel-version` floor, so activation refuses it at that
+  check first; were the window to run there, it would refuse at such a mount too and name the
+  parameter. While it makes the mounts `noatime`, activation asks no FUSE daemon and no network
+  server anything, so a dead or hung one neither makes it refuse nor makes it wait: it looks each
+  mount up from the kernel's caches alone, and in full only where no FUSE or network mount is on the
+  way, reads the mount's ID from the kernel's record of the open mount, and asks a FUSE mount only FUSE's owner check, with `AT_STATX_DONT_SYNC`. A mount that a
+  FUSE or network mount covers is left as it is. Where the caches cannot answer the lookup of a mount
+  mounted inside a FUSE or network mount (a disk mounted inside an `sshfs` or an NFS share), a full
+  lookup would ask that mount, so activation refuses and names both. It writes those mounts
   and their modes to the session plan first, and `nails recover`, a rollback and the emergency on
   the decoy give them their modes back where an activation was killed before it could. NAILS reads
   the operator's account from `/etc/passwd` with `O_NOATIME`, where musl's `getpwuid` read it with

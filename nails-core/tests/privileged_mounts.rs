@@ -944,6 +944,12 @@ impl SilentFuse {
     /// One of type `fstype` that the account `owner` (its user and group)
     /// mounted without `allow_other`, as `fusermount3` mounts a user's.
     fn mount_as(at: &Path, fstype: &str, owner: u32, flags: MsFlags) -> Self {
+        Self::mount_with(at, fstype, owner, flags, "")
+    }
+
+    /// One as [`SilentFuse::mount_as`] mounts it, with `extra` added to its
+    /// options (`,allow_other`).
+    fn mount_with(at: &Path, fstype: &str, owner: u32, flags: MsFlags, extra: &str) -> Self {
         use std::os::fd::AsRawFd;
         let device = std::fs::OpenOptions::new()
             .read(true)
@@ -951,7 +957,7 @@ impl SilentFuse {
             .open("/dev/fuse")
             .expect("open /dev/fuse");
         let options = format!(
-            "fd={},rootmode=40000,user_id={owner},group_id={owner}",
+            "fd={},rootmode=40000,user_id={owner},group_id={owner}{extra}",
             device.as_raw_fd()
         );
         nix::mount::mount(
@@ -966,6 +972,15 @@ impl SilentFuse {
             device: Some(device),
             at: at.to_path_buf(),
         }
+    }
+}
+
+impl SilentFuse {
+    /// End the daemon as a crash does: the device closes, the kernel ends
+    /// the connection, and the mount stays, failing every request with
+    /// `ENOTCONN`.
+    fn end_daemon(&mut self) {
+        drop(self.device.take());
     }
 }
 
@@ -1385,6 +1400,98 @@ fn a_disk_below_a_user_s_fuse_mount_stays_out_of_the_window(at: &Path, disk: &Pa
     std::fs::remove_dir(&source).expect("remove the bound directory");
 }
 
+/// The window asks no FUSE daemon anything: beside a FUSE mount that
+/// everyone may enter (`allow_other`, as an `sshfs` or `rclone` mounts it)
+/// and that no daemon answers, first one that never answers and then one
+/// that is gone, it opens and closes within ten seconds. It makes that mount
+/// `noatime` and gives it its mode back, and it leaves a disk mount that the
+/// FUSE mount covers as it is, for no lookup reaches that one. A full stat
+/// of the FUSE mount, which asks the daemon, fails once the daemon is gone.
+fn a_fuse_daemon_that_does_not_answer_neither_stops_nor_holds_the_window(at: &Path, disk: &Path) {
+    use nails_teardown::mountinfo::read_mountinfo;
+    use nails_teardown::noatime::QuietMounts;
+    let source = disk.join("covered");
+    let outer = at.join("everyones");
+    let inner = outer.join("inner");
+    mkdir(&source);
+    mkdir(&inner);
+    nix::mount::mount(
+        Some(source.as_path()),
+        &inner,
+        None::<&str>,
+        MsFlags::MS_BIND,
+        None::<&str>,
+    )
+    .expect("bind a directory of the disk below the later FUSE mount");
+    let mut fuse = SilentFuse::mount_with(
+        &outer,
+        "fuse.nailstest",
+        1000,
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+        ",allow_other",
+    );
+    /// The options of each mount at `point`, the topmost last.
+    fn modes(point: &Path) -> Vec<String> {
+        read_mountinfo()
+            .expect("read mountinfo")
+            .iter()
+            .filter(|mount| mount.mount_point == point)
+            .map(|mount| mount.mount_opts.clone())
+            .collect()
+    }
+    /// Whether the topmost mount at `point` has the option `word`.
+    fn has(point: &Path, word: &str) -> bool {
+        modes(point)
+            .last()
+            .is_some_and(|options| options.split(',').any(|option| option == word))
+    }
+    for daemon in ["one that never answers", "one that is gone"] {
+        if daemon == "one that is gone" {
+            fuse.end_daemon();
+            let gone = std::fs::metadata(&outer).expect_err("a full stat asks the daemon");
+            assert_eq!(gone.raw_os_error(), Some(nix::libc::ENOTCONN), "{gone}");
+        }
+        let (sent, answer) = std::sync::mpsc::channel();
+        let watched = (outer.clone(), inner.clone());
+        std::thread::spawn(move || {
+            let mut recorded = Vec::new();
+            let opened = QuietMounts::open_recorded(|records| {
+                recorded = records.to_vec();
+                Ok(())
+            });
+            let outcome = opened.map(|quiet| {
+                let during = (has(&watched.0, "noatime"), has(&watched.1, "relatime"));
+                (quiet.close(), during)
+            });
+            let _ = sent.send((outcome, recorded));
+        });
+        let Ok((outcome, recorded)) = answer.recv_timeout(std::time::Duration::from_secs(10))
+        else {
+            drop(fuse);
+            panic!("the window waits on a FUSE daemon: {daemon}");
+        };
+        let (closed, (fuse_quiet, inner_kept)) =
+            outcome.unwrap_or_else(|error| panic!("the window opens beside {daemon}: {error}"));
+        closed.expect("give the modes back");
+        assert!(
+            recorded.iter().any(|record| record.mount_point == outer),
+            "the FUSE mount is in the record: {recorded:?}"
+        );
+        assert!(
+            !recorded.iter().any(|record| record.mount_point == inner),
+            "the covered disk mount is not: {recorded:?}"
+        );
+        assert!(fuse_quiet, "the FUSE mount is noatime in the window");
+        assert!(inner_kept, "the covered disk mount is left as it is");
+        assert!(has(&outer, "relatime"), "{:?}", modes(&outer));
+        assert!(has(&inner, "relatime"), "{:?}", modes(&inner));
+    }
+    drop(fuse);
+    nix::mount::umount(&inner).expect("unmount the covered mount");
+    std::fs::remove_dir_all(&outer).expect("remove the FUSE mount point");
+    std::fs::remove_dir(&source).expect("remove the bound directory");
+}
+
 /// What NAILS reads on the decoy leaves its access times alone: a program it
 /// starts runs with every mount of a namespace of its own `noatime`, and while
 /// it asks PID 1 for something that makes PID 1 read the decoy, the mounts
@@ -1530,6 +1637,7 @@ fn quiet_children_mounts_and_trees_change_no_access_time() {
     a_record_gives_a_killed_window_s_modes_back(&disk, &has, &options);
     a_user_s_fuse_mount_stays_out_of_the_window(&at, &disk, &has, &options);
     a_disk_below_a_user_s_fuse_mount_stays_out_of_the_window(&at, &disk);
+    a_fuse_daemon_that_does_not_answer_neither_stops_nor_holds_the_window(&at, &disk);
 
     // A lookup through a quiet copy of the tree follows a symlink without
     // updating the link's access time, where a plain lookup updates it.

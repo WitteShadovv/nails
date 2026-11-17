@@ -363,6 +363,28 @@ fn without_the_fuse_parameter_the_refusal_names_it_and_the_kernel_floor() {
         assert!(text.contains("Linux 6.0 added it"), "{text}");
         assert!(text.contains("NAILS needs Linux 6.1 or newer"), "{text}");
     }
+    // Below a user's FUSE mount, a lookup the caches alone could not answer
+    // is refused by the parameter the same way, and where FUSE lets root
+    // through, by the FUSE mount it would have to ask.
+    let error = judged("/home/bob/data", Errno::AGAIN, missing(), denied).expect_err("refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    let text = error.to_string();
+    assert!(
+        text.starts_with("/home/bob/data (ext4): a lookup of it goes through a user's FUSE mount"),
+        "{text}"
+    );
+    assert!(text.contains("NAILS needs Linux 6.1 or newer"), "{text}");
+    let text = judged(
+        "/home/bob/data",
+        Errno::AGAIN,
+        Ok("Y\n".to_string()),
+        denied,
+    )
+    .expect_err("refused")
+    .to_string();
+    assert!(!text.contains("allow_sys_admin_access"), "{text}");
+    assert!(text.contains("/home/bob (fuse.gocryptfs)"), "{text}");
+    assert!(text.contains("dead or hung"), "{text}");
     let unreadable = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
     let text = judged("/home/bob", Errno::ACCESS, unreadable, denied)
         .expect_err("refused")
@@ -396,4 +418,282 @@ fn without_a_changed_mount_no_mode_is_given() {
     let mounts =
         crate::mountinfo::parse_mountinfo("30 20 8:1 / /run/x ro,noatime - ext4 /dev/sda1 rw\n");
     assert!(inherited(&[], &[], &mounts).is_empty());
+}
+
+/// FUSE's owner check is asked with `AT_STATX_DONT_SYNC`, so that FUSE
+/// answers from what the kernel holds and sends its daemon nothing, on the
+/// descriptor itself, never with `AT_STATX_FORCE_SYNC`, and for the mount
+/// ID: FUSE answers a call that asks for nothing without its owner check.
+/// The call's error is the check's answer.
+#[test]
+fn fuse_s_owner_check_asks_only_what_the_kernel_holds() {
+    use rustix::fs::{AtFlags, StatxFlags};
+    let mut asked = Vec::new();
+    let answer = fuse_owner_check(&7, |fd, flags, mask| {
+        asked.push((*fd, flags, mask));
+        Err(Errno::ACCESS)
+    });
+    assert_eq!(answer, Err(Errno::ACCESS));
+    assert_eq!(asked.len(), 1, "one call");
+    let (fd, flags, mask) = asked[0];
+    assert_eq!(fd, 7, "on the descriptor it is given");
+    assert!(flags.contains(AtFlags::STATX_DONT_SYNC), "{flags:?}");
+    assert!(flags.contains(AtFlags::EMPTY_PATH), "{flags:?}");
+    assert!(!flags.contains(AtFlags::STATX_FORCE_SYNC), "{flags:?}");
+    assert_eq!(flags, OWNER_CHECK_FLAGS);
+    assert!(mask.contains(StatxFlags::MNT_ID), "{mask:?}");
+    assert_eq!(fuse_owner_check(&7, |_, _, _| Ok(())), Ok(()));
+}
+
+/// The mount ID is read from the kernel's record of a descriptor.
+#[test]
+fn the_mount_id_is_read_from_the_descriptor_s_record() {
+    let text = "pos:\t0\nflags:\t012100000\nmnt_id:\t29\nino:\t2\n";
+    assert_eq!(fdinfo_mount_id(text), Some(29));
+    assert_eq!(fdinfo_mount_id("pos:\t0\nflags:\t0\n"), None);
+    assert_eq!(fdinfo_mount_id("mnt_id:\tx\n"), None);
+    assert_eq!(fdinfo_mount_id("my_mnt_id:\t3\n"), None);
+}
+
+/// On this kernel, the lookup from the caches alone reaches the mount at
+/// `/`, whose ID the descriptor's record gives as `statx(2)` does and as the
+/// mount table lists it. No privilege is needed.
+#[test]
+fn a_cached_lookup_of_the_root_names_its_mount() {
+    use rustix::fs::{StatxFlags, statx};
+    let mounts = crate::mountinfo::read_mountinfo().expect("read mountinfo");
+    // A process whose root is no mount point (a chroot into a directory)
+    // finds no mount listed at `/`: nothing to compare with.
+    let Some(root) = crate::mountinfo::top_mount_at(&mounts, std::path::Path::new("/")) else {
+        return;
+    };
+    let fd = open_cached(std::path::Path::new("/")).expect("look / up from the caches");
+    let id = mount_id_of(&fd).expect("the descriptor's mount ID");
+    assert_eq!(id, root.mount_id);
+    let stat = statx(&fd, "", OWNER_CHECK_FLAGS, StatxFlags::MNT_ID).expect("statx");
+    assert_eq!(i64::try_from(stat.stx_mnt_id).ok(), Some(i64::from(id)));
+}
+
+/// The FUSE and network filesystems a lookup must not go through.
+#[test]
+fn fuse_and_network_filesystems_are_remote() {
+    for (fstype, remote) in [
+        ("fuse", true),
+        ("fuseblk", true),
+        ("fuse.sshfs", true),
+        ("virtiofs", true),
+        ("nfs", true),
+        ("nfs4", true),
+        ("cifs", true),
+        ("smb3", true),
+        ("ceph", true),
+        ("9p", true),
+        ("ext4", false),
+        ("btrfs", false),
+        ("tmpfs", false),
+        ("overlay", false),
+        ("fusectl", false),
+    ] {
+        let mount = mount_line(&format!("40 1 0:50 / /mnt rw,relatime - {fstype} x rw\n"));
+        assert_eq!(is_remote(&mount), remote, "{fstype}");
+    }
+}
+
+/// A table with FUSE and network mounts: an `sshfs` everyone may enter at
+/// `/home/bob` with a disk mounted inside it and one it covers, an NFS share
+/// with a disk inside it and a FUSE mount stacked on it later, a user's FUSE
+/// mount with a disk it covers, and disks below none of them.
+const REMOTES: &str = "\
+1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw
+20 1 8:2 / /home/bob/covered rw,relatime - ext4 /dev/sda2 rw
+30 1 0:47 / /home/bob rw,relatime - fuse.sshfs h:/ rw,user_id=1000,group_id=1000,allow_other
+31 30 8:3 / /home/bob/inside rw,relatime - ext4 /dev/sda3 rw
+32 31 8:4 / /home/bob/inside/deeper rw,relatime - ext4 /dev/sda4 rw
+40 1 0:50 / /mnt/nfs rw,relatime - nfs4 srv:/ rw
+41 40 8:5 / /mnt/nfs/usb rw,relatime - ext4 /dev/sda5 rw
+50 1 8:6 / /home/alice/data rw,relatime - ext4 /dev/sda6 rw
+51 1 0:52 / /home/alice rw,nosuid,nodev,relatime - fuse.gvfsd-fuse x rw,user_id=1000,group_id=1000
+60 1 8:7 / /srv rw,relatime - ext4 /dev/sda7 rw
+61 60 8:8 / /srv/data rw,relatime - ext4 /dev/sda8 rw
+62 1 8:9 / /home/bobby/data rw,relatime - ext4 /dev/sda9 rw
+70 1 8:10 / /mnt/stack rw,relatime - ext4 /dev/sda10 rw
+71 70 0:53 / /mnt/stack rw,relatime - fuse.sshfs h:/ rw,user_id=0,group_id=0,allow_other
+";
+
+/// How [`uncached`] judges the mount at `point` of `table`, where a lookup
+/// of a FUSE or network mount gives `reach` and a failure is FUSE's owner
+/// check refusing root where `kept` says so. Every mount `reach` is asked
+/// about is collected in `asked`.
+fn uncached_at(
+    table: &str,
+    point: &str,
+    reach: impl Fn(&crate::mountinfo::MountEntry) -> Result<bool>,
+    kept: bool,
+    asked: &mut Vec<String>,
+) -> Uncached {
+    let mounts = crate::mountinfo::parse_mountinfo(table);
+    let asked = std::cell::RefCell::new(asked);
+    uncached(
+        at(&mounts, point),
+        &mounts,
+        |remote| {
+            asked
+                .borrow_mut()
+                .push(remote.mount_point.display().to_string());
+            reach(remote)
+        },
+        |_, _| kept,
+    )
+}
+
+/// A mount whose lookup the caches cannot answer alone is looked up in full
+/// only where no FUSE or network mount is on the way, or one that refuses
+/// root at its owner check; it is covered where such a mount that a lookup
+/// reaches lies above it and it is not mounted inside that one; and it is
+/// refused where it is mounted inside one, or one above it fails.
+#[test]
+fn an_uncached_lookup_never_goes_through_a_fuse_or_network_mount() {
+    let mut asked = Vec::new();
+    let reached = |_: &crate::mountinfo::MountEntry| -> Result<bool> { Ok(true) };
+    let covered = |_: &crate::mountinfo::MountEntry| -> Result<bool> { Ok(false) };
+    let gone = |_: &crate::mountinfo::MountEntry| -> Result<bool> { Err(Errno::NOTCONN) };
+    let denied = |_: &crate::mountinfo::MountEntry| -> Result<bool> { Err(Errno::ACCESS) };
+
+    // Below disks alone, or a path that only starts with the same letters.
+    for point in ["/srv/data", "/home/bobby/data", "/srv"] {
+        assert_eq!(
+            uncached_at(REMOTES, point, reached, false, &mut asked),
+            Uncached::Walk,
+            "{point}"
+        );
+    }
+    assert!(asked.is_empty(), "no FUSE or network mount is asked about");
+
+    // Below an sshfs it is not mounted inside: covered, while a lookup
+    // reaches the sshfs; where the sshfs is covered itself, it is on no way.
+    assert_eq!(
+        uncached_at(REMOTES, "/home/bob/covered", reached, false, &mut asked),
+        Uncached::Covered
+    );
+    assert_eq!(asked, ["/home/bob"]);
+    assert_eq!(
+        uncached_at(REMOTES, "/home/bob/covered", covered, false, &mut asked),
+        Uncached::Walk
+    );
+    assert_eq!(
+        uncached_at(REMOTES, "/home/bob/covered", gone, false, &mut asked),
+        Uncached::Refuse
+    );
+
+    // Mounted inside the sshfs, or inside a mount inside it: refused.
+    for point in ["/home/bob/inside", "/home/bob/inside/deeper"] {
+        assert_eq!(
+            uncached_at(REMOTES, point, reached, false, &mut asked),
+            Uncached::Refuse,
+            "{point}"
+        );
+        assert_eq!(
+            uncached_at(REMOTES, point, covered, false, &mut asked),
+            Uncached::Walk,
+            "{point}"
+        );
+    }
+
+    // Inside an NFS share: refused, and the FUSE mount at the share's point
+    // is not on its way, for it is the one at the same point as the share.
+    asked.clear();
+    assert_eq!(
+        uncached_at(REMOTES, "/mnt/nfs/usb", reached, false, &mut asked),
+        Uncached::Refuse
+    );
+    assert_eq!(asked, ["/mnt/nfs"]);
+
+    // A FUSE mount stacked on the share later covers the disk inside it,
+    // whatever the share says.
+    let stacked = format!(
+        "{REMOTES}42 40 0:54 / /mnt/nfs rw,relatime - fuse.rclone r: rw,user_id=0,group_id=0,allow_other\n"
+    );
+    let only_fuse = |remote: &crate::mountinfo::MountEntry| -> Result<bool> {
+        Ok(remote.fstype.starts_with("fuse"))
+    };
+    assert_eq!(
+        uncached_at(&stacked, "/mnt/nfs/usb", only_fuse, false, &mut asked),
+        Uncached::Covered
+    );
+    assert_eq!(
+        uncached_at(&stacked, "/mnt/nfs/usb", reached, false, &mut asked),
+        Uncached::Covered
+    );
+
+    // Below a user's FUSE mount that refuses root at its owner check: the
+    // full lookup stops there before FUSE asks its daemon anything.
+    assert_eq!(
+        uncached_at(REMOTES, "/home/alice/data", denied, true, &mut asked),
+        Uncached::Walk
+    );
+    assert_eq!(
+        uncached_at(REMOTES, "/home/alice/data", denied, false, &mut asked),
+        Uncached::Refuse
+    );
+
+    // A mount at the very point of a FUSE mount is not below it.
+    asked.clear();
+    assert_eq!(
+        uncached_at(REMOTES, "/mnt/stack", gone, false, &mut asked),
+        Uncached::Walk
+    );
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// The mounts a mount is mounted inside, up to one the table does not list,
+/// without looping on a table whose parents form a ring.
+#[test]
+fn the_mounts_a_mount_is_inside_follow_its_parents() {
+    let mounts = crate::mountinfo::parse_mountinfo(REMOTES);
+    assert_eq!(
+        ancestors(at(&mounts, "/home/bob/inside/deeper"), &mounts),
+        [31, 30, 1]
+    );
+    assert_eq!(ancestors(at(&mounts, "/home/bob/covered"), &mounts), [1]);
+    assert!(ancestors(&mounts[0], &mounts).is_empty());
+    let ring = crate::mountinfo::parse_mountinfo(
+        "5 6 8:1 / /a rw - ext4 a rw\n6 7 8:2 / /a/b rw - ext4 b rw\n7 6 8:3 / /a/b/c rw - ext4 c rw\n",
+    );
+    assert_eq!(ancestors(&ring[0], &ring), [6, 7]);
+}
+
+/// A mount refused because a full lookup of it would go through a FUSE or
+/// network mount names the mount and each such mount above it.
+#[test]
+fn an_uncached_refusal_names_the_fuse_or_network_mounts_above() {
+    let mounts = crate::mountinfo::parse_mountinfo(REMOTES);
+    let parameter = Ok("N\n".to_string());
+    let error = judge_unreached(
+        at(&mounts, "/home/bob/inside/deeper"),
+        Errno::AGAIN,
+        &mounts,
+        &parameter,
+        |_| None,
+    )
+    .expect_err("refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    let text = error.to_string();
+    assert!(
+        text.starts_with("/home/bob/inside/deeper (ext4): "),
+        "{text}"
+    );
+    assert!(text.contains("/home/bob (fuse.sshfs)"), "{text}");
+    assert!(!text.contains("/home/bob/inside (ext4)"), "{text}");
+    assert!(text.contains("dead or hung"), "{text}");
+    // Without one above, the plain error.
+    let text = judge_unreached(
+        at(&mounts, "/srv/data"),
+        Errno::AGAIN,
+        &mounts,
+        &parameter,
+        |_| None,
+    )
+    .expect_err("refused")
+    .to_string();
+    assert!(!text.contains("dead or hung"), "{text}");
 }
