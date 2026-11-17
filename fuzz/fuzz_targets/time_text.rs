@@ -8,10 +8,10 @@
 //! The first byte picks the reader, the rest is its input. A timestamp that is
 //! read is written back in both of NAILS's forms, and each reads again as the
 //! same instant unless the offset carried it outside the years 0 to 9999; the
-//! state file's serde form matches. A zone that is read
-//! shows a time anywhere in the range a timestamp covers, its two ends
-//! included, without a panic, with an offset under 26 hours and the time of
-//! day its stamp holds.
+//! state file's serde form matches. A zone that is read shows a time at six
+//! fixed instants across the range a timestamp covers, its two ends included,
+//! without a panic, with an offset under 26 hours and the time of day its
+//! stamp holds; the instants do not come from the input.
 
 #![no_main]
 

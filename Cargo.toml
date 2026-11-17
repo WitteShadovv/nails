@@ -66,9 +66,13 @@ toml_edit = { version = "0.25.17", default-features = false, features = ["parse"
 # reads the files itself and keeps NAILS's own calendar and text forms. No
 # default feature: no zone database, no system zone lookup and no file access
 # of jiff's own, no serde. This builds jiff and jiff-core, jiff's own code
-# split into a crate since 0.2.33. The releases before that split put defmt,
-# defmt-macros, defmt-parser and bitflags 1 in Cargo.lock for cargo vet to
-# cover, which jiff stopped in 0.2.40.
+# split into a crate in 0.2.33, from the same repository and owner. 0.2.29 to
+# 0.2.39 put defmt, defmt-macros, defmt-parser and bitflags 1 in Cargo.lock
+# for cargo vet to cover, which jiff stopped in 0.2.40. 0.2.28 and older
+# build without jiff-core but miss every fix since, the soundness fix of
+# 0.2.30 in jiff's printing code among them, and Dependabot would move the
+# lock to the newest release anyway, unless an exact pin held back every
+# later fix too.
 jiff = { version = "0.2.42", default-features = false, features = ["alloc"] }
 
 # Atomic file operations (NFR13)
