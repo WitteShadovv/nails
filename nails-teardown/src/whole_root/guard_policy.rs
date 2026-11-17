@@ -35,8 +35,10 @@
 //!   `/dev`, and its own mount table in `/proc`.
 //!
 //! The check runs on the decoy, before the entry: the decoy's running udevd
-//! stands for the hidden session's, which runs the same program under the
-//! same loaded policy, as the decoy's policy stays loaded across the switch.
+//! stands for the hidden session's, which runs the same program. The switch
+//! keeps the loaded policy, or PID 1 loads it again from the hidden root's
+//! files, the decoy's own unless a hidden session changed them: nothing
+//! compares those with the policy this check asks.
 //!
 //! A denied permission, a start of the copy that enters another domain than
 //! udevd's own, a udevd that does not run and a question that cannot be asked

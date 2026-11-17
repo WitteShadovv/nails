@@ -278,7 +278,10 @@ pub fn build_registry<F: Filesystem>(
     // udev runs. The inputs give the domains of the last two as the loaded
     // policy gives them to the label of the copy, the guard's in a confined
     // domain that counts only where the policy grants it every operation the
-    // guard makes. Where it does not run, the row passes. Read-only.
+    // check asks about: not the policy's rules for single ioctl numbers, nor
+    // the labels a relabel of /run gives the guard's files, so a denial that
+    // comes only from those does not fail it. Where it does not run, the row
+    // passes. Read-only.
     registry.add_check(Box::new(LsmStatusCheck::new(inputs.unit_domains.clone())));
 
     // Resolves every host tool nails spawns from the detected platform's search

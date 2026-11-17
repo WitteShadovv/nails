@@ -150,7 +150,10 @@ The decoy also has to be one the session can enter and leave:
   - where `[session_mounts] read_only` is on, the loaded policy must grant
     udevd's domain every operation the disk guard makes, or `lsm-status`
     fails `check` and the activation (see
-    [Fail closed](#fail-closed-activation-is-refused));
+    [Fail closed](#fail-closed-activation-is-refused)). The check does not
+    ask the policy's rules for single `ioctl` numbers, which selinuxfs does
+    not answer, nor the labels a relabel of `/run` gives the guard's files,
+    so it does not fail for a denial that comes only from those;
   - `systemd-soft-reboot.service` must not set `SELinuxContext=`, or PID 1
     starts the step in that context: the activation is refused, and so is
     `deactivate`, whose refusal names `deactivate --poweroff` and
