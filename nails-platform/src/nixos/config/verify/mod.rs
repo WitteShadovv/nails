@@ -266,7 +266,10 @@ pub fn verify_base_config_clean<F: Filesystem>(
 
     let markers = markers(fs, hidden_volume_root, &mut scan.unread)?;
     for file in &files {
-        let content = fs.read_file_content(file)?;
+        // Nix reads a source file as bytes, so one with a byte that is no
+        // UTF-8 (a comment in Latin-1, say) still evaluates; the markers are
+        // ASCII, and a replaced byte hides none of them.
+        let content = String::from_utf8_lossy(&fs.read_file_bytes(file)?).into_owned();
         scan.files_read += 1;
         scan.references
             .extend(references_in(file, &content, &markers));
