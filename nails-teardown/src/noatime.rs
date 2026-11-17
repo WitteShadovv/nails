@@ -78,7 +78,9 @@ pub fn may_spawn_without_access_times() -> bool {
 /// Start the child `command` makes in a mount namespace of its own whose
 /// every mount is `noatime`, where this process may
 /// ([`may_spawn_without_access_times`]), so that nothing the child reads
-/// changes an access time. The namespace's mounts are made private first, so
+/// changes an access time. The proc and sysfs mounts at `/proc` and `/sys`,
+/// which keep no access time on a disk, stay `relatime`, so that the child
+/// can still mount its own in a user namespace of its own. The namespace's mounts are made private first, so
 /// the change reaches no other namespace, and the child sees every mount the
 /// system has when it starts. Where the process may and a step fails, the
 /// child never runs: the spawn fails with the step's error. Where it may not,
@@ -94,7 +96,7 @@ pub fn spawn_without_access_times(command: &mut std::process::Command) {
     }
     // SAFETY: the closure runs in the child between fork and exec. It calls
     // only `unshare(2)`, `mount(2)` and `mount_setattr(2)` with constant
-    // arguments and a stack value, and reads `errno` on failure: all
+    // arguments and stack values, and reads `errno` on failure: all
     // async-signal-safe, with no allocation and no shared state.
     unsafe {
         command.pre_exec(|| {
@@ -128,6 +130,28 @@ pub fn spawn_without_access_times(command: &mut std::process::Command) {
             ) != 0
             {
                 return Err(std::io::Error::last_os_error());
+            }
+            // A child that mounts a proc or a sysfs of its own in a user
+            // namespace of its own, as Nix's sandbox does, may do so only
+            // where the one it sees has the access-time mode the new one
+            // gets, relatime, which its copy keeps locked. Neither keeps an
+            // access time on a disk, so both get relatime back. Without them
+            // the child still starts: only such a mount fails.
+            let relatime = MountAttr {
+                attr_set: MOUNT_ATTR_RELATIME,
+                attr_clr: MOUNT_ATTR_ATIME_MASK,
+                propagation: 0,
+                userns_fd: 0,
+            };
+            for visible in [c"/proc", c"/sys"] {
+                libc::syscall(
+                    SYS_MOUNT_SETATTR,
+                    libc::AT_FDCWD,
+                    visible.as_ptr(),
+                    AT_RECURSIVE,
+                    &raw const relatime,
+                    std::mem::size_of::<MountAttr>(),
+                );
             }
             Ok(())
         });
