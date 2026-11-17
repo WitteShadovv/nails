@@ -583,16 +583,36 @@ pub(super) fn unread_crypttab(entry: &CrypttabEntry) -> Vec<Unplain> {
 /// form it reads, whether or not it reads every option of that line: the
 /// claims count a line as one the boot does not mount only then.
 pub(super) fn reads_every_known(entry: &FstabEntry) -> bool {
+    unread_fstab_options(entry).is_empty()
+}
+
+/// The options of the fstab line `entry` that NAILS does not know, or knows
+/// in another form than the line gives them, each once, in their order, by
+/// its name alone, never its value, which can hold a password: none when
+/// NAILS knows every option of the line, each in a form it reads. The lists
+/// are the ones the claims read a plain line by (see the module docs): an
+/// option they do not hold, a flag given with a value (`nofail=1`),
+/// `x-systemd.wanted-by=` or `x-systemd.required-by=` naming a unit other
+/// than `local-fs.target`, a path or a device in a form NAILS does not read,
+/// `X-mount.subdir=`, and `loop` on a line for a device. Any such option may
+/// change whether and how the boot mounts the line, so a reader that would
+/// take the line for one the boot does not mount takes it for one it may
+/// mount: the claims, and the session's fstab policy, which masks it.
+pub fn unread_fstab_options(entry: &FstabEntry) -> Vec<String> {
     let lists = fstab_lists(entry);
-    entry
-        .options
-        .iter()
-        .filter(|option| !option.is_empty())
-        .all(|option| match option_named(option, "loop") {
-            Some(value) => unread_loop(entry, value).is_none(),
+    let mut names: Vec<String> = Vec::new();
+    for option in entry.options.iter().filter(|option| !option.is_empty()) {
+        let unread = match option_named(option, "loop") {
+            Some(value) => unread_loop(entry, value).is_some(),
             None => find(&lists, option)
-                .is_some_and(|(name, form)| unread_form(name, form, option).is_none()),
-        })
+                .is_none_or(|(name, form)| unread_form(name, form, option).is_some()),
+        };
+        let name = name_of(option);
+        if unread && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// Whether NAILS knows every option of the crypttab line `entry`, each in a

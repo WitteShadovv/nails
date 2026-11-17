@@ -520,3 +520,51 @@ fn loop_is_read_only_on_a_line_that_names_an_image_or_swap_file() {
         [unread("loop")]
     );
 }
+
+/// The session's fstab policy masks a line by the options NAILS does not
+/// read, which it names by their names alone: never a value, which can hold a
+/// password. None for a line whose every option it reads, the stock lines
+/// among them.
+#[test]
+fn the_options_nails_does_not_read_are_named_without_their_values() {
+    for (line, named) in [
+        (
+            "/dev/vdb1 /opt ext4 noauto,x-nails.probe",
+            &["x-nails.probe"][..],
+        ),
+        ("/dev/vdb1 /opt ext4 noauto,password=hunter2", &["password"]),
+        (
+            "/dev/vdb1 /opt ext4 defaults,nofail=1,foo,foo=2",
+            &["nofail", "foo"],
+        ),
+        (
+            "/dev/vdb1 /opt ext4 noauto,X-mount.subdir=a",
+            &["X-mount.subdir"],
+        ),
+        (
+            "/dev/vdb1 /opt ext4 noauto,x-systemd.wanted-by=multi-user.target",
+            &["x-systemd.wanted-by"],
+        ),
+        (
+            "/dev/vdb1 /opt ext4 noauto,x-systemd.wanted-by=",
+            &["x-systemd.wanted-by"],
+        ),
+        ("/dev/vdb1 /opt ext4 noauto,loop", &["loop"]),
+        ("/dev/vdb1 /opt xfs noauto,logdev=vdc", &["logdev"]),
+        ("/dev/vdb1 /opt ext4 noauto,auto=1", &[]),
+        ("/dev/vdb1 /opt ext4 noauto,x-systemd.automount=0", &[]),
+        (
+            "/dev/vdb1 /opt ext4 noauto,x-systemd.wanted-by=local-fs.target",
+            &[],
+        ),
+        ("/dev/sr0 /media/cdrom0 udf,iso9660 user,noauto", &[]),
+        ("/swapfile none swap sw,pri=10", &[]),
+    ] {
+        assert_eq!(unread_fstab_options(&fstab_line(line)), named, "{line}");
+        assert_eq!(
+            reads_every_known(&fstab_line(line)),
+            named.is_empty(),
+            "{line}"
+        );
+    }
+}

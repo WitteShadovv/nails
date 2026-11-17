@@ -198,8 +198,10 @@ mod tests;
 
 pub use collect::{Collected, collect, judge_storage};
 pub use judge::{claimed_devices, judge, shown_fstype};
+pub use known::unread_fstab_options;
 pub use lines::{decoys_own_mount, sharing};
 pub use loops::mounts_through_another_loop;
+pub(crate) use paths::as_written;
 pub use paths::{NamedPaths, UntoldPath};
 pub use plain::{Unplain, UnplainLine, UnplainLines, read_crypttab, read_fstab};
 
