@@ -228,6 +228,31 @@ fn accepted_decoy_storage<F: Filesystem>(
     })
 }
 
+/// The device-mapper names behind the hidden root, top first, that the plan
+/// records for the way back to mark for deferred removal: none for a plain
+/// block device, or where nothing is mounted at `hidden_root`.
+///
+/// # Errors
+///
+/// The mount table, or a place in sysfs on the way down the stack, is there
+/// but cannot be read: the stack may hold a mapping the record would lack,
+/// which the way back would then leave open with its key.
+fn recorded_backend<F: Filesystem>(fs: &F, hidden_root: &Path) -> Result<Vec<String>> {
+    let Some(chain) = crate::backend_lock::resolve_backend_chain(fs, hidden_root)? else {
+        return Ok(Vec::new());
+    };
+    match chain.unread.first() {
+        Some(place) => Err(NailsError::io(
+            place,
+            std::io::Error::other(
+                "NAILS cannot read it, so it cannot tell which device-mapper devices hold the \
+                 hidden volume, and the way back could not close one it does not know",
+            ),
+        )),
+        None => Ok(chain.dm_names),
+    }
+}
+
 /// `step`, between two cancel checkpoints: a Ctrl+C reaches the step's
 /// child processes too, so a cancel outranks the failure it caused.
 fn cancellable<T>(step: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -377,11 +402,7 @@ impl<F: Filesystem> NailsManager<F> {
             .mounts()
             .map_err(|e| NailsError::io("/proc/self/mountinfo", e))?;
         let decoy_root = entry::decoy_root_of(&entries, std::path::Path::new("/"))?;
-        let backend = crate::backend_lock::resolve_backend_chain(&self.filesystem, &hidden_root)
-            .ok()
-            .flatten()
-            .map(|chain| chain.dm_names)
-            .unwrap_or_default();
+        let backend = recorded_backend(&self.filesystem, &hidden_root)?;
         let config_toml = toml::to_string(&self.config).ok();
         let accepted_decoy_storage =
             accepted_decoy_storage(&self.filesystem, &hidden_root, self.allow)?;
