@@ -235,13 +235,23 @@ jobs:
   # unit tests of every workspace crate threaded over a sweep of shuffled seeds,
   # where such a leak fails. The libtest shuffle flag is unstable, so the test
   # binaries run with RUSTC_BOOTSTRAP, which lets the stable test harness accept
-  # it (see the `shuffle` justfile recipe); no nightly toolchain is added.
+  # it (see the `shuffle` justfile recipe); no nightly toolchain is added. The
+  # twenty seeds run as two jobs of ten: one job of all twenty grew to its
+  # 15-minute limit.
   shuffle:
-    name: shuffle
+    name: shuffle (seeds ${{ matrix.first }} to ${{ matrix.last }})
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - first: 1
+            last: 10
+          - first: 11
+            last: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -268,7 +278,9 @@ jobs:
         run: echo "TMPDIR=$(mktemp -d "$RUNNER_TEMP/tests.XXXXXX")" >> "$GITHUB_ENV"
 
       - name: Run the shuffled-seed sweep
-        run: just shuffle
+        env:
+          FIRST_SEED: ${{ matrix.first }}
+        run: just shuffle 10 "$FIRST_SEED"
 
   # The tests of the side workspaces (setup/ and gui/), each a Cargo workspace
   # of its own that the rust job does not reach; lint checks their formatting

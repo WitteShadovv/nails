@@ -195,12 +195,13 @@ side-tests: (coverage "gui")
 # cargo runner sets it for the test binaries alone: the build scripts of
 # proc-macro2 and others look for nightly features when it is set, so a build
 # that saw it would rebuild them and every crate above them, here and again in
-# the next build without it, such as `just test`.
-shuffle seeds="20":
+# the next build without it, such as `just test`. `seeds` seeds run, from
+# `first` on: CI runs `just shuffle 10 1` and `just shuffle 10 11` as two jobs.
+shuffle seeds="20" first="1":
     #!/usr/bin/env bash
     set -euo pipefail
     runner="target.'cfg(all())'.runner = ['env', 'RUSTC_BOOTSTRAP=1']"
-    for seed in $(seq 1 {{ seeds }}); do
+    for seed in $(seq {{ first }} $(( {{ first }} + {{ seeds }} - 1 ))); do
         echo "shuffle seed $seed"
         cargo test --config "$runner" --workspace --all-features --locked --lib \
             -- -Z unstable-options --shuffle-seed "$seed"
