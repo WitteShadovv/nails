@@ -22,9 +22,9 @@
 //! 6. Else UTC.
 //!
 //! No directory is listed and no zone database is searched: a zone file is
-//! read only when `TZ` or `/etc/localtime` names it. The zone is looked for
-//! once per process, the first time a time is shown in it, so a command that
-//! shows no local time reads none of these files.
+//! read only when `TZ`, `/etc/localtime` or `/etc/timezone` names it. The
+//! zone is looked for once per process, the first time a time is shown in it,
+//! so a command that shows no local time reads none of these files.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
