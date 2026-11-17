@@ -1111,6 +1111,12 @@ of this changelog for that version becomes the release notes word for word, and
   262142, a time a crafted btrfs image can hold: such a time is given in seconds since 1970, as the
   examiner gives an access time.
 
+- The way back's process-number set-back keeps the decoy's getty in the power-of-two range of the
+  number the decoy's boot gave it, as long as the getty lands less than 64 numbers off the number
+  the way back aims at. It aimed at that number itself, so a getty whose number sat just below a
+  power of two could land above it: on Fedora 44, after the emergency way back, getty@tty1 and its
+  `wtmp` records got 1025 where the cold boot gave it 990 and 991. Where the number sits less than
+  64 from an edge of its range, the way back now aims 64 inside that edge.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
