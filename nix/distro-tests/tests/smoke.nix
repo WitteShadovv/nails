@@ -171,7 +171,7 @@ distroVm.buildVmTest {
 
     # The NixOS suite's in-VM helper package, for following a soft-reboot.
     sys.path.insert(0, "${../../e2e-tests/py}")
-    from nails_e2e import session  # noqa: E402
+    from nails_e2e import journal_tail, session  # noqa: E402
 
     # The distribution-generic smoke helpers (nix/distro-tests/py), locked by
     # the `distro-checks` flake check: where a hidden write lands, which boot
@@ -979,6 +979,51 @@ distroVm.buildVmTest {
             assert rc != 0, f"{where}: {command}:\n{out}"
 
 
+    def plant_tail(label):
+        # Right before a way back: what would reach the decoy's journal past
+        # the kmsg cursor or through journald's sockets (journal_tail), the
+        # in-session kernel marker, the hidden filesystem's UUID and whether
+        # the hidden volume is a device-mapper device.
+        mark = f"NAILSLATE{label}"
+        linger = f"lngr{label}"
+        journal_tail.plant(vm, mark, linger)
+        uuid = vm.succeed("findmnt -rno UUID /mnt/data || true").strip() or None
+        dm = vm.execute("test -e /dev/mapper/data")[0] == 0
+        marker = f"NAILSIN{label}"
+        journal_tail.write_marker(vm, marker)
+        return {"marker": marker, "mark": mark, "linger": linger, "uuid": uuid, "dm": dm}
+
+
+    def assert_quiet_tail(where, planted):
+        # After the way back: the decoy's journal holds no record of the
+        # hidden session past the kmsg cursor, nor anything the hidden root
+        # sent journald's sockets after its journald stopped; the kernel's
+        # lines of a device-mapper volume's teardown are the residue the
+        # catalog names (kmsg-import). A line logged now reaches it.
+        verdict = journal_tail.judge(
+            vm, planted["marker"], planted["mark"], planted["linger"], planted["uuid"]
+        )
+        print(f"=== {where}: the kernel log from the step's start to the decoy's first line ===")
+        print("\n".join(verdict.tail))
+        assert verdict.judged, f"{where}: {verdict.findings}"
+        findings = list(verdict.findings)
+        if verdict.dm_teardown and not planted["dm"]:
+            findings.extend(verdict.dm_teardown)
+        assert not findings, f"{where}: the decoy's journal holds the hidden session's records: {findings}"
+        if verdict.dm_teardown:
+            print(f"{where}: the device-mapper teardown's lines (kmsg-import): {verdict.dm_teardown}")
+        post = f"NAILSPOST{planted['mark']}"
+        vm.succeed(f"logger -t post {post}")
+        vm.wait_until_succeeds(f"journalctl --no-pager -o cat | grep -qF {post}", timeout=30)
+        # The empty folder the switch left goes at the decoy's start, and the
+        # line that removed it with it.
+        vm.wait_until_succeeds(
+            "! test -e /run/nextroot && ! test -e /run/tmpfiles.d/overlay-runtime-boot.conf",
+            timeout=60,
+        )
+        assert journal_tail.nextroot_left(vm) == "absent"
+
+
     def rehearse(args):
         # Captured under /run (tmpfs): nothing the test reads back may land
         # on the decoy disk the scan reads.
@@ -1419,6 +1464,7 @@ distroVm.buildVmTest {
         # unit that failed while the session ran is reset by the way back, so
         # no listing on the decoy would see it.
         check_failed_units("in the first hidden session before the emergency", "hiddenSession")
+        planted = plant_tail("1")
         follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
         # The way back starts the decoy's own units, so it turns the swap of
         # each kept fstab line on again, while the first session's file is
@@ -1430,6 +1476,7 @@ distroVm.buildVmTest {
         )
         pid1_health("after emergency")
         session.assert_decoy_root(vm)
+        assert_quiet_tail("the emergency's way back", planted)
         check_failed_units("on the decoy after the emergency", "afterReturn")
         vm.fail("mountpoint -q /mnt/data")
         for tree in canary_trees:
@@ -1557,8 +1604,10 @@ distroVm.buildVmTest {
         # The way back goes through logind as well: a program in the session
         # holds it back and leaves its proof on the hidden volume.
         hold_shutdown_back("delay-probe-hidden", "/mnt/data/delay-probe.seen", 3)
+        planted = plant_tail("2")
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
+        assert_quiet_tail("deactivate's way back", planted)
         # The noauto lines kept the swap off through the way back.
         assert_no_disk_swap("the decoy after deactivate")
         check_failed_units("on the decoy after deactivate", "afterReturn")
