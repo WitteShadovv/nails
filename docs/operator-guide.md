@@ -302,6 +302,18 @@ Keep all of it `root`-owned on the hidden volume.
      or not, refuses the activation: the hidden systemd would mount it over the
      hidden volume or inside it. Mount the hidden volume where the decoy
      mounts nothing.
+   - a `noauto` entry is left to the hidden systemd, which never mounts it,
+     only where NAILS reads every option it gives, each read by its name as
+     systemd's fstab generator reads it: `noauto,auto=1` and
+     `noauto,x-systemd.automount=0` are mounted at boot, and are kept off as
+     above. A `noauto` entry with an option outside the lists `backend-entries`
+     reads a plain line by
+     (see [decoy-requirements.md](decoy-requirements.md#attaching-the-drive)),
+     or one of them in another form, is masked, and
+     `nails check` names the option. An entry kept off that gives such an
+     option, whose effect on what its units pull in NAILS does not read either,
+     is masked rather than skipped, and activation warns that the hidden
+     session will not reach the target that requires it.
 
    An activation without a build (`--overlay-only`, and on Debian and Ubuntu
    every activation) applies the same policy to the fstab the hidden session

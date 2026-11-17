@@ -1129,6 +1129,22 @@ of this changelog for that version becomes the release notes word for word, and
   it 990 and 991. Where the getty's number sits less than 64 from an edge of its range, the way back
   now aims 64 inside that edge, and at the middle of a range of 128 numbers or fewer. Where it
   measures by logind, it still aims at logind's own number.
+- The fstab policy reads each option of a line by its name, alone or with a value, as systemd's
+  fstab generator reads it, with the readers `backend-entries` uses. It took a line with
+  `noauto,auto=1`, `noauto,auto=0` or `noauto,x-systemd.automount=0` for one the boot never
+  mounts: on such a line of the hidden session's own fstab, which an entry without a build
+  decides, the hidden systemd mounted the disk read-write, and `nails check` showed such a line of
+  the decoy's fstab as left alone. It skipped a mount with
+  `x-systemd.makefs=1` and left its makefs free, which formats a disk it finds empty, and read
+  `nofail=1`, `fail=1`, `_netdev=1`, `bg=1`, a quota option with a value such as
+  `usrjquota=aquota.user`, and a `noauto` line for `/usr`, which systemd mounts all the same,
+  otherwise than systemd. A `noauto` line is now left alone only where NAILS reads every option it
+  gives, by the lists `backend-entries` reads a plain line by; one with any other option, or a
+  known one in another form (`x-systemd.after=`, `X-mount.subdir=`, `nofail=1`), is masked with
+  its automount, and `nails check` names the option. A line kept off that gives such an option,
+  whose effect on what its units pull in the session does not read either, is masked rather than
+  skipped, so a boot target that requires it is not reached, and activation warns of that. An
+  overlay line that names its upper directory more than once is kept off.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
