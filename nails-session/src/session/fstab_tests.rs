@@ -311,6 +311,11 @@ fn the_options_of_an_entry_are_read_by_their_names() {
             Some("local-fs.target"),
         ),
         ("/dev/vdb1 /usr ext4 noauto 0 0", Some("local-fs.target")),
+        ("/dev/vdb1 /usr ext4 nofail 0 0", Some("local-fs.target")),
+        (
+            "/dev/vdb1 /usr ext4 nofail,x-systemd.automount 0 0",
+            Some("local-fs.target"),
+        ),
         ("/dev/vdb2 none swap noauto,auto=1 0 0", Some("swap.target")),
         ("/dev/vdb2 none swap nofail=1 0 0", None),
     ] {

@@ -138,34 +138,63 @@ const QUOTA_OPTIONS: &[&str] = &[
     "prjquota",
 ];
 
-/// The options of a line, beyond those NAILS reads by the lists of the
-/// `backend-entries` check
-/// ([`unread_fstab_options`](nails_base::hidden_root::separation::unread_fstab_options)),
-/// whose effect on what the line's units pull in the session reads itself:
-/// the units they name, which a skip's walk follows
-/// ([`super::mount_units`]), `loop`, for which systemd has the mount require
-/// the mounts for its source, which the walk follows too, the units that link
-/// it in ([`required_by`]), the checkers they pull in ([`checkers`]), and an
-/// NFS mount in the background, which the generator makes `nofail`
-/// ([`required_by`]).
-const PULL_OPTIONS: &[&str] = &[
-    "loop",
+/// The starts of the names of systemd's own options. systemd reads no other
+/// option for what a line's units pull in, only flags it names (`noauto`,
+/// `nofail`, `_netdev`, `bg`, `loop`, the quota options), which the session
+/// reads by their names too ([`required_by`], [`checkers`],
+/// [`super::mount_units`]). systemd 260.5's fstab generator wrote nothing for
+/// the options of `mount.nfs` and `mount.cifs` (`hard`, `vers=4.2`, `uid=`),
+/// `X-mount.subdir=` or `jqfmt=` on a test root.
+const SYSTEMD_NAMESPACES: &[&str] = &["x-systemd.", "x-initrd."];
+
+/// The options of systemd's own namespaces whose effect on what the units of
+/// a line pull in the session reads: the units and paths they name, which a
+/// skip's walk follows ([`super::mount_units`]), the units that link the line
+/// in ([`required_by`]), the checkers they pull in ([`checkers`]), the
+/// automount ([`FstabEntry::is_automount`]), and those that pull in nothing,
+/// as systemd 260.5's fstab generator wrote them on a test root: an order
+/// (`x-systemd.before=`, `after=`), a timeout, `x-systemd.rw-only`,
+/// `x-systemd.device-bound`, `x-systemd.graceful-option=` and
+/// `x-initrd.mount`.
+const READ_SYSTEMD_OPTIONS: &[&str] = &[
     "x-systemd.requires",
     "x-systemd.wants",
     "x-systemd.requires-mounts-for",
     "x-systemd.wants-mounts-for",
     "x-systemd.wanted-by",
     "x-systemd.required-by",
+    "x-systemd.automount",
+    "x-systemd.makefs",
+    "x-systemd.growfs",
     "x-systemd.pcrfs",
     "x-systemd.validatefs",
-    "bg",
-    "fg",
+    "x-systemd.before",
+    "x-systemd.after",
+    "x-systemd.device-timeout",
+    "x-systemd.mount-timeout",
+    "x-systemd.idle-timeout",
+    "x-systemd.rw-only",
+    "x-systemd.device-bound",
+    "x-systemd.graceful-option",
+    "x-initrd.mount",
 ];
 
-/// Whether the session reads what the option named `name` has the units of
-/// its line pull in ([`PULL_OPTIONS`], [`QUOTA_OPTIONS`]).
-pub fn reads_pulls_of(name: &str) -> bool {
-    PULL_OPTIONS.contains(&name) || QUOTA_OPTIONS.contains(&name)
+/// Whether the session reads what the option `option` has the units of its
+/// line pull in: not for one that holds a backslash or a quote, which systemd
+/// reads otherwise than the parser splits it, nor for one of systemd's own
+/// namespaces that is not in [`READ_SYSTEMD_OPTIONS`]; for any other option,
+/// which systemd does not read for what a unit pulls in, or reads as a flag
+/// the session reads too ([`SYSTEMD_NAMESPACES`]).
+pub fn reads_pulls_of(option: &str) -> bool {
+    if option.contains(['\\', '"']) {
+        return false;
+    }
+    !SYSTEMD_NAMESPACES
+        .iter()
+        .any(|namespace| option.starts_with(namespace))
+        || READ_SYSTEMD_OPTIONS
+            .iter()
+            .any(|name| option_named(option, name).is_some())
 }
 
 /// The target that requires a `_netdev` swap line: the fstab generator links

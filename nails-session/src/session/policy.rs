@@ -25,6 +25,7 @@
 //! | a local filesystem not mounted now, mounted at boot | kept unmounted (and its automount off) |
 //! | `noauto` without an automount or a unit named to pull it in, not for `/usr`, and with only options NAILS reads | left alone: no boot target pulls it in (a skip whose pulls reach it is masked, see [`super::mount_units`]; another unit that pulls it in mounts it) |
 //! | `noauto` with an option NAILS does not read | masked, its automount too: the option may have the boot mount it |
+//! | `noauto`, with a path in it that the unit of a line the boot starts, left to the hidden systemd or put in place, needs (a mount below it, a source, a path named to require its mounts) | kept unmounted: that unit requires it, so the boot mounts it ([`decide_all`]) |
 //! | a network filesystem | kept unmounted: the hidden session would write to the server |
 //! | an overlay entry not mounted now, its upper in RAM | left to the hidden systemd |
 //! | an overlay entry not mounted now, its upper on a disk | kept unmounted |
@@ -59,14 +60,18 @@
 //! ([`unread_fstab_options`]): any other option, or a known one with a value
 //! NAILS does not read (`x-systemd.wanted-by=` naming a unit other than
 //! `local-fs.target`, `X-mount.subdir=`, a flag with a value), may change
-//! whether the boot mounts it. Such a `noauto` line is masked, its mount and
-//! its automount, with a reason that names the option. A line the policy
-//! keeps off anyway, swap too, is masked rather than skipped where it gives
-//! such an option whose effect on what its units pull in the session does not
-//! read either ([`reads_pulls_of`]): what it pulls in is then more than NAILS
-//! can tell, and a skip would leave that free to start. Where a boot target
-//! requires the units, the warning says it will not be reached
-//! ([`Decision::warning`]).
+//! whether the boot mounts it, and so may an option with a backslash or a
+//! quote, which systemd reads otherwise than the parser splits it. Such a
+//! `noauto` line is masked, its mount and its automount, with a reason that
+//! names the option. A line the policy keeps off anyway, swap too, is masked
+//! rather than skipped where such an option is one of systemd's own
+//! (`x-systemd.`, `x-initrd.`) whose effect on what its units pull in the
+//! session does not read, or holds a backslash or a quote
+//! ([`reads_pulls_of`]): what it pulls in is then more than NAILS can tell,
+//! and a skip would leave that free to start. systemd reads no other option
+//! for what a unit pulls in, so a line with `hard` or `vers=4.2` for
+//! `mount.nfs` is skipped as before. Where a boot target requires the units,
+//! the warning says it will not be reached ([`Decision::warning`]).
 //!
 //! A mounted host share or overlay is overlaid rather than left to the hidden
 //! systemd because the next root must already hold its contents when PID 1
@@ -129,6 +134,8 @@ use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
 use nails_teardown::whole_root::plan::{MaskCause, RequiredMask, Skip};
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
+
+mod needed;
 
 /// Whether a device is there now: [`device_present`] on the running system,
 /// a fixed answer in tests.
@@ -304,6 +311,9 @@ pub enum Origin {
     /// A unit file installed for a target, which requires it by a link in
     /// its `.requires` directory: `WantedBy=` rather than `RequiredBy=`.
     Installed,
+    /// A `noauto` fstab line that the unit of another line needs, which a
+    /// target requires ([`decide_all`]): `nofail` on that other line.
+    Needed,
 }
 
 /// Why a unit a boot target requires is masked rather than skipped.
@@ -449,6 +459,7 @@ impl Decision {
                 "install the unit with WantedBy= rather than RequiredBy=, so that the target \
                  wants it instead of requiring it"
             }
+            Origin::Needed => "give the fstab entry that needs it the nofail option",
         };
         let unreached = format!(
             "the hidden session will not reach {boot}, which requires it, and the units only \
@@ -541,6 +552,10 @@ enum Below {
     /// an entry without a build.
     KeptOff,
 }
+
+/// Why a `noauto` line is left alone, when no other line needs it
+/// ([`needed::needed_below`]).
+const NEVER_MOUNTED: &str = "noauto: never mounted";
 
 /// Why a line of the next root's own fstab at or below the hidden root is
 /// kept off ([`decide_hidden_fstab`]).
@@ -670,14 +685,25 @@ fn unread_options(entry: &FstabEntry, units: &Units) -> Vec<String> {
     }
 }
 
-/// The first option of the fstab line `entry` that NAILS does not read
-/// ([`unread_options`]) and whose effect on what the line's units pull in the
-/// session does not read itself either ([`reads_pulls_of`]): a skip of such a
-/// line could leave free a unit that acts on its disk.
+/// The name of the first option of the fstab line `entry` that NAILS does not
+/// read ([`unread_options`]) and whose effect on what the line's units pull
+/// in the session does not read itself either ([`reads_pulls_of`]): a skip of
+/// such a line could leave free a unit that acts on its disk.
 fn unread_pulls(entry: &FstabEntry, units: &Units) -> Option<String> {
-    unread_options(entry, units)
-        .into_iter()
-        .find(|name| !reads_pulls_of(name))
+    let unread = unread_options(entry, units);
+    entry
+        .options
+        .iter()
+        .map(|option| {
+            (
+                option
+                    .split_once('=')
+                    .map_or(option.as_str(), |(name, _)| name),
+                option,
+            )
+        })
+        .find(|(name, option)| unread.iter().any(|u| u == name) && !reads_pulls_of(option))
+        .map(|(name, _)| name.to_string())
 }
 
 /// The mask of `kept`, units of the fstab line `entry` kept off for `reason`,
@@ -937,7 +963,7 @@ fn decide_entry(
         None if entry.is_noauto() => match unread_options(entry, units).first() {
             None => Decision::Leave {
                 target,
-                reason: "noauto: never mounted",
+                reason: NEVER_MOUNTED,
             },
             // An option NAILS does not read may have the boot mount it all the
             // same: masked, with the automount it may set up. Nothing
@@ -980,14 +1006,17 @@ fn below_the_hidden_root(target: PathBuf, hidden_root: &Path) -> Decision {
 }
 
 /// Decide every entry, ordered by mount-point depth so a parent is in place
-/// before a child mounted below it.
+/// before a child mounted below it, a `noauto` line with a path in it that
+/// the unit of another line needs kept off (see the module docs).
 pub fn decide_all(
     entries: &[FstabEntry],
     mounts: &[MountEntry],
     hidden_root: &Path,
     present: Present<'_>,
 ) -> Vec<Decision> {
-    by_depth(entries, |entry| decide(entry, mounts, hidden_root, present))
+    by_depth(entries, present, |entry| {
+        decide(entry, mounts, hidden_root, present)
+    })
 }
 
 /// [`decide_all`] for entries the next root resolves elsewhere, each decided
@@ -998,7 +1027,7 @@ pub fn decide_all_redirected(
     hidden_root: &Path,
     present: Present<'_>,
 ) -> Vec<Decision> {
-    by_depth(entries, |entry| {
+    by_depth(entries, present, |entry| {
         decide_redirected(entry, mounts, hidden_root, present)
     })
 }
@@ -1011,17 +1040,28 @@ pub fn decide_all_hidden_fstab(
     hidden_root: &Path,
     present: Present<'_>,
 ) -> Vec<Decision> {
-    by_depth(entries, |entry| {
+    by_depth(entries, present, |entry| {
         decide_hidden_fstab(entry, mounts, hidden_root, present)
     })
 }
 
-/// The decision `decide` gives each of `entries`, ordered by mount-point
+/// The decision `decide` gives each of `entries`, a `noauto` line that
+/// another needs kept off ([`needed::needed_below`]), ordered by mount-point
 /// depth.
-fn by_depth(entries: &[FstabEntry], decide: impl Fn(&FstabEntry) -> Decision) -> Vec<Decision> {
+fn by_depth(
+    entries: &[FstabEntry],
+    present: Present<'_>,
+    decide: impl Fn(&FstabEntry) -> Decision,
+) -> Vec<Decision> {
+    let decided: Vec<Decision> = entries.iter().map(decide).collect();
     let mut decisions: Vec<(usize, Decision)> = entries
         .iter()
-        .map(|e| (e.file.components().count(), decide(e)))
+        .enumerate()
+        .map(|(at, e)| {
+            let decision = needed::needed_below(entries, &decided, at, present)
+                .unwrap_or_else(|| decided[at].clone());
+            (e.file.components().count(), decision)
+        })
         .collect();
     decisions.sort_by_key(|(depth, _)| *depth);
     decisions.into_iter().map(|(_, d)| d).collect()

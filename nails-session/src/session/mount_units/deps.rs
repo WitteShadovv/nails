@@ -44,7 +44,7 @@ use super::unit_dirs::{Load, UnitDirs, instance_of, template_of};
 use super::unit_file::{UnitFile, resolve_specifiers};
 use super::{acts_on_device, unit_path};
 use crate::session::fstab::{
-    FstabEntry, checkers, escape_path, is_bind_option, mount_unit, option_named,
+    FstabEntry, any_named, checkers, escape_path, is_bind_option, mount_unit,
 };
 use crate::session::policy::Units;
 use std::path::Path;
@@ -168,26 +168,18 @@ fn is_bind(vfstype: &str, options: &[&str]) -> bool {
     matches!(vfstype, "bind" | "rbind") || options.iter().any(|option| is_bind_option(option))
 }
 
-/// Whether an option of `options` is named `name`, alone or with a value, as
-/// systemd's `fstab_test_option()` reads it ([`option_named`]).
-fn has_named(options: &[&str], name: &str) -> bool {
-    options
-        .iter()
-        .any(|option| option_named(option, name).is_some())
-}
-
 /// Whether systemd counts a mount of the type `vfstype` with `options` as
 /// one of a network filesystem (an option named `_netdev` makes one).
 fn is_network(vfstype: &str, options: &[&str]) -> bool {
     NETWORK_TYPES.contains(&vfstype.strip_prefix("fuse.").unwrap_or(vfstype))
-        || has_named(options, "_netdev")
+        || any_named(options, &["_netdev"])
 }
 
 /// Whether systemd has a mount of the type `vfstype` with `options` require
 /// the mounts for its source: a bind or loop mount always, and any mount of
 /// another filesystem than a network one.
 fn needs_its_source(vfstype: &str, options: &[&str]) -> bool {
-    is_bind(vfstype, options) || has_named(options, "loop") || !is_network(vfstype, options)
+    is_bind(vfstype, options) || any_named(options, &["loop"]) || !is_network(vfstype, options)
 }
 
 /// The edge of a network filesystem's mount to the network it waits for:

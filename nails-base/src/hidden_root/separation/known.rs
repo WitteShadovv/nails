@@ -594,19 +594,26 @@ pub(super) fn reads_every_known(entry: &FstabEntry) -> bool {
 /// option they do not hold, a flag given with a value (`nofail=1`),
 /// `x-systemd.wanted-by=` or `x-systemd.required-by=` naming a unit other
 /// than `local-fs.target`, a path or a device in a form NAILS does not read,
-/// `X-mount.subdir=`, and `loop` on a line for a device. Any such option may
-/// change whether and how the boot mounts the line, so a reader that would
-/// take the line for one the boot does not mount takes it for one it may
-/// mount: the claims, and the session's fstab policy, which masks it.
+/// `X-mount.subdir=`, `loop` on a line for a device, and an option that holds
+/// a backslash or a quote. The parser splits the options at every comma and
+/// decodes nothing in them, while systemd and `libmount` decode `\054` to a
+/// comma and keep a comma after a backslash or between quotes in its option:
+/// systemd 260.5's fstab generator mounted `noauto,auto=x\,noauto` and
+/// `noauto,comment=x\054auto` at boot, and read `noauto,comment="x,auto"` as
+/// `noauto`. Any such option may change whether
+/// and how the boot mounts the line, so a reader that would take the line for
+/// one the boot does not mount takes it for one it may mount: the claims, and
+/// the session's fstab policy, which masks it.
 pub fn unread_fstab_options(entry: &FstabEntry) -> Vec<String> {
     let lists = fstab_lists(entry);
     let mut names: Vec<String> = Vec::new();
     for option in entry.options.iter().filter(|option| !option.is_empty()) {
-        let unread = match option_named(option, "loop") {
-            Some(value) => unread_loop(entry, value).is_some(),
-            None => find(&lists, option)
-                .is_none_or(|(name, form)| unread_form(name, form, option).is_some()),
-        };
+        let unread = option.contains(['\\', '"'])
+            || match option_named(option, "loop") {
+                Some(value) => unread_loop(entry, value).is_some(),
+                None => find(&lists, option)
+                    .is_none_or(|(name, form)| unread_form(name, form, option).is_some()),
+            };
         let name = name_of(option);
         if unread && !names.contains(&name) {
             names.push(name);

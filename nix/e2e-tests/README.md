@@ -630,8 +630,9 @@ soft-reboots with `py/nails_e2e/session.py`:
   whose line says `noauto,auto=1`, one with `noauto,x-systemd.automount=0`
   and an empty one with `x-systemd.makefs=1` are kept off, and none is
   mounted, formatted or changed, a `noauto` line with an option NAILS does not
-  read is masked with a reason that names it, and `check` reads a decoy line
-  with `noauto,auto=1` as one the boot mounts;
+  read is masked with a reason that names it, a `noauto` line with a tmpfs
+  line below it is skipped while the tmpfs is mounted, and `check` reads a
+  decoy line with `noauto,auto=1` as one the boot mounts;
 - `session-nixos-hidden-system`: a hidden NixOS toplevel entered in one
   soft-reboot, the way back to the decoy toplevel, re-entry, a configuration
   that does not evaluate refusing the entry, and no bootloader or system

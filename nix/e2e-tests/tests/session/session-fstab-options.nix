@@ -2,7 +2,7 @@
 # generator reads it, and leaves a line alone as never mounted only where
 # NAILS reads every option it gives.
 #
-# Four disks stand in for decoy disks the decoy does not mount now, three
+# Five disks stand in for decoy disks the decoy does not mount now, four
 # with a decoy filesystem and one empty:
 #
 #   - "optauto", whose line says noauto,auto=1: the generator takes the last of
@@ -14,14 +14,19 @@
 #     has the mount pull in systemd-makefs@, which formats a disk it finds
 #     empty, before the skip's condition is tested;
 #   - "optprobe", whose line says noauto,x-nails.probe, an option NAILS does
-#     not read.
+#     not read;
+#   - "optparent", whose line says noauto, with a tmpfs line for a directory
+#     below its mount point: systemd has the tmpfs mount require the mount
+#     of its parent directory, so the boot mounts the noauto line all the
+#     same.
 #
 # The lines go into the hidden session's own /etc/fstab, which the next entry
 # without a build decides as the decoy's: the decoy's own boot never read
 # them, so no unit its generator made stands for them. In that second hidden
 # session the hidden systemd mounts none of the disks, formats none and
-# changes none, local-fs.target is reached, and the noauto line with the
-# unknown option is masked with a reason that names it. Back on the decoy
+# changes none, local-fs.target is reached, the noauto line with the
+# unknown option is masked with a reason that names it, and the tmpfs below
+# the skipped noauto line is mounted. Back on the decoy
 # every disk is byte for byte as before, and `check` reads a decoy line with
 # noauto,auto=1, written without a reload, as one the boot mounts.
 { self, ... }:
@@ -57,6 +62,10 @@ in
         size = 64;
         driveConfig.deviceExtraOpts.serial = "optprobe";
       }
+      {
+        size = 64;
+        driveConfig.deviceExtraOpts.serial = "optparent";
+      }
     ];
     environment.systemPackages = [ self.packages.x86_64-linux.nails ];
   };
@@ -72,12 +81,15 @@ in
     AUTOMOUNT = "/dev/disk/by-id/virtio-optautomount"
     MAKEFS = "/dev/disk/by-id/virtio-optmakefs"
     PROBE = "/dev/disk/by-id/virtio-optprobe"
-    DISKS = (AUTO, AUTOMOUNT, MAKEFS, PROBE)
+    PARENT = "/dev/disk/by-id/virtio-optparent"
+    DISKS = (AUTO, AUTOMOUNT, MAKEFS, PROBE, PARENT)
     LINES = (
         f"{AUTO} /srv/auto ext4 noauto,auto=1 0 0",
         f"{AUTOMOUNT} /srv/automount ext4 noauto,x-systemd.automount=0 0 0",
         f"{MAKEFS} /srv/makefs ext4 x-systemd.makefs=1 0 0",
         f"{PROBE} /srv/probe ext4 noauto,x-nails.probe 0 0",
+        f"{PARENT} /srv/parent ext4 noauto 0 0",
+        "tmpfs /srv/parent/tmp tmpfs defaults 0 0",
     )
 
 
@@ -107,9 +119,9 @@ in
         "minimum_space_mb = 100\n"
         "EOF"
     )
-    # Three disks with a decoy filesystem and a file on it; the makefs one
+    # Four disks with a decoy filesystem and a file on it; the makefs one
     # stays empty.
-    for disk in (AUTO, AUTOMOUNT, PROBE):
+    for disk in (AUTO, AUTOMOUNT, PROBE, PARENT):
         machine.succeed(
             f"mkfs.ext4 -q {disk} && mkdir -p /run/fill && mount {disk} /run/fill && "
             "echo decoy > /run/fill/decoy-file && umount /run/fill"
@@ -149,12 +161,16 @@ in
             "the line gives it, so the boot may mount it)"
         ) not in printed:
             problems.append("noauto,x-nails.probe: no reason that names the option")
+        if machine.execute("mountpoint -q /srv/parent")[0] == 0:
+            problems.append("noauto below a tmpfs line: the disk is mounted")
         after = hashes()
         problems += [f"{disk} changed" for disk in DISKS if after[disk] != before[disk]]
         machine.log(f"forms the policy misread: {problems}")
         assert not problems, problems
         assert load_state("srv-auto.mount") == "loaded", "skipped, as local-fs.target requires it"
         assert load_state("srv-automount.mount") == "masked"
+        assert load_state("srv-parent.mount") == "loaded", "skipped, as the tmpfs requires it"
+        machine.succeed("findmnt -n -t tmpfs /srv/parent/tmp")
         # What a session that wants its own lines gone does: NixOS's link.
         machine.succeed("ln -sfn /etc/static/fstab /etc/fstab")
 
@@ -162,7 +178,7 @@ in
 
     with subtest("back on the decoy, every disk is as before"):
         assert hashes() == before, "a session changed a disk"
-        for disk in (AUTO, AUTOMOUNT, PROBE):
+        for disk in (AUTO, AUTOMOUNT, PROBE, PARENT):
             machine.succeed(
                 f"mkdir -p /run/fill && mount -o ro {disk} /run/fill && "
                 "grep -Fx decoy /run/fill/decoy-file && umount /run/fill"
