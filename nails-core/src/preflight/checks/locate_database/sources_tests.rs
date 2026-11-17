@@ -1185,6 +1185,11 @@ fn a_trigger_starts_the_first_unit_systemd_takes() {
         "Unit=reindex.service\nUnit=plocate-updatedb.service\n",
         "Unit=nonsense\nUnit=reindex.timer\nUnit=\nUnit=reindex.service\n",
         "Unit=reindex.bogus\nUnit=.service\nUnit=reindex.service\n",
+        // Specifiers of the timer's own name expand as systemd expands them,
+        // and a value they make a template of, or one with a specifier
+        // systemd does not expand there, it ignores.
+        "Unit=%N.service\n",
+        "Unit=%p@%i.service\nUnit=%P.service\n",
     ] {
         let decoy = reindex(&format!("[Timer]\nOnCalendar=hourly\n{units}"));
         decoy.mask("plocate-updatedb.timer");
@@ -1200,15 +1205,16 @@ fn a_trigger_starts_the_first_unit_systemd_takes() {
     let decoy = reindex("[Timer]\nOnCalendar=hourly\nUnit=reindex.service\nUnit=other.service\n");
     decoy.start("reindex.timer");
     assert!(decoy.check(false).is_fail());
-    // One named with a specifier cannot be told.
-    let decoy = reindex("[Timer]\nOnCalendar=hourly\nUnit=reindex@%i.service\n");
+    // One named with a specifier the host fills in cannot be told.
+    let decoy = reindex("[Timer]\nOnCalendar=hourly\nUnit=re%H.service\n");
     decoy.start("reindex.timer");
     let result = decoy.check(false);
     assert!(result.is_warn(), "{result:?}");
     assert!(
         message(&result).contains(
-            "reindex.timer may start updatedb, which NAILS cannot tell: reindex.timer names the \
-             unit it starts with a specifier"
+            "reindex.timer may start updatedb, which NAILS cannot tell: reindex.timer starts \
+             re%H.service or reindex.service, which of them systemd decides by the host it runs \
+             on"
         ),
         "{result:?}"
     );

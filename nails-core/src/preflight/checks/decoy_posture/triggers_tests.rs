@@ -4,32 +4,43 @@
 use super::super::super::systemd_conf::Assignment;
 use super::*;
 
-/// The `[Socket]` assignments of `text`, one `Key=value` a line.
-fn section(text: &str) -> Vec<Assignment> {
-    text.lines()
-        .filter_map(|line| line.split_once('='))
-        .map(|(key, value)| Assignment {
-            key: key.to_string(),
-            value: value.to_string(),
-        })
-        .collect()
+/// The targets of a socket called `socket` whose `[Socket]` section is the
+/// one `Key=value` line `line`.
+fn targets(line: &str, socket: &str) -> Vec<Target> {
+    let (key, value) = line.split_once('=').unwrap();
+    let assignments = [Assignment {
+        key: key.to_string(),
+        value: value.to_string(),
+    }];
+    socket_targets(&assignments, socket)
 }
 
 #[test]
-fn a_socket_starts_its_service_or_the_one_of_its_own_name() {
-    for (text, service) in [
-        ("ListenStream=/run/x.sock", Some("tuned.service")),
-        ("Service=firewalld.service", Some("firewalld.service")),
-        ("Service=a.service\nService=b.service", Some("b.service")),
-        // Accept=yes starts instances of tuned@.service instead.
-        ("Accept=yes", None),
-        ("Accept=true\nService=x.service", None),
-    ] {
-        assert_eq!(
-            socket_service(&section(text), "tuned.socket"),
-            Ok(service.map(str::to_string)),
-            "{text:?}"
-        );
+fn a_unit_the_host_may_name_is_one_nails_cannot_tell_about() {
+    let mut triggers = Triggers::default();
+    triggers.starts.insert(
+        "a.service".to_string(),
+        "a.socket is enabled and starts a.service".to_string(),
+    );
+    for target in targets("Service=audit%H.service", "kick.socket") {
+        triggers
+            .maybe
+            .push((target, "kick.socket may start it".to_string()));
     }
-    assert!(socket_service(&section("Service=%N.service"), "tuned.socket").is_err());
+    assert_eq!(
+        triggers.of("a.service"),
+        Some(Ok("a.socket is enabled and starts a.service".to_string()))
+    );
+    assert_eq!(
+        triggers.of("auditd.service"),
+        Some(Err(
+            "NAILS cannot tell whether a timer, path or socket unit starts auditd.service: \
+             kick.socket may start it"
+                .to_string()
+        ))
+    );
+    // The service of its own name, which systemd starts where the host's
+    // value gives no name it takes, is one it may start too.
+    assert!(triggers.of("kick.service").is_some_and(|how| how.is_err()));
+    assert_eq!(triggers.of("tuned.service"), None);
 }

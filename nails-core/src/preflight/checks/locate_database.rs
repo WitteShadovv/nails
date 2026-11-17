@@ -38,7 +38,7 @@
 //! warns that it cannot tell, naming the point, as for a file it cannot
 //! read. Without a readable mount table it looks up nothing, and warns.
 
-mod aliases;
+pub(in crate::preflight::checks) mod aliases;
 pub mod conf;
 pub mod cron;
 pub mod exec;
@@ -47,7 +47,9 @@ pub mod judge;
 pub mod options;
 pub mod read;
 pub mod shell;
-// The decoy-persistence check reads the decoy's units the same way.
+// The decoy-persistence check reads the decoy's units, and what their
+// triggers start, the same way.
+pub(in crate::preflight::checks) mod targets;
 pub(in crate::preflight::checks) mod unit;
 // The decoy-persistence check reads the triggers of the decoy's units the
 // same way.
