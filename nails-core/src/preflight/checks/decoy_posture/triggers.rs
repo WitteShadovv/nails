@@ -7,17 +7,22 @@
 //!
 //! A trigger counts when it is enabled (a link to it in a `.wants`,
 //! `.requires` or `.upholds` directory of a unit directory, which does not
-//! lead to `/dev/null`) or active (its invocation marker), and its unit is
-//! not masked. A timer or a path starts the first `Unit=` systemd takes,
-//! else the service of its own name, and a socket its last `Service=`, else
-//! the service of its own name, unless it is `Accept=yes`, which starts
-//! instances of a template of its own name instead
-//! ([`timer_targets`], [`socket_targets`]). The specifiers systemd takes from
-//! the trigger's own name are expanded as systemd expands them; one it fills
-//! in from the host (`%H`, `%m` and the like) makes the trigger one that may
-//! start each unit whose name the rest of the value fits. What NAILS cannot
-//! read of the triggers, a directory it cannot list or a trigger's unit
-//! file, counts as a trigger that may start any unit.
+//! lead to `/dev/null`) or active (its invocation marker), and its unit is not
+//! masked. A timer or a path starts the first `Unit=` systemd takes, else the
+//! service of its own name, and a socket its last `Service=`, else the service
+//! of its own name, unless it is `Accept=yes`, which starts instances of a
+//! template of its own name instead ([`timer_targets`], [`socket_targets`]).
+//! The specifiers systemd takes from the trigger's own name are expanded from
+//! the name of its unit file, as systemd expands them for a trigger loaded by
+//! that name (one enabled through a link named after an alias of it differs,
+//! see [`timer_targets`]); one it fills in from the host (`%H`, `%m` and the
+//! like) makes the trigger one that may start each unit whose name the rest of
+//! the value fits. What NAILS cannot read of the triggers, a directory it
+//! cannot list or a trigger's unit file, counts as a trigger that may start
+//! any unit. A trigger counts for a daemon only where what it starts is the
+//! daemon's own unit name: one whose `Unit=` or `Service=` names the daemon by
+//! an alias, as firewalld's `dbus-org.fedoraproject.FirewallD1.service` or an
+//! `Alias=` link of auditd or tuned, is not seen.
 
 use super::super::locate_database::aliases::unit_id;
 use super::super::locate_database::files::DecoyFiles;

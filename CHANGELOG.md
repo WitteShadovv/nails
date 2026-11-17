@@ -86,10 +86,10 @@ of this changelog for that version becomes the release notes word for word, and
   name that two aliases hold counts as one NAILS cannot tell about only where their files give the
   section differently. A timer's or path's `Unit=`, which both checks read, and a socket's
   `Service=`, which `decoy-persistence` reads, are read with the specifiers systemd takes from the
-  trigger's own name (`%n`, `%N`, `%p`, `%i`, `%j`) expanded as systemd expands them, so Arch's
-  gnupg sockets for the pacman keyring start `gpg-agent@etc-pacman.d-gnupg.service`; one systemd
-  fills in from the host, such as `%H`, counts only for a unit whose name the rest of the value
-  fits.
+  trigger's own name (`%n`, `%N`, `%p`, `%i`, `%j`) expanded from the name of its unit file, as
+  systemd expands them for a trigger loaded by that name, so Arch's gnupg sockets for the pacman
+  keyring start `gpg-agent@etc-pacman.d-gnupg.service`; one systemd fills in from the host, such as
+  `%H`, counts only for a unit whose name the rest of the value fits.
 - `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
   `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
   its order and every other key stay as they were, a value already set as asked is not rewritten

@@ -16,18 +16,18 @@
 //!
 //! - now, when the system manager shows it active (its invocation marker, or
 //!   a populated cgroup);
-//! - when a timer or a path unit starts it that is enabled, or that the
-//!   system manager runs as `systemctl list-units` shows it: one started with
+//! - when a timer or a path unit starts it that is enabled, or that the system
+//!   manager runs as `systemctl list-units` shows it: one started with
 //!   `systemctl start`, an instance of a template, a transient one as
 //!   `systemd-run --on-calendar` makes it, and one masked, or whose file is
-//!   gone, since it started. It starts its first `Unit=` systemd takes, or
-//!   the service of its own name, with the specifiers systemd takes from the
-//!   trigger's name expanded ([`timer_targets`]); one whose `Unit=` has a
-//!   specifier systemd fills in from the host (`%H` and the like) is one
-//!   NAILS cannot tell about where the name of a unit on disk fits the rest
-//!   of it. Where NAILS cannot ask the system manager,
-//!   and for a user's manager, which it never asks, a transient trigger whose
-//!   file is there counts;
+//!   gone, since it started. It starts its first `Unit=` systemd takes, or the
+//!   service of its own name, with the specifiers systemd takes from the
+//!   trigger's name expanded from the name of its unit file
+//!   ([`timer_targets`]); one whose `Unit=` has a specifier systemd fills in
+//!   from the host (`%H` and the like) is one NAILS cannot tell about where
+//!   the name of a unit on disk fits the rest of it. Where NAILS cannot ask
+//!   the system manager, and for a user's manager, which it never asks, a
+//!   transient trigger whose file is there counts;
 //! - whenever its manager starts, when it is enabled itself: an entry for it
 //!   in a `.wants`, `.requires` or `.upholds` directory, as `systemctl
 //!   enable` and `systemctl add-wants` make. The soft-reboot back to the
