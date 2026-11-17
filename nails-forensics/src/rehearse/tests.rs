@@ -1587,3 +1587,15 @@ fn a_state_without_the_entry_time_still_loads() {
     assert_eq!(state.planted_entered_at, None);
     assert_eq!(state.planted_soft_reboots, Some(0));
 }
+
+#[test]
+fn the_rehearsal_stamps_its_steps_in_utc_to_the_second() {
+    // `YYYY-MM-DDTHH:MM:SSZ`, as the state on the hidden volume keeps it.
+    let stamp = now();
+    let shape = stamp
+        .bytes()
+        .map(|b| if b.is_ascii_digit() { b'9' } else { b })
+        .collect::<Vec<u8>>();
+    assert_eq!(shape, b"9999-99-99T99:99:99Z", "{stamp}");
+    assert!(stamp.as_str() > "2026-01-01T00:00:00Z", "{stamp}");
+}

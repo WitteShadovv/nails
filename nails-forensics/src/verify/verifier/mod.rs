@@ -546,6 +546,8 @@ mod session;
 #[cfg(test)]
 mod session_tests;
 mod system;
+#[cfg(test)]
+mod time_tests;
 mod unmounted;
 #[cfg(test)]
 mod unmounted_tests;
