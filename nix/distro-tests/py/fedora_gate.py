@@ -1861,20 +1861,21 @@ class Gate:
 
     def zram_probe(self, n: int) -> None:
         """Whether the hidden session's pages reach a zram device: a unit holds
-        a marker in more memory than its cgroup may keep in RAM, so the kernel
-        swaps part of it out where the session has a swap. The marker is
-        counted on every zram device while the unit holds it and once it has
-        stopped."""
+        a marker in its memory, and the kernel is asked to reclaim the unit's
+        memory (``memory.reclaim``), which swaps it out where the session has
+        a swap. The marker is counted on every zram device while the unit
+        holds it and once it has stopped."""
         unit = f"gate-zram-{n}"
         flag = f"{HIDDEN}/.gate-zram-{n}"
         mark, count = self.zram_marker(n)
         self.fact(
             f"zram-probe-{n}",
-            f"systemd-run --unit={unit} --collect -p MemoryHigh=16M "
-            f"-p MemoryMax=32M bash -c 'x=$(yes {mark} | head -c 48000000); "
-            f"touch {flag}; sleep 600'; "
+            f"systemd-run --unit={unit} --collect bash -c "
+            f"'x=$(yes {mark} | head -c 16000000); touch {flag}; sleep 600'; "
             f"for i in $(seq 90); do test -e {flag} && break; "
-            f"systemctl -q is-active {unit} || break; sleep 1; done; sleep 2; "
+            f"systemctl -q is-active {unit} || break; sleep 1; done; "
+            f"cg=/sys/fs/cgroup$(systemctl show -P ControlGroup {unit}); "
+            "echo 256M > $cg/memory.reclaim; echo reclaim=$?; "
             f"grep VmSwap /proc/$(systemctl show -P MainPID {unit})/status; "
             f"echo held:; {count}; systemctl stop {unit}; rm -f {flag}; "
             f"sleep 2; echo stopped:; {count}; swapon --show --noheadings --bytes",
