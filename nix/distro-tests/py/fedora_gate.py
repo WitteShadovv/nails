@@ -427,7 +427,7 @@ def failed_units_problems(
 # The private temporary folder systemd makes for a unit at each of its starts
 # (PrivateTmp=): named after the boot, the unit and six random characters.
 _PRIVATE_TMP = re.compile(
-    r"^(/var/tmp/systemd-private-[0-9a-f]{32}-[^/]+)-[A-Za-z0-9]{6}(/.*)?$"
+    r"^/var/tmp/systemd-private-[0-9a-f]{32}-([^/]+)-[A-Za-z0-9]{6}(/.*)?$"
 )
 
 
@@ -436,9 +436,10 @@ def changed_paths(listing: str, mount_points: Iterable[str] = ()) -> set[str]:
     records checks judge (:data:`RECORD_PATHS`, a folder of them with what is
     below it), and without ``mount_points``, which ``find -xdev`` lists with
     the times of the filesystem mounted there. A unit's private temporary
-    folder is named by its unit alone, its random part as ``*``: each start of
-    the unit makes a new one, after a way back as after a plain
-    soft-reboot."""
+    folder is named by its unit alone, its boot ID and random part as ``*``:
+    each start of the unit makes a new one, after a way back as after a plain
+    soft-reboot, and a control taken before the cold power cycle that comes
+    before the first entry has another boot ID."""
     mounted = set(mount_points)
     found = set()
     for line in listing.splitlines():
@@ -449,7 +450,8 @@ def changed_paths(listing: str, mount_points: Iterable[str] = ()) -> set[str]:
             continue
         private = _PRIVATE_TMP.match(path)
         if private:
-            path = f"{private.group(1)}-*{private.group(2) or ''}"
+            unit, below = private.group(1), private.group(2) or ""
+            path = f"/var/tmp/systemd-private-*-{unit}-*{below}"
         found.add(path)
     return found
 
