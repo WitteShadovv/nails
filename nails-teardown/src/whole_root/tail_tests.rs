@@ -229,3 +229,58 @@ fn a_read_only_limit_fails_without_a_panic() {
     let quiet = quiet_hidden_unmount(&places, &hidden_on("253:1"), &[], Path::new("/x"));
     assert!(matches!(quiet, Quiet::Failed(_)), "{quiet:?}");
 }
+
+#[test]
+fn the_tmpfiles_line_removes_the_empty_nextroot_and_itself() {
+    assert_eq!(
+        tmpfiles_text(false),
+        "r! /run/nextroot\nr! /run/tmpfiles.d/overlay-runtime-boot.conf\n"
+    );
+    assert_eq!(
+        tmpfiles_text(true),
+        "r! /run/nextroot\nr! /run/tmpfiles.d/overlay-runtime-boot.conf\nr! /run/tmpfiles.d\n"
+    );
+    assert_eq!(
+        TMPFILES_PATH,
+        format!("/run/{TMPFILES_DIR}/{TMPFILES_NAME}")
+    );
+}
+
+#[test]
+fn a_decoy_without_runtime_tmpfiles_gets_the_folder_and_its_removal() {
+    let run = tempfile::tempdir().unwrap();
+    remove_nextroot_at_start(run.path()).unwrap();
+    let file = run.path().join(TMPFILES_DIR).join(TMPFILES_NAME);
+    assert_eq!(fs::read_to_string(&file).unwrap(), tmpfiles_text(true));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+}
+
+#[test]
+fn a_decoy_with_runtime_tmpfiles_keeps_its_folder_and_its_lines() {
+    let run = tempfile::tempdir().unwrap();
+    let dir = run.path().join(TMPFILES_DIR);
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("decoy.conf"), "d /run/decoy 0755 root root -\n").unwrap();
+    remove_nextroot_at_start(run.path()).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.join(TMPFILES_NAME)).unwrap(),
+        tmpfiles_text(false)
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("decoy.conf")).unwrap(),
+        "d /run/decoy 0755 root root -\n"
+    );
+}
+
+#[test]
+fn an_unwritable_run_leaves_no_folder() {
+    let run = tempfile::tempdir().unwrap();
+    // A file where the folder would go: nothing can be made there.
+    fs::write(run.path().join(TMPFILES_DIR), "").unwrap();
+    assert!(remove_nextroot_at_start(run.path()).is_err());
+    assert!(run.path().join(TMPFILES_DIR).is_file());
+}

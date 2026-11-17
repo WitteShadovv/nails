@@ -111,6 +111,15 @@
       "description": "Runtime drop-in the way back leaves for a wtmpdb decoy's boot writer, so that it records the way back as a power cycle; removed when the writer starts, so a leftover means it never started."
     },
     {
+      "id": "nextroot-removal",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/run/tmpfiles.d/overlay-runtime-boot.conf",
+      "image_token": "overlay-runtime-boot.conf",
+      "description": "Runtime systemd-tmpfiles line the way back leaves so that the decoy's start removes the empty /run/nextroot the switch leaves behind, and the line with it; a leftover means systemd-tmpfiles-setup.service did not run at that start, and /run/nextroot is likely still there."
+    },
+    {
       "id": "pivot-staging-run-legacy",
       "kind": "absolute-path",
       "scope": "runtime",
