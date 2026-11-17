@@ -51,11 +51,15 @@ class Machine(Protocol):
 
 
 #: The hidden service manager's own last lines after the step: the end of the
-#: soft-reboot service and the switch. A plain soft-reboot logs them as well.
+#: soft-reboot service (with its unit name, or its description alone, as
+#: NixOS logs it) and the switch, and the final kill of the helpers it forks
+#: to close a descriptor, which it starts after the step and which carry no
+#: name of the session. A plain soft-reboot logs them as well.
 HIDDEN_PID1_LINES = (
     re.compile(r"systemd-soft-reboot\.service: Deactivated successfully\."),
-    re.compile(r"Finished systemd-soft-reboot\.service( - .*)?\.?"),
+    re.compile(r"Finished (systemd-soft-reboot\.service - )?Reboot System Userspace\."),
     re.compile(r"Soft-rebooting\."),
+    re.compile(r"Sending SIGKILL to PID \d+ \(\(sd-close\)\)\."),
 )
 
 #: The decoy's service manager before its first line: it loads its SELinux
