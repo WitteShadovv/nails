@@ -97,8 +97,10 @@
 //! control character other than a tab, or white space other than a space or a
 //! tab, a backslash in its first field or mount point that begins none of the
 //! escapes `\040`, `\011`, `\012` and `\134`, a backslash in its type or
-//! options, a quote in its options, a list of types other than one of local
-//! filesystems on a device's line, or a first field that is
+//! options, a quote in its options, a list of types other than one of the
+//! local filesystems NAILS lists (`btrfs`, `exfat`, `ext2` to `ext4`, `f2fs`,
+//! `iso9660`, `msdos`, `ntfs3`, `udf`, `vfat`, `xfs`) on a device's line with
+//! only generic options, or a first field that is
 //! neither an absolute path nor a `UUID=`, `LABEL=`, `PARTUUID=` or
 //! `PARTLABEL=` tag, such as a relative path or an `ID=` tag, which NAILS does
 //! not resolve, or that leads into `/dev` but does not start with `/dev/` or
