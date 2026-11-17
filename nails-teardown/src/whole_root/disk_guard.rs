@@ -12,15 +12,21 @@
 //! mounts read-only) and a write through the device node fails, and nothing
 //! the mount itself would write (a journal replay, a mount count) reaches the
 //! disk. The decision is the same for disks present at entry and disks
-//! attached later:
+//! attached later, but two different steps take it:
 //!
 //! - **a udev rule** in `/run/udev/rules.d`, installed by the entry transition
 //!   so only the hidden udevd loads it, runs the RAM copy (`guard-device
 //!   $devnode`) for every disk and partition the moment it appears, before
-//!   udev announces it to udisks; the hidden boot's coldplug runs it for the
-//!   disks present at entry;
-//! - the session watcher sweeps all block devices on every poll, as a
-//!   fallback.
+//!   udev announces it to udisks, and again when it changes;
+//! - **the session watcher** sweeps all block devices when it starts and on
+//!   every poll after. Its first sweep is what makes the disks present at
+//!   entry read-only: a soft-reboot runs no coldplug, since
+//!   `systemd-udev-trigger.service` (`DefaultDependencies=no`, no
+//!   `Conflicts=`) is never stopped and the hidden boot does not start it
+//!   again, so the rule reaches a disk present at entry only at a later change
+//!   event of it. The watcher is a unit of
+//!   `multi-user.target`: until it starts, such a disk is writable. The sweep
+//!   is also the fallback for a device the rule missed.
 //!
 //! **Never guarded** ([`protected`]): the decoy root's device (the way back
 //! mounts it read-write), the hidden backend, every device of the session's
