@@ -680,12 +680,16 @@ of this changelog for that version becomes the release notes word for word, and
   list the root, an image with a filesystem at byte 0 beside a partition table, and an ext4 journal
   or btrfs log tree the carve would not replay each stop the run. Before, only plaso's limit to one
   partition stopped a disk of several, and only where a timeline runs.
-- The oracle real-image nightly also images two real btrfs decoys, a stock Fedora 44 Cloud disk and
-  a stock arch-boxes disk, each kept whole before, after a plain reboot, after a second plain reboot
-  and after a hidden session and the way back, then scanned without the timeline, once with the
-  session and once with the second plain reboot in its place, which must leave nothing but the live
-  controls. Neither Fedora nor Arch is admitted yet, so these images come from a test-only build
-  that admits the family's row and is never released (ci/oracle/README.md).
+- The oracle real-image nightly also images three real btrfs decoys, stock Fedora 44 and Fedora 45
+  Cloud disks and a stock arch-boxes disk, each kept whole before, after a plain reboot, after a
+  second plain reboot and after a hidden session and the way back, then scanned without the
+  timeline, once with the session and once with the second plain reboot in its place, which must
+  leave nothing but the live controls. A Fedora decoy is scanned a third time, over a copy of the
+  session's image with record-level positive controls planted (a row in lastlog2's database, made
+  where the image has none, a login row in wtmpdb's where the image has one, and a file below
+  /var/lib/dnf), and that verdict must fail on exactly the planted paths. The scan compares those
+  records by their files' digests. Neither Fedora nor Arch is admitted yet, so these images come
+  from a test-only build that admits the family's row and is never released (ci/oracle/README.md).
 - Two kinds of line bulk_extractor writes no longer stop an oracle scan before its verdict, on ext4
   as on btrfs: a zip member's description is passed over beside its saved file, whose hash keys the
   member, a member found in decompressed data included, and a login record it names `<CACHED>` is
