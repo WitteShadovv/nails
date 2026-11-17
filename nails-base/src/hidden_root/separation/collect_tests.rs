@@ -255,7 +255,7 @@ fn a_mapping_is_known_as_luks_by_its_device_mapper_uuid() {
                 name: dm.to_string(),
                 luks
             },
-            "{uuid}"
+            "{dm}"
         );
     }
 }
