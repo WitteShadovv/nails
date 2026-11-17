@@ -9,6 +9,9 @@
 //! (the mount's source in `/proc/self/mountinfo`, then the `/sys/block`
 //! device-mapper and loop stack) is a pure function over the [`Filesystem`]
 //! trait ([`resolve_backend_chain`]), exercised against `MockFilesystem`.
+//! A place on the way that is there but cannot be read, for another reason
+//! than that it is not there, is kept in [`BackendChain::unread`]: the stack
+//! may then hold a mapping the chain does not name.
 
 use std::path::{Path, PathBuf};
 
@@ -37,32 +40,43 @@ pub struct BackendChain {
     /// Loop backing devices found under the stack (e.g. `/dev/loop0`), for the
     /// common file-backed volume layout.
     pub loop_devices: Vec<PathBuf>,
+    /// The places on the way down that are there but could not be read, for
+    /// another reason than that they are not there: the `/dev/mapper` link
+    /// of the source, a `dm/name` or a `slaves/` listing. Each may hide a
+    /// device-mapper name that [`dm_names`](Self::dm_names) lacks.
+    pub unread: Vec<PathBuf>,
 }
 
 impl BackendChain {
-    /// Whether this backend is device-mapper based (has at least one dm device to
-    /// remove). A `false` means the mount is a plain block device and only the
-    /// way back's lazy unmount applies.
+    /// Whether this backend is, or may be, device-mapper based: it has a dm
+    /// device to remove, its source names one (`/dev/dm-N`, or a path under
+    /// `/dev/mapper`) whatever could be read of it, or a place on the way
+    /// could not be read. A `false` means the mount is a plain block device
+    /// and only the way back's lazy unmount applies.
     pub fn is_device_mapper(&self) -> bool {
-        !self.dm_names.is_empty()
+        !self.dm_names.is_empty() || names_dm_device(&self.source_device) || !self.unread.is_empty()
     }
 }
 
 /// Resolve the device-mapper / loop chain behind the hidden-root mount.
 ///
 /// Returns `Ok(None)` when `hidden_root` is not a mount point (already
-/// unmounted). Reads only `/proc/self/mountinfo` and `/sys/block` through `fs`,
-/// so it is total and side-effect-free: an unreadable sysfs node simply ends the
-/// walk rather than failing it.
+/// unmounted), or when there is no mount table, as in a test's tree. Reads
+/// only `/proc/self/mountinfo` and `/sys/block` through `fs`, and changes
+/// nothing: a sysfs place that is there but cannot be read ends the walk
+/// there and lands in [`BackendChain::unread`].
+///
+/// # Errors
+///
+/// The mount table is there but cannot be read.
 pub fn resolve_backend_chain<F: Filesystem>(
     fs: &F,
     hidden_root: &Path,
 ) -> crate::Result<Option<BackendChain>> {
     let content = match fs.read_file_content(Path::new(SELF_MOUNTINFO)) {
         Ok(content) => content,
-        // No mount table to read: treat as nothing mounted rather than an error,
-        // so a locked-down or test environment degrades to a clean no-op.
-        Err(_) => return Ok(None),
+        Err(error) if error.nothing_there() => return Ok(None),
+        Err(error) => return Err(error),
     };
 
     // Match the hidden root against both its literal and canonical form: the
@@ -82,9 +96,10 @@ pub fn resolve_backend_chain<F: Filesystem>(
         source_device: source_device.clone(),
         dm_names: Vec::new(),
         loop_devices: Vec::new(),
+        unread: Vec::new(),
     };
 
-    if let Some(top) = sysfs_block_name(fs, &source_device) {
+    if let Some(top) = sysfs_block_name(fs, &source_device, &mut chain.unread) {
         walk_dm_stack(fs, &top, &mut chain);
     } else if is_loop_device(&source_device) {
         chain.loop_devices.push(source_device);
@@ -98,20 +113,44 @@ pub fn resolve_backend_chain<F: Filesystem>(
 ///
 /// `/dev/dm-N` is already a sysfs block name; `/dev/mapper/<name>` is a symlink
 /// resolved to its `/dev/dm-N` target. Anything else (a plain partition, a loop
-/// device) is not a device-mapper device and yields `None`.
-fn sysfs_block_name<F: Filesystem>(fs: &F, source: &Path) -> Option<String> {
+/// device) is not a device-mapper device and yields `None`, and so does a
+/// `/dev/mapper` link that cannot be resolved, which lands in `unread` where
+/// it is there.
+fn sysfs_block_name<F: Filesystem>(
+    fs: &F,
+    source: &Path,
+    unread: &mut Vec<PathBuf>,
+) -> Option<String> {
     let name = source.file_name()?.to_str()?;
     if is_dm_name(name) {
         return Some(name.to_string());
     }
     if source.starts_with("/dev/mapper") {
-        let resolved = fs.canonicalize(source).ok()?;
+        let resolved = match fs.canonicalize(source) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                if !error.nothing_there() {
+                    unread.push(source.to_path_buf());
+                }
+                return None;
+            }
+        };
         let resolved_name = resolved.file_name()?.to_str()?.to_string();
         if is_dm_name(&resolved_name) {
             return Some(resolved_name);
         }
     }
     None
+}
+
+/// Whether a mount source names a device-mapper device by its path alone:
+/// `/dev/dm-N`, or a name under `/dev/mapper`.
+fn names_dm_device(source: &Path) -> bool {
+    source.starts_with("/dev/mapper")
+        || source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_dm_name)
 }
 
 /// Whether a sysfs block name is a device-mapper node (`dm-<N>`).
@@ -135,20 +174,32 @@ fn is_loop_device(source: &Path) -> bool {
 /// Reads `/sys/block/<dm>/dm/name` for each device-mapper node and recurses
 /// through `/sys/block/<dm>/slaves/` so a stacked target (crypt over linear over
 /// loop, say) is fully resolved. A node already seen is not revisited, so a
-/// malformed sysfs cannot loop forever.
+/// malformed sysfs cannot loop forever. A name or a listing that is there but
+/// cannot be read lands in [`BackendChain::unread`].
 fn walk_dm_stack<F: Filesystem>(fs: &F, block_name: &str, chain: &mut BackendChain) {
     let sysfs = Path::new(SYS_BLOCK).join(block_name);
 
-    if let Ok(name) = fs.read_file_content(&sysfs.join("dm/name")) {
-        let name = name.trim().to_string();
-        if !name.is_empty() && !chain.dm_names.contains(&name) {
-            chain.dm_names.push(name);
+    let name_path = sysfs.join("dm/name");
+    match fs.read_file_content(&name_path) {
+        Ok(name) => {
+            let name = name.trim().to_string();
+            if !name.is_empty() && !chain.dm_names.contains(&name) {
+                chain.dm_names.push(name);
+            }
         }
+        Err(error) if error.nothing_there() => {}
+        Err(_) => chain.unread.push(name_path),
     }
 
-    let slaves = match fs.list_directory(&sysfs.join("slaves")) {
+    let slaves_path = sysfs.join("slaves");
+    let slaves = match fs.list_directory(&slaves_path) {
         Ok(slaves) => slaves,
-        Err(_) => return,
+        Err(error) => {
+            if !error.nothing_there() {
+                chain.unread.push(slaves_path);
+            }
+            return;
+        }
     };
     for slave in slaves {
         let Some(slave_name) = slave.file_name().and_then(|n| n.to_str()) else {
@@ -188,10 +239,106 @@ mod tests {
     }
 
     #[test]
-    fn resolve_returns_none_when_mount_table_is_unreadable() {
+    fn resolve_returns_none_without_a_mount_table() {
         let fs = MockFilesystem::new();
         let chain = resolve_backend_chain(&fs, Path::new("/mnt/data")).unwrap();
         assert!(chain.is_none());
+    }
+
+    #[test]
+    fn a_mount_table_that_cannot_be_read_is_an_error() {
+        // It may show the hidden root on a mapping: taking it for nothing
+        // mounted would record no mapping for the way back to close.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            "/proc/self/mountinfo",
+            &mountinfo_line("/mnt/data", "ext4", "/dev/dm-0"),
+        );
+        fs.mock_set_lookup_error("/proc/self/mountinfo", std::io::ErrorKind::PermissionDenied);
+        assert!(resolve_backend_chain(&fs, Path::new("/mnt/data")).is_err());
+    }
+
+    #[test]
+    fn a_dm_source_is_device_mapper_whatever_its_name_reads() {
+        // The source's kernel name or its /dev/mapper path already says it is
+        // a mapping: dmsetup is needed for it even where no name could be
+        // read, and a name or a link that could not be read is kept.
+        for (source, fail, kind) in [
+            (
+                "/dev/dm-0",
+                "/sys/block/dm-0/dm/name",
+                std::io::ErrorKind::PermissionDenied,
+            ),
+            (
+                "/dev/dm-0",
+                "/sys/block/dm-0/dm/name",
+                std::io::ErrorKind::Other,
+            ),
+            (
+                "/dev/mapper/data",
+                "/dev/mapper/data",
+                std::io::ErrorKind::Other,
+            ),
+            (
+                "/dev/mapper/data",
+                "/dev/mapper/data",
+                std::io::ErrorKind::PermissionDenied,
+            ),
+        ] {
+            let fs = MockFilesystem::new();
+            fs.mock_add_file(
+                "/proc/self/mountinfo",
+                &mountinfo_line("/mnt/data", "ext4", source),
+            );
+            fs.mock_add_file("/sys/block/dm-0/dm/name", "data\n");
+            fs.mock_set_directory_contents(Path::new("/sys/block/dm-0/slaves"), Vec::new());
+            fs.create_symlink(Path::new("/dev/dm-0"), Path::new("/dev/mapper/data"))
+                .unwrap();
+            fs.mock_set_lookup_error(fail, kind);
+
+            let chain = resolve_backend_chain(&fs, Path::new("/mnt/data"))
+                .unwrap()
+                .unwrap();
+            assert!(chain.dm_names.is_empty(), "{source}: {chain:?}");
+            assert_eq!(chain.unread, vec![PathBuf::from(fail)], "{source}");
+            assert!(chain.is_device_mapper(), "{source}");
+        }
+
+        // With nothing to read under it, a dm node still names a mapping.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            "/proc/self/mountinfo",
+            &mountinfo_line("/mnt/data", "ext4", "/dev/dm-0"),
+        );
+        let chain = resolve_backend_chain(&fs, Path::new("/mnt/data"))
+            .unwrap()
+            .unwrap();
+        assert!(chain.unread.is_empty(), "{chain:?}");
+        assert!(chain.is_device_mapper());
+    }
+
+    #[test]
+    fn a_slaves_listing_that_cannot_be_read_is_kept() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            "/proc/self/mountinfo",
+            &mountinfo_line("/mnt/data", "ext4", "/dev/dm-2"),
+        );
+        fs.mock_add_file("/sys/block/dm-2/dm/name", "data0\n");
+        fs.mock_set_directory_contents(
+            Path::new("/sys/block/dm-2/slaves"),
+            vec![PathBuf::from("/sys/block/dm-2/slaves/dm-1")],
+        );
+        fs.mock_set_lookup_error(
+            "/sys/block/dm-2/slaves",
+            std::io::ErrorKind::PermissionDenied,
+        );
+
+        let chain = resolve_backend_chain(&fs, Path::new("/mnt/data"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(chain.dm_names, vec!["data0".to_string()]);
+        assert_eq!(chain.unread, vec![PathBuf::from("/sys/block/dm-2/slaves")]);
     }
 
     #[test]

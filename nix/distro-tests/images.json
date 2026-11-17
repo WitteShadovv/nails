@@ -100,12 +100,15 @@
     "enforcing": false,
     "memory": 2048,
     "enabled": false,
-    "upstreamUntil": "2027-12-01",
+    "upstreamUntil": "2027-11-24",
     "prepare": "fedora",
     "source": {
-      "kind": "pending",
+      "kind": "upstream",
       "family": "fedora",
-      "release": "45"
+      "release": "45",
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2",
+      "name": "Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2",
+      "sha256": "sha256-UL3F5w9qJPVAky0VQRwcaun8+kD7mQ2HbYPFzII7KtA="
     }
   },
   "arch-boxes": {

@@ -435,6 +435,106 @@ fn run_warns_when_a_thunderbolt_controller_is_unprotected() {
     assert!(result.message().contains("iommu_dma_protection=0"));
 }
 
+/// A place the verdict reads that is there but cannot be read may show DMA
+/// that is not remapped: the IOMMU groups, a group's type, the Thunderbolt
+/// devices or their attribute, the command line. Where the check passed it
+/// warns that it could not confirm, naming the place; one that is not there
+/// changes nothing.
+#[test]
+fn a_place_that_cannot_be_read_turns_a_pass_into_could_not_confirm() {
+    let hardened = || {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_CMDLINE, "intel_iommu=on\n");
+        with_active_iommu(&fs);
+        with_groups(&fs, &["DMA-FQ", "DMA-FQ"]);
+        fs
+    };
+    assert!(
+        DmaProtectionCheck::new()
+            .run(&hardened())
+            .unwrap()
+            .is_pass()
+    );
+    for path in [
+        IOMMU_CLASS.to_string(),
+        IOMMU_GROUPS.to_string(),
+        format!("{IOMMU_GROUPS}/1/{IOMMU_GROUP_TYPE}"),
+        THUNDERBOLT_DEVICES.to_string(),
+        PROC_CMDLINE.to_string(),
+    ] {
+        let fs = hardened();
+        fs.mock_set_lookup_error(&path, std::io::ErrorKind::Other);
+        let result = DmaProtectionCheck::new().run(&fs).unwrap();
+        assert!(result.is_warn(), "{path}: {result:?}");
+        assert!(
+            result.message().starts_with(&format!(
+                "Could not confirm the host restricts DMA into RAM: NAILS cannot look up {path} ("
+            )),
+            "{path}: {result:?}"
+        );
+        assert!(result.message().contains(&power_off_line()), "{result:?}");
+
+        let fs = hardened();
+        fs.mock_set_lookup_error(&path, std::io::ErrorKind::NotFound);
+        let result = DmaProtectionCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{path}: {result:?}");
+    }
+    // A Thunderbolt controller whose attribute cannot be read.
+    let fs = hardened();
+    with_thunderbolt(&fs, "1");
+    let attribute = format!("{THUNDERBOLT_DEVICES}/domain0/{TB_DMA_PROTECTION}");
+    fs.mock_set_lookup_error(&attribute, std::io::ErrorKind::PermissionDenied);
+    let result = DmaProtectionCheck::new().run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().starts_with(&format!(
+            "Could not confirm the host restricts DMA into RAM: NAILS cannot look up \
+             {attribute}; run the command again with sudo"
+        )),
+        "{result:?}"
+    );
+}
+
+/// A release that is there but cannot be read leaves untold which values
+/// the kernel accepts. Where the spellings of the releases read the command
+/// line apart, as `iommu.passthrough=disable` after `iommu=pt`, which Linux
+/// 6.16 and later take back and older kernels reject, the line decides
+/// nothing, and a pass becomes the warning that NAILS could not confirm,
+/// naming the release, where the newer reading was taken and the check
+/// passed. Where they agree, the release decides nothing.
+#[test]
+fn a_release_that_cannot_be_read_counts_where_the_spellings_read_the_line_apart() {
+    let machine = |cmdline: &str, release: Option<&str>| {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_CMDLINE, cmdline);
+        match release {
+            Some(release) => fs.mock_add_file(PROC_OSRELEASE, release),
+            None => fs.mock_set_lookup_error(PROC_OSRELEASE, std::io::ErrorKind::Other),
+        }
+        with_active_iommu(&fs);
+        with_groups(&fs, &["DMA-FQ"]);
+        DmaProtectionCheck::new().run(&fs).unwrap()
+    };
+    let apart = "iommu=pt iommu.passthrough=disable\n";
+    assert!(machine(apart, Some("6.16.0\n")).is_pass());
+    let older = machine(apart, Some("6.12.48\n"));
+    assert!(
+        older.is_warn() && older.message().contains("all of system RAM"),
+        "{older:?}"
+    );
+    let unread = machine(apart, None);
+    assert!(unread.is_warn(), "{unread:?}");
+    assert!(
+        unread.message().starts_with(&format!(
+            "Could not confirm the host restricts DMA into RAM: NAILS cannot look up \
+             {PROC_OSRELEASE} ("
+        )),
+        "{unread:?}"
+    );
+    // Read alike by every release.
+    assert!(machine("intel_iommu=on iommu.passthrough=0\n", None).is_pass());
+}
+
 #[test]
 fn run_passes_a_fully_dma_hardened_machine() {
     let fs = MockFilesystem::new();

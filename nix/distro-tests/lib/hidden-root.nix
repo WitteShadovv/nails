@@ -125,6 +125,24 @@
         systemctl mask --now "$unit"
       fi
     done
+    # The mask above stops auditd even where its unit refuses a manual stop
+    # (RefuseManualStop=yes on Fedora, as the Fedora probes record): the
+    # reload after the mask leaves a masked unit, which refuses nothing. As a
+    # fallback for an auditd that still runs, the daemon is asked to stop
+    # itself (audit 3.1.1 and newer).
+    if command -v auditctl >/dev/null 2>&1 && pgrep -x auditd >/dev/null; then
+      auditctl --signal stop
+      for _ in $(seq 30); do
+        pgrep -x auditd >/dev/null || break
+        sleep 1
+      done
+    fi
+    # A decoy whose auditd still runs is not amnesic: stop here rather than
+    # carry on with one.
+    if pgrep -x auditd >/dev/null; then
+      echo "auditd still runs after it was told to stop" >&2
+      exit 1
+    fi
 
     # apport takes the kernel's core dumps (kernel.core_pattern pipes to it)
     # and logs each crashing program's path and command line on the decoy

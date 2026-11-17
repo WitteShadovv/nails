@@ -703,9 +703,11 @@ Layout:
   soft-reboot does not carry, so after the switch the file is reachable only
   through its loop device, which is attached without autoclear so that the
   hidden root can be opened again on the decoy after a session. It also
-  switches to a volatile journal (plus masking an active rsyslog), which the
-  decoy-persistence preflight needs, stops apport, which Ubuntu's images run
-  and which the preflight warns of, and stops apt's daily timers, which every
+  switches to a volatile journal (plus masking an active rsyslog or auditd,
+  with `auditctl --signal stop` as a fallback for an auditd that still runs
+  after the mask), which the decoy-persistence preflight needs, stops
+  apport, which Ubuntu's images run and which the preflight warns of, and
+  stops apt's daily timers, which every
   scenario that activates on an image with apt's timers does after each boot
   before it waits for a daily run already started to end, so that no daily
   run makes `unattended-upgrade-run` refuse an activation.
@@ -724,11 +726,16 @@ Layout:
   the table lacks each fail it (`ci/tests/test_admit_row.py` runs the script
   on the family table). The family's derivatives follow the admitted row, so
   that build runs one as an untested derivative, with a warning, as the
-  release will once the family is admitted; no scenario boots one.
+  release will once the family is admitted; no scenario boots one. On Fedora
+  the build also leaves out the `lsm-status` check, which refuses every host
+  where SELinux runs until NAILS chooses the SELinux domains of the processes
+  systemd and udev start from its copy in `/run`.
 - `py/`: the scenarios' host-side helpers, unit-tested by the
   `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
   smoke's reads of a btrfs decoy's image: its zstd frames, decompressed, and
   its older roots, with btrfs-progs.
+- `fedora-gate.nix`: the drivers of Fedora's admission gate
+  ([below](#the-admission-gate-of-fedora)).
 - `default.nix`: maps the scenarios over the table, builds the scenarios of
   the images staged for their family's admission (`stagedImages`), and
   exposes the metadata.
@@ -1085,6 +1092,187 @@ mkdir -p /var/tmp/r
 TMPDIR=/var/tmp/r XDG_RUNTIME_DIR=/var/tmp/r ./fedora-44-refusal/bin/test-driver
 ```
 
+### The admission gate of Fedora
+
+Fedora is admitted in one commit with its CI matrix entry, once its admission
+gate passes on its current releases. The drivers that gate runs before that
+commit are in `fedora-gate.nix`, one set per pinned Fedora image, and run in
+the staged suite of `distro-e2e.yml`, which only a dispatch selects. Each is a
+host driver that writes what it found into the directory `NAILS_GATE_OUT`
+names (the working directory when it is unset).
+
+`<image>-rpms` resolves the packages that one `dnf install` of tuned,
+firewalld and ABRT needs on the stock image, which the gate scenarios install
+on the decoy offline, since their VMs have no network. Only the image's own
+package manager knows what it holds, so the driver boots the image with the
+guest's network on and has its dnf download that install's transaction from
+the release's own repository alone, which does not change once the release is
+out, with weak dependencies left out and every package's signature checked
+against the release key. It writes `<image>-rpms.json`: which of the three the
+image holds already, and the name, NEVRA, SHA-256, size and repository path of
+every package dnf chose (`py/fedora_rpms.py`). It fails when a package's
+signature does not check out or its location is not in the release
+repository.
+
+`python3 -m ci.e2e.rpm_closure lock <image>-rpms.json`, on a networked host,
+fetches every package again and writes `rpms/<image>.json`, the lock the gate
+fetches the closure from, only when each file is the one the image's dnf saw;
+`check` keeps every committed lock to the image file `images.json` pins.
+
+`<image>-gate`, defined once the image has a lock, is the gate scenario
+(`py/fedora_gate.py`, its reading of the kernel log and of auditd's log in
+`py/selinux_gate.py`). It boots the image with SELinux enforcing, with a
+test-only build that admits Fedora (`lib/admitted.nix`) and the locked closure
+shared in, and runs every `nails` command in a login session of the
+operator's own, through the login PAM stack, whose pam_selinux gives the user
+`unconfined_t` (checked with `id -Z`); the harness's own shell runs as a
+service, in the domain the gate records (`unconfined_service_t`). In one QEMU
+process it runs a power cycle, the reference of the login records; the
+decoy's checks (the stock journal and the running auditd refused, then the
+journal volatile and auditd off by `systemctl disable`, `systemctl mask` and
+`auditctl --signal stop`; tuned, firewalld and ABRT installed from the closure
+with every repository disabled and started, then the documented fixes; the
+locate database; lsm-status, enforcing and after `setenforce 0`; check clean;
+a failed console login, which btmp must record); a plain soft-reboot; a
+second power cycle, so that the first entry starts from a cold boot as an
+operator's does; a session ended with `deactivate`; a package the decoy
+removes after that session; a second session as a user through sudo with the
+fresh-home persona and the sleep guard on (`block`), ended with the
+emergency; and a last plain soft-reboot. Before the first entry the decoy
+makes a bind mount with a userspace option, which libmount keeps in utab, and
+before each entry the operator logs in on the decoy's console (tty4), as an
+operator does before activating.
+In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
+`/var`, the type a copied-up and a new file take, NAILS's processes outside
+`init_t` (the watcher's, and the sleep guard's in the second session), the
+overlay feature options, the canaries in their uppers, the failed units, a
+login and a failed login that the session's own wtmp and btmp record, a
+`security.selinux` round trip on the hidden volume, and a disk attached in
+the session read-only by the disk guard's udev rule, which records it: the
+watcher's sweep, the rule's fallback, runs once an hour in the gate's
+sessions, so it cannot set the disk read-only in the rule's place. The first
+session also plants the rehearsal, whose scan it must refuse. Each session
+starts a unit ordered before journald, without the default dependencies, so
+that it stops after the hidden journald and logs a line through each of
+journald's sockets as it does (`/dev/log`, its standard output, the native
+socket), and as its last step runs 8000 programs, which push the kernel's
+process numbers far past a cold boot's. After each way back it asserts the
+session's kernel log marker absent from the decoy's journal, which holds no
+kernel record of the session and none logged before the switch's last step
+ended, the cursor's effect, since the decoy's journald rewrites the cursor
+file before the gate can read it; none of the late unit's lines in the
+decoy's journal, judged only where its stop came after the hidden journald's,
+and no other audit record or line the hidden root sent to journald's sockets
+after its journald stopped, which the soft-reboot keeps open for the decoy's
+journald: audit records numbered up to the hidden root's last before the
+switch's last step, syslog and native lines the kernel took in before that
+step ended, and standard output lines of a process numbered at or above what
+the session pushed the counter to; a line logged after the way back in the
+decoy's journal, the positive control of that reading; `/run` at every depth,
+udev's device database aside, held against `/run` right before the entry and
+the shapes of what the plain soft-reboots added there (a new journal stream,
+session or unit file of the decoy's own start, its numbers left out), with
+`/run/udev/rules.d` and `/run/systemd/system` as the decoy had them, the
+session's file and NAILS's runtime folder gone, and `/run/nextroot` without a
+mount or an entry, the reconcile step's pieces left to their own check; `utab` given back, the bind mount's line under its new
+mount ID; `/run/initramfs` unchanged; the attached disk writable again; none
+of the session's files on the decoy; the SELinux booleans as they were; the
+failed units: none of NAILS's, none the hidden root masks, and no other but
+one a switch is known to leave failed (the zram swap's, with the swap each
+root ran with recorded) or one the first plain soft-reboot left failed; and
+the login and boot records changed only by the boot a power cycle adds, with
+no record of a login or a failed login made in the session: wtmp keeps the
+operator's console login, dated before the entry, and lastlog2, where the
+release keeps it (Fedora 45), the operator's last login before the entry,
+since pam_lastlog2 keeps one row a user and writes one at each of the
+operator's commands too, with no row dated inside the session; and the
+units of the consoles the way back's start ran (a getty on tty1 on Fedora
+44, kmscon on Fedora 45), by their main processes and by the records they
+wrote in wtmp, numbered below what the session pushed the counter to and in
+the power-of-two range the cold boot gave each. After the first way back the
+rehearsal's scan must find nothing and name the btrfs root, which compresses,
+as not checked. Across each way back the decoy's disk mounts must change only
+where a plain soft-reboot changes them: every file and folder whose contents
+or inode, its labels among its extended attributes, changed since right
+before the entry, held against those that changed across either plain
+soft-reboot, the login record files aside, and a unit's private temporary
+folder counted by its unit, since each start of the unit names a new one. A
+path the decoy's own start changes at every switch therefore shows nothing of
+a session. In this driver, once auditd is off, the gate masks
+`audit-rules.service`, which loads the image's rules at every start and with
+them one that keeps every process from being audited, and has the kernel
+record every program run from below `/run`, with the domain it runs in, and
+apart from those every program run from a file labelled as runtime data
+(`var_run_t`, `init_var_run_t`, `tmpfs_t`), the label a copy of NAILS in
+`/run` has where nothing labels it as a program. Each step the
+run has NAILS's copies run must be among them (the watcher, the sleep guard,
+the last step of each switch, the reconcile step and the disk guard, which no
+process listing catches), none in `init_t` and none, run or refused, from a
+copy labelled as runtime data, and a program the gate runs from such a file
+in each root must be recorded as one. Every
+AVC denial and SELinux error is counted from the boot before NAILS ran, from
+the kernel log and, while auditd runs on the stock decoy, from auditd's log,
+by the wall clock of the markers: a denial is new when a NAILS process or
+path has it, or when the reference boot, the decoy prepared and its first
+plain soft-reboot, did not log its signature (each run of check aside), a
+race of the image's own aside. The audit serial numbers of the boot from the gate's first marker on,
+once it lifted printk's rate limit, must leave no gap between the two logs,
+and no phase from that marker on may hold the kernel's notice of a lost
+record; what the boot's start lost before it is recorded. Each assertion is
+recorded with its outcome and the run goes on where it can; the driver writes
+`<image>-gate.json`, `<image>-gate.kmsg.txt` and a copy of auditd's log,
+`<image>-gate.audit.log`, and fails at its end when one does not hold. Where
+an assertion depends on code that is not in the build yet, its record names
+what it needs.
+
+`<image>-gate-noda` runs the same scenario with the policy's dontaudit rules
+off (`semodule -DB` before the reference boot), so that the denials those
+rules keep out of the log are counted too: a new denial of a NAILS process or
+path fails it, as in the gate, while the quiet denials of other programs,
+which show without those rules, are recorded. It keeps the image's audit
+rules, as every denial would bring its system call's records with it. It writes
+`<image>-gate-noda.json` and `<image>-gate-noda.kmsg.txt`. Every run of the
+gate makes room for 8192 audit records in the kernel's queue
+(`auditctl -b 8192`): with the kernel's 64, this variant lost records at the
+switches. It also has the kernel print only its warnings and worse to the
+console, from the start of the boot it counts from (`/etc/sysctl.d`): a
+kernel line printed in the middle of the backdoor's announcement on the
+serial console split it, and the driver, waiting for that line after a
+soft-reboot, did not see it. Every record stays in the kernel log the gate
+reads.
+
+`<image>-btrfs` plants the btrfs scan controls on the stock image, made
+amnesic first as NAILS requires (journal volatile, auditd off, the run
+stopped when auditd still runs)
+(`py/btrfs_controls.py`, with the reads of `py/btrfs_scan.py`): a file kept
+plain (its folder's compression property `none`), a compressed one (property
+`zstd`, a poison of one short unit repeated) and a compressed one written,
+kept through a few commits and deleted with discard off. The read of the live
+tree through the decoy's own kernel, from a read-only bind, must find the
+first two and not the third. The disk is then imaged whole with the guest
+paused right after the deletion, and on that image the raw scan must find the
+plain one and not the compressed one, which proves the file is stored
+compressed; the read of the newest root with `btrfs restore` must find the
+compressed one, which shows it decompresses what the decoy's kernel wrote,
+and not the deleted one, which shows the deletion reached the disk; and a
+read of the older roots of the tree (`btrfs-find-root`, then
+`btrfs restore -t` of up to 64 of them, the newest left out) must find the
+deleted one at its path, with its contents. A fourth file, deleted with the
+image's own `discard=async`, is recorded only, and so is a second image, taken
+at the guest's power-off as the oracle images driver takes its images: which
+older roots keep each deleted file's path and contents, and the first bytes
+each image holds at their extents. It writes `<image>-btrfs.json` and fails when
+one of the assertions does not hold. No NAILS runs in it.
+
+By hand on a KVM host, as the refusal's:
+
+```sh
+nix build .#legacyPackages.x86_64-linux.e2e-distro.fedora-44-rpms -o fedora-44-rpms
+mkdir -p /var/tmp/g/out
+TMPDIR=/var/tmp/g XDG_RUNTIME_DIR=/var/tmp/g NAILS_GATE_OUT=/var/tmp/g/out \
+  ./fedora-44-rpms/bin/test-driver
+```
+
 ### Running and CI
 
 The tier needs KVM, so it is a VM tier, not a container one. A hosted
@@ -1093,18 +1281,18 @@ passing its label list. `.github/workflows/distro-e2e.yml` runs it in five
 suites: `smoke`, `records` and `refusal`, which run together as `all`, `probe`
 and `staged`. The CI matrix is planned by `python3 -m ci.e2e distro-plan`: the
 smoke shards are kept at or below eight parallel jobs (distributions times their
-shards), and each records scenario, refusal and probe is a job of its own that
-builds its driver and runs `bin/test-driver` on the runner. Each staged
-scenario, the smoke or records scenario of an image staged for its family's
-admission run with a test-only build that admits the family, is a job of its
-own too, built in the sandbox as a smoke scenario is; only a dispatch runs
-them. The nightly runs
+shards), and each records scenario, refusal, probe and staged driver is a job of
+its own that builds its driver and runs `bin/test-driver` on the runner. Each
+staged scenario, the smoke or records scenario of an image staged for its
+family's admission run with a test-only build that admits the family, is a job
+of its own too, built in the sandbox as a smoke scenario is; only a dispatch
+runs the staged suite. The nightly runs
 run `all`. On a pull request, a push runs the records and refusal suites when
 the change touches what the tier is built from, and `all` when the pull request
 carries the `distro-e2e` label, and adding the label runs `all` at once. A
 dispatch takes the suite and the runner as inputs. The records and refusal jobs
 gate: the workflow's `distro-result` fails when one of them fails. The smoke
-and staged scenarios and the probes are informational
+and staged scenarios, the staged drivers and the probes are informational
 ([details](../../docs/ci.md#the-vm-tests-distro-e2eyml)). The NixOS suite in
 `e2e.yml` is unchanged and stays NixOS-only.
 

@@ -25,6 +25,12 @@ pub fn mount_is_read_only(entry: &MountEntry) -> bool {
     entry.read_only() || entry.super_opts.split(',').any(|opt| opt == "ro")
 }
 
+/// What to do where a check cannot read the mount table, which shows where
+/// each filesystem is mounted from and where a lookup would mount an
+/// automount point.
+pub const UNREADABLE_FIX: &str =
+    "Run the check where /proc is mounted and readable, so that NAILS can read the mount table.";
+
 /// Read and parse `/proc/self/mountinfo` once.
 pub fn read_mountinfo() -> Result<Vec<MountEntry>> {
     nails_teardown::mountinfo::read_mountinfo().at_path(nails_teardown::mountinfo::SELF_MOUNTINFO)

@@ -287,6 +287,122 @@ fn the_kernel_config_decides_when_the_command_line_is_silent() {
     assert!(off.is_warn(), "{}", off.message());
 }
 
+/// A command line that is there but cannot be read may turn init_on_free
+/// off, or page poisoning on: the config's default no longer says freed
+/// memory is zeroed, and the informational pass names the command line,
+/// where the config decided and the check said the kernel zeroes it.
+#[test]
+fn a_command_line_that_cannot_be_read_lets_no_config_say_zeroed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // A directory where the command line is: a read fails, and not as
+    // missing.
+    std::fs::create_dir(root.join("cmdline")).unwrap();
+    write(root, "osrelease", "test-kernel\n");
+    write(
+        root,
+        "boot/config-test-kernel",
+        "CONFIG_INIT_ON_FREE_DEFAULT_ON=y\n",
+    );
+    let check = MemoryWipeCheck {
+        cmdline_path: root.join("cmdline"),
+        osrelease_path: root.join("osrelease"),
+        config: ConfigSources {
+            proc_config: root.join("config.gz"),
+            boot_dir: root.join("boot"),
+            modules_dir: root.join("modules"),
+        },
+        dracut_modules_dir: root.join("dracut-modules.d"),
+    };
+    let result = check.run(&RealFilesystem).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.starts_with("Could not read whether the decoy kernel zeroes freed memory"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "NAILS cannot look up {}/cmdline (",
+            root.display()
+        )),
+        "{message}"
+    );
+}
+
+/// A release that is there but cannot be read leaves untold which values
+/// the kernel accepts: `init_on_free=enable` turns zeroing on from Linux
+/// 6.16 on, and an older kernel rejects it. Only an answer both give counts,
+/// so the informational pass names the release, where the newer spelling
+/// was taken and the check said a 6.12 kernel zeroes freed memory. An
+/// answer both give still counts.
+#[test]
+fn a_release_that_cannot_be_read_lets_only_an_answer_both_spellings_give_count() {
+    let run_with = |release: Option<&str>, cmdline: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "cmdline", cmdline);
+        match release {
+            Some(release) => write(root, "osrelease", release),
+            // A directory: a read fails, and not as missing.
+            None => std::fs::create_dir(root.join("osrelease")).unwrap(),
+        }
+        write(
+            root,
+            "boot/config-6.12.48",
+            "# CONFIG_INIT_ON_FREE_DEFAULT_ON is not set\n",
+        );
+        let check = MemoryWipeCheck {
+            cmdline_path: root.join("cmdline"),
+            osrelease_path: root.join("osrelease"),
+            config: ConfigSources {
+                proc_config: root.join("config.gz"),
+                boot_dir: root.join("boot"),
+                modules_dir: root.join("modules"),
+            },
+            dracut_modules_dir: root.join("dracut-modules.d"),
+        };
+        (
+            check.run(&RealFilesystem).unwrap(),
+            root.display().to_string(),
+        )
+    };
+    let enable = "BOOT_IMAGE=/vmlinuz init_on_free=enable quiet\n";
+    // With the release read, each kernel reads `enable` its own way: 6.12
+    // rejects it, and its config's default keeps freed memory.
+    let (older, _) = run_with(Some("6.12.48\n"), enable);
+    assert!(older.is_warn(), "{older:?}");
+    let (newer, _) = run_with(Some("6.16.1\n"), enable);
+    assert!(
+        newer
+            .message()
+            .starts_with("The decoy kernel zeroes freed memory"),
+        "{newer:?}"
+    );
+
+    let (unread, root) = run_with(None, enable);
+    assert!(unread.is_pass(), "{unread:?}");
+    let message = unread.message();
+    assert!(
+        message.starts_with("Could not read whether the decoy kernel zeroes freed memory"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("NAILS cannot look up {root}/osrelease (")),
+        "{message}"
+    );
+
+    // `init_on_free=1` and `=0` mean the same to every release.
+    let (on, _) = run_with(None, "init_on_free=1\n");
+    assert!(
+        on.message()
+            .starts_with("The decoy kernel zeroes freed memory"),
+        "{on:?}"
+    );
+    let (off, _) = run_with(None, "init_on_free=0\n");
+    assert!(off.is_warn(), "{off:?}");
+}
+
 #[test]
 fn the_command_line_overrides_the_kernel_config() {
     // init_on_free=1 wins over a config default of off.

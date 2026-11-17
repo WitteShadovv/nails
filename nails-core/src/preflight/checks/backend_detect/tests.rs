@@ -161,13 +161,43 @@ fn trait_metadata_is_stable() {
     );
 }
 
+/// Without a mount table the check cannot find the device the hidden root
+/// is on, so it cannot tell whether discards reach the hidden volume: it
+/// refuses as it refuses discards, where it used to pass as skipped, and
+/// says how to let it read the table. `--allow-discards` turns that into a
+/// warning, as it turns the discard refusal.
 #[test]
-fn run_without_mountinfo_passes() {
-    // An empty mock has no mount table: detection is skipped, never failed.
+fn a_mount_table_that_cannot_be_read_refuses_as_discards_do() {
     let fs = MockFilesystem::new();
-    let result = BackendDetectCheck::default().run(&fs).unwrap();
-    assert!(result.is_pass());
-    assert!(result.message().contains("skipped"));
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::NotFound,
+    ] {
+        fs.mock_set_lookup_error(MOUNTINFO, kind);
+        let result = BackendDetectCheck::default().run(&fs).unwrap();
+        assert!(result.is_fail(), "{kind:?}: {result:?}");
+        assert!(
+            result.message().starts_with(
+                "NAILS cannot tell whether discards reach the hidden volume, or which storage \
+                 backend the hidden root is on: it cannot read the mount table ("
+            ),
+            "{result:?}"
+        );
+        assert_eq!(result.remediation(), Some(mountinfo::UNREADABLE_FIX));
+        assert_eq!(result.allowable(), Some(Allowable::Discards));
+
+        let accepted = BackendDetectCheck::default()
+            .allowing_discards(true)
+            .run(&fs)
+            .unwrap();
+        assert!(accepted.is_warn(), "{kind:?}: {accepted:?}");
+        assert!(
+            accepted
+                .message()
+                .contains("Discards over the hidden volume are accepted for this run."),
+            "{accepted:?}"
+        );
+    }
 }
 
 // ------------------------------------------------------------------------
@@ -254,7 +284,7 @@ fn detects_tcrypt_mapping_over_loop_container_from_fixtures() {
     let mount = mount_containing(&entries, Path::new(ROOT)).unwrap();
     let top = blockdev::device_of_mount(&fs, mount).unwrap();
     assert_eq!(top, PathBuf::from("/sys/dev/block/253:3"));
-    let layers = device_layers(&fs, &top);
+    let (layers, _) = device_layers(&fs, &top);
 
     assert_eq!(layers.len(), 2);
     assert_eq!(layers[0].name, "dm-3");
@@ -512,6 +542,173 @@ fn discard_enabled_tcrypt_mapping_refuses_unless_allowed() {
     assert!(allowed.message().contains(BACKENDS_DOC));
 }
 
+/// A device or an attribute below the hidden root that sysfs shows but
+/// NAILS cannot read may show a mapping that forwards discards: the check
+/// cannot tell, and refuses as for discards, naming no device-mapper node,
+/// where the read that failed showed none and the check passed or only
+/// warned. `--allow-discards` turns it into a warning. An attribute that is
+/// not there shows nothing.
+#[test]
+fn a_device_below_the_hidden_root_that_cannot_be_read_refuses_as_discards_do() {
+    for (path, says) in [
+        (
+            "/sys/dev/block/253:3/queue/discard_max_bytes",
+            "sysfs shows queue/discard_max_bytes of a device below the hidden root, but NAILS \
+             cannot read it",
+        ),
+        (
+            "/sys/dev/block/253:3/dm/uuid",
+            "sysfs shows dm/uuid of a device below the hidden root",
+        ),
+        (
+            "/sys/dev/block/253:3/slaves/loop0/loop/backing_file",
+            "sysfs shows loop/backing_file of a device below the hidden root",
+        ),
+        (
+            "/sys/dev/block/253:3/dev",
+            "sysfs shows the device the hidden root is mounted from, but NAILS cannot read it",
+        ),
+    ] {
+        let fs = tcrypt_container_fixture("ext4", "0");
+        fs.mock_set_lookup_error(path, std::io::ErrorKind::Other);
+        let refused = assess_offline(&fs, Path::new(ROOT));
+        assert!(refused.is_fail(), "{path}: {refused:?}");
+        assert!(
+            refused.message().starts_with(
+                "NAILS cannot tell whether discards reach the hidden volume: sysfs shows "
+            ) && refused.message().contains(says),
+            "{path}: {refused:?}"
+        );
+        assert_names_no_dm_node(&refused);
+        assert_eq!(refused.allowable(), Some(nails_api::Allowable::Discards));
+        let allowed = assess_offline_allowing_discards(&fs, Path::new(ROOT));
+        assert!(allowed.is_warn(), "{path}: {allowed:?}");
+        assert!(allowed.message().contains(says), "{allowed:?}");
+        assert!(
+            allowed.message().contains("accepted for this run"),
+            "{allowed:?}"
+        );
+    }
+
+    // A mapping with no uuid, as the VeraCrypt application made up to
+    // 1.26.29, is told by its name: one that cannot be read leaves its kind,
+    // and whether it forwards discards, untold.
+    let fs = tcrypt_container_fixture("ext4", "0");
+    fs.mock_set_file_content("/sys/dev/block/253:3/dm/uuid", "\n");
+    fs.mock_set_file_content("/sys/dev/block/253:3/dm/name", "veracrypt1\n");
+    fs.mock_set_lookup_error("/sys/dev/block/253:3/dm/name", std::io::ErrorKind::Other);
+    let refused = assess_offline(&fs, Path::new(ROOT));
+    assert!(
+        refused.is_fail()
+            && refused.message().contains(
+                "sysfs shows dm/name of a device below the hidden root, but NAILS cannot read it, \
+                 and it may show a device that forwards them"
+            ),
+        "{refused:?}"
+    );
+
+    // Two of them.
+    let fs = tcrypt_container_fixture("ext4", "0");
+    for path in [
+        "/sys/dev/block/253:3/dm/uuid",
+        "/sys/dev/block/253:3/queue/discard_max_bytes",
+    ] {
+        fs.mock_set_lookup_error(path, std::io::ErrorKind::PermissionDenied);
+    }
+    let refused = assess_offline(&fs, Path::new(ROOT));
+    assert!(
+        refused.message().contains(
+            "sysfs shows dm/uuid and queue/discard_max_bytes of a device below the hidden root, \
+             but NAILS cannot read them, and they may show a device that forwards them"
+        ),
+        "{refused:?}"
+    );
+
+    // The slaves of the mapping, which NAILS cannot list, may hold another.
+    let fs = tcrypt_container_fixture("ext4", "0");
+    fs.mock_set_unreadable_dir("/sys/dev/block/253:3/slaves");
+    let refused = assess_offline(&fs, Path::new(ROOT));
+    assert!(
+        refused.is_fail() && refused.message().contains("sysfs shows slaves of a device"),
+        "{refused:?}"
+    );
+
+    // Not there: a device without discard attributes shows none.
+    let fs = tcrypt_container_fixture("ext4", "0");
+    fs.mock_set_lookup_error(
+        "/sys/dev/block/253:3/queue/discard_max_bytes",
+        std::io::ErrorKind::NotFound,
+    );
+    let result = assess_offline(&fs, Path::new(ROOT));
+    assert!(!result.is_fail(), "{result:?}");
+}
+
+/// An attribute or listing below the hidden root that decides nothing of
+/// what the check finds, there in sysfs but unreadable, changes nothing: no
+/// refusal as for discards, where every unread attribute refused, and the
+/// same result as with it read.
+#[test]
+fn an_attribute_below_the_hidden_root_that_decides_nothing_refuses_nothing() {
+    let readable = assess_offline(&tcrypt_container_fixture("ext4", "0"), Path::new(ROOT));
+    assert!(readable.is_warn(), "{readable:?}");
+    for path in [
+        "/sys/dev/block/253:3/ro",
+        "/sys/dev/block/253:3/size",
+        "/sys/dev/block/253:3/holders",
+        "/sys/dev/block/253:3/partition",
+        "/sys/dev/block/253:3/slaves/loop0/loop/offset",
+        "/sys/dev/block/253:3/slaves/loop0/loop/sizelimit",
+        // The name of a mapping whose uuid already says it is a TCRYPT one.
+        "/sys/dev/block/253:3/dm/name",
+        // Whether a loop device, which is no mapping, forwards discards.
+        "/sys/dev/block/253:3/slaves/loop0/queue/discard_max_bytes",
+    ] {
+        let fs = tcrypt_container_fixture("ext4", "0");
+        fs.mock_set_lookup_error(path, std::io::ErrorKind::PermissionDenied);
+        assert_eq!(assess_offline(&fs, Path::new(ROOT)), readable, "{path}");
+    }
+
+    // A LUKS mapping's name, and whether the partition below it forwards
+    // discards, decide nothing either.
+    let readable = assess_offline(&luks_on_partition_fixture(), Path::new(ROOT));
+    assert!(readable.is_pass(), "{readable:?}");
+    for path in [
+        "/sys/dev/block/253:2/dm/name",
+        "/sys/dev/block/253:2/slaves/sdb2/queue/discard_max_bytes",
+    ] {
+        let fs = luks_on_partition_fixture();
+        fs.mock_set_lookup_error(path, std::io::ErrorKind::PermissionDenied);
+        assert_eq!(assess_offline(&fs, Path::new(ROOT)), readable, "{path}");
+    }
+}
+
+/// A loop device over a block device whose `loop/autoclear` sysfs shows but
+/// NAILS cannot read warns that it cannot tell, where it would say it was
+/// attached without autoclear: it does not claim what it did not read.
+#[test]
+fn a_loop_whose_autoclear_cannot_be_read_warns_that_it_cannot_tell() {
+    let host = luks_on_a_loop_over_a_partition(true);
+    host.fs.mock_set_lookup_error(
+        "/sys/devices/virtual/block/loop0/loop/autoclear",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let result = detect_on(&host);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "NAILS cannot tell whether loop device loop0 over sdb2 was attached with autoclear: \
+             sysfs shows its loop/autoclear, but NAILS cannot read it. Without autoclear it stays \
+             bound after the hidden volume is closed, after a session too, until losetup -d \
+             detaches it."
+        ),
+        "{result:?}"
+    );
+    assert!(
+        !result.message().contains("was attached without autoclear"),
+        "{result:?}"
+    );
+}
+
 /// The refusal and its remediation name no device-mapper node (`dm-N` or
 /// `/dev/mapper/...`).
 fn assert_names_no_dm_node(result: &CheckResult) {
@@ -703,7 +900,7 @@ fn a_walk_cut_short_after_a_zram_leaf_excepts_nothing() {
 
     // The walk reads sixteen devices, zram0 the last of them, and stops
     // before the ten disks: the only bottom device it saw is zram0.
-    let layers = device_layers(&fs, Path::new(top));
+    let (layers, _) = device_layers(&fs, Path::new(top));
     assert_eq!(layers.len(), blockdev::MAX_STACK_DEVICES);
     assert!(layers.iter().any(|layer| layer.name == "zram0"));
     assert!(!layers.iter().any(|layer| layer.name.starts_with("sd")));

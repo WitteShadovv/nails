@@ -10,7 +10,9 @@
 use super::walk::{parse_backing_file, parse_u64, uevent_value};
 use super::*;
 use crate::filesystem::mountinfo::parse_mountinfo;
-use crate::filesystem::{Filesystem, MockFilesystem};
+use crate::filesystem::{Filesystem, MockFailure, MockFilesystem, MockLookup};
+use std::io::ErrorKind;
+use std::os::unix::ffi::OsStrExt;
 
 /// A mock sysfs, built one device at a time.
 struct Sysfs(MockFilesystem);
@@ -115,11 +117,18 @@ fn loop_device(sysfs: &Sysfs, backing: &str) {
 #[test]
 fn parse_backing_file_strips_newline_and_rejects_empty() {
     assert_eq!(
-        parse_backing_file("/home/alice/family photos\n"),
+        parse_backing_file(b"/home/alice/family photos\n"),
         Some(PathBuf::from("/home/alice/family photos"))
     );
-    assert_eq!(parse_backing_file("\n"), None);
-    assert_eq!(parse_backing_file(""), None);
+    assert_eq!(parse_backing_file(b"\n"), None);
+    assert_eq!(parse_backing_file(b""), None);
+    // A name in bytes that are no UTF-8, as the kernel gives it.
+    assert_eq!(
+        parse_backing_file(b"/home/alice/caf\xe9.img\n"),
+        Some(PathBuf::from(std::ffi::OsStr::from_bytes(
+            b"/home/alice/caf\xe9.img"
+        )))
+    );
 }
 
 #[test]
@@ -495,6 +504,218 @@ fn holders_and_the_read_only_flag_are_read() {
     );
 }
 
+/// Each attribute and listing a walk reads that sysfs shows but NAILS
+/// cannot read is kept with what it is, so a reader can count those it
+/// decides by: of a partition and its disk, of a device-mapper device and
+/// of a loop device. One that is not there, or below a component that is no
+/// directory, is kept as nothing.
+#[test]
+fn an_attribute_that_cannot_be_read_is_kept_with_what_it_is() {
+    fn partition() -> Sysfs {
+        let sysfs = Sysfs::new();
+        disk_with_partition(&sysfs);
+        sysfs.file(SDB2, "size", "204800").file(SDB2, "ro", "0");
+        sysfs.file(SDB2, "queue/discard_max_bytes", "0");
+        sysfs.links(SDB2, "holders", &[]);
+        sysfs
+    }
+    fn mapping() -> Sysfs {
+        let sysfs = Sysfs::new();
+        sysfs
+            .device(DM4, "dm-4", "253:4")
+            .file(DM4, "dm/name", "data")
+            .file(DM4, "dm/uuid", "CRYPT-LUKS2-0123-data")
+            .links(DM4, "slaves", &[]);
+        sysfs
+    }
+    fn bound() -> Sysfs {
+        let sysfs = Sysfs::new();
+        loop_device(&sysfs, "/srv/container.img");
+        sysfs
+    }
+    /// A fixture, the device to walk from, a place in it and which one.
+    type Case = (fn() -> Sysfs, &'static str, String, Attribute);
+    let sdb = SDB;
+    let cases: [Case; 17] = [
+        (partition, SDB2, format!("{SDB2}/uevent"), Attribute::Uevent),
+        (partition, SDB2, format!("{SDB2}/dev"), Attribute::Dev),
+        (partition, SDB2, format!("{SDB2}/ro"), Attribute::ReadOnly),
+        (partition, SDB2, format!("{SDB2}/size"), Attribute::Size),
+        (
+            partition,
+            SDB2,
+            format!("{SDB2}/queue/discard_max_bytes"),
+            Attribute::DiscardMaxBytes,
+        ),
+        (
+            partition,
+            SDB2,
+            format!("{SDB2}/holders"),
+            Attribute::Holders,
+        ),
+        (
+            partition,
+            SDB2,
+            format!("{SDB2}/partition"),
+            Attribute::Partition,
+        ),
+        (partition, SDB2, format!("{SDB2}/start"), Attribute::Start),
+        (partition, SDB2, format!("{sdb}/dev"), Attribute::DiskDev),
+        (
+            partition,
+            SDB2,
+            format!("{sdb}/uevent"),
+            Attribute::DiskUevent,
+        ),
+        (mapping, DM4, format!("{DM4}/dm/name"), Attribute::DmName),
+        (mapping, DM4, format!("{DM4}/dm/uuid"), Attribute::DmUuid),
+        (mapping, DM4, format!("{DM4}/slaves"), Attribute::Slaves),
+        (
+            bound,
+            LOOP0,
+            format!("{LOOP0}/loop/backing_file"),
+            Attribute::LoopBackingFile,
+        ),
+        (
+            bound,
+            LOOP0,
+            format!("{LOOP0}/loop/offset"),
+            Attribute::LoopOffset,
+        ),
+        (
+            bound,
+            LOOP0,
+            format!("{LOOP0}/loop/sizelimit"),
+            Attribute::LoopSizeLimit,
+        ),
+        (
+            bound,
+            LOOP0,
+            format!("{LOOP0}/loop/autoclear"),
+            Attribute::LoopAutoclear,
+        ),
+    ];
+    for (build, top, path, attribute) in cases {
+        let sysfs = build();
+        assert!(
+            sysfs.stack(top, LoopFollow::Never)[0].unread.is_empty(),
+            "{path}: read whole"
+        );
+        sysfs
+            .0
+            .mock_set_lookup_error(&path, ErrorKind::PermissionDenied);
+        let layer = &sysfs.stack(top, LoopFollow::Never)[0];
+        assert_eq!(
+            layer.unread,
+            vec![Unread {
+                attribute,
+                path: PathBuf::from(&path),
+            }],
+            "{path}"
+        );
+        assert_eq!(
+            layer.unread_among(&[attribute]).count(),
+            1,
+            "{path}: counted among its own"
+        );
+        let others: Vec<Attribute> = [Attribute::Uevent, Attribute::Size]
+            .into_iter()
+            .filter(|other| *other != attribute)
+            .collect();
+        assert_eq!(layer.unread_among(&others).count(), 0, "{path}");
+
+        for nothing in [ErrorKind::NotFound, ErrorKind::NotADirectory] {
+            let sysfs = build();
+            sysfs.0.mock_set_lookup_error(&path, nothing);
+            let layer = &sysfs.stack(top, LoopFollow::Never)[0];
+            assert!(layer.unread.is_empty(), "{path} {nothing:?}: {layer:?}");
+            assert!(
+                !layer.slaves_unread && !layer.holders_unread,
+                "{path} {nothing:?}"
+            );
+        }
+    }
+}
+
+/// An attribute is read as bytes: a loop device whose file has a name that
+/// is no UTF-8 reads that file, by those bytes, and nothing is unread.
+#[test]
+fn a_loop_device_over_a_file_whose_name_is_no_text_reads_that_file() {
+    let sysfs = Sysfs::new();
+    sysfs.device(LOOP0, "loop0", "7:0");
+    sysfs
+        .0
+        .mock_set_file_bytes(&format!("{LOOP0}/loop/backing_file"), b"/srv/caf\xe9.img\n");
+    let layer = &sysfs.stack(LOOP0, LoopFollow::Never)[0];
+    assert!(layer.unread.is_empty(), "{layer:?}");
+    assert_eq!(
+        layer.loop_device.as_ref().map(|bound| &bound.backing),
+        Some(&LoopBacking::File(PathBuf::from(
+            std::ffi::OsStr::from_bytes(b"/srv/caf\xe9.img")
+        )))
+    );
+}
+
+/// A loop device over a device node NAILS cannot resolve, or over a device
+/// whose number it cannot read, may read a block device: the walk keeps the
+/// place as an unread `loop/backing_file`, where it would take the node for
+/// a file and stop.
+#[test]
+fn a_loop_over_a_node_that_cannot_be_resolved_keeps_what_it_reads_unread() {
+    let sysfs = Sysfs::new();
+    disk_with_partition(&sysfs);
+    loop_device(&sysfs, "/dev/sdb2");
+    sysfs
+        .0
+        .mock_set_mount_root_error("/dev/sdb2", ErrorKind::PermissionDenied);
+    let layer = &sysfs.stack(LOOP0, LoopFollow::default())[0];
+    assert_eq!(
+        layer.unread,
+        vec![Unread {
+            attribute: Attribute::LoopBackingFile,
+            path: PathBuf::from("/dev/sdb2"),
+        }]
+    );
+
+    let sysfs = Sysfs::new();
+    disk_with_partition(&sysfs);
+    loop_device(&sysfs, "/dev/sdb2");
+    sysfs
+        .0
+        .mock_set_lookup_error(&format!("{SDB2}/dev"), ErrorKind::PermissionDenied);
+    let layer = &sysfs.stack(LOOP0, LoopFollow::Never)[0];
+    assert_eq!(
+        layer.unread,
+        vec![Unread {
+            attribute: Attribute::LoopBackingFile,
+            path: PathBuf::from(format!("{SDB2}/dev")),
+        }]
+    );
+}
+
+/// A mount on `/dev/mapper/<name>` whose device NAILS looks for among
+/// `/sys/block` cannot be found where that cannot be listed: the walk says
+/// where it could not look, where `device_of_mount` alone says none.
+#[test]
+fn a_mapper_source_whose_devices_cannot_be_listed_says_where() {
+    let sysfs = Sysfs::new();
+    sysfs
+        .device(DM4, "dm-4", "253:4")
+        .file(DM4, "dm/name", "data")
+        .links("/sys", "block", &[("dm-4", DM4)]);
+    let mount = parse_mountinfo("40 1 0:45 / /mnt/data rw - btrfs /dev/mapper/data rw").remove(0);
+    assert_eq!(
+        device_of_mount_or_unread(&sysfs.0, &mount),
+        Ok(Some(PathBuf::from(DM4)))
+    );
+    sysfs.0.mock_set_unreadable_dir("/sys/block");
+    assert_eq!(
+        device_of_mount_or_unread(&sysfs.0, &mount),
+        Err(PathBuf::from("/sys/block"))
+    );
+    assert_eq!(device_of_mount(&sysfs.0, &mount), None);
+}
+
 #[test]
 fn a_cascade_classifies_its_veracrypt_and_subdev_layers() {
     let sysfs = Sysfs::new();
@@ -671,6 +892,67 @@ fn specs_resolve_through_dev_to_their_device() {
     assert_eq!(resolve("/dev/sdz9"), None);
     assert_eq!(resolve("/home/alice/box.img"), None);
     assert_eq!(resolve("tmpfs"), None);
+
+    // A link that is there but cannot be resolved, or the number of the
+    // device it leads to that cannot be read, may name a device: the place
+    // is named, where `resolve_spec` alone says none.
+    let or_unread = |spec: &str| resolve_spec_or_unread(&sysfs.0, spec);
+    assert_eq!(or_unread("UUID=ffff"), Ok(None));
+    sysfs
+        .0
+        .mock_set_lookup_error("/dev/disk/by-label/data", ErrorKind::PermissionDenied);
+    assert_eq!(
+        or_unread("LABEL=data"),
+        Err(PathBuf::from("/dev/disk/by-label/data"))
+    );
+    assert_eq!(resolve("LABEL=data"), None);
+    sysfs
+        .0
+        .mock_set_lookup_error(&format!("{DM4}/dev"), ErrorKind::Other);
+    assert_eq!(
+        or_unread("/dev/mapper/data"),
+        Err(PathBuf::from(format!("{DM4}/dev")))
+    );
+}
+
+/// A partition the walk reaches by a `slaves/` link it cannot resolve reads
+/// as a partition, but its disk is the directory above the one the link
+/// leads to: the walk keeps the link as its disk's unread `dev`.
+#[test]
+fn a_partition_reached_by_a_link_that_cannot_be_resolved_has_an_untold_disk() {
+    let sysfs = Sysfs::new();
+    disk_with_partition(&sysfs);
+    sysfs
+        .device(DM4, "dm-4", "253:4")
+        .links(DM4, "slaves", &[("sdb2", SDB2)]);
+    let read = sysfs.stack(DM4, LoopFollow::default());
+    assert_eq!(
+        read[1].partition.as_ref().unwrap().disk.as_deref(),
+        Some("sdb")
+    );
+    assert!(read[1].unread.is_empty(), "{:?}", read[1].unread);
+
+    // The kernel serves the partition's attributes through the link.
+    let link = format!("{DM4}/slaves/sdb2");
+    for (attribute, value) in [("dev", "8:18"), ("partition", "2"), ("start", "2048")] {
+        sysfs.file(&link, attribute, value);
+    }
+    sysfs.0.mock_fail_only(
+        Path::new(&link),
+        MockLookup::Canonicalize,
+        MockFailure::Io(ErrorKind::PermissionDenied),
+    );
+    let read = sysfs.stack(DM4, LoopFollow::default());
+    let partition = read[1].partition.as_ref().expect("still a partition");
+    assert_eq!(partition.number, 2);
+    assert_eq!(partition.disk, None);
+    assert_eq!(
+        read[1].unread,
+        vec![Unread {
+            attribute: Attribute::DiskDev,
+            path: PathBuf::from(&link),
+        }]
+    );
 }
 
 #[test]
@@ -691,10 +973,33 @@ fn btrfs_members_are_every_device_of_the_filesystem() {
             ("dm-1", "/sys/devices/virtual/block/dm-1"),
         ],
     );
-    assert_eq!(btrfs_members(&sysfs.0, "sdb3"), vec!["dm-1", "sdb3"]);
-    assert_eq!(btrfs_members(&sysfs.0, "dm-1"), vec!["dm-1", "sdb3"]);
-    assert!(btrfs_members(&sysfs.0, "sda1").is_empty());
-    assert!(btrfs_members(&MockFilesystem::new(), "sdb3").is_empty());
+    assert_eq!(
+        btrfs_members(&sysfs.0, "sdb3").unwrap(),
+        vec!["dm-1", "sdb3"]
+    );
+    assert_eq!(
+        btrfs_members(&sysfs.0, "dm-1").unwrap(),
+        vec!["dm-1", "sdb3"]
+    );
+    assert!(btrfs_members(&sysfs.0, "sda1").unwrap().is_empty());
+    assert!(
+        btrfs_members(&MockFilesystem::new(), "sdb3")
+            .unwrap()
+            .is_empty()
+    );
+
+    // A listing that is there but cannot be read may hide the members: an
+    // error that names it, never none. The first place read is named.
+    for (place, kind) in [
+        (
+            "/sys/fs/btrfs/0a1b2c3d-0000-4000-8000-000000000001/devices",
+            std::io::ErrorKind::Other,
+        ),
+        ("/sys/fs/btrfs", std::io::ErrorKind::PermissionDenied),
+    ] {
+        sysfs.0.mock_set_lookup_error(place, kind);
+        assert_eq!(btrfs_members(&sysfs.0, "sdb3"), Err(PathBuf::from(place)));
+    }
 }
 
 // ------------------------------------------------------------------------

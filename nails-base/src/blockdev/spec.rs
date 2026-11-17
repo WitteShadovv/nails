@@ -3,29 +3,55 @@
 
 //! From the names a configuration file uses to the devices they mean.
 
-use super::SYS_FS_BTRFS;
-use super::walk::{dev_node_dir, names, sorted_listing};
+use super::walk::{dev_node_dir_noting, names};
+use super::{Attribute, SYS_FS_BTRFS};
 use crate::Filesystem;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 /// The sysfs directory of the block device an fstab or crypttab spec names:
 /// `/dev/sdb1`, `/dev/mapper/data`, a `/dev/disk/by-*` name, or `UUID=`,
 /// `PARTUUID=`, `LABEL=` and `PARTLABEL=`, which udev links under
 /// `/dev/disk`. `None` for a file, a pseudo source such as `tmpfs`, or a
-/// device that is not present.
+/// device that is not present, and also for one NAILS cannot resolve
+/// ([`resolve_spec_or_unread`] tells that apart).
 pub fn resolve_spec<F: Filesystem>(fs: &F, spec: &str) -> Option<PathBuf> {
-    dev_node_dir(fs, &crate::fstab::spec_device(spec)?)
+    resolve_spec_or_unread(fs, spec).ok().flatten()
+}
+
+/// [`resolve_spec`], telling a spec that names no device here from one
+/// NAILS cannot resolve: `Err` names the device node, or the `dev` attribute
+/// of the device it leads to, that is there but could not be resolved or
+/// read, for another reason than that it is not there.
+pub fn resolve_spec_or_unread<F: Filesystem>(
+    fs: &F,
+    spec: &str,
+) -> Result<Option<PathBuf>, PathBuf> {
+    let Some(device) = crate::fstab::spec_device(spec) else {
+        return Ok(None);
+    };
+    let unread = RefCell::new(Vec::new());
+    match dev_node_dir_noting(fs, &device, Attribute::Dev, &unread) {
+        Some(dir) => Ok(Some(dir)),
+        None => unread
+            .into_inner()
+            .into_iter()
+            .next()
+            .map_or(Ok(None), |unread| Err(unread.path)),
+    }
 }
 
 /// Every device of the btrfs filesystem that the device `name` (a kernel
 /// name) belongs to, sorted: the entries of `/sys/fs/btrfs/<fsid>/devices/`.
-/// Empty when no mounted btrfs filesystem uses `name`.
-pub fn btrfs_members<F: Filesystem>(fs: &F, name: &str) -> Vec<String> {
-    sorted_listing(fs, Path::new(SYS_FS_BTRFS))
-        .iter()
-        .map(|filesystem| names(&sorted_listing(fs, &filesystem.join("devices"))))
+/// Empty when no mounted btrfs filesystem uses `name`. The error is a
+/// listing that is there but could not be read, as for
+/// [`btrfs_filesystems`]: the filesystem of `name` could then have devices
+/// this does not name.
+pub fn btrfs_members<F: Filesystem>(fs: &F, name: &str) -> Result<Vec<String>, PathBuf> {
+    Ok(btrfs_filesystems(fs)?
+        .into_iter()
         .find(|members| members.iter().any(|member| member == name))
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 /// The devices of every btrfs filesystem `/sys/fs/btrfs` lists, by kernel

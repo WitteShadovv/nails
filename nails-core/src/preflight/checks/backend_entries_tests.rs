@@ -372,6 +372,47 @@ fn an_unreadable_crypttab_fails_and_asks_for_sudo() {
 }
 
 #[test]
+fn a_disk_link_a_line_names_that_cannot_be_resolved_fails() {
+    // Resolved, each line opens or mounts the hidden volume. A link that
+    // cannot be resolved may name it just the same.
+    let link = "/dev/disk/by-uuid/0011-2233";
+    let cases = [
+        (
+            "/etc/crypttab",
+            "vault UUID=0011-2233 none luks,noauto\n",
+            "/dev/sdb",
+        ),
+        (
+            "/etc/fstab",
+            "/dev/nvme0n1p3 / ext4 defaults 0 1\nUUID=0011-2233 /srv/x ext4 noauto 0 0\n",
+            "/dev/dm-9",
+        ),
+    ];
+    for (file, text, target) in cases {
+        let readable = decoy().file(file, text);
+        readable.link(link, target);
+        let result = readable.run();
+        assert!(result.is_fail(), "{file}: {result:?}");
+        assert!(!result.message().contains("Could not read"), "{result:?}");
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Other,
+        ] {
+            let decoy = decoy().file(file, text);
+            decoy.link(link, target);
+            decoy.fs.mock_set_lookup_error(link, kind);
+            let result = decoy.run();
+            assert!(result.is_fail(), "{file} {kind:?}: {result:?}");
+            assert!(
+                result.message().contains(&format!("Could not read {link}")),
+                "{}",
+                result.message()
+            );
+        }
+    }
+}
+
+#[test]
 fn a_ram_root_or_a_folder_has_no_entries_to_find() {
     let ram = Decoy::new(
         "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\

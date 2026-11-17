@@ -23,11 +23,14 @@
 //! - every run skips the volume: pass, naming the rule that skips it;
 //! - an updatedb that runs now, or that a timer, a path unit, an enabled
 //!   service or a cron job starts ([`read`]), and that does not skip it:
-//!   fail. No flag lifts this refusal;
+//!   fail. No flag lifts this refusal. One NAILS cannot tell is findutils'
+//!   or not, as where it cannot resolve the link of its program, fails
+//!   where the lists plocate and mlocate read do not skip the volume;
 //! - one NAILS cannot tell about (an unreadable or broken configuration file,
-//!   a command or option it does not follow, findutils' updatedb, a unit
-//!   directory, crontab or cron script it cannot read), or one only a person
-//!   starts that does not skip the volume: warn.
+//!   a command or option it does not follow, findutils' updatedb, one it
+//!   cannot tell is findutils' or not whose plocate and mlocate lists skip
+//!   the volume, a unit directory, crontab or cron script it cannot read),
+//!   or one only a person starts that does not skip the volume: warn.
 //!
 //! Nothing is written. The decoy's files are read under a root, so that a
 //! scan of an offline image can read them as well, with `O_NOATIME` and

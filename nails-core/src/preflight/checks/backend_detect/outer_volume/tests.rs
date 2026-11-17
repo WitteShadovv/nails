@@ -490,6 +490,110 @@ fn devices_sysfs_does_not_let_the_check_list_warn() {
     );
 }
 
+/// An attribute the check decides by that sysfs shows but NAILS cannot read
+/// leaves it unable to tell, and where it would pass it warns so, where it
+/// passed: what kind of mapping the hidden volume's mapping is or one built
+/// beside it, and what a loop device that may hold the same data reads, or
+/// from where. A writable mapping it could judge warns all the same, and an
+/// attribute that decides nothing here changes nothing.
+#[test]
+fn an_attribute_the_check_decides_by_that_cannot_be_read_warns() {
+    let cannot = |why: &str| {
+        format!("Could not check for an outer volume open beside the hidden root at {ROOT}: {why}.")
+    };
+    let denied = std::io::ErrorKind::PermissionDenied;
+    let alone = || hidden("").loop_device("loop1", "7:1", "/srv/other.img");
+    assert!(run(&alone()).is_pass(), "{:?}", run(&alone()));
+    for (path, why) in [
+        (
+            "/sys/devices/virtual/block/dm-9/dm/uuid",
+            "sysfs shows dm/uuid of a device below it, but NAILS cannot read it",
+        ),
+        (
+            "/sys/devices/virtual/block/dm-9/dm/name",
+            "sysfs shows dm/name of a device below it, but NAILS cannot read it",
+        ),
+        (
+            "/sys/devices/virtual/block/loop1/loop/backing_file",
+            "sysfs shows loop/backing_file of a device that may hold its data, but NAILS \
+             cannot read it",
+        ),
+        (
+            "/sys/devices/virtual/block/loop1/loop/offset",
+            "sysfs shows loop/offset of a device that may hold its data, but NAILS cannot read \
+             it",
+        ),
+    ] {
+        let host = alone();
+        host.fs.mock_set_lookup_error(path, denied);
+        assert_eq!(warning(&run(&host)), cannot(why), "{path}");
+    }
+    // A mapping built beside it whose kind cannot be read.
+    let beside = || {
+        hidden("")
+            .loop_device("loop1", "7:1", "/srv/other.img")
+            .mapping("dm-4", "254:4", "outer", "CRYPT-TCRYPT-outer", &["sdb2"])
+    };
+    let host = beside();
+    host.fs
+        .mock_set_lookup_error("/sys/devices/virtual/block/dm-4/dm/uuid", denied);
+    assert_eq!(
+        warning(&run(&host)),
+        cannot("sysfs shows dm/uuid of a device built on its storage, but NAILS cannot read it")
+    );
+    // The writable outer volume it could judge warns all the same, and so
+    // where a device's size cannot be read, which decides nothing here.
+    for path in [
+        "/sys/devices/virtual/block/loop1/loop/backing_file",
+        "/sys/devices/virtual/block/dm-9/dm/name",
+        "/sys/devices/virtual/block/dm-4/size",
+    ] {
+        let host = beside();
+        host.fs.mock_set_lookup_error(path, denied);
+        assert!(
+            warning(&run(&host)).contains(": outer (dm-4), on sdb2, not mounted."),
+            "{path}: {:?}",
+            run(&host)
+        );
+    }
+    // The hidden volume on a loop device: from where in its file it reads
+    // decides which other loop devices hold the same data.
+    let host = Host::new("254:9", "ext4", "/dev/mapper/data")
+        .loop_device("loop0", "7:0", "/home/alice/archive.hc")
+        .mapping("dm-9", "254:9", "data", "CRYPT-TCRYPT-data", &["loop0"]);
+    assert!(run(&host).is_pass(), "{:?}", run(&host));
+    host.fs
+        .mock_set_lookup_error("/sys/devices/virtual/block/loop0/loop/offset", denied);
+    assert_eq!(
+        warning(&run(&host)),
+        cannot(
+            "sysfs shows loop/offset of a device that may hold its data, but NAILS cannot read it"
+        )
+    );
+}
+
+/// A mapping beside the hidden one whose `ro` sysfs shows but NAILS cannot
+/// read counts as writable, and the warning says that it may be.
+#[test]
+fn an_outer_volume_whose_read_only_flag_cannot_be_read_may_be_open_read_write() {
+    let host = hidden("")
+        .mapping("dm-4", "254:4", "outer", "CRYPT-TCRYPT-outer", &["sdb2"])
+        .read_only("dm-4");
+    assert!(run(&host).is_pass());
+    host.fs.mock_set_lookup_error(
+        "/sys/devices/virtual/block/dm-4/ro",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    assert_eq!(
+        warning(&run(&host)),
+        format!(
+            "Another VeraCrypt or TrueCrypt mapping is open on the storage the hidden root's \
+             volume at {ROOT} is opened from, maybe read-write: sysfs shows its ro, but NAILS \
+             cannot read it: outer (dm-4), on sdb2, not mounted. {CRYPTSETUP}"
+        )
+    );
+}
+
 #[test]
 fn the_check_names_itself_and_needs_the_hidden_volume() {
     let check = OuterVolumeCheck::default();

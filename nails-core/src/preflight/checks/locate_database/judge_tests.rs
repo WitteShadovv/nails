@@ -307,3 +307,28 @@ fn only_a_run_by_hand_is_not_scheduled() {
     assert!(Start::Unread(String::new()).is_scheduled_or_running());
     assert!(!Start::ByHand(String::new()).is_scheduled_or_running());
 }
+
+/// A run that may read none of its lists, as an updatedb NAILS cannot tell
+/// is findutils' or not: a rule of the lists covers nothing NAILS can tell
+/// of, while lists that do not skip the volume still index it.
+#[test]
+fn a_run_that_may_read_none_of_its_lists_is_covered_by_none_of_them() {
+    let why = "NAILS cannot tell whether /usr/bin/updatedb is findutils' updatedb".to_string();
+    let unsure = |lists: Lists| Lists {
+        unsure_program: Some(why.clone()),
+        ..lists
+    };
+    assert_eq!(
+        cover(&unsure(lists(&["/mnt"], &[], &[])), &volume()),
+        Cover::Unknown(why.clone())
+    );
+    assert_eq!(
+        cover(&unsure(lists(&["/srv"], &[], &[])), &volume()),
+        Cover::Not(PathBuf::from("/mnt/data"))
+    );
+    let scan_elsewhere = Lists {
+        scan_root: Some((PathBuf::from("/srv"), "--database-root".to_string())),
+        ..unsure(lists(&[], &[], &[]))
+    };
+    assert_eq!(cover(&scan_elsewhere, &volume()), Cover::Unknown(why));
+}

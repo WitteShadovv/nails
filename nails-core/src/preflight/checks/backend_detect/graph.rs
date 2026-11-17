@@ -23,7 +23,7 @@
 //!   storage is the hidden root's.
 
 use crate::Filesystem;
-use crate::blockdev::{self, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
+use crate::blockdev::{self, Attribute, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::filesystem::mountinfo::MountEntry;
 use crate::hidden_root::separation::{
     Claimed, DeviceMap, FileHolder, LoopFile, NodeKind, SYS_CLASS_BLOCK,
@@ -91,6 +91,13 @@ impl Graph {
     /// The devices the check goes on into below the device `name`.
     pub(super) fn children<'a>(&'a self, name: &str, layer: &'a Layer) -> &'a [String] {
         self.below.get(name).unwrap_or(&layer.below)
+    }
+
+    /// The names of the attributes and listings among `among` that sysfs
+    /// shows of a device of the graph but NAILS could not read, sorted and
+    /// each once: what they would say is missing from the graph.
+    pub(super) fn unread(&self, among: &[Attribute]) -> Vec<&'static str> {
+        unread_names(self.layers.values(), among)
     }
 
     /// Whether the graph read every device a layer of it goes on into, and
@@ -165,12 +172,20 @@ impl Graph {
         };
         let devices = match holder {
             Some(FileHolder::Mount(dev)) => {
-                let Some(devices) = mounts
+                let found = mounts
                     .iter()
                     .find(|mount| &mount.dev == dev)
-                    .and_then(|mount| filesystem_devices(fs, mount))
-                else {
-                    return doubt("on a filesystem that shows no block device to follow");
+                    .map(|mount| filesystem_devices(fs, mount));
+                let devices = match found {
+                    Some(Ok(Some(devices))) => devices,
+                    Some(Err(_)) => {
+                        return doubt(
+                            "on a filesystem whose devices sysfs shows but NAILS cannot read",
+                        );
+                    }
+                    Some(Ok(None)) | None => {
+                        return doubt("on a filesystem that shows no block device to follow");
+                    }
                 };
                 if by_path
                     .is_some_and(|by_path| !devices.iter().any(|dir| dir_name(dir) == *by_path))
@@ -191,17 +206,22 @@ impl Graph {
                 let Some(by_path) = by_path else {
                     return Vec::new();
                 };
-                let Some(devices) = mounts
+                let found = mounts
                     .iter()
                     .find(|mount| {
                         blockdev::device_of_mount(fs, mount)
                             .is_some_and(|dir| dir_name(&dir) == *by_path)
                     })
-                    .and_then(|mount| filesystem_devices(fs, mount))
-                else {
-                    return Vec::new();
-                };
-                devices
+                    .map(|mount| filesystem_devices(fs, mount));
+                match found {
+                    Some(Ok(Some(devices))) => devices,
+                    Some(Err(_)) => {
+                        return doubt(
+                            "on a filesystem whose devices sysfs shows but NAILS cannot read",
+                        );
+                    }
+                    Some(Ok(None)) | None => return Vec::new(),
+                }
             }
         };
         self.below.insert(
@@ -223,11 +243,80 @@ fn disk_keeping_data_elsewhere<F: Filesystem>(fs: &F, layer: &Layer) -> Option<(
         .and(layer.sysfs.parent())?;
     let walk = blockdev::walk(fs, dir, LoopFollow::Never, 1);
     let disk = walk.layers.first()?;
+    // A disk whose kind sysfs shows but NAILS cannot read may keep its data
+    // elsewhere: the way goes on into it, where what is unread shows.
     let elsewhere = disk.dm.is_some()
         || disk.loop_device.is_some()
         || !disk.slaves.is_empty()
-        || leaf_kind(&key(disk)).is_some();
+        || leaf_kind(&key(disk)).is_some()
+        || disk.unread_among(KIND).next().is_some();
     elsewhere.then(|| (dir.to_path_buf(), key(disk)))
+}
+
+/// The attributes and listings that say what kind of device a disk is: a
+/// device-mapper or loop device, or one built on others.
+const KIND: &[Attribute] = &[
+    Attribute::DmName,
+    Attribute::DmUuid,
+    Attribute::LoopBackingFile,
+    Attribute::Slaves,
+];
+
+/// The attributes that say what kind of device-mapper device `layer` is,
+/// as [`blockdev::classify_dm`] reads them, that sysfs shows but NAILS could
+/// not read: its `dm/uuid`, and its `dm/name` where the uuid leaves the kind
+/// to the name (none, one that could not be read, or one the VeraCrypt
+/// application gave).
+pub(super) fn dm_kind_unread(layer: &Layer) -> Vec<Attribute> {
+    let unread = |attribute: Attribute| layer.unread_among(&[attribute]).next().is_some();
+    let uuid = layer.dm.as_ref().map_or("", |dm| dm.uuid.as_str());
+    let by_name = uuid.is_empty() || uuid.starts_with("VERACRYPT-");
+    let mut kind = Vec::new();
+    if unread(Attribute::DmUuid) {
+        kind.push(Attribute::DmUuid);
+    }
+    if by_name && unread(Attribute::DmName) {
+        kind.push(Attribute::DmName);
+    }
+    kind
+}
+
+/// Why a check cannot tell, where sysfs shows `attributes` of the device
+/// `device`, but NAILS cannot read them; the device is named.
+pub(super) fn unread_of(attributes: &[Attribute], device: &str) -> String {
+    let mut names: Vec<&str> = attributes
+        .iter()
+        .map(|attribute| attribute.name())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let them = if names.len() == 1 { "it" } else { "them" };
+    format!(
+        "sysfs shows {} of {device}, but NAILS cannot read {them}",
+        super::listing(&names)
+    )
+}
+
+/// The names of the attributes and listings among `among` that sysfs shows
+/// of one of `layers` but NAILS could not read, sorted and each once.
+pub(super) fn unread_names<'a>(
+    layers: impl IntoIterator<Item = &'a Layer>,
+    among: &[Attribute],
+) -> Vec<&'static str> {
+    let names: BTreeSet<&'static str> = layers
+        .into_iter()
+        .flat_map(|layer| layer.unread_among(among))
+        .map(|unread| unread.attribute.name())
+        .collect();
+    names.into_iter().collect()
+}
+
+/// Why a check cannot tell, where sysfs shows `names` of a device `place`
+/// (`below it`), but NAILS cannot read them; the device is not named.
+pub(super) fn unread_reason(names: &[&str], place: &str) -> String {
+    let listed = super::listing(names);
+    let them = if names.len() == 1 { "it" } else { "them" };
+    format!("sysfs shows {listed} of a device {place}, but NAILS cannot read {them}")
 }
 
 /// `claimed`, the devices the decoy claims, with what the rule for
@@ -264,30 +353,57 @@ pub(super) fn widen_claims<F: Filesystem>(
 
 /// The block devices the filesystem mounted as `mount` keeps its data on, as
 /// sysfs directories: each device of a btrfs or bcachefs filesystem, the one
-/// device of any other. `None` when a device of it cannot be found or none
+/// device of any other. `None` when a device of it is not there or none
 /// shows at all, as for an overlay, FUSE, a network filesystem or a tmpfs.
+/// The error names the first place that is there but could not be read,
+/// for another reason than that it is not there, where it may have shown a
+/// device of it: a device node, a `dev` attribute, or a listing of
+/// `/sys/block` or `/sys/fs/btrfs`.
 pub(super) fn filesystem_devices<F: Filesystem>(
     fs: &F,
     mount: &MountEntry,
-) -> Option<Vec<PathBuf>> {
+) -> Result<Option<Vec<PathBuf>>, PathBuf> {
     let source = mount.source.to_string_lossy();
+    let each = |devices: Vec<String>| -> Result<Option<Vec<PathBuf>>, PathBuf> {
+        let mut dirs = Vec::new();
+        for device in devices {
+            match blockdev::resolve_spec_or_unread(fs, &device)? {
+                Some(dir) => dirs.push(dir),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(dirs))
+    };
     if mount.fstype == "bcachefs" && source.contains(':') {
         // bcachefs names every device of a filesystem of several in its
         // source, `/dev/sdb:/dev/sdc`; its device number is the first one's.
-        return source
-            .split(':')
-            .map(|device| blockdev::resolve_spec(fs, device))
-            .collect();
+        return each(source.split(':').map(str::to_string).collect());
     }
-    let device = blockdev::device_of_mount(fs, mount)?;
-    let members = blockdev::btrfs_members(fs, &dir_name(&device));
+    let Some(device) = blockdev::device_of_mount_or_unread(fs, mount)? else {
+        return Ok(None);
+    };
+    // Only a btrfs filesystem lies on devices its mount does not name.
+    let members = if mount.fstype == "btrfs" {
+        blockdev::btrfs_members(fs, &dir_name(&device))?
+    } else {
+        Vec::new()
+    };
     if members.len() < 2 {
-        return Some(vec![device]);
+        return Ok(Some(vec![device]));
     }
-    members
-        .iter()
-        .map(|member| blockdev::resolve_spec(fs, &format!("/dev/{member}")))
-        .collect()
+    each(
+        members
+            .iter()
+            .map(|member| format!("/dev/{member}"))
+            .collect(),
+    )
+}
+
+/// Why a check cannot tell, where sysfs shows the devices `what` is on
+/// (`its filesystem`, say), but NAILS cannot read a place that shows them;
+/// the place is not named, as no device-mapper node is.
+pub(super) fn unread_devices(what: &str) -> String {
+    format!("sysfs shows the devices {what} is on, but NAILS cannot read them")
 }
 
 /// What a block device that keeps its data where sysfs does not show is, by

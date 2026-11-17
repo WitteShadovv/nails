@@ -134,6 +134,10 @@ pub struct BaseConfigScan {
     pub files_read: usize,
     /// Every line that names the hidden environment, by file and then line.
     pub references: Vec<BaseConfigReference>,
+    /// The places that may give a name of the hidden volume's storage that
+    /// are there but could not be read: a line that names the storage by
+    /// one of those names would not be found.
+    pub unread: Vec<String>,
 }
 
 impl BaseConfigScan {
@@ -260,9 +264,14 @@ pub fn verify_base_config_clean<F: Filesystem>(
         return Ok(scan);
     }
 
-    let markers = markers(fs, hidden_volume_root);
+    let markers = markers(fs, hidden_volume_root, &mut scan.unread)?;
     for file in &files {
-        let content = fs.read_file_content(file)?;
+        // Nix reads a source file as bytes, so one with a byte that is no
+        // UTF-8 (a comment in Latin-1, say) still evaluates. The markers are
+        // UTF-8 text, and labels and dm names need not be ASCII, but
+        // `from_utf8_lossy` replaces only the bytes that are no UTF-8 and
+        // keeps every valid sequence, so every marker the file holds.
+        let content = String::from_utf8_lossy(&fs.read_file_bytes(file)?).into_owned();
         scan.files_read += 1;
         scan.references
             .extend(references_in(file, &content, &markers));
@@ -276,7 +285,20 @@ pub fn verify_base_config_clean<F: Filesystem>(
 }
 
 /// The markers for `hidden_volume_root`, in the order a line is matched.
-fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
+/// The places of the storage's names that could not be read land in
+/// `unread`.
+///
+/// # Errors
+///
+/// The mount table is there but cannot be read: without it the device
+/// names of the hidden volume are not known, and a line that names them
+/// would pass. Where it is not there, as on a test's tree, no mount shows a
+/// device.
+fn markers<F: Filesystem>(
+    fs: &F,
+    hidden_volume_root: &Path,
+    unread: &mut Vec<String>,
+) -> Result<Vec<Marker>> {
     let marker = |pattern, kind| Marker { pattern, kind };
     let mut markers: Vec<Marker> = ARTIFACTS
         .iter()
@@ -291,11 +313,14 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
 
     // Only an absolute device path is a device marker: a pseudo source such as
     // `tmpfs` names no device.
-    let mountinfo = fs
-        .read_file_content(Path::new(SELF_MOUNTINFO))
-        .unwrap_or_default();
+    let mountinfo = match fs.read_file_content(Path::new(SELF_MOUNTINFO)) {
+        Ok(mountinfo) => mountinfo,
+        Err(error) if error.nothing_there() => String::new(),
+        Err(error) => return Err(error),
+    };
     let sources = resolve_backing_sources(&mountinfo, hidden_volume_root);
     let below = storage::below(fs, &parse_mountinfo(&mountinfo), hidden_volume_root);
+    unread.extend(below.unread.iter().cloned());
     let mut names: Vec<String> = Vec::new();
     let from_sources = sources
         .iter()
@@ -364,7 +389,7 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
         Pattern::Word("nails".into()),
         ReferenceKind::ToolName,
     ));
-    markers
+    Ok(markers)
 }
 
 /// Add `item` to `items` unless it is there already.

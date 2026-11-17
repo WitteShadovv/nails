@@ -587,6 +587,45 @@ fn an_autostart_file_that_cannot_be_looked_up_leaves_its_name_undecided() {
     );
 }
 
+/// A directory that is there but cannot be listed, and an autostart file
+/// that is there but cannot be read, are not read, where they read as an
+/// empty directory and a file of no entry: what they hold may be inherited.
+/// An unreadable file leaves its name undecided.
+#[test]
+fn a_directory_that_cannot_be_listed_or_a_file_that_cannot_be_read_is_not_read() {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let fs = MockFilesystem::new();
+    seed_entry(&fs, "/etc/xdg/autostart", "sync.desktop");
+    seed_entry(&fs, "/home/alice/.config/autostart", "notes.desktop");
+    fs.mock_set_unreadable_dir("/etc/xdg/autostart");
+    let inventory = collect(&fs, false);
+    let dir = not_read_at(&inventory, "/etc/xdg/autostart").expect("not read");
+    assert!(
+        dir.reason
+            .starts_with("NAILS cannot look up /etc/xdg/autostart"),
+        "{dir:?}"
+    );
+    assert_eq!(
+        names_for(&inventory, InheritedSource::UserAutostart),
+        vec!["notes".to_string()]
+    );
+
+    let fs = MockFilesystem::new();
+    seed_entry(&fs, "/home/alice/.config/autostart", "notes.desktop");
+    let notes = Path::new("/home/alice/.config/autostart/notes.desktop");
+    fs.mock_fail_only(
+        notes,
+        MockLookup::Read,
+        MockFailure::Io(std::io::ErrorKind::Other),
+    );
+    let inventory = collect(&fs, false);
+    assert!(not_read_at(&inventory, notes.to_str().unwrap()).is_some());
+    assert_eq!(
+        inventory.undecided().collect::<Vec<_>>(),
+        vec![("notes", InheritedSource::UserAutostart)]
+    );
+}
+
 /// A display-manager file NAILS cannot look up is not read: the accounts
 /// the other files name are still listed.
 #[test]

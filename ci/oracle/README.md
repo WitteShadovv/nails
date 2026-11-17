@@ -10,8 +10,9 @@ night it images real ext4 decoy roots in the `oracle-images` E2E test, runs
 `run-scan.sh` over them in `ORACLE_IMAGES_DIR` mode and renders the verdict,
 its `scan-btrfs` job runs `run-scan.sh` over the synthetic btrfs images
 `make-sample-images.sh` builds, and its `produce-btrfs` and `scan-btrfs-real`
-jobs image two real btrfs decoys, Fedora 44 and arch-boxes, and scan them (see
-[Real btrfs images: a Fedora 44 decoy](#real-btrfs-images-a-fedora-44-decoy)
+jobs image three real btrfs decoys, Fedora 44, Fedora 45 and arch-boxes, and
+scan them (see
+[Real btrfs images: Fedora 44 and 45 decoys](#real-btrfs-images-fedora-44-and-45-decoys)
 and [an arch-boxes decoy](#real-btrfs-images-an-arch-boxes-decoy)).
 plaso cannot open btrfs, so a btrfs scan runs no timeline and its verdict is
 `partial` at best, never `clean` (see [btrfs: no timeline](#btrfs-no-timeline)). `oracle-nightly.yml` in this
@@ -145,7 +146,7 @@ No channel stands in for another: the restore channel leaves the journal files
 to plaso, and every self-check the committed controls hold is a bulk_extractor
 finding. The scans of the real btrfs decoys add live controls of the restore
 channel, which their driver plants (see
-[Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)).
+[Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)).
 `run-scan.sh` drops the plaso channel whole when docker is missing, its pinned
 image cannot be pulled, or any image's timeline fails, runs past 20 minutes or
 does not show that plaso read the image (see below), so such a run fails. There
@@ -260,7 +261,7 @@ some not stops the run. `nails-oracle` then:
 What a partial run does not see beyond a full one is what only plaso reads:
 the records it parses out of a file, such as the login records of `wtmp`
 (bulk_extractor still carves those where they are stored uncompressed: see
-[Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)) and the messages of
+[Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)) and the messages of
 a journal (whose file the restore channel then compares whole). A file a reboot rewrites that only
 plaso read records of is named under `reboot_rewritten` instead.
 
@@ -275,13 +276,15 @@ into device space no btrfs chunk is allocated in (see
 [controls.json](#controlsjson--the-scan-self-checks)). The live controls of
 the real btrfs decoys are files the decoy wrote itself (see below).
 
-### Real btrfs images: a Fedora 44 decoy
+### Real btrfs images: Fedora 44 and 45 decoys
 
-The `produce-btrfs` job of the nightly runs `fedora-44-oracle-images`, a host
+The `produce-btrfs` job of the nightly runs `<image>-oracle-images` for
+`fedora-44` and for `fedora-45`, each a host
 driver of the distribution tests (`nix/distro-tests/oracle-images.nix`), on a
-KVM runner. It boots the stock Fedora 44 Cloud image, whose root is a btrfs
-filesystem compressed with zstd, with `root`, `boot`, `home` and `var`
-subvolumes and a vfat ESP beside it, and keeps the whole disk four times,
+KVM runner. It boots the stock Fedora 44 or Fedora 45 Cloud image, whose root
+is a btrfs filesystem compressed with zstd, with `root`, `boot`, `home` and
+`var` subvolumes and a vfat ESP beside it on both releases (the probes of the
+two images record the same layout), and keeps the whole disk four times,
 powered off: before, after one plain reboot (control), after a second plain
 reboot (control2), and after one more boot, a hidden session and the way back
 (after). The run stays in one QEMU process, which pauses at the guest's
@@ -298,11 +301,12 @@ that row there, as they will once Fedora is admitted, and no image of one runs.
 That build is never released, and once the image table enables the image, as
 the commit that admits Fedora does, the driver runs the release binary on it
 instead. The verdict on the images says what the oracle's channels see of a
-session on a Fedora 44 Cloud decoy, with what they do not see listed under
-[What it does not see](#what-it-does-not-see), not that NAILS supports Fedora.
+session on a Fedora Cloud decoy of that release, with what they do not see
+listed under [What it does not see](#what-it-does-not-see), not that NAILS
+supports Fedora.
 
-Before the first image the driver makes the decoy's journal volatile and masks
-auditd (the posture NAILS requires), creates `/mnt/data` and writes the
+Before the first image the driver makes the decoy's journal volatile and turns
+auditd off (the posture NAILS requires), creates `/mnt/data` and writes the
 coverage canary, with btrfs compression turned off for its file and its bytes
 checked on the partition in clear. The hidden root is a file on a tmpfs, and
 inside the session the driver writes, syncs and deletes a token whose bytes it
@@ -322,7 +326,9 @@ makes the scan blind and fails it. They are planted before the session: a
 session that changed one would leave it with another digest, and the scan
 would fail instead of taking the change for the control.
 
-`scan-btrfs-real` runs `run-scan.sh` twice: over before, control and after,
+For each image `scan-btrfs-real` runs `run-scan.sh` three times. The first
+two run over before,
+control and after,
 and over before, control and control2 in the place of after. No session ran
 on control2, so the second scan has nothing to find but the live controls:
 whatever else it calls residue, plain reboots made, and it fails the job as a
@@ -362,6 +368,33 @@ Three things read differently from the ext4 images:
   bulk_extractor carves the getty, boot and shutdown records of that block
   from control2 and after, and none from before and control.
 
+The third, `records`, runs over before, control and a copy of after into
+which `plant-records.sh` has planted the record-level positive controls,
+before the scan's free-space controls: a row in
+`/var/lib/lastlog/lastlog2.db`, the table pam_lastlog2 keeps (the file made
+where the image has none), a login row in wtmpdb's database where the image
+has one, and a file below `/var/lib/dnf`, each with a plain value no image
+holds, no address, domain or URL. It mounts the copy's btrfs read-write from its top
+level for that, which rewrites the filesystem's own metadata, so the copy is
+this scan's alone. The verdict must fail, not blind, with residue of the
+restore channel at exactly the planted paths (a folder the planting had to
+make among them) and nothing else, as the free-space controls cannot show.
+The oracle's Fedora decoys hold neither database, since nothing logs in on
+them through PAM, so on them the planting makes `lastlog2.db` new, in the
+`/var/lib/lastlog` the images already have, and plants no wtmpdb row. The
+file below `/var/lib/dnf`, the folder older dnf kept its state in, is new
+too, and so is that folder on Fedora 44, where it is missing; dnf5 keeps its
+history in `/usr/lib/sysimage/libdnf5`, which no control touches. So the scan
+shows that the collector sees a new login database and a new file where
+there was none, not a row added to a database or a change to where dnf5
+writes. It compares a file by its digest, not a database by its
+rows, so a row added to a database the control cycle changed as well would
+read as noise; the distribution tests' records checks judge the rows of the
+decoy's login records instead
+([the gate](../../nix/e2e-tests/README.md#the-admission-gate-of-fedora)).
+`planted.json`, beside the verdict, names each planted path with whether the
+planting made it new or changed it, and the databases it found absent.
+
 #### Login records the control holds
 
 A carved login record is therefore also compared with the control image's
@@ -395,9 +428,10 @@ first image the driver also makes the swap line of its fstab
 (`/swap/swapfile`) `noauto` and turns the swap off: the swap check refuses an
 active disk swap, and no boot of the run turns it on again. Its live controls
 hold the line added to pacman's log as well. `scan-btrfs-real` scans its
-images as it scans Fedora's. With the root mounted from the top level, the
-restore channel keys a file by its own path (`/etc/fstab`), and the disk's
-partitions are compared as on Fedora.
+images as it scans Fedora's, but for the records scan, which plants a Fedora
+decoy's record controls and runs on the Fedora images alone. With the root
+mounted from the top level, the restore channel keys a file by its own path
+(`/etc/fstab`), and the disk's partitions are compared as on Fedora.
 
 ### What it does not see
 
@@ -424,7 +458,7 @@ class with its `kind`, and a clean summary line ends with the same classes
   with `compress`, as Fedora's is), and content a file left there is unseen
   whatever value it carries. The restore carve reads the live tree's files
   decompressed (see
-  [Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)).
+  [Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)).
 - `skipped_carvers`: a database carved from free space (`sqlite_carved`, named
   in `feature_types`), unless its content carries an e-mail address, a URL or
   a domain the value recorders find.
@@ -533,7 +567,7 @@ widen into a blanket residue exemption.
   is seen.) The scans of the real btrfs decoys also take the live controls
   their driver planted, each a file of the live tree pinned by its path and
   its SHA-256 for the restore channel (see
-  [Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)): they prove that
+  [Real btrfs images](#real-btrfs-images-fedora-44-and-45-decoys)): they prove that
   the carve recovers a file the decoy wrote or changed, with its contents.
 - The **canary** is a reserved address planted on every image at an
   otherwise-uncovered path. Finding it proves the scan read the image's

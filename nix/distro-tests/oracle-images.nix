@@ -2,18 +2,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Real btrfs decoy images for the forensic oracle: before / control /
-# control2 / after of a Fedora 44 Cloud decoy and of an arch-boxes decoy,
-# keyed "<name>-oracle-images".
+# control2 / after of a Fedora 44 and a Fedora 45 Cloud decoy and of an
+# arch-boxes decoy, keyed "<name>-oracle-images".
 #
 # The NixOS oracle-images test (nix/e2e-tests/tests/forensic/13-oracle-images.nix)
 # retains an ext4 decoy root. Fedora and Arch keep their root on btrfs, which
 # plaso cannot read, and the oracle scans such images without the timeline
 # (ci/oracle/run-scan.sh). This driver produces the real images that scan
-# needs, on the stock Fedora 44 Cloud image (btrfs, zstd compressed, with the
-# root, /boot, /home and /var subvolumes next to a vfat ESP) and on the stock
-# arch-boxes basic image (btrfs, zstd compressed, mounted from its top level
-# (subvolid=5), next to a vfat ESP that systemd mounts on demand at /efi, and a
-# BIOS boot partition):
+# needs, on the stock Fedora 44 and Fedora 45 Cloud images (btrfs, zstd
+# compressed, with the root, /boot, /home and /var subvolumes next to a vfat
+# ESP) and on the stock arch-boxes basic image (btrfs, zstd compressed, mounted
+# from its top level (subvolid=5), next to a vfat ESP that systemd mounts on
+# demand at /efi, and a BIOS boot partition):
 #
 #   before    the decoy as prepared, powered off;
 #   control   the same disk after one plain reboot, powered off;
@@ -70,7 +70,7 @@
 # lists what they do not), not that NAILS supports the family.
 #
 # The decoy is prepared before the before image, so all of them hold it alike:
-# its journal volatile and auditd masked (lib/hidden-root.nix's
+# its journal volatile and auditd off (lib/hidden-root.nix's
 # makeDecoyAmnesic, the posture NAILS requires), every swap line of its fstab
 # made noauto and the swap off (arch-boxes swaps to a file on its root, and the
 # swap check refuses an active disk swap), /mnt/data created, and the
@@ -99,41 +99,11 @@ let
   # The binary an image's session runs: the release binary once the image
   # table enables the image, as the commit that admits its family does, and
   # until then the release binary with the base row of the image's family
-  # admitted, for the scenarios of its admission only. That build fails for a
-  # family whose row is admitted already. For Fedora it also leaves out the
-  # lsm-status check, which refuses every host where SELinux runs, this
-  # permissive decoy among them, until NAILS chooses the SELinux domains of the
-  # processes systemd and udev start from its copy in /run. The check only
-  # reads, so leaving it out changes nothing a session leaves on the disk. The
-  # build fails unless exactly that one line changes.
-  admitted =
-    family:
-    let
-      base = import ./lib/admitted.nix { inherit self; } family;
-    in
-    if family != "fedora" then
-      base
-    else
-      base.overrideAttrs (old: {
-        pname = "nails-test-fedora-admitted";
-        postPatch = (old.postPatch or "") + ''
-          registry=nails-core/src/manager/preflight_runner.rs
-          awk '
-            $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));" {
-              print "    let _ = LsmStatusCheck::new(UnitDomains::UNKNOWN);"; left++; next
-            }
-            { print }
-            END { if (left != 1) exit 1 }
-          ' "$registry" > "$registry.new" || {
-            echo "the lsm-status check of $registry was not left out exactly once" >&2
-            exit 1
-          }
-          mv "$registry.new" "$registry"
-        '';
-        meta = old.meta // {
-          description = "nails with the Fedora row admitted and lsm-status left out, for the btrfs oracle images only; never released";
-        };
-      });
+  # admitted, for the scenarios of its admission only (lib/admitted.nix, which
+  # for Fedora also leaves out the lsm-status check, which refuses every host
+  # where SELinux runs, this permissive decoy among them). That build fails for
+  # a family whose row is admitted already.
+  admitted = import ./lib/admitted.nix { inherit self; };
   nailsFor = entry: if entry.enabled then self.packages.x86_64-linux.nails else admitted entry.osId;
 
   binShare = {
@@ -511,5 +481,6 @@ let
 in
 {
   "fedora-44-oracle-images" = oracleImagesFor images."fedora-44";
+  "fedora-45-oracle-images" = oracleImagesFor images."fedora-45";
   "arch-boxes-oracle-images" = oracleImagesFor images."arch-boxes";
 }

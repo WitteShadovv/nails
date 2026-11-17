@@ -38,8 +38,8 @@
 //!
 //! [`discoverable`]: crate::forensic::layout::discoverable
 
-use super::graph::{Graph, filesystem_devices, widen_claims};
-use crate::blockdev::{Layer, LoopFollow, Partition};
+use super::graph::{Graph, filesystem_devices, unread_devices, unread_reason, widen_claims};
+use crate::blockdev::{Attribute, Layer, LoopFollow, Partition};
 use crate::config::get_default_hidden_volume_root;
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::filesystem::udev;
@@ -68,6 +68,30 @@ const BY_ID: &str = "/dev/disk/by-id";
 /// The mount points of the decoy's EFI system partition and boot partition.
 const BOOT_MOUNTS: &[&str] = &["/boot", "/boot/efi", "/efi"];
 
+/// The attributes and listings of a device of the hidden root's storage the
+/// check decides by: whether it is a partition (`partition`), where it
+/// starts (`start`) and on which disk (`dev` of the directory above), and
+/// what lies below it (what a loop device reads, `slaves/`). Where sysfs
+/// shows one but NAILS cannot read it, the check cannot tell.
+const HIDDEN: &[Attribute] = &[
+    Attribute::Partition,
+    Attribute::Start,
+    Attribute::DiskDev,
+    Attribute::LoopBackingFile,
+    Attribute::Slaves,
+];
+
+/// Those of a device below the decoy's root file system or its boot
+/// partitions: whether it is a partition and of which disk, and what lies
+/// below it. Where sysfs shows one but NAILS cannot read it, a disk the decoy
+/// boots from may be missing.
+const BOOT: &[Attribute] = &[
+    Attribute::Partition,
+    Attribute::DiskDev,
+    Attribute::LoopBackingFile,
+    Attribute::Slaves,
+];
+
 /// Pre-flight check that refuses a hidden root stored on a partition whose
 /// GPT type systemd mounts or uses at boot.
 ///
@@ -91,7 +115,20 @@ const BOOT_MOUNTS: &[&str] = &["/boot", "/boot/efi", "/efi"];
 ///   it, where the GPT is damaged (its header or its entries do not match
 ///   the checksums it keeps, not every entry could be checked against them,
 ///   or an entry does not fit within its usable blocks), and where neither
-///   the disk nor udev's record of the partition can be read.
+///   the disk nor udev's record of the partition can be read;
+/// - warns that it could not check where the mount table cannot be read,
+///   the hidden root's filesystem shows no block device, sysfs shows the
+///   devices of the hidden root's filesystem but NAILS cannot read a place
+///   that shows them, its storage or that of the decoy's root file system
+///   holds more devices than it reads, or sysfs shows an attribute of one of
+///   their devices that it decides by ([`HIDDEN`], [`BOOT`]) but NAILS cannot
+///   read it; below the decoy's root, and for the devices of its root file
+///   system and boot partitions, only where the hidden root's storage has a
+///   partition on a disk it does not know the decoy boots from. A partition
+///   it could judge and refuses is refused all the same, and one it could
+///   judge and warns about keeps its warning, which then says what the check
+///   could not check. A partition whose own attributes it decides by could
+///   not all be read is not judged.
 ///
 /// A hidden root on no partition of such a disk passes: a disk of its own,
 /// such as an external drive, a container file, or a RAM filesystem. Each
@@ -163,14 +200,18 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
                 hidden.fstype
             )));
         }
-        let Some(roots) = filesystem_devices(fs, hidden) else {
-            return Ok(unchecked(
-                root,
-                &format!(
-                    "its {} filesystem shows no block device to follow",
-                    separation::shown_fstype(&hidden.fstype)
-                ),
-            ));
+        let roots = match filesystem_devices(fs, hidden) {
+            Ok(Some(roots)) => roots,
+            Ok(None) => {
+                return Ok(unchecked(
+                    root,
+                    &format!(
+                        "its {} filesystem shows no block device to follow",
+                        separation::shown_fstype(&hidden.fstype)
+                    ),
+                ));
+            }
+            Err(_) => return Ok(unchecked(root, &unread_devices("its filesystem"))),
         };
 
         let collected = separation::collect(fs, &table, Path::new("/"));
@@ -187,13 +228,23 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
             &roots,
             LoopFollow::BlockDevices,
         );
-        if !graph.complete() {
-            return Ok(unchecked(
-                root,
-                "its storage holds more devices than the check reads",
-            ));
-        }
-        let Some(mut boot) = boot_disks(fs, &table, &collected.devices) else {
+        // What keeps the check from telling about all of the hidden root's
+        // storage: an attribute it decides by that sysfs shows but NAILS
+        // cannot read, or more devices than it reads. A refusal of a
+        // partition it could judge stands; otherwise it could not check.
+        let unread = graph.unread(HIDDEN);
+        let untold = if !unread.is_empty() {
+            Some(unread_reason(&unread, "below it"))
+        } else if !graph.complete() {
+            Some("its storage holds more devices than the check reads".to_string())
+        } else {
+            None
+        };
+        let Some(Boot {
+            disks: mut boot,
+            untold: boot_untold,
+        }) = boot_disks(fs, &table, &collected.devices)
+        else {
             return Ok(unchecked(
                 root,
                 "the disk the decoy's root file system is on cannot be found",
@@ -204,6 +255,17 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
         // generator reads the disk below /usr.
         let generator = GeneratorDisk::read(fs, &table);
         boot.extend(generator.disks().map(str::to_string));
+        // A disk the decoy boots from that sysfs did not let the check find
+        // matters only where a partition of the hidden root's storage is on
+        // a disk it does not know the decoy boots from.
+        let off_boot = graph.layers.values().any(|layer| {
+            layer
+                .partition
+                .as_ref()
+                .and_then(|partition| partition.disk.as_deref())
+                .is_some_and(|disk| !boot.contains(disk))
+        });
+        let untold = untold.or(boot_untold.filter(|_| off_boot));
 
         let (decoys, on_boot): (Vec<_>, Vec<_>) = graph
             .layers
@@ -211,12 +273,24 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
             .filter_map(|(name, layer)| {
                 let partition = layer.partition.as_ref()?;
                 let disk = partition.disk.as_deref()?;
+                // One whose start, say, could not be read cannot be found in
+                // the table: it is among what the check could not check.
+                if layer.unread_among(HIDDEN).next().is_some() {
+                    return None;
+                }
                 boot.contains(disk)
                     .then_some((claimed.contains_key(name), (layer, partition, disk)))
             })
             .partition(|(decoys, _)| *decoys);
-        if on_boot.is_empty() {
-            return Ok(CheckResult::Pass(if decoys.is_empty() {
+        let result = if on_boot.is_empty() {
+            CheckResult::Pass(if decoys.is_empty() && boot.is_empty() {
+                // No disk the decoy boots from is known: only a root on no
+                // partition passes, as any partition is off the known disks.
+                format!(
+                    "The hidden root at {} is on no partition of any disk.",
+                    root.display()
+                )
+            } else if decoys.is_empty() {
                 format!(
                     "The hidden root at {} is on no partition of a disk the decoy boots from \
                      ({}).",
@@ -230,22 +304,43 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
                      reports a root on the decoy's storage.",
                     root.display()
                 )
-            }));
-        }
-        let findings: Vec<Finding> = on_boot
-            .into_iter()
-            .map(|(_, (layer, partition, disk))| {
-                let place = Place {
-                    partition: layer.name.clone(),
-                    number: partition.number,
-                    disk: disk.to_string(),
-                    node: disk_node(fs, disk),
-                };
-                let entry = self.entry(fs, layer, partition, disk);
-                Finding::of(place, entry, generator.discovery(disk))
             })
-            .collect();
-        Ok(verdict(root, &findings))
+        } else {
+            let findings: Vec<Finding> = on_boot
+                .into_iter()
+                .map(|(_, (layer, partition, disk))| {
+                    let place = Place {
+                        partition: layer.name.clone(),
+                        number: partition.number,
+                        disk: disk.to_string(),
+                        node: disk_node(fs, disk),
+                    };
+                    let entry = self.entry(fs, layer, partition, disk);
+                    Finding::of(place, entry, generator.discovery(disk))
+                })
+                .collect();
+            verdict(root, &findings)
+        };
+        // A refusal stands, and a warning about a partition it could judge
+        // keeps its text and fix, and says what it could not check.
+        Ok(match (untold, result) {
+            (Some(why), CheckResult::Pass(_)) => unchecked(root, &why),
+            (Some(why), CheckResult::Warn(text)) => CheckResult::Warn(also_unchecked(&text, &why)),
+            (_, result) => result,
+        })
+    }
+}
+
+/// The warning `text` (its sentences, then its fix on a line of its own)
+/// with the sentence that the check could not check the rest, and `why`.
+fn also_unchecked(text: &str, why: &str) -> String {
+    let (sentences, fix) = text.split_once('\n').unwrap_or((text, ""));
+    let sentences =
+        format!("{sentences} It could not check the rest of the hidden root's storage: {why}.");
+    if fix.is_empty() {
+        sentences
+    } else {
+        format!("{sentences}\n{fix}")
     }
 }
 
@@ -306,27 +401,64 @@ fn udev_entry<F: Filesystem>(fs: &F, layer: &Layer, partition: &Partition) -> Op
     }
 }
 
+/// The disks the decoy boots from, as far as the check can tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Boot {
+    /// The disks, by kernel name.
+    disks: BTreeSet<String>,
+    /// Why there may be more, where there may: sysfs shows an attribute the
+    /// check decides by of a device below them that NAILS cannot read, or
+    /// they hold more devices than the check reads.
+    untold: Option<String>,
+}
+
 /// The disks the decoy boots from, by kernel name: every disk below its root
 /// file system and its EFI system or boot partition, a partition's disk and
 /// a whole disk at the bottom. `None` when the root file system's devices
-/// cannot be found.
+/// are not there, and none is found while nothing keeps the check from
+/// telling. A device of the root file system or a boot partition that sysfs
+/// shows but NAILS cannot read keeps it from telling.
 fn boot_disks<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
     recorded: &separation::DeviceMap,
-) -> Option<BTreeSet<String>> {
-    let mut roots = filesystem_devices(fs, top_mount_at(mounts, Path::new("/"))?)?;
+) -> Option<Boot> {
+    let mut unread_device = false;
+    let mut roots = match filesystem_devices(fs, top_mount_at(mounts, Path::new("/"))?) {
+        Ok(roots) => roots?,
+        Err(_) => {
+            unread_device = true;
+            Vec::new()
+        }
+    };
     for point in BOOT_MOUNTS {
         // An automount not yet used shows no device, and adds no disk. One
         // that systemd-gpt-auto-generator made mounts a partition of the
         // disk it reads, which the check counts in any case.
-        if let Some(devices) =
-            top_mount_at(mounts, Path::new(point)).and_then(|mount| filesystem_devices(fs, mount))
-        {
-            roots.extend(devices);
+        let Some(mount) = top_mount_at(mounts, Path::new(point)) else {
+            continue;
+        };
+        match filesystem_devices(fs, mount) {
+            Ok(devices) => roots.extend(devices.unwrap_or_default()),
+            Err(_) => unread_device = true,
         }
     }
     let graph = Graph::read(fs, mounts, recorded, &roots, LoopFollow::BlockDevices);
+    let unread = graph.unread(BOOT);
+    let untold = if unread_device {
+        Some(unread_devices(
+            "the decoy's root file system or a boot partition",
+        ))
+    } else if !unread.is_empty() {
+        Some(unread_reason(&unread, "below the decoy's root file system"))
+    } else if !graph.complete() {
+        Some(
+            "the storage of the decoy's root file system holds more devices than the check reads"
+                .to_string(),
+        )
+    } else {
+        None
+    };
     let disks: BTreeSet<String> = graph
         .layers
         .values()
@@ -336,7 +468,7 @@ fn boot_disks<F: Filesystem>(
                 .then(|| layer.name.clone()),
         })
         .collect();
-    (!disks.is_empty()).then_some(disks)
+    (!disks.is_empty() || untold.is_some()).then_some(Boot { disks, untold })
 }
 
 /// The name to give `sgdisk` for the disk `disk`: its first link in

@@ -384,6 +384,28 @@ pub(super) const ROWS: &[ResidueClass] = &[
         conclusion: None,
     },
     ResidueClass {
+        id: "journal-socket-carry",
+        title: "Hidden records journald's sockets carry into the decoy journal",
+        kind: ResidueKind::Session,
+        channel: Channel::Mechanism(
+            "journald's sockets, which a soft-reboot keeps open, so that the decoy's journald reads at its start what waits in them",
+        ),
+        platforms: Platforms::ALL,
+        risk: "What the hidden root sends journald after its own journald stopped waits in the sockets the soft-reboot keeps open, and the decoy's journald writes it into the decoy journal as it starts, after the way back deleted the runtime journal: the hidden root's last audit records, such as the stops of its last units, and the lines its last units log through /dev/log, their standard output or the native socket. They stay in RAM on a volatile decoy until power-off, and a persistent journal would write them to the decoy disk.",
+        preflight: Probe::None("the hidden root sends them during its shutdown, after activation"),
+        preflight_blocks: false,
+        verify: Probe::None(
+            "they name the hidden root's units and processes, which no check tells from the decoy's own",
+        ),
+        mitigation: "None yet: no way back empties those sockets. Keep the decoy journal volatile, so they never reach the decoy disk, and end the session with `deactivate --poweroff` or `emergency --poweroff` where they must not reach the decoy at all.",
+        doc_anchor: "decoy-requirements.md#what-the-decoy-journal-keeps",
+        e2e: E2e::None(
+            "asserted on Fedora 44 and 45 by the Fedora admission gate under nix/distro-tests, a suite run by hand, which fails there on it; no test looks for these records on the other families",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
         id: "network-state",
         title: "Network state the hidden session created or changed",
         kind: ResidueKind::Session,
@@ -411,10 +433,10 @@ pub(super) const ROWS: &[ResidueClass] = &[
         title: "Soft-reboot counter and boot ID",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism(
-            "SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl",
+            "SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl, and the empty /run/nextroot each way back leaves",
         ),
         platforms: Platforms::ALL,
-        risk: "Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID. Where the way back set the process-number counter back, the decoy's units after it can hold numbers below those of kernel threads that started before them, an order neither a cold boot nor a plain soft-reboot gives (`ps -eo pid,lstart,comm --sort=pid` shows it), and a persistent decoy journal can hold the same process numbers twice under one boot ID.",
+        risk: "Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID. Where the way back set the process-number counter back, the decoy's units after it can hold numbers below those of kernel threads that started before them, an order neither a cold boot nor a plain soft-reboot gives (`ps -eo pid,lstart,comm --sort=pid` shows it), and a persistent decoy journal can hold the same process numbers twice under one boot ID. Every way back also leaves /run/nextroot behind, the empty folder the switch mounted its next root on (labelled `unconfined_u:object_r:var_run_t:s0` on Fedora), where a cold boot has none.",
         preflight: Probe::None("kernel and PID 1 state, not a file"),
         preflight_blocks: false,
         verify: Probe::None("RAM only, gone at power-off"),
@@ -699,7 +721,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         mitigation: "Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean.",
         doc_anchor: "threat-model.md#residual-channels",
         e2e: E2e::None(
-            "the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems",
+            "the compressed-storage verdict is unit-tested, and the rehearsal of the Fedora admission gate under nix/distro-tests, a suite run by hand, gives it after a clean session on the compressing btrfs roots of Fedora 44 and 45; a live rehearsal on an f2fs decoy is a follow-up on hardware with that filesystem",
         ),
         residual: true,
         conclusion: None,

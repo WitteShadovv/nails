@@ -26,8 +26,13 @@
 //! `/boot/config-<release>` (Debian, Ubuntu, Fedora) or
 //! `/usr/lib/modules/<release>/config` (Fedora). The check warns when freed
 //! memory is not zeroed and stays an informational pass only when it cannot
-//! tell. It also notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe`
-//! module) when one is installed. Every probe reads; nothing here writes.
+//! tell: a command line that is there but cannot be read lets no config's
+//! default say freed memory is zeroed, since the line may turn it off, and a
+//! release that is there but cannot be read lets only an answer count that
+//! the spellings of every release give, since it says which values the
+//! kernel accepts. It also notes a RAM-wipe-on-shutdown mechanism (the
+//! dracut `ram-wipe` module) when one is installed. Every probe reads;
+//! nothing here writes.
 //!
 //! The config files and dracut's modules are read through the automount
 //! guard ([`crate::filesystem::automount`]): a lookup that would mount an
@@ -38,7 +43,7 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::kernel_cmdline::{self, BoolSpellings};
-use crate::filesystem::automount::{Guarded, Snapshot, note};
+use crate::filesystem::automount::{Guarded, Snapshot, describe, note};
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
@@ -176,11 +181,19 @@ impl MemoryWipeCheck {
         }
     }
 
-    /// The booted kernel's release, or `None` when it cannot be read.
-    fn release<F: Filesystem>(&self, fs: &F) -> Option<String> {
-        let release = fs.read_file_content(&self.osrelease_path).ok()?;
-        let release = release.trim();
-        (!release.is_empty()).then(|| release.to_string())
+    /// The booted kernel's release, `None` when it is not there or empty;
+    /// `Err` says why NAILS cannot read it, where it is there.
+    fn release<F: Filesystem>(&self, fs: &F) -> std::result::Result<Option<String>, String> {
+        match fs.read_file_content(&self.osrelease_path) {
+            Ok(release) => {
+                let release = release.trim();
+                Ok((!release.is_empty()).then(|| release.to_string()))
+            }
+            Err(error) if error.nothing_there() => Ok(None),
+            Err(error) => {
+                Err(describe(&self.osrelease_path.display().to_string(), &error).sentence)
+            }
+        }
     }
 
     /// Whether a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module,
@@ -219,12 +232,35 @@ impl<F: Filesystem> PreFlightCheck<F> for MemoryWipeCheck {
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // The command line and the release are the running kernel's own, in
         // /proc; the config files and dracut's modules lie on the decoy.
-        let cmdline = fs.read_file_content(&self.cmdline_path).ok();
+        let (cmdline, cmdline_unread) = match fs.read_file_content(&self.cmdline_path) {
+            Ok(cmdline) => (Some(cmdline), None),
+            Err(error) if error.nothing_there() => (None, None),
+            Err(error) => (
+                None,
+                Some(describe(&self.cmdline_path.display().to_string(), &error).sentence),
+            ),
+        };
         let release = self.release(fs);
-        let spellings = BoolSpellings::of_release(release.as_deref());
         let guarded = Guarded::new(fs.clone(), &Snapshot::read(fs, Path::new("/")));
-        let config = self.config.read(&guarded, release.as_deref());
-        let freed = freed_memory(cmdline.as_deref(), spellings, config.as_ref());
+        let known = release.as_ref().ok().and_then(Option::as_deref);
+        let config = self.config.read(&guarded, known);
+        let judge = |spellings| freed_memory(cmdline.as_deref(), spellings, config.as_ref());
+        let freed = match &release {
+            Ok(release) => judge(BoolSpellings::of_release(release.as_deref())),
+            // A release that cannot be read leaves untold which values the
+            // kernel accepts: only an answer the spellings of every release
+            // give counts.
+            Err(_) => match judge(BoolSpellings::Classic) {
+                freed if freed == judge(BoolSpellings::EnableDisable) => freed,
+                _ => FreedMemory::Unknown,
+            },
+        };
+        let freed = match freed {
+            // A command line that cannot be read may turn init_on_free off,
+            // or page poisoning on, whatever the config's default.
+            FreedMemory::Zeroed if cmdline_unread.is_some() => FreedMemory::Unknown,
+            freed => freed,
+        };
 
         let ram_wipe_note = if self.ram_wipe_present(&guarded) {
             " A RAM-wipe mechanism (the dracut ram-wipe module) is installed: the decoy wipes \
@@ -260,14 +296,19 @@ impl<F: Filesystem> PreFlightCheck<F> for MemoryWipeCheck {
                  session rather than leaving the machine running.",
             )),
             FreedMemory::Unknown => {
+                let unread: String = [cmdline_unread, release.err()]
+                    .into_iter()
+                    .flatten()
+                    .map(|why| format!(" {why}."))
+                    .collect();
                 let unlooked = note(&guarded.skipped())
                     .map(|note| format!("\n{note}"))
                     .unwrap_or_default();
                 Ok(CheckResult::Pass(format!(
                     "Could not read whether the decoy kernel zeroes freed memory (init_on_free on \
                      the command line, or CONFIG_INIT_ON_FREE_DEFAULT_ON in its config); whether \
-                     freed pages are zeroed is unknown. Recommended: add init_on_free=1 to the \
-                     decoy kernel command line.{ram_wipe_note}{unlooked}"
+                     freed pages are zeroed is unknown.{unread} Recommended: add init_on_free=1 to \
+                     the decoy kernel command line.{ram_wipe_note}{unlooked}"
                 )))
             }
         }

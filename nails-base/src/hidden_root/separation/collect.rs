@@ -44,7 +44,10 @@
 //! could hide the decoy's claim on the hidden root's device.
 //! `/sys/class/block` is listed as unreadable when it cannot be listed or is
 //! missing (no sysfs, as in some containers): every block device is listed
-//! there, so without it no claim can be followed to a device.
+//! there, so without it no claim can be followed to a device. So is a
+//! device node or `/dev/disk` link that a line of fstab or crypttab, or the
+//! mount table, names and that is there but cannot be resolved, or the
+//! `dev` of the device it leads to: it may name the hidden root's device.
 //!
 //! The filesystem that holds a loop device's backing file is found by the
 //! device the loop driver recorded for it (see [`FileHolder`]): a mount with
@@ -212,16 +215,27 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
                 .iter()
                 .map(|m| m.source.to_string_lossy().into_owned()),
         );
+    // A name whose link or device cannot be resolved may lead to the hidden
+    // root's device: it is unreadable, never a name of no device.
     for spec in specs {
         if devices.by_spec.contains_key(&spec) {
             continue;
         }
-        if let Some(name) = blockdev::resolve_spec(fs, &spec)
-            .as_deref()
-            .and_then(file_name)
-            .or_else(|| devices.by_dev.get(&unlinked_number(fs, &spec)?).cloned())
-        {
-            devices.by_spec.insert(spec, name);
+        match blockdev::resolve_spec_or_unread(fs, &spec) {
+            Ok(dir) => {
+                if let Some(name) = dir
+                    .as_deref()
+                    .and_then(file_name)
+                    .or_else(|| devices.by_dev.get(&unlinked_number(fs, &spec)?).cloned())
+                {
+                    devices.by_spec.insert(spec, name);
+                }
+            }
+            Err(place) => {
+                if !collected.unreadable.contains(&place) {
+                    collected.unreadable.push(place);
+                }
+            }
         }
     }
 

@@ -9,6 +9,7 @@ use super::*;
 use crate::filesystem::MockFilesystem;
 use crate::test_support::write_executable;
 use std::fs;
+use std::io::ErrorKind;
 
 const HIDDEN_ROOT: &str = "/mnt/data";
 
@@ -161,6 +162,45 @@ fn an_unknown_backend_requires_dmsetup() {
             HostToolsCheck::with_probe(vec![dir.clone()], PlatformKind::Fhs, Some(Family::Debian));
         let result = check.run(&host).unwrap();
         assert!(result.is_fail(), "{result:?}");
+        assert!(
+            result.message().contains("dmsetup (apt install dmsetup)"),
+            "{}",
+            result.message()
+        );
+    }
+}
+
+#[test]
+fn a_mapping_whose_name_or_link_cannot_be_read_requires_dmsetup() {
+    // The source names a mapping: one whose name, link or devices below it
+    // NAILS cannot read still needs dmsetup on the way back.
+    let temp = tempfile::tempdir().unwrap();
+    let dir = bin_with(&temp, &["systemctl", "loginctl", "ip"]);
+    let cases = [
+        (
+            "/dev/dm-0",
+            "/sys/block/dm-0/dm/name",
+            ErrorKind::PermissionDenied,
+        ),
+        ("/dev/dm-0", "/sys/block/dm-0/dm/name", ErrorKind::Other),
+        (
+            "/dev/dm-0",
+            "/sys/block/dm-0/slaves",
+            ErrorKind::PermissionDenied,
+        ),
+        ("/dev/mapper/data", "/dev/mapper/data", ErrorKind::Other),
+    ];
+    for (source, place, kind) in cases {
+        let fs = hidden_root_on(source);
+        fs.mock_add_file("/sys/block/dm-0/dm/name", "data\n");
+        fs.mock_set_directory_contents(Path::new("/sys/block/dm-0/slaves"), Vec::new());
+        fs.create_symlink(Path::new("/dev/dm-0"), Path::new("/dev/mapper/data"))
+            .unwrap();
+        fs.mock_set_lookup_error(place, kind);
+        let check =
+            HostToolsCheck::with_probe(vec![dir.clone()], PlatformKind::Fhs, Some(Family::Debian));
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_fail(), "{place} {kind:?}: {result:?}");
         assert!(
             result.message().contains("dmsetup (apt install dmsetup)"),
             "{}",

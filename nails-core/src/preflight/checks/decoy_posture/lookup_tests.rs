@@ -8,8 +8,8 @@
 //! the decoy keeps, with why NAILS cannot tell.
 
 use super::*;
-use crate::filesystem::MockFilesystem;
 use crate::filesystem::automount::mount_fix;
+use crate::filesystem::{MockFailure, MockFilesystem, MockLookup};
 use crate::preflight::checks::automount_fixture::{reached, with_automounts};
 use std::io::ErrorKind;
 
@@ -205,6 +205,43 @@ fn a_kdump_unit_nails_cannot_tell_is_enabled_refuses_as_armed() {
     );
 }
 
+/// A unit directory whose listing fails for another reason than that it is
+/// not there may hold the link that enables a kdump unit: refused as if
+/// kdump were armed, where the listing that failed read as a directory with
+/// no link, and status counts kdump as armed. A directory that is not there,
+/// or below a file, holds no link, so kdump is not armed. Below a file, a
+/// unit file the check reads there, as tuned's, is one NAILS cannot follow,
+/// which counts against the decoy on its own.
+#[test]
+fn a_unit_directory_nails_cannot_list_refuses_as_armed() {
+    let fs = decoy("volatile");
+    fs.mock_set_unreadable_dir("/usr/lib/systemd/system");
+    let result = run(&fs, false);
+    refused_as_untold(
+        &fs,
+        &result,
+        "cannot tell whether kdump is armed: NAILS cannot tell whether kdump-tools.service is \
+         enabled: NAILS cannot look up /usr/lib/systemd/system; run the command again with sudo",
+    );
+    let kdump = DecoyPersistenceCheck::kdump_on_decoy(&fs).expect("refused as armed");
+    assert!(
+        kdump.untold.as_deref().is_some_and(|why| why.starts_with(
+            "NAILS cannot tell whether kdump-tools.service is enabled: NAILS cannot look up \
+             /usr/lib/systemd/system"
+        )),
+        "{kdump:?}"
+    );
+
+    for kind in [ErrorKind::NotFound, ErrorKind::NotADirectory] {
+        let fs = decoy("volatile");
+        fs.mock_set_lookup_error("/usr/lib/systemd/system", kind);
+        assert_eq!(DecoyPersistenceCheck::kdump_on_decoy(&fs), None, "{kind:?}");
+        let result = run(&fs, false);
+        assert!(!result.message().contains("kdump"), "{kind:?}: {result:?}");
+        assert_eq!(result.is_pass(), kind == ErrorKind::NotFound, "{result:?}");
+    }
+}
+
 /// The `syslog.service` alias names the enabled syslog daemon. One NAILS
 /// cannot look up may name a daemon that writes logs to the decoy disk:
 /// refused, with the override.
@@ -218,6 +255,200 @@ fn a_syslog_alias_nails_cannot_look_up_refuses() {
         &result,
         "NAILS cannot tell which daemon syslog.service names: NAILS cannot look up \
          /etc/systemd/system/syslog.service (",
+    );
+}
+
+/// A `syslog.service` link whose target NAILS cannot resolve, for another
+/// reason than that it leads to nothing, may name a daemon that writes logs
+/// to the decoy disk: refused, with the override, where the resolution that
+/// failed read as a link that names no service. One that leads to nothing
+/// names none, and the decoy passes.
+#[test]
+fn a_syslog_alias_nails_cannot_resolve_refuses() {
+    let link = Path::new("/etc/systemd/system/syslog.service");
+    let decoy_with_alias = |failure: ErrorKind| {
+        let fs = decoy("volatile");
+        fs.create_symlink(Path::new("/usr/lib/systemd/system/rsyslog.service"), link)
+            .unwrap();
+        fs.mock_fail_only(link, MockLookup::Canonicalize, MockFailure::Io(failure));
+        fs
+    };
+    let fs = decoy_with_alias(ErrorKind::PermissionDenied);
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        "NAILS cannot tell which daemon syslog.service names: NAILS cannot look up \
+         /etc/systemd/system/syslog.service; run the command again with sudo",
+    );
+    let fs = decoy_with_alias(ErrorKind::NotFound);
+    let result = run(&fs, false);
+    assert!(result.is_pass(), "{result:?}");
+}
+
+/// The directory of the invocation markers, which NAILS cannot list, may
+/// hold the marker of a running template instance of a logger, and a
+/// cgroup's `cgroup.events`, which it cannot read, may show a process in the
+/// unit: NAILS cannot tell whether the unit runs, and refuses with the
+/// override, where the listing or the read that failed showed nothing
+/// running. Neither is there on a decoy that passes.
+#[test]
+fn a_marker_directory_or_cgroup_nails_cannot_read_refuses() {
+    let fs = decoy("volatile");
+    fs.mock_set_unreadable_dir("/run/systemd/units");
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        "NAILS cannot tell whether rsyslog.service runs: NAILS cannot look up \
+         /run/systemd/units; run the command again with sudo",
+    );
+
+    let events = "/sys/fs/cgroup/system.slice/auditd.service/cgroup.events";
+    let fs = decoy("volatile");
+    fs.mock_set_lookup_error(events, ErrorKind::Other);
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        &format!("NAILS cannot tell whether auditd.service runs: NAILS cannot look up {events} ("),
+    );
+
+    for kind in [ErrorKind::NotFound, ErrorKind::NotADirectory] {
+        let fs = decoy("volatile");
+        fs.mock_set_lookup_error("/run/systemd/units", kind);
+        fs.mock_set_lookup_error(events, kind);
+        let result = run(&fs, false);
+        assert!(result.is_pass(), "{kind:?}: {result:?}");
+    }
+}
+
+/// A `/proc` that NAILS cannot list, or a process whose `comm` or `cmdline`
+/// it cannot read, may hide a syslog or audit daemon that systemd did not
+/// start, which writes to the decoy disk: refused, with the override, where
+/// they read as no process, and sssd's warning says it cannot tell. A
+/// process that ended since the listing hides none.
+#[test]
+fn processes_nails_cannot_read_refuse() {
+    let fs = decoy("volatile");
+    fs.mock_set_unreadable_dir("/proc");
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        "NAILS cannot tell whether a syslog or audit daemon that systemd did not start runs: \
+         NAILS cannot list /proc; run the command again with sudo",
+    );
+    let sssd = sssd::sssd_finding(&fs, Path::new("/"), false).expect("sssd cannot be told");
+    assert!(
+        sssd.starts_with(
+            "NAILS cannot tell whether sssd is in use on the decoy: NAILS cannot tell whether \
+             an sssd daemon runs: NAILS cannot list /proc; run the command again with sudo"
+        ),
+        "{sssd}"
+    );
+
+    let one_process = || {
+        let fs = decoy("volatile");
+        fs.mock_set_directory_contents(Path::new("/proc"), vec![PathBuf::from("/proc/731")]);
+        fs.mock_set_path_type("/proc/731", crate::filesystem::PathKind::Dir);
+        fs
+    };
+    let fs = one_process();
+    fs.mock_add_file("/proc/731/comm", "bash\n");
+    fs.mock_set_lookup_error("/proc/731/cmdline", ErrorKind::PermissionDenied);
+    refused_as_untold(
+        &fs,
+        &run(&fs, false),
+        "NAILS cannot tell whether a syslog or audit daemon that systemd did not start runs: \
+         NAILS cannot read /proc/731/cmdline; run the command again with sudo",
+    );
+
+    // Gone: neither file is there any more.
+    let fs = one_process();
+    fs.mock_set_lookup_error("/proc/731", ErrorKind::NotFound);
+    let result = run(&fs, false);
+    assert!(result.is_pass(), "{result:?}");
+}
+
+/// A process that ends between the open of its `comm` and the read makes the
+/// read fail with `ESRCH`, whose code the error NAILS gets does not keep: a
+/// read that fails while the process's directory is gone when NAILS looks
+/// again is of a process that ended, which hides no daemon, where it was
+/// taken for one NAILS cannot read and refused. A read that fails while the
+/// directory is there still cannot tell.
+#[test]
+fn a_process_whose_directory_is_gone_after_a_failed_read_ended() {
+    let one_process = |there: bool| {
+        let fs = decoy("volatile");
+        fs.mock_set_directory_contents(Path::new("/proc"), vec![PathBuf::from("/proc/731")]);
+        if there {
+            fs.mock_set_path_type("/proc/731", crate::filesystem::PathKind::Dir);
+        }
+        fs.mock_add_file("/proc/731/comm", "rsyslogd\n");
+        fs.mock_fail_only(
+            Path::new("/proc/731/comm"),
+            MockLookup::Read,
+            MockFailure::Io(ErrorKind::Other),
+        );
+        fs.mock_fail_only(
+            Path::new("/proc/731/cmdline"),
+            MockLookup::Read,
+            MockFailure::Io(ErrorKind::Other),
+        );
+        fs
+    };
+    let processes = loggers::running_processes(&one_process(false), Path::new("/"));
+    assert_eq!(processes.untold, None);
+    assert!(processes.names.is_empty(), "{:?}", processes.names);
+    assert!(run(&one_process(false), false).is_pass());
+
+    let fs = one_process(true);
+    let untold = loggers::running_processes(&fs, Path::new("/")).untold;
+    assert!(
+        untold
+            .as_deref()
+            .is_some_and(|why| why.starts_with("NAILS cannot read /proc/731/comm (")),
+        "{untold:?}"
+    );
+    assert!(run(&fs, false).is_fail());
+}
+
+/// A command line or a `comm` that holds a byte that is no UTF-8, as of a
+/// process started with a file name in Latin-1, is read, and the process
+/// is known by its names: it is no process NAILS cannot read, which refused
+/// for as long as it ran. A daemon started so is found by its name.
+#[test]
+fn a_process_whose_command_line_is_no_text_is_read_by_its_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let process = |pid: &str, comm: &[u8], cmdline: &[u8]| {
+        std::fs::create_dir_all(root.join("proc").join(pid)).unwrap();
+        std::fs::write(root.join("proc").join(pid).join("comm"), comm).unwrap();
+        std::fs::write(root.join("proc").join(pid).join("cmdline"), cmdline).unwrap();
+    };
+    process("42", b"vim\n", b"vim\0caf\xe9.txt\0");
+    process(
+        "43",
+        b"rsyslogd\n",
+        b"/usr/sbin/rsyslogd\0-f\0/etc/caf\xe9.conf\0",
+    );
+    process("44", b"caf\xe9\n", b"/opt/caf\xe9\0");
+    let processes = loggers::running_processes(&crate::RealFilesystem, root);
+    assert_eq!(processes.untold, None);
+    for name in ["vim", "rsyslogd", "caf\u{fffd}"] {
+        assert!(
+            processes.names.contains(name),
+            "{name}: {:?}",
+            processes.names
+        );
+    }
+
+    // A file it cannot read, here one that is a directory, while the
+    // process's directory is there, still cannot tell.
+    std::fs::create_dir_all(root.join("proc/45/comm")).unwrap();
+    let untold = loggers::running_processes(&crate::RealFilesystem, root).untold;
+    assert!(
+        untold
+            .as_deref()
+            .is_some_and(|why| why.starts_with("NAILS cannot read /proc/45/comm (")),
+        "{untold:?}"
     );
 }
 
@@ -452,6 +683,66 @@ fn a_warning_part_the_guard_does_not_look_at_warns() {
     assert!(!reached(&fs, "/srv"), "{:?}", fs.mock_lookups());
 }
 
+/// A file or directory a warning reads that cannot be read for another
+/// reason than that it is not there may hide what the warning is about: the
+/// kernel's core pattern, the pstore, the root's mount options and the
+/// sudoers files. Each warns that NAILS cannot tell, where the read that
+/// failed showed nothing and the decoy passed. Where nothing is there, it
+/// passes.
+#[test]
+fn a_warning_part_nails_cannot_read_warns() {
+    for (path, says) in [
+        (
+            CORE_PATTERN,
+            "NAILS cannot tell whether the kernel writes core dumps to the decoy disk: NAILS \
+             cannot look up /proc/sys/kernel/core_pattern (",
+        ),
+        (
+            PSTORE_DIR,
+            "NAILS cannot tell whether pstore holds persisted crash records: NAILS cannot look \
+             up /sys/fs/pstore (",
+        ),
+        (
+            MOUNTINFO,
+            "NAILS cannot tell whether the root filesystem records access times, which leave an \
+             atime trail of reads on the decoy: NAILS cannot look up /proc/self/mountinfo (",
+        ),
+        (
+            "/etc/sudoers",
+            "NAILS cannot tell whether sudoers sets a log file or I/O logging, which record \
+             sudo's commands or whole terminal sessions on the decoy disk: NAILS cannot look up \
+             /etc/sudoers (",
+        ),
+    ] {
+        let fs = decoy("volatile");
+        fs.mock_set_lookup_error(path, ErrorKind::Other);
+        let result = run(&fs, false);
+        assert!(result.is_warn(), "{path}: {result:?}");
+        assert!(result.message().contains(says), "{path}: {result:?}");
+    }
+
+    let fs = decoy("volatile");
+    fs.mock_add_file("/etc/sudoers", "@includedir /etc/sudoers.d\n");
+    fs.mock_set_unreadable_dir("/etc/sudoers.d");
+    let result = run(&fs, false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "NAILS cannot tell whether sudoers sets a log file or I/O logging, which record \
+             sudo's commands or whole terminal sessions on the decoy disk: NAILS cannot look up \
+             /etc/sudoers.d; run the command again with sudo"
+        ),
+        "{result:?}"
+    );
+
+    let fs = decoy("volatile");
+    for path in [CORE_PATTERN, PSTORE_DIR, MOUNTINFO, "/etc/sudoers"] {
+        fs.mock_set_lookup_error(path, ErrorKind::NotFound);
+    }
+    let result = run(&fs, false);
+    assert!(result.is_pass(), "{result:?}");
+}
+
 /// The kdump probe of status reads through the guard too: a unit directory
 /// it did not look up, which the probe itself passes over, may hold an
 /// enabling link, and kdump counts as armed, or NAILS cannot tell.
@@ -460,11 +751,16 @@ fn the_kdump_probe_of_status_counts_a_directory_it_did_not_look_up() {
     let fs = decoy("volatile");
     with_automounts(&fs, &["/lib"]);
     let kdump = DecoyPersistenceCheck::kdump_on_decoy(&fs).expect("kdump cannot be told");
+    let unlisted = "NAILS does not look up /lib/systemd/system, since the lookup would mount \
+                    the automount point /lib";
     assert_eq!(
         kdump.untold.as_deref(),
         Some(
-            "NAILS does not look up /lib/systemd/system, since the lookup would mount the \
-             automount point /lib"
+            format!(
+                "NAILS cannot tell whether kdump-tools.service is enabled: {unlisted}; NAILS \
+                 cannot tell whether kdump.service is enabled: {unlisted}"
+            )
+            .as_str()
         )
     );
     assert!(DecoyPersistenceCheck::decoy_kdump_armed(&fs));

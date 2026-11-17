@@ -680,12 +680,16 @@ of this changelog for that version becomes the release notes word for word, and
   list the root, an image with a filesystem at byte 0 beside a partition table, and an ext4 journal
   or btrfs log tree the carve would not replay each stop the run. Before, only plaso's limit to one
   partition stopped a disk of several, and only where a timeline runs.
-- The oracle real-image nightly also images two real btrfs decoys, a stock Fedora 44 Cloud disk and
-  a stock arch-boxes disk, each kept whole before, after a plain reboot, after a second plain reboot
-  and after a hidden session and the way back, then scanned without the timeline, once with the
-  session and once with the second plain reboot in its place, which must leave nothing but the live
-  controls. Neither Fedora nor Arch is admitted yet, so these images come from a test-only build
-  that admits the family's row and is never released (ci/oracle/README.md).
+- The oracle real-image nightly also images three real btrfs decoys, stock Fedora 44 and Fedora 45
+  Cloud disks and a stock arch-boxes disk, each kept whole before, after a plain reboot, after a
+  second plain reboot and after a hidden session and the way back, then scanned without the
+  timeline, once with the session and once with the second plain reboot in its place, which must
+  leave nothing but the live controls. A Fedora decoy is scanned a third time, over a copy of the
+  session's image with record-level positive controls planted (a row in lastlog2's database, made
+  where the image has none, a login row in wtmpdb's where the image has one, and a file below
+  /var/lib/dnf), and that verdict must fail on exactly the planted paths. The scan compares those
+  records by their files' digests. Neither Fedora nor Arch is admitted yet, so these images come
+  from a test-only build that admits the family's row and is never released (ci/oracle/README.md).
 - Two kinds of line bulk_extractor writes no longer stop an oracle scan before its verdict, on ext4
   as on btrfs: a zip member's description is passed over beside its saved file, whose hash keys the
   member, a member found in decompressed data included, and a login record it names `<CACHED>` is
@@ -2332,12 +2336,61 @@ of this changelog for that version becomes the release notes word for word, and
   it cannot look up as one it could not tell about, never as one that is not there: as a finding at
   the severity of what it looks for there but no more than a warning, or among the areas it did not
   check, and one it had no permission for says to run it again with sudo. Some readers still take a
-  place they cannot list, read or follow for an empty one, among them the walk of the decoy's
-  `/etc/nixos`, the lookups `soft-reboot-units` makes for its units in the decoy's root and
-  activation makes in the operator's home, the readers of the sudoers files and of `/proc/swaps`,
-  and the walks of `verify` through the log directory and the temporary folders. Offline, a shell
-  history or desktop recency file that does not resolve inside the root, as a loop of links, is now
-  listed as not checked, where it was passed over.
+  place they cannot list, read or follow for an empty one, among them the lookups `soft-reboot-units`
+  makes for its units in the decoy's root (it refuses as for a missing unit) and activation makes in
+  the operator's home, and the walks of `verify` through the log directory and the temporary
+  folders. Offline, a shell history or desktop recency file that does not resolve inside the root,
+  as a loop of links, is now listed as not checked, where it was passed over.
+- Readers of `nails check` and activation that took a place they could not list, read or resolve,
+  for another reason than that nothing is there, for one that shows nothing now say they cannot
+  tell, name the place, and refuse or warn as for what they look for. `decoy-persistence` refuses
+  (`--allow-persistent-decoy` lifts it) where it cannot list a unit directory that may hold an
+  enabling link of a kdump unit, resolve a `syslog.service` link, list the invocation markers of
+  systemd's units, read a unit's `cgroup.events`, list `/proc` or read the `comm` or `cmdline` of a
+  process that is still there, and warns where it cannot read `kernel.core_pattern`,
+  `/sys/fs/pstore`, the mount table's options for `/`, or a sudoers file or include directory. A
+  command line or a sudoers file that holds bytes that are no UTF-8 is read. The same reads of the
+  invocation markers and `cgroup.events` make `unattended-upgrade-run` refuse, with a fix that says
+  what to let NAILS read, and `locate-database` warn. `backend-detect` refuses as for discards
+  (`--allow-discards` lifts it) where it cannot read the mount table, which passed as "Backend
+  detection skipped", the device the hidden root is mounted from, or an attribute of the stack below
+  it that decides whether discards reach the hidden volume, and warns where it cannot read whether a
+  loop device over a block device detaches when closed. `backend-partition-type` and `outer-volume`
+  warn that they could not check where sysfs shows an attribute they decide by but they cannot read
+  it, where they passed, while a partition `backend-partition-type` could judge and refuses is
+  refused all the same. `session-state` refuses where it cannot read the mount table, and takes a
+  session plan it cannot read for one an interrupted entry left, which `recover` removes, but one
+  below a file for none. `fstab-policy` and `decoy-root` refuse without the mount table. `swap`
+  refuses where it cannot read `/proc/swaps`, a zram device's `backing_dev`, `/sys/power/resume` or
+  `/proc/cmdline`, and reads a swap file's name that is no UTF-8, which hid every swap from it, and
+  fails it as file swap. `suspicious-nails-reference` refuses where its walk of `/etc/nixos` cannot
+  look up a place, or it cannot read the mount table or a place that gives a name of the hidden
+  volume's storage, and says what to make readable. It reads a `.nix` file that holds bytes that are
+  no UTF-8, as Nix does, where it refused it as one it could not read. `locate-database` no longer
+  takes an updatedb link it cannot resolve for plocate's: where the lists plocate and mlocate read
+  skip the volume it warns that it cannot tell whether the run is findutils' updatedb, which reads
+  none of them, and where they do not, as with Debian 13's stock `/etc/updatedb.conf`, it refuses
+  as before. `binary-location` warns where it cannot resolve a link in a `PATH` directory,
+  `dma-protection` where it cannot read what lets it pass, and `hidden-volume` where it cannot read
+  the names of the volume's source. `backend-entries` refuses, and `backend-encryption` warns that
+  it cannot confirm, where a device link a line of fstab or crypttab or the mount table names cannot
+  be resolved, which the attach gate now counts as an input it could not read, and
+  `backend-encryption` also where it cannot resolve an image file the decoy's crypttab opens, or
+  read what kind of mapping a device is or what lies below it. `backend-partition-type`,
+  `outer-volume` and `backend-encryption` warn that they cannot tell where sysfs shows the devices
+  of the hidden root's filesystem (a btrfs device list among them) but they cannot read them, and
+  `backend-partition-type` too where it cannot read those of the decoy's root file system or a boot
+  partition, or resolve a link into a partition below the hidden root, while the hidden root has a
+  partition on a disk it does not know the decoy boots from. A warning it could judge keeps its text
+  and fix and says what it could not check. `host-tools` requires `dmsetup` for a hidden root
+  mounted from `/dev/dm-N` or `/dev/mapper` whatever it can read of the stack, and for one whose
+  stack it cannot read, where it passed when it could not read the mapping's name, and activation
+  refuses where it cannot read the stack it records for the way back to close. `inherited-autostart`
+  lists a directory it cannot list, or a file it cannot read, as not read, and `memory-wipe` no
+  longer says the kernel zeroes freed memory where it cannot read the command line, or where it
+  cannot read the release, which says which values the kernel accepts, and the values on the line
+  mean different things to different releases. A check run without root now warns that it cannot
+  read `/etc/sudoers` and `/sys/fs/pstore` where, as on most systems, only root can read them.
 - `nails deactivate` that cannot take its lock, a hidden root that cannot be looked up among the
   causes, refuses before the switch as before, and now names `emergency`, which ends the session
   without the lock: it returns to the decoy where it can prepare the return and powers off where it

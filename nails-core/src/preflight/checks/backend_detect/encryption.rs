@@ -28,7 +28,7 @@
 //! error.
 
 use super::CryptType;
-use crate::blockdev::{DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
+use crate::blockdev::{Attribute, DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::config::get_default_hidden_volume_root;
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::top_mount_at;
@@ -41,7 +41,10 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 mod tests;
 
-use super::graph::{Graph, MAX_DEVICES, filesystem_devices, leaf_kind, widen_claims};
+use super::graph::{
+    Graph, MAX_DEVICES, dm_kind_unread, filesystem_devices, leaf_kind, unread_devices, unread_of,
+    widen_claims,
+};
 
 /// The cryptsetup types that encrypt, as the `<TYPE>` of a `CRYPT-<TYPE>-`
 /// device-mapper uuid. `INTEGRITY` and `VERITY` encrypt nothing.
@@ -151,8 +154,13 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEncryptionCheck {
             &collected.devices,
             separation::claimed_devices(&collected.scene(&table), hidden),
         );
-        let crypttab_files = crypttab_files(fs, &collected.crypttab);
-        let cover = filesystem_devices(fs, hidden)
+        let mut unreadable = collected.unreadable.clone();
+        let crypttab_files = crypttab_files(fs, &collected.crypttab, &mut unreadable);
+        let cover = match filesystem_devices(fs, hidden) {
+            Ok(roots) => roots,
+            Err(_) => return Ok(unknown(root, &unread_devices("its filesystem"))),
+        };
+        let cover = cover
             .and_then(|roots| {
                 let graph = Graph::read(
                     fs,
@@ -174,7 +182,7 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEncryptionCheck {
                     separation::shown_fstype(&hidden.fstype)
                 ))
             });
-        Ok(judge(root, cover, &collected.unreadable))
+        Ok(judge(root, cover, &unreadable))
     }
 }
 
@@ -222,16 +230,32 @@ fn judge(root: &Path, cover: Cover, unreadable: &[PathBuf]) -> CheckResult {
 /// The image files the decoy's crypttab opens, as the loop driver would name
 /// them (their links resolved), each as the volume it opens. A source under
 /// `/dev`, or a `UUID=` and the like, names a device and is claimed as one.
-fn crypttab_files<F: Filesystem>(fs: &F, crypttab: &[CrypttabEntry]) -> BTreeMap<PathBuf, Claimed> {
-    crypttab
+/// A source that is there but whose links cannot be resolved, for another
+/// reason than that it is not there, lands in `unreadable`: it may be the
+/// file a loop device under the hidden root reads.
+fn crypttab_files<F: Filesystem>(
+    fs: &F,
+    crypttab: &[CrypttabEntry],
+    unreadable: &mut Vec<PathBuf>,
+) -> BTreeMap<PathBuf, Claimed> {
+    let mut files = BTreeMap::new();
+    for entry in crypttab
         .iter()
         .filter(|entry| entry.source.starts_with('/') && !entry.source.starts_with("/dev/"))
-        .map(|entry| {
-            let path = Path::new(&entry.source);
-            let file = fs.canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            (file, Claimed::Encrypted(entry.name.clone()))
-        })
-        .collect()
+    {
+        let path = Path::new(&entry.source);
+        let file = match fs.canonicalize(path) {
+            Ok(file) => file,
+            Err(error) => {
+                if !error.nothing_there() && !unreadable.iter().any(|seen| seen == path) {
+                    unreadable.push(path.to_path_buf());
+                }
+                path.to_path_buf()
+            }
+        };
+        files.insert(file, Claimed::Encrypted(entry.name.clone()));
+    }
+    files
 }
 
 /// The warning that the check cannot tell, and `why`.
@@ -270,8 +294,13 @@ enum Role {
     Unknown(String),
 }
 
-/// What `layer` does to the data that passes it.
+/// What `layer` does to the data that passes it. A device whose kind of
+/// mapping sysfs shows but NAILS cannot read may be any.
 fn role(layer: &Layer) -> Role {
+    let kind = dm_kind_unread(layer);
+    if !kind.is_empty() {
+        return Role::Unknown(unread_of(&kind, &layer.name));
+    }
     let Some(dm) = &layer.dm else {
         return Role::Passes;
     };
@@ -470,6 +499,15 @@ impl<'a> Stack<'a> {
     /// What a way that ends at `layer`, a device the check goes on below
     /// from nowhere, passes there.
     fn bottom(&self, name: &str, layer: &Layer) -> Cover {
+        // A device below it, or the file a loop device reads, that sysfs
+        // shows but NAILS cannot read may be encrypted.
+        let below: Vec<Attribute> = layer
+            .unread_among(&[Attribute::Slaves, Attribute::LoopBackingFile])
+            .map(|unread| unread.attribute)
+            .collect();
+        if !below.is_empty() {
+            return Cover::Unknown(unread_of(&below, &layer.name));
+        }
         if let Some(kind) = leaf_kind(name) {
             return Cover::Unknown(format!(
                 "{} is {kind}, which keeps its data where the check cannot follow",

@@ -160,16 +160,32 @@ impl<F: Filesystem> PreFlightCheck<F> for SoftRebootUnitsCheck {
     }
 }
 
+/// How a check reads the mount table: [`read_mountinfo`] outside tests,
+/// which give one that fails.
+type MountTable = fn() -> std::io::Result<Vec<MountEntry>>;
+
 /// `decoy-root`.
 #[derive(Debug)]
 pub struct DecoyRootCheck {
     root: PathBuf,
+    /// How the check reads the mount table.
+    mount_table: MountTable,
 }
 
 impl DecoyRootCheck {
     /// The check for the decoy root at `root`.
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            mount_table: read_mountinfo,
+        }
+    }
+
+    /// The check, reading the mount table with `mount_table` (tests).
+    #[cfg(test)]
+    fn reading_mounts(mut self, mount_table: MountTable) -> Self {
+        self.mount_table = mount_table;
+        self
     }
 }
 
@@ -198,11 +214,31 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyRootCheck {
         "the decoy root can be mounted again for the way back"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(judge_decoy_root(
-            &read_mountinfo().unwrap_or_default(),
-            &self.root,
-        ))
+        Ok(self.judge((self.mount_table)()))
     }
+}
+
+impl DecoyRootCheck {
+    /// The result for the mount table `mounts`, as it was read: without it
+    /// NAILS cannot tell what the decoy root is mounted from, and refuses.
+    fn judge(&self, mounts: std::io::Result<Vec<MountEntry>>) -> CheckResult {
+        match mounts {
+            Ok(mounts) => judge_decoy_root(&mounts, &self.root),
+            Err(error) => without_mount_table(
+                "the decoy root can be mounted again for the way back",
+                &error,
+            ),
+        }
+    }
+}
+
+/// The refusal of a check that judges by the mount table, which it cannot
+/// read for `error`: NAILS cannot tell `what`.
+fn without_mount_table(what: &str, error: &std::io::Error) -> CheckResult {
+    CheckResult::fail_with(
+        format!("NAILS cannot tell whether {what}: it cannot read the mount table ({error})"),
+        crate::filesystem::mountinfo::UNREADABLE_FIX,
+    )
 }
 
 /// Judge where the machine is.
@@ -236,12 +272,25 @@ pub fn judge_session(view: &SessionView) -> CheckResult {
 pub struct SessionStateCheck {
     paths: Paths,
     hidden_root: PathBuf,
+    /// How the check reads the mount table.
+    mount_table: MountTable,
 }
 
 impl SessionStateCheck {
     /// The check under `paths` for the hidden volume at `hidden_root`.
     pub fn new(paths: Paths, hidden_root: PathBuf) -> Self {
-        Self { paths, hidden_root }
+        Self {
+            paths,
+            hidden_root,
+            mount_table: read_mountinfo,
+        }
+    }
+
+    /// The check, reading the mount table with `mount_table` (tests).
+    #[cfg(test)]
+    fn reading_mounts(mut self, mount_table: MountTable) -> Self {
+        self.mount_table = mount_table;
+        self
     }
 }
 
@@ -253,7 +302,25 @@ impl<F: Filesystem> PreFlightCheck<F> for SessionStateCheck {
         "not in a hidden session and no interrupted entry"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(judge_session(&probe::probe(&self.paths, &self.hidden_root)))
+        Ok(self.judge((self.mount_table)()))
+    }
+}
+
+impl SessionStateCheck {
+    /// The result for the mount table `mounts`, as it was read. Without it
+    /// NAILS cannot tell whether `/` is the hidden root or an interrupted
+    /// entry left `/run/nextroot` mounted, and refuses.
+    fn judge(&self, mounts: std::io::Result<Vec<MountEntry>>) -> CheckResult {
+        match mounts {
+            Ok(mounts) => {
+                judge_session(&probe::probe_with(&self.paths, &self.hidden_root, &mounts))
+            }
+            Err(error) => without_mount_table(
+                "the hidden session is already active or an interrupted activation left a next \
+                 root mounted",
+                &error,
+            ),
+        }
     }
 }
 
@@ -408,12 +475,26 @@ pub fn decoy_units(
 pub struct FstabPolicyCheck {
     root: PathBuf,
     hidden_root: PathBuf,
+    /// How the check reads the decoy's mount table.
+    mount_table: MountTable,
 }
 
 impl FstabPolicyCheck {
     /// The check for the decoy root at `root`.
     pub fn new(root: PathBuf, hidden_root: PathBuf) -> Self {
-        Self { root, hidden_root }
+        Self {
+            root,
+            hidden_root,
+            mount_table: read_mountinfo,
+        }
+    }
+
+    /// The check, reading the decoy's mount table with `mount_table`
+    /// (tests).
+    #[cfg(test)]
+    fn reading_mounts(mut self, mount_table: MountTable) -> Self {
+        self.mount_table = mount_table;
+        self
     }
 }
 
@@ -426,11 +507,26 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
     }
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let snapshot = Snapshot::read(fs, &self.root);
-        Ok(self.judge(fs, &snapshot, &read_mountinfo().unwrap_or_default()))
+        Ok(self.judge_read(fs, &snapshot, (self.mount_table)()))
     }
 }
 
 impl FstabPolicyCheck {
+    /// [`judge`](Self::judge) with the decoy's mount table `mounts` as it
+    /// was read: a decision depends on what is mounted, so without the table
+    /// NAILS cannot tell whether every decision is safe, and refuses.
+    fn judge_read<F: Filesystem>(
+        &self,
+        fs: &F,
+        snapshot: &Arc<Snapshot>,
+        mounts: std::io::Result<Vec<MountEntry>>,
+    ) -> CheckResult {
+        match mounts {
+            Ok(mounts) => self.judge(fs, snapshot, &mounts),
+            Err(error) => without_mount_table("every decoy filesystem has a safe decision", &error),
+        }
+    }
+
     /// The result for the decoy root, given the decoy's mount table `mounts`,
     /// with each lookup on the running system asked of `snapshot` first. A
     /// lookup the guard does not make refuses the entry, and so does a table

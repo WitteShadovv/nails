@@ -67,31 +67,60 @@ pub struct SwapPosture {
     pub findings: Vec<String>,
     /// The `/proc/swaps` filenames of the disk-backed devices that failed
     /// (plain partitions, file swap, disk-backed zram, fixed-key dm-crypt), in
-    /// the order the kernel lists them. RAM-only zram and ephemeral encrypted
+    /// the order the kernel lists them, each whose name is UTF-8 (see
+    /// [`Self::unnamed_disk_swap`]). RAM-only zram and ephemeral encrypted
     /// swap are excluded, so the remediation can name exactly the devices the
     /// operator must `swapoff` instead of a blanket `swapoff -a`.
     pub disk_swap_devices: Vec<String>,
+    /// Whether a disk-backed device that failed has a name that is no UTF-8,
+    /// which `disk_swap_devices` cannot give `swapoff`: the remediation turns
+    /// every swap off instead.
+    pub unnamed_disk_swap: bool,
     /// Whether a hibernation channel (a configured resume device or a `resume=`
     /// kernel argument) can write memory to disk.
     pub hibernation_active: bool,
+    /// The files NAILS could not read for another reason than that they are
+    /// not there, in the order it read them: each may hide a channel, so each
+    /// is a failing finding too, which says NAILS cannot tell.
+    pub unread: Vec<String>,
 }
 
 /// Classify every active swap device plus the hibernation channel.
 ///
 /// Reads `/proc/swaps`, the relevant `/sys` and crypttab entries, and the kernel
 /// command line through `fs`. A missing `/proc/swaps` (or an empty one) means no
-/// swap is active and classifies as [`SwapSeverity::Pass`].
+/// swap is active and classifies as [`SwapSeverity::Pass`]. One that is there
+/// but cannot be read, and so a zram device's `backing_dev`, `/sys/power/resume`
+/// or `/proc/cmdline`, may hide a channel: NAILS cannot tell, which fails as a
+/// channel does ([`SwapPosture::unread`]).
 pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
     let mut severity = SwapSeverity::Pass;
     let mut findings = Vec::new();
     let mut disk_swap_devices = Vec::new();
+    let mut unnamed_disk_swap = false;
+    let mut unread = Vec::new();
 
-    let swaps = fs
-        .read_file_content(Path::new(PROC_SWAPS))
-        .unwrap_or_default();
+    // Read as bytes: the kernel gives a swap file's name as it is, which need
+    // not be UTF-8.
+    let swaps = match fs.read_file_bytes(Path::new(PROC_SWAPS)) {
+        Ok(swaps) => swaps,
+        Err(error) if error.nothing_there() => Vec::new(),
+        Err(error) => {
+            severity = SwapSeverity::Fail;
+            findings.push(format!(
+                "NAILS cannot tell which swap is active: it cannot read {PROC_SWAPS} ({error})"
+            ));
+            unread.push(PROC_SWAPS.to_string());
+            Vec::new()
+        }
+    };
 
     // The first line of /proc/swaps is a header; every later line is a device.
-    for line in swaps.lines().skip(1) {
+    for bytes in swaps.split(|&byte| byte == b'\n').skip(1) {
+        // A name that is no UTF-8 is shown with its bytes replaced, which no
+        // `swapoff` finds: the fix turns every swap off then.
+        let named = std::str::from_utf8(bytes).is_ok();
+        let line = String::from_utf8_lossy(bytes);
         if line.trim().is_empty() {
             continue;
         }
@@ -103,7 +132,8 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
         let decoded = crate::filesystem::mountinfo::unescape_octal(raw_filename);
         let filename = decoded.as_str();
         let kind = cols.next().unwrap_or("");
-        let (device_severity, detail) = classify_device(fs, filename, kind);
+        let unread_before = unread.len();
+        let (device_severity, detail) = classify_device(fs, filename, kind, &mut unread);
         if device_severity != SwapSeverity::Pass {
             severity = severity.max(device_severity);
             findings.push(detail);
@@ -111,14 +141,20 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
         // Only the disk-backed failures are offered to `swapoff`: an ephemeral
         // encrypted device merely warns and a RAM-only zram passes, so naming
         // them would send the operator to disable swap that is already safe.
-        if device_severity == SwapSeverity::Fail {
-            disk_swap_devices.push(filename.to_string());
+        // Nor is a device NAILS cannot tell is disk-backed: the fix names
+        // what to make readable.
+        if device_severity == SwapSeverity::Fail && unread.len() == unread_before {
+            if named {
+                disk_swap_devices.push(filename.to_string());
+            } else {
+                unnamed_disk_swap = true;
+            }
         }
     }
 
-    let hibernation = hibernation_findings(fs);
+    let (hibernation, untold) = hibernation_findings(fs, &mut unread);
     let hibernation_active = !hibernation.is_empty();
-    for detail in hibernation {
+    for detail in hibernation.into_iter().chain(untold) {
         severity = severity.max(SwapSeverity::Fail);
         findings.push(detail);
     }
@@ -127,14 +163,20 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
         severity,
         findings,
         disk_swap_devices,
+        unnamed_disk_swap,
         hibernation_active,
+        unread,
     }
 }
 
 /// Build the remediation for a failing swap posture, naming the exact devices to
-/// disable so the operator does not have to run a blanket `swapoff -a`.
+/// disable so the operator does not have to run a blanket `swapoff -a`, and
+/// the files NAILS could not read. A device whose name is no UTF-8 cannot be
+/// named: then the blanket form it is.
 fn fail_remediation(posture: &SwapPosture) -> String {
-    let swapoff = if posture.disk_swap_devices.is_empty() {
+    let swapoff = if posture.unnamed_disk_swap {
+        Some("sudo swapoff -a".to_string())
+    } else if posture.disk_swap_devices.is_empty() {
         None
     } else {
         Some(format!(
@@ -142,8 +184,27 @@ fn fail_remediation(posture: &SwapPosture) -> String {
             posture.disk_swap_devices.join(" ")
         ))
     };
+    if posture.unread.is_empty() {
+        return channel_remediation(swapoff, posture.hibernation_active);
+    }
+    let read = format!(
+        "Make {} readable to NAILS, then run the check again.",
+        posture.unread.join(", ")
+    );
+    if swapoff.is_none() && !posture.hibernation_active {
+        read
+    } else {
+        format!(
+            "{} {read}",
+            channel_remediation(swapoff, posture.hibernation_active)
+        )
+    }
+}
 
-    match (swapoff, posture.hibernation_active) {
+/// The remediation for the channels found: the disk swap to turn off
+/// (`swapoff`, when one was identified) and whether hibernation is active.
+fn channel_remediation(swapoff: Option<String>, hibernation_active: bool) -> String {
+    match (swapoff, hibernation_active) {
         (Some(cmd), true) => format!(
             "Disable the active disk swap ({cmd}) and hibernation (remove resume= and clear \
              /sys/power/resume); keep only RAM-only zram."
@@ -166,19 +227,37 @@ fn fail_remediation(posture: &SwapPosture) -> String {
     }
 }
 
-/// Classify a single `/proc/swaps` entry by its filename and type column.
-fn classify_device<F: Filesystem>(fs: &F, filename: &str, kind: &str) -> (SwapSeverity, String) {
+/// Classify a single `/proc/swaps` entry by its filename and type column; a
+/// file NAILS cannot read lands in `unread`.
+fn classify_device<F: Filesystem>(
+    fs: &F,
+    filename: &str,
+    kind: &str,
+    unread: &mut Vec<String>,
+) -> (SwapSeverity, String) {
     if let Some(zram) = filename.strip_prefix("/dev/")
         && zram.starts_with("zram")
     {
         let backing_path = PathBuf::from(format!("/sys/block/{zram}/backing_dev"));
         // zram is RAM-only unless a backing device is explicitly configured;
-        // the attribute reads `none` in that default case. Treat an
-        // unreadable attribute as the default (RAM-only).
-        let backing = fs
-            .read_file_content(&backing_path)
-            .map(|v| v.trim().to_string())
-            .unwrap_or_else(|_| "none".to_string());
+        // the attribute reads `none` in that default case, and a kernel
+        // without zram's writeback has no such attribute. One that is there
+        // but cannot be read may name a disk.
+        let backing = match fs.read_file_content(&backing_path) {
+            Ok(value) => value.trim().to_string(),
+            Err(error) if error.nothing_there() => "none".to_string(),
+            Err(error) => {
+                unread.push(backing_path.display().to_string());
+                return (
+                    SwapSeverity::Fail,
+                    format!(
+                        "NAILS cannot tell whether zram swap {filename} writes pages back to a \
+                         disk: it cannot read {} ({error})",
+                        backing_path.display()
+                    ),
+                );
+            }
+        };
         return if backing == "none" {
             (SwapSeverity::Pass, String::new())
         } else {
@@ -256,11 +335,32 @@ fn crypttab_random_key<F: Filesystem>(fs: &F, name: &str) -> bool {
 }
 
 /// Hibernation findings: a configured resume device or a `resume=` kernel
-/// argument, either of which lets a hibernation image write memory to disk.
-fn hibernation_findings<F: Filesystem>(fs: &F) -> Vec<String> {
+/// argument, either of which lets a hibernation image write memory to disk,
+/// and why NAILS cannot tell about either where it cannot read its file for
+/// another reason than that it is not there (a kernel without hibernation has
+/// no `/sys/power/resume`); such a file lands in `unread`.
+fn hibernation_findings<F: Filesystem>(
+    fs: &F,
+    unread: &mut Vec<String>,
+) -> (Vec<String>, Vec<String>) {
     let mut out = Vec::new();
+    let mut untold = Vec::new();
+    let mut read = |path: &str, what: &str| match fs.read_file_content(Path::new(path)) {
+        Ok(text) => Some(text),
+        Err(error) if error.nothing_there() => None,
+        Err(error) => {
+            untold.push(format!(
+                "NAILS cannot tell whether {what}: it cannot read {path} ({error})"
+            ));
+            unread.push(path.to_string());
+            None
+        }
+    };
 
-    if let Ok(resume) = fs.read_file_content(Path::new(SYS_POWER_RESUME)) {
+    if let Some(resume) = read(
+        SYS_POWER_RESUME,
+        "a hibernation resume device is configured",
+    ) {
         let resume = resume.trim();
         if !resume.is_empty() && resume != "0:0" {
             out.push(format!(
@@ -270,15 +370,15 @@ fn hibernation_findings<F: Filesystem>(fs: &F) -> Vec<String> {
         }
     }
 
-    if let Ok(cmdline) = fs.read_file_content(Path::new(PROC_CMDLINE))
-        && cmdline.split_whitespace().any(|t| t.starts_with("resume="))
+    if read(PROC_CMDLINE, "the kernel command line sets resume=")
+        .is_some_and(|cmdline| cmdline.split_whitespace().any(|t| t.starts_with("resume=")))
     {
         out.push(
             "kernel command line sets resume=; hibernation can write memory to disk".to_string(),
         );
     }
 
-    out
+    (out, untold)
 }
 
 /// Pre-flight check to validate swap cannot leak memory to persistent storage.
@@ -389,6 +489,89 @@ mod tests {
         // /proc/swaps absent entirely: no swap is active.
         let result = SwapCheck::new().run(&fs).unwrap();
         assert!(result.is_pass(), "{result:?}");
+    }
+
+    /// A file that is there but cannot be read may hide a channel: a swap
+    /// `/proc/swaps` would list, the disk a zram device writes pages back
+    /// to, a resume device or a `resume=` on the command line. NAILS cannot
+    /// tell, and the check fails as for the channel, naming the file in what
+    /// it says and in the fix, where the read that failed passed as none.
+    #[test]
+    fn a_file_that_cannot_be_read_fails_as_a_channel_would() {
+        let unread = |prepare: &dyn Fn(&MockFilesystem), path: &str, says: &str| {
+            let fs = MockFilesystem::new();
+            prepare(&fs);
+            fs.mock_set_lookup_error(path, std::io::ErrorKind::Other);
+            let posture = classify_swap(&fs);
+            assert_eq!(posture.severity, SwapSeverity::Fail, "{path}: {posture:?}");
+            assert_eq!(posture.unread, vec![path.to_string()], "{posture:?}");
+            let result = SwapCheck::new().run(&fs).unwrap();
+            assert!(result.is_fail(), "{path}: {result:?}");
+            assert!(result.message().contains(says), "{path}: {result:?}");
+            assert_eq!(
+                result.remediation(),
+                Some(format!("Make {path} readable to NAILS, then run the check again.").as_str()),
+                "{path}"
+            );
+        };
+        unread(
+            &|_| {},
+            PROC_SWAPS,
+            "NAILS cannot tell which swap is active: it cannot read /proc/swaps (",
+        );
+        unread(
+            &|fs| {
+                fs.mock_add_file(
+                    PROC_SWAPS,
+                    &proc_swaps(&["/dev/zram0 partition 8388604 0 100"]),
+                );
+            },
+            "/sys/block/zram0/backing_dev",
+            "NAILS cannot tell whether zram swap /dev/zram0 writes pages back to a disk: it \
+             cannot read /sys/block/zram0/backing_dev (",
+        );
+        unread(
+            &|fs| fs.mock_add_file(PROC_SWAPS, &proc_swaps(&[])),
+            SYS_POWER_RESUME,
+            "NAILS cannot tell whether a hibernation resume device is configured: it cannot \
+             read /sys/power/resume (",
+        );
+        unread(
+            &|fs| fs.mock_add_file(PROC_SWAPS, &proc_swaps(&[])),
+            PROC_CMDLINE,
+            "NAILS cannot tell whether the kernel command line sets resume=: it cannot read \
+             /proc/cmdline (",
+        );
+        // Not there is none: no swap table, no writeback, no hibernation.
+        let fs = MockFilesystem::new();
+        for path in [
+            PROC_SWAPS,
+            "/sys/block/zram0/backing_dev",
+            SYS_POWER_RESUME,
+            PROC_CMDLINE,
+        ] {
+            fs.mock_set_lookup_error(path, std::io::ErrorKind::NotFound);
+        }
+        assert!(SwapCheck::new().run(&fs).unwrap().is_pass());
+    }
+
+    /// A file NAILS cannot read beside a channel it found: the fix names both.
+    #[test]
+    fn the_fix_names_a_file_that_cannot_be_read_beside_the_swap_to_disable() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/sda2 partition 8388604 0 -2"]),
+        );
+        fs.mock_set_lookup_error(SYS_POWER_RESUME, std::io::ErrorKind::PermissionDenied);
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert_eq!(
+            result.remediation(),
+            Some(
+                "Disable the active disk swap: sudo swapoff /dev/sda2. Keep only RAM-only zram. \
+                 Make /sys/power/resume readable to NAILS, then run the check again."
+            )
+        );
     }
 
     #[test]
@@ -568,6 +751,49 @@ mod tests {
         );
         let posture = classify_swap(&fs);
         assert_eq!(posture.disk_swap_devices, vec!["/swap file".to_string()]);
+    }
+
+    /// A swap file whose name is no UTF-8, which the kernel gives in
+    /// `/proc/swaps` as it is, fails as file swap, where the table that holds
+    /// it counted as one NAILS cannot read and the fix said to make it
+    /// readable. No `swapoff` finds it by the name shown, so the fix turns
+    /// every swap off.
+    #[test]
+    fn a_swap_file_whose_name_is_no_text_fails_as_file_swap() {
+        let fs = MockFilesystem::new();
+        let mut table = proc_swaps(&["/dev/sda2 partition 8388604 0 -2"]).into_bytes();
+        table.extend_from_slice(b"/home/caf\xe9.swap file 1048572 0 -3\n");
+        fs.mock_set_file_bytes(PROC_SWAPS, &table);
+        let posture = classify_swap(&fs);
+        assert_eq!(posture.severity, SwapSeverity::Fail);
+        assert!(posture.unread.is_empty(), "{posture:?}");
+        assert_eq!(posture.disk_swap_devices, vec!["/dev/sda2".to_string()]);
+        assert!(posture.unnamed_disk_swap);
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(
+            result.message().contains(
+                "file-backed swap /home/caf\u{fffd}.swap writes memory to the decoy disk"
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            result.remediation(),
+            Some("Disable the active disk swap: sudo swapoff -a. Keep only RAM-only zram.")
+        );
+
+        // Named, it is named in the fix.
+        let fs = MockFilesystem::new();
+        fs.mock_set_file_bytes(
+            PROC_SWAPS,
+            proc_swaps(&["/home/cafe.swap file 1048572 0 -3"]).as_bytes(),
+        );
+        assert!(!classify_swap(&fs).unnamed_disk_swap);
+        assert_eq!(
+            SwapCheck::new().run(&fs).unwrap().remediation(),
+            Some(
+                "Disable the active disk swap: sudo swapoff /home/cafe.swap. Keep only RAM-only zram."
+            )
+        );
     }
 
     #[test]
