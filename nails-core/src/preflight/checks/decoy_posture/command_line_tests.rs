@@ -84,8 +84,9 @@ fn a_command_line_nails_cannot_read_leaves_it_untold() {
     assert_eq!(
         wants(&fs, Path::new("/"), "auditd.service"),
         Err(
-            "NAILS cannot tell whether auditd.service is enabled, which a systemd.wants= there \
-             makes it: NAILS cannot read /proc/cmdline; run the command again with sudo"
+            "NAILS cannot tell whether auditd.service is enabled by a systemd.wants= on the \
+             kernel command line: NAILS cannot read /proc/cmdline; run the command again with \
+             sudo"
                 .to_string()
         )
     );
@@ -97,8 +98,8 @@ fn a_command_line_nails_cannot_read_leaves_it_untold() {
     let why = wants(&fs, Path::new("/"), "auditd.service").unwrap_err();
     assert!(
         why.starts_with(
-            "NAILS cannot tell whether auditd.service is enabled, which a systemd.wants= there \
-             makes it: NAILS cannot read \
+            "NAILS cannot tell whether auditd.service is enabled by a systemd.wants= in the \
+             SystemdOptions EFI variable: NAILS cannot read \
              /run/systemd/efivars/SystemdOptions-8cf2644b-4b0b-428f-9387-6d876050dc67 ("
         ),
         "{why}"

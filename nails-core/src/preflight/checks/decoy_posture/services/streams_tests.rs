@@ -186,8 +186,9 @@ fn a_stream_the_unit_sends_to_its_terminal_is_judged_by_its_tty_path() {
         ("StandardError=file:/dev/pts/3", pseudo),
         (
             "StandardError=tty\nTTYPath=/dev/tty",
-            "it logs to /dev/tty, a pseudo-terminal, whose other side the program that holds it \
-             may copy into a file, as script does into its typescript",
+            "it logs to /dev/tty, the controlling terminal, which may be a pseudo-terminal, whose \
+             other side the program that holds it may copy into a file, as script does into its \
+             typescript",
         ),
         (
             "StandardError=tty\nTTYPath=/dev/ttyUSB0",
@@ -387,12 +388,18 @@ fn a_process_stream_is_judged_by_where_its_descriptor_leads() {
     // A pseudo-terminal leads to the program that holds its other side,
     // which may copy what it shows into a file, as script does, and so may
     // the controlling terminal, which may be one.
-    for target in ["/dev/pts/4", "/dev/tty"] {
+    for (target, what) in [
+        ("/dev/pts/4", "a pseudo-terminal"),
+        (
+            "/dev/tty",
+            "the controlling terminal, which may be a pseudo-terminal",
+        ),
+    ] {
         assert_eq!(
             unknown(led_to(Ok(PathBuf::from(target)), Stream::Error, by)),
             format!(
-                "it logs to {target}, a pseudo-terminal, whose other side the program that holds \
-                 it may copy into a file, as script does into its typescript"
+                "it logs to {target}, {what}, whose other side the program that holds it may copy \
+                 into a file, as script does into its typescript"
             )
         );
     }

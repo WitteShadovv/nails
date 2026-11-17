@@ -54,7 +54,10 @@ const UNIT_TYPES: &[&str] = &[
 ///
 /// Why NAILS cannot tell: one of them is there but cannot be read.
 pub(super) fn wants<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> Result<bool, String> {
-    for (rel, first_line) in [(EFI_OPTIONS, true), (CMDLINE, false)] {
+    for (rel, first_line, place) in [
+        (EFI_OPTIONS, true, "in the SystemdOptions EFI variable"),
+        (CMDLINE, false, "on the kernel command line"),
+    ] {
         let text = match fs.read_file_content(&root.join(rel)) {
             Ok(text) => text,
             Err(e) if e.io_kind() == Some(std::io::ErrorKind::NotFound) => continue,
@@ -65,8 +68,8 @@ pub(super) fn wants<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> Result<bo
                     format!("NAILS cannot read /{rel} ({e})")
                 };
                 return Err(format!(
-                    "NAILS cannot tell whether {unit} is enabled, which a systemd.wants= there \
-                     makes it: {why}"
+                    "NAILS cannot tell whether {unit} is enabled by a systemd.wants= {place}: \
+                     {why}"
                 ));
             }
         };

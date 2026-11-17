@@ -155,11 +155,15 @@ fn is_sink(path: &str) -> bool {
         .any(|prefix| numbered(path, prefix))
 }
 
+/// The controlling terminal of the process that opens it, which may be a
+/// pseudo-terminal or not.
+const CONTROLLING_TERMINAL: &str = "/dev/tty";
+
 /// Whether `path` is a pseudo-terminal (`/dev/pts/<n>`), or the controlling
 /// terminal (`/dev/tty`), which may be one: the program that holds its other
 /// side may copy all it shows into a file.
 fn is_pseudo_terminal(path: &str) -> bool {
-    path == "/dev/tty" || numbered(path, "/dev/pts/")
+    path == CONTROLLING_TERMINAL || numbered(path, "/dev/pts/")
 }
 
 /// Where a daemon logs that writes what it logs to `path`: nowhere for a
@@ -171,9 +175,14 @@ pub(super) fn log_to_path(path: &str, file: impl FnOnce() -> Log) -> Log {
     if is_sink(path) {
         Log::NoFile
     } else if is_pseudo_terminal(path) {
+        let what = if path == CONTROLLING_TERMINAL {
+            "the controlling terminal, which may be a pseudo-terminal"
+        } else {
+            "a pseudo-terminal"
+        };
         Log::Unknown(format!(
-            "it logs to {path}, a pseudo-terminal, whose other side the program that holds it may \
-             copy into a file, as script does into its typescript"
+            "it logs to {path}, {what}, whose other side the program that holds it may copy into a \
+             file, as script does into its typescript"
         ))
     } else if path.starts_with("/dev/") && !path.starts_with("/dev/shm/") {
         Log::Unknown(format!("it logs to {path}, a device NAILS does not judge"))
