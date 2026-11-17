@@ -555,7 +555,7 @@ fn a_bash_comment_starts_only_where_bash_s_reader_starts_one() {
     // False alarms: bash 5.3.9 wrote none with these, as it expands the
     // `$((...)` and parses it as code, where the `#` starts a comment that
     // takes the `PROMPT_COMMAND` assignment along. The reader starts no
-    // comment in such a `$((...)`, as it cannot tell whether bash expands it.
+    // comment in these `$((...)`, as it cannot tell whether bash expands them.
     for text in [
         "X=$((echo a); : # ; PROMPT_COMMAND='history -a'\n)\n",
         "X=\"$((echo a); : # ; PROMPT_COMMAND='history -a'\n)\"\n",
