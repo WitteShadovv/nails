@@ -20,7 +20,9 @@
 //!   narrow the `/run` snapshot to what the decoy's own shutdown left, drop the
 //!   `utab` lines of the mounts the switch leaves behind
 //!   ([`crate::whole_root::utab`]), copy the decoy's records
-//!   ([`crate::whole_root::run_records`]), and record the entry.
+//!   ([`crate::whole_root::run_records`]), drop journald's stored output
+//!   streams ([`crate::whole_root::tail::drop_journal_streams`]), and record
+//!   the entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule, the drop-ins and the masks, scrub `/run`
@@ -641,6 +643,12 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     // Without the copy, the way back clears the records instead.
     if run_records::save(&env.run, &env.runtime_dir.join(RECORDS_NAME)).is_err() {
         let _ = std::fs::remove_file(env.runtime_dir.join(RECORDS_NAME));
+    }
+    // The decoy's stored output streams go before the counter is read, as
+    // the way back drops the session's: neither start then spends a number
+    // on closing them ([`tail::drop_journal_streams`]).
+    if let Some(systemctl) = &env.systemctl {
+        let _ = tail::drop_journal_streams(systemctl);
     }
     // The counter as PID 1 hands over: the way back measures how many numbers
     // the hidden start uses from here ([`fresh_pids::counter`]).
