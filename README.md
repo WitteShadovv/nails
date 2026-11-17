@@ -427,11 +427,15 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
 <details>
 <summary><b>What <code>nails check</code> prints</b></summary>
 
-<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS, among them the platform row that names the detected release, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
+<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check as it was on 2026-10-26: each pre-flight check of that version with PASS, among them the platform row that names the detected release, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
 
-Captured from the `session-readme-captures` NixOS VM test, on a decoy set up as
+Captured on 2026-10-26 from the `session-readme-captures` NixOS VM test (run
+40383365802 of the E2E workflow), on a decoy set up as
 [docs/decoy-requirements.md](docs/decoy-requirements.md) recommends; see
 [docs/assets/README.md](docs/assets/README.md) for how each screenshot is made.
+Checks added or changed since then are not in it: NAILS now prints more rows,
+`kernel-version` among them, `host-tools` no longer asks for `ip`, and there is
+no `network-tools` row any more.
 The test VM also has an emulated IOMMU that remaps DMA, so `dma-protection`
 passes there. It warns when the IOMMU is off or in passthrough, or when a
 Thunderbolt or USB4 controller reports no DMA protection, and with Linux 5.14 or
