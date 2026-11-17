@@ -7,8 +7,8 @@
 //!
 //! The first byte picks the reader, the rest is its input. A timestamp that is
 //! read is written back in both of NAILS's forms, and each reads again as the
-//! same instant unless the offset carried it past year 9999; the state file's
-//! serde form matches. A zone that is read
+//! same instant unless the offset carried it outside the years 0 to 9999; the
+//! state file's serde form matches. A zone that is read
 //! shows a time anywhere in the range a timestamp covers, its two ends
 //! included, without a panic, with an offset under 26 hours and the time of
 //! day its stamp holds.
@@ -43,9 +43,10 @@ fn timestamp(text: &str) {
     };
     let z = instant.to_rfc3339_z();
     assert_eq!(serde_json::to_string(&instant).unwrap(), format!("\"{z}\""));
-    // An offset can carry a time read in year 9999 into year 10000, whose
-    // form has a sign and five digits, which the reading refuses, as it
-    // refuses any year that is not four digits.
+    // An offset can carry a time read in year 9999 into year 10000, or one
+    // read in year 0 into year -1, whose forms have a sign (`+10000`,
+    // `-0001`), which the reading refuses, as it refuses any year that is not
+    // four digits.
     if z.starts_with(['+', '-']) {
         assert!(Timestamp::parse_rfc3339(&z).is_err(), "{text:?}");
         return;

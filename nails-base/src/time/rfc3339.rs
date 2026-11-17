@@ -3,8 +3,13 @@
 
 //! Reading an RFC 3339 date and time.
 //!
-//! The grammar is RFC 3339's `date-time` with a four-digit year, read as
-//! NAILS has always read the state file's fields and the log's lines:
+//! The grammar is RFC 3339's `date-time` with a four-digit year, the one
+//! NAILS has always read the log's lines with. The state file's fields are
+//! read with it too, which is stricter than their reading was before: a form
+//! NAILS never wrote, such as a `+HHMM` offset, blanks around the time or a
+//! year without four digits, now makes the file corrupt.
+//!
+//! The grammar:
 //!
 //! - the date and the time may be split by `T`, `t` or a space;
 //! - the seconds may carry a fraction of any length, of which nine digits are
