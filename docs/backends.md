@@ -142,13 +142,17 @@ follow), and reports:
 A mount table the check cannot read, the device the hidden root is mounted
 from that sysfs shows but the check cannot read, or an attribute of the stack
 below it that decides whether discards reach the hidden volume and that sysfs
-shows but the check cannot read (`dm/uuid`, `dm/name`,
-`queue/discard_max_bytes`, `slaves`, `loop/backing_file`), leaves it unable to
-tell whether discards reach the hidden volume: it refuses as for discards,
-naming the attributes but, like the discard refusal, no device-mapper node,
-and `--allow-discards` turns that into a warning too. A `loop/autoclear` it
-cannot read warns that it cannot tell whether the loop device was attached
-with autoclear. The other attributes decide nothing here.
+shows but the check cannot read, leaves it unable to tell whether discards
+reach the hidden volume. Those attributes are a device's `dm/uuid`, its
+`dm/name` where the uuid leaves the kind of mapping to the name (no uuid, one
+it cannot read, or one the VeraCrypt application gave), its
+`queue/discard_max_bytes` where it is or may be a cryptsetup or VeraCrypt
+mapping, its `slaves` and its `loop/backing_file`. The check refuses as for
+discards, naming the attributes but, like the discard refusal, no
+device-mapper node, and `--allow-discards` turns that into a warning too. A
+`loop/autoclear` it cannot read, of a loop device over a block device, warns
+that it cannot tell whether the loop device was attached with autoclear. The
+other attributes decide nothing here.
 
 The check reads the start of the device below each LUKS mapping read-only and
 without changing its access time, which needs root: a LUKS1 or LUKS2 header,
@@ -231,7 +235,7 @@ or a btrfs filesystem with one plain device warns about the plain disk.
 | Passes | Each way down passes a layer that is not the decoy's: a cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK or FVAULT2 (`dm/uuid` starts with `CRYPT-<type>-`), a SUBDEV mapping (cryptsetup's name for the layers it puts below such a mapping, such as the further ciphers of a VeraCrypt cascade), or a mapping named as the VeraCrypt application names its own (`veracrypt<N>`, with no uuid up to VeraCrypt 1.26.29 and with the uuid `VERACRYPT-<serial>-veracrypt<N>` from 1.26.30 on). |
 | Warns: nothing encrypts it | A way down reaches a device, which the warning names, with no encrypting layer above it. Anyone who reads that device, or a copy of it, reads the hidden root's files. dm-integrity and dm-verity encrypt nothing. |
 | Warns: only the decoy's own encryption | The only encryption on a way down is a layer of the decoy's own storage, such as the LUKS volume under its `/home` for an image file kept there, the LUKS devices of the md array its root lies on for another partition of that array, or a volume the decoy's crypttab opens, from a device or an image file, that was opened under another name. Whoever unlocks the decoy reads the hidden root's files, and the threat model counts on an adversary who gets the decoy's credentials (see [Compelled disclosure of the decoy](threat-model.md#compelled-disclosure-of-the-decoy)). |
-| Warns: encryption cannot be confirmed | A way down passes a device-mapper device of a kind the check does not know, a cryptsetup type it does not know, a loop device whose file it cannot follow to a disk, whose path and recorded filesystem disagree or whose recorded filesystem is not mounted here, or a ZFS volume, a network block device (`nbd`), a userspace block device (`ublk`) or a `zram` device, which keep their data where sysfs does not show; or the stack holds more devices than the check reads (16 below any one device, 64 in all); or the filesystem shows no block device at all, as a ZFS dataset or a network filesystem. A pass also needs `/etc/fstab` and `/etc/crypttab` read, since either may name the encryption found as the decoy's. |
+| Warns: encryption cannot be confirmed | A way down passes a device-mapper device of a kind the check does not know, a cryptsetup type it does not know, a device whose `dm/uuid` sysfs shows but the check cannot read (or its `dm/name`, where the uuid leaves the kind to the name), a device whose `slaves` or `loop/backing_file` it cannot read, a loop device whose file it cannot follow to a disk, whose path and recorded filesystem disagree or whose recorded filesystem is not mounted here, or a ZFS volume, a network block device (`nbd`), a userspace block device (`ublk`) or a `zram` device, which keep their data where sysfs does not show; or the stack holds more devices than the check reads (16 below any one device, 64 in all); or the filesystem shows no block device at all, as a ZFS dataset or a network filesystem, or sysfs shows its devices but the check cannot read them. A pass also needs `/etc/fstab` and `/etc/crypttab` read, and each device link and image file they name resolved, since either may name the encryption found as the decoy's. |
 | Warns: in RAM | The hidden root is a tmpfs or ramfs. Nothing on it survives a power-off or a reboot, so it serves to try NAILS out, not to keep a hidden environment. |
 
 The check knows a mapping by its device-mapper uuid and name, as cryptsetup
@@ -269,7 +273,7 @@ neither.
 | Result | When |
 |---|---|
 | Warns | Such a mapping is writable: the kernel does not hold it read-only (`ro` is `0`). The warning names its topmost mapping (`outer (dm-4)`), the device it is opened from and where it is mounted, read-write or read-only. A mapping that VeraCrypt 1.26.29 or earlier made stays writable even when it mounted the volume read-only. |
-| Warns: cannot check | The mount table cannot be read, the hidden root's filesystem shows no block device, or sysfs does not let the check list the devices below the hidden root, or those built on its storage (`slaves/`, `holders/`, `/sys/class/block`), or read what decides it: what kind of mapping a device of the stack or one built on its storage is (`dm/uuid`, `dm/name`), and what a loop device reads, or from where (`loop/backing_file`, `loop/offset`). A mapping whose `ro` it cannot read counts as writable, and the warning says it may be. |
+| Warns: cannot check | The mount table cannot be read, the hidden root's filesystem shows no block device, or sysfs shows its devices but the check cannot read them (a btrfs device list, say), or sysfs does not let the check list the devices below the hidden root, or those built on its storage (`slaves/`, `holders/`, `/sys/class/block`), or read what decides it: what kind of mapping a device of the stack or one built on its storage is (`dm/uuid`, `dm/name`), and what a loop device reads, or from where (`loop/backing_file`, `loop/offset`). A mapping whose `ro` it cannot read counts as writable, and the warning says it may be. |
 | Passes | Every such mapping is read-only, as `cryptsetup open --readonly` makes it, and as VeraCrypt 1.26.30 and later make theirs for a volume they mount read-only (`veracrypt --mount-options=ro`); there is none; or the hidden root is in no VeraCrypt or TrueCrypt volume. |
 
 Close the outer volume before activating, or, when it has to be shown, open
@@ -364,8 +368,8 @@ partition the decoy uses itself is left to the `hidden-volume` check.
 |---|---|
 | Refuses | The partition has the GPT type of a `/home`, `/srv`, `/var`, `/var/tmp` or swap partition. A swap partition is refused with the no-auto flag too, though systemd leaves it alone then. |
 | Warns | The partition has one of the first four types with the no-auto flag, which systemd honours; or the type of a root, EFI system or extended boot loader partition, which systemd acts on only under the conditions above; or the table does not list the partition where the kernel has it, or is damaged: its header or its entries do not match the checksums it keeps, not every entry could be checked against them, or an entry does not fit within the blocks its partitions may use; or neither the disk nor udev's record of the partition could be read. |
-| Warns: cannot check | The mount table cannot be read; the hidden root's filesystem shows no block device; the disk of the decoy's root file system cannot be found; the hidden root's storage holds more devices than the check reads, or sysfs shows an attribute of one of them that the check decides by but it cannot read it: whether the device is a partition, where it starts and on which disk (`partition`, `start`, the disk's `dev`), and what lies below it (`loop/backing_file`, `slaves/`); or the same holds below the decoy's root file system (`start` aside) while a partition of the hidden root's storage is on a disk the check does not know the decoy boots from. A partition it could judge and refuses is refused all the same. |
-| Passes | Any other type, an MBR, or no partition of a disk the decoy boots from: a disk of its own such as an external drive, a container file, a RAM filesystem. |
+| Warns: cannot check | The mount table cannot be read; the hidden root's filesystem shows no block device, or sysfs shows its devices but the check cannot read them (the device it is mounted from, a device link, the btrfs device list); the disk of the decoy's root file system cannot be found, as where that file system shows no block device; the hidden root's storage holds more devices than the check reads, or sysfs shows an attribute of one of them that the check decides by but it cannot read it: whether the device is a partition, where it starts and on which disk (`partition`, `start`, the disk's `dev`, or a link into the device it cannot resolve), and what lies below it (`loop/backing_file`, `slaves/`); or the same holds below the decoy's root file system (`start` aside), or sysfs shows the devices of that file system or of a boot partition but the check cannot read them, while a partition of the hidden root's storage is on a disk the check does not know the decoy boots from. A partition it could judge and refuses is refused all the same, and a warning about one it could judge keeps its text and fix and says what it could not check. |
+| Passes | Any other type, an MBR, or no partition of a disk the decoy boots from: a disk of its own such as an external drive, a container file, a RAM filesystem. Where no disk the decoy boots from can be told, a hidden root on no partition at all passes. |
 
 The fix is the generic Linux type, given from a live system or where setup
 happens, never on the decoy:
@@ -596,13 +600,18 @@ Every backend leaves the same traces on the decoy side while you unlock it:
 `nails deactivate` and `nails emergency` close the hidden backend themselves:
 before the soft-reboot back they mark its device-mapper stack for deferred
 removal with `dmsetup`, which the `host-tools` pre-flight check requires for
-such a backend, and the switch releases the last reference (the overlay that
+such a backend (a hidden root mounted from `/dev/dm-N` or `/dev/mapper`
+counts as one whatever NAILS can read of its stack, and so does one whose
+stack it cannot read), and the switch releases the last reference (the overlay that
 held the hidden volume), so the kernel removes the mapping, and a loop device
 set up with autoclear, at that moment. You do not run the lock sequence after a
 session; you run it only when you unlocked the volume on the decoy without
 activating, or for a backend that is not device-mapper based. A device they
 cannot mark (the hidden session removed `dmsetup`, say) they name once the
-soft-reboot is enqueued: it stays open after the switch until you power off.
+soft-reboot is enqueued: it stays open after the switch until you power off. Activation
+refuses where it cannot read the stack it records for them (a `dm/name`, a
+`slaves/` listing or the `/dev/mapper` link of the source), since the way
+back would leave a mapping it does not know open.
 Closing the mapping does not clear the key from RAM: dm-crypt wipes the master
 key when a mapping is removed, but other copies (page cache, freed pages,
 process memory) survive a soft-reboot and a warm reboot, unless the firmware

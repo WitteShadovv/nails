@@ -2446,7 +2446,8 @@ opens a device below one of them) cannot go: the hidden root then lies on the
 decoy's own storage, and the check says to put it on storage of its own instead.
 The lines only the hidden volume needs still go, and where both kinds are
 flagged the check says both. If the check cannot read `/etc/crypttab` (some
-distributions make it readable by root only), it fails and asks you to run the
+distributions make it readable by root only), or cannot resolve a device link a
+line names (a `UUID=` or a `/dev/disk` path), it fails and asks you to run the
 command with sudo. `--allow-decoy-storage` covers only the decoy's own fstab
 lines that its boot mounted at `/` or at a system folder for another part of the
 filesystem that a hidden root it accepted is a folder or a subvolume of, while
