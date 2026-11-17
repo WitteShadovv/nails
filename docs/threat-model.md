@@ -668,14 +668,18 @@ without `CONFIG_CHECKPOINT_RESTORE` has no such file), the numbers continue as
 before, and `deactivate` warns of that before the switch. It warns as well where
 it finds no getty or logind to measure by, and the counter can only go to just
 below that lowest number. Where the getty itself is measured, its number lands
-near the decoy's own boot's, not on it, and so far in the same power-of-two
-range in every test; an examiner who compares the getty records with those of
-every earlier boot can still see one that sits above the rest, the more so after
-several sessions without a power-off. Until the next power-off, anyone with a
-shell can see the reset itself: the decoy's units can hold numbers below those
-of kernel threads that started before them (the soft-reboot row of the residual
-table above). Only a session ended with `deactivate --poweroff` (or
-`emergency --poweroff`), which has no way back, leaves none of this to chance.
+near the decoy's own boot's, not on it, and not always in the same power-of-two
+range: in four Fedora 44 runs of Fedora's admission gate it landed 8 to 35
+numbers above the cold boot's, and after the emergency way back of the two runs
+without the policy's dontaudit rules the getty and its wtmp record got 1025,
+where the cold boot gave it 990 and 991. An examiner who compares the getty
+records with those of every earlier boot can still see one that sits above the
+rest, the more so after several sessions without a power-off. Until the next
+power-off, anyone with a shell can see the reset itself: the decoy's units can
+hold numbers below those of kernel threads that started before them (the
+soft-reboot row of the residual table above). Only a session ended with
+`deactivate --poweroff` (or `emergency --poweroff`), which has no way back,
+leaves none of this to chance.
 
 ## Evaluation scope
 
