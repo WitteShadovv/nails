@@ -328,8 +328,9 @@ def write_marker(machine: Machine, marker: str) -> None:
     machine.succeed(f"echo {shlex.quote(marker)} > /dev/kmsg")
 
 
-#: The ring buffer, read to its end without waiting for more.
-RING = "dd if=/dev/kmsg bs=16384 iflag=nonblock 2>/dev/null; true"
+#: The ring buffer, read to its end without waiting for more: dd stops with
+#: EAGAIN there, an error the driver's shell would fail the command on.
+RING = "dd if=/dev/kmsg bs=16384 iflag=nonblock 2>/dev/null || true"
 
 #: The decoy's journal, every transport, with the fields the judgment reads.
 JOURNAL = (
