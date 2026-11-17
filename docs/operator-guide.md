@@ -227,7 +227,13 @@ Keep all of it `root`-owned on the hidden volume.
    guard's files), and permissive mode warns,
    see [the decoy
    requirements](decoy-requirements.md#fail-closed-activation-is-refused)),
-   `systemd-version` (254 or newer), `soft-reboot-units` (the units that
+   `systemd-version` (254 or newer), `kernel-version` (Linux 6.1 or newer,
+   read from the kernel without starting a program: NAILS changes mounts
+   with `mount_setattr`, which Linux 5.12 added, and knows that FUSE keeps
+   root out of a user's FUSE mount by FUSE's `allow_sys_admin_access`
+   parameter, which Linux 6.0 added; an older kernel, or a release it cannot
+   read or tell the version of, fails it, naming the running release and the
+   floor), `soft-reboot-units` (the units that
    implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
    root can be mounted again by device for the way back), `session-state` (no
    session and no leftovers of an interrupted one), `shutdown-inhibitors` (no
@@ -1196,15 +1202,23 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     activation writes makes it list the unit directories again. Activation
     ends its preparation with a second reload, so PID 1 has taken all of it
     in before each mount gets its own mode back, a bind made meanwhile the
-    mode of the mount it copies. A mount that another mount covers is left
-    as it is, since no lookup reaches it. So is a user's FUSE mount that the
+    mode of the mount it copies. A mount that another mount covers, so that
+    a lookup of its mount point leads elsewhere or nowhere, is left as it is,
+    since no lookup reaches it. So is a user's FUSE mount that the
     kernel keeps root out of, such as the desktop's `gvfsd-fuse` and
     document portal in `/run/user/UID`, an AppImage's `squashfuse` or an
     `sshfs`: of type `fuse`, `fuse.*` or `fuseblk`, mounted without
     `allow_other` for a user or a group other than root's, refusing NAILS'
     look at it with `EACCES` or `EPERM`, on a kernel whose FUSE parameter
     `allow_sys_admin_access` is off, its default. FUSE then refuses PID 1,
-    which runs as root, the same, so PID 1 reads nothing there. Activation
+    which runs as root, the same, so PID 1 reads nothing there. A mount at or
+    below such a FUSE mount whose mount point NAILS' lookup cannot reach,
+    refused with `EACCES` or `EPERM`, is left as it is too, such as an fstab
+    mount inside a home that a user's FUSE mount covers: PID 1's lookup
+    stops in FUSE the same way. Where FUSE has no `allow_sys_admin_access`
+    parameter, as before Linux 6.0, activation refuses at such a mount and
+    names the parameter: NAILS needs Linux 6.1 or newer, which the
+    `kernel-version` check asks for (see step 1 above). Activation
     refuses, naming the mount and its type, where it cannot make another
     mount `noatime`. It refuses as well where it runs in a user namespace of
     its own, which may not change the system's mounts. Before it changes a mount

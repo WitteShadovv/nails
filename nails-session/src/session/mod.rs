@@ -21,6 +21,7 @@ pub mod fstab;
 pub mod guards;
 pub mod hidden_masks;
 pub mod kernel_modules;
+pub mod kernel_version;
 pub mod labels;
 pub mod layout;
 pub mod leave;
