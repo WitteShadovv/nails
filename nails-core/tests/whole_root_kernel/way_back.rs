@@ -352,6 +352,7 @@ fn the_transition_gives_each_utab_line_the_mount_made_in_its_mount_s_place() {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
+            tail: None,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
         });

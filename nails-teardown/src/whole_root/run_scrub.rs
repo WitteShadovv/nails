@@ -42,9 +42,11 @@
 //! mounts the switch carries, and on the way back it writes the decoy's lines
 //! under the new mount IDs of the mounts the way back restored. Last, the
 //! caller writes the kmsg cursor ([`next_kernel_seqnum`],
-//! [`write_kernel_seqnum`]) so the decoy journald skips every kernel record of
-//! the hidden session, and every earlier one with them. Nothing here logs: a
-//! name written to `/dev/kmsg` would reach the decoy's ring buffer.
+//! [`write_kernel_seqnum`]) so the decoy journald skips every kernel record
+//! logged before it, the hidden session's and every earlier one;
+//! [`crate::whole_root::tail`] keeps the session from logging after it.
+//! Nothing here logs: a name written to `/dev/kmsg` would reach the decoy's
+//! ring buffer.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
