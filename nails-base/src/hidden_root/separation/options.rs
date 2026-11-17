@@ -34,21 +34,23 @@
 //! Some options have the boot write over the device a line names itself
 //! ([`overwrites`], [`formats_its_device`]): of a crypttab line `swap`, `tmp`
 //! and `tmp=`, for which `systemd-makefs` makes swap or a filesystem on the
-//! mapping, and so over its source, and plain mode, which opens the source
-//! with no header to check, so whatever writes to the mapping writes over the
-//! source at the offset the line gives; and of an fstab line
-//! `x-systemd.makefs`, alone or with a value, for which the generator has
-//! `systemd-makefs` make a filesystem, or swap on a swap line, on the line's
-//! device wherever it finds no filesystem there. It probes for filesystems
-//! only, so a whole disk with a partition table and nothing at its own start
-//! looks empty to it, and systemd 262's formatted one. The judge fails such
-//! a line on any device of the hidden drive, as an option that opens a device
-//! for writing fails (see the `reads` module): its whole disk, a partition of
-//! it and a device stacked on one of them. A line for a device the volume is
-//! stored on fails as one that opens or mounts it, as before, and so the
-//! decoy's own fstab line for the filesystem a root on its storage lies in,
-//! which formats nothing there, as that filesystem is found on its device,
-//! stays the decoy's own line for its folder.
+//! mapping, and so over its source, plain mode, which opens the source with
+//! no header to check, so whatever writes to the mapping writes over the
+//! source at the offset the line gives, and a header kept apart from the
+//! source (`header=`), which checks nothing on the source either; and of an
+//! fstab line `x-systemd.makefs`, alone or with a value, for which the
+//! generator has `systemd-makefs` make a filesystem, or swap on a swap line,
+//! on the line's device wherever it finds no filesystem there. It probes for
+//! filesystems only, so a whole disk with a partition table and nothing at its
+//! own start looks empty to it, and the `systemd-makefs` of systemd 262
+//! formatted such a disk. The judge fails such a line on any device of the
+//! hidden drive, as an option that opens a device for writing fails (see the
+//! `reads` module): its whole disk, a partition of it and a device stacked on
+//! one of them. A line for a device the volume is stored on fails as one that
+//! opens or mounts it, as before, and so the decoy's own fstab line for the
+//! filesystem a root on its storage lies in, which formats nothing there, as
+//! that filesystem is found on its device, stays the decoy's own line for its
+//! folder.
 
 use super::known::{reads_every_known, reads_every_known_crypttab};
 use super::paths::as_written;
@@ -182,18 +184,27 @@ pub(super) enum Overwrite {
     /// The line opens it as plain dm-crypt, with no header to check, so
     /// whatever writes to the mapping writes over the source.
     Plain,
+    /// The line opens it with a header kept apart from it (`header=`), which
+    /// checks nothing on the source, so whatever writes to the mapping
+    /// writes over the source.
+    Detached,
 }
 
 /// How the boot writes over the source of the crypttab line `entry`, if it
-/// may: `swap` and `tmp`, by name, whatever the order of the options, and
-/// else plain mode, by the last option that sets a type ([`crypt_type`]).
+/// may: `swap` and `tmp`, by name, whatever the order of the options, else
+/// plain mode, by the last option that sets a type ([`crypt_type`]), and
+/// else a `header=`, by name, of any type: `systemd-cryptsetup` then loads the
+/// header from where that option says, and maps the source at the offset the
+/// header gives, whatever lies on it.
 pub(super) fn overwrites(entry: &CrypttabEntry) -> Option<Overwrite> {
     if has_named(&entry.options, &["swap"]) {
         Some(Overwrite::Swap)
     } else if has_named(&entry.options, &["tmp"]) {
         Some(Overwrite::Filesystem)
+    } else if crypt_type(entry) == CryptType::Plain {
+        Some(Overwrite::Plain)
     } else {
-        (crypt_type(entry) == CryptType::Plain).then_some(Overwrite::Plain)
+        has_named(&entry.options, &["header"]).then_some(Overwrite::Detached)
     }
 }
 

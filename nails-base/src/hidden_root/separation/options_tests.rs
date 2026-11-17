@@ -167,3 +167,37 @@ fn a_crypttab_line_is_opened_as_luks_by_the_last_option_that_sets_its_type() {
         assert!(!opens_as_luks(&crypttab_line(options)), "{options}");
     }
 }
+
+/// How the boot writes over the source of a crypttab line: `swap` and `tmp`
+/// by name, whatever their order, have `systemd-makefs` make swap or a
+/// filesystem on the mapping; plain mode, by the last option that sets a
+/// type, checks no header; and a `header=`, of any type, loads the header
+/// from elsewhere and checks nothing on the source either.
+#[test]
+fn a_crypttab_line_writes_over_its_source_by_swap_tmp_plain_mode_or_a_header_kept_apart() {
+    for (options, how) in [
+        ("swap", Some(Overwrite::Swap)),
+        ("swap,luks", Some(Overwrite::Swap)),
+        ("luks,header=/etc/hdr,swap", Some(Overwrite::Swap)),
+        ("luks,tmp", Some(Overwrite::Filesystem)),
+        ("tmp=ext2,luks", Some(Overwrite::Filesystem)),
+        ("plain", Some(Overwrite::Plain)),
+        ("luks,plain", Some(Overwrite::Plain)),
+        ("header=/etc/hdr,plain", Some(Overwrite::Plain)),
+        ("luks,header=/etc/hdr", Some(Overwrite::Detached)),
+        ("header=/etc/hdr", Some(Overwrite::Detached)),
+        ("plain,header=/etc/hdr", Some(Overwrite::Detached)),
+        ("tcrypt,header=/etc/hdr", Some(Overwrite::Detached)),
+        ("header=/etc/hdr,bitlk", Some(Overwrite::Detached)),
+        ("luks,header=/hdr:/dev/sdf", Some(Overwrite::Detached)),
+        ("none", None),
+        ("luks", None),
+        ("plain,luks", None),
+        ("tcrypt", None),
+        ("tcrypt-veracrypt", None),
+        ("bitlk", None),
+        ("luks,discard,tpm2-device=auto", None),
+    ] {
+        assert_eq!(overwrites(&crypttab_line(options)), how, "{options}");
+    }
+}

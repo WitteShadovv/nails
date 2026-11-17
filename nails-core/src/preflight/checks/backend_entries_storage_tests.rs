@@ -335,6 +335,13 @@ fn a_line_that_has_the_boot_write_over_a_device_of_the_drive_fails() {
              mapping lands on that drive)"
         )
     };
+    let detached = |shown: &str| {
+        format!(
+            "/etc/crypttab: '{shown}' (it opens a device of the drive the volume at /mnt is \
+             stored on with a header kept apart from it, which checks nothing on that device, so \
+             what the boot writes to its mapping lands on that drive)"
+        )
+    };
     for (fstab, crypttab, finding) in [
         (
             "/dev/sdb /media/x ext4 x-systemd.makefs,nofail 0 0\n",
@@ -416,14 +423,26 @@ fn a_line_that_has_the_boot_write_over_a_device_of_the_drive_fails() {
             "plainx /dev/sdb /etc/plainkey plain,cipher=aes-xts-plain64,size=512\n",
             plain("plainx /dev/sdb"),
         ),
+        (
+            "/dev/mapper/hdrx /data ext4 x-systemd.makefs,nofail 0 0\n",
+            "hdrx /dev/sdb /etc/hdrkey luks,header=/etc/hdrx.img\n",
+            detached("hdrx /dev/sdb"),
+        ),
+        (
+            "",
+            "hdrx /dev/sdb2 none luks,header=/etc/hdrx.img,nofail\n",
+            detached("hdrx /dev/sdb2"),
+        ),
     ] {
         let decoy = on_a_partition(fstab, crypttab);
         fails_naming(&decoy, &finding);
     }
     // Another drive, a line that writes nothing over its device, and one
-    // that opens the disk as LUKS, which loads its header or fails, pass.
+    // that opens the disk as LUKS, which loads its header or fails, pass,
+    // and so does a header kept apart from a source on another drive.
     for (fstab, crypttab) in [
         ("", "swapcrypt /dev/sdc /dev/urandom swap\n"),
+        ("", "hdrx /dev/sdc none luks,header=/etc/hdrx.img,nofail\n"),
         ("/dev/sdc /media/x ext4 x-systemd.makefs,nofail 0 0\n", ""),
         ("/dev/sdb none swap sw 0 0\n", ""),
         ("/dev/sdb /media/g ext4 x-systemd.growfs,nofail 0 0\n", ""),
@@ -461,9 +480,10 @@ fn a_line_that_has_the_boot_write_over_a_device_of_the_drive_fails() {
 fn a_header_device_on_the_drive_fails() {
     // systemd's crypttab generator mounts the device of
     // `header=<path>:<device>` read-write ("LUKS2 recovery requires rw header
-    // access"): on the volume's drive, the partition beside it or the whole
-    // disk by any of its names, that is a write to it at boot, with the flag
-    // too.
+    // access"), and cryptsetup writes to a device a `header=` names itself
+    // where it repairs a damaged copy of a LUKS2 header: on the volume's
+    // drive, the partition beside it or the whole disk by any of its names,
+    // that is a write to it at boot, with the flag too.
     let header = |shown: &str| {
         format!(
             "/etc/crypttab: '{shown}' (it mounts a device of the drive the volume at /mnt is \
@@ -477,6 +497,20 @@ fn a_header_device_on_the_drive_fails() {
     ] {
         let decoy = on_a_partition("", crypttab);
         fails_naming(&decoy, &header("vault /dev/sdc"));
+    }
+    let read = |shown: &str| {
+        format!(
+            "/etc/crypttab: '{shown}' (it reads its header from a device of the drive the volume \
+             at /mnt is stored on, which cryptsetup writes to where it repairs that header)"
+        )
+    };
+    for crypttab in [
+        "vault /dev/sdc none luks,header=/dev/sdb2,nofail\n",
+        "vault /dev/sdc none luks,header=/dev/sdb,nofail\n",
+        "vault /dev/sdc none luks,header=/dev/disk/by-id/usb-whole,nofail\n",
+    ] {
+        let decoy = on_a_partition("", crypttab);
+        fails_naming(&decoy, &read("vault /dev/sdc"));
     }
     // The volume's own partition is a device it is stored on.
     let result = on_a_partition(
@@ -495,6 +529,7 @@ fn a_header_device_on_the_drive_fails() {
     // pass.
     for crypttab in [
         "vault /dev/sdc none luks,header=/hdr.img:/dev/sdc,nofail\n",
+        "vault /dev/sdc none luks,header=/dev/sdc,nofail\n",
         "vault /dev/sdc /k:/dev/sdb2 luks,nofail\n",
     ] {
         let result = on_a_partition("", crypttab).run();

@@ -36,8 +36,10 @@
 //! writes its journal or its log onto what lies on the device it names. So
 //! does the device of a `header=<path>:<device>`, which the crypttab
 //! generator mounts read-write, as LUKS2 recovery may write the header (see
-//! below), and the judge fails a line that has the boot write over its own
-//! source the same way (see the `options` module).
+//! below), and a device a `header=` names itself, from which `cryptsetup`
+//! loads the header and which it writes to where it repairs a damaged copy
+//! of a LUKS2 header, and the judge fails a line that has the boot write
+//! over its own source the same way (see the `options` module).
 //!
 //! The generator splits the key field and each `header=` at the last `:`
 //! when what follows is an absolute path or a `UUID=`, `LABEL=`, `PARTUUID=`
@@ -244,6 +246,19 @@ fn header_drive_why(root: &Path) -> String {
     )
 }
 
+/// Why the device a crypttab line's `header=` names itself makes a finding
+/// when it lies on the drive of the volume at `root`, its whole disk, a
+/// partition of it or a device stacked on it, though not on a device the
+/// volume is stored on: `cryptsetup` loads the header from that device, and
+/// writes to it where it repairs a damaged copy of a LUKS2 header.
+fn header_on_drive_why(root: &Path) -> String {
+    format!(
+        "it reads its header from a device of the drive the volume at {} is stored on, which \
+         cryptsetup writes to where it repairs that header",
+        root.display()
+    )
+}
+
 /// Why a line that has the boot write over the device `node` it names itself
 /// makes a finding, if it does: when that device lies on the drive of the
 /// volume at `root`, whose whole disks are `disks`, on one of them, a
@@ -279,6 +294,10 @@ pub(super) fn overwrite_why(
         Some(Overwrite::Plain) => format!(
             "it opens {drive} as plain dm-crypt, which checks no header, so what the boot \
              writes to its mapping lands on that drive"
+        ),
+        Some(Overwrite::Detached) => format!(
+            "it opens {drive} with a header kept apart from it, which checks nothing on that \
+             device, so what the boot writes to its mapping lands on that drive"
         ),
     })
 }
@@ -325,8 +344,9 @@ pub(super) struct Reads<'a, 'b> {
 /// `drive`, and the mounts that hold the files it reads, which the line
 /// claims. A device the volume is stored on makes a finding, and so does
 /// any other device of its drive that an option opens for writing
-/// ([`opens_for_writing`]): the drive's whole disk, a partition of it or a
-/// device stacked on one of them.
+/// ([`opens_for_writing`]), or that the boot mounts for a header or reads a
+/// header from, which it may write to: the drive's whole disk, a partition
+/// of it or a device stacked on one of them.
 pub(super) fn judge_reads<'a>(
     scene: &Scene<'a>,
     hidden: &MountEntry,
@@ -360,6 +380,9 @@ pub(super) fn judge_reads<'a>(
                 }
                 Named::HeaderDevice if reaches_a_disk_of(scene, node, drive.disks) => {
                     Some(header_drive_why(&hidden.mount_point))
+                }
+                Named::Header if reaches_a_disk_of(scene, node, drive.disks) => {
+                    Some(header_on_drive_why(&hidden.mount_point))
                 }
                 _ => None,
             }

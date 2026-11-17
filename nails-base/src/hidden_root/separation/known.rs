@@ -47,7 +47,9 @@
 //!   hidden drive, not only one the volume is stored on. `header=` and
 //!   `tcrypt-keyfile=` the `reads` module reads as before, and the device of a
 //!   `header=<path>:<device>`, which the crypttab generator mounts read-write,
-//!   fails its line on any device of the hidden drive as well.
+//!   and a device a `header=` names itself, which `cryptsetup` writes to where
+//!   it repairs the header, fail its line on any device of the hidden drive as
+//!   well.
 //! - The generic flags of `libmount` (`defaults`, `ro`, `rw`, `exec`,
 //!   `noexec`, `suid`, `nosuid`, `dev`, `nodev`, `sync`, `async`, `dirsync`)
 //!   and the atime family (`atime`, `noatime`, `diratime`, `nodiratime`,
@@ -95,17 +97,18 @@
 //!   their order, as `systemd-cryptsetup` does (see the `options` module), and
 //!   lets the decoy's own line be only where it opens its LUKS mapping as LUKS,
 //!   with neither `swap` nor `tmp`. A line with `swap` or `tmp`, or one it
-//!   opens in plain mode, which checks no header, writes over its source, or
-//!   lets whatever writes to its mapping do so, which the judge reads by the
-//!   drive the source is on (see the `options` module). Of the others,
-//!   `discard`, `nofail`, `_netdev`, `x-initrd.attach` and Debian's `initramfs`
-//!   (when it is opened), `readonly`, the cipher, sizes and offsets in the
-//!   source, the key slot and key file size and offset, `keyfile-erase`, the
-//!   crypt workers, and how often, how long and how the boot asks for the
-//!   passphrase (`tries=`, `timeout=`, `keyfile-timeout=`, `password-echo=`,
-//!   `headless`, `token-timeout=`, `try-empty-password`, `tpm2-pcrs=`): none
-//!   names a device or a file besides the line's source and key file.
-//!   `keyscript=` is not plain for its own reason (see the `reads` module).
+//!   opens in plain mode or with a `header=`, which checks no header on its
+//!   source, writes over its source, or lets whatever writes to its mapping do
+//!   so, which the judge reads by the drive the source is on (see the `options`
+//!   module). Of the others, `discard`, `nofail`, `_netdev`, `x-initrd.attach`
+//!   and Debian's `initramfs` (when it is opened), `readonly`, the cipher,
+//!   sizes and offsets in the source, the key slot and key file size and
+//!   offset, `keyfile-erase`, the crypt workers, and how often, how long and
+//!   how the boot asks for the passphrase (`tries=`, `timeout=`,
+//!   `keyfile-timeout=`, `password-echo=`, `headless`, `token-timeout=`,
+//!   `try-empty-password`, `tpm2-pcrs=`): none names a device or a file besides
+//!   the line's source and key file. `keyscript=` is not plain for its own
+//!   reason (see the `reads` module).
 //!
 //! NAILS reads a flag only alone: one given with a value, such as `nofail=1`,
 //! is not plain, as no stock line gives one and `libmount` releases read it

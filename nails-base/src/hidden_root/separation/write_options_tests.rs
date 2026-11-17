@@ -106,12 +106,11 @@ fn an_option_that_opens_any_device_of_the_drive_for_writing_is_an_entry() {
         );
     }
     // A device of another drive, an option that writes to nothing it names,
-    // the device the boot mounts read-only for a key file, a header, and the
-    // drive's other partition as a line's own source name none.
+    // the device the boot mounts read-only for a key file, and the drive's
+    // other partition as a line's own source name none.
     for (fstab, crypttab) in [
         ("", "vault /dev/sdc none luks,tpm2-device=/dev/sdc,nofail"),
         ("", "vault /dev/sdc /key:/dev/sdb2 luks,nofail"),
-        ("", "vault /dev/sdc none luks,header=/dev/sdb2,nofail"),
         ("/dev/sdc /data ext4 journal_path=/dev/sdc 0 2", ""),
         (
             "/dev/sdc /data ext4 x-systemd.requires-mounts-for=/dev/sdb 0 2",
@@ -309,13 +308,84 @@ fn a_line_that_has_the_boot_write_over_its_own_device_of_the_drive_is_an_entry()
 }
 
 #[test]
+fn a_crypttab_line_with_a_header_kept_apart_on_the_drive_is_an_entry() {
+    // A `header=` of any type has systemd-cryptsetup load the header from
+    // where that option says and map the source at the offset the header
+    // gives, whatever lies on it: as for a plain mapping, what the boot
+    // writes to the mapping, an fstab line with x-systemd.makefs for it say,
+    // lands on the source, on the volume's drive that drive.
+    let detached = "it opens a device of the drive the volume at /mnt is stored on with a header \
+                    kept apart from it, which checks nothing on that device, so what the boot \
+                    writes to its mapping lands on that drive";
+    for (fstab, crypttab, shown) in [
+        (
+            "/dev/mapper/hdrx /data ext4 x-systemd.makefs,nofail 0 0",
+            "hdrx /dev/sdb /etc/hdrkey luks,header=/etc/hdrx.img",
+            "hdrx /dev/sdb",
+        ),
+        (
+            "",
+            "hdrx /dev/sdb2 none header=/etc/hdrx.img,nofail",
+            "hdrx /dev/sdb2",
+        ),
+        (
+            "",
+            "hdrx /dev/disk/by-id/usb-whole none luks,header=/hdrx.img:/dev/sdc,nofail",
+            "hdrx /dev/disk/by-id/usb-whole",
+        ),
+        (
+            "",
+            "tc /dev/sdb /etc/tckey tcrypt,header=/etc/tc.hdr",
+            "tc /dev/sdb",
+        ),
+    ] {
+        let judgement = partitioned_drive()
+            .spec("/dev/disk/by-id/usb-whole", "sdb")
+            .fstab(&format!(
+                "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n{fstab}\n"
+            ))
+            .crypttab(&format!("{crypttab}\n"))
+            .judge("/mnt");
+        assert_eq!(
+            entry_needs(&judgement),
+            [(EntryKind::Blocking, shown, false)],
+            "{fstab}{crypttab}"
+        );
+        assert_eq!(judgement.entries[0].why, detached, "{fstab}{crypttab}");
+    }
+    // A header kept apart from a source on another drive names none.
+    let judgement = partitioned_drive()
+        .crypttab("vault /dev/sdc none luks,header=/etc/hdr.img\n")
+        .judge("/mnt");
+    assert_eq!(entry_needs(&judgement), []);
+}
+
+#[test]
 fn a_header_device_on_the_drive_is_an_entry() {
     // systemd's crypttab generator mounts the device of a
-    // `header=<path>:<device>` read-write, for LUKS2 recovery: on the
-    // volume's drive, that is a write to it at boot.
+    // `header=<path>:<device>` read-write, for LUKS2 recovery, and
+    // cryptsetup writes to a device a `header=` names itself where it
+    // repairs a damaged copy of a LUKS2 header: on the volume's drive, that
+    // is a write to it at boot.
     let header = "it mounts a device of the drive the volume at /mnt is stored on read-write for \
                   its header";
+    let read = "it reads its header from a device of the drive the volume at /mnt is stored on, \
+                which cryptsetup writes to where it repairs that header";
     for (crypttab, why) in [
+        ("vault /dev/sdc none luks,header=/dev/sdb2,nofail", read),
+        ("vault /dev/sdc none luks,header=/dev/sdb,nofail", read),
+        (
+            "vault /dev/sdc none luks,header=/dev/disk/by-id/usb-whole,nofail",
+            read,
+        ),
+        (
+            "vault /dev/sdc none luks,header=/dev/mapper/other,nofail",
+            read,
+        ),
+        (
+            "vault /dev/sdc none luks,header=/dev/sdb1,nofail",
+            "it reads its header from the volume at /mnt or a device it is stored on",
+        ),
         (
             "vault /dev/sdc none luks,header=/hdr.img:/dev/sdb2,nofail",
             header,
@@ -348,6 +418,7 @@ fn a_header_device_on_the_drive_is_an_entry() {
     // file, name none.
     for crypttab in [
         "vault /dev/sdc none luks,header=/hdr.img:/dev/sdc,nofail",
+        "vault /dev/sdc none luks,header=/dev/sdc,nofail",
         "vault /dev/sdc /k:/dev/sdb2 luks,nofail",
     ] {
         let judgement = partitioned_drive()
