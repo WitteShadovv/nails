@@ -193,7 +193,8 @@ Also refused by the pre-flight checks:
   (`hidden-volume`, see
   [Attaching the drive](docs/decoy-requirements.md#attaching-the-drive));
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
-  volume, its container file or image by any path, or, for a root that
+  volume, its container file or image by its path or by any path to the same
+  file (a hard link, a bind of its folder), or, for a root that
   `--allow-decoy-storage` accepted on a filesystem the decoy uses, that
   filesystem, or that has the boot write to a device of the hidden volume's
   drive (`x-systemd.makefs`, a random-key swap, `journal_path=`,

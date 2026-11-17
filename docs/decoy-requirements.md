@@ -2228,7 +2228,10 @@ device, with a second mapping that showed the hidden files. NAILS knows that
 file by the path the loop driver shows for it and by its device and inode as the
 driver recorded them, which one `stat` of the line's path, read with no link
 followed, gives, so a path written with `..`, a hard link and a path through
-another mount of the same folder name it too. Where the driver's record cannot
+another mount of the same folder of its filesystem, a bind say, name it too. A
+path through a FUSE view of its folder, such as one `bindfs` makes, or through
+an overlay over it, shows the device and inode of that view's own filesystem,
+and NAILS does not match it (see below). Where the driver's record cannot
 be read, which takes root, whether a file that is there is that one cannot be
 told, and the line fails as one whose path cannot be told. Another loop device
 over that file, named by its path in `/dev`, is a device the volume is stored
@@ -2280,7 +2283,10 @@ own way. A key file elsewhere, `none`, `/dev/urandom` and a device of another
 filesystem pass.
 
 Some lines name the volume in a way `backend-entries` does not read, and it lets
-them pass: a FUSE program that takes its sources as a list of folders, as
+them pass: a path to the container file or image the volume is stored in through
+a FUSE view of its folder, such as one `bindfs` makes, or through an overlay
+over that folder, which `systemd-cryptsetup` or `mount` would open through the
+view, a FUSE program that takes its sources as a list of folders, as
 mergerfs does, a network or remote source that this computer serves itself or
 that a program's own configuration leads to one of its folders, a program named
 alone, which `PATH` finds, an option NAILS does not know of a line of no local
@@ -2419,9 +2425,10 @@ whole disk, a partition of it or a device stacked on one of these, as
 `header=<path>:<device>`, which the boot mounts read-write, and a device a
 `header=` names itself, or as a line's own `x-systemd.makefs`, `swap`, `tmp`,
 plain mode or `header=` does over the device the line names, or while a line
-names the container file or image the volume is stored in, by any path that
-leads to that file, or while an fstab or crypttab line names a path that NAILS
-cannot tell, which may lead to it, or is not plain: NAILS reads only plain
+names the container file or image the volume is stored in, by its path or by
+any path to the same file (a hard link, a bind of its folder), or while an fstab
+or crypttab line names a path that NAILS cannot tell, which may lead to it, or
+is not plain: NAILS reads only plain
 lines, with only the options it lists, and follows no symbolic link in the path
 of a bind line's source, a swap file, an image file, the file a FUSE program
 reads or that program, a crypttab source that is no tag and no device's path in

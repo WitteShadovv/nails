@@ -60,9 +60,11 @@
 //! reads, the container file the volume is opened from or the image it is in,
 //! by the path the loop driver shows for it or by any path to the same file,
 //! its device and inode ([`FileId`]), which the boot opens a second time (see
-//! the `placed` module), and another loop device over that file counts as a
-//! device of that stack. A device an option names by its path is resolved as a
-//! line's source is, through links that stay in `/dev`. Such an entry is an
+//! the `placed` module; a path through a FUSE view or an overlay of its folder
+//! shows another device and inode, and is not matched), and another loop
+//! device over that file counts as a device of that stack. A device an option
+//! names by its path is resolved as a line's source is, through links that
+//! stay in `/dev`. Such an entry is an
 //! enabler stored on the decoy; the attach gate ignores the finding (writing to
 //! the root stays safe) and the `backend-entries` check reports it. A line
 //! placed by a path whose place cannot be told ([`UntoldPath`]) may mount or
