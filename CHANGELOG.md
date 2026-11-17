@@ -2337,27 +2337,41 @@ of this changelog for that version becomes the release notes word for word, and
   invocation markers and `cgroup.events` make `unattended-upgrade-run` refuse, with a fix that says
   what to let NAILS read, and `locate-database` warn. `backend-detect` refuses as for discards
   (`--allow-discards` lifts it) where it cannot read the mount table, which passed as "Backend
-  detection skipped", the device the hidden root is mounted from, or an attribute of the stack
-  below it that decides whether discards reach the hidden volume, and warns where it cannot read
-  whether a loop device detaches when closed. `backend-partition-type` and `outer-volume` warn
-  that they could not check where sysfs shows an attribute they decide by but they cannot read it,
-  where they passed, while a partition `backend-partition-type` could judge and refuses is refused
-  all the same. `session-state` refuses where it cannot read the mount table, and takes a
+  detection skipped", the device the hidden root is mounted from, or an attribute of the stack below
+  it that decides whether discards reach the hidden volume, and warns where it cannot read whether a
+  loop device over a block device detaches when closed. `backend-partition-type` and `outer-volume`
+  warn that they could not check where sysfs shows an attribute they decide by but they cannot read
+  it, where they passed, while a partition `backend-partition-type` could judge and refuses is
+  refused all the same. `session-state` refuses where it cannot read the mount table, and takes a
   session plan it cannot read for one an interrupted entry left, which `recover` removes, but one
   below a file for none. `fstab-policy` and `decoy-root` refuse without the mount table. `swap`
-  refuses where it cannot read `/proc/swaps`, a zram device's `backing_dev`, `/sys/power/resume`
-  or `/proc/cmdline`, and reads a swap file's name that is no UTF-8, which hid every swap from it,
-  and fails it as file swap. `suspicious-nails-reference` refuses where its walk of `/etc/nixos`
-  cannot look up a place, or it cannot read the mount table or a place that gives a name of the
-  hidden volume's storage, and says what to make readable. `locate-database` also warns where it
-  cannot resolve an updatedb link, `binary-location` where it cannot resolve a link in a `PATH`
-  directory, `dma-protection` where it cannot read what lets it pass, and `hidden-volume` where it
-  cannot read the names of the volume's source. `inherited-autostart` lists a directory it cannot
-  list, or a file it cannot read, as not read, and `memory-wipe` no longer says the kernel zeroes
-  freed memory where it cannot read the command line, or where it cannot read the release, which
-  says which values the kernel accepts, and the values on the line mean different things to
-  different releases. A check run without root now warns that it cannot read `/etc/sudoers` and
-  `/sys/fs/pstore` where, as on most systems, only root can read them.
+  refuses where it cannot read `/proc/swaps`, a zram device's `backing_dev`, `/sys/power/resume` or
+  `/proc/cmdline`, and reads a swap file's name that is no UTF-8, which hid every swap from it, and
+  fails it as file swap. `suspicious-nails-reference` refuses where its walk of `/etc/nixos` cannot
+  look up a place, or it cannot read the mount table or a place that gives a name of the hidden
+  volume's storage, and says what to make readable. It reads a `.nix` file that holds bytes that are
+  no UTF-8, as Nix does, where it refused it as one it could not read. `locate-database` also warns
+  where it cannot resolve an updatedb link, `binary-location` where it cannot resolve a link in a
+  `PATH` directory, `dma-protection` where it cannot read what lets it pass, and `hidden-volume`
+  where it cannot read the names of the volume's source. `backend-entries` refuses, and
+  `backend-encryption` warns that it cannot confirm, where a device link a line of fstab or crypttab
+  or the mount table names cannot be resolved, which the attach gate now counts as an input it could
+  not read, and `backend-encryption` also where it cannot resolve an image file the decoy's crypttab
+  opens, or read what kind of mapping a device is or what lies below it. `backend-partition-type`,
+  `outer-volume` and `backend-encryption` warn that they cannot tell where sysfs shows the devices
+  of the hidden root's filesystem (a btrfs device list among them) but they cannot read them, and
+  `backend-partition-type` too where it cannot read those of the decoy's root file system or a boot
+  partition, or resolve a link into a partition below the hidden root, while the hidden root has a
+  partition on a disk it does not know the decoy boots from. A warning it could judge keeps its text
+  and fix and says what it could not check. `host-tools` requires `dmsetup` for a hidden root
+  mounted from `/dev/dm-N` or `/dev/mapper` whatever it can read of the stack, and for one whose
+  stack it cannot read, where it passed when it could not read the mapping's name, and activation
+  refuses where it cannot read the stack it records for the way back to close. `inherited-autostart`
+  lists a directory it cannot list, or a file it cannot read, as not read, and `memory-wipe` no
+  longer says the kernel zeroes freed memory where it cannot read the command line, or where it
+  cannot read the release, which says which values the kernel accepts, and the values on the line
+  mean different things to different releases. A check run without root now warns that it cannot
+  read `/etc/sudoers` and `/sys/fs/pstore` where, as on most systems, only root can read them.
 - `nails deactivate` that cannot take its lock, a hidden root that cannot be looked up among the
   causes, refuses before the switch as before, and now names `emergency`, which ends the session
   without the lock: it returns to the decoy where it can prepare the return and powers off where it
