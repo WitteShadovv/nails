@@ -494,14 +494,17 @@ of this changelog for that version becomes the release notes word for word, and
   refuses a host whose loaded policy does not grant the domain udevd starts the disk guard in,
   `udev_t` under a targeted policy, every operation the guard makes, from udevd's reading of the
   rule that starts it to setting a disk read-only, one where no systemd-udevd runs, and one whose
-  policy cannot be asked. It judges the two apart, since what NAILS sets on systemd's side does not
-  reach what udev runs. Where the copies take no label, NAILS chooses neither domain, and the check
-  refuses every host where SELinux runs. Fedora, whose hosts run SELinux by default, is not admitted
-  yet. It warns, where nothing refuses, when SELinux is permissive or runs in another mode than
-  `/etc/selinux/config` sets. Where the kernel's list cannot be read, a mounted selinuxfs or an
-  SELinux context of the process means SELinux runs, and without either, `/sys/fs/selinux` or a
-  configuration that sets a mode or names a policy is refused without deciding: a mount over `/sys`
-  can hide `/sys/fs/selinux`, so the check does not rule SELinux out because it is missing.
+  policy cannot be asked. For the guard it does not ask the policy's rules for single `ioctl`
+  numbers, which selinuxfs does not answer, nor the labels a relabel of `/run` would give its files,
+  so it does not refuse a policy that denies the guard only there. It judges the two apart, since
+  what NAILS sets on systemd's side does not reach what udev runs. Where the copies take no label,
+  NAILS chooses neither domain, and the check refuses every host where SELinux runs. Fedora, whose
+  hosts run SELinux by default, is not admitted yet. It warns, where nothing refuses, when SELinux
+  is permissive or runs in another mode than `/etc/selinux/config` sets. Where the kernel's list
+  cannot be read, a mounted selinuxfs or an SELinux context of the process means SELinux runs, and
+  without either, `/sys/fs/selinux` or a configuration that sets a mode or names a policy is refused
+  without deciding: a mount over `/sys` can hide `/sys/fs/selinux`, so the check does not rule
+  SELinux out because it is missing.
 - `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
   tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
   the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists

@@ -288,7 +288,10 @@ upper changes.
   it grants the domain udevd starts the disk guard in, `udev_t` under a
   targeted policy, every operation the guard makes: where it does not, the
   guard could leave a disk that appears in the session writable, and the host
-  is refused. Fedora, whose hosts run SELinux by default, is not admitted yet,
+  is refused. That question leaves out the policy's rules for single `ioctl`
+  numbers, which selinuxfs does not answer, and the labels a relabel of `/run`
+  would give the guard's files, so a policy that denies the guard only there is
+  not refused. Fedora, whose hosts run SELinux by default, is not admitted yet,
   so this applies only where a host of a family NAILS admits runs SELinux. The
   emergency, which asks PID 1 nothing, powers off instead of returning where
   the copy does not take its label again or the loaded policy would not start
