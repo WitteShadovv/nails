@@ -501,6 +501,14 @@ impl QuietMounts {
         self.give_back()
     }
 
+    /// End it as a process that is killed does: its descriptors closed and
+    /// no mount given its mode back. For the tests of [`restore`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn abandon(mut self) {
+        self.changed.clear();
+        self.sources.clear();
+    }
+
     fn give_back(&mut self) -> std::io::Result<()> {
         let mut result = Ok(());
         let mut keep = |done: std::io::Result<()>| {
