@@ -258,7 +258,7 @@ fn recorded(hidden: &Path) -> StateFile {
 
 fn active() -> SystemState {
     SystemState::Active {
-        activated_at: Utc::now(),
+        activated_at: Timestamp::now(),
     }
 }
 

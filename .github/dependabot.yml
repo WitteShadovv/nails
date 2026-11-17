@@ -84,8 +84,6 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "clap"
         update-types: ["version-update:semver-major"]
-      - dependency-name: "chrono"
-        update-types: ["version-update:semver-major"]
 
   # The fuzz crate, a workspace of its own with its own Cargo.lock: libFuzzer's
   # bindings and the dependencies of the NAILS crates it fuzzes.

@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn states_serialize_as_tagged_objects() {
         let degraded = SystemState::Degraded {
-            since: chrono::Utc::now(),
+            since: nails_core::time::Timestamp::now(),
             reason: "x".into(),
         };
         let json =

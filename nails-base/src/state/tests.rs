@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::NailsError;
+use crate::time::Timestamp;
 
 #[test]
 fn test_state_file_default() {
@@ -15,7 +16,7 @@ fn test_state_file_default() {
     assert_eq!(state_file.hidden_toplevel(), None);
     assert_eq!(state_file.integrity_sha256, None);
     // Just verify last_modified exists (can't test exact time)
-    assert!(state_file.last_modified <= Utc::now());
+    assert!(state_file.last_modified <= Timestamp::now());
 }
 
 #[test]
@@ -188,9 +189,7 @@ fn test_save_load_round_trip_with_inactive_state() {
         state: SystemState::Inactive,
         platform: None,
         last_activation: None,
-        last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
-            .unwrap()
-            .with_timezone(&Utc),
+        last_modified: Timestamp::parse_rfc3339("2025-01-27T10:30:00Z").unwrap(),
         boot_id: None,
         owner_pid: 0,
         owner_start_time: None,
@@ -348,7 +347,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         state: SystemState::Inactive,
         platform: Some(PlatformState::nixos(Some("test-gen".to_string()))),
         last_activation: None,
-        last_modified: Utc::now(),
+        last_modified: Timestamp::now(),
         boot_id: None,
         owner_pid: 0,
         owner_start_time: None,
@@ -423,7 +422,7 @@ fn test_state_file_permissions_are_0600() {
         state: SystemState::Inactive,
         platform: None,
         last_activation: None,
-        last_modified: Utc::now(),
+        last_modified: Timestamp::now(),
         boot_id: None,
         owner_pid: 0,
         owner_start_time: None,
@@ -456,9 +455,7 @@ fn test_checksum_round_trip_save_load() {
         state: SystemState::Inactive,
         platform: Some(PlatformState::nixos(Some("gen123".to_string()))),
         last_activation: None,
-        last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
-            .unwrap()
-            .with_timezone(&Utc),
+        last_modified: Timestamp::parse_rfc3339("2025-01-27T10:30:00Z").unwrap(),
         boot_id: None,
         owner_pid: 0,
         owner_start_time: None,
@@ -1096,9 +1093,7 @@ fn test_compatible_version_load_with_checksum() {
     let state = StateFile {
         platform: Some(PlatformState::nixos(Some("gen-abc".to_string()))),
         last_activation: None,
-        last_modified: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc),
+        last_modified: Timestamp::parse_rfc3339("2025-06-01T12:00:00Z").unwrap(),
         ..StateFile::default()
     };
 
@@ -1312,9 +1307,7 @@ fn test_degraded_state_round_trips_through_save_load() {
     let state_path = temp_dir.path().join("state.json");
 
     let degraded = SystemState::Degraded {
-        since: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc),
+        since: Timestamp::parse_rfc3339("2025-06-01T12:00:00Z").unwrap(),
         reason: "unmount of /home failed".to_string(),
     };
     let state = StateFile {
@@ -1596,12 +1589,8 @@ fn load_bytes(bytes: &str) -> LoadResult {
 /// they track the current serialiser. The Debian-family and NixOS records are
 /// the frozen release files.
 fn current_format_goldens() -> Vec<(&'static str, StateFile)> {
-    let activated_at = DateTime::parse_from_rfc3339("2026-05-10T08:15:30Z")
-        .unwrap()
-        .with_timezone(&Utc);
-    let finished_at = DateTime::parse_from_rfc3339("2026-05-10T08:15:33Z")
-        .unwrap()
-        .with_timezone(&Utc);
+    let activated_at = Timestamp::parse_rfc3339("2026-05-10T08:15:30Z").unwrap();
+    let finished_at = Timestamp::parse_rfc3339("2026-05-10T08:15:33Z").unwrap();
     let last_modified = finished_at;
     let with_family = move |family: crate::Family| StateFile {
         version: "0.3.0".to_string(),

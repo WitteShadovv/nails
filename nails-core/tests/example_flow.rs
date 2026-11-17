@@ -19,14 +19,14 @@ fn the_state_record_follows_forced_states() {
 
     manager
         .force_state(SystemState::Active {
-            activated_at: chrono::Utc::now(),
+            activated_at: nails_core::time::Timestamp::now(),
         })
         .unwrap();
     assert!(manager.current_state().unwrap().is_active());
 
     manager
         .force_state(SystemState::Degraded {
-            since: chrono::Utc::now(),
+            since: nails_core::time::Timestamp::now(),
             reason: "in the hidden root without a way back".into(),
         })
         .unwrap();
@@ -76,7 +76,7 @@ fn status_on_the_decoy_reports_the_record_next_to_the_live_view() {
     let (mut manager, _tmp) = TestWorld::new().manager();
     manager
         .force_state(SystemState::Active {
-            activated_at: chrono::Utc::now(),
+            activated_at: nails_core::time::Timestamp::now(),
         })
         .unwrap();
     let fs = manager.filesystem().clone();
@@ -86,7 +86,7 @@ fn status_on_the_decoy_reports_the_record_next_to_the_live_view() {
         .report(
             &nails_core::session::SessionView::Decoy,
             &[],
-            chrono::Utc::now(),
+            nails_core::time::Timestamp::now(),
         )
         .unwrap();
     assert_eq!(status.posture, Posture::Decoy);

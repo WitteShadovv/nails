@@ -14,9 +14,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use chrono::{TimeZone, Utc};
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
+use nails_core::time::Timestamp;
 use nails_core::{StateFile, SystemState};
 use serde_json::Value;
 
@@ -140,7 +140,7 @@ fn recover_resets_a_stale_active_record_on_the_decoy() {
         || {
             let harness = Harness::new();
             harness.write_state(SystemState::Active {
-                activated_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+                activated_at: Timestamp::from_unix_seconds(1_700_000_000).unwrap(),
             });
 
             let output = harness.run(&["--ascii", "recover"]);

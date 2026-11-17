@@ -167,7 +167,7 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         reason,
         remediation: report.remediation.as_deref(),
         entered_at: report.entered_at.map(|t| t.to_rfc3339()),
-        uptime_seconds: report.uptime.map(|u| u.num_seconds()),
+        uptime_seconds: report.uptime.map(|u| u.as_secs()),
         uptime_formatted: report.uptime.map(nails_core::status::format_uptime),
         hidden_system: report.hidden_system.as_deref(),
         decoy_system: report.decoy_system.as_deref(),

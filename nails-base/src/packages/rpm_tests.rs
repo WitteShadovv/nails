@@ -267,10 +267,10 @@ fn staged(database: &[u8], wal: Option<&[u8]>) -> MockFilesystem {
     let fs = MockFilesystem::new();
     let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
     fs.mock_set_file_bytes(DB, database);
-    fs.mock_set_modified_time(Path::new(DB), time.into());
+    fs.mock_set_modified_time(Path::new(DB), time);
     if let Some(wal) = wal {
         fs.mock_set_file_bytes(DB_WAL, wal);
-        fs.mock_set_modified_time(Path::new(DB_WAL), time.into());
+        fs.mock_set_modified_time(Path::new(DB_WAL), time);
     }
     fs
 }
@@ -351,7 +351,7 @@ fn a_database_that_cannot_be_trusted_is_an_error() {
     fs.mock_set_file_bytes("/sysimage/rpm/rpmdb.sqlite-journal", b"");
     fs.mock_set_modified_time(
         Path::new("/sysimage/rpm/rpmdb.sqlite-journal"),
-        (SystemTime::UNIX_EPOCH + Duration::from_secs(1)).into(),
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1),
     );
     let files = Files::beside(&fs, Path::new(DB)).unwrap();
     assert!(files.journal.is_some());
@@ -367,7 +367,7 @@ fn a_database_that_cannot_be_trusted_is_an_error() {
     fs.mock_set_file_bytes("/sysimage/rpm/rpmdb.sqlite-journal", b"journal");
     fs.mock_set_modified_time(
         Path::new("/sysimage/rpm/rpmdb.sqlite-journal"),
-        (SystemTime::UNIX_EPOCH + Duration::from_secs(1)).into(),
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1),
     );
     let files = Files::beside(&fs, Path::new(DB)).unwrap();
     let error = read_packages(&fs, &files, &mut Budget::default()).unwrap_err();

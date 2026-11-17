@@ -3,12 +3,12 @@
 
 //! Integration tests for the recorded [`SystemState`], through the public API.
 
-use chrono::Utc;
 use nails_core::SystemState;
+use nails_core::time::Timestamp;
 
 #[test]
 fn predicates_and_labels_match_each_state() {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let cases = [
         (SystemState::Inactive, "inactive"),
         (SystemState::Active { activated_at: now }, "active"),
@@ -30,7 +30,7 @@ fn predicates_and_labels_match_each_state() {
 
 #[test]
 fn every_state_round_trips_through_json() {
-    let now = Utc::now();
+    let now = Timestamp::now();
     for state in [
         SystemState::Inactive,
         SystemState::Active { activated_at: now },

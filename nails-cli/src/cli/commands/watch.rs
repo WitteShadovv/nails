@@ -508,7 +508,7 @@ fn mount_alert(mount: &MountEntry) -> Notification {
         ),
         urgency: "critical".to_string(),
         icon: Some("drive-removable-media".to_string()),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: nails_core::time::Timestamp::now().to_rfc3339(),
     }
 }
 
@@ -527,7 +527,7 @@ fn cover_alert(cover: &MountEntry) -> Notification {
         ),
         urgency: "critical".to_string(),
         icon: Some("drive-removable-media".to_string()),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: nails_core::time::Timestamp::now().to_rfc3339(),
     }
 }
 
@@ -541,7 +541,7 @@ fn alert_only_notice() -> Notification {
             .to_string(),
         urgency: "critical".to_string(),
         icon: Some("drive-harddisk".to_string()),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: nails_core::time::Timestamp::now().to_rfc3339(),
     }
 }
 
@@ -556,7 +556,7 @@ fn power_off_notice() -> Notification {
             .to_string(),
         urgency: "critical".to_string(),
         icon: Some("drive-harddisk".to_string()),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: nails_core::time::Timestamp::now().to_rfc3339(),
     }
 }
 
@@ -570,7 +570,7 @@ fn unwatched_notice() -> Notification {
             .to_string(),
         urgency: "critical".to_string(),
         icon: Some("drive-harddisk".to_string()),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: nails_core::time::Timestamp::now().to_rfc3339(),
     }
 }
 
@@ -584,7 +584,7 @@ fn backend_alert() -> Notification {
         body: "A mounted volume stopped responding. Save your work and reconnect it.".to_string(),
         urgency: "critical".to_string(),
         icon: Some("drive-harddisk".to_string()),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: nails_core::time::Timestamp::now().to_rfc3339(),
     }
 }
 

@@ -100,11 +100,11 @@ fn the_hidden_session_reports_active_with_its_uptime_policy_and_system() {
         dir.path().display(),
         dir.path().display()
     );
-    let now = DateTime::<Utc>::from_timestamp(1_700_000_000 + 7 * 3600, 0).unwrap();
+    let now = Timestamp::from_unix_seconds(1_700_000_000 + 7 * 3600).unwrap();
     let report = cmd.report(&view, &parse_mountinfo(&table), now).unwrap();
     assert_eq!(report.posture, Posture::Active);
     assert_eq!(report.session, "hidden");
-    assert_eq!(report.uptime, Some(Duration::hours(7)));
+    assert_eq!(report.uptime, Some(SignedDuration::from_hours(7)));
     assert_eq!(
         report.hidden_system.as_deref(),
         Some("/nix/store/bbb-nixos-system")
@@ -166,7 +166,7 @@ fn the_units_a_boot_target_requires_are_listed_with_why() {
             SessionView::Entering(plan)
         }
     };
-    let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+    let now = Timestamp::from_unix_seconds(1_700_000_000).unwrap();
     let shown = |hidden: bool| -> Vec<(String, &'static str, &'static str, Option<PathBuf>)> {
         cmd.report(&view(hidden), &[], now)
             .unwrap()
@@ -227,7 +227,7 @@ fn a_disk_mounted_over_the_hidden_volume_is_named() {
 "
     );
     let report = cmd
-        .report(&view, &parse_mountinfo(&volume), Utc::now())
+        .report(&view, &parse_mountinfo(&volume), Timestamp::now())
         .unwrap();
     assert_eq!(report.hidden_root_covered_by, None);
 
@@ -236,7 +236,7 @@ fn a_disk_mounted_over_the_hidden_volume_is_named() {
 "
     );
     let report = cmd
-        .report(&view, &parse_mountinfo(&covered), Utc::now())
+        .report(&view, &parse_mountinfo(&covered), Timestamp::now())
         .unwrap();
     assert_eq!(covered_by(&report), Some("/dev/sdc1"));
     // A plan without the device still loads; the stack shows the cover.
@@ -244,7 +244,7 @@ fn a_disk_mounted_over_the_hidden_volume_is_named() {
         .report(
             &SessionView::Hidden(Box::new(plan(dir.path()))),
             &parse_mountinfo(&covered),
-            Utc::now(),
+            Timestamp::now(),
         )
         .unwrap();
     assert_eq!(covered_by(&report), Some("/dev/sdc1"));
@@ -268,7 +268,7 @@ fn a_cover_is_found_through_a_symlinked_root_and_on_its_parent() {
          2 1 253:0 / {volume_dir} rw - ext4 /dev/mapper/data rw\n"
     );
     let report = cmd
-        .report(&view, &parse_mountinfo(&volume), Utc::now())
+        .report(&view, &parse_mountinfo(&volume), Timestamp::now())
         .unwrap();
     assert!(
         report.hidden_root_mounted,
@@ -278,14 +278,14 @@ fn a_cover_is_found_through_a_symlinked_root_and_on_its_parent() {
 
     let covered = format!("{volume}3 2 8:33 / {volume_dir} rw - vfat /dev/sdc1 rw\n");
     let report = cmd
-        .report(&view, &parse_mountinfo(&covered), Utc::now())
+        .report(&view, &parse_mountinfo(&covered), Timestamp::now())
         .unwrap();
     assert_eq!(covered_by(&report), Some("/dev/sdc1"));
 
     // A stick on a parent of the volume hides it as well.
     let on_parent = format!("{volume}4 1 8:49 / {base}/mnt rw - vfat /dev/sdd1 rw\n");
     let report = cmd
-        .report(&view, &parse_mountinfo(&on_parent), Utc::now())
+        .report(&view, &parse_mountinfo(&on_parent), Timestamp::now())
         .unwrap();
     assert_eq!(covered_by(&report), Some("/dev/sdd1"));
     assert_eq!(
@@ -323,7 +323,7 @@ fn an_active_record_on_the_plain_decoy_is_explained_with_its_remedy() {
     let dir = tempfile::tempdir().unwrap();
     let record = StateFile {
         state: SystemState::Active {
-            activated_at: Utc::now(),
+            activated_at: Timestamp::now(),
         },
         ..StateFile::default()
     };
@@ -331,7 +331,7 @@ fn an_active_record_on_the_plain_decoy_is_explained_with_its_remedy() {
         .save_with_custom_root(&dir.path().join("state.json"), dir.path())
         .unwrap();
     let report = command(dir.path())
-        .report(&SessionView::Decoy, &[], Utc::now())
+        .report(&SessionView::Decoy, &[], Timestamp::now())
         .unwrap();
     assert_eq!(report.posture, Posture::Decoy);
     assert!(
@@ -359,7 +359,7 @@ fn an_active_record_on_the_plain_decoy_is_explained_with_its_remedy() {
         .save_with_custom_root(&dir.path().join("state.json"), dir.path())
         .unwrap();
     let report = command(dir.path())
-        .report(&SessionView::Decoy, &[], Utc::now())
+        .report(&SessionView::Decoy, &[], Timestamp::now())
         .unwrap();
     assert_eq!((report.reason, report.remediation), (None, None));
 }
@@ -372,7 +372,7 @@ fn an_armed_kdump_is_reported_on_the_decoy_and_never_in_the_session() {
         let fs = crate::filesystem::MockFilesystem::new();
         fs.mock_add_file("/sys/kernel/kexec_crash_loaded", kexec_crash_loaded);
         command_on(fs, dir.path())
-            .report(view, &[], Utc::now())
+            .report(view, &[], Timestamp::now())
             .unwrap()
             .decoy_kdump_armed
     };
@@ -420,7 +420,7 @@ fn an_install_at_shutdown_is_reported_on_the_decoy_and_never_in_the_session() {
             vec![PathBuf::from("/etc/apt/apt.conf.d/99local")],
         );
         command_on(fs, dir.path())
-            .report(view, &[], Utc::now())
+            .report(view, &[], Timestamp::now())
             .unwrap()
             .decoy_install_at_shutdown
     };
@@ -457,7 +457,7 @@ fn an_entry_the_soft_reboot_refused_is_named_with_its_reason_and_time() {
     let dir = tempfile::tempdir().unwrap();
     StateFile {
         state: SystemState::Active {
-            activated_at: Utc::now(),
+            activated_at: Timestamp::now(),
         },
         ..StateFile::default()
     }
@@ -466,7 +466,7 @@ fn an_entry_the_soft_reboot_refused_is_named_with_its_reason_and_time() {
     refused_in(dir.path(), "the next root has no os-release", 1_700_000_000);
 
     let report = command(dir.path())
-        .report(&SessionView::Decoy, &[], Utc::now())
+        .report(&SessionView::Decoy, &[], Timestamp::now())
         .unwrap();
 
     assert_eq!(report.posture, Posture::Decoy);
@@ -474,7 +474,7 @@ fn an_entry_the_soft_reboot_refused_is_named_with_its_reason_and_time() {
         report.switch_refusal,
         Some(RefusedSwitch {
             reason: "the next root has no os-release".to_string(),
-            at: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
+            at: Timestamp::from_unix_seconds(1_700_000_000).unwrap(),
         })
     );
     let reason = report.reason.expect("the record is explained");
@@ -496,7 +496,7 @@ fn an_entry_the_soft_reboot_refused_is_named_with_its_reason_and_time() {
         .save_with_custom_root(&dir.path().join("state.json"), dir.path())
         .unwrap();
     let report = command(dir.path())
-        .report(&SessionView::Decoy, &[], Utc::now())
+        .report(&SessionView::Decoy, &[], Timestamp::now())
         .unwrap();
     assert_eq!((report.reason, report.remediation), (None, None));
     assert!(report.switch_refusal.is_some());
@@ -515,12 +515,12 @@ fn a_way_back_the_soft_reboot_refused_is_read_from_the_runtime_directory() {
     );
     let view = SessionView::Hidden(Box::new(plan(dir.path())));
 
-    let report = cmd.report(&view, &[], Utc::now()).unwrap();
+    let report = cmd.report(&view, &[], Timestamp::now()).unwrap();
 
     assert_eq!(report.posture, Posture::Active);
     let refused = report.switch_refusal.expect("the refused way back");
     assert_eq!(refused.reason, "the decoy's init does not resolve");
-    assert_eq!(refused.at.timestamp(), 1_700_000_060);
+    assert_eq!(refused.at.unix_seconds(), 1_700_000_060);
     // Without the scratch tree, the system's runtime directory is read.
     assert_eq!(
         StatusCommand::new(RealFilesystem, Config::test_default(), dir.path().join("x")).paths,
@@ -533,7 +533,7 @@ fn a_tampered_state_file_on_the_decoy_is_unknown() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("state.json"), "{ not json").unwrap();
     let report = command(dir.path())
-        .report(&SessionView::Decoy, &[], Utc::now())
+        .report(&SessionView::Decoy, &[], Timestamp::now())
         .unwrap();
     assert_eq!(report.posture, Posture::Unknown);
     assert_eq!(report.state_source, "corrupt");
@@ -549,7 +549,9 @@ fn a_tampered_state_file_in_the_hidden_session_is_reported_with_its_remedy() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("state.json"), "{ not json").unwrap();
     let view = SessionView::Hidden(Box::new(plan(dir.path())));
-    let report = command(dir.path()).report(&view, &[], Utc::now()).unwrap();
+    let report = command(dir.path())
+        .report(&view, &[], Timestamp::now())
+        .unwrap();
     assert_eq!(report.posture, Posture::Active);
     assert!(report.record_unreadable(), "{}", report.state_source);
     let remediation = report.remediation.as_deref().expect("a remedy");
@@ -563,42 +565,51 @@ fn a_tampered_state_file_in_the_hidden_session_is_reported_with_its_remedy() {
     StateFile::default()
         .save_with_custom_root(&dir.path().join("state.json"), dir.path())
         .unwrap();
-    let report = command(dir.path()).report(&view, &[], Utc::now()).unwrap();
+    let report = command(dir.path())
+        .report(&view, &[], Timestamp::now())
+        .unwrap();
     assert!(!report.record_unreadable());
     assert_eq!(report.remediation, None);
 }
 
 #[test]
 fn uptime_reads_in_the_largest_two_units_with_singular_and_plural() {
-    assert_eq!(format_uptime(Duration::zero()), "0 minutes");
-    assert_eq!(format_uptime(Duration::seconds(59)), "0 minutes");
-    assert_eq!(format_uptime(Duration::minutes(1)), "1 minute");
-    assert_eq!(format_uptime(Duration::minutes(59)), "59 minutes");
-    assert_eq!(format_uptime(Duration::hours(1)), "1 hour");
+    assert_eq!(format_uptime(SignedDuration::ZERO), "0 minutes");
+    assert_eq!(format_uptime(SignedDuration::from_secs(59)), "0 minutes");
+    assert_eq!(format_uptime(SignedDuration::from_mins(1)), "1 minute");
+    assert_eq!(format_uptime(SignedDuration::from_mins(59)), "59 minutes");
+    assert_eq!(format_uptime(SignedDuration::from_hours(1)), "1 hour");
     assert_eq!(
-        format_uptime(Duration::hours(1) + Duration::minutes(1)),
+        format_uptime(SignedDuration::from_hours(1) + SignedDuration::from_mins(1)),
         "1 hour 1 minute"
     );
     assert_eq!(
-        format_uptime(Duration::hours(23) + Duration::minutes(59)),
+        format_uptime(SignedDuration::from_hours(23) + SignedDuration::from_mins(59)),
         "23 hours 59 minutes"
     );
-    assert_eq!(format_uptime(Duration::days(1)), "1 day");
+    assert_eq!(format_uptime(SignedDuration::from_hours(24)), "1 day");
     // Past a day the minutes are dropped, even when there are no hours.
     assert_eq!(
-        format_uptime(Duration::days(1) + Duration::minutes(30)),
+        format_uptime(SignedDuration::from_hours(24) + SignedDuration::from_mins(30)),
         "1 day"
     );
     assert_eq!(
-        format_uptime(Duration::days(1) + Duration::hours(1) + Duration::minutes(5)),
+        format_uptime(
+            SignedDuration::from_hours(24)
+                + SignedDuration::from_hours(1)
+                + SignedDuration::from_mins(5)
+        ),
         "1 day 1 hour"
     );
-    assert_eq!(format_uptime(Duration::days(365)), "365 days");
+    assert_eq!(
+        format_uptime(SignedDuration::from_hours(24 * 365)),
+        "365 days"
+    );
 }
 
 #[test]
 fn a_negative_uptime_from_clock_skew_reads_as_zero() {
-    assert_eq!(format_uptime(Duration::hours(-3)), "0 minutes");
+    assert_eq!(format_uptime(SignedDuration::from_hours(-3)), "0 minutes");
 }
 
 #[test]
@@ -609,14 +620,17 @@ fn reminders_accumulate_at_six_twelve_and_twenty_four_hours() {
             .map(|r| r.severity)
             .collect::<Vec<_>>()
     };
-    assert!(severities(Duration::hours(5) + Duration::minutes(59)).is_empty());
-    assert_eq!(severities(Duration::hours(6)), [ReminderSeverity::Info]);
+    assert!(severities(SignedDuration::from_hours(5) + SignedDuration::from_mins(59)).is_empty());
     assert_eq!(
-        severities(Duration::hours(12)),
+        severities(SignedDuration::from_hours(6)),
+        [ReminderSeverity::Info]
+    );
+    assert_eq!(
+        severities(SignedDuration::from_hours(12)),
         [ReminderSeverity::Info, ReminderSeverity::Warning]
     );
     assert_eq!(
-        severities(Duration::hours(24)),
+        severities(SignedDuration::from_hours(24)),
         [
             ReminderSeverity::Info,
             ReminderSeverity::Warning,
@@ -624,7 +638,7 @@ fn reminders_accumulate_at_six_twelve_and_twenty_four_hours() {
         ]
     );
 
-    let critical = &generate_opsec_reminders(Duration::days(3), true)[2];
+    let critical = &generate_opsec_reminders(SignedDuration::from_hours(24 * 3), true)[2];
     assert_eq!(
         critical.message,
         "Session >24 hours - strongly recommend deactivation"
@@ -633,7 +647,10 @@ fn reminders_accumulate_at_six_twelve_and_twenty_four_hours() {
 
 #[test]
 fn disabled_reminders_stay_silent_however_long_the_session() {
-    assert_eq!(generate_opsec_reminders(Duration::days(30), false), []);
+    assert_eq!(
+        generate_opsec_reminders(SignedDuration::from_hours(24 * 30), false),
+        []
+    );
 }
 
 #[test]

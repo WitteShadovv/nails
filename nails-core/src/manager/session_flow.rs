@@ -50,7 +50,7 @@ use crate::session::labels::{self, Labels};
 use crate::session::package_drift::{self, Advisory};
 use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
 use crate::state::{LastActivation, SystemState};
-use chrono::Utc;
+use crate::time::Timestamp;
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use std::path::{Path, PathBuf};
 
@@ -512,7 +512,7 @@ impl<F: Filesystem> NailsManager<F> {
         prepared: &entry::Entry,
         elapsed: std::time::Duration,
     ) -> Result<()> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         // The FHS family of the detected host; the state file keeps only Fedora
         // and Arch (see `StateFile::mark_fhs_family`), so a Debian-family host
         // records no family and its state file stays byte identical.

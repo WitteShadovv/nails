@@ -22,9 +22,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use chrono::{DateTime, TimeZone, Utc};
 use insta_cmd::assert_cmd_snapshot;
 use nails_core::test_support::ScratchTmpfs;
+use nails_core::time::Timestamp;
 use nails_core::{StateFile, SystemState};
 use serde_json::Value;
 
@@ -82,8 +82,8 @@ fn nails() -> Command {
 }
 
 /// A fixed activation instant so active-state output is deterministic.
-fn fixed_instant() -> DateTime<Utc> {
-    Utc.timestamp_opt(1_700_000_000, 0).unwrap()
+fn fixed_instant() -> Timestamp {
+    Timestamp::from_unix_seconds(1_700_000_000).unwrap()
 }
 
 /// An isolated hidden root plus a strict `nails.toml` pointing at it.

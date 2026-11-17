@@ -381,8 +381,8 @@ fn an_entry_whose_name_is_not_utf8_is_left_out() {
     assert_eq!(packages[0].name, "good");
 }
 
-fn at(seconds: u64) -> chrono::DateTime<chrono::Utc> {
-    (SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)).into()
+fn at(seconds: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
 #[test]

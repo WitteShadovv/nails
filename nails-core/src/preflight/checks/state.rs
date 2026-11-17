@@ -104,7 +104,7 @@ impl<F: Filesystem> PreFlightCheck<F> for StateCheck {
 mod tests {
     use super::*;
     use crate::filesystem::MockFilesystem;
-    use chrono::Utc;
+    use crate::time::Timestamp;
 
     #[test]
     fn the_check_is_named_state() {
@@ -125,11 +125,11 @@ mod tests {
                 .is_pass()
         );
         let active = StateCheck::new(SystemState::Active {
-            activated_at: Utc::now(),
+            activated_at: Timestamp::now(),
         });
         assert!(active.run(&fs).unwrap().is_warn());
         let degraded = StateCheck::new(SystemState::Degraded {
-            since: Utc::now(),
+            since: Timestamp::now(),
             reason: "the way back failed".into(),
         });
         let result = degraded.run(&fs).unwrap();

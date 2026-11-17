@@ -206,11 +206,25 @@ fn map_probe_severity(severity: ProbeSeverity) -> Severity {
     }
 }
 
-/// An RFC 3339 UTC timestamp for a file time.
+/// An RFC 3339 UTC timestamp for a file time, to the second it falls in. A
+/// time outside the years -262143 to 262142 is given as its seconds since
+/// 1970, as the examiner gives such an access time.
 pub(crate) fn format_time(time: SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time)
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string()
+    nails_base::time::Timestamp::from_system_time(time).map_or_else(
+        || unix_seconds(time).to_string(),
+        nails_base::time::Timestamp::to_utc_seconds,
+    )
+}
+
+/// The whole seconds of `time` since 1970, rounded down.
+fn unix_seconds(time: SystemTime) -> i128 {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => i128::from(after.as_secs()),
+        Err(before) => {
+            let before = before.duration();
+            -i128::from(before.as_secs()) - i128::from(before.subsec_nanos() > 0)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -419,5 +433,16 @@ mod tests {
         let before = ids.len();
         ids.dedup();
         assert_eq!(before, ids.len());
+    }
+
+    #[test]
+    fn a_file_time_past_the_years_a_timestamp_covers_is_given_in_seconds() {
+        use std::time::{Duration, SystemTime};
+        let after = SystemTime::UNIX_EPOCH + Duration::from_secs(9_000_000_000_000);
+        assert_eq!(super::format_time(after), "9000000000000");
+        let before = SystemTime::UNIX_EPOCH - Duration::from_secs(9_000_000_000_000);
+        assert_eq!(super::format_time(before), "-9000000000000");
+        let before = SystemTime::UNIX_EPOCH - Duration::new(9_000_000_000_000, 1);
+        assert_eq!(super::format_time(before), "-9000000000001");
     }
 }

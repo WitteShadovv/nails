@@ -528,7 +528,10 @@ fn test_enforce_retention_delegates_to_rotation_helper() {
         &PathBuf::from("/mnt/data/logs"),
         vec![fresh_log.clone(), old_log.clone()],
     );
-    fs.mock_set_modified_time(&old_log, chrono::Utc::now() - chrono::Duration::days(10));
+    fs.mock_set_modified_time(
+        &old_log,
+        std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400),
+    );
 
     manager.enforce_retention(&fs).unwrap();
 

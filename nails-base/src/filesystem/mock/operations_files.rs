@@ -265,7 +265,7 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned");
         if let Some(modified) = times.get(&path.to_path_buf()) {
-            return Ok(std::time::SystemTime::from(*modified));
+            return Ok(*modified);
         }
 
         Ok(std::time::SystemTime::now())

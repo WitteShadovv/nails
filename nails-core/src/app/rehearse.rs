@@ -392,7 +392,7 @@ impl Rehearsal {
             schema_version: rehearse::STATE_SCHEMA_VERSION,
             token,
             phase: Phase::Planted,
-            planted_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            planted_at: crate::time::Timestamp::now().to_utc_seconds(),
             planted_boot_id: here.boot_id.clone(),
             planted_entered_at: session.entered_at,
             planted_soft_reboots: here.soft_reboots,
@@ -450,7 +450,7 @@ impl Rehearsal {
         if let Some(s) = state.as_mut() {
             s.phase = Phase::Scanned;
             s.scans.push(rehearse::ScanSummary {
-                at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                at: crate::time::Timestamp::now().to_utc_seconds(),
                 boot_id: rehearse::current_boot_id(),
                 devices: targets
                     .iter()

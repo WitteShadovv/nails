@@ -34,16 +34,13 @@ const RECENT_LOG_LIMIT: usize = 20;
 /// formatted lines with timestamps (in `zone`, as the report's other times)
 /// and levels painted in `style`. The file is only read, never written, so its
 /// size and mtime are untouched.
-fn read_recent_logs<Tz: chrono::TimeZone>(
+fn read_recent_logs(
     log_path: &std::path::Path,
-    activated_at: Option<chrono::DateTime<chrono::Utc>>,
+    activated_at: Option<nails_core::time::Timestamp>,
     show_debug: bool,
     style: nails_core::output::Style,
-    zone: &Tz,
-) -> Option<Vec<String>>
-where
-    Tz::Offset: std::fmt::Display,
-{
+    zone: &nails_core::time::Zone,
+) -> Option<Vec<String>> {
     use nails_core::output::Tone;
     use std::collections::VecDeque;
     use std::fs::File;
@@ -64,10 +61,10 @@ where
         if let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) {
             // Check if log entry is after activation
             if let Some(timestamp_str) = entry.get("timestamp").and_then(|t| t.as_str())
-                && let Ok(log_time) = chrono::DateTime::parse_from_rfc3339(timestamp_str)
+                && let Ok(log_time) = nails_core::time::Timestamp::parse_rfc3339(timestamp_str)
             {
                 if let Some(activation_time) = activated_at
-                    && log_time.with_timezone(&chrono::Utc) < activation_time
+                    && log_time < activation_time
                 {
                     continue; // Skip logs from before activation
                 }
@@ -97,7 +94,7 @@ where
                     std::borrow::Cow::Borrowed(raw_message)
                 };
 
-                let time = log_time.with_timezone(zone).format("%H:%M:%S").to_string();
+                let time = zone.clock(log_time);
                 let level_painted = match level {
                     "ERROR" => style.paint_bold(level, Tone::Red),
                     "WARN" => style.paint_bold(level, Tone::Yellow),

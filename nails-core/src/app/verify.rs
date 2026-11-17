@@ -211,7 +211,7 @@ mod tests {
             match case {
                 "active" => StateFile {
                     state: crate::SystemState::Active {
-                        activated_at: chrono::Utc::now(),
+                        activated_at: crate::time::Timestamp::now(),
                     },
                     ..StateFile::default()
                 }

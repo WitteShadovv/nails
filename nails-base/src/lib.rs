@@ -52,6 +52,9 @@ pub mod process;
 // Logging infrastructure module (Logging with Hidden Volume Validation)
 pub mod logging;
 
+// Instants as NAILS keeps, writes and shows them, and the local time zone.
+pub mod time;
+
 // Shared marks and per-stream styles for CLI output
 pub mod output;
 

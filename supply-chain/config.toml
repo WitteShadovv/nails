@@ -30,10 +30,6 @@ criteria = "safe-to-run"
 version = "1.1.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.android_system_properties]]
-version = "0.1.6"
-criteria = "safe-to-deploy"
-
 [[exemptions.anstream]]
 version = "1.0.0"
 criteria = "safe-to-deploy"
@@ -140,10 +136,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.cfg-if]]
 version = "1.0.5"
-criteria = "safe-to-deploy"
-
-[[exemptions.chrono]]
-version = "0.4.45"
 criteria = "safe-to-deploy"
 
 [[exemptions.clap]]
@@ -314,10 +306,6 @@ criteria = "safe-to-deploy"
 version = "0.4.15"
 criteria = "safe-to-deploy"
 
-[[exemptions.iana-time-zone]]
-version = "0.1.65"
-criteria = "safe-to-deploy"
-
 [[exemptions.indexmap]]
 version = "2.14.2"
 criteria = "safe-to-deploy"
@@ -336,6 +324,18 @@ criteria = "safe-to-deploy"
 
 [[exemptions.itoa]]
 version = "1.0.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.jiff]]
+version = "0.2.42"
+criteria = "safe-to-deploy"
+
+[[exemptions.jiff-core]]
+version = "0.1.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.jiff-static]]
+version = "0.2.42"
 criteria = "safe-to-deploy"
 
 [[exemptions.js-sys]]
@@ -472,6 +472,14 @@ criteria = "safe-to-run"
 
 [[exemptions.polling]]
 version = "3.11.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.portable-atomic]]
+version = "1.15.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.portable-atomic-util]]
+version = "0.2.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.proc-macro-crate]]
@@ -753,26 +761,6 @@ criteria = "safe-to-run"
 [[exemptions.winapi-x86_64-pc-windows-gnu]]
 version = "0.4.0"
 criteria = "safe-to-run"
-
-[[exemptions.windows-core]]
-version = "0.62.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-implement]]
-version = "0.60.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-interface]]
-version = "0.59.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-result]]
-version = "0.4.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-strings]]
-version = "0.5.1"
-criteria = "safe-to-deploy"
 
 [[exemptions.windows-sys]]
 version = "0.61.2"
