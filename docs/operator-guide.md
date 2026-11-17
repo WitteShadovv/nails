@@ -1186,11 +1186,16 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     get-property`): `systemctl show` asks for every property of the service
     manager, which then works out its taint list as well and reads
     `/etc/os-release` and `/etc/adjtime` for it;
-  - while activation has the service manager reload its units and asks it
-    about the units the switch depends on, every mount that keeps access
-    times is `noatime`, and each gets its own mode back right after: the
-    reload makes PID 1 run every generator and read every unit file again.
-    Where activation cannot make the mounts `noatime` for it, it refuses;
+  - from the moment activation has the service manager reload its units to
+    the end of its preparation, every mount that keeps access times is
+    `noatime`: the reload makes PID 1 run every generator and read every unit
+    file again, each mount activation makes shows to PID 1 as a unit (a bind
+    of the root's device makes it read `blockdev@.target`), and a drop-in
+    activation writes makes it list the unit directories again. Activation
+    ends its preparation with a second reload, so PID 1 has taken all of it
+    in before each mount gets its own mode back, a bind made meanwhile the
+    mode of the mount it copies. Where activation cannot make the mounts
+    `noatime`, it refuses;
   - it asks the kernel itself for the network state over netlink: no `ip`,
     `nft` or `iw` runs. It asks for the firewall tables only where nf_tables
     is in the kernel already, and deletes a Wi-Fi interface only where

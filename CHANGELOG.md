@@ -2647,9 +2647,10 @@ of this changelog for that version becomes the release notes word for word, and
   tables instead of starting the decoy's `ip`, `nft` and `iw`, and never make the kernel load
   nf_tables or cfg80211: where `nft` made it load nf_tables, the decoy's modprobe read its settings
   and the module's file. Run as root, NAILS starts `systemctl`, `busctl` and `loginctl` in a mount
-  namespace whose every mount is `noatime`, and the service manager's reload at entry, which reads
-  every unit file again, runs while every mount that keeps access times is `noatime`; activation
-  refuses where it cannot make them so. NAILS asks the service manager for its version alone, where
+  namespace whose every mount is `noatime`, and every mount that keeps access times is `noatime`
+  from the service manager's reload at entry, which reads every unit file again, to a second reload
+  at the end of the entry, so the units of the entry's mounts and the drop-ins it writes are read
+  then too; activation refuses where it cannot make them so. NAILS asks the service manager for its version alone, where
   `systemctl show` made it work out its taint list and read `/etc/os-release` and `/etc/adjtime`.
   The way back looks at the decoy's init, release file and boot records through a `noatime` copy of
   the decoy root's mounts, where it followed the decoy's `/var/lib/wtmpdb/wtmp.db` link with access
