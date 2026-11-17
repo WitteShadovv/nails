@@ -948,6 +948,30 @@ logind.
   `/etc/nixos` is a git repository, as a flake often is, its history: a line
   removed from a file stays in the commit that added it.
 
+  With `--allow-decoy-storage`, for a hidden root that the flag accepts as a
+  folder or a btrfs subvolume of a filesystem the decoy itself mounts another
+  part of at `/` or at a system folder (see
+  [Attaching the drive](#attaching-the-drive)), the names of the devices that
+  filesystem lies on are the decoy's own: `hardware-configuration.nix` gives
+  them for `/` and `/home`. The check lets be a line that names only such a
+  device, in any of the forms above: its device path, its kernel name and
+  `/dev/block` link, every `/dev/disk/by-*` link udev made for it, its uuid,
+  `PARTUUID`, label and partition label, and on an encrypted decoy the LUKS
+  mapping that filesystem lies on by its name and the partition below it. It
+  passes and says how many lines name that device. It takes those devices
+  from the attach gate's judge, by kernel name and device number, and lets be
+  the names of a device only where the kernel shows it with the same name and
+  number while the check reads them. Still refused, with the flag too: the
+  root's mount point and its units; the folder the root is, as another mount
+  of that filesystem shows it (`/home/alice/vault` for a bind of that folder
+  of `/`); its subvolume as `subvol=` or `subvolid=` names it; a name of any
+  other device the hidden volume is stored on; a place that may give such a
+  name and cannot be read; NAILS's own text and the word `nails`; and a line
+  that names one of these beside the device. Without the flag, and for a root
+  that is the whole filesystem, that the decoy mounts no other part of at `/`
+  or at a system folder, or whose storage NAILS cannot judge, nothing is let
+  be.
+
 ### Ubuntu
 
 - **Ubuntu 24.04 or 26.04** (systemd 255+). A later release runs with a
@@ -2095,10 +2119,11 @@ has `systemd-makefs` make swap or a filesystem on the mapping wherever it finds
 none (see below). So does the decoy's own crypttab line where its key file or
 header lies in the root's folder, or where the device the boot mounts for one of
 them is one that filesystem lies on (see below). On NixOS,
-`suspicious-nails-reference` still refuses such a root while the decoy's
-`/etc/nixos` names the device of its filesystem, as the
-`hardware-configuration.nix` of most installs does for every filesystem it
-lists.
+`suspicious-nails-reference` lets be the names the decoy's `/etc/nixos` gives
+the devices that filesystem lies on, as the `hardware-configuration.nix` of
+most installs does for `/` and `/home`, and still refuses the root's mount
+point, its own folder and subvolume, and the names of any other device (see
+[NixOS](#nixos)).
 
 Every other line for that filesystem still fails `backend-entries`: a line for
 any other folder, such as `/pool` or `/home/u`, since it may name the hidden

@@ -488,7 +488,12 @@ system folder, a folder below `/var` or `/.snapshots` among them, outside the
 hidden root for another part of that filesystem, while the mount there shows
 it, and the crypttab lines without `tcrypt-hidden`, `swap` or `tmp` that the
 boot opens as LUKS for the LUKS device that filesystem lies on while the decoy
-mounts another part of it at `/` or by such a line.
+mounts another part of it at `/` or by such a line. On NixOS, for such a root
+while the decoy mounts another part of that filesystem at `/` or at a system
+folder, `suspicious-nails-reference` lets be the names the decoy's
+`/etc/nixos` gives the devices that filesystem lies on, as
+`hardware-configuration.nix` does for `/` and `/home`, never the root's mount
+point, its own folder or subvolume, or a name of any other device.
 
 In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or

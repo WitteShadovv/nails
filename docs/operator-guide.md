@@ -136,9 +136,18 @@ a line that mounts the volume itself (a bind line from the root's folder, any
 line for a root that is the whole filesystem), a `noauto` crypttab line, one
 with `tcrypt-hidden`, `swap` or `tmp`, one that opens the device in plain mode
 or as another kind and any other crypttab line still fail `backend-entries`.
+On NixOS, for such a root, `suspicious-nails-reference` lets be the lines of
+`/etc/nixos` that name only a device that filesystem lies on, by its device
+path, kernel name, `/dev/disk/by-*` links, uuid, `PARTUUID`, label, partition
+label or LUKS mapping, as `hardware-configuration.nix` does for `/` and
+`/home`, and says how many lines it let be. The root's mount point, the folder
+or subvolume the root is (by its path or by `subvol=` and `subvolid=`), a name
+of any other device the volume is stored on and a place NAILS cannot read
+still fail it, and without the flag every such name does.
 See
-[the attach gate](threat-model.md#the-attach-gate) and
-[Attaching the drive](decoy-requirements.md#attaching-the-drive).
+[the attach gate](threat-model.md#the-attach-gate),
+[Attaching the drive](decoy-requirements.md#attaching-the-drive) and
+[the NixOS decoy requirements](decoy-requirements.md#nixos).
 
 Read this guide on another device, not on the decoy: opening it there leaves
 viewer traces such as `~/.lesshst`. The guide ships in the release bundle.
