@@ -52,6 +52,13 @@ const F_MULTI: u16 = 0x2;
 pub const F_ACK: u16 = 0x4;
 /// List every object (`NLM_F_DUMP`).
 pub const F_DUMP: u16 = 0x300;
+/// A part of a list that changed while the kernel sent it
+/// (`NLM_F_DUMP_INTR`): the list may miss objects or hold stale ones.
+const F_DUMP_INTR: u16 = 0x10;
+
+/// How often a list the kernel marks as changed while it was sent is asked
+/// for before [`Socket::dump`] gives up, as `nft` asks again.
+const DUMP_ATTEMPTS: usize = 3;
 
 /// An error or an acknowledgement (`NLMSG_ERROR`).
 const MSG_ERROR: u16 = 2;
@@ -221,6 +228,39 @@ fn status(body: &[u8]) -> io::Result<()> {
     }
 }
 
+/// The parts of a list as they come in.
+#[derive(Debug, Default)]
+struct List {
+    replies: Vec<Reply>,
+    interrupted: bool,
+}
+
+impl List {
+    /// Take one message of the list and say whether the list ended.
+    fn take(&mut self, message: &Raw<'_>) -> io::Result<bool> {
+        // The kernel can mark any part, its end included.
+        if message.flags & F_DUMP_INTR != 0 {
+            self.interrupted = true;
+        }
+        match message.kind {
+            MSG_DONE | MSG_ERROR => status(message.body).map(|()| true),
+            kind => {
+                self.replies.push(Reply {
+                    kind,
+                    body: message.body.to_vec(),
+                });
+                Ok(message.flags & F_MULTI == 0)
+            }
+        }
+    }
+
+    /// The list, unless the kernel marked a part of it as changed while it
+    /// was sent.
+    fn whole(self) -> Option<Vec<Reply>> {
+        (!self.interrupted).then_some(self.replies)
+    }
+}
+
 /// A netlink socket of one protocol.
 #[derive(Debug)]
 pub struct Socket {
@@ -283,22 +323,22 @@ impl Socket {
     }
 
     /// Send a request that lists objects (`F_DUMP`) and collect every
-    /// message of the list.
+    /// message of the list. A list the kernel marks as changed while it sent
+    /// it is asked for again, up to [`DUMP_ATTEMPTS`] times, and is an error
+    /// after that: a caller never takes a list that may miss an object for
+    /// a whole one.
     pub fn dump(&mut self, request: &Message) -> io::Result<Vec<Reply>> {
-        let seqs = self.send(std::slice::from_ref(request))?;
-        let mut replies = Vec::new();
-        self.receive(&seqs, |message| match message.kind {
-            MSG_DONE => status(message.body).map(|()| true),
-            MSG_ERROR => status(message.body).map(|()| true),
-            kind => {
-                replies.push(Reply {
-                    kind,
-                    body: message.body.to_vec(),
-                });
-                Ok(message.flags & F_MULTI == 0)
+        for _ in 0..DUMP_ATTEMPTS {
+            let seqs = self.send(std::slice::from_ref(request))?;
+            let mut list = List::default();
+            self.receive(&seqs, |message| list.take(message))?;
+            if let Some(replies) = list.whole() {
+                return Ok(replies);
             }
-        })?;
-        Ok(replies)
+        }
+        Err(io::Error::other(
+            "the kernel's list changed each time it was read",
+        ))
     }
 
     /// Send a request that asks for one object and return the kernel's

@@ -56,6 +56,51 @@ fn the_messages_of_a_buffer_are_read_in_order_and_a_cut_one_ends_them() {
     assert_eq!(read[1].kind, MSG_DONE);
 }
 
+/// The list `buf` makes, read as [`Socket::dump`] reads it: `Ok(None)` when
+/// the kernel marked it as changed while it was sent.
+fn list_of(buf: &[u8]) -> io::Result<Option<Vec<Reply>>> {
+    let mut list = List::default();
+    for message in messages(buf) {
+        if list.take(&message)? {
+            return Ok(list.whole());
+        }
+    }
+    panic!("the list did not end");
+}
+
+#[test]
+fn a_list_ends_at_its_done_and_keeps_its_parts() {
+    let mut buf = raw(16, F_MULTI, 4, &[1, 2, 3, 4]);
+    buf.extend(raw(16, F_MULTI, 4, &[5, 6, 7, 8]));
+    buf.extend(raw(MSG_DONE, F_MULTI, 4, &0i32.to_ne_bytes()));
+    let replies = list_of(&buf).unwrap().unwrap();
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[1].body, vec![5, 6, 7, 8]);
+}
+
+#[test]
+fn a_list_the_kernel_marks_as_changed_is_never_taken_as_whole() {
+    // A marked part in the middle.
+    let mut buf = raw(16, F_MULTI, 4, &[1, 2, 3, 4]);
+    buf.extend(raw(16, F_MULTI | F_DUMP_INTR, 4, &[5, 6, 7, 8]));
+    buf.extend(raw(MSG_DONE, F_MULTI, 4, &0i32.to_ne_bytes()));
+    assert!(list_of(&buf).unwrap().is_none());
+    // A marked end.
+    let mut buf = raw(16, F_MULTI, 4, &[1, 2, 3, 4]);
+    buf.extend(raw(MSG_DONE, F_MULTI | F_DUMP_INTR, 4, &0i32.to_ne_bytes()));
+    assert!(list_of(&buf).unwrap().is_none());
+    // A list of one part that is marked.
+    let buf = raw(16, F_DUMP_INTR, 4, &[1, 2, 3, 4]);
+    assert!(list_of(&buf).unwrap().is_none());
+}
+
+#[test]
+fn a_list_that_ends_in_an_error_is_an_error() {
+    let mut buf = raw(16, F_MULTI, 4, &[1, 2, 3, 4]);
+    buf.extend(raw(MSG_DONE, F_MULTI, 4, &(-libc::EBUSY).to_ne_bytes()));
+    assert_eq!(list_of(&buf).unwrap_err().raw_os_error(), Some(libc::EBUSY));
+}
+
 #[test]
 fn an_attribute_s_flag_bits_are_not_its_type_and_a_cut_one_ends_the_list() {
     let mut body = vec![0u8; 4];
