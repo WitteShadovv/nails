@@ -385,11 +385,11 @@ fn the_tuned_firewalld_and_abrt_rows_say_how_they_are_caught() {
 }
 
 #[test]
-fn the_journal_socket_row_is_a_residual_channel_the_fedora_gate_asserts() {
-    // What the hidden root sends journald after its journald stopped reaches
-    // the decoy journal through the sockets the soft-reboot keeps open: no
-    // check sees it and no way back empties them, so it is listed, and only
-    // the Fedora gate looks for it.
+fn the_journal_socket_row_is_a_residual_channel_the_way_back_empties() {
+    // What the hidden root sends journald after its journald stopped would
+    // reach the decoy journal through the sockets the soft-reboot keeps open:
+    // no check sees it, so it stays listed, and the way back empties them,
+    // which decoy-journal-leak asserts.
     let row = class("journal-socket-carry").expect("the journal-socket-carry row");
     assert_eq!(row.kind, ResidueKind::Session);
     assert!(row.residual);
@@ -399,10 +399,11 @@ fn the_journal_socket_row_is_a_residual_channel_the_fedora_gate_asserts() {
         "decoy-requirements.md#what-the-decoy-journal-keeps"
     );
     assert!(
-        matches!(row.e2e, E2e::None(reason) if reason.contains("Fedora admission gate")),
+        matches!(row.e2e, E2e::Test("decoy-journal-leak")),
         "{:?}",
         row.e2e
     );
+    assert!(row.mitigation.contains("stops journald's socket units"));
 }
 
 #[test]

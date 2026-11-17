@@ -1223,8 +1223,8 @@ udev's device database aside, held against `/run` right before the entry and
 the shapes of what the plain soft-reboots added there (a new journal stream,
 session or unit file of the decoy's own start, its numbers left out), with
 `/run/udev/rules.d` and `/run/systemd/system` as the decoy had them, the
-session's file and NAILS's runtime folder gone, and `/run/nextroot` without a
-mount or an entry, the reconcile step's pieces left to their own check; `utab` given back, the bind mount's line under its new
+session's file and NAILS's runtime folder gone, and `/run/nextroot` gone, the
+reconcile step's pieces left to their own check; `utab` given back, the bind mount's line under its new
 mount ID; `/run/initramfs` unchanged; the attached disk writable again; none
 of the session's files on the decoy; the SELinux booleans as they were; the
 failed units: none of NAILS's, none the hidden root masks, and no other but
