@@ -172,6 +172,19 @@ POST_MARK = "GATEPOSTU"
 # cold boot gave it. Fedora 44 runs a getty on tty1, Fedora 45 kmscon, and the
 # cold boot names the ones that run (the serial console is the harness's).
 GETTY_UNITS = ("getty@*", "serial-getty@*", "kmsconvt@*")
+# The zram devices, the swap on them and the units of zram-generator's first
+# device: what a cold boot sets up, and what a way back must set up again.
+ZRAM_STATE = (
+    'for d in /sys/block/zram*; do test -e "$d/initstate" || continue; '
+    'echo "${d##*/} initstate=$(cat $d/initstate) disksize=$(cat $d/disksize) '
+    'backing=$(cat $d/backing_dev 2>/dev/null) mm_stat=$(cat $d/mm_stat)"; done; '
+    "swapon --show --noheadings --bytes; "
+    "systemctl show -p Id,LoadState,ActiveState,Result "
+    "systemd-zram-setup@zram0.service dev-zram0.swap; true"
+)
+# The process numbers around the consoles' units: every process with its
+# parent, terminal and name, in the order of their numbers.
+PID_LISTING = "ps -e -o pid=,ppid=,tty=,comm= --sort=pid | head -n 900"
 # How many programs each session starts right before its way back, to push the
 # kernel's process numbers far past a cold boot's (as the smoke does): the
 # numbers after the way back show the set-back, and every process the hidden
@@ -1612,6 +1625,7 @@ class Gate:
         state["noexec"] = "noexec" in self.vm.succeed("findmnt -no OPTIONS /run")
         state["failed"] = self.failed_units(f"failed-before-{n}")
         self.fact(f"swap-before-{n}", "swapon --show --noheadings; true")
+        self.fact(f"zram-before-{n}", ZRAM_STATE)
         state["booleans"] = self.booleans(f"before-{n}")
         state["trees"] = self.unit_trees(f"before-{n}")
         return state
@@ -1762,6 +1776,8 @@ class Gate:
         self.check(f"session {n}: each canary lands in its upper", not missing, missing)
         failed = self.judge_failed(f"session {n}", f"failed-hidden-{n}")
         self.facts[f"failed-hidden-{n}"] = failed
+        self.fact(f"zram-hidden-{n}", ZRAM_STATE)
+        self.zram_probe(n)
         # A login and a failed login in the hidden session: their records land
         # in the session's own files, and none may reach the decoy.
         start = self.fact(
@@ -1831,6 +1847,39 @@ class Gate:
         )
         state["late"] = late.splitlines()[-1:] == ["active"]
         self.exec_probe(f"hidden-{n}")
+
+    def zram_marker(self, n: int) -> tuple[str, str]:
+        """The marker the zram probe of session ``n`` holds, as the shell
+        writes it, so that no command line holds it whole, and the command
+        that counts it on every zram device."""
+        mark = f'"GATE""ZRAM-{self.nonce}-{n}"'
+        count = (
+            "for z in /dev/zram*; do test -b $z || continue; "
+            f"echo $z=$(grep -a -c {mark} $z); done"
+        )
+        return mark, count
+
+    def zram_probe(self, n: int) -> None:
+        """Whether the hidden session's pages reach a zram device: a unit holds
+        a marker in more memory than its cgroup may keep in RAM, so the kernel
+        swaps part of it out where the session has a swap. The marker is
+        counted on every zram device while the unit holds it and once it has
+        stopped."""
+        unit = f"gate-zram-{n}"
+        flag = f"{HIDDEN}/.gate-zram-{n}"
+        mark, count = self.zram_marker(n)
+        self.fact(
+            f"zram-probe-{n}",
+            f"systemd-run --unit={unit} --collect -p MemoryHigh=16M "
+            f"-p MemoryMax=32M bash -c 'x=$(yes {mark} | head -c 48000000); "
+            f"touch {flag}; sleep 600'; "
+            f"for i in $(seq 90); do test -e {flag} && break; "
+            f"systemctl -q is-active {unit} || break; sleep 1; done; sleep 2; "
+            f"grep VmSwap /proc/$(systemctl show -P MainPID {unit})/status; "
+            f"echo held:; {count}; systemctl stop {unit}; rm -f {flag}; "
+            f"sleep 2; echo stopped:; {count}; swapon --show --noheadings --bytes",
+            600,
+        )
 
     def plant(self) -> None:
         """The rehearsal's first step in the first session, and the refusal
@@ -1961,6 +2010,11 @@ class Gate:
 
     def leave(self, n: int, how: str, user: str, config: str) -> bool:
         self.push(n)
+        self.fact(
+            f"pid-plan-{n}",
+            f"tr -d '\\n ' < {RUNTIME}/plan.json | grep -o '\"pids\".\\{{0,600\\}}'",
+        )
+        self.fact(f"pids-hidden-{n}", PID_LISTING)
         self.mark(f"leave-{n}")
         self.facts[f"leave-wall-{n}"] = self.session.wall_clock(self.vm)
         if how == "deactivate":
@@ -2395,6 +2449,9 @@ class Gate:
         reached = self.reached.get(n)
         units = self.getty_numbers(f"after-{n}", self.cold_units)
         lines = getty_logins(after.wtmp)
+        self.fact(f"pids-after-{n}", PID_LISTING)
+        self.fact(f"zram-after-{n}", ZRAM_STATE)
+        self.fact(f"zram-marker-after-{n}", self.zram_marker(n)[1])
         problems = [
             *getty_problems(self.cold_units, units, reached),
             *getty_problems(self.cold_lines, lines, reached),
@@ -2852,6 +2909,8 @@ class Gate:
         self.mark("prep-cold")
         self.cold_units = self.getty_numbers("cold")
         self.cold_lines = getty_logins(self.records_capture("cold").wtmp)
+        self.fact("pids-cold", PID_LISTING)
+        self.fact("zram-cold", ZRAM_STATE)
         self.where = "decoy before the first entry"
         # The first session: shared home, ended with deactivate.
         self.sh("hidden-root-1", HIDDEN_ROOT)
