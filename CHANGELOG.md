@@ -2650,7 +2650,12 @@ of this changelog for that version becomes the release notes word for word, and
   namespace whose every mount of a disk is `noatime`, and every mount that keeps access times is
   `noatime` from the service manager's reload at entry, which reads every unit file again, to a
   second reload at the end of the entry, so the units of the entry's mounts and the drop-ins it
-  writes are read then too; activation refuses where it cannot make them so. NAILS asks the service
+  writes are read then too; activation refuses where it cannot make them so. It writes those mounts
+  and their modes to the session plan first, and `nails recover`, a rollback and the emergency on
+  the decoy give them their modes back where an activation was killed before it could. NAILS reads
+  the operator's account from `/etc/passwd` with `O_NOATIME`, where musl's `getpwuid` read it with
+  access times on. Netlink lists the kernel marks as changed while it sent them are asked for
+  again and count as unread after three tries. NAILS asks the service
   manager for its version alone, where `systemctl show` made it work out its taint list and read
   `/etc/os-release` and `/etc/adjtime`. The way back looks at the decoy's init, release file and
   boot records through a `noatime` copy of the decoy root's mounts, where it followed the decoy's
@@ -2658,10 +2663,11 @@ of this changelog for that version becomes the release notes word for word, and
   more: `host-tools` no longer requires `ip`, the `network-tools` warnings of `check` and `activate`
   are gone, and so are `deactivate`'s warnings about a missing tool. A symbolic link a lookup of
   NAILS' own follows still gets a new access time, as do the files of the overlay module's first
-  load and what an unprivileged `check` reads (What `check` touches in docs/operator-guide.md). The
-  new access-time scenario of the distribution tests ages a Debian 13 decoy disk, and a Fedora 44
-  one with a test build, and fails on any other read by `check`, an activation or a way back that a
-  plain soft-reboot does not make.
+  load, what `sudo`, `doas` or `pkexec` reads to start NAILS, and what an unprivileged `check` reads
+  (What `check` touches in docs/operator-guide.md). The new access-time scenario of the
+  distribution tests ages a Debian 13 decoy disk, and a Fedora 44 one with a test build, and fails
+  on any other read by `check`, an activation or a way back, for an operator account, that a plain
+  soft-reboot does not make.
 - A switch into or out of a hidden session that hangs until `soft-reboot.target`'s job timeout
   (30 minutes) now powers the machine off. systemd ended such a switch by force
   (`JobTimeoutAction=soft-reboot-force` in every series from 254 to 262), which never runs
