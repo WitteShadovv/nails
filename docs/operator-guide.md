@@ -835,6 +835,7 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
 | `/run` scrub, `utab` restore, kmsg cursor | Yes | Yes | — |
 | Ends at | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a way back that powers off instead, see [How it works](#how-it-works): off) | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a way back that powers off instead: off; `--reboot`: a full reboot) | the decoy, unchanged |
 | Detaches a leftover `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in | — | on the decoy: Yes | Yes |
+| Gives the decoy's mounts an interrupted activation left `noatime` their own access-time mode back | — | on the decoy: Yes | Yes |
 | Reads the configuration first | Yes (falls back to defaults) | No: it runs before argument parsing, the configuration and logging | Yes |
 
 ### When to use each
@@ -1177,7 +1178,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   root mounted without `noatime`, a read updates an access time that is older
   than a day, or older than the file's last change, to the moment of the read,
   so run as root NAILS keeps its reads off them:
-  - it reads the decoy's files and lists its directories with `O_NOATIME`;
+  - it reads the decoy's files and lists its directories with `O_NOATIME`,
+    the operator's entry in `/etc/passwd` included;
   - it starts each of those programs in a mount namespace of its own whose
     every mount of a disk is `noatime`, so neither the program's file nor its loader,
     libraries and data files, nor what it reads, get a new access time, while
@@ -1194,8 +1196,13 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     activation writes makes it list the unit directories again. Activation
     ends its preparation with a second reload, so PID 1 has taken all of it
     in before each mount gets its own mode back, a bind made meanwhile the
-    mode of the mount it copies. Where activation cannot make the mounts
-    `noatime`, it refuses;
+    mode of the mount it copies. A mount that another mount covers is left
+    as it is, since no lookup reaches it. Activation refuses where it cannot
+    make the others `noatime`, and where it runs in a user namespace of its
+    own, which may not change the system's mounts. Before it changes a mount
+    it writes the mount and its mode to the session plan: where activation is
+    killed before it gives the modes back, `nails recover` gives them back
+    (see [Interrupted activation](#specific-situations));
   - it asks the kernel itself for the network state over netlink: no `ip`,
     `nft` or `iw` runs. It asks for the firewall tables only where nf_tables
     is in the kernel already, and deletes a Wi-Fi interface only where
@@ -1215,6 +1222,12 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   - the directories udevd lists for its rules and link files, which it does
     whenever it handles a kernel event, whatever made the event, every three
     seconds at most;
+  - what the privilege tool reads when it starts NAILS: `sudo`, `doas` or
+    `pkexec` reads its own file and libraries, its configuration, the PAM
+    stack and the account databases, so their access times show the moment
+    of the check or the activation. NAILS starts after them and cannot keep
+    that off. Start NAILS from a shell that is root already, or mount the
+    decoy root `noatime`;
   - without root, all of it: an unprivileged `check` reads the files it does
     not own with their access times updated, and starts the programs as they
     are. Run `check` with `sudo`.
@@ -1222,7 +1235,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   The access-time scenario of the distribution tests checks this on a Debian
   13 decoy mounted `relatime`, and on a Fedora 44 one with a test build that
   admits Fedora: it ages every entry of the decoy disk, runs `check` and two
-  sessions with their ways back, lists the links and udevd's directories,
+  sessions with their ways back for an operator account named as `sudo`
+  names it (without starting `sudo`), lists the links and udevd's directories,
   and fails on any other read of the decoy disk that a plain soft-reboot of
   the decoy does not make. Mount the decoy root `noatime` to leave no access
   time at all, the links' included.
@@ -2947,7 +2961,11 @@ root; clean up anyway.
 built `/run/nextroot`). `nails status` reports an interrupted entry and exits 7
 with "run `nails recover`". Run it. Residue: whatever the build wrote stays in the
 upper on the hidden volume; the decoy is untouched. Ctrl+C during activation
-rolls the entry back by itself.
+rolls the entry back by itself. An activation killed while it held the decoy's
+mounts `noatime` (see [What `check` touches](#what-check-touches)) leaves them so:
+`findmnt` shows `noatime` where the fstab says otherwise, and the decoy records
+no access time meanwhile. `nails recover` gives each mount the mode it had,
+from the session plan; a reboot does too.
 
 **Deactivation refuses or fails** in the hidden session. Use `nails emergency`:
 with the session plan it returns to the decoy where it can prepare the way back
