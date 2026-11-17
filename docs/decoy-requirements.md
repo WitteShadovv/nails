@@ -458,23 +458,27 @@ Where NAILS cannot tell whether a namespace keeps its journal on the disk,
 the refusal and the warning give that namespace's fix as well, and where a
 unit names its namespace with a specifier, which NAILS does not expand, they
 say to name it without one or drop it. NAILS does not judge the namespaces
-of other units for what those units log. A unit counts when the service
-manager can start it: it is enabled (a link in a `.wants`, `.requires` or
-`.upholds` directory of any directory the service manager loads units from,
-or a `systemd.wants=` on the kernel command line, as for kdump above) or
-active, or a timer, path or socket unit that is enabled or active starts it,
-and it is not masked. A timer or a path starts the first `Unit=` systemd
-takes, a socket its last `Service=`, and either, without one, the service of
-its own name. In those values NAILS expands the specifiers systemd takes from
-the trigger's own name, `%n`, `%N`, `%p`, `%i` and `%j`, and `%%`, as systemd
-expands them, so Arch's `gpg-agent-ssh@etc-pacman.d-gnupg.socket` starts
-`gpg-agent@etc-pacman.d-gnupg.service`. systemd ignores a value with `%P`,
-`%I`, `%J`, `%f` or another letter it does not expand there, and so does
-NAILS. A value with a specifier systemd fills in from the host, such as `%H`
-or `%m`, counts as a trigger that may start each daemon whose unit name the
-rest of the value fits, and what it would start without that value, which
-NAILS cannot tell about. A process
-counts as it runs, by its name (`comm`), or, run through its interpreter as in
+of other units for what those units log. A unit counts when the service manager
+can start it: it is enabled (a link in a `.wants`, `.requires` or `.upholds`
+directory of any directory the service manager loads units from, or a
+`systemd.wants=` on the kernel command line, as for kdump above) or active, or
+a timer, path or socket unit that is enabled or active starts it, and it is not
+masked. A timer or a path starts the first `Unit=` systemd takes, a socket its
+last `Service=`, and either, without one, the service of its own name. In those
+values NAILS expands the specifiers systemd takes from the trigger's own name,
+`%n`, `%N`, `%p`, `%i` and `%j`, and `%%`, with the name of the trigger's unit
+file, as systemd expands them for a trigger it loads by that name, so Arch's
+`gpg-agent-ssh@etc-pacman.d-gnupg.socket` starts
+`gpg-agent@etc-pacman.d-gnupg.service`. systemd expands a unit file's own
+values with the name it first loads the trigger under, so for a trigger enabled
+through a link named after one of its aliases, `%n`, `%N`, `%p` and `%j` come
+from that alias, which NAILS does not follow; no stock unit is enabled that
+way. systemd ignores a value with `%P`, `%I`, `%J`, `%f` or another letter it
+does not expand there, and so does NAILS. A value with a specifier systemd
+fills in from the host, such as `%H` or `%m`, counts as a trigger that may
+start each daemon whose unit name the rest of the value fits, and what it would
+start without that value, which NAILS cannot tell about. A process counts as it
+runs, by its name (`comm`), or, run through its interpreter as in
 `python3 /usr/sbin/tuned`, by the script Python runs, its options read from its
 command line, so a daemon started by hand, or one still running with the
 options its unit had before a change, is seen as well. NixOS's wrapper runs
@@ -575,28 +579,31 @@ probe boots has none of them.
   `sudo systemctl disable --now abrtd.service`.
 
 What NAILS cannot read of these, a unit file or drop-in directory it cannot
-read, a command or option it does not follow, a program that runs the daemon
-in turn (as `logsave` or `script` does, which can copy what it logs into a
-file of their own), a variable the unit does not set, a standard stream it
-cannot follow (a pipe, a pseudo-terminal, or a descriptor a socket unit
-passes, among them), a journal namespace whose configuration it cannot read, a
-drop-in name that two aliases of a unit hold in files that give the unit's
-section differently, where the name of its unit file holds no drop-in of that
-name (systemd reads the drop-ins of the unit file's name first, so one of
-those shadows one of an alias, but takes the aliases in an order of its own),
-counts against
-the decoy: tuned is refused as if it logged to a file, and firewalld and ABRT
-warn. A log to a device that keeps nothing it is given, as `/dev/null`, the
-console, a virtual console (`/dev/tty<n>`) or a serial line (`/dev/ttyS<n>`),
-is no file. A pseudo-terminal (`/dev/pts/<n>`), or the controlling terminal
-(`/dev/tty`), which may be one, counts as a pipe does: the program that holds
-its other side may copy all it shows into a file, as `script` does into its
-typescript, `screen -L` into its log or `tmux pipe-pane` into a command.
-Another device NAILS does not judge counts so too. Whether a unit is enabled
-or active NAILS reads from the links and markers systemd leaves, without
-following them, and from the kernel command line. Of the `SystemdOptions` EFI
-variable it reads only the copy the service manager made under
-`/run/systemd/efivars` when it last started, so a `systemd.wants=` that
+read, a command or option it does not follow, a program that runs the daemon in
+turn (as `logsave` or `script` does, which can copy what it logs into a file of
+their own), a variable the unit does not set, a standard stream it cannot
+follow (a pipe, a pseudo-terminal, or a descriptor a socket unit passes, among
+them), a journal namespace whose configuration it cannot read, a drop-in name
+that two aliases of a unit hold in files that give the unit's section
+differently, where the name of its unit file holds no drop-in of that name
+(systemd reads the drop-ins of the unit file's name first, so one of those
+shadows one of an alias, but takes the aliases in an order of its own), counts
+against the decoy: tuned is refused as if it logged to a file, and firewalld
+and ABRT warn. A timer, path or socket unit counts for a daemon only where what
+it starts is the daemon's own unit name: one whose `Unit=` or `Service=` names
+the daemon by an alias, as firewalld's
+`dbus-org.fedoraproject.FirewallD1.service` or an `Alias=` link of auditd or
+tuned, is not counted. A log to a device that keeps nothing it is given, as
+`/dev/null`, the console, a virtual console (`/dev/tty<n>`) or a serial line
+(`/dev/ttyS<n>`), is no file. A pseudo-terminal (`/dev/pts/<n>`), or the
+controlling terminal (`/dev/tty`), which may be one, counts as a pipe does: the
+program that holds its other side may copy all it shows into a file, as
+`script` does into its typescript, `screen -L` into its log or `tmux pipe-pane`
+into a command. Another device NAILS does not judge counts so too. Whether a
+unit is enabled or active NAILS reads from the links and markers systemd
+leaves, without following them, and from the kernel command line. Of the
+`SystemdOptions` EFI variable it reads only the copy the service manager made
+under `/run/systemd/efivars` when it last started, so a `systemd.wants=` that
 `bootctl systemd-efi-options` adds to the variable later is missed, though on
 systemd 255 to 257, booted by UEFI without Secure Boot, the way back reads the
 variable again and starts that unit. A unit whose link or marker NAILS cannot
@@ -1575,40 +1582,40 @@ What it reads:
   whole script of `sh -c '…'`, or any word with a blank, a quote, `;`, `|`,
   `&` or `$` in it, is a script NAILS cannot tell about, however it ends. It
   runs now when the system manager shows it active. It is scheduled when a
-  timer or path unit starts it (its first `Unit=` systemd takes, or the
-  service of its own name, with the specifiers of the timer's own name
-  expanded as systemd expands them, see
-  [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt); one whose `Unit=`
-  has a specifier the host fills in, such as `%H`, is a timer NAILS cannot
-  tell about where the name of a unit on the disk fits the rest of the value)
-  that is enabled, or that the system manager runs
-  as `systemctl list-units` shows it: one started with `systemctl start`, an
-  instance of a template, a transient one as `systemd-run --on-calendar`
-  makes it in `/run/systemd/transient`, and one masked, or whose file is
-  gone, since it started (systemd leaves no file that says a timer runs, and
-  the file of a transient one may stay a while after it stops); and when it
-  is enabled itself: an entry for it in a `.wants`, `.requires` or `.upholds`
-  directory, as `systemctl enable` and `systemctl add-wants` make. Such a
-  service runs again at the soft-reboot back to the decoy. Where NAILS cannot
-  ask the system manager, a transient trigger whose file is there counts, and
-  one that is not enabled may run all the same, which warns. Units are read
-  from every directory systemd loads them from (`/etc/systemd/system.control`,
+  timer or path unit starts it (its first `Unit=` systemd takes, or the service
+  of its own name, with the specifiers of the timer's own name expanded from
+  the name of its unit file, see
+  [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt); one whose `Unit=` has
+  a specifier the host fills in, such as `%H`, is a timer NAILS cannot tell
+  about where the name of a unit on the disk fits the rest of the value) that
+  is enabled, or that the system manager runs as `systemctl list-units` shows
+  it: one started with `systemctl start`, an instance of a template, a
+  transient one as `systemd-run --on-calendar` makes it in
+  `/run/systemd/transient`, and one masked, or whose file is gone, since it
+  started (systemd leaves no file that says a timer runs, and the file of a
+  transient one may stay a while after it stops); and when it is enabled
+  itself: an entry for it in a `.wants`, `.requires` or `.upholds` directory,
+  as `systemctl enable` and `systemctl add-wants` make. Such a service runs
+  again at the soft-reboot back to the decoy. Where NAILS cannot ask the system
+  manager, a transient trigger whose file is there counts, and one that is not
+  enabled may run all the same, which warns. Units are read from every
+  directory systemd loads them from (`/etc/systemd/system.control`,
   `/run/systemd/system.control`, `/run/systemd/transient`, the generator
-  directories, `/etc/systemd/system`, `/run/systemd/system`, their
-  `.attached` siblings, `/usr/local/lib/systemd/system`,
-  `/usr/lib/systemd/system` and `/lib/systemd/system`), with the drop-ins of
-  the unit, of its template, of its name's prefixes and of its aliases, read
-  as for [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt), and an
-  instance is read from its template. Users' managers count too: the units in each home
+  directories, `/etc/systemd/system`, `/run/systemd/system`, their `.attached`
+  siblings, `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system` and
+  `/lib/systemd/system`), with the drop-ins of the unit, of its template, of
+  its name's prefixes and of its aliases, read as for
+  [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt), and an instance is
+  read from its template. Users' managers count too: the units in each home
   `/etc/passwd` names, in the other directories of `/home` and in the other
   numbers of `/run/user` (`~/.config/systemd/user`,
   `~/.local/share/systemd/user`, `/run/user/<uid>/systemd/…`), and those every
-  user shares (`/etc/systemd/user`, `/usr/lib/systemd/user` and the others).
-  Of a user's timers only an enabled or a transient one counts: NAILS asks no
-  user's manager what it runs.
-  `plocate-updatedb.service`, `mlocate-updatedb.service` and
-  `update-locatedb.service` with nothing starting them are ones a person
-  starts. A unit file that is empty or a link to `/dev/null` masks its unit.
+  user shares (`/etc/systemd/user`, `/usr/lib/systemd/user` and the others). Of
+  a user's timers only an enabled or a transient one counts: NAILS asks no
+  user's manager what it runs. `plocate-updatedb.service`,
+  `mlocate-updatedb.service` and `update-locatedb.service` with nothing
+  starting them are ones a person starts. A unit file that is empty or a link
+  to `/dev/null` masks its unit.
 - **Cron.** `/etc/crontab`, the files of `/etc/cron.d`, root's and the users'
   crontabs (`/var/spool/cron/crontabs`, `/var/spool/cron`), `/etc/anacrontab`,
   and the scripts of `/etc/cron.hourly`, `daily`, `weekly` and `monthly`. A

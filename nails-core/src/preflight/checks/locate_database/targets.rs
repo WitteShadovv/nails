@@ -5,9 +5,18 @@
 //! read with the specifiers systemd expands there.
 //!
 //! systemd expands them with `unit_name_printf()` (src/core/unit-printf.c,
-//! alike in systemd 255 to 261), from the trigger's id, the name of its unit
-//! file with the trigger's instance (`gpg-agent-ssh@etc-pacman.d-gnupg.socket`
-//! for that instance of `gpg-agent-ssh@.socket`):
+//! alike in systemd 255 to 261), from the name it loaded the trigger under.
+//! NAILS expands them from the name of the trigger's unit file with the
+//! trigger's instance (`gpg-agent-ssh@etc-pacman.d-gnupg.socket` for that
+//! instance of `gpg-agent-ssh@.socket`), which is that name for a trigger
+//! loaded by its own name. systemd parses the unit file before it merges the
+//! unit's names (`unit_load_fragment()` runs before `merge_by_names()` sets
+//! the id), so it expands the file's own `Unit=` and `Service=` with the name
+//! it first loaded the trigger under, and only drop-ins with the id. For a
+//! trigger enabled through a link named after one of its aliases, `%n`, `%N`,
+//! `%p` and `%j` therefore come from that alias in systemd and from the unit
+//! file's name here (`%i` is the same, as an alias keeps the instance). No
+//! stock unit is enabled that way. The specifiers:
 //!
 //! - `%n` is the id, `%N` the id without its type, `%p` its prefix (the part
 //!   before the first `@`, or before the type), `%i` its instance (nothing
