@@ -625,6 +625,13 @@ soft-reboots with `py/nails_e2e/session.py`:
   with Debian's `blk-availability.service` running, a decoy filesystem on LVM
   that the switch keeps mounted for the way back (the unit's stop is cleared
   for the session and back afterwards);
+- `session-fstab-options`: the lines of the hidden session's own fstab read
+  by their options' names as systemd's fstab generator reads them: a disk
+  whose line says `noauto,auto=1`, one with `noauto,x-systemd.automount=0`
+  and an empty one with `x-systemd.makefs=1` are kept off, and none is
+  mounted, formatted or changed, a `noauto` line with an option NAILS does not
+  read is masked with a reason that names it, and `check` reads a decoy line
+  with `noauto,auto=1` as one the boot mounts;
 - `session-nixos-hidden-system`: a hidden NixOS toplevel entered in one
   soft-reboot, the way back to the decoy toplevel, re-entry, a configuration
   that does not evaluate refusing the entry, and no bootloader or system
