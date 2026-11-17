@@ -99,41 +99,11 @@ let
   # The binary an image's session runs: the release binary once the image
   # table enables the image, as the commit that admits its family does, and
   # until then the release binary with the base row of the image's family
-  # admitted, for the scenarios of its admission only. That build fails for a
-  # family whose row is admitted already. For Fedora it also leaves out the
-  # lsm-status check, which refuses every host where SELinux runs, this
-  # permissive decoy among them, until NAILS chooses the SELinux domains of the
-  # processes systemd and udev start from its copy in /run. The check only
-  # reads, so leaving it out changes nothing a session leaves on the disk. The
-  # build fails unless exactly that one line changes.
-  admitted =
-    family:
-    let
-      base = import ./lib/admitted.nix { inherit self; } family;
-    in
-    if family != "fedora" then
-      base
-    else
-      base.overrideAttrs (old: {
-        pname = "nails-test-fedora-admitted";
-        postPatch = (old.postPatch or "") + ''
-          registry=nails-core/src/manager/preflight_runner.rs
-          awk '
-            $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));" {
-              print "    let _ = LsmStatusCheck::new(UnitDomains::UNKNOWN);"; left++; next
-            }
-            { print }
-            END { if (left != 1) exit 1 }
-          ' "$registry" > "$registry.new" || {
-            echo "the lsm-status check of $registry was not left out exactly once" >&2
-            exit 1
-          }
-          mv "$registry.new" "$registry"
-        '';
-        meta = old.meta // {
-          description = "nails with the Fedora row admitted and lsm-status left out, for the btrfs oracle images only; never released";
-        };
-      });
+  # admitted, for the scenarios of its admission only (lib/admitted.nix, which
+  # for Fedora also leaves out the lsm-status check, which refuses every host
+  # where SELinux runs, this permissive decoy among them). That build fails for
+  # a family whose row is admitted already.
+  admitted = import ./lib/admitted.nix { inherit self; };
   nailsFor = entry: if entry.enabled then self.packages.x86_64-linux.nails else admitted entry.osId;
 
   binShare = {

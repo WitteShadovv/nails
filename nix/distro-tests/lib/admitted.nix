@@ -12,6 +12,12 @@
 # it says what NAILS does on that family's image, not that NAILS supports the
 # family.
 #
+# On Fedora the build also leaves out the lsm-status check, which refuses every
+# host where SELinux runs until NAILS chooses the SELinux domains of the
+# processes systemd and udev start from its copy in /run. The check only reads,
+# so leaving it out changes nothing a session leaves on the disk. The build
+# fails unless exactly that one line of the check registry changes.
+#
 # `id` is the row's os-release ID ("fedora", "arch"). The rows of the family's
 # derivatives keep their lines, and follow the base row as they do in the
 # release once the family is admitted: this build runs a derivative with the
@@ -21,22 +27,44 @@
 { self }:
 id:
 assert builtins.match "[a-z0-9._-]+" id != null;
+let
+  fedora = id == "fedora";
+  withoutLsmStatus = ''
+    registry=nails-core/src/manager/preflight_runner.rs
+    awk '
+      $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(UnitDomains::UNKNOWN)));" {
+        print "    let _ = LsmStatusCheck::new(UnitDomains::UNKNOWN);"; left++; next
+      }
+      { print }
+      END { if (left != 1) exit 1 }
+    ' "$registry" > "$registry.new" || {
+      echo "the lsm-status check of $registry was not left out exactly once" >&2
+      exit 1
+    }
+    mv "$registry.new" "$registry"
+  '';
+in
 self.packages.x86_64-linux.nails.overrideAttrs (old: {
   pname = "nails-test-${id}-admitted";
-  postPatch = (old.postPatch or "") + ''
-    table=nails-platform/src/platform/family.rs
-    if ! awk -v id='${id}' -f ${./admit-row.awk} "$table" > "$table.new"; then
-      echo "the ${id} row of $table is not one refused base row of the table" >&2
-      exit 1
-    fi
-    changed=$(diff "$table" "$table.new" | grep -c '^[<>]' || true)
-    if [ "$changed" != 2 ]; then
-      echo "admitting the ${id} row changed $changed lines of $table, not one" >&2
-      exit 1
-    fi
-    mv "$table.new" "$table"
-  '';
+  postPatch =
+    (old.postPatch or "")
+    + ''
+      table=nails-platform/src/platform/family.rs
+      if ! awk -v id='${id}' -f ${./admit-row.awk} "$table" > "$table.new"; then
+        echo "the ${id} row of $table is not one refused base row of the table" >&2
+        exit 1
+      fi
+      changed=$(diff "$table" "$table.new" | grep -c '^[<>]' || true)
+      if [ "$changed" != 2 ]; then
+        echo "admitting the ${id} row changed $changed lines of $table, not one" >&2
+        exit 1
+      fi
+      mv "$table.new" "$table"
+    ''
+    + (if fedora then withoutLsmStatus else "");
   meta = old.meta // {
-    description = "nails with the ${id} row of the family table admitted, for the scenarios of its admission only; never released";
+    description = "nails with the ${id} row of the family table admitted${
+      if fedora then " and lsm-status left out" else ""
+    }, for the scenarios of its admission only; never released";
   };
 })

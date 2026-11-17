@@ -726,7 +726,10 @@ Layout:
   the table lacks each fail it (`ci/tests/test_admit_row.py` runs the script
   on the family table). The family's derivatives follow the admitted row, so
   that build runs one as an untested derivative, with a warning, as the
-  release will once the family is admitted; no scenario boots one.
+  release will once the family is admitted; no scenario boots one. On Fedora
+  the build also leaves out the `lsm-status` check, which refuses every host
+  where SELinux runs until NAILS chooses the SELinux domains of the processes
+  systemd and udev start from its copy in `/run`.
 - `py/`: the scenarios' host-side helpers, unit-tested by the
   `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
   smoke's reads of a btrfs decoy's image: its zstd frames, decompressed, and
