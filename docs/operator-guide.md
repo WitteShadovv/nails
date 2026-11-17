@@ -1247,8 +1247,22 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   the path, and warns or refuses as it does for what it finds. Some readers
   still take a place they cannot list, read or follow for an empty one: among
   them the lookups of its units below the decoy root in `soft-reboot-units`,
-  which then refuses as for a missing unit, and the reads activation makes in
-  the operator's home below the next root.
+  which then refuses as for a missing unit, the reads activation makes in
+  the operator's home below the next root, and the name audit of
+  `hidden-volume`, which takes a device-mapper name or a filesystem label of
+  the volume's source it cannot read for none, so it does not warn about a
+  name that betrays hidden storage. The persona reader of
+  `inherited-autostart` and of activation's persona masks reads a file that
+  holds bytes that are not UTF-8 as an empty one, so an autologin or
+  autostart setting in such a file is not read. Two checks see less without
+  root, where no read fails: where `/proc` is mounted with `hidepid=invisible`
+  or `hidepid=ptraceable`, the search of `decoy-persistence` for a syslog or
+  audit daemon started outside systemd lists no other user's process and
+  passes on what it sees (activation runs as root and sees every process),
+  and `backend-detect` cannot read the LUKS header below a mapping, so it
+  does not see an `allow-discards` flag stored in that header and judges
+  discards by the mapping's `queue/discard_max_bytes` alone (see
+  [backends.md](backends.md#backend-detection-in-preflight)).
 
 ### Pre-activation checklist
 
