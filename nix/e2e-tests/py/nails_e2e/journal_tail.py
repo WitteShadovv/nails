@@ -266,6 +266,15 @@ def judge_records(
         if not ok:
             verdict.findings.append(f"after the cursor: {record.seq} {record.text}")
     for entry in entries:
+        # Only what the journal took in from the marker on: the decoy's own
+        # records from before the session, a persistent journal's among them,
+        # may name the hidden filesystem (its setup mounted it on the decoy).
+        try:
+            received = int(entry.get("__MONOTONIC_TIMESTAMP", ""))
+        except ValueError:
+            received = None
+        if received is not None and received < at.usec:
+            continue
         text = message(entry)
         transport = str(entry.get("_TRANSPORT", ""))
         hit = [n for n in names if n in text]
@@ -336,9 +345,11 @@ def write_marker(machine: Machine, marker: str) -> None:
 #: EAGAIN there, an error the driver's shell would fail the command on.
 RING = "dd if=/dev/kmsg bs=16384 iflag=nonblock 2>/dev/null || true"
 
-#: The decoy's journal, every transport, with the fields the judgment reads.
+#: The decoy's journal of this boot (a soft-reboot keeps the boot), every
+#: transport, with the fields the judgment reads; the receive time
+#: (``__MONOTONIC_TIMESTAMP``) comes with every entry.
 JOURNAL = (
-    "journalctl -o json --no-pager "
+    "journalctl -b 0 -o json --no-pager "
     "--output-fields=_TRANSPORT,MESSAGE,SYSLOG_IDENTIFIER,SYSLOG_PID,_PID,"
     "_SOURCE_MONOTONIC_TIMESTAMP,_AUDIT_ID"
 )
