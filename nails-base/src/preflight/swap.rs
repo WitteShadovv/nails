@@ -67,10 +67,15 @@ pub struct SwapPosture {
     pub findings: Vec<String>,
     /// The `/proc/swaps` filenames of the disk-backed devices that failed
     /// (plain partitions, file swap, disk-backed zram, fixed-key dm-crypt), in
-    /// the order the kernel lists them. RAM-only zram and ephemeral encrypted
+    /// the order the kernel lists them, each whose name is UTF-8 (see
+    /// [`Self::unnamed_disk_swap`]). RAM-only zram and ephemeral encrypted
     /// swap are excluded, so the remediation can name exactly the devices the
     /// operator must `swapoff` instead of a blanket `swapoff -a`.
     pub disk_swap_devices: Vec<String>,
+    /// Whether a disk-backed device that failed has a name that is no UTF-8,
+    /// which `disk_swap_devices` cannot give `swapoff`: the remediation turns
+    /// every swap off instead.
+    pub unnamed_disk_swap: bool,
     /// Whether a hibernation channel (a configured resume device or a `resume=`
     /// kernel argument) can write memory to disk.
     pub hibernation_active: bool,
@@ -92,23 +97,30 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
     let mut severity = SwapSeverity::Pass;
     let mut findings = Vec::new();
     let mut disk_swap_devices = Vec::new();
+    let mut unnamed_disk_swap = false;
     let mut unread = Vec::new();
 
-    let swaps = match fs.read_file_content(Path::new(PROC_SWAPS)) {
+    // Read as bytes: the kernel gives a swap file's name as it is, which need
+    // not be UTF-8.
+    let swaps = match fs.read_file_bytes(Path::new(PROC_SWAPS)) {
         Ok(swaps) => swaps,
-        Err(error) if error.nothing_there() => String::new(),
+        Err(error) if error.nothing_there() => Vec::new(),
         Err(error) => {
             severity = SwapSeverity::Fail;
             findings.push(format!(
                 "NAILS cannot tell which swap is active: it cannot read {PROC_SWAPS} ({error})"
             ));
             unread.push(PROC_SWAPS.to_string());
-            String::new()
+            Vec::new()
         }
     };
 
     // The first line of /proc/swaps is a header; every later line is a device.
-    for line in swaps.lines().skip(1) {
+    for bytes in swaps.split(|&byte| byte == b'\n').skip(1) {
+        // A name that is no UTF-8 is shown with its bytes replaced, which no
+        // `swapoff` finds: the fix turns every swap off then.
+        let named = std::str::from_utf8(bytes).is_ok();
+        let line = String::from_utf8_lossy(bytes);
         if line.trim().is_empty() {
             continue;
         }
@@ -132,7 +144,11 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
         // Nor is a device NAILS cannot tell is disk-backed: the fix names
         // what to make readable.
         if device_severity == SwapSeverity::Fail && unread.len() == unread_before {
-            disk_swap_devices.push(filename.to_string());
+            if named {
+                disk_swap_devices.push(filename.to_string());
+            } else {
+                unnamed_disk_swap = true;
+            }
         }
     }
 
@@ -147,6 +163,7 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
         severity,
         findings,
         disk_swap_devices,
+        unnamed_disk_swap,
         hibernation_active,
         unread,
     }
@@ -154,9 +171,12 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
 
 /// Build the remediation for a failing swap posture, naming the exact devices to
 /// disable so the operator does not have to run a blanket `swapoff -a`, and
-/// the files NAILS could not read.
+/// the files NAILS could not read. A device whose name is no UTF-8 cannot be
+/// named: then the blanket form it is.
 fn fail_remediation(posture: &SwapPosture) -> String {
-    let swapoff = if posture.disk_swap_devices.is_empty() {
+    let swapoff = if posture.unnamed_disk_swap {
+        Some("sudo swapoff -a".to_string())
+    } else if posture.disk_swap_devices.is_empty() {
         None
     } else {
         Some(format!(
@@ -731,6 +751,49 @@ mod tests {
         );
         let posture = classify_swap(&fs);
         assert_eq!(posture.disk_swap_devices, vec!["/swap file".to_string()]);
+    }
+
+    /// A swap file whose name is no UTF-8, which the kernel gives in
+    /// `/proc/swaps` as it is, fails as file swap, where the table that holds
+    /// it counted as one NAILS cannot read and the fix said to make it
+    /// readable. No `swapoff` finds it by the name shown, so the fix turns
+    /// every swap off.
+    #[test]
+    fn a_swap_file_whose_name_is_no_text_fails_as_file_swap() {
+        let fs = MockFilesystem::new();
+        let mut table = proc_swaps(&["/dev/sda2 partition 8388604 0 -2"]).into_bytes();
+        table.extend_from_slice(b"/home/caf\xe9.swap file 1048572 0 -3\n");
+        fs.mock_set_file_bytes(PROC_SWAPS, &table);
+        let posture = classify_swap(&fs);
+        assert_eq!(posture.severity, SwapSeverity::Fail);
+        assert!(posture.unread.is_empty(), "{posture:?}");
+        assert_eq!(posture.disk_swap_devices, vec!["/dev/sda2".to_string()]);
+        assert!(posture.unnamed_disk_swap);
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(
+            result.message().contains(
+                "file-backed swap /home/caf\u{fffd}.swap writes memory to the decoy disk"
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            result.remediation(),
+            Some("Disable the active disk swap: sudo swapoff -a. Keep only RAM-only zram.")
+        );
+
+        // Named, it is named in the fix.
+        let fs = MockFilesystem::new();
+        fs.mock_set_file_bytes(
+            PROC_SWAPS,
+            proc_swaps(&["/home/cafe.swap file 1048572 0 -3"]).as_bytes(),
+        );
+        assert!(!classify_swap(&fs).unnamed_disk_swap);
+        assert_eq!(
+            SwapCheck::new().run(&fs).unwrap().remediation(),
+            Some(
+                "Disable the active disk swap: sudo swapoff /home/cafe.swap. Keep only RAM-only zram."
+            )
+        );
     }
 
     #[test]
