@@ -13,6 +13,17 @@ use std::path::{Path, PathBuf};
 /// A TZif version 2 file (RFC 8536), as `nails-cli/tests/time_strings.rs`
 /// writes one.
 fn tzif(types: &[(i32, bool, &str)], transitions: &[(i64, u8)], footer: &str) -> Vec<u8> {
+    tzif_with_leap_seconds(types, transitions, &[], footer)
+}
+
+/// The same with a leap-second table of (leap time, correction) records, as a
+/// `right/` zone has.
+fn tzif_with_leap_seconds(
+    types: &[(i32, bool, &str)],
+    transitions: &[(i64, u8)],
+    leap_seconds: &[(i64, i32)],
+    footer: &str,
+) -> Vec<u8> {
     fn header(out: &mut Vec<u8>, counts: [u32; 6]) {
         out.extend_from_slice(b"TZif2");
         out.extend_from_slice(&[0; 15]);
@@ -38,7 +49,7 @@ fn tzif(types: &[(i32, bool, &str)], transitions: &[(i64, u8)], footer: &str) ->
         [
             0,
             0,
-            0,
+            count(leap_seconds.len()),
             count(transitions.len()),
             count(types.len()),
             count(chars.len()),
@@ -56,6 +67,10 @@ fn tzif(types: &[(i32, bool, &str)], transitions: &[(i64, u8)], footer: &str) ->
         out.push(*at);
     }
     out.extend_from_slice(&chars);
+    for (at, correction) in leap_seconds {
+        out.extend_from_slice(&at.to_be_bytes());
+        out.extend_from_slice(&correction.to_be_bytes());
+    }
     out.push(b'\n');
     out.extend_from_slice(footer.as_bytes());
     out.push(b'\n');
@@ -337,6 +352,41 @@ fn a_missing_or_broken_etc_localtime_falls_back_and_then_to_utc() {
         ["/etc/localtime", "link /etc/localtime", "/etc/timezone"]
     );
 
+    // A name that starts with `/` follows the zone directory as it stands:
+    // it names no zone file, and the file the name itself gives is not read.
+    let files = Files::default()
+        .file("/usr/share/zoneinfo/Europe/Berlin", berlin())
+        .file(
+            "/etc/timezone",
+            b"/usr/share/zoneinfo/Europe/Berlin\n".to_vec(),
+        );
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 01:00:00 +00:00"
+    );
+    assert_eq!(
+        files.reads()[3..],
+        ["/usr/share/zoneinfo//usr/share/zoneinfo/Europe/Berlin"]
+    );
+    let files = Files::default()
+        .file("/etc/hostname", berlin())
+        .file("/etc/timezone", b"/etc/hostname\n".to_vec());
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 01:00:00 +00:00"
+    );
+    assert_eq!(files.reads()[3..], ["/usr/share/zoneinfo//etc/hostname"]);
+    // A link with a doubled slash names `/Europe/Berlin`, which still opens
+    // the zone below the directory.
+    let files = Files::default()
+        .link("/etc/localtime", "/usr/share/zoneinfo//Europe/Berlin")
+        .file("/usr/share/zoneinfo/Europe/Berlin", berlin());
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 03:00:00 +02:00"
+    );
+    assert_eq!(files.reads()[2..], ["/usr/share/zoneinfo//Europe/Berlin"]);
+
     // /etc/timezone that is not UTF-8 names nothing.
     let files = Files::default().file("/etc/timezone", vec![0xff, 0xfe]);
     assert_eq!(
@@ -451,7 +501,7 @@ fn a_fixed_zone_and_utc_show_their_offset() {
 }
 
 #[test]
-fn a_time_past_the_years_a_zone_reaches_takes_the_offset_at_their_end() {
+fn a_time_past_the_years_a_zone_reaches_keeps_the_offset_its_rule_gives() {
     let zone = tzif_zone();
     let max = Timestamp::MAX;
     assert_eq!(zone.stamp(max), "+262143-01-01 00:59:59 +01:00");
@@ -465,6 +515,144 @@ fn a_time_past_the_years_a_zone_reaches_takes_the_offset_at_their_end() {
         zone.clock(Timestamp::from_unix_seconds(253_402_300_800).unwrap()),
         "01:00:00"
     );
+}
+
+/// 10000-07-01T00:00:00Z, a summer instant past year 9999.
+const SUMMER_10000: i64 = 253_418_025_600;
+/// 262142-07-01T00:00:00Z, in the last year a timestamp covers.
+const SUMMER_262142: i64 = 8_210_250_979_200;
+/// -20000-07-01T00:00:00Z, before the years a zone's transitions reach.
+const SUMMER_MINUS_20000: i64 = -693_290_534_400;
+
+#[test]
+fn a_summer_time_past_year_9999_keeps_its_daylight_saving_offset() {
+    let at = |secs: i64| Timestamp::from_unix_seconds(secs).unwrap();
+    let rule = Zone::posix("CET-1CEST,M3.5.0,M10.5.0/3").unwrap();
+    let file = tzif_zone();
+    for zone in [&rule, &file] {
+        assert_eq!(zone.stamp(at(SUMMER_10000)), "+10000-07-01 02:00:00 +02:00");
+        assert_eq!(
+            zone.stamp(at(SUMMER_262142)),
+            "+262142-07-01 02:00:00 +02:00"
+        );
+        assert_eq!(zone.clock(at(SUMMER_10000 - 7 * 3600)), "19:00:00");
+        // The changes fall on the same day and hour as in any year.
+        // 10000-03-26 is the last Sunday of March in year 10000.
+        assert_eq!(
+            zone.stamp(at(253_409_648_399)),
+            "+10000-03-26 01:59:59 +01:00"
+        );
+        assert_eq!(
+            zone.stamp(at(253_409_648_400)),
+            "+10000-03-26 03:00:00 +02:00"
+        );
+    }
+    let new_york = Zone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+    assert_eq!(
+        new_york.stamp(at(SUMMER_10000)),
+        "+10000-06-30 20:00:00 -04:00"
+    );
+    // Before year -9999 a rule holds as well; a zone file's first offset
+    // holds before its first transition.
+    assert_eq!(
+        rule.stamp(at(SUMMER_MINUS_20000)),
+        "-20000-07-01 02:00:00 +02:00"
+    );
+    assert_eq!(
+        file.stamp(at(SUMMER_MINUS_20000)),
+        "-20000-07-01 01:00:00 +01:00"
+    );
+}
+
+/// Berlin's 2026 changes as a `right/` zone has them: transitions in leap
+/// time, two leap seconds before them.
+fn right_berlin() -> Vec<u8> {
+    tzif_with_leap_seconds(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_002, 1), (1_792_890_002, 0)],
+        &[(78_796_800, 1), (94_694_401, 2)],
+        "CET-1CEST,M3.5.0,M10.5.0/3",
+    )
+}
+
+#[test]
+fn a_zone_with_leap_seconds_changes_its_offset_on_the_unix_second() {
+    let zone = Zone::tzif(&right_berlin()).unwrap();
+    let cases = [
+        (0, "1970-01-01 01:00:00 +01:00"),
+        (1_774_745_999, "2026-03-29 01:59:59 +01:00"),
+        (1_774_746_000, "2026-03-29 03:00:00 +02:00"),
+        (1_774_746_001, "2026-03-29 03:00:01 +02:00"),
+        (1_792_889_999, "2026-10-25 02:59:59 +02:00"),
+        (1_792_890_000, "2026-10-25 02:00:00 +01:00"),
+        // After the last transition, the footer's rule at the Unix second.
+        (1_901_149_199, "2030-03-31 01:59:59 +01:00"),
+        (1_901_149_200, "2030-03-31 03:00:00 +02:00"),
+    ];
+    for (secs, shown) in cases {
+        let at = Timestamp::from_unix_seconds(secs).unwrap();
+        assert_eq!(zone.stamp(at), shown, "{secs}");
+    }
+}
+
+#[test]
+fn a_zone_file_whose_leap_seconds_are_no_valid_table_is_no_zone() {
+    let types = [(3600, false, "CET")];
+    let refused: [&[(i64, i32)]; 5] = [
+        // The first correction is not one second.
+        &[(78_796_800, 2)],
+        // The first is before 1970.
+        &[(-1, 1)],
+        // A step of two seconds.
+        &[(78_796_800, 1), (94_694_401, 3)],
+        // Less than 28 days apart.
+        &[(78_796_800, 1), (78_796_800 + 28 * 86_400 - 2, 2)],
+        // No step.
+        &[(78_796_800, 1), (94_694_401, 1)],
+    ];
+    for table in refused {
+        let bytes = tzif_with_leap_seconds(&types, &[], table, "CET-1");
+        assert!(Zone::tzif(&bytes).is_none(), "{table:?}");
+    }
+    let taken: [&[(i64, i32)]; 3] = [
+        &[(78_796_800, -1)],
+        &[(78_796_800, 1), (78_796_800 + 28 * 86_400 - 1, 2)],
+        &[(78_796_800, 1), (94_694_401, 0)],
+    ];
+    for table in taken {
+        let bytes = tzif_with_leap_seconds(&types, &[], table, "CET-1");
+        assert!(Zone::tzif(&bytes).is_some(), "{table:?}");
+    }
+}
+
+/// A TZif version 1 file: 32-bit times, no footer, one leap second.
+fn version_1_with_a_leap_second() -> Vec<u8> {
+    let mut out = b"TZif".to_vec();
+    out.extend_from_slice(&[0; 16]);
+    // isutcnt, isstdcnt, leapcnt, timecnt, typecnt, charcnt.
+    for count in [0u32, 0, 1, 1, 2, 9] {
+        out.extend_from_slice(&count.to_be_bytes());
+    }
+    out.extend_from_slice(&1_774_746_001i32.to_be_bytes());
+    out.push(1);
+    out.extend_from_slice(&3600i32.to_be_bytes());
+    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(&7200i32.to_be_bytes());
+    out.extend_from_slice(&[1, 4]);
+    out.extend_from_slice(b"CET\0CEST\0");
+    out.extend_from_slice(&78_796_800i32.to_be_bytes());
+    out.extend_from_slice(&1i32.to_be_bytes());
+    out
+}
+
+#[test]
+fn a_version_1_zone_file_counts_its_leap_seconds_too() {
+    let zone = Zone::tzif(&version_1_with_a_leap_second()).unwrap();
+    let at = |secs| Timestamp::from_unix_seconds(secs).unwrap();
+    assert_eq!(zone.stamp(at(1_774_745_999)), "2026-03-29 01:59:59 +01:00");
+    assert_eq!(zone.stamp(at(1_774_746_000)), "2026-03-29 03:00:00 +02:00");
+    // No footer: the last transition's offset holds on.
+    assert_eq!(zone.stamp(at(SUMMER_10000)), "+10000-07-01 02:00:00 +02:00");
 }
 
 fn tzif_zone() -> Zone {
