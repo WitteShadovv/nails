@@ -1781,3 +1781,40 @@ fn activation_refuses_where_a_place_of_the_hidden_stack_cannot_be_read() {
         assert!(error.to_string().contains(place), "{place}: {error}");
     }
 }
+
+/// Activation itself, not only the reader: where a place of the stack below
+/// the hidden root cannot be read, the entry stops with the place named
+/// before anything is prepared, and never goes on with a plan that records
+/// no mapping for the way back to close.
+#[test]
+fn activation_stops_before_anything_is_prepared_where_it_cannot_read_the_hidden_stack() {
+    for place in ["/sys/block/dm-0/dm/name", "/sys/block/dm-0/slaves"] {
+        let dir = tempfile::tempdir().unwrap();
+        let machine = machine(dir.path(), DECOY_TABLE);
+        let fs = hidden_on_mapping();
+        fs.mock_set_lookup_error(place, std::io::ErrorKind::PermissionDenied);
+        let hidden = Path::new("/mnt/data");
+        let config = Config {
+            hidden_volume_root: hidden.to_path_buf(),
+            state_file_path: hidden.join("state.json"),
+            log_path: hidden.join("logs"),
+            ..Config::test_default()
+        };
+        let mut m = NailsManager::new(fs, config, hidden.join("state.json"));
+        m.set_host_profile(FakePlatform::fhs().host_profile());
+        let host = FakeEntryHost::default();
+
+        let error = m
+            .enter_session_no_preflight_on(&machine, &EnterOptions::default(), &host)
+            .unwrap_err();
+
+        let text = error.to_string();
+        assert!(text.contains(place), "{place}: {text}");
+        assert!(
+            text.contains("cannot tell which device-mapper devices hold the hidden volume"),
+            "{place}: {text}"
+        );
+        assert!(!machine.paths.runtime().exists(), "{place}");
+        assert_eq!(host.reloads.get(), 0, "{place}");
+    }
+}
