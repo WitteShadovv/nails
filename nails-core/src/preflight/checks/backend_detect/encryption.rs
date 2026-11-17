@@ -28,7 +28,7 @@
 //! error.
 
 use super::CryptType;
-use crate::blockdev::{DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
+use crate::blockdev::{Attribute, DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::config::get_default_hidden_volume_root;
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::top_mount_at;
@@ -42,7 +42,8 @@ use std::path::{Path, PathBuf};
 mod tests;
 
 use super::graph::{
-    Graph, MAX_DEVICES, filesystem_devices, leaf_kind, unread_devices, widen_claims,
+    Graph, MAX_DEVICES, dm_kind_unread, filesystem_devices, leaf_kind, unread_devices, unread_of,
+    widen_claims,
 };
 
 /// The cryptsetup types that encrypt, as the `<TYPE>` of a `CRYPT-<TYPE>-`
@@ -293,8 +294,13 @@ enum Role {
     Unknown(String),
 }
 
-/// What `layer` does to the data that passes it.
+/// What `layer` does to the data that passes it. A device whose kind of
+/// mapping sysfs shows but NAILS cannot read may be any.
 fn role(layer: &Layer) -> Role {
+    let kind = dm_kind_unread(layer);
+    if !kind.is_empty() {
+        return Role::Unknown(unread_of(&kind, &layer.name));
+    }
     let Some(dm) = &layer.dm else {
         return Role::Passes;
     };
@@ -493,6 +499,15 @@ impl<'a> Stack<'a> {
     /// What a way that ends at `layer`, a device the check goes on below
     /// from nowhere, passes there.
     fn bottom(&self, name: &str, layer: &Layer) -> Cover {
+        // A device below it, or the file a loop device reads, that sysfs
+        // shows but NAILS cannot read may be encrypted.
+        let below: Vec<Attribute> = layer
+            .unread_among(&[Attribute::Slaves, Attribute::LoopBackingFile])
+            .map(|unread| unread.attribute)
+            .collect();
+        if !below.is_empty() {
+            return Cover::Unknown(unread_of(&below, &layer.name));
+        }
         if let Some(kind) = leaf_kind(name) {
             return Cover::Unknown(format!(
                 "{} is {kind}, which keeps its data where the check cannot follow",

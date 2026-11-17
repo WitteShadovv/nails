@@ -489,6 +489,74 @@ fn a_mapping_of_an_unknown_kind_cannot_be_confirmed() {
     );
 }
 
+/// A mapping whose `dm/uuid`, or whose name and uuid, sysfs shows but NAILS
+/// cannot read may be any kind of mapping: the check cannot tell, and says
+/// so, where it said nothing encrypts the hidden root.
+#[test]
+fn a_mapping_whose_kind_cannot_be_read_cannot_be_confirmed() {
+    let dir = "/sys/devices/virtual/block/dm-9";
+    for (unread, shown) in [
+        (
+            &["dm/uuid"][..],
+            "dm/uuid of dm-9, but NAILS cannot read it",
+        ),
+        (
+            &["dm/uuid", "dm/name"][..],
+            "dm/name and dm/uuid of dm-9, but NAILS cannot read them",
+        ),
+    ] {
+        let host = external("CRYPT-LUKS2-6677-data");
+        for attribute in unread {
+            host.fs.mock_set_lookup_error(
+                &format!("{dir}/{attribute}"),
+                std::io::ErrorKind::PermissionDenied,
+            );
+        }
+        let result = host.run();
+        assert_eq!(
+            warning(&result),
+            format!(
+                "Could not confirm that the hidden root at {ROOT} is encrypted: sysfs shows \
+                 {shown}."
+            )
+        );
+        assert_eq!(fix(&result), UNKNOWN_FIX);
+    }
+    // The name of a mapping whose uuid says what it is decides nothing.
+    let host = external("CRYPT-LUKS2-6677-data");
+    host.fs.mock_set_lookup_error(
+        &format!("{dir}/dm/name"),
+        std::io::ErrorKind::PermissionDenied,
+    );
+    assert!(host.run().is_pass(), "{:?}", host.run());
+}
+
+/// A device whose devices below sysfs shows but NAILS cannot list may lie
+/// on encryption: the check cannot tell, where it said nothing encrypts it.
+#[test]
+fn a_device_whose_devices_below_cannot_be_listed_cannot_be_confirmed() {
+    let logical_volume = || {
+        Host::new("254:9", "ext4", "/dev/mapper/data")
+            .disk("sdb", "8:16")
+            .mapping("dm-9", "254:9", "data", "LVM-a1b2-data", &["sdb"])
+    };
+    assert!(
+        warning(&logical_volume().run()).starts_with("Nothing encrypts the hidden root"),
+        "{:?}",
+        logical_volume().run()
+    );
+    let host = logical_volume();
+    host.fs
+        .mock_set_unreadable_dir("/sys/devices/virtual/block/dm-9/slaves");
+    assert_eq!(
+        warning(&host.run()),
+        format!(
+            "Could not confirm that the hidden root at {ROOT} is encrypted: sysfs shows slaves \
+             of dm-9, but NAILS cannot read it."
+        )
+    );
+}
+
 #[test]
 fn a_mapping_of_an_unknown_kind_over_encryption_of_its_own_passes() {
     let result = Host::new("254:9", "ext4", "/dev/mapper/mp")

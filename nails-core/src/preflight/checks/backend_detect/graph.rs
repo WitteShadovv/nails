@@ -262,6 +262,41 @@ const KIND: &[Attribute] = &[
     Attribute::Slaves,
 ];
 
+/// The attributes that say what kind of device-mapper device `layer` is,
+/// as [`blockdev::classify_dm`] reads them, that sysfs shows but NAILS could
+/// not read: its `dm/uuid`, and its `dm/name` where the uuid leaves the kind
+/// to the name (none, one that could not be read, or one the VeraCrypt
+/// application gave).
+pub(super) fn dm_kind_unread(layer: &Layer) -> Vec<Attribute> {
+    let unread = |attribute: Attribute| layer.unread_among(&[attribute]).next().is_some();
+    let uuid = layer.dm.as_ref().map_or("", |dm| dm.uuid.as_str());
+    let by_name = uuid.is_empty() || uuid.starts_with("VERACRYPT-");
+    let mut kind = Vec::new();
+    if unread(Attribute::DmUuid) {
+        kind.push(Attribute::DmUuid);
+    }
+    if by_name && unread(Attribute::DmName) {
+        kind.push(Attribute::DmName);
+    }
+    kind
+}
+
+/// Why a check cannot tell, where sysfs shows `attributes` of the device
+/// `device`, but NAILS cannot read them; the device is named.
+pub(super) fn unread_of(attributes: &[Attribute], device: &str) -> String {
+    let mut names: Vec<&str> = attributes
+        .iter()
+        .map(|attribute| attribute.name())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let them = if names.len() == 1 { "it" } else { "them" };
+    format!(
+        "sysfs shows {} of {device}, but NAILS cannot read {them}",
+        super::listing(&names)
+    )
+}
+
 /// The names of the attributes and listings among `among` that sysfs shows
 /// of one of `layers` but NAILS could not read, sorted and each once.
 pub(super) fn unread_names<'a>(
@@ -279,11 +314,7 @@ pub(super) fn unread_names<'a>(
 /// Why a check cannot tell, where sysfs shows `names` of a device `place`
 /// (`below it`), but NAILS cannot read them; the device is not named.
 pub(super) fn unread_reason(names: &[&str], place: &str) -> String {
-    let listed = match names {
-        [] => String::new(),
-        [one] => (*one).to_string(),
-        [init @ .., last] => format!("{} and {last}", init.join(", ")),
-    };
+    let listed = super::listing(names);
     let them = if names.len() == 1 { "it" } else { "them" };
     format!("sysfs shows {listed} of a device {place}, but NAILS cannot read {them}")
 }
