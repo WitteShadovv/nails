@@ -1666,27 +1666,33 @@ of this changelog for that version becomes the release notes word for word, and
   was read as code the check follows counts as on, for an option, adds a directory the check cannot
   follow, for `fpath`, or makes the check warn that it cannot tell, so a `source` or `eval` in an
   `echo`, a string, an alias or a here-document, or an `eval` of what a command prints, warns too.
-  bash's files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, outside comments
-  as bash 5.3's reader starts them: from a `#` that starts a word after a space, a tab or an
+  bash's files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, outside comments.
+  The reader takes a comment to run from a `#` that starts a word after a space, a tab or an
   operator, in the file's code or a `$(...)` or `<(...)`, to the end of its line, a backslash at its
-  end too, and none in a quote, a backquote pair, a `${...}`, arithmetic or a here-document's body
-  (bash 5.3 ran the `PROMPT_COMMAND` after `:\v#;`, on the line after `# ... \`, in
-  `PROMPT_COMMAND='printf " #"; history -a'`, and after ``X=`: #`;``, `Y=${X:- #};` and
-  `W=${X:-a #}b;`, which the check took for comments). A `((` whose first `(` group a lone `)`
-  closes is read as bash reads it, as a subshell that starts with that group. A `$((` that one
-  closes bash reads as a `$(...)`, to its `)` with quotes and no comment, and parses as code only
-  where it expands the word, so the check starts no comment in it. bash 5.3 wrote each typed line
-  with `X="$((echo a); echo "b #")"; PROMPT_COMMAND='history -a'`, which the check passed before,
-  and with `false && X=$((echo a)#); PROMPT_COMMAND='history -a'`, and the check warns at both, but
-  also where bash expands such a `$((...)` and a comment in it takes the `PROMPT_COMMAND`
-  assignment along. Where the reader cannot tell what bash reads, in the first group of a `((`,
-  after the `)` that ends such a subshell, in a `(` it keeps open (an extended glob's group,
-  `@(a| #b)`) or after a `)` that closes nothing it saw open, it keeps the text, which can only make
-  the check warn, and a `case` in a `$(...)` it may read otherwise than bash, as a pattern's `)`
-  ends the `$(...)` for it. A line whose code ends in a backslash goes on in the next. It still only
-  warns: such a shell has written the decoy commands before activation starts, so a refusal would
-  take none of them back, and for a shell that writes a line once its command ends, a refused
-  activation would add its own.
+  end too, and starts none in a quote, a backquote pair, a `${...}`, arithmetic or a
+  here-document's body (bash 5.3 ran the `PROMPT_COMMAND` after `:\v#;`, on the line after
+  `# ... \`, in `PROMPT_COMMAND='printf " #"; history -a'`, and after ``X=`: #`;``, `Y=${X:- #};`
+  and `W=${X:-a #}b;`, which the check took for comments). The check's tests hold setups that bash
+  5.3 ran, and in those the reader drops only what bash read as a comment. A `((` whose first `(`
+  group a lone `)` closes bash reads as a subshell that starts with that group, and the reader
+  reads the rest of it as code. A `$((` that one closes bash reads as a `$(...)`, to its `)` with
+  quotes and no comment, and parses as code only where it expands the word. bash 5.3 wrote each
+  typed line with `X="$((echo a); echo "b #")"; PROMPT_COMMAND='history -a'`, which the check
+  passed before, and with `false && X=$((echo a)#); PROMPT_COMMAND='history -a'`, and the check
+  warns at both. Where the reader cannot tell what bash reads, in such a `$((...)`, in the first
+  group of a `((`, after the `)` that ends such a subshell, in a `(` it keeps open (an extended
+  glob's group, `@(a| #b)`) or after a `)` that closes nothing it saw open, it keeps the text. Kept
+  text can make the check warn where bash runs nothing, as where bash expands such a `$((...)` and
+  a comment in it takes the `PROMPT_COMMAND` assignment along. It can also make the check pass
+  where bash runs that assignment: where bash reads the text as a comment, the reader takes a quote
+  in it for one that opens, and may then start a comment inside a quote bash opened. A `case` in a
+  `$(...)` it may read otherwise than bash, as a pattern's `)` ends the `$(...)` for it, and where
+  that `$(...)` stands in a `"..."`, a `${...}`, a `$((...)` or an arithmetic command, it may end
+  that too soon and start a comment in it that bash never starts. Known issues names these false
+  passes. A line whose code ends in a backslash goes on in the next. It still only warns: such a
+  shell has written the decoy commands before activation starts, so a refusal would take none of
+  them back, and for a shell that writes a line once its command ends, a refused activation would
+  add its own.
 - The `incremental-history-flush` check no longer warns that it cannot tell at forms that many zsh
   setups hold, each by a rule for the form it knows, but for `compinit`, which stays a doubt (see
   below), and a hook's output to `$TTY` (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`), which stays
@@ -2902,17 +2908,23 @@ of this changelog for that version becomes the release notes word for word, and
 - The history check (`incremental-history-flush`) does not see a security module (SELinux,
   AppArmor) that keeps zsh from opening a startup file you own and may read by its mode, nor a
   program named like the command you type that zsh finds first in `PATH` (a `sudo` script in
-  `~/bin`). It reads zsh's and bash's startup code by rules that follow zsh 5.9 to 5.9.2 and bash
-  5.3 as far as its tests and the setups run in those shells went, so a form they read otherwise
-  than those shells do can still pass. It reads zsh's startup code by a list of the commands it
-  knows to be harmless, so it warns at an outside program a hook runs (`precmd() { git status }`)
-  and at the `/etc/zshrc` NixOS generates, where zsh writes nothing: type the decoy commands in a
-  zsh started as `zsh -f`. It also warns at an alias used in an `eval` on the line that defines
-  it, which zsh reads after the alias ran, and at any `emulate sh` beside
-  `setopt bareglobqual noshglob`, whatever the values hold. In bash's files it warns at a
-  `PROMPT_COMMAND` assignment in a comment inside a `$((...)` that bash reads as a command
-  substitution (`X=$((echo a)#; PROMPT_COMMAND='history -a'` with the `)` on the next line), as it
-  cannot tell where bash expands one. See docs/operator-guide.md.
+  `~/bin`). It reads zsh's startup code by rules that follow zsh 5.9 to 5.9.2 as far as its tests
+  and the setups run in zsh went, and bash's by rules that follow bash 5.3 as far as its tests
+  went, so a form they read otherwise than those shells do can still pass. In bash's files it
+  passes some setups with which bash 5.3.9 runs a `history -a` from `PROMPT_COMMAND`: with a quote
+  in text that bash reads as a comment and the check keeps, after the `)` that ends a subshell, in
+  a subshell's `(` or in the first group of a `((` (`(: #'` with
+  `) ; X='); : #'; PROMPT_COMMAND='history -a'` on the next line), and with a `case` in a `$(...)`
+  that stands in a `"..."`, a `${...}`, a `$((...)` or an arithmetic command
+  (`(( $(case x in x) echo 1;; esac) # )); PROMPT_COMMAND='history -a'`). It reads zsh's startup
+  code by a list of the commands it knows to be harmless, so it warns at an outside program a hook
+  runs (`precmd() { git status }`) and at the `/etc/zshrc` NixOS generates, where zsh writes
+  nothing: type the decoy commands in a zsh started as `zsh -f`. It also warns at an alias used in
+  an `eval` on the line that defines it, which zsh reads after the alias ran, and at any
+  `emulate sh` beside `setopt bareglobqual noshglob`, whatever the values hold. In bash's files it
+  warns at a `PROMPT_COMMAND` assignment in a comment inside a `$((...)` that bash reads as a
+  command substitution (`X=$((echo a)#; PROMPT_COMMAND='history -a'` with the `)` on the next
+  line), as it cannot tell where bash expands one. See docs/operator-guide.md.
 - A switch into or out of a hidden session can stop halfway: the programs have closed, but the
   screen stays dark or still and no login screen comes. Once the old system's units have stopped,
   PID 1 can go to sleep with work still queued and wait until something wakes it. This matches a

@@ -9,15 +9,19 @@
 //! `~/.bash_profile`, `~/.bash_login`, `~/.profile` and `~/.bashrc` in each
 //! home the shell may run with. A line is read for the words a shell would
 //! run, its comment dropped and its quotes taken off, and goes on in the next
-//! one where what is left of it ends in a backslash. A comment starts at a
-//! `#` that starts a word, after a space or a tab (bash's blanks) or an
-//! operator, in the file's code or a command substitution's, not in a quote,
-//! a backquote pair, a `${...}`, arithmetic or a `(` the reader keeps open,
-//! and ends with its line, a backslash at its end too, as in bash
-//! ([`uncommented`]), but for a `$((...)` that bash reads as a command
-//! substitution, in which the reader starts none, which can only make the
-//! check warn, and a `case` in a command substitution, which the reader may
-//! read otherwise.
+//! one where what is left of it ends in a backslash. The reader
+//! ([`uncommented`]) starts a comment at a `#` that starts a word, after a
+//! space or a tab (bash's blanks) or an operator, in the file's code or a
+//! command substitution's, and none in a quote, a backquote pair, a `${...}`,
+//! arithmetic or a `(` it keeps open. A comment ends with its line, a
+//! backslash at its end too. The reader's tests hold setups that bash 5.3
+//! ran, and in those it drops only what bash read as a comment. Where it
+//! cannot tell what bash reads, it keeps the text. Kept text can make the
+//! check warn where bash runs nothing. It can also make the check pass where
+//! bash runs the `PROMPT_COMMAND` assignment, as where bash reads the text as
+//! a comment and the reader takes a quote in it for one that opens. A `case`
+//! in a command substitution the reader may read otherwise than bash, which
+//! can make the check pass too.
 
 use std::path::{Path, PathBuf};
 
@@ -163,33 +167,43 @@ fn delimiter(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<(String
     (!word.is_empty()).then_some((word, tabs))
 }
 
-/// `text`, bash code, with its comments dropped as bash 5.3's reader reads
-/// them: a `#` that starts a word, at a line's start or after a space, a tab
-/// or an operator (`;`, `&`, `|`, `(`, `)`, not `<` or `>`), not escaped by a
-/// backslash, starts one in the file's code and in a command substitution or
-/// a process substitution's, which bash parses as code (`$(: # x)`), and
-/// none in a quote (`'...'`, `"..."`, `$'...'`), a backquote pair, a
-/// `${...}` or arithmetic (`$((...))`, `((...))`, `$[...]`), which bash
-/// reads to their end as part of a word (`X=\`: #\``, `${X:- #}`). A `((`
-/// whose first `(` group a lone `)` closes (`((echo a); echo b)`) bash reads
-/// as a subshell that starts with that group: the reader reads the group as
-/// bash first reads it, to its `)`, with quotes and no comment, and the rest
-/// as code, where a comment starts. A `$((` whose first group a lone `)`
-/// closes (`$((echo a); echo b)`) bash reads as a command substitution: it
-/// reads the whole to its `)` with quotes and no comment, and parses it as
-/// code only where it expands the word, so a `#` in it may start a comment
-/// or none. Where the reader cannot tell what bash reads, it keeps the text,
-/// which can only make the check warn: in such a `$((...)`, in the first
-/// group of a `((`, where bash, running it as code, may find a comment,
-/// after the `)` that ends such a subshell (`((echo a); echo b)#`), in a `(`
-/// it keeps open, as an extended glob's or a regular expression's group may
-/// be part of a word (`@(a| #b)`), and after a `)` that closes nothing it saw
-/// open, as a `case` pattern's `)` in a `$(...)` may end it too soon for the
-/// reader. A `case` in a `$(...)` it may still read otherwise than bash: in a
-/// `"..."` or a `${...}` around the `$(...)`, a quote or a `}` in an arm then
-/// ends what the reader is in, and a `#` after it may start a comment bash
-/// never starts (`X="$(case x in x) echo "a #";; esac)"`,
-/// `Y=${X:-$(case x in x) echo };; esac) #}`).
+/// `text`, bash code, with its comments dropped: a `#` that starts a word, at
+/// a line's start or after a space, a tab or an operator (`;`, `&`, `|`, `(`,
+/// `)`, not `<` or `>`), not escaped by a backslash, starts one in the file's
+/// code and in a command substitution or a process substitution's, which
+/// bash parses as code (`$(: # x)`), and none in a quote (`'...'`, `"..."`,
+/// `$'...'`), a backquote pair, a `${...}` or arithmetic (`$((...))`,
+/// `((...))`, `$[...]`), which bash reads to their end as part of a word
+/// (`X=\`: #\``, `${X:- #}`). Its tests hold setups that bash 5.3 ran, and in
+/// those the reader drops only what bash read as a comment. A `((` whose
+/// first `(` group a lone `)` closes (`((echo a); echo b)`) bash reads as a
+/// subshell that starts with that group: the reader reads the group as bash
+/// first reads it, to its `)`, with quotes and no comment, and the rest as
+/// code, where a comment starts. A `$((` whose first group a lone `)` closes
+/// (`$((echo a); echo b)`) bash reads as a command substitution: it reads
+/// the whole to its `)` with quotes and no comment, and parses it as code
+/// only where it expands the word, so a `#` in it may start a comment or
+/// none. Where the reader cannot tell what bash reads, it keeps the text: in
+/// such a `$((...)`, in the first group of a `((`, where bash, running it as
+/// code, may find a comment, after the `)` that ends such a subshell
+/// (`((echo a); echo b)#`), in a `(` it keeps open, as an extended glob's or
+/// a regular expression's group may be part of a word (`@(a| #b)`), and
+/// after a `)` that closes nothing it saw open, as a `case` pattern's `)` may
+/// end a `$(...)` or a `(` too soon for the reader. Kept text can make the
+/// check warn where bash runs nothing. It can also make the check pass where
+/// bash runs the `PROMPT_COMMAND` assignment: where bash reads the text as a
+/// comment, a quote in it means nothing to bash, but the reader takes it for
+/// one that opens, and may then start a comment inside a quote bash opened
+/// (`(: #'` with `) ; X='); : #'; PROMPT_COMMAND=...` on the next line). A
+/// `case` in a `$(...)` it may read otherwise than bash too, as a pattern's
+/// `)` may end the `$(...)` for it. Where the `$(...)` stands in another
+/// construct (a `"..."`, a `${...}`, a `$((...)` read as a command
+/// substitution or an arithmetic command), a quote, a `}` or a `)` after the
+/// pattern may then end that construct for the reader, and a `#` after it
+/// may start a comment bash never starts
+/// (`X="$(case x in x) echo "a #";; esac)"`,
+/// `Y=${X:-$(case x in x) echo };; esac) #}`,
+/// `(( $(case x in x) echo 1;; esac) # ))`).
 /// A comment ends with its line, a backslash at its end too. bash keeps any
 /// other white space in the word (a vertical tab, a no-break space), so a `#`
 /// after one starts no comment. A here-document's body is text, in which no
@@ -370,7 +384,9 @@ impl BashReader<'_> {
                         // command substitution, to its own `)` as it read
                         // the group, with quotes and no comment, and as code
                         // only where it expands the word, so the reader
-                        // starts no comment in it (`$((echo a); : #)`).
+                        // starts no comment in it (`$((echo a); : #)`),
+                        // unless a `case` in a `$(...)` in it ends it too
+                        // soon (see `uncommented`).
                         self.frames.push(Frame::Pair { depth: 0 });
                         self.previous = Some(')');
                         return true;

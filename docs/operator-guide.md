@@ -1692,24 +1692,31 @@ afterwards:
   NixOS's `/etc/zshrc`, is followed, which can change the link's (see
   [What `check` touches](#what-check-touches)). bash's files it reads for
   `history -a` or `history -w` in a file that names `PROMPT_COMMAND`, outside
-  comments as bash 5.3's reader starts them: from a `#` that starts a word
-  after a space, a tab or an operator, in the file's code or in a `$(...)` or
-  `<(...)`, to the end of its line, a backslash at its end too, and none in a
-  quote, a backquote pair, a `${...}`, arithmetic or a here-document's body.
-  A `((` whose first `(` group a lone `)` closes it reads as bash does, as a
-  subshell that starts with that group. A `$((` that one closes bash reads as
-  a `$(...)` it parses as code only where it expands the word, so the check
-  starts no comment in it, and warns too where bash expands it and a comment
-  in it takes the `PROMPT_COMMAND` assignment along. Where its reader cannot
-  tell what bash reads, it keeps the text, which can only make it warn: in
-  the first group of a `((` and after the `)` that ends such a subshell,
-  in a `(` it keeps open, as an extended glob's or a regular expression's
-  group is part of a word (`@(a| #b)`), and after a `)` that closes nothing
-  it saw open. A `case` in a `$(...)` it may read otherwise than bash, as a
-  pattern's `)` ends the `$(...)` for it. A line whose code ends in a
-  backslash goes on in the next. zsh's files it reads by rules that follow
-  how zsh 5.9 to 5.9.2 read them, and fails closed where those rules cannot
-  follow them:
+  comments. Its reader starts a comment at a `#` that starts a word after a
+  space, a tab or an operator, in the file's code or in a `$(...)` or `<(...)`,
+  and ends it with its line, a backslash at its end too. It starts none in a
+  quote, a backquote pair, a `${...}`, arithmetic or a here-document's body. The
+  check's tests hold setups that bash 5.3 ran, and in those the reader drops
+  only what bash read as a comment. A `((` whose first `(` group a lone `)`
+  closes bash reads as a subshell that starts with that group, and the reader
+  reads the rest of it as code. A `$((` that one closes bash reads as a `$(...)`
+  it parses as code only where it expands the word. Where the reader cannot tell
+  what bash reads, it keeps the text: in such a `$((...)`, in the first group of
+  a `((` and after the `)` that ends such a subshell, in a `(` it keeps open, as
+  an extended glob's or a regular expression's group is part of a word
+  (`@(a| #b)`), and after a `)` that closes nothing it saw open. Kept text can
+  make the check warn where bash runs nothing, as where bash expands such a
+  `$((...)` and a comment in it takes the `PROMPT_COMMAND` assignment along. It
+  can also make the check pass where bash runs that assignment. Where bash reads
+  the text as a comment, a quote in it means nothing to bash, but the reader
+  takes it for one that opens, and may then start a comment inside a quote bash
+  opened. A `case` in a `$(...)` it may read otherwise than bash, as a pattern's
+  `)` ends the `$(...)` for it. Where that `$(...)` stands in a `"..."`, a
+  `${...}`, a `$((...)` or an arithmetic command, the reader may end that too
+  soon and start a comment in it that bash never starts, and the check may pass.
+  A line whose code ends in a backslash goes on in the next. zsh's files it
+  reads by rules that follow how zsh 5.9 to 5.9.2 read them, and fails closed
+  where those rules cannot follow them:
 
   - each command the check reads in the startup files, and in every hook,
     widget, alias, function and job it follows that zsh may run, must be on a
@@ -2436,9 +2443,17 @@ afterwards:
   environment of a shell it found no command typed into), a `TMOUT` the
   environment of such a shell holds, nor a history tool
   that keeps its own record of each command, such as atuin, as one. Nor does
-  it see code that zsh or bash reads otherwise than its rules do: they
-  follow zsh 5.9 to 5.9.2 and bash 5.3 as far as its tests and the setups
-  run in those shells went, and a form none of those held can still pass.
+  it see code that zsh or bash reads otherwise than its rules do. They follow
+  zsh 5.9 to 5.9.2 as far as its tests and the setups run in zsh went, and
+  bash 5.3 as far as its tests went, and a form none of those held can still
+  pass. Some are known in bash's files, where bash 5.3 runs a `history -a`
+  from `PROMPT_COMMAND` and the check passes: a quote in text that bash reads
+  as a comment and the check keeps, after the `)` that ends a subshell, in a
+  subshell's `(` or in the first group of a `((` (`(: #'` with
+  `) ; X='); : #'; PROMPT_COMMAND='history -a'` on the next line), and a
+  `case` in a `$(...)` that stands in a `"..."`, a `${...}`, a `$((...)` or
+  an arithmetic command
+  (`(( $(case x in x) echo 1;; esac) # )); PROMPT_COMMAND='history -a'`).
 
   It reads an `eval` of words it can read as code, and so an alias's value, a
   trap's code, a `sched`'s command, a `zstyle -e`'s strings and a function's
