@@ -114,8 +114,8 @@ fn requests_until(
 
 #[test]
 fn return_to_decoy_applies_the_plan_of_a_return_through_the_helper() {
-    let warning =
-        "The return finds no `nft` (nftables) in the hidden session's system directories.";
+    let warning = "The return cannot number the decoy's processes from where its own boot \
+        numbered them.";
     let (wired, requests, _power_off) = deactivating(warning);
     assert!(
         wired
@@ -123,7 +123,7 @@ fn return_to_decoy_applies_the_plan_of_a_return_through_the_helper() {
             .find_with(text::DEACTIVATE_QUESTION, AccessibleRole::Groupbox)
             .accessible_description()
             .unwrap_or_default()
-            .contains("The return finds no nft (nftables)"),
+            .contains("The return cannot number the decoy's processes"),
         "the engine's warning, as it came"
     );
     wired

@@ -19,12 +19,11 @@ use screen::Screen;
 use serde_json::{Value, json};
 use slint::platform::Key;
 
-/// The warning of a way back that powers off when it cannot put the
-/// network state back, in the engine's words.
-const POWERS_OFF_INSTEAD: &str = "The return finds no `ip` (iproute2) in the hidden session's \
-    system directories, so the policy-routing rules the session added stay on the decoy until \
-    power-off, and a virtual link it made or a MAC address it changed makes the machine power \
-    off instead of returning. `sudo /mnt/data/nails deactivate --poweroff` leaves none of them.";
+/// The warning of a way back that powers off instead of returning, in the
+/// engine's words: the session made a link the kernel keeps.
+const POWERS_OFF_INSTEAD: &str = "The way back cannot delete tunl0, which the kernel keeps, so \
+    the machine powers off instead of returning to the decoy. `sudo /mnt/data/nails deactivate \
+    --poweroff` powers off at once.";
 
 fn answered(kind: Kind, envelope: Value) -> Update {
     Update::Answered(kind, Answer { exit: 0, envelope })
@@ -110,10 +109,10 @@ fn a_hidden_session_deactivates_through_a_question_with_both_endings() {
     // The engine's warning, its code quotes dropped: here, that the return
     // would power off instead.
     assert!(
-        lines[1].contains("makes the machine power off instead of returning"),
+        lines[1].contains("the machine powers off instead of returning to the decoy"),
         "{body}"
     );
-    assert!(lines[1].ends_with("sudo /mnt/data/nails deactivate --poweroff leaves none of them."));
+    assert!(lines[1].ends_with("sudo /mnt/data/nails deactivate --poweroff powers off at once."));
     screen.find_with(text::POWER_OFF, AccessibleRole::Button);
     screen.find_with(text::RETURN_TO_DECOY, AccessibleRole::Button);
     assert_eq!(screen.focused(), "Cancel", "the focus starts on Cancel");
