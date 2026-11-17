@@ -387,9 +387,6 @@ SCAN_WARNINGS_EXIT = 9
 # in /run.
 NEEDS_LABEL = "the RAM copy labelled as a program (bin_t)"
 NEEDS_LSM = "lsm-status passing on an SELinux host, so the build keeps it"
-NEEDS_SOCKETS = (
-    "a way back that empties what journald's sockets hold before the decoy starts"
-)
 TUNED_DROPIN = "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n"
 # What PID 1 logs when the policy of the root it starts in is not loaded, and
 # when a policy is.
@@ -2082,7 +2079,6 @@ class Gate:
                 else "not judged: the late writer did not run, or not after "
                 f"the hidden journald stopped ({order})"
             ),
-            NEEDS_SOCKETS,
         )
         judged = bool(entries) and None not in (last_serial, switch_us, streams)
         natural = {kind: found[kind][:20] for kind in ("audit", "datagram", "stream")}
@@ -2091,7 +2087,6 @@ class Gate:
             "hidden root sent to journald's sockets",
             judged and not any(natural.values()),
             natural if judged else {"not judged": bounds},
-            NEEDS_SOCKETS,
         )
         post = f"{POST_MARK}-{self.nonce}-{n}"
         seen = self.fact(
@@ -2106,8 +2101,9 @@ class Gate:
         )
 
     def nextroot(self, n: int) -> None:
-        """/run/nextroot, where the decoy root was mounted for the switch, holds
-        no mount and no entry after the way back."""
+        """/run/nextroot, where the decoy root was mounted for the switch, is
+        gone after the way back, as after a cold boot: the decoy's start
+        removes it."""
         found = self.fact(
             f"nextroot-{n}",
             "test -e /run/nextroot -o -L /run/nextroot || { echo absent; exit 0; }; "
@@ -2117,9 +2113,8 @@ class Gate:
         )
         lines = found.splitlines()
         self.check(
-            f"way back {n}: /run/nextroot holds no mount and no entry",
-            lines == ["absent"]
-            or (len(lines) == 1 and lines[0].startswith("directory")),
+            f"way back {n}: /run/nextroot is gone",
+            lines == ["absent"],
             found,
         )
 
