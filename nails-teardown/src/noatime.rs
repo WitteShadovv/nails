@@ -420,28 +420,31 @@ fn reach_or_covered(mount: &crate::mountinfo::MountEntry) -> Result<Option<rusti
 }
 
 /// The FUSE module's parameter that lets a process with `CAP_SYS_ADMIN` in
-/// the initial user namespace past the check of a mount's owner.
+/// the initial user namespace past the check of a mount's owner. Linux 6.0
+/// added it together with that way past the check, which it keeps off by
+/// default.
 const FUSE_SYS_ADMIN_ACCESS: &str = "/sys/module/fuse/parameters/allow_sys_admin_access";
 
-/// Whether `mount`, which this process could not reach with `error`, is a
-/// FUSE mount the kernel keeps PID 1 out of, so that PID 1 reads nothing on
-/// it and [`QuietMounts`] can leave it as it is: of type `fuse`, `fuse.*` or
-/// `fuseblk`, refused with `EACCES` or `EPERM`, mounted without `allow_other`
-/// for a user or a group other than root's, on a kernel whose FUSE lets
-/// `CAP_SYS_ADMIN` no further (`sys_admin_access`, the parameter
-/// [`FUSE_SYS_ADMIN_ACCESS`] as read, is `N`). FUSE then answers every
-/// process whose user and group IDs are not all the mount's own with
-/// `EACCES`, and PID 1 runs as root. A user's own FUSE mounts are such:
-/// a desktop's `gvfsd-fuse` and document portal, an AppImage's
-/// `squashfuse`, an `sshfs`. Every other mount that cannot be reached is an
-/// error.
-fn kept_from_root(
-    mount: &crate::mountinfo::MountEntry,
-    error: Errno,
-    sys_admin_access: Option<&str>,
-) -> bool {
-    let fuse =
-        mount.fstype == "fuse" || mount.fstype == "fuseblk" || mount.fstype.starts_with("fuse.");
+/// The oldest Linux NAILS runs on, as its major and minor number: 6.1, the
+/// oldest long-term kernel with both `mount_setattr(2)` (Linux 5.12), which
+/// [`spawn_without_access_times`] and [`QuietMounts`] change mounts with, and
+/// FUSE's `allow_sys_admin_access` parameter (Linux 6.0), by which
+/// [`QuietMounts`] knows that FUSE lets root no further than its owner check.
+pub const MIN_LINUX: (u32, u32) = (6, 1);
+
+/// Whether `mount` is a FUSE mount: of type `fuse`, `fuse.*` or `fuseblk`.
+fn is_fuse(mount: &crate::mountinfo::MountEntry) -> bool {
+    mount.fstype == "fuse" || mount.fstype == "fuseblk" || mount.fstype.starts_with("fuse.")
+}
+
+/// Whether `mount` is a user's FUSE mount: a FUSE mount ([`is_fuse`])
+/// mounted without `allow_other` for a user or a group other than root's
+/// (`user_id` and `group_id` not both 0). FUSE answers every process whose
+/// user and group IDs are not all the mount's own with `EACCES`, root
+/// included unless the kernel lets `CAP_SYS_ADMIN` past that check
+/// ([`kept_from_root`]). A user's own FUSE mounts are such: a desktop's
+/// `gvfsd-fuse` and document portal, an AppImage's `squashfuse`, an `sshfs`.
+fn users_fuse(mount: &crate::mountinfo::MountEntry) -> bool {
     let options: Vec<&str> = mount.super_opts.split(',').collect();
     let id = |key: &str| {
         options
@@ -453,10 +456,99 @@ fn kept_from_root(
         (Some(user), Some(group)) => user != 0 || group != 0,
         _ => false,
     };
-    fuse && matches!(error, Errno::ACCESS | Errno::PERM)
-        && !options.contains(&"allow_other")
-        && not_roots
+    is_fuse(mount) && !options.contains(&"allow_other") && not_roots
+}
+
+/// Whether `mount`, which this process could not reach with `error`, is a
+/// FUSE mount the kernel keeps PID 1 out of, so that PID 1 reads nothing on
+/// it and [`QuietMounts`] can leave it as it is: a user's FUSE mount
+/// ([`users_fuse`]), refused with `EACCES` or `EPERM`, on a kernel whose FUSE
+/// lets `CAP_SYS_ADMIN` no further (`sys_admin_access`, the parameter
+/// [`FUSE_SYS_ADMIN_ACCESS`] as read, is `N`). PID 1 runs as root and is
+/// refused the same way. Every other mount that cannot be reached is an
+/// error.
+fn kept_from_root(
+    mount: &crate::mountinfo::MountEntry,
+    error: Errno,
+    sys_admin_access: Option<&str>,
+) -> bool {
+    users_fuse(mount)
+        && matches!(error, Errno::ACCESS | Errno::PERM)
         && sys_admin_access.map(str::trim) == Some("N")
+}
+
+/// Whether `mount`, which this process could not reach with `error`, lies at
+/// or below the mount point of another mount of `mounts` that is a FUSE mount
+/// `kept` says the kernel keeps root out of ([`kept_from_root`]): every
+/// lookup of root's through that mount fails with `EACCES` or `EPERM`, PID
+/// 1's too, so PID 1 reads nothing on `mount` either. An fstab mount inside a
+/// home that a user's FUSE mount covers later is such.
+fn below_kept_fuse(
+    mount: &crate::mountinfo::MountEntry,
+    error: Errno,
+    mounts: &[crate::mountinfo::MountEntry],
+    kept: impl Fn(&crate::mountinfo::MountEntry) -> bool,
+) -> bool {
+    matches!(error, Errno::ACCESS | Errno::PERM)
+        && mounts.iter().any(|fuse| {
+            fuse.mount_id != mount.mount_id
+                && is_fuse(fuse)
+                && mount.mount_point.starts_with(&fuse.mount_point)
+                && kept(fuse)
+        })
+}
+
+/// Judge `mount`, a mount that keeps access times and that this process
+/// could not reach with `error`: `Ok` where the kernel keeps PID 1 out of it
+/// too, so that [`QuietMounts`] leaves it as it is, a user's FUSE mount
+/// ([`kept_from_root`]) or a mount at or below one ([`below_kept_fuse`]),
+/// and otherwise the error, naming the mount. `sys_admin_access` is FUSE's
+/// [`FUSE_SYS_ADMIN_ACCESS`] as read, and `reach` the error, if any, of
+/// reaching another mount of `mounts`. Where the rule would leave the mount
+/// out but the parameter cannot be read, the error says so: a kernel without
+/// it, one before Linux 6.0, is below [`MIN_LINUX`].
+fn judge_unreached(
+    mount: &crate::mountinfo::MountEntry,
+    error: Errno,
+    mounts: &[crate::mountinfo::MountEntry],
+    sys_admin_access: &std::io::Result<String>,
+    reach: impl Fn(&crate::mountinfo::MountEntry) -> Option<Errno>,
+) -> std::io::Result<()> {
+    let parameter = sys_admin_access.as_deref().ok();
+    let kept = |fuse: &crate::mountinfo::MountEntry| {
+        reach(fuse).is_some_and(|error| kept_from_root(fuse, error, parameter))
+    };
+    if kept_from_root(mount, error, parameter) || below_kept_fuse(mount, error, mounts, kept) {
+        return Ok(());
+    }
+    let users = |fuse: &crate::mountinfo::MountEntry| {
+        users_fuse(fuse) && reach(fuse).is_some_and(|e| matches!(e, Errno::ACCESS | Errno::PERM))
+    };
+    let would_be_kept = matches!(error, Errno::ACCESS | Errno::PERM)
+        && (users_fuse(mount) || below_kept_fuse(mount, error, mounts, users));
+    match sys_admin_access {
+        Err(read) if would_be_kept => {
+            let (major, minor) = MIN_LINUX;
+            let why = if read.kind() == std::io::ErrorKind::NotFound {
+                format!(
+                    "this kernel's FUSE has no allow_sys_admin_access parameter \
+                     ({FUSE_SYS_ADMIN_ACCESS}), which tells whether root may look into a \
+                     user's FUSE mount: Linux 6.0 added it, and NAILS needs Linux \
+                     {major}.{minor} or newer"
+                )
+            } else {
+                format!("{FUSE_SYS_ADMIN_ACCESS} cannot be read: {read}")
+            };
+            Err(naming(
+                mount,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("{}, and {why}", std::io::Error::from(error)),
+                ),
+            ))
+        }
+        _ => Err(naming(mount, error.into())),
+    }
 }
 
 /// `error`, from reaching or changing `mount`, with the mount's point and
@@ -478,9 +570,9 @@ impl QuietMounts {
     /// filesystem that keeps them on a disk ([`NO_DISK_ATIMES`]). Each is
     /// reached by its mount point and taken only when the mount found there is
     /// the one listed: a mount another covers is out of reach of every lookup
-    /// and is left, and so is a FUSE mount the kernel keeps root, PID 1
-    /// included, out of ([`kept_from_root`]). Where this process may not
-    /// change mounts
+    /// and is left, and so are a FUSE mount the kernel keeps root, PID 1
+    /// included, out of ([`kept_from_root`]) and a mount at or below one
+    /// ([`below_kept_fuse`]). Where this process may not change mounts
     /// ([`may_spawn_without_access_times`]) nothing changes. A change that
     /// fails puts back the ones made before it and is the error: the caller
     /// then knows the request it guards would set access times.
@@ -492,9 +584,9 @@ impl QuietMounts {
     /// its mode, before it changes any: where `record` fails, nothing changes
     /// and that is the error. A mount that keeps access times and cannot be
     /// reached for another reason than another mount covering it or the
-    /// kernel keeping root out of it ([`kept_from_root`]) is an error too, so
-    /// that no mount PID 1 can read is left out silently. An error names the
-    /// mount's point and type.
+    /// kernel keeping root out of it or out of a FUSE mount above it
+    /// ([`judge_unreached`]) is an error too, so that no mount PID 1 can read
+    /// is left out silently. An error names the mount's point and type.
     pub fn open_recorded(
         record: impl FnOnce(&[QuietRecord]) -> std::io::Result<()>,
     ) -> std::io::Result<Self> {
@@ -507,23 +599,23 @@ impl QuietMounts {
         let mut reached = Vec::new();
         let mut records = Vec::new();
         let mut sys_admin_access = None;
-        for mount in mounts {
+        for mount in &mounts {
             let Some(mode) = atime_mode(&mount.mount_opts) else {
                 continue;
             };
             if NO_DISK_ATIMES.contains(&mount.fstype.as_str()) {
                 continue;
             }
-            let fd = match reach_or_covered(&mount) {
+            let fd = match reach_or_covered(mount) {
                 Ok(Some(fd)) => fd,
                 Ok(None) => continue,
                 Err(error) => {
                     let parameter = sys_admin_access
-                        .get_or_insert_with(|| std::fs::read_to_string(FUSE_SYS_ADMIN_ACCESS).ok());
-                    if kept_from_root(&mount, error, parameter.as_deref()) {
-                        continue;
-                    }
-                    return Err(naming(&mount, error.into()));
+                        .get_or_insert_with(|| std::fs::read_to_string(FUSE_SYS_ADMIN_ACCESS));
+                    judge_unreached(mount, error, &mounts, parameter, |other| {
+                        reach_or_covered(other).err()
+                    })?;
+                    continue;
                 }
             };
             records.push(QuietRecord {
@@ -533,7 +625,7 @@ impl QuietMounts {
                 root: mount.root.clone(),
                 relatime: mode == MOUNT_ATTR_RELATIME,
             });
-            reached.push((fd, mode, mount));
+            reached.push((fd, mode, mount.clone()));
         }
         record(&records)?;
         for (fd, mode, mount) in reached {
@@ -644,259 +736,5 @@ pub fn quiet_copy(root: &std::path::Path) -> Option<rustix::fd::OwnedFd> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_flag_is_dropped_only_when_the_kernel_refuses_it() {
-        let mut tried = Vec::new();
-        let opened = with_noatime(|flags| {
-            tried.push(flags);
-            if flags.contains(OFlags::NOATIME) {
-                Err(Errno::PERM)
-            } else {
-                Ok("plain")
-            }
-        });
-        assert_eq!(opened, Ok("plain"));
-        assert_eq!(tried, vec![OFlags::NOATIME, OFlags::empty()]);
-
-        let mut calls = 0;
-        assert_eq!(
-            with_noatime(|_| {
-                calls += 1;
-                Ok(())
-            }),
-            Ok(())
-        );
-        assert_eq!(calls, 1, "a granted flag needs no second open");
-
-        let mut calls = 0;
-        assert_eq!(
-            with_noatime(|_| -> Result<()> {
-                calls += 1;
-                Err(Errno::NOENT)
-            }),
-            Err(Errno::NOENT)
-        );
-        assert_eq!(calls, 1, "any other error is the answer");
-    }
-
-    #[test]
-    fn a_mount_keeps_its_own_access_time_mode() {
-        assert_eq!(atime_mode("rw,relatime"), Some(MOUNT_ATTR_RELATIME));
-        assert_eq!(
-            atime_mode("rw,nosuid,relatime,nodiratime"),
-            Some(MOUNT_ATTR_RELATIME)
-        );
-        assert_eq!(atime_mode("rw"), Some(MOUNT_ATTR_STRICTATIME));
-        assert_eq!(atime_mode("ro,nodiratime"), Some(MOUNT_ATTR_STRICTATIME));
-        assert_eq!(atime_mode("rw,noatime"), None);
-        assert_eq!(atime_mode("rw,noatime,relatime"), None);
-    }
-
-    /// Without the right to change mounts (a test runs unprivileged, or as
-    /// root of a user namespace of its own) nothing is changed, and a child
-    /// starts as it is.
-    #[test]
-    fn without_the_right_to_change_mounts_nothing_changes() {
-        if may_spawn_without_access_times() {
-            return;
-        }
-        let quiet = QuietMounts::open().unwrap();
-        assert!(quiet.is_empty());
-        assert_eq!(quiet.len(), 0);
-        assert!(quiet_copy(std::path::Path::new("/")).is_none());
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "exit 0"]);
-        spawn_without_access_times(&mut command);
-        assert!(command.status().unwrap().success());
-    }
-
-    fn source(dev: &str, root: &str, mode: u64) -> Source {
-        Source {
-            dev: dev.to_string(),
-            root: std::path::PathBuf::from(root),
-            mode,
-        }
-    }
-
-    /// A bind made while the mounts were quiet gets the mode of the mount of
-    /// its filesystem whose root holds it, the deepest of several; a mount
-    /// listed before, one that keeps access times, one of another device and
-    /// one on a filesystem without them on a disk keep theirs.
-    #[test]
-    fn a_bind_made_while_quiet_gets_the_mode_of_the_mount_it_copies() {
-        let table = "\
-20 1 8:1 / / rw,noatime - ext4 /dev/sda1 rw
-21 1 0:30 /root / rw,noatime - btrfs /dev/vda4 rw
-22 1 0:30 /home /home rw,noatime - btrfs /dev/vda4 rw
-30 20 8:1 / /run/nextroot/decoy ro,noatime - ext4 /dev/sda1 rw
-31 20 0:30 /home/user /run/nextroot/home ro,noatime - btrfs /dev/vda4 rw
-32 20 0:30 /root/var /run/nextroot/var rw,noatime - btrfs /dev/vda4 rw
-33 20 8:1 /etc /run/nextroot/etc rw,relatime - ext4 /dev/sda1 rw
-34 20 8:2 / /run/nextroot/boot rw,noatime - ext4 /dev/sda2 rw
-35 20 0:40 / /run/nextroot/run rw,noatime - tmpfs tmpfs rw
-";
-        let mounts = crate::mountinfo::parse_mountinfo(table);
-        let sources = [
-            source("8:1", "/", MOUNT_ATTR_RELATIME),
-            source("0:30", "/root", MOUNT_ATTR_STRICTATIME),
-            source("0:30", "/home", MOUNT_ATTR_RELATIME),
-        ];
-        let got: Vec<(i32, u64)> = inherited(&sources, &[20, 21, 22], &mounts)
-            .into_iter()
-            .map(|(mount, mode)| (mount.mount_id, mode))
-            .collect();
-        assert_eq!(
-            got,
-            vec![
-                (30, MOUNT_ATTR_RELATIME),
-                (31, MOUNT_ATTR_RELATIME),
-                (32, MOUNT_ATTR_STRICTATIME),
-            ]
-        );
-    }
-
-    fn record(id: i32, point: &str, dev: &str, root: &str, relatime: bool) -> QuietRecord {
-        QuietRecord {
-            mount_id: id,
-            mount_point: std::path::PathBuf::from(point),
-            dev: dev.to_string(),
-            root: std::path::PathBuf::from(root),
-            relatime,
-        }
-    }
-
-    /// A record gives back its mode only to the mount it names that is still
-    /// `noatime`: a mount gone, one whose ID another mount took, and one
-    /// whose mode was changed since are left as they are.
-    #[test]
-    fn a_record_restores_only_the_mount_it_names_while_noatime() {
-        let table = "\
-20 1 8:1 / / rw,noatime - ext4 /dev/sda1 rw
-22 1 0:30 /home /home rw,noatime - btrfs /dev/vda4 rw
-24 1 8:2 / /boot rw,relatime - ext4 /dev/sda2 rw
-25 1 0:31 / /srv rw,noatime - ext4 /dev/sdb1 rw
-";
-        let mounts = crate::mountinfo::parse_mountinfo(table);
-        let records = [
-            record(20, "/", "8:1", "/", true),
-            record(22, "/home", "0:30", "/home", false),
-            // Its mode was changed back since.
-            record(24, "/boot", "8:2", "/", true),
-            // Another mount took ID 25.
-            record(25, "/srv", "8:3", "/", true),
-            // Gone.
-            record(26, "/data", "8:4", "/", true),
-        ];
-        let got: Vec<(i32, u64)> = to_restore(&records, &mounts)
-            .into_iter()
-            .map(|(record, mount)| (mount.mount_id, record.mode()))
-            .collect();
-        assert_eq!(
-            got,
-            vec![(20, MOUNT_ATTR_RELATIME), (22, MOUNT_ATTR_STRICTATIME)]
-        );
-        assert!(restore(&[]).is_empty());
-    }
-
-    /// The record goes into the plan and comes back as it was.
-    #[test]
-    fn a_record_reads_back_as_it_was_written() {
-        let written = record(20, "/", "8:1", "/", true);
-        let text = serde_json::to_string(&written).unwrap();
-        assert_eq!(serde_json::from_str::<QuietRecord>(&text).unwrap(), written);
-    }
-
-    fn mount_line(line: &str) -> crate::mountinfo::MountEntry {
-        crate::mountinfo::parse_mountinfo(line)
-            .pop()
-            .expect("a mount table line")
-    }
-
-    /// A FUSE mount of a user's, without `allow_other`, that root cannot
-    /// reach is left out of the quiet mounts: the kernel answers PID 1 as it
-    /// answers root. Any other mount, error, owner or kernel setting is not.
-    #[test]
-    fn only_a_fuse_mount_the_kernel_keeps_root_out_of_is_left_out() {
-        let gvfs = mount_line(
-            "45 30 0:47 / /run/user/1000/gvfs rw,nosuid,nodev,relatime - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000,group_id=1000\n",
-        );
-        let n = Some("N\n");
-        assert!(kept_from_root(&gvfs, Errno::ACCESS, n));
-        assert!(kept_from_root(&gvfs, Errno::PERM, n));
-        for other in [Errno::IO, Errno::NOTCONN, Errno::INTR, Errno::NOMEM] {
-            assert!(!kept_from_root(&gvfs, other, n), "{other:?}");
-        }
-        // The kernel lets CAP_SYS_ADMIN through, or its setting is unknown.
-        assert!(!kept_from_root(&gvfs, Errno::ACCESS, Some("Y\n")));
-        assert!(!kept_from_root(&gvfs, Errno::ACCESS, None));
-
-        for (line, left_out) in [
-            // Plain fuse and fuseblk, and a group that is not root's.
-            (
-                "46 30 0:48 / /mnt/a rw,relatime - fuse sshfs rw,user_id=1000,group_id=1000",
-                true,
-            ),
-            (
-                "47 30 8:3 / /mnt/b rw,relatime - fuseblk /dev/sda3 rw,user_id=0,group_id=100",
-                true,
-            ),
-            // Everyone may read it: what refused root is not the owner check.
-            (
-                "48 30 0:49 / /mnt/c rw,relatime - fuse.sshfs h:/ rw,user_id=1000,group_id=1000,allow_other",
-                false,
-            ),
-            // Root's own.
-            (
-                "49 30 0:50 / /mnt/d rw,relatime - fuse.sshfs h:/ rw,user_id=0,group_id=0",
-                false,
-            ),
-            // No owner listed.
-            ("50 30 0:51 / /mnt/e rw,relatime - fuse.sshfs h:/ rw", false),
-            (
-                "51 30 0:52 / /mnt/f rw,relatime - fuse.sshfs h:/ rw,user_id=x,group_id=1000",
-                false,
-            ),
-            // Not FUSE.
-            (
-                "52 30 8:1 / /mnt/g rw,relatime - ext4 /dev/sda1 rw,user_id=1000,group_id=1000",
-                false,
-            ),
-            (
-                "53 30 0:53 / /mnt/h rw,relatime - fusectl fusectl rw,user_id=1000,group_id=1000",
-                false,
-            ),
-            (
-                "54 30 0:54 / /mnt/i rw,relatime - fusefs x rw,user_id=1000,group_id=1000",
-                false,
-            ),
-        ] {
-            let mount = mount_line(&format!("{line}\n"));
-            assert_eq!(kept_from_root(&mount, Errno::ACCESS, n), left_out, "{line}");
-        }
-    }
-
-    /// An error that refuses the quiet mounts names the mount and its type.
-    #[test]
-    fn a_refusal_names_the_mount_and_its_type() {
-        let mount = mount_line(
-            "46 30 0:48 / /mnt/data rw,relatime - fuse.sshfs h:/ rw,user_id=0,group_id=0\n",
-        );
-        let error = naming(&mount, Errno::ACCESS.into());
-        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-        let text = error.to_string();
-        assert!(text.starts_with("/mnt/data (fuse.sshfs): "), "{text}");
-        assert!(text.contains("os error 13"), "{text}");
-    }
-
-    /// Without a mount it changed, no mount takes a mode from it.
-    #[test]
-    fn without_a_changed_mount_no_mode_is_given() {
-        let mounts = crate::mountinfo::parse_mountinfo(
-            "30 20 8:1 / /run/x ro,noatime - ext4 /dev/sda1 rw\n",
-        );
-        assert!(inherited(&[], &[], &mounts).is_empty());
-    }
-}
+#[path = "noatime_tests.rs"]
+mod tests;
