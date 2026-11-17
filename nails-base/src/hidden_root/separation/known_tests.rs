@@ -550,6 +550,22 @@ fn the_options_nails_does_not_read_are_named_without_their_values() {
             &["x-systemd.wanted-by"],
         ),
         ("/dev/vdb1 /opt ext4 noauto,loop", &["loop"]),
+        // A backslash or a quote: systemd keeps the comma after a backslash
+        // in the option, libmount decodes \054 to one, and a comma between
+        // quotes stays in the option.
+        ("/dev/vdb1 /opt ext4 noauto,auto=x\\,noauto", &["auto"]),
+        (
+            "/dev/vdb1 /opt ext4 noauto,comment=x\\054auto",
+            &["comment"],
+        ),
+        (
+            "/dev/vdb1 /opt ext4 noauto,x-gvfs-show\\054auto",
+            &["x-gvfs-show\\054auto"],
+        ),
+        (
+            "/dev/vdb1 /opt ext4 noauto,comment=\"x,auto\"",
+            &["comment", "auto\""],
+        ),
         ("/dev/vdb1 /opt xfs noauto,logdev=vdc", &["logdev"]),
         ("/dev/vdb1 /opt ext4 noauto,auto=1", &[]),
         ("/dev/vdb1 /opt ext4 noauto,x-systemd.automount=0", &[]),
