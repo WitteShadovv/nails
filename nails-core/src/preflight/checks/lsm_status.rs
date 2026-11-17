@@ -106,7 +106,10 @@
 //!   that domain every operation the guard makes ([`check_guard`]): the guard
 //!   counts there where it does ([`UnitDomain::Granted`]), and fails the check
 //!   where it does not, where no udevd runs, or where the policy cannot be
-//!   asked;
+//!   asked. The policy's rules for single `ioctl` numbers, which selinuxfs
+//!   does not answer, and the labels a relabel of `/run` would give the
+//!   guard's files are not asked, so a policy that denies the guard only there
+//!   does not fail it;
 //! - where the copies take no label, NAILS chooses neither domain: both are
 //!   [`UnitDomain::Unknown`], and on a host where SELinux runs the check
 //!   fails.
