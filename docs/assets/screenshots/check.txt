@@ -1,6 +1,6 @@
 title: nails check (NixOS VM, decoy side)
 command: sudo /mnt/data/nails check --overlay-only
-caption: Real output captured from the session-readme-captures NixOS VM test in run ID 40383365802 of the E2E workflow on GitHub's hosted runners, 2026-10-26, on a test VM set up as docs/decoy-requirements.md recommends, with nails run from the hidden volume through sudo. dma-protection passes because the test VM also has QEMU's emulated Intel IOMMU, turned on with intel_iommu=on; it warns when the IOMMU is off or in passthrough, when a Thunderbolt or USB4 controller reports no DMA protection, and with Linux 5.14 or newer when an IOMMU group is identity-mapped (see docs/operator-guide.md). --overlay-only skips the hidden NixOS build; /nix/.ro-store, /tmp/shared and /tmp/xchg are the test VM's own mounts.
+caption: Real output captured from the session-readme-captures NixOS VM test in run ID 40383365802 of the E2E workflow on GitHub's hosted runners, 2026-10-26, on a test VM set up as docs/decoy-requirements.md recommends, with nails run from the hidden volume through sudo. dma-protection passes because the test VM also has QEMU's emulated Intel IOMMU, turned on with intel_iommu=on; it warns when the IOMMU is off or in passthrough, when a Thunderbolt or USB4 controller reports no DMA protection, and with Linux 5.14 or newer when an IOMMU group is identity-mapped (see docs/operator-guide.md). --overlay-only skips the hidden NixOS build; /nix/.ro-store, /tmp/shared and /tmp/xchg are the test VM's own mounts. Three lines are edited to what NAILS prints since it asks the kernel for the network state itself: the network-tools row is gone, host-tools counts four tools (systemctl, loginctl, nix and dmsetup) where ip made five, and the tally counts 29 passed.
 ---
 =======================================
   NAILS Readiness Check
@@ -16,8 +16,7 @@ Pre-flight checks:
   [PASS] decoy-root: the decoy root (ext4 on /dev/vda) can be mounted again for the way back
   [PASS] fstab-policy: decoy filesystems in the hidden root: /nix/.ro-store: overlaid; /nix/store: overlaid; /tmp/shared: overlaid; /tmp/xchg: overlaid
   [PASS] mount-namespace: Running in PID 1's mount namespace with shared root propagation
-  [PASS] host-tools: All 5 required host tools are present
-  [PASS] network-tools: The way back finds nft, and iw where a link is a Wi-Fi interface
+  [PASS] host-tools: All 4 required host tools are present
   [PASS] symlink-support: Filesystem at /mnt/data supports symbolic links
   [PASS] upper-fs-capability: Hidden root at /mnt/data can host an overlayfs upper layer
   [PASS] backend-detect: Hidden root backend: ext4 on LUKS mapping dm-0 on block device vdb; no backend-specific hazards detected
@@ -63,4 +62,4 @@ Inherited decoy state:
   [PASS] nothing to review
   [INFO] 4 components of the desktop or distribution not listed (--json lists every entry)
 
-[PASS] Ready to activate  (30 passed, 0 warnings, 0 failed)
+[PASS] Ready to activate  (29 passed, 0 warnings, 0 failed)

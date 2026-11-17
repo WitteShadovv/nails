@@ -2657,7 +2657,9 @@ of this changelog for that version becomes the release notes word for word, and
   and their modes to the session plan first, and `nails recover`, a rollback and the emergency on
   the decoy give them their modes back where an activation was killed before it could. NAILS reads
   the operator's account from `/etc/passwd` with `O_NOATIME`, where musl's `getpwuid` read it with
-  access times on. Netlink lists the kernel marks as changed while it sent them are asked for
+  access times on. It asks nscd nothing, which musl's lookup did for an account missing from the
+  file, so an account only nscd resolves no longer resolves; the operator's account belongs in
+  `/etc/passwd` (Requirements in README.md). Netlink lists the kernel marks as changed while it sent them are asked for
   again and count as unread after three tries. NAILS asks the service
   manager for its version alone, where `systemctl show` made it work out its taint list and read
   `/etc/os-release` and `/etc/adjtime`. The way back looks at the decoy's init, release file and
