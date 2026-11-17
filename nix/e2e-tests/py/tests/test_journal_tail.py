@@ -162,6 +162,22 @@ class JudgeTest(unittest.TestCase):
         verdict = self.judge(entries)
         self.assertEqual(len(verdict.findings), 3)
 
+    def test_a_decoy_record_from_before_the_marker_names_nothing(self) -> None:
+        entries = [
+            {
+                "_TRANSPORT": "kernel",
+                "MESSAGE": f"EXT4-fs (loop0): mounted filesystem {UUID} r/w",
+                "__MONOTONIC_TIMESTAMP": "62000000",
+            },
+            {
+                "_TRANSPORT": "kernel",
+                "MESSAGE": f"EXT4-fs (loop0): mounted filesystem {UUID} r/w",
+                "__MONOTONIC_TIMESTAMP": "64800000",
+            },
+        ]
+        verdict = self.judge(entries)
+        self.assertEqual(len(verdict.findings), 1)
+
     def test_an_audit_record_of_the_hidden_root_is_found_by_its_serial(self) -> None:
         entries = [
             {
