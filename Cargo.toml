@@ -65,7 +65,10 @@ toml_edit = { version = "0.25.17", default-features = false, features = ["parse"
 # transitions and a POSIX TZ string, read by nails-base's time module, which
 # reads the files itself and keeps NAILS's own calendar and text forms. No
 # default feature: no zone database, no system zone lookup and no file access
-# of jiff's own, no serde.
+# of jiff's own, no serde. This builds jiff and jiff-core, jiff's own code
+# split into a crate since 0.2.33. The releases before that split put defmt,
+# defmt-macros, defmt-parser and bitflags 1 in Cargo.lock for cargo vet to
+# cover, which jiff stopped in 0.2.40.
 jiff = { version = "0.2.42", default-features = false, features = ["alloc"] }
 
 # Atomic file operations (NFR13)
