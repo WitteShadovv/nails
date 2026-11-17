@@ -60,6 +60,13 @@ yanked = "deny"
 # use (synchronous code runs the async API through zbus::block_on) and replaces
 # the async-io feature with default-rt. Make the move, or record why it still
 # waits, by the expiry below.
+#
+# chrono is unmaintained too (RUSTSEC-2026-0543, informational): RustSec lists
+# no patched version and recommends jiff or time. nails-base, nails-core,
+# nails-cli and nails-forensics use it directly, for UTC timestamps, RFC 3339
+# text and durations, some of which state and report files store, so this fix
+# is ours as well: move those crates to jiff or time with every stored format
+# unchanged. Make the move, or record why it still waits, by its expiry.
 ignore = [
     # zvariant: part of zbus 6 as zbus::wire; gone once nails-session moves.
     # expires: 2027-01-31
@@ -71,6 +78,9 @@ ignore = [
     # moves.
     # expires: 2027-01-31
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, merged into zbus 6; fixed by moving nails-session from zbus 5 to 6" },
+    # chrono: our own timestamp code; gone once the four crates move.
+    # expires: 2027-02-28
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no patched version; fixed by moving our timestamp code to jiff or time" },
 ]
 
 # =============================================================================

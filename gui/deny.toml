@@ -45,6 +45,11 @@ ignore = [
     # GUI: as RUSTSEC-2026-0370, for zvariant_derive.
     # expires: 2027-01-31
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, merged into zbus 6; reached on zbus 5 through AccessKit's AT-SPI adapter and Slint's winit backend, which reads the settings portal" },
+    # GUI: chrono is unmaintained (RUSTSEC-2026-0543), with no patched version.
+    # The window reaches it only through Slint's core (i-slint-core), so it
+    # goes once Slint moves to jiff or time.
+    # expires: 2027-02-28
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no patched version; reached through Slint's core (i-slint-core)" },
     # GUI: pin-utils was archived upstream on 2026-10-01 and has no fixed
     # release. The window reaches it only through spin_on 0.1.1, which Slint
     # uses in slint-build and slint-macros, both run at build time. Neither
