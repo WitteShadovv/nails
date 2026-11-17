@@ -575,8 +575,9 @@ Every backend leaves the same traces on the decoy side while you unlock it:
   pre-flight check refuses activation while a crypttab or fstab line opens or
   mounts the hidden volume, or a device it is stored on, except the decoy's
   own lines for `/` and its system folders, and the crypttab lines for the
-  device they mount, that `--allow-decoy-storage` lets be (see above); a line
-  that opens only another volume on the same drive warns (see
+  device they mount, that `--allow-decoy-storage` lets be (see above); a
+  TrueCrypt or VeraCrypt line that opens only another volume on the same drive
+  warns, unless it has the boot write over that drive (see
   [crypttab and fstab](decoy-requirements.md#crypttab-and-fstab)).
 
 `nails deactivate` and `nails emergency` close the hidden backend themselves:

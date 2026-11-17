@@ -314,21 +314,23 @@ How the code upholds this:
   device on its drive or one that cannot be found, is such an enabler, and so is
   one that has the boot write to a device of the hidden drive, its whole disk, a
   partition of it or a device stacked on one of these, through an option such as
-  `journal_path=`, `tpm2-device=` or a header device it mounts read-write, or
-  over the device it names itself (`x-systemd.makefs`, a crypttab line's `swap`,
-  `tmp` or plain mode): the `backend-entries` pre-flight check refuses
-  activation while one exists, among the lines it reads (the decoy requirements
-  list what it reads and what it lets pass). No flag overrides the check, except
-  that for a root `--allow-decoy-storage` accepted as a folder or a btrfs
-  subvolume of a filesystem the decoy uses, the check lets be the decoy's own
-  fstab lines that the boot mounted at `/` or at a system folder, a folder below
-  `/var` or `/.snapshots` among them, outside the hidden root for another part
-  of that filesystem, while the mount there shows it, never one that mounts the
-  volume itself, and, while the decoy mounts another part of that filesystem at
-  `/` or by such a line, the crypttab lines the boot opens as LUKS for the LUKS
-  device it lies on, never a `noauto` one, one with `tcrypt-hidden`, `swap` or
-  `tmp`, one that opens the device in another mode or one for any other device.
-  A line that opens only another volume on the same drive warns.
+  `journal_path=`, `tpm2-device=` or a device it reads a header from, or over
+  the device it names itself (`x-systemd.makefs`, a crypttab line's `swap`,
+  `tmp`, plain mode or a header kept apart from it): the `backend-entries`
+  pre-flight check refuses activation while one exists, among the lines it reads
+  (the decoy requirements list what it reads and what it lets pass). No flag
+  overrides the check, except that for a root `--allow-decoy-storage` accepted
+  as a folder or a btrfs subvolume of a filesystem the decoy uses, the check
+  lets be the decoy's own fstab lines that the boot mounted at `/` or at a
+  system folder, a folder below `/var` or `/.snapshots` among them, outside the
+  hidden root for another part of that filesystem, while the mount there shows
+  it, never one that mounts the volume itself, and, while the decoy mounts
+  another part of that filesystem at `/` or by such a line, the crypttab lines
+  the boot opens as LUKS for the LUKS device it lies on, never a `noauto` one,
+  one with `tcrypt-hidden`, `swap` or `tmp`, one that opens the device in
+  another mode or one for any other device. A TrueCrypt or VeraCrypt line that
+  opens only another volume on the same drive warns, unless it has the boot
+  write over that drive.
 
 This invariant is checked by the end-to-end tests `uefi-esp-nvram-invariant`
 and `soft-reboot-mechanics`: they hash the ESP file listing and capture the EFI
