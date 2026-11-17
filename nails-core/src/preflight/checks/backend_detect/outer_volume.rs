@@ -26,7 +26,7 @@
 //! read-only (`ro`). It reads sysfs and the mount table alone, never a
 //! mapping's table.
 
-use super::graph::{Graph, filesystem_devices, unread_names, unread_reason};
+use super::graph::{Graph, filesystem_devices, unread_devices, unread_names, unread_reason};
 use super::luks2::names_a_volume;
 use crate::blockdev::{self, Attribute, DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::config::get_default_hidden_volume_root;
@@ -137,14 +137,18 @@ impl<F: Filesystem> PreFlightCheck<F> for OuterVolumeCheck {
                 hidden.fstype
             )));
         }
-        let Some(roots) = filesystem_devices(fs, hidden) else {
-            return Ok(unchecked(
-                root,
-                &format!(
-                    "its {} filesystem shows no block device to follow",
-                    separation::shown_fstype(&hidden.fstype)
-                ),
-            ));
+        let roots = match filesystem_devices(fs, hidden) {
+            Ok(Some(roots)) => roots,
+            Ok(None) => {
+                return Ok(unchecked(
+                    root,
+                    &format!(
+                        "its {} filesystem shows no block device to follow",
+                        separation::shown_fstype(&hidden.fstype)
+                    ),
+                ));
+            }
+            Err(_) => return Ok(unchecked(root, &unread_devices("its filesystem"))),
         };
         let graph = Graph::read(
             fs,

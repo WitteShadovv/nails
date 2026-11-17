@@ -10,7 +10,7 @@
 use super::walk::{parse_backing_file, parse_u64, uevent_value};
 use super::*;
 use crate::filesystem::mountinfo::parse_mountinfo;
-use crate::filesystem::{Filesystem, MockFilesystem};
+use crate::filesystem::{Filesystem, MockFailure, MockFilesystem, MockLookup};
 use std::io::ErrorKind;
 use std::os::unix::ffi::OsStrExt;
 
@@ -892,6 +892,67 @@ fn specs_resolve_through_dev_to_their_device() {
     assert_eq!(resolve("/dev/sdz9"), None);
     assert_eq!(resolve("/home/alice/box.img"), None);
     assert_eq!(resolve("tmpfs"), None);
+
+    // A link that is there but cannot be resolved, or the number of the
+    // device it leads to that cannot be read, may name a device: the place
+    // is named, where `resolve_spec` alone says none.
+    let or_unread = |spec: &str| resolve_spec_or_unread(&sysfs.0, spec);
+    assert_eq!(or_unread("UUID=ffff"), Ok(None));
+    sysfs
+        .0
+        .mock_set_lookup_error("/dev/disk/by-label/data", ErrorKind::PermissionDenied);
+    assert_eq!(
+        or_unread("LABEL=data"),
+        Err(PathBuf::from("/dev/disk/by-label/data"))
+    );
+    assert_eq!(resolve("LABEL=data"), None);
+    sysfs
+        .0
+        .mock_set_lookup_error(&format!("{DM4}/dev"), ErrorKind::Other);
+    assert_eq!(
+        or_unread("/dev/mapper/data"),
+        Err(PathBuf::from(format!("{DM4}/dev")))
+    );
+}
+
+/// A partition the walk reaches by a `slaves/` link it cannot resolve reads
+/// as a partition, but its disk is the directory above the one the link
+/// leads to: the walk keeps the link as its disk's unread `dev`.
+#[test]
+fn a_partition_reached_by_a_link_that_cannot_be_resolved_has_an_untold_disk() {
+    let sysfs = Sysfs::new();
+    disk_with_partition(&sysfs);
+    sysfs
+        .device(DM4, "dm-4", "253:4")
+        .links(DM4, "slaves", &[("sdb2", SDB2)]);
+    let read = sysfs.stack(DM4, LoopFollow::default());
+    assert_eq!(
+        read[1].partition.as_ref().unwrap().disk.as_deref(),
+        Some("sdb")
+    );
+    assert!(read[1].unread.is_empty(), "{:?}", read[1].unread);
+
+    // The kernel serves the partition's attributes through the link.
+    let link = format!("{DM4}/slaves/sdb2");
+    for (attribute, value) in [("dev", "8:18"), ("partition", "2"), ("start", "2048")] {
+        sysfs.file(&link, attribute, value);
+    }
+    sysfs.0.mock_fail_only(
+        Path::new(&link),
+        MockLookup::Canonicalize,
+        MockFailure::Io(ErrorKind::PermissionDenied),
+    );
+    let read = sysfs.stack(DM4, LoopFollow::default());
+    let partition = read[1].partition.as_ref().expect("still a partition");
+    assert_eq!(partition.number, 2);
+    assert_eq!(partition.disk, None);
+    assert_eq!(
+        read[1].unread,
+        vec![Unread {
+            attribute: Attribute::DiskDev,
+            path: PathBuf::from(&link),
+        }]
+    );
 }
 
 #[test]
@@ -912,10 +973,33 @@ fn btrfs_members_are_every_device_of_the_filesystem() {
             ("dm-1", "/sys/devices/virtual/block/dm-1"),
         ],
     );
-    assert_eq!(btrfs_members(&sysfs.0, "sdb3"), vec!["dm-1", "sdb3"]);
-    assert_eq!(btrfs_members(&sysfs.0, "dm-1"), vec!["dm-1", "sdb3"]);
-    assert!(btrfs_members(&sysfs.0, "sda1").is_empty());
-    assert!(btrfs_members(&MockFilesystem::new(), "sdb3").is_empty());
+    assert_eq!(
+        btrfs_members(&sysfs.0, "sdb3").unwrap(),
+        vec!["dm-1", "sdb3"]
+    );
+    assert_eq!(
+        btrfs_members(&sysfs.0, "dm-1").unwrap(),
+        vec!["dm-1", "sdb3"]
+    );
+    assert!(btrfs_members(&sysfs.0, "sda1").unwrap().is_empty());
+    assert!(
+        btrfs_members(&MockFilesystem::new(), "sdb3")
+            .unwrap()
+            .is_empty()
+    );
+
+    // A listing that is there but cannot be read may hide the members: an
+    // error that names it, never none. The first place read is named.
+    for (place, kind) in [
+        (
+            "/sys/fs/btrfs/0a1b2c3d-0000-4000-8000-000000000001/devices",
+            std::io::ErrorKind::Other,
+        ),
+        ("/sys/fs/btrfs", std::io::ErrorKind::PermissionDenied),
+    ] {
+        sysfs.0.mock_set_lookup_error(place, kind);
+        assert_eq!(btrfs_members(&sysfs.0, "sdb3"), Err(PathBuf::from(place)));
+    }
 }
 
 // ------------------------------------------------------------------------

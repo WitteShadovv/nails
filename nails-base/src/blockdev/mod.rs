@@ -20,7 +20,9 @@
 //!   [`device_of_mount_or_unread`] also says where a read that may have
 //!   found the device failed.
 //! - [`resolve_spec`] finds the device an fstab or crypttab spec names, and
-//!   [`follow_in_dev`] where a path in `/dev` leads, without leaving `/dev`.
+//!   [`resolve_spec_or_unread`] also says where a lookup that may have found
+//!   it failed. [`follow_in_dev`] finds where a path in `/dev` leads, without
+//!   leaving `/dev`.
 //! - [`btrfs_members`] lists every device of a btrfs filesystem, and
 //!   [`btrfs_filesystems`] those of all of them.
 //! - [`classify_dm`] says what a device-mapper uuid and name describe.
@@ -39,7 +41,7 @@ mod tests;
 
 pub use dev_path::{OutOfDev, follow_in_dev};
 pub use driver::{PROC_DEVICES, SHARED_RANGE, block_majors, major_of, parse_block_majors};
-pub use spec::{btrfs_filesystems, btrfs_members, resolve_spec};
+pub use spec::{btrfs_filesystems, btrfs_members, resolve_spec, resolve_spec_or_unread};
 pub use walk::{
     classify_dm, device_numbered, device_of_mount, device_of_mount_or_unread, stack, walk,
 };
