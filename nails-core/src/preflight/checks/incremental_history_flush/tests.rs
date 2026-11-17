@@ -491,6 +491,105 @@ fn a_bash_comment_starts_outside_quotes_alone() {
 }
 
 #[test]
+fn a_bash_comment_starts_only_where_bash_s_reader_starts_one() {
+    // bash 5.3.9 writes each typed line with each of these in ~/.bashrc: a
+    // `#` after a blank in a backquote pair, a `${...}` or arithmetic, which
+    // bash reads to their end as part of a word, starts no comment, and one
+    // in a command substitution's code does only to its line's end.
+    for text in [
+        "X=`: #`; PROMPT_COMMAND='history -a'\n",
+        "Y=${X:- #}; PROMPT_COMMAND='history -a'\n",
+        "W=${X:-a #}b; PROMPT_COMMAND='history -a'\n",
+        "Z=$(: #\n); PROMPT_COMMAND='history -a'\n",
+        "Z=$(echo ${X:- #}); PROMPT_COMMAND='history -a'\n",
+        "Z=$(echo `: #`); PROMPT_COMMAND='history -a'\n",
+        "Z=\"${X:- #}\"; PROMPT_COMMAND='history -a'\n",
+        "Z=`: # it's`\nPROMPT_COMMAND='history -a'\n",
+        "Z=${X:-'a }b'}; PROMPT_COMMAND='history -a'\n",
+        "Z=${X:-'}' #}; PROMPT_COMMAND='history -a'\n",
+        "Z=`echo \\` #`; PROMPT_COMMAND='history -a'\n",
+        "Z=$(cat <<'EOF'\nit's # x\nEOF\n); PROMPT_COMMAND='history -a'\n",
+        "Z=$(( 1 )) ; PROMPT_COMMAND='history -a' #\n",
+        "Z=$((1))#; PROMPT_COMMAND='history -a'\n",
+        "Z=$(echo a)#; PROMPT_COMMAND='history -a'\n",
+        "echo $# ; PROMPT_COMMAND='history -a'\n",
+        "X=$(case x in x) :;; esac)#; PROMPT_COMMAND='history -a'\n",
+        "X=$(case x in (x) :;; esac)#; PROMPT_COMMAND='history -a'\n",
+        "shopt -s extglob\nX=@(a| #b); PROMPT_COMMAND='history -a'\n",
+        "shopt -s extglob\ncase x in @(a| #b)) ;; esac; PROMPT_COMMAND='history -a'\n",
+        "[[ a =~ ( #) ]]; PROMPT_COMMAND='history -a'\n",
+        // A `((` that a lone `)` closes is a subshell with a `(` group
+        // first, read as code after it. A `$((` that one closes is a command
+        // substitution, which bash reads to its `)` with quotes and no
+        // comment, and parses as code only where it expands the word, which
+        // it never does after `false &&`, in a function never called or in a
+        // `case` arm never taken.
+        "X=\"$((echo a); echo \"b #\")\"; PROMPT_COMMAND='history -a'\n",
+        "X=\"$((echo a) ; echo 'b\" #')\"; PROMPT_COMMAND='history -a'\n",
+        "X=\"$( ((echo a); echo b) ; echo \"c #\")\"; PROMPT_COMMAND='history -a'\n",
+        "((echo a # c\n); echo b); PROMPT_COMMAND='history -a'\n",
+        "true || X=\"$((echo a) ; : #)\"; PROMPT_COMMAND='history -w'\n",
+        "false && X=$((echo a)#); PROMPT_COMMAND='history -a'\n",
+        "f() { X=\"$((echo a); echo b #)\"; }; PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); : #); PROMPT_COMMAND='history -a'\n",
+        "f() { X=$((echo a); : #); }; PROMPT_COMMAND='history -a'\n",
+        "case y in x) X=$((echo a); : #);; esac; PROMPT_COMMAND='history -a'\n",
+        "false && X=$(( $(case x in x) echo 1;; esac) + 1 #)); PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); (: #)); PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); echo ') #'); PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); echo \") #\"); PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); echo `: #`); PROMPT_COMMAND='history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        let command = if text.contains("history -w") {
+            "history -w"
+        } else {
+            "history -a"
+        };
+        assert!(
+            warning(bash(&fs)).contains(&format!("/home/alice/.bashrc runs `{command}`")),
+            "{text:?}"
+        );
+    }
+    // False alarms: bash 5.3.9 wrote none with these, as it expands the
+    // `$((...)` and parses it as code, where the `#` starts a comment that
+    // takes the `PROMPT_COMMAND` assignment along. The reader starts no
+    // comment in such a `$((...)`, as it cannot tell whether bash expands it.
+    for text in [
+        "X=$((echo a); : # ; PROMPT_COMMAND='history -a'\n)\n",
+        "X=\"$((echo a); : # ; PROMPT_COMMAND='history -a'\n)\"\n",
+        "X=$((echo a)#; PROMPT_COMMAND='history -a'\n)\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(
+            warning(bash(&fs)).contains("/home/alice/.bashrc runs `history -a`"),
+            "{text:?}"
+        );
+    }
+    // bash 5.3.9 wrote none with these: the comment starts in the file's
+    // code, in a command or process substitution's code, after an arithmetic
+    // command or a subshell, and in a `((` subshell's code after its first
+    // group, and runs to its line's end.
+    for text in [
+        "X=1 # ; PROMPT_COMMAND='history -a'\n",
+        "X=$(: #); PROMPT_COMMAND='history -a'\n)\n",
+        "X=${X:-$(: #)}; PROMPT_COMMAND='history -a'\n)}\n",
+        "X=\"$(: #)\"; PROMPT_COMMAND='history -a'\n)\"\n",
+        "cat <(: #) >/dev/null; PROMPT_COMMAND='history -a'\n)\n",
+        "((1)) #; PROMPT_COMMAND='history -a'\n",
+        "Z=$(echo a) #; PROMPT_COMMAND='history -a'\n",
+        "(echo)#; PROMPT_COMMAND='history -a'\n",
+        "((echo a); : # ; PROMPT_COMMAND='history -a'\n)\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(matches!(bash(&fs), CheckResult::Pass(_)), "{text:?}");
+    }
+}
+
+#[test]
 fn bash_reads_the_system_files_too() {
     for path in ["/etc/profile", "/etc/bash.bashrc", "/etc/bashrc"] {
         let fs = MockFilesystem::new();

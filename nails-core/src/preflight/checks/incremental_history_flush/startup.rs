@@ -10,9 +10,14 @@
 //! home the shell may run with. A line is read for the words a shell would
 //! run, its comment dropped and its quotes taken off, and goes on in the next
 //! one where what is left of it ends in a backslash. A comment starts at a
-//! `#` that starts a word outside quotes, after a space or a tab (bash's
-//! blanks) or an operator, and ends with its line, a backslash at its end
-//! too, as in bash ([`uncommented`]).
+//! `#` that starts a word, after a space or a tab (bash's blanks) or an
+//! operator, in the file's code or a command substitution's, not in a quote,
+//! a backquote pair, a `${...}`, arithmetic or a `(` the reader keeps open,
+//! and ends with its line, a backslash at its end too, as in bash
+//! ([`uncommented`]), but for a `$((...)` that bash reads as a command
+//! substitution, in which the reader starts none, which can only make the
+//! check warn, and a `case` in a command substitution, which the reader may
+//! read otherwise.
 
 use std::path::{Path, PathBuf};
 
@@ -90,15 +95,42 @@ pub(super) fn read<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>,
         .map_err(failed)
 }
 
-/// Where the reading of bash code is ([`uncommented`]).
+/// What the reading of bash code is in ([`uncommented`]), as bash's reader
+/// reads it: a construct it reads to its end before the word it stands in
+/// goes on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Quote {
-    None,
-    /// In `'...'`, where nothing is escaped.
+enum Frame {
+    /// The file's code, or a command substitution's or a process
+    /// substitution's (`$(...)`, `<(...)`, `>(...)`), or the rest of a
+    /// `((...)` that bash reads as a subshell (`((echo a); echo b)`), which
+    /// bash parses as code, where a `#` that starts a word starts a comment;
+    /// whether a `)` closes it, and how many `(` in it are open.
+    Code { substitution: bool, depth: usize },
+    /// The rest of a `$((...)` whose first `(` group a lone `)` closed
+    /// (`$((echo a); echo b)`), a command substitution to bash, which reads
+    /// it to its `)` as it reads that group, with quotes and no comment, and
+    /// parses it as code only where it expands the word; how many `(` in it
+    /// are open.
+    Pair { depth: usize },
+    /// `${...}`, to its `}`.
+    Brace,
+    /// Arithmetic: `$((...))` and `((...))` (a `command` of its own, after
+    /// which a word starts), to the `))` that closes it, or `$[...]`, to its
+    /// `]`; how many of the brackets it closes with are open in it.
+    Arith {
+        close: char,
+        depth: usize,
+        command: bool,
+    },
+    /// A backquote pair, to the next backquote no backslash escapes, in which
+    /// nothing else opens.
+    Backquote,
+    /// `'...'`, where nothing is escaped.
     Single,
-    /// In `"..."`, where a backslash escapes the next character.
+    /// `"..."`, where a backslash escapes the next character and `$(...)`,
+    /// `${...}`, `$[...]` and a backquote pair open.
     Double,
-    /// In `$'...'`, where a backslash escapes the next character.
+    /// `$'...'`, where a backslash escapes the next character.
     Ansi,
 }
 
@@ -131,107 +163,360 @@ fn delimiter(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<(String
     (!word.is_empty()).then_some((word, tabs))
 }
 
-/// `text`, bash code, with its comments dropped as bash reads them: a `#`
-/// that starts a word, at a line's start or after a space, a tab or an
-/// operator, outside quotes (`'...'`, `"..."`, `$'...'`) and not escaped by a
-/// backslash, starts one, which ends with its line, a backslash at its end
-/// too. bash keeps any other white space in the word (a vertical tab, a
-/// no-break space), so a `#` after one starts no comment. A here-document's
-/// body is text, in which no `#` starts a comment and no quote opens one.
-/// bash reads a startup file and what it sources as it reads a script, with
-/// comments whatever `interactive_comments` holds.
+/// `text`, bash code, with its comments dropped as bash 5.3's reader reads
+/// them: a `#` that starts a word, at a line's start or after a space, a tab
+/// or an operator (`;`, `&`, `|`, `(`, `)`, not `<` or `>`), not escaped by a
+/// backslash, starts one in the file's code and in a command substitution or
+/// a process substitution's, which bash parses as code (`$(: # x)`), and
+/// none in a quote (`'...'`, `"..."`, `$'...'`), a backquote pair, a
+/// `${...}` or arithmetic (`$((...))`, `((...))`, `$[...]`), which bash
+/// reads to their end as part of a word (`X=\`: #\``, `${X:- #}`). A `((`
+/// whose first `(` group a lone `)` closes (`((echo a); echo b)`) bash reads
+/// as a subshell that starts with that group: the reader reads the group as
+/// bash first reads it, to its `)`, with quotes and no comment, and the rest
+/// as code, where a comment starts. A `$((` whose first group a lone `)`
+/// closes (`$((echo a); echo b)`) bash reads as a command substitution: it
+/// reads the whole to its `)` with quotes and no comment, and parses it as
+/// code only where it expands the word, so a `#` in it may start a comment
+/// or none. Where the reader cannot tell what bash reads, it keeps the text,
+/// which can only make the check warn: in such a `$((...)`, in the first
+/// group of a `((`, where bash, running it as code, may find a comment,
+/// after the `)` that ends such a subshell (`((echo a); echo b)#`), in a `(`
+/// it keeps open, as an extended glob's or a regular expression's group may
+/// be part of a word (`@(a| #b)`), and after a `)` that closes nothing it saw
+/// open, as a `case` pattern's `)` in a `$(...)` may end it too soon for the
+/// reader. A `case` in a `$(...)` it may still read otherwise than bash: in a
+/// `"..."` or a `${...}` around the `$(...)`, a quote or a `}` in an arm then
+/// ends what the reader is in, and a `#` after it may start a comment bash
+/// never starts (`X="$(case x in x) echo "a #";; esac)"`,
+/// `Y=${X:-$(case x in x) echo };; esac) #}`).
+/// A comment ends with its line, a backslash at its end too. bash keeps any
+/// other white space in the word (a vertical tab, a no-break space), so a `#`
+/// after one starts no comment. A here-document's body is text, in which no
+/// `#` starts a comment and no quote opens one. bash reads a startup file and
+/// what it sources as it reads a script, with comments whatever
+/// `interactive_comments` holds.
 fn uncommented(text: &str) -> String {
-    let mut kept = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    let mut quote = Quote::None;
-    let mut previous: Option<char> = None;
-    let mut bodies: Vec<(String, bool)> = Vec::new();
-    while let Some(c) = chars.next() {
-        match quote {
-            Quote::Single if c == '\'' => quote = Quote::None,
-            Quote::Double if c == '"' => quote = Quote::None,
-            Quote::Ansi if c == '\'' => quote = Quote::None,
-            Quote::Double | Quote::Ansi if c == '\\' => {
-                kept.push(c);
-                if let Some(next) = chars.next() {
-                    kept.push(next);
-                }
-                previous = Some('\\');
-                continue;
+    let mut reader = BashReader {
+        chars: text.chars().peekable(),
+        kept: String::with_capacity(text.len()),
+        frames: vec![Frame::Code {
+            substitution: false,
+            depth: 0,
+        }],
+        previous: None,
+        bodies: Vec::new(),
+    };
+    while let Some(c) = reader.chars.next() {
+        if !reader.read(c) {
+            reader.kept.push(c);
+            reader.previous = Some(c);
+        }
+    }
+    reader.kept
+}
+
+/// The state of [`uncommented`]: the text left to read, what it keeps, what
+/// it is in, the character before (where it is one that ends a word, the
+/// next starts one), and the here-documents the line being read opened.
+struct BashReader<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+    kept: String,
+    frames: Vec<Frame>,
+    previous: Option<char>,
+    bodies: Vec<(String, bool)>,
+}
+
+impl BashReader<'_> {
+    /// What it is in: the file's code at the bottom.
+    fn frame(&self) -> Frame {
+        *self.frames.last().expect("the file's code")
+    }
+
+    /// Read `c` and what it takes with it; `false` where `c` is to be kept as
+    /// it is, as the character before the next.
+    fn read(&mut self, c: char) -> bool {
+        let frame = self.frame();
+        // A backslash escapes the next character but in `'...'`.
+        if c == '\\' && frame != Frame::Single {
+            self.kept.push(c);
+            if let Some(next) = self.chars.next() {
+                self.kept.push(next);
             }
-            Quote::Single | Quote::Double | Quote::Ansi => {}
-            Quote::None => match c {
-                '\\' => {
-                    kept.push(c);
-                    if let Some(next) = chars.next() {
-                        kept.push(next);
-                    }
-                    previous = Some('\\');
-                    continue;
+            self.previous = Some('\\');
+            return true;
+        }
+        if c == '$' && self.dollar(frame) {
+            return true;
+        }
+        match frame {
+            Frame::Single | Frame::Ansi if c == '\'' => {
+                self.frames.pop();
+            }
+            Frame::Backquote if c == '`' => {
+                self.frames.pop();
+            }
+            Frame::Double => match c {
+                '"' => {
+                    self.frames.pop();
                 }
-                '\'' => quote = Quote::Single,
-                '"' => quote = Quote::Double,
-                '$' if chars.peek() == Some(&'\'') => {
-                    kept.push(c);
-                    kept.push('\'');
-                    chars.next();
-                    quote = Quote::Ansi;
-                    previous = Some('\'');
-                    continue;
-                }
-                '#' if previous.is_none_or(|p| {
-                    matches!(p, '\n' | ' ' | '\t' | ';' | '&' | '|' | '(' | ')')
-                }) =>
-                {
-                    while chars.next_if(|c| *c != '\n').is_some() {}
-                    continue;
-                }
-                '<' if chars.peek() == Some(&'<') => {
-                    kept.push(c);
-                    kept.push('<');
-                    chars.next();
-                    let mut ahead = chars.clone();
-                    if let Some(body) = delimiter(&mut ahead) {
-                        bodies.push(body);
-                    }
-                    previous = Some('<');
-                    continue;
-                }
-                '\n' if !bodies.is_empty() => {
-                    kept.push(c);
-                    // The bodies of the here-documents the line opened, in
-                    // order, each to the line that is its delimiter.
-                    for (word, tabs) in std::mem::take(&mut bodies) {
-                        loop {
-                            let mut line = String::new();
-                            while let Some(next) = chars.next_if(|c| *c != '\n') {
-                                line.push(next);
-                            }
-                            let ended = chars.next().is_some();
-                            kept.push_str(&line);
-                            if ended {
-                                kept.push('\n');
-                            }
-                            let shown = if tabs {
-                                line.trim_start_matches('\t')
-                            } else {
-                                line.as_str()
-                            };
-                            if shown == word || !ended {
-                                break;
-                            }
-                        }
-                    }
-                    previous = Some('\n');
-                    continue;
+                '`' => self.frames.push(Frame::Backquote),
+                _ => {}
+            },
+            Frame::Brace => match c {
+                '\'' => self.frames.push(Frame::Single),
+                '"' => self.frames.push(Frame::Double),
+                '`' => self.frames.push(Frame::Backquote),
+                '}' => {
+                    self.frames.pop();
                 }
                 _ => {}
             },
+            Frame::Arith {
+                close,
+                depth,
+                command,
+            } => return self.arith(c, close, depth, command),
+            Frame::Pair { depth } => return self.pair(c, depth),
+            Frame::Single | Frame::Ansi | Frame::Backquote => {}
+            Frame::Code {
+                substitution,
+                depth,
+            } => return self.code(c, substitution, depth),
         }
-        kept.push(c);
-        previous = Some(c);
+        false
     }
-    kept
+
+    /// What `$` opens where expansions are read (not in `'...'`, `$'...'` or
+    /// a backquote pair): `$(...)`, `$((...))`, `${...}`, `$[...]` and, but in
+    /// `"..."`, `$'...'`; `false` where it opens none.
+    fn dollar(&mut self, frame: Frame) -> bool {
+        if matches!(frame, Frame::Single | Frame::Backquote | Frame::Ansi) {
+            return false;
+        }
+        let arith = |close| Frame::Arith {
+            close,
+            depth: 0,
+            command: false,
+        };
+        let (opened, shown) = match self.chars.peek() {
+            Some('(') => {
+                self.chars.next();
+                if self.chars.next_if_eq(&'(').is_some() {
+                    (arith(')'), "$((")
+                } else {
+                    let code = Frame::Code {
+                        substitution: true,
+                        depth: 0,
+                    };
+                    (code, "$(")
+                }
+            }
+            Some('{') => {
+                self.chars.next();
+                (Frame::Brace, "${")
+            }
+            Some('[') => {
+                self.chars.next();
+                (arith(']'), "$[")
+            }
+            Some('\'') if frame != Frame::Double => {
+                self.chars.next();
+                (Frame::Ansi, "$'")
+            }
+            _ => return false,
+        };
+        self.kept.push_str(shown);
+        self.frames.push(opened);
+        self.previous = Some('(');
+        true
+    }
+
+    /// Read `c` in arithmetic that closes with `close` and has `depth` of its
+    /// brackets open in it, a `command` of its own or not.
+    fn arith(&mut self, c: char, close: char, depth: usize, command: bool) -> bool {
+        let open = if close == ')' { '(' } else { '[' };
+        match c {
+            '\'' => self.frames.push(Frame::Single),
+            '"' => self.frames.push(Frame::Double),
+            '`' => self.frames.push(Frame::Backquote),
+            c if c == open || (c == close && depth > 0) => {
+                let depth = if c == open { depth + 1 } else { depth - 1 };
+                *self.frames.last_mut().expect("the arithmetic") = Frame::Arith {
+                    close,
+                    depth,
+                    command,
+                };
+            }
+            c if c == close => {
+                self.frames.pop();
+                self.kept.push(c);
+                if close == ')' {
+                    if let Some(next) = self.chars.next_if_eq(&')') {
+                        self.kept.push(next);
+                    } else if command {
+                        // A lone `)` closes no arithmetic: bash reads the
+                        // `((` as a subshell with a `(` group first, which
+                        // the `)` closed (`((echo a); echo b)`), and the rest
+                        // to its own `)` as code.
+                        self.frames.push(Frame::Code {
+                            substitution: true,
+                            depth: 0,
+                        });
+                        self.previous = Some(')');
+                        return true;
+                    } else {
+                        // Nor does it in a `$((`: bash reads the whole as a
+                        // command substitution, to its own `)` as it read
+                        // the group, with quotes and no comment, and as code
+                        // only where it expands the word, so the reader
+                        // starts no comment in it (`$((echo a); : #)`).
+                        self.frames.push(Frame::Pair { depth: 0 });
+                        self.previous = Some(')');
+                        return true;
+                    }
+                }
+                // `$((1))#x` is one word, `((1)) #x` a comment.
+                self.previous = Some(if command { ')' } else { 'x' });
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Read `c` in the rest of a `$((...)` that bash reads as a command
+    /// substitution, with `depth` of its `(` open.
+    fn pair(&mut self, c: char, depth: usize) -> bool {
+        match c {
+            '\'' => self.frames.push(Frame::Single),
+            '"' => self.frames.push(Frame::Double),
+            '`' => self.frames.push(Frame::Backquote),
+            c if c == '(' || (c == ')' && depth > 0) => {
+                let depth = if c == '(' { depth + 1 } else { depth - 1 };
+                *self.frames.last_mut().expect("the pair") = Frame::Pair { depth };
+            }
+            ')' => {
+                // The substitution is part of a word that goes on (`$(x)#y`).
+                self.frames.pop();
+                self.kept.push(c);
+                self.previous = Some('x');
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Read `c` in code, the file's or a substitution's, with `depth` of its
+    /// `(` open.
+    fn code(&mut self, c: char, substitution: bool, depth: usize) -> bool {
+        let word_start = self
+            .previous
+            .is_none_or(|p| matches!(p, '\n' | ' ' | '\t' | ';' | '&' | '|' | '(' | ')'));
+        let set_depth = |frames: &mut Vec<Frame>, depth| {
+            *frames.last_mut().expect("the code") = Frame::Code {
+                substitution,
+                depth,
+            };
+        };
+        match c {
+            '\'' => self.frames.push(Frame::Single),
+            '"' => self.frames.push(Frame::Double),
+            '`' => self.frames.push(Frame::Backquote),
+            // In a `(` the reader keeps open, which may be an extended glob's
+            // or a regular expression's group (`@(a| #b)`,
+            // `[[ $x =~ ( #) ]]`) that bash reads as part of a word, a `#`
+            // starts none: the text stays.
+            '#' if word_start && depth == 0 => {
+                while self.chars.next_if(|c| *c != '\n').is_some() {}
+                return true;
+            }
+            '<' | '>' if self.chars.peek() == Some(&'(') => {
+                // A process substitution.
+                self.chars.next();
+                self.kept.push(c);
+                self.kept.push('(');
+                self.frames.push(Frame::Code {
+                    substitution: true,
+                    depth: 0,
+                });
+                self.previous = Some('(');
+                return true;
+            }
+            '(' if word_start && self.chars.peek() == Some(&'(') => {
+                // An arithmetic command.
+                self.chars.next();
+                self.kept.push_str("((");
+                self.frames.push(Frame::Arith {
+                    close: ')',
+                    depth: 0,
+                    command: true,
+                });
+                self.previous = Some('(');
+                return true;
+            }
+            '(' => set_depth(&mut self.frames, depth + 1),
+            ')' if depth > 0 => set_depth(&mut self.frames, depth - 1),
+            ')' => {
+                // The substitution is part of a word that goes on (`$(x)#y`).
+                // One that closes nothing the reader saw open may close a
+                // substitution a `case` pattern's `)` ended too soon
+                // (`$(case x in x) :;; esac)#y`): a `#` after it starts no
+                // comment either.
+                if substitution {
+                    self.frames.pop();
+                }
+                self.kept.push(c);
+                self.previous = Some('x');
+                return true;
+            }
+            '<' if self.chars.peek() == Some(&'<') => {
+                self.kept.push_str("<<");
+                self.chars.next();
+                let mut ahead = self.chars.clone();
+                if let Some(body) = delimiter(&mut ahead) {
+                    self.bodies.push(body);
+                }
+                self.previous = Some('<');
+                return true;
+            }
+            '\n' if !self.bodies.is_empty() => {
+                self.kept.push(c);
+                self.here_documents();
+                self.previous = Some('\n');
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// The bodies of the here-documents the line opened, in order, each to
+    /// the line that is its delimiter, kept as text.
+    fn here_documents(&mut self) {
+        for (word, tabs) in std::mem::take(&mut self.bodies) {
+            loop {
+                let mut line = String::new();
+                while let Some(next) = self.chars.next_if(|c| *c != '\n') {
+                    line.push(next);
+                }
+                let ended = self.chars.next().is_some();
+                self.kept.push_str(&line);
+                if ended {
+                    self.kept.push('\n');
+                }
+                let shown = if tabs {
+                    line.trim_start_matches('\t')
+                } else {
+                    line.as_str()
+                };
+                if shown == word || !ended {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// The words of a line of shell code, its comment dropped already
