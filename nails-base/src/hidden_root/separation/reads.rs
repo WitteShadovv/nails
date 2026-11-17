@@ -259,13 +259,25 @@ fn header_on_drive_why(root: &Path) -> String {
     )
 }
 
+/// Whether a filesystem is mounted from the device `node` now, as the mount
+/// table shows it ([`node_of_mount`](super::DeviceMap::node_of_mount)): the
+/// device holds that filesystem, so `systemd-makefs`, which formats a device
+/// only where it finds no filesystem there, leaves it as it is.
+fn holds_a_mounted_filesystem(scene: &Scene<'_>, node: &str) -> bool {
+    scene
+        .mounts
+        .iter()
+        .any(|mount| scene.devices.node_of_mount(mount) == Some(node))
+}
+
 /// Why a line that has the boot write over the device `node` it names itself
 /// makes a finding, if it does: when that device lies on the drive of the
 /// volume at `root`, whose whole disks are `disks`, on one of them, a
 /// partition of one or a device stacked on one ([`reaches_a_disk_of`]). `how`
 /// says how a crypttab line writes over its source, and `None` is an fstab
-/// line's `x-systemd.makefs`. A device the volume is stored on is judged as
-/// the line's source, before this.
+/// line's `x-systemd.makefs`, which formats nothing on a device a filesystem
+/// is mounted from now ([`holds_a_mounted_filesystem`]). A device the volume
+/// is stored on is judged as the line's source, before this.
 pub(super) fn overwrite_why(
     scene: &Scene<'_>,
     node: &str,
@@ -273,7 +285,9 @@ pub(super) fn overwrite_why(
     how: Option<Overwrite>,
     root: &Path,
 ) -> Option<String> {
-    if !reaches_a_disk_of(scene, node, disks) {
+    if !reaches_a_disk_of(scene, node, disks)
+        || (how.is_none() && holds_a_mounted_filesystem(scene, node))
+    {
         return None;
     }
     let drive = format!(

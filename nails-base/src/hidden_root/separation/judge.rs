@@ -568,7 +568,9 @@ fn claims(
             // One the boot formats where it finds no filesystem, a device of
             // the hidden drive outside the root's stack, its whole disk say:
             // a write over the drive at boot, or when a unit pulls in a
-            // `noauto` one. A device of the stack is a finding below.
+            // `noauto` one. A device of the stack is a finding below, and one
+            // a filesystem is mounted from now holds that filesystem, which
+            // `systemd-makefs` finds there and leaves as it is.
             if let Some(why) = node
                 .filter(|n| formats_its_device(entry) && !entry_stack.iter().any(|s| s == n))
                 .and_then(|n| overwrite_why(scene, n, &disks, None, &hidden.mount_point))

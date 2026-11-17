@@ -134,7 +134,8 @@ fn a_line_that_has_the_boot_write_over_its_own_device_of_the_drive_is_an_entry()
     // partition table and nothing at its own start among them. A plain
     // mapping checks no header, so whatever writes to it writes over its
     // source. On the volume's drive, a noauto line among them, that is a
-    // write over that drive.
+    // write over that drive, on a partition no filesystem is mounted from
+    // now too.
     let decoys = "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n";
     let makefs = "it has the boot format a device of the drive the volume at /mnt is stored on \
                   where it finds no filesystem, through its option x-systemd.makefs";
@@ -171,9 +172,9 @@ fn a_line_that_has_the_boot_write_over_its_own_device_of_the_drive_is_an_entry()
             makefs,
         ),
         (
-            "/dev/sdb2 /media/x ext4 x-systemd.makefs 0 0",
+            "/dev/sdb3 /media/x ext4 x-systemd.makefs 0 0",
             "",
-            "/dev/sdb2 /media/x ext4",
+            "/dev/sdb3 /media/x ext4",
             makefs,
         ),
         (
@@ -244,6 +245,7 @@ fn a_line_that_has_the_boot_write_over_its_own_device_of_the_drive_is_an_entry()
         ),
     ] {
         let judgement = partitioned_drive()
+            .part("sdb3", "8:19", "sdb")
             .spec("/dev/disk/by-id/usb-whole", "sdb")
             .fstab(&format!("{decoys}{fstab}\n"))
             .crypttab(&format!("{crypttab}\n"))
@@ -257,9 +259,12 @@ fn a_line_that_has_the_boot_write_over_its_own_device_of_the_drive_is_an_entry()
     }
     // Another drive, a line that writes nothing over its device, one that
     // opens it as LUKS, which loads its header or fails, and one whose
-    // mapping is not open now, name none.
+    // mapping is not open now, name none, and so does an x-systemd.makefs
+    // line for a device a filesystem is mounted from now, sdb2 at /media/b,
+    // which systemd-makefs finds that filesystem on and leaves as it is.
     for (fstab, crypttab) in [
         ("/dev/sdc /media/x ext4 x-systemd.makefs,nofail 0 0", ""),
+        ("/dev/sdb2 /media/b2 ext4 x-systemd.makefs,nofail 0 0", ""),
         ("", "swapcrypt /dev/sdc /dev/urandom swap"),
         ("/dev/sdb none swap sw 0 0", ""),
         ("/dev/sdb /media/g ext4 x-systemd.growfs,nofail 0 0", ""),

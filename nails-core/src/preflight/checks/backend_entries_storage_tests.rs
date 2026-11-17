@@ -572,3 +572,34 @@ fn a_line_that_writes_over_another_partition_of_the_disk_a_container_lies_on_fai
     let result = decoy.run();
     assert!(result.is_pass(), "{result:?}");
 }
+
+#[test]
+fn a_makefs_line_for_a_device_a_filesystem_is_mounted_from_passes() {
+    // A root in a container file on the decoy's /home, whose fstab line has
+    // x-systemd.makefs, as NixOS writes it for autoFormat: /home's device
+    // holds the filesystem mounted at /home, which systemd-makefs finds there
+    // and leaves as it is, so the line formats nothing. The same line for a
+    // partition of that disk that no filesystem is mounted from fails.
+    let fstab = |home: &str| {
+        format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n/dev/nvme0n1p4 /home ext4 {home} 0 2\n")
+    };
+    let decoy = root_in_a_file(true, "", "");
+    decoy
+        .fs
+        .mock_set_file_content("/etc/fstab", &fstab("defaults,x-systemd.makefs"));
+    let result = decoy.run();
+    assert!(result.is_pass(), "{result:?}");
+    let decoy = root_in_a_file(true, "/dev/nvme0n1p5 /data ext4 x-systemd.makefs 0 2\n", "")
+        .partition(
+            "/sys/devices/pci0/nvme/nvme0n1/nvme0n1p5",
+            "nvme0n1p5",
+            "259:5",
+        );
+    decoy.fs.mock_set_device_node("/dev/nvme0n1p5");
+    fails_naming(
+        &decoy,
+        "/etc/fstab: '/dev/nvme0n1p5 /data ext4' (it has the boot format a device of the drive \
+         the volume at /mnt is stored on where it finds no filesystem, through its option \
+         x-systemd.makefs)",
+    );
+}
