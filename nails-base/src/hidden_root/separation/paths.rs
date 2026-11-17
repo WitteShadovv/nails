@@ -39,8 +39,10 @@
 //! Of each such path that reads and is there, one `stat(2)` gives the file it
 //! names, its device and inode ([`identify`]): the path holds no link, so the
 //! `stat` follows none, and it changes no access time. A line that names the
-//! file a loop device of the hidden root's stack reads, by any spelling of
-//! its path, names the volume's own storage (see the `placed` module). A path
+//! file a loop device of the hidden root's stack reads, by its path or by any
+//! path to the same file, its device and inode, names the volume's own storage
+//! (see the `placed` module); a path through a FUSE view or an overlay of its
+//! folder shows another device and inode, and is not matched. A path
 //! whose `stat` fails for another reason than that nothing is there cannot be
 //! told either.
 

@@ -310,7 +310,9 @@ How the code upholds this:
 - **No decoy entry opens the hidden volume.** A line in the decoy's
   `/etc/crypttab` or `/etc/fstab` that opens or mounts the hidden volume (or a
   device it is stored on), or the container file or image the volume is stored
-  in, by any path that leads to that file, or carries `tcrypt-hidden` for a
+  in, by its path or by any path to the same file (a hard link, a bind of its
+  folder; not a path through a FUSE view or an overlay of its folder, which
+  shows another device and inode), or carries `tcrypt-hidden` for a
   device on its drive or one that cannot be found, is such an enabler, and so is
   one that has the boot write to a device of the hidden drive, its whole disk, a
   partition of it or a device stacked on one of these, through an option such as
