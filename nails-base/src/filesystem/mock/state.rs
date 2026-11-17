@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::super::{MountSource, ProcessMatch};
-use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -220,7 +219,7 @@ pub struct MockFilesystem {
     pub(super) write_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) rename_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) explicit_file_sizes: Arc<Mutex<HashSet<PathBuf>>>,
-    pub(super) modified_times: Arc<Mutex<HashMap<PathBuf, DateTime<Utc>>>>,
+    pub(super) modified_times: Arc<Mutex<HashMap<PathBuf, std::time::SystemTime>>>,
     /// The status change times reported by
     /// [`Filesystem::change_time`](crate::Filesystem::change_time), keyed
     /// by path. An unset path reads as changed at the epoch.

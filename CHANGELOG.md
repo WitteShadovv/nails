@@ -712,6 +712,15 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- The time code no longer uses chrono, which RustSec lists as unmaintained (RUSTSEC-2026-0543).
+  NAILS writes and reads its times with code of its own, and reads the local time zone's rules with
+  jiff. Every time it writes stays as it was: the state file's fields, the JSON reports, the alerts,
+  the examiner's evidence and the local times `status` shows. The local zone comes from the same
+  files as before (`TZ`, else `/etc/localtime`, else the zone `/etc/localtime` links to or
+  `/etc/timezone` names), with no zone database listed or searched. A timestamp in the state file
+  in a form NAILS never wrote, such as a year without four digits, a blank around it or a leap
+  second, now makes the file corrupt, where chrono's reading took some of them.
+
 - `decoy-persistence` warns of a `kernel.core_pattern` that hands core dumps to a handler other
   than systemd-coredump, by a pipe or the kernel's coredump socket, which it left alone before:
   NAILS does not judge what such a handler keeps. Ubuntu 24.04 and 26.04 run apport, which logs the
@@ -1079,6 +1088,10 @@ of this changelog for that version becomes the release notes word for word, and
   guide says when `plant` counts the channel as planted.
 
 ### Fixed
+
+- The catalog checks of `verify` no longer stop with a panic on a file modified after the year
+  262142, a time a crafted btrfs image can hold: such a time is given in seconds since 1970, as the
+  examiner gives an access time.
 
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or

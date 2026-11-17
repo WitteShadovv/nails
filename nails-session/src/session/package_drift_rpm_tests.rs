@@ -44,7 +44,7 @@ fn run(check: &PackageDriftCheck, fs: &MockFilesystem) -> CheckResult {
 fn file(fs: &MockFilesystem, path: &str, bytes: &[u8]) {
     fs.mock_set_file_bytes(path, bytes);
     let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-    fs.mock_set_modified_time(Path::new(path), time.into());
+    fs.mock_set_modified_time(Path::new(path), time);
 }
 
 /// The upper's tree: `files` (below the upper) and the `whiteouts`, with

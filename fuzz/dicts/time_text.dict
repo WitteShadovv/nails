@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: RFC 3339 separators and offsets, the TZif header and
+# footer, and POSIX TZ rule pieces.
+"T"
+"t"
+"Z"
+"z"
+"+00:00"
+"-05:30"
+"\xe2\x88\x92"
+".123456789"
+"1969-12-31"
+"9999-12-31"
+"23:59:59"
+"TZif"
+"TZif2"
+"TZif3"
+"\x00\x00\x00\x00"
+"\x0a"
+"CET-1CEST"
+",M3.5.0"
+",M10.5.0/3"
+",J60"
+"/24"
+"<+0130>"
+"-1:30"

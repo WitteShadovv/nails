@@ -4,7 +4,6 @@
 use super::super::{MountSource, ProcessMatch};
 use super::MockFilesystem;
 use super::state::{MockFailure, MockLookup};
-use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 
 /// The kind of entry a mock path represents.
@@ -635,16 +634,16 @@ impl MockFilesystem {
     /// ```rust
     /// use nails_base::filesystem::{Filesystem, MockFilesystem};
     /// use std::path::Path;
-    /// use chrono::{Duration, Utc};
+    /// use std::time::{Duration, SystemTime};
     ///
     /// let fs = MockFilesystem::new();
-    /// let old_time = Utc::now() - Duration::days(10);
+    /// let old_time = SystemTime::now() - Duration::from_secs(10 * 86_400);
     /// fs.mock_set_modified_time(Path::new("/mnt/hidden/logs/nails.log.8"), old_time);
     ///
     /// // This file will now be considered 10 days old
     /// let modified = fs.modified_time(Path::new("/mnt/hidden/logs/nails.log.8")).unwrap();
     /// ```
-    pub fn mock_set_modified_time(&self, path: &Path, modified_time: DateTime<Utc>) {
+    pub fn mock_set_modified_time(&self, path: &Path, modified_time: std::time::SystemTime) {
         let mut times = self
             .modified_times
             .lock()

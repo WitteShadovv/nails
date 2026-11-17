@@ -145,7 +145,7 @@ fn the_backend_alert_reads_as_an_ordinary_storage_warning() {
     );
     assert_eq!(alert.urgency, "critical");
     assert_eq!(alert.icon.as_deref(), Some("drive-harddisk"));
-    chrono::DateTime::parse_from_rfc3339(&alert.created_at)
+    nails_core::time::Timestamp::parse_rfc3339(&alert.created_at)
         .expect("the alert carries an RFC 3339 timestamp");
     assert_neutral(&alert);
 }

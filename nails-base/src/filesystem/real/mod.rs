@@ -290,10 +290,7 @@ impl Filesystem for RealFilesystem {
     }
 
     fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime> {
-        // `dir_ops::modified_time` (owned by another chunk) still yields a
-        // `chrono` timestamp; convert at this boundary so the trait never
-        // exposes `chrono`.
-        Ok(std::time::SystemTime::from(dir_ops::modified_time(path)?))
+        dir_ops::modified_time(path)
     }
 
     fn change_time(&self, path: &Path) -> Result<std::time::SystemTime> {

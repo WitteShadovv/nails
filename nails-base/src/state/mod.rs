@@ -11,7 +11,7 @@
 //! (`nails_session::session::probe`) are authoritative, and the state file is the
 //! record next to them.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io::ErrorKind;
@@ -193,13 +193,13 @@ pub enum SystemState {
     /// A hidden session was entered.
     Active {
         /// When the entry was committed, right before the soft-reboot.
-        activated_at: DateTime<Utc>,
+        activated_at: Timestamp,
     },
 
     /// Something went wrong that needs the operator's attention.
     Degraded {
         /// Since when.
-        since: DateTime<Utc>,
+        since: Timestamp,
         /// Why, for the operator.
         reason: String,
     },

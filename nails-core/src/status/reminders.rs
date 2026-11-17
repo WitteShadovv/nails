@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use chrono::Duration;
+use crate::time::SignedDuration;
 
 /// OpSec reminder with severity level
 ///
@@ -173,19 +173,21 @@ impl ReminderSeverity {
 ///
 /// ```
 /// use nails_core::status::format_uptime;
-/// use chrono::Duration;
+/// use nails_core::time::SignedDuration;
 ///
-/// assert_eq!(format_uptime(Duration::minutes(1)), "1 minute");
-/// assert_eq!(format_uptime(Duration::minutes(45)), "45 minutes");
-/// assert_eq!(format_uptime(Duration::hours(1)), "1 hour");
-/// assert_eq!(format_uptime(Duration::hours(3) + Duration::minutes(30)), "3 hours 30 minutes");
-/// assert_eq!(format_uptime(Duration::hours(5)), "5 hours");
-/// assert_eq!(format_uptime(Duration::days(1)), "1 day");
-/// assert_eq!(format_uptime(Duration::days(2) + Duration::hours(5)), "2 days 5 hours");
+/// let minutes = SignedDuration::from_mins;
+/// let hours = SignedDuration::from_hours;
+/// assert_eq!(format_uptime(minutes(1)), "1 minute");
+/// assert_eq!(format_uptime(minutes(45)), "45 minutes");
+/// assert_eq!(format_uptime(hours(1)), "1 hour");
+/// assert_eq!(format_uptime(hours(3) + minutes(30)), "3 hours 30 minutes");
+/// assert_eq!(format_uptime(hours(5)), "5 hours");
+/// assert_eq!(format_uptime(hours(24)), "1 day");
+/// assert_eq!(format_uptime(hours(2 * 24) + hours(5)), "2 days 5 hours");
 /// ```
-pub fn format_uptime(duration: Duration) -> String {
+pub fn format_uptime(duration: SignedDuration) -> String {
     // Guard against negative durations (clock skew protection)
-    let total_minutes = duration.num_minutes().max(0);
+    let total_minutes = duration.as_mins().max(0);
     let days = total_minutes / (24 * 60);
     let hours = (total_minutes % (24 * 60)) / 60;
     let minutes = total_minutes % 60;
@@ -230,27 +232,27 @@ pub fn format_uptime(duration: Duration) -> String {
 ///
 /// ```
 /// use nails_core::status::{generate_opsec_reminders, ReminderSeverity};
-/// use chrono::Duration;
+/// use nails_core::time::SignedDuration;
 ///
 /// // 6 hours - 1 reminder
-/// let reminders = generate_opsec_reminders(Duration::hours(6), true);
+/// let reminders = generate_opsec_reminders(SignedDuration::from_hours(6), true);
 /// assert_eq!(reminders.len(), 1);
 /// assert_eq!(reminders[0].severity, ReminderSeverity::Info);
 ///
 /// // 26 hours - all 3 reminders
-/// let reminders = generate_opsec_reminders(Duration::hours(26), true);
+/// let reminders = generate_opsec_reminders(SignedDuration::from_hours(26), true);
 /// assert_eq!(reminders.len(), 3);
 ///
 /// // Disabled - no reminders
-/// let reminders = generate_opsec_reminders(Duration::hours(26), false);
+/// let reminders = generate_opsec_reminders(SignedDuration::from_hours(26), false);
 /// assert_eq!(reminders.len(), 0);
 /// ```
-pub fn generate_opsec_reminders(uptime: Duration, enabled: bool) -> Vec<OpSecReminder> {
+pub fn generate_opsec_reminders(uptime: SignedDuration, enabled: bool) -> Vec<OpSecReminder> {
     if !enabled {
         return Vec::new();
     }
 
-    let hours = uptime.num_hours();
+    let hours = uptime.as_hours();
     let mut reminders = Vec::new();
 
     // Thresholds are cumulative - show all applicable reminders

@@ -9,8 +9,8 @@
 
 use super::NailsManager;
 use crate::session::{Layout, SessionView, fstab::escape_path};
+use crate::time::Timestamp;
 use crate::{Filesystem, NailsError, Result, StateFile, SystemState};
-use chrono::Utc;
 use std::path::{Path, PathBuf};
 
 /// What a `discard` would delete for one path.
@@ -76,7 +76,7 @@ impl<F: Filesystem> NailsManager<F> {
             state_file.clear_platform();
         }
         state_file.state = new_state;
-        state_file.last_modified = Utc::now();
+        state_file.last_modified = Timestamp::now();
         let saved = self.save_state_file(&state_file);
         *cached = Some(state_file);
         saved

@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use chrono::{DateTime, TimeZone, Utc};
 use nails_core::next_step::{NextStep, sudo_line};
 use nails_core::output::{Mark, Style};
 use nails_core::preflight::InstallAtShutdown;
 use nails_core::status::{Posture, RequiredUnitView, StatusReport};
+use nails_core::time::Zone;
 
 use super::{config_file_label, read_recent_logs};
 use crate::cli::output::dto::system_state_label;
@@ -80,30 +80,16 @@ pub fn print_status_header(style: Style) {
     println!();
 }
 
-/// `instant` in `zone` with its offset from UTC, as `status` shows a time:
-/// `2026-10-14 21:41:59 +02:00`. In the local zone that is the time the desktop
-/// clock shows; the JSON output and the files on the volume keep UTC.
-pub(super) fn stamp<Tz: TimeZone>(instant: DateTime<Utc>, zone: &Tz) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    instant
-        .with_timezone(zone)
-        .format("%Y-%m-%d %H:%M:%S %:z")
-        .to_string()
-}
-
 /// The lines of the human status report (without the header and logs), with
-/// the times in `zone`.
-pub(super) fn status_lines<Tz: TimeZone>(
+/// the times in `zone` with their offset from UTC: `2026-10-14 21:41:59
+/// +02:00`. In the local zone that is the time the desktop clock shows; the
+/// JSON output and the files on the volume keep UTC.
+pub(super) fn status_lines(
     report: &StatusReport,
     details: bool,
     style: Style,
-    zone: &Tz,
-) -> Vec<String>
-where
-    Tz::Offset: std::fmt::Display,
-{
+    zone: &Zone,
+) -> Vec<String> {
     let mut out = Vec::new();
     out.push(format!(
         "Security Posture:   {}",
@@ -118,7 +104,7 @@ where
     if let Some(refused) = &report.switch_refusal {
         out.push(format!(
             "Last switch:        refused at {}",
-            stamp(refused.at, zone)
+            zone.stamp(refused.at)
         ));
         out.push(format!("  {}", style.marked(Mark::Warn, &refused.reason)));
     }
@@ -133,7 +119,7 @@ where
         )
     });
     if let Some(entered) = report.entered_at {
-        out.push(format!("Entered:            {}", stamp(entered, zone)));
+        out.push(format!("Entered:            {}", zone.stamp(entered)));
     }
     if let Some(uptime) = report.uptime {
         out.push(format!(
@@ -226,7 +212,7 @@ where
         out.push(format!(
             "Last activation:    took {} (finished {})",
             nails_core::timing::format_duration(std::time::Duration::from_millis(last.duration_ms)),
-            stamp(last.finished_at, zone)
+            zone.stamp(last.finished_at)
         ));
     }
     for reminder in &report.opsec_reminders {
@@ -247,7 +233,7 @@ pub fn print_status_human(
     style: Style,
 ) {
     print_status_header(style);
-    for line in status_lines(report, details, style, &chrono::Local) {
+    for line in status_lines(report, details, style, Zone::local()) {
         println!("{line}");
     }
     if details {
@@ -267,7 +253,7 @@ pub fn print_status_human(
             }
         );
         if let Some(logs) =
-            read_recent_logs(log_path, report.entered_at, false, style, &chrono::Local)
+            read_recent_logs(log_path, report.entered_at, false, style, Zone::local())
         {
             println!();
             println!("Recent log lines:");

@@ -11,8 +11,8 @@
 use crate::config::PersonaMode;
 use crate::session::{Paths, SessionView};
 use crate::state::LastActivation;
+use crate::time::{SignedDuration, Timestamp};
 use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
-use chrono::{DateTime, Duration, Utc};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::plan::{MaskCause, Plan, PolicyMountKind};
 use nails_teardown::whole_root::{skips, switch_refusal};
@@ -192,7 +192,7 @@ pub struct RefusedSwitch {
     /// an arming that did not run in time.
     pub reason: String,
     /// When it was refused.
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
 }
 
 impl RefusedSwitch {
@@ -205,7 +205,7 @@ impl RefusedSwitch {
         let record =
             switch_refusal::read(runtime_dir).or_else(|| switch_refusal::read(hidden_root))?;
         Some(Self {
-            at: DateTime::<Utc>::from_timestamp(i64::try_from(record.at).ok()?, 0)?,
+            at: Timestamp::from_unix_seconds(i64::try_from(record.at).ok()?)?,
             reason: record.reason,
         })
     }
@@ -239,9 +239,9 @@ pub struct StatusReport {
     /// `corrupt`.
     pub state_source: &'static str,
     /// When the hidden root was entered.
-    pub entered_at: Option<DateTime<Utc>>,
+    pub entered_at: Option<Timestamp>,
     /// How long the hidden session has run.
-    pub uptime: Option<Duration>,
+    pub uptime: Option<SignedDuration>,
     /// The hidden NixOS toplevel the session runs.
     pub hidden_system: Option<String>,
     /// The decoy NixOS toplevel the way back returns to.
@@ -426,7 +426,7 @@ impl<F: Filesystem> StatusCommand<F> {
             &self.config.hidden_volume_root,
             &entries,
         );
-        self.report(&view, &entries, Utc::now())
+        self.report(&view, &entries, Timestamp::now())
     }
 
     /// Build the report for a given live view and mount table.
@@ -434,7 +434,7 @@ impl<F: Filesystem> StatusCommand<F> {
         &self,
         view: &SessionView,
         entries: &[MountEntry],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<StatusReport> {
         let loaded = StateFile::load_with_outcome(&self.state_file_path)?;
         let state_file = loaded.state_file;
@@ -469,12 +469,14 @@ impl<F: Filesystem> StatusCommand<F> {
         let plan = plan_of(view);
         let entered_at = plan
             .and_then(|p| p.entered_at)
-            .and_then(|secs| DateTime::<Utc>::from_timestamp(i64::try_from(secs).ok()?, 0))
+            .and_then(|secs| Timestamp::from_unix_seconds(i64::try_from(secs).ok()?))
             .or(match &state_file.state {
                 SystemState::Active { activated_at } if view.is_hidden() => Some(*activated_at),
                 _ => None,
             });
-        let uptime = entered_at.filter(|_| view.is_hidden()).map(|t| now - t);
+        let uptime = entered_at
+            .filter(|_| view.is_hidden())
+            .map(|t| now.duration_since(t));
         // The mount table names the root with its symlinks resolved.
         let resolved = self
             .filesystem

@@ -8,6 +8,7 @@ use nails_core::config::PersonaMode;
 use nails_core::output::Style;
 use nails_core::preflight::InstallAtShutdown;
 use nails_core::status::{CoverView, PolicyMountView, Posture, RequiredUnitView, StatusReport};
+use nails_core::time::{Timestamp, Zone};
 use std::path::PathBuf;
 
 fn report(posture: Posture, session: &'static str) -> StatusReport {
@@ -56,7 +57,7 @@ fn an_active_session_lists_its_policy_mounts_and_system() {
         ascii: true,
         ..Style::default()
     };
-    let lines = status_lines(&active, false, style, &chrono::Utc).join("\n");
+    let lines = status_lines(&active, false, style, &Zone::utc()).join("\n");
     assert!(lines.contains("[ACTIVE]"), "{lines}");
     assert!(lines.contains("/boot (read-only)"), "{lines}");
     assert!(lines.contains("dev-vda3.swap"), "{lines}");
@@ -74,7 +75,7 @@ fn a_cover_is_shown_in_both_forms() {
         source: "/dev/sdc1".into(),
         mount_point: "/mnt/data".into(),
     });
-    let lines = status_lines(&active, false, Style::default(), &chrono::Utc).join("\n");
+    let lines = status_lines(&active, false, Style::default(), &Zone::utc()).join("\n");
     assert!(
         lines.contains(
             "/dev/sdc1 is mounted over it: files saved there go to that disk \
@@ -114,14 +115,13 @@ fn assert_matches_the_schema(value: &serde_json::Value) {
 
 #[test]
 fn a_refused_switch_is_shown_with_its_reason_and_time_in_both_forms() {
-    use chrono::{FixedOffset, TimeZone, Utc};
     use nails_core::status::RefusedSwitch;
 
     // The entry recorded Active, then the soft-reboot refused the switch.
     let why = "the next root has neither /etc/os-release nor /usr/lib/os-release";
     let mut refused = report(Posture::Decoy, "decoy");
     refused.state = SystemState::Active {
-        activated_at: Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 50).unwrap(),
+        activated_at: Timestamp::parse_rfc3339("2026-10-14T19:41:50Z").unwrap(),
     };
     refused.reason = Some(
         "the record still holds an active session, but none is running: the switch into it \
@@ -131,9 +131,9 @@ fn a_refused_switch_is_shown_with_its_reason_and_time_in_both_forms() {
     refused.remediation = Some("Run `sudo /mnt/data/nails recover` to reset the record".into());
     refused.switch_refusal = Some(RefusedSwitch {
         reason: why.into(),
-        at: Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 59).unwrap(),
+        at: Timestamp::parse_rfc3339("2026-10-14T19:41:59Z").unwrap(),
     });
-    let zone = FixedOffset::east_opt(2 * 3600).unwrap();
+    let zone = Zone::fixed(2 * 3600).unwrap();
 
     let lines = status_lines(&refused, false, plain(), &zone).join("\n");
     assert!(
@@ -190,11 +190,11 @@ fn a_refused_switch_is_shown_with_its_reason_and_time_in_both_forms() {
 #[test]
 fn an_armed_kdump_is_shown_on_the_decoy_in_both_forms() {
     let mut decoy = report(Posture::Decoy, "decoy");
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(!lines.contains("kdump"), "{lines}");
 
     decoy.decoy_kdump_armed = true;
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(lines.contains("kdump is armed on the decoy"), "{lines}");
     assert!(lines.contains("activation refuses it"), "{lines}");
     let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
@@ -204,7 +204,7 @@ fn an_armed_kdump_is_shown_on_the_decoy_in_both_forms() {
     // In the session the line is about the decoy, so it is left out.
     let mut active = report(Posture::Active, "hidden");
     active.decoy_kdump_armed = true;
-    let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&active, false, plain(), &Zone::utc()).join("\n");
     assert!(!lines.contains("kdump"), "{lines}");
 }
 
@@ -215,7 +215,7 @@ fn an_armed_kdump_is_shown_on_the_decoy_in_both_forms() {
 fn a_record_nails_cannot_tell_about_counts_and_says_so() {
     let mut decoy = report(Posture::Decoy, "decoy");
     decoy.decoy_persistent = true;
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(
         lines.contains(
             "The decoy keeps a persistent journal or syslog: the soft-reboots are recorded on \
@@ -225,7 +225,7 @@ fn a_record_nails_cannot_tell_about_counts_and_says_so() {
     );
 
     decoy.decoy_persistence_untold = vec!["NAILS cannot read /var/log/journal".to_string()];
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(
         lines.contains(
             "NAILS cannot tell whether the decoy keeps a persistent journal or syslog (NAILS \
@@ -238,7 +238,7 @@ fn a_record_nails_cannot_tell_about_counts_and_says_so() {
     decoy.decoy_kdump_armed = true;
     decoy.decoy_kdump_untold =
         Some("/sys/kernel/kexec_crash_loaded cannot be probed (Input/output error)".to_string());
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(
         lines.contains(
             "kdump is armed on the decoy, or NAILS cannot tell (/sys/kernel/kexec_crash_loaded \
@@ -259,7 +259,7 @@ fn a_record_nails_cannot_tell_about_counts_and_says_so() {
 #[test]
 fn an_install_at_shutdown_is_shown_on_the_decoy_in_both_forms() {
     let mut decoy = report(Posture::Decoy, "decoy");
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(!lines.contains("unattended-upgrades"), "{lines}");
     let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
     assert_eq!(value["data"]["decoy_installs_at_shutdown"], false);
@@ -292,7 +292,7 @@ fn an_install_at_shutdown_is_shown_on_the_decoy_in_both_forms() {
         ),
     ] {
         decoy.decoy_install_at_shutdown = Some(install);
-        let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+        let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
         assert!(lines.contains(line), "{install:?}: {lines}");
         let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
         assert_eq!(value["data"]["decoy_installs_at_shutdown"], true);
@@ -303,32 +303,32 @@ fn an_install_at_shutdown_is_shown_on_the_decoy_in_both_forms() {
     // Without root it says how to tell, never that activation refuses it:
     // a run as root may pass.
     decoy.decoy_install_at_shutdown = Some(InstallAtShutdown::UnknownWithoutRoot);
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(lines.contains(" status`"), "{lines}");
     assert!(!lines.contains("activation refuses it"), "{lines}");
     // Only a file apt refuses is said to install nothing.
     decoy.decoy_install_at_shutdown = Some(InstallAtShutdown::On);
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(!lines.contains("installs nothing"), "{lines}");
 
     // In the session the line is about the decoy, so it is left out.
     let mut active = report(Posture::Active, "hidden");
     active.decoy_install_at_shutdown = Some(InstallAtShutdown::On);
-    let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&active, false, plain(), &Zone::utc()).join("\n");
     assert!(!lines.contains("unattended-upgrades"), "{lines}");
 }
 
 #[test]
 fn an_accepted_override_is_shown_in_both_forms() {
     let mut active = report(Posture::Active, "hidden");
-    let lines = status_lines(&active, false, Style::default(), &chrono::Utc).join("\n");
+    let lines = status_lines(&active, false, Style::default(), &Zone::utc()).join("\n");
     assert!(!lines.contains("--allow-decoy-storage"), "{lines}");
     let value = serde_json::to_value(status_envelope(&active)).unwrap();
     assert!(value["data"].get("accepted_decoy_storage").is_none());
 
     let reason = "/mnt is not a volume of its own: it is a bind mount of a folder of /srv";
     active.accepted_decoy_storage = Some(reason.into());
-    let lines = status_lines(&active, false, Style::default(), &chrono::Utc).join("\n");
+    let lines = status_lines(&active, false, Style::default(), &Zone::utc()).join("\n");
     assert!(
         lines.contains(&format!(
             "--allow-decoy-storage: {reason}; everything written there lands on that storage"
@@ -342,7 +342,7 @@ fn an_accepted_override_is_shown_in_both_forms() {
 #[test]
 fn the_units_a_boot_target_requires_are_listed_with_why_in_both_forms() {
     let mut active = report(Posture::Active, "hidden");
-    let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&active, false, plain(), &Zone::utc()).join("\n");
     assert!(!lines.contains("Required at boot"), "{lines}");
     let value = serde_json::to_value(status_envelope(&active)).unwrap();
     assert_eq!(value["data"]["required_units"], serde_json::json!([]));
@@ -366,7 +366,7 @@ fn the_units_a_boot_target_requires_are_listed_with_why_in_both_forms() {
         unit("srv-old.mount", "masked", "skip_undone", None),
         unit("srv-pa-child.mount", "masked", "pulls_in_mount", None),
     ];
-    let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&active, false, plain(), &Zone::utc()).join("\n");
     for line in [
         "Required at boot, kept off:",
         "srv-data.mount: skipped, as a boot target requires it",
@@ -387,9 +387,9 @@ fn the_units_a_boot_target_requires_are_listed_with_why_in_both_forms() {
     let mut decoy = active.clone();
     decoy.posture = Posture::Decoy;
     decoy.session = "decoy";
-    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
     assert!(!lines.contains("srv-data.mount"), "{lines}");
-    let lines = status_lines(&decoy, true, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&decoy, true, plain(), &Zone::utc()).join("\n");
     assert!(lines.contains("srv-data.mount"), "{lines}");
 
     let value = serde_json::to_value(status_envelope(&active)).unwrap();
@@ -417,7 +417,7 @@ fn a_degraded_posture_shows_its_reason_and_remedy() {
     let mut degraded = report(Posture::Degraded, "interrupted");
     degraded.reason = Some("an interrupted activation left a populated /run/nextroot".into());
     degraded.remediation = Some("Run `sudo /mnt/data/nails recover` to remove them".to_string());
-    let lines = status_lines(&degraded, false, Style::default(), &chrono::Utc).join("\n");
+    let lines = status_lines(&degraded, false, Style::default(), &Zone::utc()).join("\n");
     assert!(lines.contains("/run/nextroot"), "{lines}");
     assert!(
         lines.contains("sudo") && lines.contains("recover"),
@@ -520,7 +520,7 @@ fn an_unreadable_record_needs_attention_in_every_place() {
     unreadable.state_source = "corrupt";
     unreadable.switch_refusal = Some(nails_core::status::RefusedSwitch {
         reason: "the unit masks failed".into(),
-        at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        at: Timestamp::from_unix_seconds(1_700_000_000).unwrap(),
     });
     unreadable.hidden_root_covered_by = Some(CoverView {
         source: "/dev/sdc1".into(),
@@ -547,7 +547,7 @@ fn an_unreadable_record_needs_attention_in_every_place() {
 fn an_unreadable_record_is_shown_as_unknown_not_as_inactive() {
     let mut unreadable = report(Posture::Active, "hidden");
     unreadable.state_source = "corrupt";
-    let lines = status_lines(&unreadable, false, plain(), &chrono::Utc).join("\n");
+    let lines = status_lines(&unreadable, false, plain(), &Zone::utc()).join("\n");
     assert!(
         lines.contains("State:              Unknown (the state file could not be read or trusted)"),
         "{lines}"
@@ -584,16 +584,14 @@ fn a_status_that_could_not_be_built_claims_no_place() {
 /// JSON keeps UTC.
 #[test]
 fn times_are_shown_in_the_local_zone_with_their_offset() {
-    use chrono::{FixedOffset, TimeZone, Utc};
-
     let mut active = report(Posture::Active, "hidden");
-    let entered = Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 59).unwrap();
+    let entered = Timestamp::parse_rfc3339("2026-10-14T19:41:59Z").unwrap();
     active.entered_at = Some(entered);
     active.last_activation = Some(nails_core::LastActivation {
         duration_ms: 10_960,
         finished_at: entered,
     });
-    let zone = FixedOffset::east_opt(2 * 3600).unwrap();
+    let zone = Zone::fixed(2 * 3600).unwrap();
 
     let lines = status_lines(&active, false, Style::default(), &zone).join("\n");
 
@@ -614,15 +612,13 @@ fn times_are_shown_in_the_local_zone_with_their_offset() {
 /// never "took 0s".
 #[test]
 fn a_sub_second_activation_shows_its_tenths() {
-    use chrono::{TimeZone, Utc};
-
     let mut decoy = report(Posture::Decoy, "decoy");
     decoy.last_activation = Some(nails_core::LastActivation {
         duration_ms: 640,
-        finished_at: Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 59).unwrap(),
+        finished_at: Timestamp::parse_rfc3339("2026-10-14T19:41:59Z").unwrap(),
     });
 
-    let lines = status_lines(&decoy, false, plain(), &Utc).join("\n");
+    let lines = status_lines(&decoy, false, plain(), &Zone::utc()).join("\n");
 
     assert!(
         lines.contains("Last activation:    took 0.6s (finished 2026-10-14 19:41:59 +00:00)"),
@@ -635,7 +631,7 @@ fn a_sub_second_activation_shows_its_tenths() {
 #[test]
 fn recent_logs_are_shown_in_the_given_zone() {
     let dir = log_dir(&[log_line("2026-01-01T23:30:01Z", "INFO", "late")]);
-    let zone = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+    let zone = Zone::fixed(2 * 3600).unwrap();
 
     let lines = super::read_recent_logs(dir.path(), None, false, plain(), &zone).unwrap();
 
@@ -687,7 +683,7 @@ fn the_config_label_notes_a_missing_file_and_names_a_present_one() {
 fn recent_logs_are_none_without_a_log_file() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        super::read_recent_logs(dir.path(), None, false, plain(), &chrono::Utc),
+        super::read_recent_logs(dir.path(), None, false, plain(), &Zone::utc()),
         None
     );
 }
@@ -703,12 +699,10 @@ fn recent_logs_skip_entries_before_the_activation_and_debug_noise() {
         "not json at all".to_string(),
         serde_json::json!({"level": "ERROR", "fields": {"message": "no timestamp"}}).to_string(),
     ]);
-    let activated = chrono::DateTime::parse_from_rfc3339("2026-01-01T10:00:00Z")
-        .unwrap()
-        .with_timezone(&chrono::Utc);
+    let activated = Timestamp::parse_rfc3339("2026-01-01T10:00:00Z").unwrap();
 
     let lines =
-        super::read_recent_logs(dir.path(), Some(activated), false, plain(), &chrono::Utc).unwrap();
+        super::read_recent_logs(dir.path(), Some(activated), false, plain(), &Zone::utc()).unwrap();
 
     assert_eq!(
         lines,
@@ -727,7 +721,7 @@ fn recent_logs_keep_debug_and_trace_when_asked() {
         log_line("2026-01-01T10:00:04Z", "NOTICE", "unknown level"),
     ]);
 
-    let lines = super::read_recent_logs(dir.path(), None, true, plain(), &chrono::Utc).unwrap();
+    let lines = super::read_recent_logs(dir.path(), None, true, plain(), &Zone::utc()).unwrap();
 
     assert_eq!(
         lines,
@@ -752,7 +746,7 @@ fn recent_logs_keep_only_the_newest_twenty_in_order() {
         .collect();
     let dir = log_dir(&lines);
 
-    let recent = super::read_recent_logs(dir.path(), None, false, plain(), &chrono::Utc).unwrap();
+    let recent = super::read_recent_logs(dir.path(), None, false, plain(), &Zone::utc()).unwrap();
 
     assert_eq!(recent.len(), super::RECENT_LOG_LIMIT);
     assert_eq!(recent.first().unwrap(), "[10:00:05] INFO entry 5");
@@ -772,7 +766,7 @@ fn recent_logs_fall_back_to_a_top_level_message_and_paint_levels() {
         ascii: false,
     };
 
-    let lines = super::read_recent_logs(dir.path(), None, false, style, &chrono::Utc).unwrap();
+    let lines = super::read_recent_logs(dir.path(), None, false, style, &Zone::utc()).unwrap();
 
     assert_eq!(
         lines,
@@ -792,8 +786,8 @@ fn recent_logs_fold_a_unicode_mark_to_ascii_in_ascii_mode() {
         ascii: true,
     };
 
-    let folded = super::read_recent_logs(dir.path(), None, false, ascii, &chrono::Utc).unwrap();
-    let kept = super::read_recent_logs(dir.path(), None, false, plain(), &chrono::Utc).unwrap();
+    let folded = super::read_recent_logs(dir.path(), None, false, ascii, &Zone::utc()).unwrap();
+    let kept = super::read_recent_logs(dir.path(), None, false, plain(), &Zone::utc()).unwrap();
 
     assert_eq!(folded, vec!["[10:00:01] INFO [PASS] Activation complete"]);
     assert_eq!(kept, vec!["[10:00:01] INFO \u{2713} Activation complete"]);
@@ -803,7 +797,7 @@ fn recent_logs_fold_a_unicode_mark_to_ascii_in_ascii_mode() {
 fn recent_logs_are_none_when_nothing_matches() {
     let dir = log_dir(&[log_line("2026-01-01T10:00:02Z", "DEBUG", "probe detail")]);
     assert_eq!(
-        super::read_recent_logs(dir.path(), None, false, plain(), &chrono::Utc),
+        super::read_recent_logs(dir.path(), None, false, plain(), &Zone::utc()),
         None
     );
 }
