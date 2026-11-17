@@ -2650,7 +2650,10 @@ of this changelog for that version becomes the release notes word for word, and
   namespace whose every mount of a disk is `noatime`, and every mount that keeps access times is
   `noatime` from the service manager's reload at entry, which reads every unit file again, to a
   second reload at the end of the entry, so the units of the entry's mounts and the drop-ins it
-  writes are read then too; activation refuses where it cannot make them so. It writes those mounts
+  writes are read then too; activation refuses where it cannot make one so, and names that mount
+  and its type. A user's FUSE mount that the kernel keeps root and so PID 1 out of (a desktop's
+  `gvfsd-fuse` and document portal, an `sshfs`, mounted without `allow_other`) is left as it is,
+  since PID 1 reads nothing there. It writes those mounts
   and their modes to the session plan first, and `nails recover`, a rollback and the emergency on
   the decoy give them their modes back where an activation was killed before it could. NAILS reads
   the operator's account from `/etc/passwd` with `O_NOATIME`, where musl's `getpwuid` read it with

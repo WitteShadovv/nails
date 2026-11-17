@@ -1197,9 +1197,17 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     ends its preparation with a second reload, so PID 1 has taken all of it
     in before each mount gets its own mode back, a bind made meanwhile the
     mode of the mount it copies. A mount that another mount covers is left
-    as it is, since no lookup reaches it. Activation refuses where it cannot
-    make the others `noatime`, and where it runs in a user namespace of its
-    own, which may not change the system's mounts. Before it changes a mount
+    as it is, since no lookup reaches it. So is a user's FUSE mount that the
+    kernel keeps root out of, such as the desktop's `gvfsd-fuse` and
+    document portal in `/run/user/UID`, an AppImage's `squashfuse` or an
+    `sshfs`: of type `fuse`, `fuse.*` or `fuseblk`, mounted without
+    `allow_other` for a user or a group other than root's, refusing NAILS'
+    look at it with `EACCES` or `EPERM`, on a kernel whose FUSE parameter
+    `allow_sys_admin_access` is off, its default. FUSE then refuses PID 1,
+    which runs as root, the same, so PID 1 reads nothing there. Activation
+    refuses, naming the mount and its type, where it cannot make another
+    mount `noatime`. It refuses as well where it runs in a user namespace of
+    its own, which may not change the system's mounts. Before it changes a mount
     it writes the mount and its mode to the session plan: where activation is
     killed before it gives the modes back, `nails recover` gives them back
     (see [Interrupted activation](#specific-situations));
