@@ -245,7 +245,10 @@ impl<'a, F: Filesystem> RunReader<'a, F> {
 
     /// [`Self::with_options`] for an updatedb `command`, which is no
     /// plocate or mlocate when it is findutils'. A command NAILS cannot tell
-    /// is findutils' or not has lists it cannot tell.
+    /// is findutils' or not is judged by the lists plocate and mlocate read,
+    /// marked as lists it may not read ([`Lists::unsure_program`]): a run
+    /// they do not skip the volume by indexes it as plocate's, and one they
+    /// skip it by is one NAILS cannot tell about.
     pub fn command(
         &self,
         command: &ExecCommand,
@@ -264,7 +267,18 @@ impl<'a, F: Filesystem> RunReader<'a, F> {
                 );
             }
             Ok(false) => {}
-            Err(why) => return (Err(format!("{why} ({whose})")), None, None),
+            Err(why) => {
+                let why = format!("{why} ({whose})");
+                let (lists, database, scan) = self.with_options(&command.args, whose, cwd);
+                let lists = match lists {
+                    Ok(lists) => Ok(Lists {
+                        unsure_program: Some(why),
+                        ..lists
+                    }),
+                    Err(_) => Err(why),
+                };
+                return (lists, database, scan);
+            }
         }
         self.with_options(&command.args, whose, cwd)
     }
@@ -323,6 +337,7 @@ impl<'a, F: Filesystem> RunReader<'a, F> {
             fs: changed(&lists.fs, &scan.fs, whose),
             scan_root: None,
             incomplete: lists.incomplete.clone(),
+            unsure_program: None,
         };
         if let Some(dir) = &scan.database_root {
             match cwd.resolve(dir).and_then(|dir| self.resolve(&dir)) {

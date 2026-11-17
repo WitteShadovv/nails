@@ -1571,7 +1571,11 @@ starts, does not skip the hidden volume, whatever flags the run is given. It
 warns instead, and does not refuse, where it cannot tell: an
 `/etc/updatedb.conf` it cannot read, or one that updatedb refuses and stops
 on; a command or option it does not follow; findutils' updatedb, whose prune
-options it does not read; a unit directory, crontab, cron script,
+options it does not read; an updatedb it cannot tell is findutils' or not,
+because it cannot resolve the link of its program (no permission, an I/O
+error, a dead network or FUSE mount, an automount point it does not mount),
+where the lists plocate and mlocate read skip the volume (where they do not,
+it refuses, as for plocate's); a unit directory, crontab, cron script,
 `/etc/passwd` or process it cannot read, or a `/proc` that hides processes
 from it; a timer it cannot ask the system manager about, or one whose `Unit=`
 has a specifier the host fills in (below). An unprivileged

@@ -115,48 +115,117 @@ fn an_updatedb_nails_cannot_tell_is_findutils_has_lists_it_cannot_tell() {
     );
 }
 
+/// Behind the automount point too, a run whose updatedb NAILS cannot tell is
+/// findutils' or not is refused where the lists plocate and mlocate read do
+/// not skip the volume, as with Debian 13's stock updatedb.conf, and nothing
+/// at or below the point is looked up.
+#[test]
+fn an_updatedb_behind_an_automount_point_is_refused_where_its_lists_do_not_skip_the_volume() {
+    let decoy = Decoy::new();
+    decoy
+        .file("/etc/updatedb.conf", DEBIAN)
+        .file("/usr/sbin/updatedb.plocate", "")
+        .link("/usr/bin/updatedb", "/usr/local/libexec/updatedb.findutils")
+        .file("/etc/crontab", "0 3 * * * root updatedb\n");
+    with_automount(&decoy, "/usr/local");
+    let result = decoy.check(false);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        message(&result).contains(
+            "the cron job at line 1 of /etc/crontab runs updatedb, and it does not skip the \
+             hidden volume at /mnt/data"
+        ),
+        "{result:?}"
+    );
+    assert!(
+        !reached(&decoy.fs, "/usr/local"),
+        "{:?}",
+        decoy.fs.mock_lookups()
+    );
+}
+
+/// The decoy of the tests below: a cron job runs a bare `updatedb`, whose
+/// link to plocate's NAILS cannot resolve, failing with `kind`, and
+/// `/etc/updatedb.conf` holds `conf`.
+fn decoy_failing(conf: &str, kind: ErrorKind) -> Decoy {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let decoy = Decoy::new();
+    decoy
+        .file("/etc/updatedb.conf", conf)
+        .file("/usr/sbin/updatedb.plocate", "")
+        .link("/usr/bin/updatedb", "/usr/sbin/updatedb.plocate")
+        .file("/etc/crontab", "0 3 * * * root updatedb\n");
+    decoy.fs.mock_fail_only(
+        Path::new("/usr/bin/updatedb"),
+        MockLookup::Canonicalize,
+        MockFailure::Io(kind),
+    );
+    decoy
+}
+
 /// A bare `updatedb` whose link NAILS cannot resolve, for another reason
 /// than that it leads to nothing, may lead to findutils', which reads no
-/// updatedb.conf: the run's prune lists cannot be told, and a cron job that
-/// runs it warns, where the resolution that failed read as plocate's and the
-/// updatedb.conf that skips the volume let the decoy pass. One that leads
-/// to nothing is no findutils'.
+/// updatedb.conf: where the lists plocate and mlocate read skip the volume,
+/// a cron job that runs it warns that NAILS cannot tell, where the
+/// resolution that failed read as plocate's and the updatedb.conf that skips
+/// the volume let the decoy pass. One that leads to nothing is no
+/// findutils'.
 #[test]
-fn an_updatedb_link_nails_cannot_resolve_has_lists_it_cannot_tell() {
-    use crate::filesystem::{MockFailure, MockLookup};
-    let decoy_failing = |kind: ErrorKind| {
-        let decoy = Decoy::new();
-        decoy
-            .file("/etc/updatedb.conf", &pruning_mnt(DEBIAN))
-            .file("/usr/sbin/updatedb.plocate", "")
-            .link("/usr/bin/updatedb", "/usr/sbin/updatedb.plocate")
-            .file("/etc/crontab", "0 3 * * * root updatedb\n");
-        decoy.fs.mock_fail_only(
-            Path::new("/usr/bin/updatedb"),
-            MockLookup::Canonicalize,
-            MockFailure::Io(kind),
-        );
-        decoy
-    };
-    let decoy = decoy_failing(ErrorKind::Other);
-    let result = decoy.check(false);
-    assert!(result.is_warn(), "{result:?}");
-    for part in [
-        "the cron job at line 1 of /etc/crontab runs updatedb, and NAILS cannot tell whether it \
-         skips the hidden volume: NAILS cannot tell whether /usr/bin/updatedb is findutils' \
-         updatedb, whose prune options NAILS does not read: NAILS cannot look up \
-         /usr/bin/updatedb (",
-        "NAILS cannot tell which updatedb /usr/bin/updatedb is: NAILS cannot look up \
-         /usr/bin/updatedb (",
+fn an_updatedb_link_nails_cannot_resolve_warns_where_its_lists_skip_the_volume() {
+    for kind in [
+        ErrorKind::Other,
+        ErrorKind::PermissionDenied,
+        ErrorKind::NotConnected,
     ] {
-        assert!(message(&result).contains(part), "{part}: {result:?}");
+        let decoy = decoy_failing(&pruning_mnt(DEBIAN), kind);
+        let result = decoy.check(false);
+        assert!(result.is_warn(), "{kind:?}: {result:?}");
+        for part in [
+            "the cron job at line 1 of /etc/crontab runs updatedb, and NAILS cannot tell whether \
+             it skips the hidden volume: NAILS cannot tell whether /usr/bin/updatedb is \
+             findutils' updatedb, whose prune options NAILS does not read: NAILS cannot look up \
+             /usr/bin/updatedb",
+            "(line 1 of /etc/crontab)",
+            "NAILS cannot tell which updatedb /usr/bin/updatedb is: NAILS cannot look up \
+             /usr/bin/updatedb",
+        ] {
+            assert!(
+                message(&result).contains(part),
+                "{kind:?}: {part}: {result:?}"
+            );
+        }
     }
-    let decoy = decoy_failing(ErrorKind::NotFound);
+    let decoy = decoy_failing(&pruning_mnt(DEBIAN), ErrorKind::NotFound);
     let result = decoy.check(false);
     assert!(
         !message(&result).contains("is findutils' updatedb"),
         "{result:?}"
     );
+}
+
+/// The same run where the lists plocate and mlocate read do not skip the
+/// volume, as with Debian 13's stock updatedb.conf: plocate's updatedb would
+/// index it, so the check refuses, as it did where the resolution that
+/// failed read as plocate's, and never only warns that NAILS cannot tell.
+#[test]
+fn an_updatedb_link_nails_cannot_resolve_is_refused_where_its_lists_do_not_skip_the_volume() {
+    for kind in [
+        ErrorKind::Other,
+        ErrorKind::PermissionDenied,
+        ErrorKind::NotConnected,
+        ErrorKind::NotFound,
+    ] {
+        let decoy = decoy_failing(DEBIAN, kind);
+        let result = decoy.check(false);
+        assert!(result.is_fail(), "{kind:?}: {result:?}");
+        assert!(
+            message(&result).contains(
+                "the cron job at line 1 of /etc/crontab runs updatedb, and it does not skip the \
+                 hidden volume at /mnt/data"
+            ),
+            "{kind:?}: {result:?}"
+        );
+    }
 }
 
 /// The message of `result`.

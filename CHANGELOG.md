@@ -2350,8 +2350,11 @@ of this changelog for that version becomes the release notes word for word, and
   fails it as file swap. `suspicious-nails-reference` refuses where its walk of `/etc/nixos` cannot
   look up a place, or it cannot read the mount table or a place that gives a name of the hidden
   volume's storage, and says what to make readable. It reads a `.nix` file that holds bytes that are
-  no UTF-8, as Nix does, where it refused it as one it could not read. `locate-database` also warns
-  where it cannot resolve an updatedb link, `binary-location` where it cannot resolve a link in a
+  no UTF-8, as Nix does, where it refused it as one it could not read. `locate-database` no longer
+  takes an updatedb link it cannot resolve for plocate's: where the lists plocate and mlocate read
+  skip the volume it warns that it cannot tell whether the run is findutils' updatedb, which reads
+  none of them, and where they do not, as with Debian 13's stock `/etc/updatedb.conf`, it refuses
+  as before. `binary-location` where it cannot resolve a link in a
   `PATH` directory, `dma-protection` where it cannot read what lets it pass, and `hidden-volume`
   where it cannot read the names of the volume's source. `backend-entries` refuses, and
   `backend-encryption` warns that it cannot confirm, where a device link a line of fstab or crypttab

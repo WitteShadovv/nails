@@ -75,6 +75,12 @@ pub struct Lists {
     pub scan_root: Option<(PathBuf, String)>,
     /// Why a list that is not complete may hold more.
     pub incomplete: Option<String>,
+    /// Why NAILS cannot tell whether the run reads these lists at all: its
+    /// updatedb may be plocate's or mlocate's, which read them, or
+    /// findutils', which reads none of them. A run they do not skip the
+    /// volume by indexes it as plocate's or mlocate's; one they skip it by
+    /// may index it as findutils', so NAILS cannot tell.
+    pub unsure_program: Option<String>,
 }
 
 /// What starts a run.
@@ -137,8 +143,18 @@ pub enum Cover {
     Unknown(String),
 }
 
-/// Whether a run with `lists` skips the volume at `location`.
+/// Whether a run with `lists` skips the volume at `location`. A rule that
+/// covers it covers nothing NAILS can tell of where the run may read none of
+/// the lists ([`Lists::unsure_program`]).
 pub fn cover(lists: &Lists, location: &Location) -> Cover {
+    match (cover_by_lists(lists, location), &lists.unsure_program) {
+        (Cover::Covered(_), Some(why)) => Cover::Unknown(why.clone()),
+        (cover, _) => cover,
+    }
+}
+
+/// Whether a run that reads `lists` skips the volume at `location`.
+fn cover_by_lists(lists: &Lists, location: &Location) -> Cover {
     let at = location.path.as_path();
     let (scan, scan_origin) = match &lists.scan_root {
         Some((root, origin)) => (root.as_path(), Some(origin.as_str())),
