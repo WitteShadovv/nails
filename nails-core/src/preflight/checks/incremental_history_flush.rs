@@ -233,10 +233,7 @@ impl InspectedShell {
         let homes = match operator {
             Some(operator) if operator.uid == uid => vec![operator.home().to_path_buf()],
             _ => {
-                let own = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
-                    .ok()
-                    .flatten()?
-                    .dir;
+                let own = nails_base::target_user::home_of_uid(uid)?;
                 let mut homes = vec![own];
                 homes.extend(operator.map(|operator| operator.home().to_path_buf()));
                 homes
