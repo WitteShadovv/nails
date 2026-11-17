@@ -387,8 +387,7 @@ NEEDS_POSTURE = "the posture checks of tuned, firewalld and ABRT"
 NEEDS_LSM = "the lsm-status check"
 NEEDS_AUDITD_TEXT = "the corrected auditd text of decoy-persistence"
 NEEDS_SOCKETS = (
-    "a way back that empties what journald's sockets hold before the decoy "
-    "starts, which no branch builds yet"
+    "a way back that empties what journald's sockets hold before the decoy starts"
 )
 TUNED_DROPIN = "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n"
 # What PID 1 logs when the policy of the root it starts in is not loaded, and
