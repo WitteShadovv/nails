@@ -14,6 +14,8 @@ use std::path::Path;
 mod extra;
 #[path = "member_lines_tests.rs"]
 mod member_lines;
+#[path = "own_tests.rs"]
+mod own_filesystem;
 #[path = "own_lines_tests.rs"]
 mod own_lines;
 #[path = "path_lines_tests.rs"]
@@ -241,6 +243,14 @@ impl World {
 
     fn judge(&self, root: &str) -> Judgement {
         self.ask(root, judge)
+    }
+
+    /// The filesystem the root at `root` lies on where the decoy mounts
+    /// another part of it at `/` or at a system folder ([`own_filesystem`]).
+    fn own(&self, root: &str) -> Option<OwnFilesystem> {
+        self.ask(root, |scene, hidden| {
+            own_filesystem(scene, hidden, &judge(scene, hidden))
+        })
     }
 
     fn claimed(&self, root: &str) -> BTreeMap<String, Claimed> {

@@ -6,8 +6,9 @@
 use super::{CheckResult, PreFlightCheck};
 use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle};
 use crate::filesystem::mountinfo::UNREADABLE_FIX;
+use crate::hidden_root::{Allow, HiddenRoot};
 use crate::nixos::config::BaseConfigScan;
-use crate::{Filesystem, NailsError, Result, verify_base_config_clean};
+use crate::{Filesystem, NailsError, Result, verify_base_config_clean_allowing};
 use std::path::{Path, PathBuf};
 
 /// The decoy's own configuration directory, which the check reads.
@@ -19,16 +20,41 @@ const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
 /// environment: the hidden volume's device or mount point (or the units
 /// systemd names after them), the storage it is on by its device paths, every
 /// link udev made for it, its uuids and its labels, its mapping where a line
-/// opens it, or NAILS ([`verify_base_config_clean`] lists the forms).
+/// opens it, or NAILS ([`verify_base_config_clean`](crate::verify_base_config_clean)
+/// lists the forms).
+///
+/// With `--allow-decoy-storage`, for a root the attach gate's judge places on
+/// a filesystem the decoy uses as a folder or a btrfs subvolume of it, while
+/// the decoy itself mounts another part of that filesystem at `/` or at a
+/// system folder ([`HiddenRoot::own_filesystem`]), the names of the devices
+/// that filesystem lies on are the decoy's own, as its
+/// `hardware-configuration.nix` writes them for `/` and `/home`: a line that
+/// names only such a device is let be
+/// ([`verify_base_config_clean_allowing`]). The root's mount point, its own
+/// folder and subvolume, every other device's names, a place that cannot be
+/// read, and every name without the flag still refuse.
 #[derive(Debug, Clone, Default)]
 pub struct SuspiciousNailsReferenceCheck {
     hidden_volume_root: PathBuf,
+    allow: Allow,
 }
 
 impl SuspiciousNailsReferenceCheck {
     /// Creates a check that matches the base config against the configured hidden root.
     pub fn new(hidden_volume_root: PathBuf) -> Self {
-        Self { hidden_volume_root }
+        Self {
+            hidden_volume_root,
+            allow: Allow::Nothing,
+        }
+    }
+
+    /// Let be the names of the devices of the filesystem that `allow`
+    /// (`--allow-decoy-storage`) accepts the root on as a folder or a
+    /// subvolume of it, which the decoy mounts itself.
+    #[must_use]
+    pub fn allowing(mut self, allow: Allow) -> Self {
+        self.allow = allow;
+        self
     }
 }
 
@@ -69,7 +95,11 @@ impl<F: Filesystem> PreFlightCheck<F> for SuspiciousNailsReferenceCheck {
                 &readable_fix(&shown),
             ));
         }
-        match verify_base_config_clean(fs, &self.hidden_volume_root) {
+        // The filesystem the flag accepted the root on, by one reading of the
+        // judge's inputs; none without the flag, or where they cannot be
+        // read, so then nothing is let be.
+        let own = HiddenRoot::own_filesystem(fs, &self.hidden_volume_root, self.allow);
+        match verify_base_config_clean_allowing(fs, &self.hidden_volume_root, own.as_ref()) {
             Ok(scan) => Ok(scan_result(&scan)),
             Err(error) => Ok(cannot_tell(&error.to_string(), &scan_fix(&error))),
         }
@@ -153,6 +183,15 @@ fn unseen(path: &Path, error: NailsError) -> Option<(PathBuf, NailsError)> {
     (!error.nothing_there() && error.not_looked_up().is_none()).then(|| (path.to_path_buf(), error))
 }
 
+/// `1 line names it` or `<n> lines name it`, of that device.
+fn lines_named(lines: usize) -> String {
+    if lines == 1 {
+        "1 line names that device".to_string()
+    } else {
+        format!("{lines} lines name that device")
+    }
+}
+
 /// The check result for a scan: the first reference with its file, line,
 /// text, reason and remedy, else, where a place that names the hidden
 /// volume's storage could not be read, the refusal that NAILS cannot tell,
@@ -169,10 +208,14 @@ fn scan_result(scan: &BaseConfigScan) -> CheckResult {
                 &readable_fix(&places),
             );
         }
-        return CheckResult::Pass(match scan.files_read {
-            0 => "No .nix file under /etc/nixos, so nothing was inspected; a configuration \
-                  kept elsewhere is not checked"
-                .to_string(),
+        let read = match scan.files_read {
+            0 => {
+                return CheckResult::Pass(
+                    "No .nix file under /etc/nixos, so nothing was inspected; a configuration \
+                     kept elsewhere is not checked"
+                        .to_string(),
+                );
+            }
             1 => "The one .nix file under /etc/nixos names nothing of the hidden environment"
                 .to_string(),
             files => {
@@ -180,6 +223,14 @@ fn scan_result(scan: &BaseConfigScan) -> CheckResult {
                     "The {files} .nix files under /etc/nixos name nothing of the hidden environment"
                 )
             }
+        };
+        return CheckResult::Pass(match scan.let_be.len() {
+            0 => read,
+            lines => format!(
+                "{read} other than the device of the filesystem that --allow-decoy-storage \
+                 accepted the hidden root on, which the decoy mounts itself ({})",
+                lines_named(lines)
+            ),
         });
     };
     let more = match scan.references.len() - 1 {
@@ -199,6 +250,10 @@ fn scan_result(scan: &BaseConfigScan) -> CheckResult {
         first.kind.remedy(),
     )
 }
+
+#[cfg(test)]
+#[path = "suspicious_nails_reference_own_tests.rs"]
+mod own_tests;
 
 #[cfg(test)]
 mod tests {
@@ -400,8 +455,8 @@ mod tests {
     fn a_name_of_the_storage_the_scan_cannot_read_refuses() {
         let scan = BaseConfigScan {
             files_read: 1,
-            references: Vec::new(),
             unread: vec!["/run/udev/data/b8:18".to_string()],
+            ..BaseConfigScan::default()
         };
         assert_eq!(
             scan_result(&scan),

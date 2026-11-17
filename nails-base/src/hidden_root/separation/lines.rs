@@ -336,7 +336,7 @@ fn subvolume_path(scene: &Scene<'_>, hidden: &MountEntry, id: u64) -> Option<Pat
 
 /// The value of the option `key=` of `mount`, from its filesystem's options
 /// or its own.
-fn mount_option<'a>(mount: &'a MountEntry, key: &str) -> Option<&'a str> {
+pub(super) fn mount_option<'a>(mount: &'a MountEntry, key: &str) -> Option<&'a str> {
     mount
         .super_opts
         .split(',')

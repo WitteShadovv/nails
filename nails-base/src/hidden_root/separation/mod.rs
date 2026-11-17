@@ -189,6 +189,7 @@ mod known;
 mod lines;
 mod loops;
 mod options;
+mod own;
 mod paths;
 mod placed;
 mod plain;
@@ -201,6 +202,7 @@ pub use judge::{claimed_devices, judge, shown_fstype};
 pub use known::unread_fstab_options;
 pub use lines::{decoys_own_mount, sharing};
 pub use loops::mounts_through_another_loop;
+pub use own::{OwnDevice, OwnFilesystem, own_filesystem};
 pub(crate) use paths::as_written;
 pub use paths::{NamedPaths, UntoldPath};
 pub use plain::{Unplain, UnplainLine, UnplainLines, read_crypttab, read_fstab};
@@ -962,4 +964,13 @@ pub struct Judgement {
     pub verdict: Verdict,
     /// The decoy's entries for the hidden drive; they never change the verdict.
     pub entries: Vec<EntryFinding>,
+    /// Where the decoy itself mounts another part of the filesystem a root
+    /// that is a folder or a subvolume of it is part of, at `/` or at a
+    /// system folder: `/` by its mount there, else the folder of the first
+    /// fstab finding that is the decoy's own line for one
+    /// ([`EntryFinding::system_folder`]). The crypttab lines of the decoy's
+    /// own ([`EntryFinding::system_folder`]) are told by it. `None` where the
+    /// decoy mounts no other part of it so, as for a root that is the whole
+    /// filesystem, and for a RAM root.
+    pub own_place: Option<PathBuf>,
 }

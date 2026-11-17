@@ -1795,3 +1795,70 @@ fn outside_the_session_accepted_decoy_storage_needs_the_override() {
         .is_err()
     );
 }
+
+/// The filesystem a root that `--allow-decoy-storage` accepts as a folder of
+/// `/` lies on, read once from the mount table and the judge's inputs: only
+/// with the flag, never for a volume of its own, a covered root or one inside
+/// the hidden session, and never where the judge's inputs cannot be read.
+#[test]
+fn own_filesystem_is_the_one_the_flag_accepts_a_folder_or_subvolume_root_on() {
+    let bind = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                5 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n";
+    let fs = fs_with(bind);
+    fs.mock_set_file_content("/etc/fstab", "/dev/vda1 / ext4 defaults 0 1\n");
+    let root = Path::new("/mnt/data");
+    assert_eq!(HiddenRoot::own_filesystem(&fs, root, Allow::Nothing), None);
+    let own =
+        HiddenRoot::own_filesystem(&fs, root, Allow::DecoyStorage).expect("the filesystem of /");
+    assert_eq!(own.how, separation::Sharing::Bind);
+    assert_eq!(own.at, Path::new("/"));
+    assert_eq!(
+        own.devices,
+        [separation::OwnDevice {
+            name: "vda1".to_string(),
+            dev: "8:1".to_string(),
+        }]
+    );
+    assert_eq!(own.folders, [PathBuf::from("/srv/x")]);
+    assert_eq!(
+        HiddenRoot::own_filesystem(&fs, Path::new(""), Allow::DecoyStorage),
+        None
+    );
+
+    // A volume of its own.
+    let fs = fs_with(&decoy_table(""));
+    assert_eq!(
+        HiddenRoot::own_filesystem(&fs, root, Allow::DecoyStorage),
+        None
+    );
+    // A root covered by another filesystem mounted over it.
+    let fs = fs_with(&format!(
+        "{bind}6 5 8:17 / /mnt/data rw - ext4 /dev/vdb1 rw\n"
+    ));
+    assert_eq!(
+        HiddenRoot::own_filesystem(&fs, root, Allow::DecoyStorage),
+        None
+    );
+    // Inside the hidden session.
+    let fs = fs_with(&session_table(
+        "5 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n",
+    ));
+    assert_eq!(
+        HiddenRoot::own_filesystem(&fs, root, Allow::DecoyStorage),
+        None
+    );
+    // The fstab cannot be read, or the mount table.
+    let fs = fs_with(bind);
+    fs.mock_set_file_content("/etc/fstab", "/dev/vda1 / ext4 defaults 0 1\n");
+    fs.mock_set_lookup_error("/etc/fstab", std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        HiddenRoot::own_filesystem(&fs, root, Allow::DecoyStorage),
+        None
+    );
+    let fs = fs_with(bind);
+    fs.mock_set_mount_table_error("permission denied");
+    assert_eq!(
+        HiddenRoot::own_filesystem(&fs, root, Allow::DecoyStorage),
+        None
+    );
+}

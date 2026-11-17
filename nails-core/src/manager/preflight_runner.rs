@@ -363,9 +363,11 @@ pub fn build_registry<F: Filesystem>(
     // The config layer's base-config reference gate (on NixOS: a decoy
     // `/etc/nixos` that names the hidden environment). It runs in every mode,
     // overlay-only included, and refuses before the next root is prepared;
-    // the shared registry means `nails check` reports it too.
+    // the shared registry means `nails check` reports it too. With
+    // --allow-decoy-storage it lets be the decoy's own names for the devices
+    // of the filesystem the flag accepted a folder or subvolume root on.
     if let Some(layer) = config_layer {
-        registry.add_check(layer.base_reference_check(&config.hidden_volume_root));
+        registry.add_check(layer.base_reference_check(&config.hidden_volume_root, allow));
     }
 
     // The config-layer checks and the build-target check are registered only on

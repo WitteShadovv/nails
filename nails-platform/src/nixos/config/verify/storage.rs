@@ -6,8 +6,11 @@
 //!
 //! The mount table names only the top device (`/dev/mapper/data`). A
 //! configuration can name the volume by what lies below it as well, and each
-//! device by several names. [`below`] reads them from the system through the
-//! [`Filesystem`] trait, for every layer the hidden volume alone uses:
+//! device by several names. [`below_letting_be`] reads them from the system
+//! through the [`Filesystem`] trait, for every layer the hidden volume alone
+//! uses, and keeps apart those of the devices of a filesystem that
+//! `--allow-decoy-storage` accepted the root on as a folder or a subvolume of
+//! it, which the decoy's own configuration names:
 //!
 //! - from sysfs, the layers: the LUKS mapping, the partition (`/dev/sdb2`) and
 //!   its partition uuid, a mapping below a logical volume, the image file
@@ -31,6 +34,7 @@ use super::nix_text::Pattern;
 use crate::filesystem::Filesystem;
 use nails_base::blockdev::{self, Attribute, DeviceMapper, DmKind, Layer, LoopBacking, LoopFollow};
 use nails_base::filesystem::MountEntry;
+use nails_base::hidden_root::separation::OwnDevice;
 use std::path::{Path, PathBuf};
 
 /// udev's database: one file per block device, `b<major>:<minor>`.
@@ -81,17 +85,35 @@ pub(super) struct Storage {
 /// volume: when the hidden root is a logical volume in the decoy's own
 /// encrypted volume group, the LUKS mapping and the partition below it are
 /// the decoy's, and its configuration names them.
+#[cfg(test)]
 pub(super) fn below<F: Filesystem>(fs: &F, mounts: &[MountEntry], root: &Path) -> Storage {
+    below_letting_be(fs, mounts, root, &[]).0
+}
+
+/// [`below`], with the names of each layer that is one of `own` by its
+/// kernel name and its device number apart: the devices the filesystem lies
+/// on that `--allow-decoy-storage` accepted the root on as a folder or a
+/// subvolume of it, which the decoy's own configuration names. The first
+/// storage holds the names of every other layer, and every place that could
+/// not be read, also one of such a layer; the second the names of those
+/// layers. A layer whose device number cannot be read is none of them.
+pub(super) fn below_letting_be<F: Filesystem>(
+    fs: &F,
+    mounts: &[MountEntry],
+    root: &Path,
+    own: &[OwnDevice],
+) -> (Storage, Storage) {
     let mut storage = Storage::default();
+    let mut let_be = Storage::default();
     let Some(mount) = mounts.iter().rev().find(|m| m.mount_point == root) else {
-        return storage;
+        return (storage, let_be);
     };
     let top = match blockdev::device_of_mount_or_unread(fs, mount) {
         Ok(Some(top)) => top,
-        Ok(None) => return storage,
+        Ok(None) => return (storage, let_be),
         Err(place) => {
             storage.keep_unread(&place);
-            return storage;
+            return (storage, let_be);
         }
     };
     let layers = blockdev::walk(
@@ -104,22 +126,41 @@ pub(super) fn below<F: Filesystem>(fs: &F, mounts: &[MountEntry], root: &Path) -
     for unread in layers.iter().flat_map(|layer| layer.unread_among(NAMES)) {
         storage.keep_unread(&unread.path);
     }
-    let mut own: Vec<&str> = Vec::new();
+    let mut alone_layers: Vec<&str> = Vec::new();
     for (index, layer) in layers.iter().enumerate() {
         let alone = index == 0
             || (!layer.holders.is_empty()
                 && layer
                     .holders
                     .iter()
-                    .all(|holder| own.contains(&holder.as_str())));
+                    .all(|holder| alone_layers.contains(&holder.as_str())));
         if alone {
-            own.push(&layer.name);
-            storage.add(layer);
-            storage.add_kernel_names(layer);
-            storage.add_udev_names(fs, layer);
+            alone_layers.push(&layer.name);
+            let names = if is_own(layer, own) {
+                &mut let_be
+            } else {
+                &mut storage
+            };
+            names.add(layer);
+            names.add_kernel_names(layer);
+            names.add_udev_names(fs, layer);
         }
     }
-    storage
+    let unread = std::mem::take(&mut let_be.unread);
+    for place in unread {
+        storage.keep_unread(Path::new(&place));
+    }
+    (storage, let_be)
+}
+
+/// Whether `layer` is one of `own`: the same kernel name and the same device
+/// number, as sysfs gives them now.
+fn is_own(layer: &Layer, own: &[OwnDevice]) -> bool {
+    let Some(dev) = layer.dev.as_deref().map(str::trim) else {
+        return false;
+    };
+    own.iter()
+        .any(|device| device.name == layer.name && device.dev == dev)
 }
 
 impl Storage {
