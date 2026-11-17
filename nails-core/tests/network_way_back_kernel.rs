@@ -459,6 +459,7 @@ fn way_back_plan(hidden: &Path) -> Plan {
         read_only_disks: false,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
+        quiet_mounts: Vec::new(),
         pids: nails_teardown::whole_root::fresh_pids::Record::default(),
     }
 }

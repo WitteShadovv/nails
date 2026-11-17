@@ -105,7 +105,7 @@ use nails_teardown::whole_root::{
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use quiet::{quiet_mounts, settle};
+use quiet::{give_modes_back, quiet_mounts, restore_recorded, settle};
 
 use super::guards::{GuardHost, check_stop_guards, check_switch_timeout};
 
@@ -428,8 +428,10 @@ fn fhs_init(root: &Path) -> PathBuf {
 
 /// Undo a failed or abandoned entry: detach `/run/nextroot`, remove the
 /// drop-in, the masks and skips the entry transition wrote (an entry whose
-/// switch failed) and the runtime directory, and give the kernel back the helper
-/// paths a hidden NixOS activation changed. Returns the mounts still left.
+/// switch failed) and the runtime directory, give the kernel back the helper
+/// paths a hidden NixOS activation changed, and give the decoy's mounts an
+/// entry that died made `noatime` their own access-time mode back
+/// ([`quiet_mounts`]). Returns the mounts still left.
 pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
     let plan = Plan::load(&paths.plan()).ok();
     let kept = Snapshot::load(&paths.runtime().join(SNAPSHOT_NAME)).unwrap_or_default();
@@ -445,6 +447,7 @@ pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
         );
         skips::remove_skips(&paths.run, &plan.skips, &kept);
         kernel_helpers::restore(&plan.kernel_settings);
+        restore_recorded(plan);
     }
     nextroot::remove_runtime_dir(&paths.runtime());
     if plan.is_some_and(|plan| plan.run_noexec) {
@@ -572,6 +575,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         read_only_disks: inputs.read_only_disks,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
+        quiet_mounts: Vec::new(),
         pids: Default::default(),
     }
 }
@@ -624,7 +628,7 @@ fn build(
     if plan.run_noexec {
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
-    let quiet = quiet_mounts()?;
+    let quiet = quiet_mounts(paths, &mut plan)?;
     install_transition(paths, inputs, host, dropin)?;
     crate::cancel::checkpoint()?;
 
@@ -765,13 +769,14 @@ fn build(
 
     crate::cancel::checkpoint()?;
     settle(host)?;
-    drop(quiet);
+    give_modes_back(quiet)?;
     activation_step(ActivationPhase::Arm, building);
     super::program_label::ready_for_entry(
         inputs.program_label,
         host.selinux(),
         &paths.binary_copy(),
     )?;
+    plan.quiet_mounts.clear();
     plan.armed = Some(Arm::now(Direction::Enter));
     plan.write_atomic(&paths.plan())
         .map_err(|e| io(&paths.plan(), e))?;

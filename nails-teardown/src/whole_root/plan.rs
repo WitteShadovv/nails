@@ -421,6 +421,13 @@ pub struct Plan {
     /// (see [`crate::whole_root::kernel_helpers`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kernel_settings: Vec<crate::whole_root::kernel_helpers::KernelSetting>,
+    /// The decoy's mounts the entry made `noatime` while it runs, with the
+    /// access-time mode each had, written before any is changed and cleared
+    /// when the entry gave each its mode back. A rollback, `nails recover` and
+    /// the decoy side of an emergency give them their modes back where an
+    /// entry died before it could ([`crate::noatime::restore`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quiet_mounts: Vec<crate::noatime::QuietRecord>,
     /// What the session measures to set the kernel's process-number counter
     /// back on the way back, so the process it measures by (the decoy's
     /// getty, else logind) gets about the number its own boot gave it (see
@@ -655,6 +662,7 @@ pub(crate) fn sample() -> Plan {
         read_only_disks: false,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
+        quiet_mounts: Vec::new(),
         pids: Default::default(),
     }
 }

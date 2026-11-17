@@ -8,7 +8,9 @@
 
 use super::EntryHost;
 use crate::error::{NailsError, Result};
+use crate::session::layout::Paths;
 use nails_teardown::noatime::QuietMounts;
+use nails_teardown::whole_root::plan::Plan;
 
 /// Make the decoy's mounts that keep access times `noatime` for the rest of
 /// the entry ([`QuietMounts`]); where they cannot be made so, the entry is
@@ -22,13 +24,33 @@ use nails_teardown::noatime::QuietMounts;
 /// and PID 1 then lists every unit directory again at its next load of a
 /// unit. All of that happens while the mounts are `noatime`, up to the
 /// reload at the end of the entry ([`settle`]).
-pub(super) fn quiet_mounts() -> Result<QuietMounts> {
-    QuietMounts::open().map_err(|e| {
+///
+/// The mounts it changes and their modes go to the plan before any is
+/// changed, so that a rollback or `nails recover` gives them their modes
+/// back where the activation dies before it can ([`super::rollback`]). On the
+/// system, an entry that may not change mounts (NAILS run in a user namespace
+/// of its own) is refused too: nothing would keep PID 1's reads from setting
+/// access times.
+pub(super) fn quiet_mounts(paths: &Paths, plan: &mut Plan) -> Result<QuietMounts> {
+    let refuse = |why: String| {
         NailsError::InvalidState(format!(
             "NAILS cannot keep the service manager's reload from setting access times on the \
-             decoy disk: making its mounts noatime for it failed ({e})"
+             decoy disk: {why}"
         ))
+    };
+    if paths.is_system() && !nails_teardown::noatime::may_spawn_without_access_times() {
+        return Err(refuse(
+            "it runs as root of a user namespace of its own, which may not change the system's \
+             mounts"
+                .to_string(),
+        ));
+    }
+    let plan_path = paths.plan();
+    QuietMounts::open_recorded(|records| {
+        plan.quiet_mounts = records.to_vec();
+        plan.write_atomic(&plan_path)
     })
+    .map_err(|e| refuse(format!("making its mounts noatime for it failed ({e})")))
 }
 
 /// Reload the service manager once more, as the last step of the entry while
@@ -39,4 +61,23 @@ pub(super) fn quiet_mounts() -> Result<QuietMounts> {
 /// mode back.
 pub(super) fn settle(host: &dyn EntryHost) -> Result<()> {
     host.daemon_reload()
+}
+
+/// Give each mount [`quiet_mounts`] changed its own mode back, after the last
+/// reload ([`settle`]). A mode that does not take fails the entry, so that
+/// the rollback tries again.
+pub(super) fn give_modes_back(quiet: QuietMounts) -> Result<()> {
+    quiet
+        .close()
+        .map_err(|e| NailsError::InvalidState(format!("a decoy mount stays noatime: {e}")))
+}
+
+/// Give each mount `plan` records as changed by an entry that died its own
+/// mode back, where it is still `noatime`
+/// ([`nails_teardown::noatime::restore`]); one it cannot give its mode back
+/// is logged.
+pub(super) fn restore_recorded(plan: &Plan) {
+    for stuck in nails_teardown::noatime::restore(&plan.quiet_mounts) {
+        tracing::warn!(mount = %stuck.display(), "a decoy mount stays noatime until reboot");
+    }
 }
