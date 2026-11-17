@@ -11,10 +11,18 @@
 #     soft-reboot back writes a token to /dev/kmsg. No hidden journald sees it,
 #     and the decoy journald must not import it from the ring buffer (the
 #     transition seeks its kmsg cursor).
-# After the way back neither token is in the live decoy journal, and a carve of
-# the decoy disk image finds neither in its journal or anywhere on the image.
-# A line logged on the decoy before activation must still be carved from the
-# image (positive control: the scan can see the journal).
+#   - what would follow the kmsg cursor or wait in journald's sockets
+#     (nails_e2e.journal_tail): a process the shutdown leaves running, which
+#     PID 1's final kill would name, the hidden filesystem's unmount line, and
+#     a unit that stops after journald and logs through /dev/log, its standard
+#     output and the native socket.
+# After the way back none of these is in the live decoy journal, which holds
+# no record of the hidden session past the cursor but the kernel's lines of
+# the hidden LUKS volume's teardown, and a carve of the decoy disk image finds
+# none of the tokens in its journal or anywhere on the image. A line logged on
+# the decoy before activation must still be carved from the image (positive
+# control: the scan can see the journal). The empty /run/nextroot the switch
+# left is gone.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -51,7 +59,10 @@ in
     precontrol_token = "NAILS_JCTL_PRECONTROL_2026a"
     hidden_jrnl_token = "NAILS_JCTL_HIDDEN_2026a"
     late_kmsg_token = "NAILS_JCTL_LATEKMSG_2026a"
-    hidden_tokens = [hidden_jrnl_token, late_kmsg_token]
+    late_socket_mark = "NAILSJCTLLATESOCK2026a"
+    linger = "lngrjctl2026a"
+    session_marker = "NAILSJCTLINSESSION2026a"
+    hidden_tokens = [hidden_jrnl_token, late_kmsg_token, late_socket_mark, linger]
     UPPER = "/mnt/data/root/upper"
 
     machine.start()
@@ -111,6 +122,13 @@ in
         )
         machine.succeed("systemctl is-active late-kmsg-probe.service")
 
+    with subtest("plant what would follow the cursor or wait in journald's sockets"):
+        from nails_e2e import journal_tail
+
+        journal_tail.plant(machine, late_socket_mark, linger)
+        hidden_uuid = machine.succeed("findmnt -rno UUID /mnt/data || true").strip() or None
+        journal_tail.write_marker(machine, session_marker)
+
     with subtest("deactivate: neither token is in the live decoy journal"):
         canonical_deactivate(config, "deactivate")
         # The probe really ran: its record is in the kernel ring buffer (RAM).
@@ -126,6 +144,13 @@ in
         assert precontrol_token in machine.succeed(
             f"journalctl --grep {precontrol_token} --no-pager -o cat"
         ), "the decoy journal lost its own pre-activation line"
+        verdict = journal_tail.judge(
+            machine, session_marker, late_socket_mark, linger, hidden_uuid
+        )
+        print("\n".join(verdict.tail))
+        assert verdict.judged and not verdict.findings, verdict.findings
+        print(f"the LUKS volume's teardown lines (kmsg-import): {verdict.dm_teardown}")
+        machine.wait_until_succeeds("! test -e /run/nextroot", timeout=60)
 
     with subtest("the decoy image keeps the control but no hidden token"):
         post = disk_forensics.snapshot(machine, "post-journal-leak", restart=False)
