@@ -149,6 +149,7 @@ mod kernel_tests {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
                 },
+                tail: None,
             }
         }
     }

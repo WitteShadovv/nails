@@ -125,6 +125,7 @@ fn the_units_outside_the_fstab_are_kept_off_in_the_hidden_root_as_fstab_lines() 
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
+            tail: None,
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         let dropin = paths

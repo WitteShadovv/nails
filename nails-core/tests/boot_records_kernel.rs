@@ -142,6 +142,7 @@ mod kernel_tests {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
                 },
+                tail: None,
             };
             let before = boot_records::boot_clock();
             let outcome = transition::run(&env);

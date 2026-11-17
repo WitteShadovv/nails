@@ -36,6 +36,9 @@
 //! - [`switch_refusal`]: why the last switch was refused, kept on the hidden
 //!   volume (a refused entry) or in the runtime directory (a refused way
 //!   back) so `status` can say so;
+//! - [`tail`]: the hidden session's last processes, journald's sockets and
+//!   the hidden filesystem's unmount line, ended, emptied and quieted before
+//!   the kmsg cursor;
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
 //! - [`logind`]: the soft-reboot request of the entry and the way back, and
@@ -64,6 +67,7 @@ pub mod run_scrub;
 pub mod runtime_units;
 pub mod skips;
 pub mod switch_refusal;
+pub mod tail;
 pub mod tools;
 pub mod transition;
 pub mod utab;

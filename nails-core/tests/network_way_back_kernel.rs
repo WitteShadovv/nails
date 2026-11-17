@@ -553,6 +553,7 @@ fn a_way_back_that_powers_off_writes_nothing_on_the_console() {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
+            tail: None,
         });
 
         // The way back ran and asked for the power-off: the stand-in kernel

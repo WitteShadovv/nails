@@ -79,6 +79,7 @@ impl World {
                 grace: std::time::Duration::ZERO,
                 kernel: refused_power_off,
             },
+            tail: None,
         }
     }
     /// Where the way back reads and writes the network state: a fake
@@ -381,13 +382,15 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     // decoy's utab must come after it.
     let late = world.dir.path().join("late-stopped");
     let calls = world.dir.path().join("reset-failed-calls");
+    let all_calls = world.dir.path().join("all-calls");
     plan.failed_at_entry = vec!["decoy-before.service".to_string()];
     world.write_plan(&plan);
     let systemctl = world.dir.path().join("systemctl");
     write_executable(
         &systemctl,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = reset-failed ]; then echo \"$@\" >> {calls}; exit 0; fi\n\
+            "#!/bin/sh\necho \"$@\" >> {all_calls}\n\
+             if [ \"$1\" = reset-failed ]; then echo \"$@\" >> {calls}; exit 0; fi\n\
              if [ \"$1\" = list-units ]; then\n\
                echo 'overlay-runtime-monitor.service loaded failed failed watcher'\n\
                echo 'nscd.service loaded failed failed Name Service Cache Daemon'\n\
@@ -404,7 +407,8 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
             late = late.display(),
             kmsg = world.kmsg().display(),
             utab = r.join("mount/utab").display(),
-            calls = calls.display()
+            calls = calls.display(),
+            all_calls = all_calls.display()
         ),
         0o755,
     );
@@ -444,6 +448,25 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
     let cursor = fs::read(r.join(run_scrub::KERNEL_SEQNUM)).unwrap();
     assert_eq!(u64::from_ne_bytes(cursor.try_into().unwrap()), 503);
+    // journald's sockets were closed with what they hold, after the wait for
+    // the late unit: the last calls before the cursor.
+    let stops: Vec<String> = tail::journal_socket_calls()
+        .iter()
+        .map(|args| args.join(" "))
+        .collect();
+    let every_call = fs::read_to_string(&all_calls).unwrap();
+    let every_call: Vec<&str> = every_call.lines().collect();
+    assert!(
+        every_call.ends_with(&stops.iter().map(String::as_str).collect::<Vec<_>>()),
+        "{every_call:?}"
+    );
+    let first_stop = every_call.len() - stops.len();
+    assert!(
+        every_call[..first_stop]
+            .iter()
+            .any(|call| call.starts_with("list-jobs")),
+        "{every_call:?}"
+    );
     // An emergency's SIGKILL left units failed (the session's own, a decoy
     // unit caught stopping); the decoy must not inherit that record, but keeps
     // the failure it had before the session.

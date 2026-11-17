@@ -844,6 +844,7 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
+            tail: None,
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         assert!(
@@ -907,6 +908,7 @@ fn the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter() {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
+            tail: None,
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         assert_eq!(
@@ -1366,6 +1368,7 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
+            tail: None,
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         for unit in &plan.boot_masks {

@@ -218,7 +218,7 @@ const SURVIVE_XATTRS: [&str; 2] = [
 
 /// The unified cgroup hierarchy beside the procfs at `proc`:
 /// `/sys/fs/cgroup` for `/proc`.
-fn cgroups_beside(proc: &Path) -> PathBuf {
+pub(crate) fn cgroups_beside(proc: &Path) -> PathBuf {
     proc.parent()
         .unwrap_or(Path::new("/"))
         .join(crate::cgroup::CGROUP_ROOT.trim_start_matches('/'))
@@ -230,7 +230,7 @@ fn cgroups_beside(proc: &Path) -> PathBuf {
 /// `SurviveFinalKillSignal=yes` (in the hierarchy at `cgroups`), or it runs
 /// as root with an `argv[0]` that begins with `@`, as a root storage daemon
 /// does. A file that cannot be read counts for neither.
-fn survives_soft_reboot(dir: &Path, cgroups: &Path) -> bool {
+pub(crate) fn survives_soft_reboot(dir: &Path, cgroups: &Path) -> bool {
     in_surviving_cgroup(dir, cgroups) || is_storage_daemon(dir)
 }
 
