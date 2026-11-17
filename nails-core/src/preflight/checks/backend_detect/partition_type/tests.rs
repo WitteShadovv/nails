@@ -1592,6 +1592,35 @@ fn the_generators_disk_is_unknown_where_its_way_down_cannot_be_read() {
     );
 }
 
+/// systemd takes no device of a btrfs root file system of several devices.
+/// Where `/sys/fs/btrfs` cannot be listed, the check cannot tell whether the
+/// decoy's btrfs root has more than one, nor which disk
+/// systemd-gpt-auto-generator reads: the listing that failed no longer reads
+/// as a root of one device, whose partition's disk the generator reads.
+#[test]
+fn the_generators_disk_is_unknown_where_a_btrfs_roots_devices_cannot_be_listed() {
+    let on_btrfs = || {
+        let host = on_the_decoys_disk().btrfs(&["nvme0n1p3"]);
+        host.fs.mock_set_mount_table(&format!(
+            "1 0 0:30 / / rw,relatime - btrfs /dev/nvme0n1p3 rw\n\
+             40 1 254:9 / {ROOT} rw,relatime - ext4 /dev/mapper/data rw\n"
+        ));
+        host
+    };
+    let host = on_btrfs();
+    let table = host.fs.mount_table().unwrap();
+    assert_eq!(
+        GeneratorDisk::read(&host.fs, &table).discovery("nvme0n1"),
+        judge::Discovery::Every
+    );
+    let host = on_btrfs();
+    host.fs
+        .mock_set_lookup_error("/sys/fs/btrfs", std::io::ErrorKind::PermissionDenied);
+    let generator = GeneratorDisk::read(&host.fs, &table);
+    assert_eq!(generator.discovery("nvme0n1"), judge::Discovery::Unknown);
+    assert_eq!(generator.disks().count(), 0);
+}
+
 #[test]
 fn several_partitions_are_judged_together() {
     // An md mirror of partitions 5 and 6 of the decoy's disk.
