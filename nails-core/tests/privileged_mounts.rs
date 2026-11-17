@@ -1196,8 +1196,9 @@ fn a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows() {
     root.teardown();
 }
 
-/// A process that dies with the mounts quiet (here: one that forgets its
-/// value, as a SIGKILL would) leaves them `noatime`. The record it handed
+/// A process that dies with the mounts quiet (here: one that abandons its
+/// value, closing its descriptors and giving no mode back, as a SIGKILL
+/// would) leaves them `noatime`. The record it handed
 /// over before the change gives them their own mode back. `disk` is a mount
 /// that keeps access times `relatime`; `has` and `options` read its options.
 fn a_record_gives_a_killed_window_s_modes_back(
@@ -1218,7 +1219,7 @@ fn a_record_gives_a_killed_window_s_modes_back(
             .any(|record| record.mount_point == disk && record.relatime),
         "the disk is in the record: {recorded:?}"
     );
-    std::mem::forget(quiet);
+    quiet.abandon();
     assert!(has("noatime"), "{}", options());
     assert_eq!(
         nails_teardown::noatime::restore(&recorded),
