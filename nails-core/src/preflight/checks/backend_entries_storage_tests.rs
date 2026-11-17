@@ -536,3 +536,39 @@ fn a_header_device_on_the_drive_fails() {
         assert!(result.is_pass(), "{crypttab}: {result:?}");
     }
 }
+
+#[test]
+fn a_line_that_writes_over_another_partition_of_the_disk_a_container_lies_on_fails() {
+    // A root in a container file on the decoy's /home lies on the decoy's
+    // own disk: that disk is the hidden drive, so a random-key swap line for
+    // another partition of it fails as one that has the boot write over a
+    // device of that drive, without the flag and with it, though the
+    // hidden-volume check accepts the container with a warning.
+    let decoy = root_in_a_file(
+        true,
+        "",
+        "cswap /dev/nvme0n1p5 /dev/urandom swap,cipher=aes-xts-plain64,size=512\n",
+    )
+    .partition(
+        "/sys/devices/pci0/nvme/nvme0n1/nvme0n1p5",
+        "nvme0n1p5",
+        "259:5",
+    );
+    decoy.fs.mock_set_device_node("/dev/nvme0n1p5");
+    assert!(hidden_volume_with_the_flag(&decoy.fs).is_warn());
+    fails_naming(
+        &decoy,
+        "/etc/crypttab: 'cswap /dev/nvme0n1p5' (it has the boot make swap over a device of the \
+         drive the volume at /mnt is stored on through its option swap)",
+    );
+    // A swap line for a partition of another disk passes.
+    let decoy = root_in_a_file(true, "", "cswap /dev/sdc /dev/urandom swap\n").device(
+        SDC,
+        "sdc",
+        "8:32",
+        &[],
+    );
+    decoy.fs.mock_set_device_node("/dev/sdc");
+    let result = decoy.run();
+    assert!(result.is_pass(), "{result:?}");
+}
