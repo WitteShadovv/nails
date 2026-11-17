@@ -68,8 +68,9 @@ fn a_builtin_a_function_an_alias_or_a_disable_runs_something_else_in_place_of_is
     // reserved word away.
     let shadowed = |name: &str, place: &str| {
         format!(
-            "it cannot tell what the files set where they run `{name}`, as {place} defines a \
-             function or an alias `{name}`, which zsh runs in place of the builtin of that name"
+            "it cannot tell what the files set or define where they run `{name}`, as {place} \
+             defines a function or an alias `{name}`, which zsh runs in place of the builtin of \
+             that name"
         )
     };
     for (zshenv, name) in [
@@ -80,6 +81,16 @@ fn a_builtin_a_function_an_alias_or_a_disable_runs_something_else_in_place_of_is
         ("disable -r export\nexport() { : }\n", "export"),
         ("functions[local]=:\n", "local"),
         ("n=unset\nfunction $n { : }\n", "$n"),
+        // zsh 5.9 to 5.9.2 then define no alias, so `later` runs the program
+        // PATH finds, and mark no function to autoload.
+        ("alias alias=:\n", "alias"),
+        ("alias() { : }\n", "alias"),
+        ("f() { : }\nfunctions -c f alias\n", "alias"),
+        ("functions() { : }\n", "functions"),
+        ("alias unalias=:\n", "unalias"),
+        ("unfunction() { : }\n", "unfunction"),
+        ("alias autoload=:\n", "autoload"),
+        ("unhash() { : }\n", "unhash"),
     ] {
         let fs = moved_home();
         seed(&fs, "/etc/zshenv", zshenv);

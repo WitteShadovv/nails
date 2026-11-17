@@ -202,6 +202,47 @@ fn a_glob_qualifier_that_runs_code_is_a_doubt() {
 }
 
 #[test]
+fn an_emulate_that_turns_glob_subst_on_where_qualifiers_may_be_on_is_a_doubt() {
+    // sh's, ksh's and csh's mode turn GLOB_SUBST on without a file naming
+    // it, and zsh 5.9 to 5.9.2 run the code of a glob qualifier in a value
+    // built in two parts once SH_GLOB is off and BARE_GLOB_QUAL or
+    // EXTENDED_GLOB on.
+    let value = "a='/('; b='e:later:)'; x=\"$a$b\"; : $x\n";
+    let doubted = |rc: &str| {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        scan(&fs, UNKNOWN)
+            .doubts
+            .iter()
+            .any(|doubt| doubt.contains("GLOB_SUBST"))
+    };
+    for setup in [
+        "emulate sh\nsetopt bareglobqual noshglob\n",
+        "emulate ksh\nsetopt bareglobqual noshglob\n",
+        "emulate bash\nsetopt bareglobqual noshglob\n",
+        "emulate -R sh\nsetopt bareglobqual noshglob\n",
+        "emulate sh\nsetopt extendedglob noshglob\n",
+        "emulate csh\nsetopt bareglobqual\n",
+        "emulate sh -o bareglobqual -o noshglob\n",
+        "alias em=emulate\nem sh\nsetopt bareglobqual noshglob\n",
+        "emulate $mode\nsetopt bareglobqual noshglob\n",
+    ] {
+        assert!(doubted(&format!("{setup}{value}")), "{setup}");
+    }
+    // Without the options that turn qualifiers on, or in zsh's mode, no
+    // value runs code.
+    for setup in [
+        "emulate sh -c ':'\n",
+        "emulate sh\nsetopt bareglobqual\n",
+        "emulate sh\nsetopt noshglob\n",
+        "setopt bareglobqual noshglob\n",
+        "emulate -L zsh\nsetopt bareglobqual noshglob\n",
+    ] {
+        assert!(!doubted(&format!("{setup}{value}")), "{setup}");
+    }
+}
+
+#[test]
 fn emulate_r_ksh_turns_share_history_on() {
     // zsh 5.9.1: `-R` resets every option to the mode's defaults, and ksh's
     // hold SHARE_HISTORY; sh's, csh's and zsh's hold none of the three, and a
@@ -1285,8 +1326,9 @@ fn a_function_defined_by_each_of_its_names_or_one_zsh_expands_is_read_by_each() 
     assert_eq!(
         scan(&fs, UNKNOWN).doubts,
         [
-            "it cannot tell what the files set where they run `$n`, as /home/alice/.zshrc defines \
-          a function or an alias `$n`, which zsh runs in place of the builtin of that name"
+            "it cannot tell what the files set or define where they run `$n`, as \
+             /home/alice/.zshrc defines a function or an alias `$n`, which zsh runs in place of \
+             the builtin of that name"
         ]
     );
     for definition in [

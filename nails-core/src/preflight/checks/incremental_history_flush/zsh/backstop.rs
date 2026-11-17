@@ -25,6 +25,9 @@
 use super::arith::READ_AS_NUMBER;
 use super::builtins::fc_letters;
 use super::lexer::{Token, blank, lex};
+use super::option_words::{
+    aliases_mentions, emulates, emulates_other, names_prompt_subst, names_rcs, sets_letter,
+};
 use super::walk::{HOOKS, PROMPTS, option};
 
 /// What the lines of a file name, outside the lines that are a comment.
@@ -70,6 +73,9 @@ pub(super) struct Named {
     pub(super) arith: usize,
     /// `TMOUT` where it is not read ([`writes`]).
     pub(super) tmouts: usize,
+    /// The option `ALIASES` in a spelling other than `aliases` alone
+    /// ([`super::option_words::aliases_mentions`]).
+    pub(super) aliases: usize,
 }
 
 impl Named {
@@ -97,6 +103,7 @@ impl Named {
             function_params: self.function_params.max(other.function_params),
             arith: self.arith.max(other.arith),
             tmouts: self.tmouts.max(other.tmouts),
+            aliases: self.aliases.max(other.aliases),
         }
     }
 
@@ -121,6 +128,7 @@ impl Named {
         self.numbers += number_writes(piece);
         self.arith += piece.matches("((").count() + piece.matches("$[").count();
         self.tmouts += writes(piece, "TMOUT");
+        self.aliases += aliases_mentions(piece);
         let alone = matches!(
             piece,
             "functions"
@@ -168,7 +176,7 @@ pub(super) fn code_lines(text: &str) -> impl Iterator<Item = &str> {
 /// space or a tab as zsh parts words ([`super::lexer::blank`]), is `#`. One
 /// that starts with any other white space (a vertical tab, a no-break space)
 /// is code, as zsh keeps that in the word before the `#`.
-fn comment_line(line: &str) -> bool {
+pub(super) fn comment_line(line: &str) -> bool {
     line.trim_start_matches(blank).starts_with('#')
 }
 
@@ -247,6 +255,40 @@ impl Forms {
         self.most(|line| whole_words(line, name))
     }
 
+    /// Whether a form of the text names one of the options `wanted`
+    /// ([`names_any`]): with the quotes and backslashes taken off too, as
+    /// zsh takes them off an option's name (`setopt 'glob'subst`,
+    /// `setopt glob\_subst`).
+    pub(super) fn names_any(&self, wanted: &[&str]) -> bool {
+        self.texts.iter().any(|text| names_any(text, wanted))
+    }
+
+    /// Whether a form of the text may run an `emulate` of a mode whose first
+    /// letter past one `r` is among `modes` ([`super::option_words::emulates`]), each of which
+    /// sets every option of its list as that mode has it.
+    pub(super) fn emulates(&self, modes: &[char]) -> bool {
+        self.texts.iter().any(|text| emulates(text, modes))
+    }
+
+    /// Whether a form of the text runs a `set`, a `setopt` or an `unsetopt`
+    /// with a word of flags that holds `letter`
+    /// ([`super::option_words::sets_letter`]).
+    pub(super) fn sets_letter(&self, letter: char) -> bool {
+        self.texts.iter().any(|text| sets_letter(text, letter))
+    }
+
+    /// Whether a form of the text may turn `RCS` or `GLOBAL_RCS` on again
+    /// ([`super::option_words::names_rcs`]).
+    pub(super) fn names_rcs(&self) -> bool {
+        self.texts.iter().any(|text| names_rcs(text))
+    }
+
+    /// Whether a form of the text may turn `PROMPT_SUBST` on
+    /// ([`super::option_words::names_prompt_subst`]).
+    pub(super) fn names_prompt_subst(&self) -> bool {
+        self.texts.iter().any(|text| names_prompt_subst(text))
+    }
+
     /// What the forms may change what a later command runs with, as the
     /// warning names each: an alias, by `alias` with a value or the
     /// parameters that hold them ([`alias_writes`]); a `disable`, after
@@ -313,7 +355,7 @@ impl Forms {
     /// Whether the forms may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, which
     /// split what an expansion gives an array or keep its first element:
     /// they name either, in either form ([`names_any`]), run an `emulate` of
-    /// another mode than zsh's ([`emulates_other`]), or a `set`, `setopt` or
+    /// another mode than zsh's ([`super::option_words::emulates_other`]), or a `set`, `setopt` or
     /// `unsetopt` with a word of flags that holds `y`, `SH_WORD_SPLIT`'s
     /// letter.
     pub(super) fn word_split(&self) -> bool {
@@ -362,36 +404,6 @@ fn loader_writes(line: &str) -> usize {
             !line[..at].chars().next_back().is_some_and(part) && is_write(line, at, len)
         })
         .count()
-}
-
-/// Whether `text`, zsh code, runs an `emulate` of another mode than zsh's,
-/// which may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on: past its flags (and
-/// the option after `-o` or `+o`), its first word is not `zsh`. One with no
-/// word after it shows the mode and changes none.
-fn emulates_other(text: &str) -> bool {
-    code_lines(text).any(|line| {
-        let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
-        line.match_indices("emulate").any(|(at, found)| {
-            if line[..at].chars().next_back().is_some_and(part)
-                || line[at + found.len()..].chars().next().is_some_and(part)
-            {
-                return false;
-            }
-            let rest = line[at + found.len()..]
-                .split([';', '&', '|', '(', ')', '`'])
-                .next()
-                .unwrap_or_default();
-            let mut words = rest.split_whitespace();
-            while let Some(word) = words.next() {
-                if matches!(word, "-o" | "+o") {
-                    words.next();
-                } else if !word.starts_with(['-', '+']) {
-                    return word != "zsh";
-                }
-            }
-            false
-        })
-    })
 }
 
 /// `text` with what each of its lines holds from a `#` that starts a word
@@ -603,37 +615,6 @@ pub(super) fn options(text: &str) -> Vec<(usize, bool)> {
     found
 }
 
-/// Whether `text`, zsh code, may turn `RCS` or `GLOBAL_RCS` on again, which
-/// make a zsh started with `-f` or `-d` read the startup files it skips: a
-/// word that names one of them, in either form and as [`options`] reads
-/// words; a `set`, `setopt` or `unsetopt` with a word of flags that holds `f`
-/// or `d`, the letters of `NO_RCS` and `NO_GLOBAL_RCS` (`set +f`); and an
-/// `emulate`, as `emulate -R` sets every option as zsh starts with it. A line
-/// that is a comment is left out.
-pub(super) fn names_rcs(text: &str) -> bool {
-    names_any(text, &["rcs", "globalrcs"])
-        || text.lines().filter(|line| !comment_line(line)).any(|line| {
-            let flags = ["set", "setopt", "unsetopt"]
-                .iter()
-                .any(|command| whole_words(line, command) > 0)
-                && line.split_whitespace().any(|word| {
-                    let word = word.trim_matches(['\'', '"', '\\']);
-                    word.len() > 1
-                        && word.starts_with(['-', '+'])
-                        && word[1..].starts_with(|c: char| c.is_ascii_alphabetic())
-                        && word.contains(['f', 'd'])
-                });
-            // A computed flag or name (`set +$x`), and an `exec`, which
-            // may start another zsh without `-f`.
-            let computed = ["set", "setopt", "unsetopt"].iter().any(|command| {
-                line.match_indices(command).any(|(at, _)| {
-                    whole_words(&line[at..], command) > 0 && line[at..].contains(['$', '`'])
-                })
-            });
-            flags || computed || whole_words(line, "emulate") > 0 || whole_words(line, "exec") > 0
-        })
-}
-
 /// Whether `text`, a word of zsh code, names a history file: `$HISTFILE` or
 /// an expansion of it, or a path whose last part holds `hist` in any case
 /// (`~/.zsh_history`, `~/.histfile`, `of=$HOME/.zhistory`).
@@ -669,18 +650,6 @@ pub(super) fn names_any(text: &str, wanted: &[&str]) -> bool {
     })
 }
 
-/// Whether `text`, zsh code, may turn `PROMPT_SUBST` on, which makes zsh run
-/// what a prompt holds as it shows it: it names the option, or its other name
-/// `PROMPT_VARS` (zsh's alias for bash's), or runs an `emulate`, as sh's and
-/// ksh's emulation turn it on.
-pub(super) fn names_prompt_subst(text: &str) -> bool {
-    names_any(text, &["promptsubst", "promptvars"])
-        || text
-            .lines()
-            .filter(|line| !comment_line(line))
-            .any(|line| whole_words(line, "emulate") > 0)
-}
-
 /// Whether `text`, a word of zsh code, expands a parameter's value again,
 /// which may run code or set a parameter (`${options[...]::=on}`): with the
 /// `(e)` flag, with `(%%)`, which expands it in full as a prompt, or as a
@@ -700,7 +669,7 @@ pub(super) fn reexpands(text: &str) -> bool {
 
 /// Add what the parts of `word` name, as `named` reads a part, to `found`
 /// ([`options`]).
-fn named_in<T>(word: &str, named: &impl Fn(&str) -> Option<T>, found: &mut Vec<T>) {
+pub(super) fn named_in<T>(word: &str, named: &impl Fn(&str) -> Option<T>, found: &mut Vec<T>) {
     let mut start = None;
     for (at, c) in word
         .char_indices()
@@ -740,7 +709,8 @@ pub(super) const KEPT: (char, char) = ('\u{1}', '\u{2}');
 /// written, as far as they may name an option, and more: each alternative of
 /// a `{a,b}` list, and of a `{x..y}` range and, as `BRACE_CCL` makes it, of
 /// a `{abc}` group (its ranges too, as in `{a-z}`) each character that an
-/// option's name may hold ([`NAME_CHARS`]), beside the group as written.
+/// option's name may hold, in lower case ([`name_char`]), beside the group
+/// as written.
 /// `None` when that makes more than [`BRACE_LIMIT`].
 pub(super) fn braces(word: &str) -> Option<Vec<String>> {
     let mut done = Vec::new();
@@ -803,10 +773,14 @@ fn closing(bytes: &[u8], open: usize) -> Option<usize> {
     None
 }
 
-/// The characters of the names of [`super::OPTIONS`] and of their `no`
-/// form, in either case, and the `_` that zsh skips in a name: no other
-/// character a group of brace expansion stands for can make a word name one.
-const NAME_CHARS: &str = "incapedhstorymINCAPEDHSTORYM_";
+/// Whether `c` may stand in the name of one of zsh's options or of its `no`
+/// form, in lower case, as zsh compares names: a letter, or the `_` that zsh
+/// skips in a name. No other character a group of brace expansion stands
+/// for can make a word name one (`BRACE_CCL` makes `{g}lobsubst` name
+/// `GLOB_SUBST`).
+fn name_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c == '_'
+}
 
 /// What a group of brace expansion, `content` between its braces, may stand
 /// for ([`braces`]).
@@ -829,9 +803,12 @@ fn alternatives(content: &str) -> Vec<String> {
         return parts;
     }
     let mut alternatives = vec![format!("{}{content}{}", KEPT.0, KEPT.1)];
+    // Each character an option's name may hold, in lower case, as the
+    // names are compared: `{a-zA-Z}` stands for the 26 letters.
     let mut add = |from: char, to: char| {
         for c in from.min(to)..=from.max(to) {
-            if NAME_CHARS.contains(c) && !alternatives.iter().any(|known| *known == c.to_string()) {
+            let c = c.to_ascii_lowercase();
+            if name_char(c) && !alternatives.iter().any(|known| *known == c.to_string()) {
                 alternatives.push(c.to_string());
             }
         }
@@ -1058,7 +1035,7 @@ fn writes(text: &str, name: &str) -> usize {
 /// `${name=...}`, `${name:=...}` or `${name::=...}`, an element's too
 /// (`${name[1]::=...}`); also as the argument of an option, after its letters
 /// (`print -vZDOTDIR`).
-fn is_write(text: &str, at: usize, len: usize) -> bool {
+pub(super) fn is_write(text: &str, at: usize, len: usize) -> bool {
     let part = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let modifiers = ['#', '+', '=', '~', '^'];
     let before = &text[..at];

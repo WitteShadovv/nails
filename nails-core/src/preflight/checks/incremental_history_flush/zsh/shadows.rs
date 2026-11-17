@@ -14,8 +14,9 @@
 //! it runs, which picks the program a multi-call coreutils runs, each set by
 //! a file or held by the shell's environment, which may make the program
 //! print other code. And what may change what a builtin runs by which the walk
-//! reads a setting ([`SETTERS`]): a function or a regular alias of its name,
-//! and a `disable` of it, are doubts wherever the files read define them.
+//! reads a setting or a definition ([`SETTERS`]): a function or a regular
+//! alias of its name, a `functions -c` copy to it, and a `disable` of it, are
+//! doubts wherever the files read define them.
 
 use super::Reader;
 use super::backstop::Forms;
@@ -46,12 +47,15 @@ pub(super) struct Snapshot {
 }
 
 /// The builtins and precommands by which the walk reads a parameter as set,
-/// declared or taken away (`export ZDOTDIR=...`, `unset XDG_CONFIG_HOME`) or a
-/// file as sourced. A regular alias of such a name runs in its place (`alias
-/// export=:`, zsh 5.9 to 5.9.2 then set nothing), and so does a function of a
-/// name that is no reserved word, or one `disable -r` takes away (`unset() {
-/// }`, `source() { }`), and after a `disable` of it zsh runs what PATH finds,
-/// so the setting the walk read need not happen.
+/// declared or taken away (`export ZDOTDIR=...`, `unset XDG_CONFIG_HOME`), a
+/// file as sourced, or an alias or a function as defined, copied, marked to
+/// be autoloaded or taken away (`alias`, `functions -c`, `autoload`,
+/// `unalias`). A regular alias of such a name runs in its place (`alias
+/// export=:`, `alias alias=:`, zsh 5.9 to 5.9.2 then set and define nothing),
+/// and so does a function of a name that is no reserved word, or one
+/// `disable -r` takes away (`unset() { }`, `source() { }`, `alias() { }`, or
+/// `functions -c f alias`), and after a `disable` of it zsh runs what PATH
+/// finds, so the setting or the definition the walk read need not happen.
 const SETTERS: &[&str] = &[
     "typeset",
     "export",
@@ -64,6 +68,12 @@ const SETTERS: &[&str] = &[
     "unset",
     "source",
     ".",
+    "alias",
+    "unalias",
+    "functions",
+    "unfunction",
+    "autoload",
+    "unhash",
     "builtin",
     "command",
     "noglob",
@@ -101,13 +111,13 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// Note a doubt where `what` (`/etc/zshenv defines a function or an
     /// alias`) is named `name`, like a builtin by which the walk reads a
-    /// setting ([`SETTERS`]), or where an expansion may make the name, as it
-    /// then runs in that builtin's place.
+    /// setting or a definition ([`SETTERS`]), or where an expansion may make
+    /// the name, as it then runs in that builtin's place.
     pub(super) fn shadow_setter(&mut self, name: &str, what: &str) {
         if SETTERS.contains(&name) || may_expand(name) {
             self.doubt(format!(
-                "it cannot tell what the files set where they run `{name}`, as {what} `{name}`, \
-                 which zsh runs in place of the builtin of that name"
+                "it cannot tell what the files set or define where they run `{name}`, as {what} \
+                 `{name}`, which zsh runs in place of the builtin of that name"
             ));
         }
     }
@@ -127,9 +137,9 @@ impl<F: Filesystem> Reader<'_, F> {
             .collect();
         if !names.is_empty() {
             self.doubt(format!(
-                "it cannot tell what the files set where they run `{}`, as a `disable` in \
-                 {place} may take that builtin away, after which zsh runs what PATH finds by its \
-                 name",
+                "it cannot tell what the files set or define where they run `{}`, as a \
+                 `disable` in {place} may take that builtin away, after which zsh runs what PATH \
+                 finds by its name",
                 names.join("`, `")
             ));
         }

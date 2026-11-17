@@ -1745,7 +1745,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                     },
                 ]
             ),
-            Token::End(End::Line),
+            Token::End(End::Newline),
         ]
     );
     assert_eq!(
@@ -1784,7 +1784,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
         tokens("(( a << (b) ))\nc"),
         [
             Token::Arithmetic("(( a << (b) ))".to_string()),
-            Token::End(End::Line),
+            Token::End(End::Newline),
             Token::Word(Word {
                 text: "c".to_string(),
                 expands: false,

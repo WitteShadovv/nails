@@ -211,7 +211,7 @@ fn an_fc_alias_counts_as_used_in_a_stock_function_zsh_expands_aliases_in() {
                  it is used, as zsh hands the fc it stands for the words after it";
     // An alias named like a builtin by which the walk reads a setting runs
     // in its place, which is a doubt of its own.
-    let shadow = "it cannot tell what the files set where they run `typeset`, as \
+    let shadow = "it cannot tell what the files set or define where they run `typeset`, as \
                   /home/alice/.zshrc defines a function or an alias `typeset`, which zsh runs in \
                   place of the builtin of that name";
     for (rc, doubts) in [

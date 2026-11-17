@@ -25,10 +25,16 @@
 //! file), or after the code that runs the name (a helper a hook runs that
 //! the file defines after the hook), counts for nothing, as such a stop may
 //! come before it: zsh 5.9 to 5.9.2 then run the outside program PATH finds
-//! by that name, which is a doubt. An alias counts the same way, as zsh puts
-//! its value in place of the name as it reads the code, but only for a name
-//! with no quote or backslash in it past no precommand that is a builtin:
-//! zsh puts none in place of `\name`, `"name"` or `noglob name`. One whose
+//! by that name, which is a doubt. An alias counts the same way, but only
+//! for a name with no quote or backslash in it past no precommand that is a
+//! builtin (zsh puts none in place of `\name`, `"name"` or `noglob name`),
+//! and only for code zsh reads after the alias ran: zsh reads a file's code
+//! up to a newline that leaves nothing open, runs it, then reads on, and
+//! puts an alias's value in place of the name as it reads
+//! ([`Listed::parsed`]), so not for the rest of its own line, a line joined
+//! to it, the rest of a group or a compound command it stands in, or a
+//! function defined there. Where a file or the command line may turn
+//! `ALIASES` off, no alias counts ([`Listed::aliases_off`]). One whose
 //! value hands the words it is used with to a command the list does not
 //! hold with any words ([`super::known::TAKES_ANY_WORDS`]) is a doubt where
 //! it is used with words (`alias k=kill`, then `k -HUP $$`). The stock
@@ -60,6 +66,9 @@ pub(super) struct Def {
     /// chain of commands joined by `&&` alone in it that it is in
     /// ([`super::walk::Event::Unlisted`]).
     pub(super) chain: Option<(usize, usize)>,
+    /// The piece of code it stands in and the part of it zsh reads at once
+    /// ([`Listed::parsed`]).
+    pub(super) parsed: (usize, usize),
 }
 
 /// A command the list does not hold ([`super::walk::Event::Unlisted`]), and
@@ -79,6 +88,9 @@ pub(super) struct Unlisted {
     /// The readings of the files being followed as it is read, outermost
     /// first ([`Listed::within`]).
     pub(super) within: Vec<usize>,
+    /// The piece of code it stands in and the part of it zsh reads at once
+    /// ([`Listed::parsed`]).
+    pub(super) parsed: (usize, usize),
 }
 
 /// What the reader keeps for the list of the commands the check knows to be
@@ -104,6 +116,15 @@ pub(super) struct Listed {
     pub(super) readings: usize,
     pub(super) pieces: usize,
     pub(super) piece: usize,
+    /// How many parts of the piece being followed zsh has read and run, each
+    /// up to a newline that leaves nothing open
+    /// ([`super::walk::Event::Parsed`]): zsh puts an alias in place as it
+    /// reads code, so an alias counts only for a part read after the one
+    /// that defines it.
+    pub(super) parsed: usize,
+    /// What may turn the option `ALIASES` off, after which zsh puts no alias
+    /// in place ([`super::walk::Event::AliasesOff`]).
+    pub(super) aliases_off: Option<String>,
 }
 
 /// The functions the stock `promptinit` defines as it runs.
@@ -150,6 +171,7 @@ impl<F: Filesystem> Reader<'_, F> {
             order: self.order,
             place: place.to_string(),
             within: self.listed.within.clone(),
+            parsed: (piece, self.listed.parsed),
         };
         self.listed.unlisted.push(unlisted);
     }
@@ -167,17 +189,24 @@ impl<F: Filesystem> Reader<'_, F> {
             within: self.listed.within.clone(),
             alias,
             chain: None,
+            parsed: (self.listed.piece, self.listed.parsed),
         });
     }
 
     /// Whether the code `unlisted`, a command that runs by the name `name`,
     /// stands in certainly defines or autoloads a function or an alias of that
     /// name before it ([the module](self)): an alias only where zsh may put
-    /// one in place of the name.
+    /// one in place of the name, no file may turn `ALIASES` off, and zsh
+    /// reads the command after the definition ran: in a part of the same
+    /// piece of code read after the one that defines it, or in a file sourced
+    /// after it.
     fn certainly_defined(&self, name: &str, unlisted: &Unlisted) -> bool {
         self.listed.defs.iter().any(|def| {
             def.name == name
-                && (def.alias.is_none() || unlisted.alias)
+                && (def.alias.is_none()
+                    || (unlisted.alias
+                        && self.listed.aliases_off.is_none()
+                        && (unlisted.within != def.within || def.parsed < unlisted.parsed)))
                 && def.order < unlisted.order
                 && unlisted.within.starts_with(&def.within)
                 && (def.here || (def.chain.is_some() && def.chain == unlisted.chain))
@@ -244,6 +273,7 @@ impl<F: Filesystem> Reader<'_, F> {
                         within: unlisted.within.clone(),
                         alias: None,
                         chain: unlisted.chain,
+                        parsed: unlisted.parsed,
                     })
                 })
                 .collect();
@@ -263,7 +293,23 @@ impl<F: Filesystem> Reader<'_, F> {
             let why = match unlisted.name.as_deref() {
                 None => Some(unlisted.why.clone()),
                 Some(name) if !self.certainly_defined(name, &unlisted) => {
-                    Some(outside_program(name))
+                    Some(match &self.listed.aliases_off {
+                        Some(what)
+                            if self
+                                .listed
+                                .defs
+                                .iter()
+                                .any(|def| def.name == name && def.alias.is_some()) =>
+                        {
+                            format!(
+                                "`{name}` is an alias the files define, but {what}, after which \
+                                 zsh puts no alias in place of a name and runs the outside \
+                                 program of that name, which may change the terminal, signal the \
+                                 shell or leave a process that does later"
+                            )
+                        }
+                        _ => outside_program(name),
+                    })
                 }
                 Some(name)
                     if unlisted.words

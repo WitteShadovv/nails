@@ -34,8 +34,12 @@ pub(super) struct Word {
 /// Where a command ends, and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum End {
-    /// `;` or a newline.
+    /// `;`.
     Line,
+    /// A newline, which ends a command as `;` does, and which zsh reads a
+    /// file's code up to before it runs any of it, where nothing is left
+    /// open ([`super::walk::Event::Parsed`]).
+    Newline,
     /// `&&`: the next command runs where the one before it succeeded.
     Condition,
     /// `||`: the next command runs where the one before it failed.
@@ -788,7 +792,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
             '\\' if lexer.chars.next_if_eq(&'\n').is_some() => {}
             '\n' => {
                 lexer.end_word();
-                lexer.tokens.push(Token::End(End::Line));
+                lexer.tokens.push(Token::End(End::Newline));
                 lexer.heredoc_bodies();
             }
             ';' => {

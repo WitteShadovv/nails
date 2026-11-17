@@ -278,6 +278,15 @@ pub(in super::super) enum Event {
         alias: bool,
         why: String,
     },
+    /// zsh has read the piece of a file's code before this, up to a newline
+    /// that leaves nothing open, and runs it before it reads the next: an
+    /// alias that piece defines is in place for the code zsh reads after it,
+    /// and for none of that piece's ([`super::super::reached`]).
+    Parsed,
+    /// The option `ALIASES` may be turned off, by what `what` names, after
+    /// which zsh puts no alias in place of a name: the name runs the
+    /// function or the outside program it would run without the alias.
+    AliasesOff(String),
     /// A job that may run on after the startup files ([`super::jobs`]): one
     /// in the background, a process substitution, or what a program that
     /// detaches what it runs starts (`nohup`); `what` names it, as the
