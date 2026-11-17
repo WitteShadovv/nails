@@ -5,13 +5,14 @@
 //! line to the history file as zsh runs, or hold an `fc` that writes it,
 //! read in zsh's order and failing closed on what the check cannot follow.
 //!
-//! Every command the files run, and every hook, widget, alias, function and
-//! job they reach that zsh may run, keeps to a list of the commands the
-//! check knows to be harmless, each read by its name and every word
-//! ([`known`]): any other is a doubt where zsh may run it ([`reached`]), an
-//! outside program, a key binding, a widget and a terminal setting among
-//! them, so that a form the reader does not know makes the check warn rather
-//! than pass. The rules below read what the commands on the list do.
+//! Each command the reader reads in the files, and in every hook, widget,
+//! alias, function and job it follows that zsh may run, is held to a list of
+//! the commands the check knows to be harmless, each read by its name and
+//! every word ([`known`]): any other is a doubt where zsh may run it
+//! ([`reached`]), an outside program, a key binding, a widget and a terminal
+//! setting among them. The rules below read what the commands on the list
+//! do. They follow how zsh 5.9 to 5.9.2 read the code as far as the tests
+//! go: code zsh reads otherwise than they do is code the list never sees.
 //!
 //! zsh reads `zshenv`, then `zprofile` for a login shell, `zshrc` for an
 //! interactive one and `zlogin` for a login shell: each stage's file in `/etc`
@@ -22,7 +23,7 @@
 //! error. A zsh
 //! started with `-f` reads `/etc/zshenv` alone, and one started with `-d` no
 //! other file in `/etc` ([`Start`]), unless a file read so far names `RCS` or
-//! `GLOBAL_RCS`, which may turn them on again ([`backstop::names_rcs`]). The
+//! `GLOBAL_RCS`, which may turn them on again ([`option_words::names_rcs`]). The
 //! options its command line turns on count too ([`CommandLine`]). A file that a
 //! startup file sources is read where it is sourced, when its path resolves. A
 //! zsh runs with one home, which `~` and `$HOME` name, so for a shell that may
@@ -149,6 +150,7 @@ mod jobs;
 mod known;
 mod lexer;
 mod made;
+mod option_words;
 mod order;
 mod paths;
 mod reached;
@@ -245,13 +247,13 @@ struct Reader<'a, F: Filesystem> {
     /// What the check could not follow.
     doubts: Vec<String>,
     /// Whether a file read may turn `RCS` or `GLOBAL_RCS` on again
-    /// ([`backstop::names_rcs`]), and whether one may run an `emulate` of
+    /// ([`option_words::names_rcs`]), and whether one may run an `emulate` of
     /// sh's or ksh's mode that lasts, in which zsh reads the user's files in
     /// the home ([`Event::Emulates`]).
     rcs: bool,
     sh_mode: bool,
     /// Whether a file read may turn `PROMPT_SUBST` on
-    /// ([`backstop::names_prompt_subst`]).
+    /// ([`option_words::names_prompt_subst`]).
     prompt_subst: bool,
     /// The doubts of the prompts that hold code zsh runs as it shows them
     /// when `PROMPT_SUBST` is on ([`Event::Prompt`]).
@@ -567,13 +569,15 @@ impl<F: Filesystem> Reader<'_, F> {
         outer: Option<String>,
     ) {
         let (whole, certain) = how;
-        self.rcs |= backstop::names_rcs(text);
-        self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
         let forms = self.lines(text, &place);
-        self.reading(text, &forms, &place);
+        self.rcs |= forms.names_rcs();
+        self.prompt_subst |= forms.names_prompt_subst();
+        self.reading(&forms, &place);
         self.shadows(&forms, &place, outer.as_deref());
-        if backstop::names_any(text, &["globsubst"]) {
+        // GLOB_SUBST, which an `emulate` of sh's, ksh's or csh's mode turns
+        // on too ([`reading`]).
+        if forms.names_any(&["globsubst"]) {
             self.doubt(format!(
                 "it cannot tell what code zsh runs from the values it expands as patterns, as \
                  {place} names GLOB_SUBST, which makes a glob qualifier in a value run"
@@ -586,6 +590,7 @@ impl<F: Filesystem> Reader<'_, F> {
         self.outers.push(outer);
         self.listed.pieces += 1;
         let piece = std::mem::replace(&mut self.listed.piece, self.listed.pieces);
+        let parsed = std::mem::replace(&mut self.listed.parsed, 0);
         let confused = std::mem::replace(&mut self.listed.confused, read.confused);
         let before = self.start_file();
         for event in read.events {
@@ -594,6 +599,7 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         self.end_file(before);
         self.listed.confused = confused;
+        self.listed.parsed = parsed;
         self.listed.piece = piece;
         self.outers.pop();
         self.stack.pop();
@@ -763,6 +769,10 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
             }
             Event::Emulates => self.sh_mode = true,
+            Event::Parsed => self.listed.parsed += 1,
+            Event::AliasesOff(what) => {
+                self.listed.aliases_off.get_or_insert(what);
+            }
         }
     }
 

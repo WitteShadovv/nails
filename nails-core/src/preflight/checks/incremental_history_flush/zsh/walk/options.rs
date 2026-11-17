@@ -10,6 +10,7 @@
 
 use super::super::backstop;
 use super::super::lexer::Word;
+use super::super::option_words;
 use super::command::ALIAS_PARAMETERS;
 use super::hooks::hook_array;
 use super::{Event, Walker};
@@ -37,7 +38,9 @@ fn ksh(mode: &str) -> bool {
 impl Walker<'_> {
     /// The events of a `setopt`-like command turning the options `word`
     /// names on (`on`), as brace expansion may make the word
-    /// ([`backstop::options`]); none when it names others.
+    /// ([`backstop::options`]); none when it names others. One that may turn
+    /// `ALIASES` off ([`option_words::turns_aliases_off`]) makes zsh put no alias
+    /// in place of a name after it ([`Event::AliasesOff`]).
     pub(super) fn set(&mut self, word: &str, on: bool, unconditional: bool) {
         for (option, named_on) in backstop::options(word) {
             self.events.push(Event::Set {
@@ -45,6 +48,17 @@ impl Walker<'_> {
                 on: on == named_on,
                 unconditional,
             });
+        }
+        if option_words::turns_aliases_off(word, on) {
+            self.events.push(Event::AliasesOff(format!(
+                "{} may turn ALIASES off (`{word}`)",
+                self.place
+            )));
+        }
+        // The word names the option, not the parameter `aliases`, which a
+        // line's count takes it for ([`backstop::alias_writes`]).
+        if option_words::aliases_option(word).is_some() {
+            self.alias_params += backstop::alias_writes(word);
         }
     }
 
@@ -107,6 +121,9 @@ impl Walker<'_> {
                             "it cannot tell which parameter `set {} {}` in {} sets",
                             arg.text, name.text, self.place
                         )));
+                    } else if name.text == "options" {
+                        // Every option at once, `ALIASES` among them.
+                        self.every_option(&format!("set {} options ...", arg.text));
                     } else if hook_array(&name.text) {
                         self.hooks += 1;
                         hooks = true;

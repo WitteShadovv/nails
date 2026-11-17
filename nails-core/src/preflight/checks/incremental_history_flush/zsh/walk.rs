@@ -14,6 +14,7 @@
 use super::OPTIONS;
 use super::backstop;
 use super::lexer::{End, Flaw, Token, Word, lex};
+use super::option_words;
 use std::collections::BTreeMap;
 
 mod arith;
@@ -248,6 +249,15 @@ struct Walker<'a> {
     /// ([`backstop::alias_writes`]), and a function by `functions`.
     alias_params: usize,
     function_params: usize,
+    /// The last end of a command was a `&&`, an `||` or a `|`, after which
+    /// zsh reads on past newlines to the command it joins.
+    continued: bool,
+    /// Whether the code is a file's, which zsh reads up to each newline that
+    /// leaves nothing open before it runs that piece ([`Event::Parsed`]),
+    /// and whether such a newline was read whose here-documents' bodies,
+    /// which zsh reads with that piece, may come next.
+    boundaries: bool,
+    boundary: bool,
 }
 
 impl Walker<'_> {
@@ -341,7 +351,8 @@ impl Walker<'_> {
                     return false;
                 }
                 Some(
-                    Token::End(End::Line | End::Condition | End::Or | End::Arm) | Token::Close,
+                    Token::End(End::Line | End::Newline | End::Condition | End::Or | End::Arm)
+                    | Token::Close,
                 )
                 | None => {
                     return false;
@@ -733,17 +744,27 @@ impl Walker<'_> {
         }
     }
 
-    /// The events of the end of a command.
+    /// The events of the end of a command. A newline where nothing is left
+    /// open, no compound command, function's body or `[[ ... ]]`, ends the
+    /// piece of a file's code that zsh reads before it runs any of it
+    /// ([`Event::Parsed`]), past the bodies of the here-documents its lines
+    /// open.
     fn end(&mut self, end: End) {
+        let open_condition = self
+            .pending
+            .words
+            .first()
+            .is_some_and(|first| first.text == "[[")
+            && !self.pending.words.iter().any(|word| word.text == "]]");
         self.finish(matches!(end, End::Pipe | End::Background));
-        if end == End::Line {
+        if matches!(end, End::Line | End::Newline) {
             // The here-documents the line opens come next, as the input of
             // its commands.
             self.bodies_start = self.line_start;
             self.line_start = self.events.len();
         }
         match end {
-            End::Line | End::Background => self.end_short(),
+            End::Line | End::Newline | End::Background => self.end_short(),
             End::Arm => {
                 self.end_short();
                 if let Some(open) = self.frames.last_mut()
@@ -758,18 +779,26 @@ impl Walker<'_> {
             self.elsewhere(self.sublist);
             self.background(self.sublist);
         }
-        if matches!(end, End::Line | End::Background | End::Arm) {
+        if matches!(end, End::Line | End::Newline | End::Background | End::Arm) {
             self.sublist = self.events.len();
         }
         // A chain of commands joined by `&&` alone, each of which runs where
         // the ones before it did; past `||` or `|` none is certain.
         match end {
             End::Condition => {}
-            End::Line | End::Background | End::Arm => self.chain = Some(self.events.len()),
+            End::Line | End::Newline | End::Background | End::Arm => {
+                self.chain = Some(self.events.len());
+            }
             End::Or | End::Pipe => self.chain = None,
         }
         self.pending.after_condition = matches!(end, End::Condition | End::Or);
         self.pending.piped = end == End::Pipe;
+        self.continued = matches!(end, End::Condition | End::Or | End::Pipe);
+        self.boundary |= end == End::Newline
+            && self.boundaries
+            && self.frames.is_empty()
+            && !self.pending.function_next
+            && !open_condition;
     }
 
     /// The events of a `(`: a function's or an anonymous function's `()`, or
@@ -793,6 +822,17 @@ impl Walker<'_> {
     /// Walk every token, finding the events in order.
     fn walk(mut self) -> Self {
         while let Some(token) = self.tokens.next() {
+            // zsh reads on past a newline after `&&`, `||` or `|` (and the
+            // comment before it) to the command they join.
+            if token == Token::End(End::Newline) && self.continued {
+                continue;
+            }
+            if !matches!(token, Token::Text(_)) {
+                self.continued = false;
+                if std::mem::take(&mut self.boundary) {
+                    self.events.push(Event::Parsed);
+                }
+            }
             if self.frames.last().is_some_and(|open| open.pattern) {
                 self.pattern_token(token);
                 continue;
@@ -925,8 +965,23 @@ pub(super) struct Read {
 
 /// Walk zsh code `text` from the file at `place` that runs in the function
 /// `outer`, when in one, where zsh is at its top level as it runs it
-/// (`top`, [`Walker::top`]); what the lexer could not read is a doubt.
+/// (`top`, [`Walker::top`]); what the lexer could not read is a doubt. zsh
+/// reads such code, a string or a function's, whole before it runs any of
+/// it.
 fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Walked {
+    walk_text(text, place, outer, top, false)
+}
+
+/// Walk zsh code `text` as [`walk_text_in`] does; `boundaries` where it is a
+/// file's that zsh reads a piece at a time, as it runs it, up to each newline
+/// that leaves nothing open ([`Event::Parsed`]).
+fn walk_text(
+    text: &str,
+    place: &str,
+    outer: Option<String>,
+    top: bool,
+    boundaries: bool,
+) -> Walked {
     let (tokens, flaws) = lex(text);
     let (arithmetic, marks) = arith::of_tokens(&tokens);
     let walker = Walker {
@@ -967,6 +1022,9 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Wa
         bodies_start: 0,
         alias_params: 0,
         function_params: 0,
+        continued: false,
+        boundaries,
+        boundary: false,
     }
     .walk();
     let mut events = walker.events;
@@ -1023,6 +1081,9 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>, top: bool) -> Wa
 pub(super) fn events(text: &str, place: &str, outer: Option<String>) -> Read {
     let (tokens, _) = lex(text);
     let mut read = [0; 3];
+    // The words that name the option ALIASES, which the walk reads where
+    // a command sets it ([`Event::AliasesOff`]).
+    let mut aliases = 0;
     for token in &tokens {
         let texts: Vec<&str> = match token {
             Token::Word(word) => vec![&word.text],
@@ -1032,15 +1093,22 @@ pub(super) fn events(text: &str, place: &str, outer: Option<String>) -> Read {
             Token::Text(text) | Token::Arithmetic(text) => vec![text],
             _ => Vec::new(),
         };
+        aliases += texts
+            .iter()
+            .map(|text| option_words::aliases_mentions(text))
+            .sum::<usize>();
         for (at, _) in texts.into_iter().flat_map(backstop::options) {
             read[at] += 1;
         }
     }
-    let mut walked = walk_text_in(text, place, outer, false);
+    // A file's own code zsh reads a piece at a time; one it runs as a
+    // function's code, as it loads it, whole.
+    let boundaries = outer.is_none();
+    let mut walked = walk_text(text, place, outer, false, boundaries);
     let mut events = std::mem::take(&mut walked.events);
     events.extend(unread::beyond(
         &backstop::named(text),
-        &read,
+        (&read, aliases),
         &walked,
         place,
     ));

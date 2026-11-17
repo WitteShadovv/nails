@@ -21,7 +21,11 @@
 //!   `prompt_default_setup` (`prompt restore`).
 //! - `add-zsh-hook` and `add-zle-hook-widget` make the function they are
 //!   given a hook, which the walk reads where they are run
-//!   ([`super::walk::Event::Hook`]), or take one away.
+//!   ([`super::walk::Event::Hook`]), or take one away. A function of the
+//!   files' own by either name, or a file of either name that is not the
+//!   stock one, is read as code like any function the files run, where the
+//!   files run it and where `prompt` does (its `set_prompt` runs both with
+//!   `-D`).
 
 use super::{Reader, Word};
 use crate::Filesystem;
@@ -154,6 +158,15 @@ impl<F: Filesystem> Reader<'_, F> {
                     "prompt_preview_theme",
                 ] {
                     let edge = ("prompt".to_string(), helper.to_string());
+                    if !self.edges.contains(&edge) {
+                        self.edges.push(edge);
+                    }
+                }
+                // set_prompt takes the theme's hooks away with
+                // `add-zsh-hook -D` and `add-zle-hook-widget -D` as it picks
+                // one, which run the files' own functions of those names.
+                for helper in ["add-zsh-hook", "add-zle-hook-widget"] {
+                    let edge = ("set_prompt".to_string(), helper.to_string());
                     if !self.edges.contains(&edge) {
                         self.edges.push(edge);
                     }

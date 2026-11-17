@@ -10,12 +10,14 @@
 
 use super::super::known::{self, Verdict};
 use super::super::lexer::Word;
+use super::super::option_words;
 use super::command::{Run, assigned};
 use super::{Event, Walker};
 
 /// The parameters the expansions in `text`, a word of zsh code, set as zsh
 /// expands them (`${NAME=x}`, `${NAME:=x}`, `${NAME::=x}`), past their
-/// flags (`${(L)NAME:=x}`).
+/// flags and the `=`, `~` and `^` that split it, take it as a pattern and
+/// join it to what is around it (`${(L)NAME:=x}`, `${(AA)=options::=...}`).
 fn assigning_expansions(text: &str) -> Vec<&str> {
     let mut found = Vec::new();
     let mut rest = text;
@@ -25,6 +27,7 @@ fn assigning_expansions(text: &str) -> Vec<&str> {
             Some(flags) => flags.split_once(')').map_or("", |(_, after)| after),
             None => rest,
         };
+        let inner = inner.trim_start_matches(['=', '~', '^']);
         let end = inner
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
             .unwrap_or(inner.len());
@@ -107,9 +110,13 @@ impl Walker<'_> {
 
     /// Note a doubt where the assignment `word` sets a parameter the list
     /// does not let be ([`Walker::listed_parameter`]), or an option by a name
-    /// it does not hold (`options[errexit]=on`, [`known::option`]).
+    /// it does not hold (`options[errexit]=on`, [`known::option`]); and where
+    /// it may turn `ALIASES` off ([`Event::AliasesOff`]): zsh turns an option
+    /// on for the value `on` and off for `off` (`options[aliases]=off`,
+    /// `options[noaliases]=on`), and changes none for any other, so a value
+    /// an expansion makes or one added to may.
     pub(super) fn listed_assignment(&mut self, word: &Word) {
-        let Some((target, _)) = word.text.split_once('=') else {
+        let Some((target, value)) = word.text.split_once('=') else {
             return;
         };
         let name = assigned(target);
@@ -122,6 +129,18 @@ impl Walker<'_> {
             .unwrap_or(target)
             .split_once('[')
             .and_then(|(_, key)| key.strip_suffix(']'));
+        if let Some(plain) = key.and_then(option_words::aliases_option) {
+            let off = word.expands
+                || target.ends_with('+')
+                || (plain && value == "off")
+                || (!plain && value == "on");
+            if off {
+                self.events.push(Event::AliasesOff(format!(
+                    "{} may turn ALIASES off (`{}`)",
+                    self.place, word.text
+                )));
+            }
+        }
         let why = match key {
             Some(key) => known::option(key),
             None => Some("it sets every option at once".to_string()),
@@ -142,10 +161,39 @@ impl Walker<'_> {
 
     /// Note the parameters the expansions in `text`, a word of the file's
     /// code that zsh expands, set as zsh expands them and the list does not
-    /// let be ([`assigning_expansions`]).
+    /// let be ([`assigning_expansions`]), and an option that turns `ALIASES`
+    /// off by one (`${options[aliases]::=off}`, [`Event::AliasesOff`]).
     pub(super) fn listed_expansions(&mut self, text: &str) {
         for name in assigning_expansions(text) {
             self.listed_parameter(name, text);
+            // `${(AA)=options::=aliases off}` sets every option at once.
+            if name == "options" {
+                self.every_option(text);
+            }
         }
+        if option_words::expansion_elements(text, "options")
+            .iter()
+            .any(|key| option_words::aliases_option(key).is_some())
+        {
+            self.events.push(Event::AliasesOff(format!(
+                "{} may turn ALIASES off (`{text}`)",
+                self.place
+            )));
+        }
+    }
+
+    /// Note a doubt where `shown` sets every option at once (`options=(...)`,
+    /// `set -A options ...`).
+    pub(super) fn every_option(&mut self, shown: &str) {
+        self.events.push(Event::Unlisted {
+            function: self.function(),
+            shown: shown.to_string(),
+            name: None,
+            words: false,
+            certain: false,
+            chain: None,
+            alias: false,
+            why: "it sets every option at once".to_string(),
+        });
     }
 }

@@ -21,16 +21,7 @@ impl Walker<'_> {
             None => (name, false),
         };
         if name == "options" {
-            self.events.push(Event::Unlisted {
-                function: self.function(),
-                shown: format!("{name}=(...)"),
-                name: None,
-                words: false,
-                certain: false,
-                chain: None,
-                alias: false,
-                why: "it sets every option at once".to_string(),
-            });
+            self.every_option(&format!("{name}=(...)"));
         } else {
             self.listed_parameter(&name, &format!("{name}=(...)"));
         }

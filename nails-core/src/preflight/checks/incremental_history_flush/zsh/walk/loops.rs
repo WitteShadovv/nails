@@ -94,7 +94,11 @@ impl Walker<'_> {
     /// `{ ... }` or, for `foreach`, `... end`, past any line end, or with one
     /// command or group, as in zsh's short forms (then `true`).
     fn body_closer(&mut self, foreach: bool) -> (Closer, bool) {
-        while self.tokens.next_if_eq(&Token::End(End::Line)).is_some() {}
+        while self
+            .tokens
+            .next_if(|token| matches!(token, Token::End(End::Line | End::Newline)))
+            .is_some()
+        {}
         let (closer, short) = match self.tokens.peek() {
             Some(Token::Word(word)) if word.text == "do" => (Closer::Done, false),
             Some(Token::Word(word)) if word.text == "{" => (Closer::Brace, false),

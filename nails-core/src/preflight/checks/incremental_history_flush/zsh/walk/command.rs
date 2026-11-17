@@ -718,7 +718,9 @@ impl Walker<'_> {
             "unset" => self.unset(&args, unconditional),
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
-            "add-zsh-hook" | "add-zle-hook-widget" => self.hook(&command.text, &args),
+            "add-zsh-hook" | "add-zle-hook-widget" => {
+                self.hook(&command.text, &args, function.clone(), input);
+            }
             "zle" => self.zle(&args),
             "trap" => self.trap(&args, unconditional),
             "sched" => self.sched(&args, unconditional),
@@ -813,6 +815,16 @@ impl Walker<'_> {
                 self.alias_params += 1;
                 self.events.push(Event::Doubt(format!(
                     "it cannot tell what alias `{} {}` in {} gives, which zsh then expands",
+                    command.text, target.text, self.place
+                )));
+            }
+            // An option set to a value the check cannot read
+            // (`read 'options[aliases]'`), which may turn ALIASES off; one
+            // by a name it cannot read is a doubt of its own
+            // ([`computed_options`]).
+            if name == "options" && !computed_options(&target.text) {
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell which option `{} {}` in {} turns on or off",
                     command.text, target.text, self.place
                 )));
             }

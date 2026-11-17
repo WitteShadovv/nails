@@ -2,20 +2,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What the lines of a file name beyond what the walk read of its code
-//! ([`super::events`]): such an option counts as on, an `fpath` setting adds
-//! a directory the check cannot follow, a prompt holds code it cannot follow,
-//! and the rest is a doubt, in case the walk read the code otherwise than
-//! zsh does.
+//! ([`super::events`]): such an option counts as on, `ALIASES` as off, an
+//! `fpath` setting adds a directory the check cannot follow, a prompt holds
+//! code it cannot follow, and the rest is a doubt, in case the walk read the
+//! code otherwise than zsh does.
 
 use super::super::arith::READ_AS_NUMBER;
 use super::super::backstop::Named;
 use super::{Event, Walked};
 
 /// The events of what `named`, what the lines of the file at `place` name,
-/// holds beyond what the walk read of its code: `read`, the options its
-/// tokens name, and `walked`, the rest it counted.
-pub(super) fn beyond(named: &Named, read: &[usize; 3], walked: &Walked, place: &str) -> Vec<Event> {
+/// holds beyond what the walk read of its code: of `read`, the options its
+/// tokens name and how often they name `ALIASES`, and `walked`, the rest it
+/// counted.
+pub(super) fn beyond(
+    named: &Named,
+    read: (&[usize; 3], usize),
+    walked: &Walked,
+    place: &str,
+) -> Vec<Event> {
+    let (read, aliases) = read;
     let mut events = Vec::new();
+    if named.aliases > aliases {
+        events.push(Event::AliasesOff(format!(
+            "a line of {place} names ALIASES where the check read no code, which may turn it \
+             off"
+        )));
+    }
     for (at, (&lines, &tokens)) in named.options.iter().zip(read).enumerate() {
         if lines > tokens {
             events.push(Event::Unread(at));

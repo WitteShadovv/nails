@@ -156,7 +156,29 @@ impl Walker<'_> {
     /// (`command`) of `args`: the function it makes a hook, which zsh runs as
     /// commands are entered or end, or as each line is entered
     /// ([`Event::Hook`]), and autoloads; one an expansion names is a doubt.
-    pub(super) fn hook(&mut self, command: &str, args: &[Word]) {
+    /// It runs the function of that name, run in `function` with `input`:
+    /// the files' own or one they autoload, whose code the check reads as
+    /// any other function's they run, where the stock one's work it reads by
+    /// its bytes ([`super::super::stock`]).
+    pub(super) fn hook(
+        &mut self,
+        command: &str,
+        args: &[Word],
+        function: Option<String>,
+        input: Input,
+    ) {
+        self.hook_made(command, args);
+        self.events.push(Event::Call {
+            name: command.to_string(),
+            args: args.to_vec(),
+            function,
+            input,
+        });
+    }
+
+    /// The hook that an `add-zsh-hook` or an `add-zle-hook-widget`
+    /// (`command`) of `args` makes ([`Walker::hook`]).
+    fn hook_made(&mut self, command: &str, args: &[Word]) {
         for arg in args {
             self.mention_word(arg);
         }

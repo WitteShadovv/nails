@@ -321,3 +321,164 @@ fn a_command_in_a_function_zsh_never_runs_is_none() {
         assert!(!unlisted(rc), "{rc}");
     }
 }
+
+#[test]
+fn an_alias_counts_for_the_code_zsh_reads_after_it_ran() {
+    // zsh reads a file's code up to a newline that leaves nothing open
+    // before it runs any of it, and puts an alias in place as it reads: the
+    // alias is there for the lines after the one that defines it, and in a
+    // file the code sources after it.
+    for (rc, more) in [
+        ("alias q=:\nq\n", &[][..]),
+        ("alias q=:; true\nq\n", &[][..]),
+        ("alias q=: # a comment\nq x\n", &[][..]),
+        ("alias q=:\nprecmd() { q }\n", &[][..]),
+        (
+            "alias q=:\nsource ~/.q.zsh\n",
+            &[("/home/alice/.q.zsh", "q\n")][..],
+        ),
+        (
+            "alias q=:; source ~/.q.zsh\n",
+            &[("/home/alice/.q.zsh", "q\n")][..],
+        ),
+    ] {
+        assert_eq!(doubts(rc, more), Vec::<String>::new(), "{rc}");
+    }
+    // zsh 5.9 to 5.9.2 run the program PATH finds for `later` with each:
+    // the rest of the alias's own line, a line joined to it by a backslash,
+    // a trailing `&&`, `||` or `|`, and the rest of a `{ ... }` group or a
+    // function it defines with it.
+    for rc in [
+        "alias q=:; q\n",
+        "alias q=: && q\n",
+        "alias q=: &&\nq\n",
+        "alias q=: &&\n\n# a comment\nq\n",
+        "false ||\nalias q=: ||\nq\n",
+        "alias q=: \\\n; q\n",
+        "{\nalias q=:\nq\n}\n",
+        "{ alias q=:\nq }\n",
+        "alias q=:; precmd() { q }\n",
+        "{\nalias q=:\nprecmd() { q }\n}\n",
+        "if true; then\nalias q=:\nq\nfi\n",
+        "while true; do\nalias q=:\nq\nbreak\ndone\n",
+        "f() {\nalias q=:\nq\n}\nf\n",
+    ] {
+        assert!(unlisted(rc), "{rc}");
+    }
+}
+
+#[test]
+fn an_alias_counts_for_nothing_where_aliases_may_be_off() {
+    // With ALIASES off zsh puts no alias in place of a name, so `q` runs the
+    // program PATH finds: zsh 5.9 to 5.9.2 did with each of these.
+    for off in [
+        "setopt no_aliases",
+        "setopt noaliases",
+        "setopt NO_ALIASES",
+        "unsetopt ALIASES",
+        "unsetopt a_l_i_a_s_e_s",
+        "unsetopt aliases",
+        "set -o noaliases",
+        "set +o aliases",
+        "options[aliases]=off",
+        "options[ALIASES]=off",
+        "options[noaliases]=on",
+        "options[aliases]=$x",
+        "emulate zsh -o noaliases",
+        "emulate -L zsh +o aliases",
+        ": ${options[aliases]::=off}",
+        ": ${(AA)=options::=aliases off}",
+        "read 'options[aliases]' <<< off",
+        "printf -v 'options[aliases]' off",
+        "for o in noaliases; do setopt $o; done",
+        "setopt no_{aliases,beep}",
+    ] {
+        let rc = format!("alias q=:\n{off}\nq\n");
+        let found = doubts(&rc, &[]);
+        assert!(!found.is_empty(), "{rc}");
+    }
+    // An alias of the files' own named like the command is no definition
+    // then: the doubt says so.
+    assert!(
+        doubts("alias q=:\nunsetopt aliases\nq\n", &[])
+            .iter()
+            .any(|doubt| doubt.contains("`q` is an alias the files define, but")),
+    );
+    // Turning it on, or naming it as a parameter's element zsh reads, is no
+    // write of the parameter `aliases` and turns nothing off.
+    for on in [
+        "setopt aliases",
+        "unsetopt noaliases",
+        "set -o aliases",
+        "options[aliases]=on",
+        "emulate zsh -o aliases",
+    ] {
+        let rc = format!("alias q=:\n{on}\nq\n");
+        assert_eq!(doubts(&rc, &[]), Vec::<String>::new(), "{rc}");
+    }
+    let argv =
+        |words: &[&str]| -> Vec<String> { words.iter().map(|word| (*word).to_string()).collect() };
+    for words in [
+        &["zsh", "+o", "aliases"][..],
+        &["zsh", "-o", "noaliases"],
+        &["zsh", "--no-aliases"],
+    ] {
+        assert!(
+            CommandLine::of(&argv(words))
+                .doubts
+                .iter()
+                .any(|doubt| doubt.contains("turns ALIASES off")),
+            "{words:?}"
+        );
+    }
+}
+
+#[test]
+fn a_function_of_the_files_own_named_add_zsh_hook_is_code_they_run() {
+    // zsh 5.9 to 5.9.2 run the files' own `add-zsh-hook`, whose `later`
+    // runs the program PATH finds, where the files call it.
+    for (rc, more) in [
+        (
+            "add-zsh-hook() { later }\nf() { : }\nadd-zsh-hook precmd f\n",
+            &[][..],
+        ),
+        (
+            "function add-zsh-hook { later }\nautoload -Uz add-zsh-hook\nf() { : }\n\
+             add-zsh-hook precmd f\n",
+            &[][..],
+        ),
+        (
+            "add-zle-hook-widget() { later }\nf() { : }\nadd-zle-hook-widget line-init f\n",
+            &[][..],
+        ),
+        (
+            "fpath=(~/.zfunc $fpath)\nautoload -Uz add-zsh-hook\nf() { : }\n\
+             add-zsh-hook precmd f\n",
+            &[("/home/alice/.zfunc/add-zsh-hook", "later\n")][..],
+        ),
+    ] {
+        let found = doubts(rc, more);
+        assert!(
+            found
+                .iter()
+                .any(|doubt| super::unlisted(doubt) && doubt.contains("`later`")),
+            "{rc}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn an_alias_counts_for_nothing_in_a_function_autoloaded_with_u() {
+    // `autoload -U` loads the function's code with no alias put in place,
+    // so zsh 5.9 to 5.9.2 run the program PATH finds for `q` in it.
+    let found = doubts(
+        "alias q=:\nfpath=(~/.zfunc $fpath)\nautoload -Uz f\nprecmd() { f }\n",
+        &[("/home/alice/.zfunc/f", "q\n")],
+    );
+    assert!(
+        found
+            .iter()
+            .any(|doubt| super::unlisted(doubt) && doubt.contains("`q`")),
+        "{found:?}"
+    );
+}

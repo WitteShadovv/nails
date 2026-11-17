@@ -6,8 +6,9 @@
 //! ([`super::reached`]). Each command is read exactly, past its
 //! precommands, by its name and every word ([`command`]); one the list does
 //! not hold, or holds in another form, is a doubt ([`Verdict::Unknown`]). So
-//! a form the reader does not know makes the check warn that it cannot tell,
-//! and none passes unread. What each entry does, and why that is harmless:
+//! a command the reader reads that the list does not hold makes the check
+//! warn that it cannot tell; one the reader does not read as zsh runs it,
+//! the list never sees. What each entry does, and why that is harmless:
 //!
 //! - `:`, `true`, `false`, `[`, `test` and `[[ ... ]]` give a status and do
 //!   nothing else. `print`, `echo` and `printf` write text to the terminal,
