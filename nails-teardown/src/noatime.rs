@@ -26,7 +26,9 @@
 //! read every unit file again, and a question about a unit it has not loaded
 //! makes it read that unit's files. [`QuietMounts`] makes the mounts that keep
 //! access times `noatime` for as long as such a request takes, and puts each
-//! back as it was.
+//! back as it was. It asks no FUSE daemon and no network server anything while
+//! it looks those mounts up, so that one that is dead or hung neither stops
+//! nor holds it.
 //!
 //! A lookup of NAILS' own updates the access time of every symlink it follows,
 //! and no open flag prevents that. Through a detached copy of a tree whose
@@ -327,9 +329,11 @@ pub fn restore(records: &[QuietRecord]) -> Vec<std::path::PathBuf> {
     let Ok(mounts) = crate::mountinfo::read_mountinfo() else {
         return records.iter().map(|r| r.mount_point.clone()).collect();
     };
+    let lookups = Lookups::new(&mounts);
     let mut failed = Vec::new();
     for (record, mount) in to_restore(records, &mounts) {
-        let done = reach(mount)
+        let done = lookups
+            .reach(mount)
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
             .and_then(|fd| set_atime_mode(&fd, record.mode()));
         if done.is_err() {
@@ -391,32 +395,253 @@ fn inherited<'a>(
         .collect()
 }
 
-/// The mount at `mount`'s mount point, by a descriptor, when it is the one
-/// the mount table lists there: `None` for a mount another covers, which no
-/// lookup reaches, and when it cannot be reached at all.
-fn reach(mount: &crate::mountinfo::MountEntry) -> Option<rustix::fd::OwnedFd> {
-    reach_or_covered(mount).ok().flatten()
+/// Filesystem types whose lookups and attributes can need an answer from
+/// outside the kernel, a network server or a cluster's lock manager, besides
+/// FUSE's ([`is_fuse`]) and virtiofs, whose daemon gives them. Each lookup of
+/// [`QuietMounts`] avoids asking one ([`Lookups::reach_or_covered`]).
+const REMOTE: &[&str] = &[
+    "9p",
+    "afs",
+    "ceph",
+    "cifs",
+    "coda",
+    "gfs2",
+    "glusterfs",
+    "lustre",
+    "ncpfs",
+    "nfs",
+    "nfs4",
+    "ocfs2",
+    "orangefs",
+    "smb3",
+    "smbfs",
+    "virtiofs",
+];
+
+/// Whether a lookup in `mount` or its attributes can need an answer from a
+/// FUSE daemon, a network server or a cluster's lock manager ([`REMOTE`]).
+fn is_remote(mount: &crate::mountinfo::MountEntry) -> bool {
+    is_fuse(mount) || REMOTE.contains(&mount.fstype.as_str())
 }
 
-/// The mount at `mount`'s mount point, by a descriptor: `Ok(None)` when no
-/// lookup of that path reaches it, because another mount covers it or one of
-/// its parents (the path then leads elsewhere or nowhere), and an error when
-/// the mount point cannot be opened or asked for its mount for another
-/// reason.
-fn reach_or_covered(mount: &crate::mountinfo::MountEntry) -> Result<Option<rustix::fd::OwnedFd>> {
-    use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
+/// The flags of the `statx(2)` with which [`fuse_owner_check`] asks a FUSE
+/// mount: its descriptor itself (`AT_EMPTY_PATH`), and only what the kernel
+/// holds (`AT_STATX_DONT_SYNC`). Before Linux 6.6, FUSE sends its daemon a
+/// request for the attributes once they are older than their timeout, for
+/// any mask, unless the call says `AT_STATX_DONT_SYNC`.
+const OWNER_CHECK_FLAGS: rustix::fs::AtFlags =
+    rustix::fs::AtFlags::EMPTY_PATH.union(rustix::fs::AtFlags::STATX_DONT_SYNC);
+
+/// Ask FUSE's own check whether this process may look into the FUSE mount
+/// `fd` refers to, through `statx`, a `statx(2)` on that descriptor with the
+/// flags and mask it is given: [`OWNER_CHECK_FLAGS`] and the mount ID. FUSE
+/// answers `EACCES` there to a process its owner check refuses, root
+/// included unless the kernel lets `CAP_SYS_ADMIN` past it, before it asks
+/// its daemon anything. It answers a call that asks for nothing at all
+/// without that check, so the mask is not empty. Past the check, the flags
+/// keep the call to what the kernel holds.
+fn fuse_owner_check<Fd>(
+    fd: &Fd,
+    statx: impl FnOnce(&Fd, rustix::fs::AtFlags, rustix::fs::StatxFlags) -> Result<()>,
+) -> Result<()> {
+    statx(fd, OWNER_CHECK_FLAGS, rustix::fs::StatxFlags::MNT_ID)
+}
+
+/// The ID of the mount an open file is on, as `/proc/<pid>/fdinfo/<fd>`
+/// lists it in `text` (`mnt_id:`): `None` where the line is missing.
+fn fdinfo_mount_id(text: &str) -> Option<i32> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("mnt_id:"))
+        .and_then(|id| id.trim().parse().ok())
+}
+
+/// The ID of the mount `fd` is on, from the kernel's own record of the
+/// descriptor (`/proc/self/fdinfo`), which no filesystem is asked for, where
+/// `statx(2)` would ask the filesystem for attributes too: a network
+/// filesystem can ask its server for them even under
+/// `AT_STATX_DONT_SYNC`.
+fn mount_id_of(fd: &rustix::fd::OwnedFd) -> Result<i32> {
+    use std::os::fd::AsRawFd;
+    let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd()))
+        .map_err(|error| Errno::from_io_error(&error).unwrap_or(Errno::IO))?;
+    // The kernel has listed the mount ID there since Linux 3.15.
+    fdinfo_mount_id(&text).ok_or(Errno::INVAL)
+}
+
+/// What a lookup of a mount's point needs where the kernel's caches cannot
+/// answer it alone ([`open_cached`] fails with `EAGAIN`), by the FUSE and
+/// network mounts ([`is_remote`]) whose points lie above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Uncached {
+    /// No such mount is on the way, or each one on it refuses root at FUSE's
+    /// owner check before it asks its daemon anything: a full lookup asks
+    /// none.
+    Walk,
+    /// One that a lookup reaches lies above it, and it is not mounted inside
+    /// that one: every lookup of its point ends in that mount, so none
+    /// reaches it.
+    Covered,
+    /// A full lookup would go through one and could need its answer: a dead
+    /// daemon or server would make it fail, a hung one would make it wait.
+    Refuse,
+}
+
+/// Judge `mount`, whose lookup the kernel's caches cannot answer alone, by
+/// each FUSE or network mount of `mounts` whose point lies above its own
+/// ([`Uncached`]). `reach` says whether a lookup reaches such a mount
+/// (`Ok(true)`), reaches another mount at its point (`Ok(false)`, so that no
+/// lookup goes through it) or fails, and `kept` whether a failure is FUSE's
+/// owner check refusing root ([`kept_from_root`]).
+fn uncached(
+    mount: &crate::mountinfo::MountEntry,
+    mounts: &[crate::mountinfo::MountEntry],
+    reach: impl Fn(&crate::mountinfo::MountEntry) -> Result<bool>,
+    kept: impl Fn(&crate::mountinfo::MountEntry, Errno) -> bool,
+) -> Uncached {
+    let inside = ancestors(mount, mounts);
+    let mut verdict = Uncached::Walk;
+    for remote in mounts.iter().filter(|remote| {
+        remote.mount_id != mount.mount_id
+            && is_remote(remote)
+            && mount.mount_point != remote.mount_point
+            && mount.mount_point.starts_with(&remote.mount_point)
+    }) {
+        match reach(remote) {
+            Ok(false) => {}
+            Ok(true) if !inside.contains(&remote.mount_id) => return Uncached::Covered,
+            Err(error) if kept(remote, error) => {}
+            Ok(true) | Err(_) => verdict = Uncached::Refuse,
+        }
+    }
+    verdict
+}
+
+/// The IDs of the mounts `mount` is mounted inside, by the mount table: its
+/// parent, the parent's parent, and so on up to a mount the table does not
+/// list.
+fn ancestors(
+    mount: &crate::mountinfo::MountEntry,
+    mounts: &[crate::mountinfo::MountEntry],
+) -> Vec<i32> {
+    let mut chain = Vec::new();
+    let mut at = mount;
+    while let Some(parent) = mounts
+        .iter()
+        .find(|parent| parent.mount_id == at.parent_id && parent.mount_id != at.mount_id)
+    {
+        if chain.contains(&parent.mount_id) || chain.len() > mounts.len() {
+            break;
+        }
+        chain.push(parent.mount_id);
+        at = parent;
+    }
+    chain
+}
+
+/// Look `point` up from the kernel's caches alone (`RESOLVE_CACHED`), for a
+/// descriptor of what is there (`O_PATH`, the last component not followed):
+/// `EAGAIN` where that needs a filesystem's answer, which it never asks for.
+/// The directories on the way to a mount point stay in the cache as long as
+/// the mount does.
+fn open_cached(point: &std::path::Path) -> Result<rustix::fd::OwnedFd> {
+    use rustix::fs::{CWD, Mode, ResolveFlags, openat2};
+    openat2(
+        CWD,
+        point,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::CACHED,
+    )
+}
+
+/// Look `point` up in full, for a descriptor of the mount there, the last
+/// component not followed and no automount triggered.
+fn open_walk(point: &std::path::Path) -> Result<rustix::fd::OwnedFd> {
+    use rustix::fs::CWD;
     use rustix::mount::{OpenTreeFlags, open_tree};
     let flags = OpenTreeFlags::OPEN_TREE_CLOEXEC
         | OpenTreeFlags::AT_NO_AUTOMOUNT
         | OpenTreeFlags::AT_SYMLINK_NOFOLLOW;
-    let fd = match open_tree(CWD, &mount.mount_point, flags) {
-        Ok(fd) => fd,
-        Err(Errno::NOENT | Errno::NOTDIR) => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    let stat = statx(&fd, "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID)?;
-    let reached = i64::try_from(stat.stx_mnt_id).ok() == Some(i64::from(mount.mount_id));
-    Ok(reached.then_some(fd))
+    open_tree(CWD, point, flags)
+}
+
+/// What [`QuietMounts`] looks mounts up with: the mount table it read, and
+/// FUSE's [`FUSE_SYS_ADMIN_ACCESS`], read once when it is first needed.
+struct Lookups<'a> {
+    mounts: &'a [crate::mountinfo::MountEntry],
+    sys_admin_access: std::cell::OnceCell<std::io::Result<String>>,
+}
+
+impl<'a> Lookups<'a> {
+    fn new(mounts: &'a [crate::mountinfo::MountEntry]) -> Self {
+        Self {
+            mounts,
+            sys_admin_access: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// FUSE's [`FUSE_SYS_ADMIN_ACCESS`] as read.
+    fn sys_admin_access(&self) -> &std::io::Result<String> {
+        self.sys_admin_access
+            .get_or_init(|| std::fs::read_to_string(FUSE_SYS_ADMIN_ACCESS))
+    }
+
+    /// The mount at `mount`'s mount point, by a descriptor, when it is the
+    /// one the mount table lists there: `None` for a mount another covers,
+    /// which no lookup reaches, and when it cannot be reached at all.
+    fn reach(&self, mount: &crate::mountinfo::MountEntry) -> Option<rustix::fd::OwnedFd> {
+        self.reach_or_covered(mount).ok().flatten()
+    }
+
+    /// The mount at `mount`'s mount point, by a descriptor: `Ok(None)` when no
+    /// lookup of that path reaches it, because another mount covers it or one
+    /// of its parents (the path then leads elsewhere or nowhere), and an
+    /// error when the mount point cannot be opened or asked for its mount for
+    /// another reason.
+    ///
+    /// It asks no filesystem anything a dead or hung FUSE daemon or network
+    /// server would have to answer. The lookup comes from the kernel's caches
+    /// alone ([`open_cached`]); where they cannot answer it, a full lookup
+    /// runs only where no FUSE or network mount is on the way, a mount that
+    /// such a mount covers is left as covered, and every other is the error
+    /// `EAGAIN` ([`uncached`]). The mount ID comes from the kernel's record
+    /// of the descriptor ([`mount_id_of`]), and a FUSE mount is asked only
+    /// FUSE's owner check ([`fuse_owner_check`]).
+    fn reach_or_covered(
+        &self,
+        mount: &crate::mountinfo::MountEntry,
+    ) -> Result<Option<rustix::fd::OwnedFd>> {
+        let opened = match open_cached(&mount.mount_point) {
+            Err(Errno::AGAIN) => {
+                let kept = |remote: &crate::mountinfo::MountEntry, error| {
+                    kept_from_root(remote, error, self.sys_admin_access().as_deref().ok())
+                };
+                let reach = |remote: &crate::mountinfo::MountEntry| {
+                    self.reach_or_covered(remote).map(|fd| fd.is_some())
+                };
+                match uncached(mount, self.mounts, reach, kept) {
+                    Uncached::Walk => open_walk(&mount.mount_point),
+                    Uncached::Covered => return Ok(None),
+                    Uncached::Refuse => return Err(Errno::AGAIN),
+                }
+            }
+            other => other,
+        };
+        let fd = match opened {
+            Ok(fd) => fd,
+            Err(Errno::NOENT | Errno::NOTDIR) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if mount_id_of(&fd)? != mount.mount_id {
+            return Ok(None);
+        }
+        if is_fuse(mount) {
+            fuse_owner_check(&fd, |fd, flags, mask| {
+                rustix::fs::statx(fd, "", flags, mask).map(|_| ())
+            })?;
+        }
+        Ok(Some(fd))
+    }
 }
 
 /// The FUSE module's parameter that lets a process with `CAP_SYS_ADMIN` in
@@ -430,6 +655,8 @@ const FUSE_SYS_ADMIN_ACCESS: &str = "/sys/module/fuse/parameters/allow_sys_admin
 /// [`spawn_without_access_times`] and [`QuietMounts`] change mounts with, and
 /// FUSE's `allow_sys_admin_access` parameter (Linux 6.0), by which
 /// [`QuietMounts`] knows that FUSE lets root no further than its owner check.
+/// It has `openat2(2)`'s `RESOLVE_CACHED` (Linux 5.12) too, with which
+/// [`QuietMounts`] looks mounts up from the kernel's caches alone.
 pub const MIN_LINUX: (u32, u32) = (6, 1);
 
 /// Whether `mount` is a FUSE mount: of type `fuse`, `fuse.*` or `fuseblk`.
@@ -506,7 +733,9 @@ fn below_kept_fuse(
 /// [`FUSE_SYS_ADMIN_ACCESS`] as read, and `reach` the error, if any, of
 /// reaching another mount of `mounts`. Where the rule would leave the mount
 /// out but the parameter cannot be read, the error says so: a kernel without
-/// it, one before Linux 6.0, is below [`MIN_LINUX`].
+/// it, one before Linux 6.0, is below [`MIN_LINUX`]. Where its lookup would
+/// need an answer of a FUSE or network mount (`EAGAIN`, [`Uncached::Refuse`]),
+/// the error names each such mount above it.
 fn judge_unreached(
     mount: &crate::mountinfo::MountEntry,
     error: Errno,
@@ -524,8 +753,15 @@ fn judge_unreached(
     let users = |fuse: &crate::mountinfo::MountEntry| {
         users_fuse(fuse) && reach(fuse).is_some_and(|e| matches!(e, Errno::ACCESS | Errno::PERM))
     };
-    let would_be_kept = matches!(error, Errno::ACCESS | Errno::PERM)
-        && (users_fuse(mount) || below_kept_fuse(mount, error, mounts, users));
+    // From Linux 6.8 on, a lookup that only the caches may answer stops at
+    // FUSE's owner check with `EAGAIN`, not `EACCES`: the kernel leaves the
+    // lookup's fast mode at any error of a permission check, which such a
+    // lookup may not. Below a user's FUSE mount, `EAGAIN` then counts as the
+    // refusal it stands for.
+    let refused = matches!(error, Errno::ACCESS | Errno::PERM);
+    let would_be_kept = (refused && users_fuse(mount))
+        || ((refused || error == Errno::AGAIN)
+            && below_kept_fuse(mount, Errno::ACCESS, mounts, users));
     match sys_admin_access {
         Err(read) if would_be_kept => {
             let (major, minor) = MIN_LINUX;
@@ -539,11 +775,43 @@ fn judge_unreached(
             } else {
                 format!("{FUSE_SYS_ADMIN_ACCESS} cannot be read: {read}")
             };
+            let what = if error == Errno::AGAIN {
+                "a lookup of it goes through a user's FUSE mount above it".to_string()
+            } else {
+                std::io::Error::from(error).to_string()
+            };
             Err(naming(
                 mount,
                 std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
-                    format!("{}, and {why}", std::io::Error::from(error)),
+                    format!("{what}, and {why}"),
+                ),
+            ))
+        }
+        _ if error == Errno::AGAIN => {
+            let above: Vec<String> = mounts
+                .iter()
+                .filter(|remote| {
+                    is_remote(remote)
+                        && mount.mount_point != remote.mount_point
+                        && mount.mount_point.starts_with(&remote.mount_point)
+                })
+                .map(|remote| format!("{} ({})", remote.mount_point.display(), remote.fstype))
+                .collect();
+            if above.is_empty() {
+                return Err(naming(mount, error.into()));
+            }
+            Err(naming(
+                mount,
+                std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    format!(
+                        "the kernel's caches cannot answer a lookup of it alone, and a full \
+                         lookup would go through {}, which NAILS does not ask while it \
+                         makes the mounts noatime: a dead or hung FUSE daemon or network \
+                         server would stop activation",
+                        above.join(", ")
+                    ),
                 ),
             ))
         }
@@ -572,8 +840,10 @@ impl QuietMounts {
     /// the one listed: a mount another covers is out of reach of every lookup
     /// and is left, and so are a FUSE mount the kernel keeps root, PID 1
     /// included, out of ([`kept_from_root`]) and a mount at or below one
-    /// ([`below_kept_fuse`]). Where this process may not change mounts
-    /// ([`may_spawn_without_access_times`]) nothing changes. A change that
+    /// ([`below_kept_fuse`]). No lookup asks a FUSE daemon or a network
+    /// server anything ([`Lookups::reach_or_covered`]). Where this process may
+    /// not change mounts ([`may_spawn_without_access_times`]) nothing
+    /// changes. A change that
     /// fails puts back the ones made before it and is the error: the caller
     /// then knows the request it guards would set access times.
     pub fn open() -> std::io::Result<Self> {
@@ -586,7 +856,9 @@ impl QuietMounts {
     /// reached for another reason than another mount covering it or the
     /// kernel keeping root out of it or out of a FUSE mount above it
     /// ([`judge_unreached`]) is an error too, so that no mount PID 1 can read
-    /// is left out silently. An error names the mount's point and type.
+    /// is left out silently: so is one whose lookup would need an answer of a
+    /// FUSE or network mount above it ([`Uncached::Refuse`]). An error names
+    /// the mount's point and type.
     pub fn open_recorded(
         record: impl FnOnce(&[QuietRecord]) -> std::io::Result<()>,
     ) -> std::io::Result<Self> {
@@ -596,9 +868,9 @@ impl QuietMounts {
         }
         let mounts = crate::mountinfo::read_mountinfo()?;
         quiet.before = mounts.iter().map(|mount| mount.mount_id).collect();
+        let lookups = Lookups::new(&mounts);
         let mut reached = Vec::new();
         let mut records = Vec::new();
-        let mut sys_admin_access = None;
         for mount in &mounts {
             let Some(mode) = atime_mode(&mount.mount_opts) else {
                 continue;
@@ -606,14 +878,12 @@ impl QuietMounts {
             if NO_DISK_ATIMES.contains(&mount.fstype.as_str()) {
                 continue;
             }
-            let fd = match reach_or_covered(mount) {
+            let fd = match lookups.reach_or_covered(mount) {
                 Ok(Some(fd)) => fd,
                 Ok(None) => continue,
                 Err(error) => {
-                    let parameter = sys_admin_access
-                        .get_or_insert_with(|| std::fs::read_to_string(FUSE_SYS_ADMIN_ACCESS));
-                    judge_unreached(mount, error, &mounts, parameter, |other| {
-                        reach_or_covered(other).err()
+                    judge_unreached(mount, error, &mounts, lookups.sys_admin_access(), |other| {
+                        lookups.reach_or_covered(other).err()
                     })?;
                     continue;
                 }
@@ -684,8 +954,9 @@ impl QuietMounts {
         let sources = std::mem::take(&mut self.sources);
         match crate::mountinfo::read_mountinfo() {
             Ok(mounts) => {
+                let lookups = Lookups::new(&mounts);
                 for (mount, mode) in inherited(&sources, &self.before, &mounts) {
-                    if let Some(fd) = reach(mount) {
+                    if let Some(fd) = lookups.reach(mount) {
                         keep(set_atime_mode(&fd, mode));
                     }
                 }

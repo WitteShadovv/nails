@@ -1218,7 +1218,18 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     stops in FUSE the same way. Where FUSE has no `allow_sys_admin_access`
     parameter, as before Linux 6.0, activation refuses at such a mount and
     names the parameter: NAILS needs Linux 6.1 or newer, which the
-    `kernel-version` check asks for (see step 1 above). Activation
+    `kernel-version` check asks for (see step 1 above). While it makes the
+    mounts `noatime`, activation asks no FUSE daemon and no network server
+    anything, so a dead or hung one neither stops nor holds it: it looks
+    each mount up from the kernel's caches alone (`openat2` with
+    `RESOLVE_CACHED`), and in full only where no FUSE or network mount is
+    on the way, reads the mount's ID from `/proc/self/fdinfo`, and
+    asks a FUSE mount only FUSE's owner check, with `AT_STATX_DONT_SYNC`. A
+    mount that a FUSE or network mount covers is left as it is. Where the
+    caches cannot answer the lookup of a mount mounted inside a FUSE or
+    network mount, such as a disk mounted inside an `sshfs` or an NFS
+    share, activation refuses and names both: a full lookup would ask that
+    mount. Activation
     refuses, naming the mount and its type, where it cannot make another
     mount `noatime`. It refuses as well where it runs in a user namespace of
     its own, which may not change the system's mounts. Before it changes a mount
