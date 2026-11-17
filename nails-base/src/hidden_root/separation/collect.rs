@@ -31,8 +31,11 @@
 //! block device it leads to, only through links that stay in `/dev` (see
 //! [`follow_in_dev`](crate::blockdev::follow_in_dev)): a udev link, a link in
 //! `/dev/block`, a volume group's link and a path with `.` or a doubled `/` in
-//! it. A FUSE line names a device by the source it gives its program, the part
-//! after the `#` of a `fuse` line's first field.
+//! it. A path `/dev/block/<major>:<minor>` that leads to no block device now,
+//! as before udev has made that link, names the device with that number
+//! (`unlinked_number`), which the boot finds by it. A FUSE line names a device
+//! by the source it gives its program, the part after the `#` of a `fuse`
+//! line's first field.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -95,7 +98,7 @@ use crate::filesystem::LoopRecord;
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::FstabEntry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Everything the judge reads besides the mount table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -216,6 +219,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         if let Some(name) = blockdev::resolve_spec(fs, &spec)
             .as_deref()
             .and_then(file_name)
+            .or_else(|| devices.by_dev.get(&unlinked_number(fs, &spec)?).cloned())
         {
             devices.by_spec.insert(spec, name);
         }
@@ -482,6 +486,43 @@ fn file_holder<F: Filesystem>(
 /// A device number as sysfs and the mount table write it, `major:minor`.
 fn device_number(dev: u64) -> String {
     format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev))
+}
+
+/// The `major:minor` that `spec` names when it is a path
+/// `/dev/block/<major>:<minor>` that leads to no block device now: udev links
+/// that path to the block device with that number, and the boot finds the
+/// device by it once it has, so it names that device whether or not the link
+/// is there yet, or leads elsewhere in `/dev`. One whose link leads out of
+/// `/dev`, or that cannot be looked up, is left as it is: where it leads
+/// cannot be told (see the `paths` module). `.` and doubled `/` in it are read
+/// as a lookup reads them.
+fn unlinked_number<F: Filesystem>(fs: &F, spec: &str) -> Option<String> {
+    let path = Path::new(spec);
+    let parts: Vec<_> = path.components().collect();
+    let [
+        Component::RootDir,
+        Component::Normal(dev),
+        Component::Normal(block),
+        Component::Normal(number),
+    ] = parts.as_slice()
+    else {
+        return None;
+    };
+    let number = number.to_str()?;
+    let (major, minor) = number.split_once(':')?;
+    let canonical = format!(
+        "{}:{}",
+        major.parse::<u32>().ok()?,
+        minor.parse::<u32>().ok()?
+    );
+    if *dev != "dev" || *block != "block" || canonical != number {
+        return None;
+    }
+    matches!(
+        blockdev::follow_in_dev(fs, path),
+        Ok(_) | Err(blockdev::OutOfDev::Missing)
+    )
+    .then_some(canonical)
 }
 
 fn file_name(path: &Path) -> Option<String> {

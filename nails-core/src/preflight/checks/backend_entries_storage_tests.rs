@@ -272,6 +272,12 @@ fn a_line_that_names_the_veracrypt_container_of_the_root_fails() {
 /// the links `/dev/disk/by-id/usb-whole` and `/dev/block/8:16` of sdb, and
 /// `fstab` and `crypttab`.
 fn on_a_partition(fstab: &str, crypttab: &str) -> Decoy {
+    on_a_partition_linked(fstab, crypttab, true)
+}
+
+/// [`on_a_partition`], with udev's `/dev/block/8:16` link of sdb only where
+/// `number_link` says so.
+fn on_a_partition_linked(fstab: &str, crypttab: &str, number_link: bool) -> Decoy {
     let decoy = Decoy::new(
         "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
          5 1 254:9 / /mnt rw - ext4 /dev/mapper/data rw\n",
@@ -296,7 +302,9 @@ fn on_a_partition(fstab: &str, crypttab: &str) -> Decoy {
     .file("/etc/crypttab", crypttab)
     .encrypted();
     decoy.link("/dev/disk/by-id/usb-whole", "../../sdb");
-    decoy.link("/dev/block/8:16", "../sdb");
+    if number_link {
+        decoy.link("/dev/block/8:16", "../sdb");
+    }
     for node in ["dm-9", "sdb", "sdb1", "sdb2", "sdc", "loop5"] {
         decoy.fs.mock_set_device_node(&format!("/dev/{node}"));
     }
@@ -602,4 +610,38 @@ fn a_makefs_line_for_a_device_a_filesystem_is_mounted_from_passes() {
          the volume at /mnt is stored on where it finds no filesystem, through its option \
          x-systemd.makefs)",
     );
+}
+
+#[test]
+fn a_number_path_udev_has_not_linked_yet_names_the_device_of_that_number() {
+    // udev links /dev/block/<major>:<minor> to the block device with that
+    // number, and the boot finds the device by it once it has: a line that
+    // names sdb so fails while the link is not there yet as well.
+    for (fstab, crypttab, finding) in [
+        (
+            "/dev/block/8:16 /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+            "",
+            "/etc/fstab: '/dev/block/8:16 /media/x ext4' (it has the boot format a device of the \
+             drive the volume at /mnt is stored on where it finds no filesystem, through its \
+             option x-systemd.makefs)",
+        ),
+        (
+            "",
+            "swapcrypt /dev//block/./8:16 /dev/urandom swap\n",
+            "/etc/crypttab: 'swapcrypt /dev//block/./8:16' (it has the boot make swap over a \
+             device of the drive the volume at /mnt is stored on through its option swap)",
+        ),
+    ] {
+        let decoy = on_a_partition_linked(fstab, crypttab, false);
+        fails_naming(&decoy, finding);
+    }
+    // A number no block device has, and one written in another form than
+    // udev's link, name nothing.
+    for fstab in [
+        "/dev/block/8:99 /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+        "/dev/block/08:16 /media/x ext4 x-systemd.makefs,nofail 0 0\n",
+    ] {
+        let result = on_a_partition_linked(fstab, "", false).run();
+        assert!(result.is_pass(), "{fstab}: {result:?}");
+    }
 }
