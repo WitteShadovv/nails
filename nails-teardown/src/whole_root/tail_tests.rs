@@ -119,6 +119,19 @@ fn the_journal_sockets_are_stopped_and_the_stream_store_dropped() {
 }
 
 #[test]
+fn the_entry_drops_only_the_stored_streams() {
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    let systemctl = fake_systemctl(world.path(), &calls, "none");
+    assert!(drop_journal_streams(&systemctl));
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        "clean --what=fdstore systemd-journald.service\n"
+    );
+    assert!(!drop_journal_streams(&world.path().join("no-systemctl")));
+}
+
+#[test]
 fn no_unit_waiting_to_restart_settles_at_once() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");

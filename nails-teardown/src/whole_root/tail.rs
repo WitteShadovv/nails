@@ -246,12 +246,25 @@ pub fn journal_socket_calls() -> Vec<Vec<&'static str>> {
     JOURNAL_SOCKETS
         .iter()
         .map(|unit| vec!["stop", *unit])
-        .chain(std::iter::once(vec![
-            "clean",
-            "--what=fdstore",
-            JOURNAL_SERVICE,
-        ]))
+        .chain(std::iter::once(DROP_STREAMS.to_vec()))
         .collect()
+}
+
+/// The `systemctl` call that drops journald's descriptor store of
+/// standard-output streams.
+pub const DROP_STREAMS: [&str; 3] = ["clean", "--what=fdstore", JOURNAL_SERVICE];
+
+/// Drop journald's stored standard-output streams at the entry, as the way
+/// back does with [`empty_journal_sockets`]. PID 1 closes each stored
+/// descriptor through a helper process of its own, so the next start that
+/// releases the store uses a process number per stream: dropped before the
+/// entry records the process-number counter, neither the hidden start nor
+/// the decoy's start after the way back uses them, and the way back's
+/// measure of how many numbers a start uses up to its getty
+/// ([`crate::whole_root::fresh_pids`]) holds for the decoy's start. Returns
+/// whether the call succeeded.
+pub fn drop_journal_streams(systemctl: &Path) -> bool {
+    tools::run(systemctl, &DROP_STREAMS, TOOL_BUDGET) == tools::Outcome::Done
 }
 
 /// Discard what journald's sockets and descriptor store hold: stop the socket
