@@ -1179,7 +1179,7 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   so run as root NAILS keeps its reads off them:
   - it reads the decoy's files and lists its directories with `O_NOATIME`;
   - it starts each of those programs in a mount namespace of its own whose
-    every mount is `noatime`, so neither the program's file nor its loader,
+    every mount of a disk is `noatime`, so neither the program's file nor its loader,
     libraries and data files, nor what it reads, get a new access time, while
     its question reaches the system as before;
   - it asks the service manager for its version alone (`busctl

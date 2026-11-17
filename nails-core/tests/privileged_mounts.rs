@@ -1280,6 +1280,17 @@ fn quiet_children_mounts_and_trees_change_no_access_time() {
     cat(false);
     assert_ne!(atime(), aged, "a plain child updates the access time");
 
+    // Such a child can still mount a proc of its own in a user and PID
+    // namespace of its own, as Nix's sandbox does: the kernel allows it only
+    // where the proc the child sees has the access-time mode a new one gets.
+    let mut command = Command::new("unshare");
+    command
+        .args(["--user", "--map-root-user", "--mount", "--pid", "--fork"])
+        .args(["--mount-proc", "/bin/true"]);
+    spawn_without_access_times(&mut command);
+    let status = command.status().expect("run unshare, from util-linux");
+    assert!(status.success(), "a proc of its own: {status}");
+
     let aged = age();
     assert!(has("relatime"), "{}", options());
     {
