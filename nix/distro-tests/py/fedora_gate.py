@@ -2233,6 +2233,9 @@ class Gate:
             NEEDS_LABEL,
         )
         # The pieces that stayed are judged above; anything else counts.
+        # Without the RAM copy's label NAILS's steps run in init_t, and after
+        # the emergency the watcher's and the sleep guard's wants links stay;
+        # with it, no run left one.
         trees = self.unit_trees(f"after-{n}")
         added = sorted(
             line
@@ -2244,6 +2247,7 @@ class Gate:
             "in /run",
             not added,
             {"added": added, "now": trees},
+            NEEDS_LABEL,
         )
         self.nextroot(n)
         noexec = "noexec" in vm.succeed("findmnt -no OPTIONS /run")
@@ -2512,6 +2516,8 @@ class Gate:
             n = int(label.rsplit("-", 1)[-1])
             residue = run_residue(before, after, controls, self.pieces.get(n, []))
             self.facts[f"run-residue-{label}"] = residue
+            # As the unit check after the way back: without the RAM copy's
+            # label the emergency leaves the session's wants links.
             self.check(
                 f"{label.replace('-', ' ')}: nothing of the session stays in /run, "
                 "at any depth",
@@ -2519,6 +2525,7 @@ class Gate:
                 {"left": residue, "new": sorted(after - before)[:200]}
                 if controls
                 else "no control was taken",
+                NEEDS_LABEL,
             )
 
     def judge_execs(self) -> None:
