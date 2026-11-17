@@ -403,9 +403,7 @@ fn reach(mount: &crate::mountinfo::MountEntry) -> Option<rustix::fd::OwnedFd> {
 /// its parents (the path then leads elsewhere or nowhere), and an error when
 /// the mount point cannot be opened or asked for its mount for another
 /// reason.
-fn reach_or_covered(
-    mount: &crate::mountinfo::MountEntry,
-) -> std::io::Result<Option<rustix::fd::OwnedFd>> {
+fn reach_or_covered(mount: &crate::mountinfo::MountEntry) -> Result<Option<rustix::fd::OwnedFd>> {
     use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
     use rustix::mount::{OpenTreeFlags, open_tree};
     let flags = OpenTreeFlags::OPEN_TREE_CLOEXEC
@@ -414,11 +412,64 @@ fn reach_or_covered(
     let fd = match open_tree(CWD, &mount.mount_point, flags) {
         Ok(fd) => fd,
         Err(Errno::NOENT | Errno::NOTDIR) => return Ok(None),
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e),
     };
     let stat = statx(&fd, "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID)?;
     let reached = i64::try_from(stat.stx_mnt_id).ok() == Some(i64::from(mount.mount_id));
     Ok(reached.then_some(fd))
+}
+
+/// The FUSE module's parameter that lets a process with `CAP_SYS_ADMIN` in
+/// the initial user namespace past the check of a mount's owner.
+const FUSE_SYS_ADMIN_ACCESS: &str = "/sys/module/fuse/parameters/allow_sys_admin_access";
+
+/// Whether `mount`, which this process could not reach with `error`, is a
+/// FUSE mount the kernel keeps PID 1 out of, so that PID 1 reads nothing on
+/// it and [`QuietMounts`] can leave it as it is: of type `fuse`, `fuse.*` or
+/// `fuseblk`, refused with `EACCES` or `EPERM`, mounted without `allow_other`
+/// for a user or a group other than root's, on a kernel whose FUSE lets
+/// `CAP_SYS_ADMIN` no further (`sys_admin_access`, the parameter
+/// [`FUSE_SYS_ADMIN_ACCESS`] as read, is `N`). FUSE then answers every
+/// process whose user and group IDs are not all the mount's own with
+/// `EACCES`, and PID 1 runs as root. A user's own FUSE mounts are such:
+/// a desktop's `gvfsd-fuse` and document portal, an AppImage's
+/// `squashfuse`, an `sshfs`. Every other mount that cannot be reached is an
+/// error.
+fn kept_from_root(
+    mount: &crate::mountinfo::MountEntry,
+    error: Errno,
+    sys_admin_access: Option<&str>,
+) -> bool {
+    let fuse =
+        mount.fstype == "fuse" || mount.fstype == "fuseblk" || mount.fstype.starts_with("fuse.");
+    let options: Vec<&str> = mount.super_opts.split(',').collect();
+    let id = |key: &str| {
+        options
+            .iter()
+            .find_map(|option| option.strip_prefix(key))
+            .and_then(|value| value.parse::<u32>().ok())
+    };
+    let not_roots = match (id("user_id="), id("group_id=")) {
+        (Some(user), Some(group)) => user != 0 || group != 0,
+        _ => false,
+    };
+    fuse && matches!(error, Errno::ACCESS | Errno::PERM)
+        && !options.contains(&"allow_other")
+        && not_roots
+        && sys_admin_access.map(str::trim) == Some("N")
+}
+
+/// `error`, from reaching or changing `mount`, with the mount's point and
+/// type in front of it.
+fn naming(mount: &crate::mountinfo::MountEntry, error: std::io::Error) -> std::io::Error {
+    std::io::Error::new(
+        error.kind(),
+        format!(
+            "{} ({}): {error}",
+            mount.mount_point.display(),
+            mount.fstype
+        ),
+    )
 }
 
 impl QuietMounts {
@@ -427,7 +478,9 @@ impl QuietMounts {
     /// filesystem that keeps them on a disk ([`NO_DISK_ATIMES`]). Each is
     /// reached by its mount point and taken only when the mount found there is
     /// the one listed: a mount another covers is out of reach of every lookup
-    /// and is left. Where this process may not change mounts
+    /// and is left, and so is a FUSE mount the kernel keeps root, PID 1
+    /// included, out of ([`kept_from_root`]). Where this process may not
+    /// change mounts
     /// ([`may_spawn_without_access_times`]) nothing changes. A change that
     /// fails puts back the ones made before it and is the error: the caller
     /// then knows the request it guards would set access times.
@@ -438,8 +491,10 @@ impl QuietMounts {
     /// [`open`](Self::open), handing `record` every mount it will change, with
     /// its mode, before it changes any: where `record` fails, nothing changes
     /// and that is the error. A mount that keeps access times and cannot be
-    /// reached for another reason than another mount covering it is an error
-    /// too, so that no mount is left out silently.
+    /// reached for another reason than another mount covering it or the
+    /// kernel keeping root out of it ([`kept_from_root`]) is an error too, so
+    /// that no mount PID 1 can read is left out silently. An error names the
+    /// mount's point and type.
     pub fn open_recorded(
         record: impl FnOnce(&[QuietRecord]) -> std::io::Result<()>,
     ) -> std::io::Result<Self> {
@@ -451,6 +506,7 @@ impl QuietMounts {
         quiet.before = mounts.iter().map(|mount| mount.mount_id).collect();
         let mut reached = Vec::new();
         let mut records = Vec::new();
+        let mut sys_admin_access = None;
         for mount in mounts {
             let Some(mode) = atime_mode(&mount.mount_opts) else {
                 continue;
@@ -458,8 +514,17 @@ impl QuietMounts {
             if NO_DISK_ATIMES.contains(&mount.fstype.as_str()) {
                 continue;
             }
-            let Some(fd) = reach_or_covered(&mount)? else {
-                continue;
+            let fd = match reach_or_covered(&mount) {
+                Ok(Some(fd)) => fd,
+                Ok(None) => continue,
+                Err(error) => {
+                    let parameter = sys_admin_access
+                        .get_or_insert_with(|| std::fs::read_to_string(FUSE_SYS_ADMIN_ACCESS).ok());
+                    if kept_from_root(&mount, error, parameter.as_deref()) {
+                        continue;
+                    }
+                    return Err(naming(&mount, error.into()));
+                }
             };
             records.push(QuietRecord {
                 mount_id: mount.mount_id,
@@ -472,7 +537,7 @@ impl QuietMounts {
         }
         record(&records)?;
         for (fd, mode, mount) in reached {
-            set_atime_mode(&fd, MOUNT_ATTR_NOATIME)?;
+            set_atime_mode(&fd, MOUNT_ATTR_NOATIME).map_err(|error| naming(&mount, error))?;
             quiet.changed.push((fd, mode));
             quiet.sources.push(Source {
                 dev: mount.dev,
@@ -742,6 +807,88 @@ mod tests {
         let written = record(20, "/", "8:1", "/", true);
         let text = serde_json::to_string(&written).unwrap();
         assert_eq!(serde_json::from_str::<QuietRecord>(&text).unwrap(), written);
+    }
+
+    fn mount_line(line: &str) -> crate::mountinfo::MountEntry {
+        crate::mountinfo::parse_mountinfo(line)
+            .pop()
+            .expect("a mount table line")
+    }
+
+    /// A FUSE mount of a user's, without `allow_other`, that root cannot
+    /// reach is left out of the quiet mounts: the kernel answers PID 1 as it
+    /// answers root. Any other mount, error, owner or kernel setting is not.
+    #[test]
+    fn only_a_fuse_mount_the_kernel_keeps_root_out_of_is_left_out() {
+        let gvfs = mount_line(
+            "45 30 0:47 / /run/user/1000/gvfs rw,nosuid,nodev,relatime - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000,group_id=1000\n",
+        );
+        let n = Some("N\n");
+        assert!(kept_from_root(&gvfs, Errno::ACCESS, n));
+        assert!(kept_from_root(&gvfs, Errno::PERM, n));
+        for other in [Errno::IO, Errno::NOTCONN, Errno::INTR, Errno::NOMEM] {
+            assert!(!kept_from_root(&gvfs, other, n), "{other:?}");
+        }
+        // The kernel lets CAP_SYS_ADMIN through, or its setting is unknown.
+        assert!(!kept_from_root(&gvfs, Errno::ACCESS, Some("Y\n")));
+        assert!(!kept_from_root(&gvfs, Errno::ACCESS, None));
+
+        for (line, left_out) in [
+            // Plain fuse and fuseblk, and a group that is not root's.
+            (
+                "46 30 0:48 / /mnt/a rw,relatime - fuse sshfs rw,user_id=1000,group_id=1000",
+                true,
+            ),
+            (
+                "47 30 8:3 / /mnt/b rw,relatime - fuseblk /dev/sda3 rw,user_id=0,group_id=100",
+                true,
+            ),
+            // Everyone may read it: what refused root is not the owner check.
+            (
+                "48 30 0:49 / /mnt/c rw,relatime - fuse.sshfs h:/ rw,user_id=1000,group_id=1000,allow_other",
+                false,
+            ),
+            // Root's own.
+            (
+                "49 30 0:50 / /mnt/d rw,relatime - fuse.sshfs h:/ rw,user_id=0,group_id=0",
+                false,
+            ),
+            // No owner listed.
+            ("50 30 0:51 / /mnt/e rw,relatime - fuse.sshfs h:/ rw", false),
+            (
+                "51 30 0:52 / /mnt/f rw,relatime - fuse.sshfs h:/ rw,user_id=x,group_id=1000",
+                false,
+            ),
+            // Not FUSE.
+            (
+                "52 30 8:1 / /mnt/g rw,relatime - ext4 /dev/sda1 rw,user_id=1000,group_id=1000",
+                false,
+            ),
+            (
+                "53 30 0:53 / /mnt/h rw,relatime - fusectl fusectl rw,user_id=1000,group_id=1000",
+                false,
+            ),
+            (
+                "54 30 0:54 / /mnt/i rw,relatime - fusefs x rw,user_id=1000,group_id=1000",
+                false,
+            ),
+        ] {
+            let mount = mount_line(&format!("{line}\n"));
+            assert_eq!(kept_from_root(&mount, Errno::ACCESS, n), left_out, "{line}");
+        }
+    }
+
+    /// An error that refuses the quiet mounts names the mount and its type.
+    #[test]
+    fn a_refusal_names_the_mount_and_its_type() {
+        let mount = mount_line(
+            "46 30 0:48 / /mnt/data rw,relatime - fuse.sshfs h:/ rw,user_id=0,group_id=0\n",
+        );
+        let error = naming(&mount, Errno::ACCESS.into());
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        let text = error.to_string();
+        assert!(text.starts_with("/mnt/data (fuse.sshfs): "), "{text}");
+        assert!(text.contains("os error 13"), "{text}");
     }
 
     /// Without a mount it changed, no mount takes a mode from it.

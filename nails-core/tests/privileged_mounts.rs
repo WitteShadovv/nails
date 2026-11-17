@@ -938,6 +938,12 @@ struct SilentFuse {
 
 impl SilentFuse {
     fn mount(at: &Path) -> Self {
+        Self::mount_as(at, "fuse", 0, MsFlags::empty())
+    }
+
+    /// One of type `fstype` that the account `owner` (its user and group)
+    /// mounted without `allow_other`, as `fusermount3` mounts a user's.
+    fn mount_as(at: &Path, fstype: &str, owner: u32, flags: MsFlags) -> Self {
         use std::os::fd::AsRawFd;
         let device = std::fs::OpenOptions::new()
             .read(true)
@@ -945,14 +951,14 @@ impl SilentFuse {
             .open("/dev/fuse")
             .expect("open /dev/fuse");
         let options = format!(
-            "fd={},rootmode=40000,user_id=0,group_id=0",
+            "fd={},rootmode=40000,user_id={owner},group_id={owner}",
             device.as_raw_fd()
         );
         nix::mount::mount(
             Some("nails-test"),
             at,
-            Some("fuse"),
-            MsFlags::empty(),
+            Some(fstype),
+            flags,
             Some(options.as_str()),
         )
         .expect("mount a FUSE filesystem");
@@ -1242,6 +1248,72 @@ fn a_record_gives_a_killed_window_s_modes_back(
     assert!(has("relatime"), "{}", options());
 }
 
+/// A user's FUSE mount without `allow_other` (a desktop's `gvfsd-fuse` or
+/// document portal, an `sshfs`), which the kernel keeps root and so PID 1
+/// out of, stays out of the quiet mounts: they open beside it, leave it
+/// `relatime` and close, while `disk`, a mount that keeps access times
+/// `relatime` (`has` and `options` read its options), is `noatime` between.
+fn a_user_s_fuse_mount_stays_out_of_the_window(
+    at: &Path,
+    disk: &Path,
+    has: &dyn Fn(&str) -> bool,
+    options: &dyn Fn() -> String,
+) {
+    use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
+    use nails_teardown::noatime::QuietMounts;
+    let parameter = std::fs::read_to_string("/sys/module/fuse/parameters/allow_sys_admin_access")
+        .expect("read the FUSE module's allow_sys_admin_access");
+    assert_eq!(
+        parameter.trim(),
+        "N",
+        "the kernel's default: FUSE lets CAP_SYS_ADMIN no further than root"
+    );
+    let point = at.join("user-fuse");
+    mkdir(&point);
+    let fuse = SilentFuse::mount_as(
+        &point,
+        "fuse.nailstest",
+        1000,
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+    );
+    let fuse_has = |word: &str| {
+        top_mount_at(&read_mountinfo().expect("read mountinfo"), &point)
+            .expect("the FUSE mount")
+            .mount_opts
+            .split(',')
+            .any(|option| option == word)
+    };
+    assert!(fuse_has("relatime"));
+    let denied = std::fs::metadata(&point).expect_err("root may not look into a user's FUSE mount");
+    assert_eq!(
+        denied.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{denied}"
+    );
+
+    let mut recorded = Vec::new();
+    let quiet = QuietMounts::open_recorded(|records| {
+        recorded = records.to_vec();
+        Ok(())
+    })
+    .expect("the window opens beside the FUSE mount");
+    assert!(
+        recorded.iter().any(|record| record.mount_point == disk),
+        "the disk is in the record: {recorded:?}"
+    );
+    assert!(
+        !recorded.iter().any(|record| record.mount_point == point),
+        "the FUSE mount is not: {recorded:?}"
+    );
+    assert!(has("noatime"), "{}", options());
+    assert!(fuse_has("relatime"), "the FUSE mount is left as it is");
+    quiet.close().expect("give the modes back");
+    assert!(has("relatime"), "{}", options());
+    assert!(fuse_has("relatime"));
+    drop(fuse);
+    std::fs::remove_dir(&point).expect("remove the FUSE mount point");
+}
+
 /// What NAILS reads on the decoy leaves its access times alone: a program it
 /// starts runs with every mount of a namespace of its own `noatime`, and while
 /// it asks PID 1 for something that makes PID 1 read the decoy, the mounts
@@ -1385,6 +1457,7 @@ fn quiet_children_mounts_and_trees_change_no_access_time() {
     nix::mount::umount(&bound).expect("unmount the bind");
 
     a_record_gives_a_killed_window_s_modes_back(&disk, &has, &options);
+    a_user_s_fuse_mount_stays_out_of_the_window(&at, &disk, &has, &options);
 
     // A lookup through a quiet copy of the tree follows a symlink without
     // updating the link's access time, where a plain lookup updates it.
