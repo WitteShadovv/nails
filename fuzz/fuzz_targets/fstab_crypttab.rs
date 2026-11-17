@@ -48,6 +48,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use nails_base::crypttab::parse_crypttab;
+use nails_base::hidden_root::separation::unread_fstab_options;
 use nails_fuzz::systemd::{UnitName, fstab_node_to_udev_node, option_words, unit_name_from_path};
 use nails_fuzz::{glibc, libmount};
 use nails_session::session::fstab::{FstabEntry, entry_lines, parse_fstab};
@@ -243,13 +244,18 @@ fn read_alike(line: &[u8]) {
 fn check(entry: &FstabEntry, decision: &Decision, there: bool) {
     match decision {
         Decision::Mask { unreached, .. } => {
-            // A mask leaves a target unreached only for a device not there.
+            // A mask leaves a target unreached only for a device not there,
+            // or for a line with an option NAILS does not read.
             if let Some(unreached) = unreached {
-                assert!(!there, "{entry:?}: {unreached:?} with every device there");
-                assert!(
-                    matches!(unreached.cause, Unskippable::NoDevice(_)),
-                    "{entry:?}: {unreached:?}"
-                );
+                match unreached.cause {
+                    Unskippable::NoDevice(_) => {
+                        assert!(!there, "{entry:?}: {unreached:?} with every device there");
+                    }
+                    Unskippable::Unread => assert!(
+                        !unread_fstab_options(entry).is_empty(),
+                        "{entry:?}: {unreached:?}"
+                    ),
+                }
             }
         }
         Decision::Skip { skip, .. } => {

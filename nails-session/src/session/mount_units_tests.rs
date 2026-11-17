@@ -130,7 +130,7 @@ fn a_native_mount_a_target_requires_is_skipped_with_its_fsck_while_its_disk_is_t
                 device: Some("/dev/disk/by-id/virtio-scratch".into()),
             },
             masked: Vec::new(),
-            reason: "not mounted now; the hidden session would mount it read-write",
+            reason: "not mounted now; the hidden session would mount it read-write".into(),
         }]
     );
 
@@ -539,7 +539,7 @@ fn a_zram_swap_that_may_write_back_to_a_disk_is_kept_off_as_disk_swap() {
     let masked = Decision::Mask {
         target: "/dev/zram0".into(),
         units: vec!["dev-zram0.swap".into()],
-        reason: "swap would take hidden RAM onto a decoy disk",
+        reason: "swap would take hidden RAM onto a decoy disk".into(),
         unreached: None,
     };
     // The device is not there: what sets it up in the hidden session, and
@@ -583,7 +583,7 @@ fn the_gpt_auto_esp_is_bound_read_only_and_its_automount_kept_off() {
     let mask_automount = Decision::Mask {
         target: "/efi".into(),
         units: vec!["efi.automount".into()],
-        reason: "the session puts the filesystem behind it in place",
+        reason: "the session puts the filesystem behind it in place".into(),
         unreached: None,
     };
     // Mounted, or only the automount set up: the bind of /efi mounts the ESP
@@ -672,7 +672,7 @@ fn a_unit_that_cannot_be_read_or_resolved_is_masked() {
             [Decision::Mask {
                 target: "/srv/x".into(),
                 units: vec!["srv-x.mount".into()],
-                reason,
+                reason: reason.into(),
                 unreached: Some(Unreached {
                     target: "local-fs.target".into(),
                     cause: Unskippable::Unread,
@@ -1029,7 +1029,7 @@ fn a_unit_whose_files_fail_to_be_looked_up_is_masked_not_read_elsewhere() {
             [Decision::Mask {
                 target: "/srv/ram".into(),
                 units: vec!["srv-ram.mount".into()],
-                reason: UNREADABLE,
+                reason: UNREADABLE.into(),
                 unreached: Some(Unreached {
                     target: "local-fs.target".into(),
                     cause: Unskippable::Unread,
@@ -1085,6 +1085,23 @@ fn a_unit_s_options_pass_on_without_those_only_the_fstab_generator_reads() {
     .unwrap();
     let entry = as_entry(&unit, "srv-x.mount", Path::new("/srv/x"), None).unwrap();
     assert_eq!(entry.options, ["ro", "noatime"]);
+}
+
+/// The generator copies the options of a line into `Options=` as the line
+/// gives them, and reads each by its name: `noauto,auto=1` is mounted at
+/// boot. Read by their names here too, none is left to make the unit look
+/// like one the boot never mounts.
+#[test]
+fn the_options_only_the_fstab_generator_reads_go_by_their_names() {
+    let unit = unit_file::parse(
+        b"[Mount]\nWhat=/dev/vdb1\nWhere=/srv/x\nType=ext4\n\
+          Options=noauto=1,auto=1,nofail=0,fail=,x-systemd.automount=0,\
+          comment=systemd.automount=1,x-systemd.wanted-by,noautox,usrquota\n",
+    )
+    .unwrap();
+    let entry = as_entry(&unit, "srv-x.mount", Path::new("/srv/x"), None).unwrap();
+    assert_eq!(entry.options, ["noautox", "usrquota"]);
+    assert!(!entry.is_noauto());
 }
 
 #[test]

@@ -83,7 +83,9 @@ mod pulls;
 pub mod unit_dirs;
 pub mod unit_file;
 
-use super::fstab::{FstabEntry, automount_unit, escape_path, is_virtual_type, mount_unit};
+use super::fstab::{
+    FstabEntry, automount_unit, escape_path, is_virtual_type, mount_unit, option_named,
+};
 use super::policy::{self, Decision, KeptOff, Origin, Present, Units, Unreached, Unskippable};
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::plan::{MaskCause, Skip};
@@ -502,13 +504,23 @@ fn value(unit: &UnitFile, section: &str, key: &str) -> Result<Option<String>, ()
 }
 
 /// The fstab options that only the fstab generator reads, and which mean
-/// nothing in a unit's `Options=`: a unit is pulled in by its links.
+/// nothing in a unit's `Options=`: a unit is pulled in by its links. Each is
+/// matched by its name, alone or with a value, as the generator reads it
+/// ([`option_named`]), and the generator copies it into `Options=` as the
+/// line gives it: `noauto,auto=1` is `Options=noauto,auto=1`.
 fn generator_option(option: &str) -> bool {
-    matches!(
-        option,
-        "noauto" | "auto" | "nofail" | "fail" | "x-systemd.automount" | "comment=systemd.automount"
-    ) || option.starts_with("x-systemd.wanted-by=")
-        || option.starts_with("x-systemd.required-by=")
+    [
+        "noauto",
+        "auto",
+        "nofail",
+        "fail",
+        "x-systemd.automount",
+        "comment=systemd.automount",
+        "x-systemd.wanted-by",
+        "x-systemd.required-by",
+    ]
+    .iter()
+    .any(|name| option_named(option, name).is_some())
 }
 
 /// What the files of the mount or swap unit `name` say about it, as an fstab
@@ -597,7 +609,7 @@ fn mask(
     Decision::Mask {
         target,
         units,
-        reason,
+        reason: reason.into(),
         unreached: required.map(|boot| Unreached {
             target: boot.clone(),
             cause: Unskippable::Unread,
@@ -779,7 +791,7 @@ fn decide_one(
                 device: None,
             },
             masked: Vec::new(),
-            reason,
+            reason: reason.into(),
         }
     } else {
         mask(path, vec![automount], reason, None, native.origin())

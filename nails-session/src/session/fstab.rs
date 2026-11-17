@@ -14,6 +14,14 @@
 //! switch. The parser is [`nails_base::fstab`], re-exported here; the unit
 //! names are the session's own.
 //!
+//! The options are read by their names, alone or with a value, as systemd's
+//! fstab generator reads them ([`FstabEntry::has_named`],
+//! [`FstabEntry::yes_no_option`]): `noauto,auto=1` is `auto`, `nofail=1` is
+//! `nofail`, and `x-systemd.makefs=1` has the mount pull in its makefs. The
+//! policy leaves a line alone as never mounted only where NAILS reads every
+//! option it gives
+//! ([`unread_fstab_options`](nails_base::hidden_root::separation::unread_fstab_options)).
+//!
 //! That parser reads some lines otherwise than systemd's fstab generator
 //! does, as it splits a line at any whitespace and undoes other escapes.
 //! [`entry_lines`] gives the lines glibc reads as entries, which libmount
@@ -28,8 +36,8 @@ mod lines;
 
 pub use lines::{Field, Unlike, entry_lines};
 pub use nails_base::fstab::{
-    FstabEntry, escape_path, is_bind_option, is_host_share_type, is_virtual_type, parse_fstab,
-    spec_device,
+    FstabEntry, any_named, escape_path, is_bind_option, is_host_share_type, is_virtual_type,
+    option_named, parse_fstab, spec_device,
 };
 
 /// The `/etc/fstab` of the root at `root`, read as that root resolves it
@@ -118,7 +126,9 @@ pub fn swap_unit(spec: &str) -> Option<String> {
 }
 
 /// The mount options that turn on quota for a filesystem, for which systemd's
-/// fstab generator has the mount pull in its quota check and activation.
+/// fstab generator has the mount pull in its quota check and activation. It
+/// reads them by their names: `usrjquota=aquota.user`, the only form ext4
+/// takes for a journaled quota, is `usrjquota` to it.
 const QUOTA_OPTIONS: &[&str] = &[
     "usrquota",
     "grpquota",
@@ -127,6 +137,36 @@ const QUOTA_OPTIONS: &[&str] = &[
     "grpjquota",
     "prjquota",
 ];
+
+/// The options of a line, beyond those NAILS reads by the lists of the
+/// `backend-entries` check
+/// ([`unread_fstab_options`](nails_base::hidden_root::separation::unread_fstab_options)),
+/// whose effect on what the line's units pull in the session reads itself:
+/// the units they name, which a skip's walk follows
+/// ([`super::mount_units`]), `loop`, for which systemd has the mount require
+/// the mounts for its source, which the walk follows too, the units that link
+/// it in ([`required_by`]), the checkers they pull in ([`checkers`]), and an
+/// NFS mount in the background, which the generator makes `nofail`
+/// ([`required_by`]).
+const PULL_OPTIONS: &[&str] = &[
+    "loop",
+    "x-systemd.requires",
+    "x-systemd.wants",
+    "x-systemd.requires-mounts-for",
+    "x-systemd.wants-mounts-for",
+    "x-systemd.wanted-by",
+    "x-systemd.required-by",
+    "x-systemd.pcrfs",
+    "x-systemd.validatefs",
+    "bg",
+    "fg",
+];
+
+/// Whether the session reads what the option named `name` has the units of
+/// its line pull in ([`PULL_OPTIONS`], [`QUOTA_OPTIONS`]).
+pub fn reads_pulls_of(name: &str) -> bool {
+    PULL_OPTIONS.contains(&name) || QUOTA_OPTIONS.contains(&name)
+}
 
 /// The target that requires a `_netdev` swap line: the fstab generator links
 /// every swap into `swap.target` up to systemd 260, and a `_netdev` one into
@@ -149,7 +189,7 @@ pub fn required_by(entry: &FstabEntry) -> Option<String> {
         if entry.yes_no_option("noauto", "auto") || entry.is_nofail() {
             return None;
         }
-        let target = if entry.has_option("_netdev") {
+        let target = if entry.has_named("_netdev") {
             NETDEV_SWAP_TARGET
         } else {
             "swap.target"
@@ -215,14 +255,14 @@ pub fn checkers(entry: &FstabEntry) -> Vec<String> {
     let mut units = Vec::new();
     let device = waits_for(entry).map(|device| escape_path(&device));
     if entry.is_swap() {
-        if let Some(device) = device.filter(|_| entry.has_option("x-systemd.makefs")) {
+        if let Some(device) = device.filter(|_| entry.has_named("x-systemd.makefs")) {
             units.push(format!("systemd-mkswap@{device}.service"));
         }
         return units;
     }
     if let Some(device) = device {
         units.push(format!("systemd-fsck@{device}.service"));
-        if entry.has_option("x-systemd.makefs") {
+        if entry.has_named("x-systemd.makefs") {
             units.push(format!("systemd-makefs@{device}.service"));
         }
     }
@@ -232,11 +272,11 @@ pub fn checkers(entry: &FstabEntry) -> Vec<String> {
         ("x-systemd.pcrfs", "systemd-pcrfs"),
         ("x-systemd.validatefs", "systemd-validatefs"),
     ] {
-        if entry.has_option(option) {
+        if entry.has_named(option) {
             units.push(format!("{template}@{at}.service"));
         }
     }
-    if QUOTA_OPTIONS.iter().any(|option| entry.has_option(option)) {
+    if any_named(&entry.options, QUOTA_OPTIONS) {
         units.push(format!("systemd-quotacheck@{at}.service"));
         units.push(format!("quotaon@{at}.service"));
     }

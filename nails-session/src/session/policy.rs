@@ -23,7 +23,8 @@
 //! | a local filesystem mounted read-only in the decoy | read-only bind |
 //! | any other local filesystem mounted in the decoy | an overlay with its upper on the hidden volume |
 //! | a local filesystem not mounted now, mounted at boot | kept unmounted (and its automount off) |
-//! | `noauto` without an automount or a unit named to pull it in | left alone: no boot target pulls it in (a skip whose pulls reach it is masked, see [`super::mount_units`]; another unit that pulls it in mounts it) |
+//! | `noauto` without an automount or a unit named to pull it in, not for `/usr`, and with only options NAILS reads | left alone: no boot target pulls it in (a skip whose pulls reach it is masked, see [`super::mount_units`]; another unit that pulls it in mounts it) |
+//! | `noauto` with an option NAILS does not read | masked, its automount too: the option may have the boot mount it |
 //! | a network filesystem | kept unmounted: the hidden session would write to the server |
 //! | an overlay entry not mounted now, its upper in RAM | left to the hidden systemd |
 //! | an overlay entry not mounted now, its upper on a disk | kept unmounted |
@@ -48,6 +49,24 @@
 //! be reached
 //! ([`Decision::warning`]). A mount behind a skipped automount stays masked:
 //! the target does not pull it in.
+//!
+//! Each option is read by its name, alone or with a value, as systemd's fstab
+//! generator reads it ([`super::fstab`]): `noauto,auto=1` and
+//! `noauto,x-systemd.automount=0` are mounted at boot, `x-systemd.makefs=1`
+//! pulls in a makefs, `nofail=1` is `nofail`. A line counts as one the boot
+//! never mounts only where NAILS also reads every option it gives, by the
+//! lists the `backend-entries` check reads a plain line by
+//! ([`unread_fstab_options`]): any other option, or a known one with a value
+//! NAILS does not read (`x-systemd.wanted-by=` naming a unit other than
+//! `local-fs.target`, `X-mount.subdir=`, a flag with a value), may change
+//! whether the boot mounts it. Such a `noauto` line is masked, its mount and
+//! its automount, with a reason that names the option. A line the policy
+//! keeps off anyway, swap too, is masked rather than skipped where it gives
+//! such an option whose effect on what its units pull in the session does not
+//! read either ([`reads_pulls_of`]): what it pulls in is then more than NAILS
+//! can tell, and a skip would leave that free to start. Where a boot target
+//! requires the units, the warning says it will not be reached
+//! ([`Decision::warning`]).
 //!
 //! A mounted host share or overlay is overlaid rather than left to the hidden
 //! systemd because the next root must already hold its contents when PID 1
@@ -102,11 +121,13 @@
 //! do in that session ([`kept_below_warning`]).
 
 use super::fstab::{
-    FstabEntry, automount_unit, checkers, escape_path, mount_unit, required_by, swap_unit,
-    waits_for,
+    FstabEntry, automount_unit, checkers, escape_path, mount_unit, option_named, reads_pulls_of,
+    required_by, swap_unit, waits_for,
 };
+use nails_base::hidden_root::separation::unread_fstab_options;
 use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
 use nails_teardown::whole_root::plan::{MaskCause, RequiredMask, Skip};
+use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 
 /// Whether a device is there now: [`device_present`] on the running system,
@@ -163,7 +184,7 @@ pub enum Decision {
         /// The units.
         units: Vec<String>,
         /// Why.
-        reason: &'static str,
+        reason: Cow<'static, str>,
         /// The boot target the mask keeps from being reached, when one
         /// requires the units and their device was not there to skip them.
         unreached: Option<Unreached>,
@@ -178,7 +199,7 @@ pub enum Decision {
         /// Units masked with them: the mount behind a skipped automount.
         masked: Vec<String>,
         /// Why they must not start.
-        reason: &'static str,
+        reason: Cow<'static, str>,
     },
     /// Leave it to the hidden systemd, or leave it alone.
     Leave {
@@ -636,14 +657,68 @@ pub fn kept_below_warning(
     })
 }
 
+/// The options of the fstab line `entry` that NAILS does not read, by their
+/// names ([`unread_fstab_options`]), when `units` are the ones the fstab
+/// generator makes of the line: none for a unit outside the fstab, whose
+/// options its unit files carry, and whose pulls NAILS reads from them
+/// ([`super::mount_units`]).
+fn unread_options(entry: &FstabEntry, units: &Units) -> Vec<String> {
+    if units.origin == Origin::Fstab {
+        unread_fstab_options(entry)
+    } else {
+        Vec::new()
+    }
+}
+
+/// The first option of the fstab line `entry` that NAILS does not read
+/// ([`unread_options`]) and whose effect on what the line's units pull in the
+/// session does not read itself either ([`reads_pulls_of`]): a skip of such a
+/// line could leave free a unit that acts on its disk.
+fn unread_pulls(entry: &FstabEntry, units: &Units) -> Option<String> {
+    unread_options(entry, units)
+        .into_iter()
+        .find(|name| !reads_pulls_of(name))
+}
+
+/// The mask of `kept`, units of the fstab line `entry` kept off for `reason`,
+/// that gives an option whose pulls NAILS does not read, `option`
+/// ([`unread_pulls`]): it may pull in more than NAILS can tell, which a skip
+/// would leave free to start, so the units are masked whatever pulls them in,
+/// and a boot target that requires them is not reached
+/// ([`Unskippable::Unread`]).
+fn mask_unread(
+    entry: &FstabEntry,
+    kept: Vec<String>,
+    units: &Units,
+    reason: &str,
+    option: &str,
+) -> Decision {
+    let target = if entry.is_swap() {
+        PathBuf::from(&entry.spec)
+    } else {
+        entry.file.clone()
+    };
+    Decision::Mask {
+        target,
+        units: kept,
+        reason: format!("{reason}; NAILS cannot tell what its option {option} pulls in").into(),
+        unreached: units.required_by.clone().map(|boot| Unreached {
+            target: boot,
+            cause: Unskippable::Unread,
+            origin: units.origin,
+        }),
+    }
+}
+
 /// Keep `units` of `entry` from starting: its mount, and its automount when
 /// it has one. They are skipped where a boot target requires them, unless
 /// the device they wait for is not there now, and masked otherwise (see the
-/// module docs).
+/// module docs). A line that gives an option NAILS does not read has both
+/// its mount and its automount masked ([`mask_unread`]).
 fn keep_off(
     entry: &FstabEntry,
     units: &Units,
-    reason: &'static str,
+    reason: Cow<'static, str>,
     present: Present<'_>,
 ) -> Decision {
     let target = entry.file.clone();
@@ -651,6 +726,10 @@ fn keep_off(
         .unit
         .clone()
         .unwrap_or_else(|| mount_unit(&entry.file));
+    if let Some(option) = unread_pulls(entry, units) {
+        let kept = vec![mount, automount_unit(&entry.file)];
+        return mask_unread(entry, kept, units, &reason, &option);
+    }
     if let Some(automount) = units.automount.clone() {
         if units.required_by.is_none() {
             return Decision::Mask {
@@ -684,7 +763,7 @@ fn gate(
     kept: Vec<String>,
     entry: &FstabEntry,
     units: &Units,
-    reason: &'static str,
+    reason: Cow<'static, str>,
     present: Present<'_>,
 ) -> Decision {
     let Some(required) = units.required_by.clone() else {
@@ -719,6 +798,25 @@ fn gate(
     }
 }
 
+/// The upper directory the overlay line `entry` names: its one `upperdir=`
+/// option, or, where it gives none, the one the decoy's overlay mounted at
+/// its mount point has (`Ok(None)` where that has none either). `Err` where
+/// it gives `upperdir` more than once, or with no value: the kernel takes
+/// the last of several, and NAILS does not tell where it lies.
+fn overlay_upper(entry: &FstabEntry, mounts: &[MountEntry]) -> Result<Option<PathBuf>, ()> {
+    let given: Vec<Option<&str>> = entry
+        .options
+        .iter()
+        .filter_map(|option| option_named(option, "upperdir"))
+        .collect();
+    match given.as_slice() {
+        [] => Ok(mounted_at(mounts, &entry.file)
+            .and_then(|m| parse_overlay_opts(&m.super_opts).upperdir)),
+        [Some(upper)] => Ok(Some(PathBuf::from(upper))),
+        _ => Err(()),
+    }
+}
+
 fn decide_entry(
     entry: &FstabEntry,
     units: &Units,
@@ -735,12 +833,16 @@ fn decide_entry(
                 reason: "a swap entry without a device",
             };
         };
+        let reason = "swap would take hidden RAM onto a decoy disk";
+        if let Some(option) = unread_pulls(entry, units) {
+            return mask_unread(entry, vec![unit], units, reason, &option);
+        }
         return gate(
             PathBuf::from(&entry.spec),
             vec![unit],
             entry,
             units,
-            "swap would take hidden RAM onto a decoy disk",
+            reason.into(),
             present,
         );
     }
@@ -755,7 +857,7 @@ fn decide_entry(
     if below_hidden_root {
         match below {
             Below::Refused => return below_the_hidden_root(target, hidden_root),
-            Below::KeptOff => return keep_off(entry, units, KEPT_BELOW, present),
+            Below::KeptOff => return keep_off(entry, units, KEPT_BELOW.into(), present),
             Below::Redirected => {}
         }
     }
@@ -776,7 +878,8 @@ fn decide_entry(
             entry,
             units,
             "a link leads it into the hidden volume, where the hidden session would mount \
-             a decoy filesystem read-write",
+             a decoy filesystem read-write"
+                .into(),
             present,
         );
     }
@@ -794,18 +897,20 @@ fn decide_entry(
         return keep_off(
             entry,
             units,
-            "the hidden session would write to the server",
+            "the hidden session would write to the server".into(),
             present,
         );
     }
     if entry.vfstype == "overlay" {
-        let opts = entry
-            .option_value("upperdir")
-            .map(PathBuf::from)
-            .or_else(|| {
-                mounted_at(mounts, &target).and_then(|m| parse_overlay_opts(&m.super_opts).upperdir)
-            });
-        let in_ram = opts
+        let Ok(upper) = overlay_upper(entry, mounts) else {
+            return keep_off(
+                entry,
+                units,
+                "an overlay that names its upper directory more than once, or with no value".into(),
+                present,
+            );
+        };
+        let in_ram = upper
             .as_deref()
             .and_then(|upper| mount_containing(mounts, upper))
             .is_some_and(|m| m.fstype == "tmpfs" || m.fstype == "ramfs");
@@ -815,7 +920,12 @@ fn decide_entry(
                 reason: "an overlay with its upper in RAM",
             }
         } else {
-            keep_off(entry, units, "an overlay with its upper on a disk", present)
+            keep_off(
+                entry,
+                units,
+                "an overlay with its upper on a disk".into(),
+                present,
+            )
         };
     }
     match mounted_at(mounts, &target) {
@@ -823,14 +933,32 @@ fn decide_entry(
             Decision::ReadOnlyBind { target }
         }
         Some(_) => Decision::Overlay { target },
-        None if entry.is_noauto() => Decision::Leave {
-            target,
-            reason: "noauto: never mounted",
+        None if entry.is_noauto() => match unread_options(entry, units).first() {
+            None => Decision::Leave {
+                target,
+                reason: "noauto: never mounted",
+            },
+            // An option NAILS does not read may have the boot mount it all the
+            // same: masked, with the automount it may set up. Nothing
+            // requires it, as the line reads.
+            Some(option) => Decision::Mask {
+                units: vec![
+                    units.unit.clone().unwrap_or_else(|| mount_unit(&target)),
+                    automount_unit(&target),
+                ],
+                target,
+                reason: format!(
+                    "noauto, but NAILS does not read its option {option} as the line gives it, \
+                     so the boot may mount it"
+                )
+                .into(),
+                unreached: None,
+            },
         },
         None => keep_off(
             entry,
             units,
-            "not mounted now; the hidden session would mount it read-write",
+            "not mounted now; the hidden session would mount it read-write".into(),
             present,
         ),
     }
@@ -1036,3 +1164,7 @@ pub fn masks(fstab: &[FstabEntry], decisions: &[Decision]) -> Vec<String> {
 #[cfg(test)]
 #[path = "policy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "policy_options_tests.rs"]
+mod options_tests;

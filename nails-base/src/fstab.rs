@@ -96,6 +96,37 @@ pub fn option_named<'a>(option: &'a str, name: &str) -> Option<Option<&'a str>> 
     }
 }
 
+/// Whether an option of `options` has one of `names`, alone or with a value,
+/// as systemd's `fstab_test_option()` matches an option by its name
+/// ([`option_named`]): `x-systemd.makefs=1` and `usrjquota=aquota.user` are
+/// `x-systemd.makefs` and `usrjquota` to it.
+pub fn any_named(options: &[String], names: &[&str]) -> bool {
+    options.iter().any(|option| {
+        names
+            .iter()
+            .any(|name| option_named(option, name).is_some())
+    })
+}
+
+/// Whether the last of `options` named `yes` or `no`, alone or with a value,
+/// is named `yes`, as systemd's `fstab_test_yes_no_option()` reads such a
+/// pair, whatever the value: neither is `no`. systemd 260.5's fstab
+/// generator mounts a line with `noauto,auto=1` or `noauto,auto=0` at boot,
+/// and takes `nofail=0` for `nofail`.
+pub fn last_named(options: &[String], yes: &str, no: &str) -> bool {
+    options
+        .iter()
+        .rev()
+        .find_map(|option| {
+            if option_named(option, yes).is_some() {
+                Some(true)
+            } else {
+                option_named(option, no).map(|_| false)
+            }
+        })
+        .unwrap_or(false)
+}
+
 /// Whether the mount option `option` makes a bind mount: its name, the part
 /// before a `=`, is `bind` or `rbind`. `libmount` and systemd's
 /// `fstab_test_option()` match an option by that name, so `bind=x` and
@@ -106,9 +137,17 @@ pub fn is_bind_option(option: &str) -> bool {
 }
 
 impl FstabEntry {
-    /// Whether an option is present (`noauto`, `bind`, `ro`, …).
+    /// Whether an option is present as `name` exactly, with no value. The
+    /// generators and `libmount` read an option by its name, with a value
+    /// too, as [`has_named`](Self::has_named) does.
     pub fn has_option(&self, name: &str) -> bool {
         self.options.iter().any(|o| o == name)
+    }
+
+    /// Whether an option is named `name`, alone or with a value, as systemd
+    /// reads it ([`any_named`]).
+    pub fn has_named(&self, name: &str) -> bool {
+        any_named(&self.options, &[name])
     }
 
     /// The value of a `key=value` option.
@@ -134,9 +173,10 @@ impl FstabEntry {
     }
 
     /// A network filesystem (including FUSE network types), or a line
-    /// marked `_netdev`.
+    /// marked `_netdev`, by its name: the fstab generator links a line with
+    /// `_netdev=1` into `remote-fs.target`.
     pub fn is_network(&self) -> bool {
-        is_network_type(&self.vfstype) || self.has_option("_netdev")
+        is_network_type(&self.vfstype) || self.has_named("_netdev")
     }
 
     /// A bind mount: an option `bind` or `rbind`, with a value too
@@ -145,35 +185,53 @@ impl FstabEntry {
         self.options.iter().any(|option| is_bind_option(option))
     }
 
-    /// Whether the last of the options `yes` and `no` the entry gives is
-    /// `yes`, the way systemd's fstab generator reads a pair such as
-    /// `noauto` and `auto`: `noauto,auto` is `auto`, and an entry with
+    /// Whether the last of the options named `yes` and `no` the entry gives,
+    /// alone or with a value, is `yes`, the way systemd's fstab generator
+    /// reads a pair such as `noauto` and `auto` ([`last_named`]):
+    /// `noauto,auto` and `noauto,auto=1` are `auto`, and an entry with
     /// neither is `no`.
     pub fn yes_no_option(&self, yes: &str, no: &str) -> bool {
-        self.options
-            .iter()
-            .rev()
-            .find(|o| *o == yes || *o == no)
-            .is_some_and(|o| o == yes)
+        last_named(&self.options, yes, no)
     }
 
-    /// Mounted only on demand by an automount unit: `x-systemd.automount`, or
-    /// its older spelling `comment=systemd.automount`. systemd makes no
-    /// automount for a swap entry.
+    /// Mounted only on demand by an automount unit: an option named
+    /// `x-systemd.automount`, or its older spelling
+    /// `comment=systemd.automount`, alone or with a value, which the fstab
+    /// generator reads by its name (`x-systemd.automount=0` too). systemd
+    /// makes no automount for a swap entry.
     pub fn is_automount(&self) -> bool {
         !self.is_swap()
-            && (self.has_option("x-systemd.automount")
-                || self.has_option("comment=systemd.automount"))
+            && any_named(
+                &self.options,
+                &["x-systemd.automount", "comment=systemd.automount"],
+            )
     }
 
-    /// Never mounted at boot (and not on demand): `noauto`, unless a later
-    /// `auto` takes it back, the entry has an automount, which the boot sets
-    /// up whatever `noauto` says, or it names a unit that pulls it in
-    /// ([`names_units_that_pull_it_in`](Self::names_units_that_pull_it_in)).
+    /// Whether systemd's fstab generator mounts the entry whatever its
+    /// options say: a mount of `/` or `/usr`, as written with no `.` or `..`,
+    /// which it takes for mandatory and mounts, `noauto`, `nofail` and an
+    /// automount ignored.
+    pub fn is_mandatory(&self) -> bool {
+        !self.is_swap()
+            && crate::hidden_root::separation::as_written(&self.file)
+                .is_some_and(|at| at == Path::new("/") || at == Path::new("/usr"))
+    }
+
+    /// Never mounted at boot (and not on demand), as systemd's fstab
+    /// generator reads its options, by their names: the last of `noauto` and
+    /// `auto` is `noauto` ([`yes_no_option`](Self::yes_no_option)), and the
+    /// entry has no automount, which the boot sets up whatever `noauto` says,
+    /// names no unit that pulls it in
+    /// ([`names_units_that_pull_it_in`](Self::names_units_that_pull_it_in))
+    /// and is no mount of `/` or `/usr` ([`is_mandatory`](Self::is_mandatory)).
+    /// It says nothing of the options NAILS does not read: a reader that acts
+    /// on it asks that too
+    /// ([`unread_fstab_options`](crate::hidden_root::separation::unread_fstab_options)).
     pub fn is_noauto(&self) -> bool {
         self.yes_no_option("noauto", "auto")
             && !self.is_automount()
             && !self.names_units_that_pull_it_in()
+            && !self.is_mandatory()
     }
 
     /// A mount entry that names units to pull it in: `x-systemd.wanted-by=`
@@ -193,8 +251,9 @@ impl FstabEntry {
             })
     }
 
-    /// `nofail`, unless a later `fail` takes it back: the boot then only
-    /// wants the entry's unit, and goes on without it.
+    /// `nofail`, unless a later `fail` takes it back, each by its name
+    /// ([`yes_no_option`](Self::yes_no_option)): the boot then only wants
+    /// the entry's unit, and goes on without it.
     pub fn is_nofail(&self) -> bool {
         self.yes_no_option("nofail", "fail")
     }
@@ -517,7 +576,9 @@ mod tests {
         assert!(!entry("ext4", "nofail,fail").is_nofail());
         assert!(entry("ext4", "fail,defaults,nofail").is_nofail());
         assert!(!entry("ext4", "defaults").is_nofail());
-        assert!(!entry("ext4", "nofail=no").is_nofail());
+        // By the name, whatever the value: systemd 260.5's fstab generator
+        // read nofail=0 as nofail.
+        assert!(entry("ext4", "nofail=no").is_nofail());
         // The older spelling of an automount, which systemd still reads; and
         // none for swap, which systemd never gives one.
         assert!(entry("ext4", "comment=systemd.automount").is_automount());
@@ -536,6 +597,71 @@ mod tests {
         }
         assert!(entry("ext4", "noauto,x-systemd.wanted-by=").is_noauto());
         assert!(entry("swap", "noauto,x-systemd.wanted-by=multi-user.target").is_noauto());
+    }
+
+    /// Each option is read by its name, alone or with a value, as systemd
+    /// 260.5's fstab generator read these lines on a test root: it linked
+    /// `noauto,auto=1` and `noauto,auto=0` into `local-fs.target.requires`,
+    /// set up an automount for `noauto,x-systemd.automount=0`,
+    /// `x-systemd.automount=no` and `comment=systemd.automount=1`, took
+    /// `nofail=1` for `nofail` and `nofail,fail=1` for `fail`, linked a line
+    /// with `_netdev=1` into `remote-fs.target` and an NFS line with `bg=1`
+    /// into its `.wants`, and mounted a `noauto` line for `/usr`.
+    #[test]
+    fn options_are_read_by_their_names_as_systemd_reads_them() {
+        let entry = |file: &str, t: &str, o: &str| FstabEntry {
+            spec: "/dev/vdb1".into(),
+            file: file.into(),
+            vfstype: t.into(),
+            options: o.split(',').map(str::to_string).collect(),
+        };
+        for options in [
+            "noauto,auto=1",
+            "noauto,auto=0",
+            "noauto,auto=",
+            "noauto,x-systemd.automount=0",
+            "noauto,x-systemd.automount=no",
+            "noauto,comment=systemd.automount=1",
+        ] {
+            assert!(!entry("/data", "ext4", options).is_noauto(), "{options}");
+        }
+        for options in [
+            "noauto=1",
+            "auto,noauto=",
+            "auto=1,noauto",
+            "noauto,nofail=1",
+        ] {
+            assert!(entry("/data", "ext4", options).is_noauto(), "{options}");
+        }
+        assert!(entry("/data", "ext4", "noauto,x-systemd.automount=0").is_automount());
+        assert!(entry("/data", "ext4", "comment=systemd.automount=1").is_automount());
+        assert!(!entry("/data", "ext4", "x-systemd.automountx").is_automount());
+        assert!(entry("/data", "ext4", "nofail=1").is_nofail());
+        assert!(!entry("/data", "ext4", "nofail,fail=1").is_nofail());
+        assert!(entry("/data", "ext4", "_netdev=1").is_network());
+        assert!(!entry("/data", "ext4", "_netdevx").is_network());
+        assert!(entry("/data", "ext4", "x-systemd.makefs=1").has_named("x-systemd.makefs"));
+        assert!(!entry("/data", "ext4", "x-systemd.makefs=1").has_option("x-systemd.makefs"));
+        // A mount of / or /usr is mandatory, as written with . and .. read.
+        for file in ["/usr", "/", "/usr/", "/./usr", "/x/../usr"] {
+            let line = entry(file, "ext4", "noauto");
+            assert!(line.is_mandatory(), "{file}");
+            assert!(!line.is_noauto(), "{file}");
+        }
+        assert!(!entry("/usr/local", "ext4", "noauto").is_mandatory());
+        assert!(!entry("/usr", "swap", "noauto").is_mandatory());
+        assert!(any_named(&["bg=1".to_string()], &["bg"]));
+        assert!(last_named(
+            &["fg".to_string(), "bg=1".to_string()],
+            "bg",
+            "fg"
+        ));
+        assert!(!last_named(
+            &["bg".to_string(), "fg=1".to_string()],
+            "bg",
+            "fg"
+        ));
+        assert!(!last_named(&[], "bg", "fg"));
     }
 
     #[test]

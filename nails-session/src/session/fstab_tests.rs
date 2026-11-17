@@ -257,3 +257,63 @@ fn the_device_and_the_checkers_of_an_entry_are_named_as_the_generator_names_them
     assert_eq!(checkers(&swap), ["systemd-mkswap@dev-vdb2.service"]);
     assert!(checkers(&entry("/dev/vdb2 none swap sw 0 0")).is_empty());
 }
+
+/// Each option is read by its name, alone or with a value, as systemd
+/// 260.5's fstab generator read these lines on a test root: it linked
+/// `systemd-makefs@`, `systemd-growfs@`, `systemd-pcrfs@`,
+/// `systemd-validatefs@`, `systemd-quotacheck@` and `quotaon@` for
+/// `x-systemd.makefs=1`, `x-systemd.growfs=1`, `x-systemd.pcrfs=1`,
+/// `x-systemd.validatefs=1` and `usrjquota=aquota.user`, linked
+/// `noauto,auto=1` into `local-fs.target.requires`, `nofail=1` into its
+/// `.wants`, `_netdev=1` into `remote-fs.target.requires` and an NFS line
+/// with `bg,fg=1` into `remote-fs.target.requires`.
+#[test]
+fn the_options_of_an_entry_are_read_by_their_names() {
+    let entry = |line: &str| parse_fstab(line).remove(0);
+    let line = entry(
+        "/dev/vdb1 /data ext4 x-systemd.makefs=1,x-systemd.growfs=1,x-systemd.pcrfs=1,\
+         x-systemd.validatefs=1,usrjquota=aquota.user 0 0",
+    );
+    assert_eq!(
+        checkers(&line),
+        [
+            "systemd-fsck@dev-vdb1.service",
+            "systemd-makefs@dev-vdb1.service",
+            "systemd-growfs@data.service",
+            "systemd-pcrfs@data.service",
+            "systemd-validatefs@data.service",
+            "systemd-quotacheck@data.service",
+            "quotaon@data.service",
+        ]
+    );
+    assert_eq!(
+        checkers(&entry("/dev/vdb2 none swap x-systemd.makefs=yes 0 0")),
+        ["systemd-mkswap@dev-vdb2.service"]
+    );
+    for (line, required) in [
+        (
+            "/dev/vdb1 /data ext4 noauto,auto=1 0 0",
+            Some("local-fs.target"),
+        ),
+        ("/dev/vdb1 /data ext4 nofail=1 0 0", None),
+        (
+            "/dev/vdb1 /data ext4 nofail,fail=1 0 0",
+            Some("local-fs.target"),
+        ),
+        (
+            "/dev/vdb1 /data ext4 _netdev=1 0 0",
+            Some("remote-fs.target"),
+        ),
+        ("srv:/x /data nfs bg=1 0 0", None),
+        ("srv:/x /data nfs bg,fg=1 0 0", Some("remote-fs.target")),
+        (
+            "/dev/vdb1 /data ext4 noauto,x-systemd.automount=0 0 0",
+            Some("local-fs.target"),
+        ),
+        ("/dev/vdb1 /usr ext4 noauto 0 0", Some("local-fs.target")),
+        ("/dev/vdb2 none swap noauto,auto=1 0 0", Some("swap.target")),
+        ("/dev/vdb2 none swap nofail=1 0 0", None),
+    ] {
+        assert_eq!(required_by(&entry(line)).as_deref(), required, "{line}");
+    }
+}
