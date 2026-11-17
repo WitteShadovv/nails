@@ -2624,8 +2624,9 @@ writes its superblock).
   naming its own mount point. NAILS writes nothing there meanwhile, and the
   cover triggers no emergency.
 - With `session_mounts.read_only = true`, every disk the session does not use is
-  read-only for the session, from the hidden boot on and for every disk attached
-  later: mounts come up read-only (`mount` warns "write-protected, mounted
+  read-only for the session, a disk present at entry once the session watcher
+  has started with the hidden boot's default units, and every disk attached
+  later as it appears: mounts come up read-only (`mount` warns "write-protected, mounted
   read-only"), `mount -o rw` fails, and writes fail. Turn it on unless you need
   to write to an external disk in the hidden session.
 - `nails deactivate` unmounts these disks before the way back (a busy one is

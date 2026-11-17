@@ -735,15 +735,19 @@ writes.
   the device node fails. Nothing a mount itself writes (a journal replay, a
   mount count) reaches the disk either. A udev rule that only the hidden
   session's udevd loads applies this to every disk and partition the moment it
-  appears, before udisks hears of it, and the hidden boot applies it to the
-  disks present at entry; the watcher checks all disks on every poll as a
-  fallback. The decoy root's disk, the hidden backend and everything it sits
-  on, the ESP and the decoy filesystems the session carries stay writable, as
-  do virtual devices (loop, device mapper, zram); a disk mounted below the
-  hidden root does not, unless it lies below `<hidden_volume_root>/root` (see
-  the limits below). The way back, `deactivate` and
-  `emergency` alike, makes exactly the disks the session set read-only writable
-  again before the switch, so the decoy finds them as it left them.
+  appears, before udisks hears of it. The disks present at entry are made
+  read-only by the session watcher, which checks all disks when it starts in
+  the hidden boot and on every poll after, as the fallback for the rule too: a
+  soft-reboot replays no device events, so the rule sees such a disk only when
+  it changes. Until the watcher starts with the hidden boot's default units, a
+  disk present at entry is writable. The decoy root's disk, the hidden backend
+  and everything it sits on, the ESP and the decoy filesystems the session
+  carries stay writable, as do virtual devices (loop, device mapper, zram); a
+  disk mounted below the hidden root does not, unless it lies below
+  `<hidden_volume_root>/root` (see the limits below). The way back,
+  `deactivate` and `emergency` alike, makes exactly the disks the session set
+  read-only writable again before the switch, so the decoy finds them as it
+  left them.
 - **The way back.** `nails deactivate` unmounts every disk mounted during the
   session before it soft-reboots (a busy one is detached; the soft-reboot ends
   its users), so the decoy can mount it again normally. That includes a disk
