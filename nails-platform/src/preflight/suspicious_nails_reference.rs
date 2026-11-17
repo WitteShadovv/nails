@@ -271,6 +271,39 @@ mod tests {
         );
     }
 
+    /// Nix reads a source file as bytes, so a `.nix` file with a byte that
+    /// is no UTF-8, as a comment in Latin-1, is read: it passes when clean,
+    /// and a reference in it is found, where it refused as one NAILS could
+    /// not read, with a fix that sudo cannot give.
+    #[test]
+    fn a_nix_file_that_is_no_utf8_is_read() {
+        let file = Path::new("/etc/nixos/configuration.nix");
+        let run = |bytes: &[u8]| {
+            let dir = tempfile::tempdir().unwrap();
+            let real = dir.path().join("configuration.nix");
+            std::fs::write(&real, bytes).unwrap();
+            // The real filesystem reads it as the check does.
+            let read = crate::RealFilesystem.read_file_bytes(&real);
+            assert_eq!(read.unwrap(), bytes);
+            let fs = MockFilesystem::new();
+            fs.mock_set_file_bytes(file.to_str().unwrap(), bytes);
+            fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
+            SuspiciousNailsReferenceCheck::new(PathBuf::from("/mnt/hidden"))
+                .run(&fs)
+                .unwrap()
+        };
+        let clean = run(b"# Ren\xe9's machine\n{ }\n");
+        assert!(clean.is_pass(), "{clean:?}");
+        let named = run(b"# Ren\xe9's machine\n{ x = /mnt/hidden; }\n");
+        assert!(named.is_fail(), "{named:?}");
+        assert!(
+            named
+                .message()
+                .contains("/etc/nixos/configuration.nix, line 2"),
+            "{named:?}"
+        );
+    }
+
     #[test]
     fn further_references_are_counted() {
         let result = run_on(&[
