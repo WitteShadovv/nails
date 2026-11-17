@@ -9,8 +9,9 @@
 //! POSIX rule, as a TZif file a test writes, or empty for UTC, so no zone
 //! database of the machine running the tests is read. The cases cover a
 //! positive and a negative offset, both ends of a daylight saving change from
-//! a rule and from a file's transitions, times before 1970, offsets with
-//! seconds, and years past 9999. These tests name no time library: they hold
+//! a rule and from a file's transitions (counted in leap time in a file with
+//! leap seconds), times before 1970, offsets with seconds, and years past
+//! 9999 in summer and in winter. These tests name no time library: they hold
 //! for any code behind the report.
 
 use std::path::PathBuf;
@@ -120,6 +121,17 @@ impl Harness {
 /// the POSIX TZ string of its footer. The version 1 block holds one type and
 /// no transitions, as readers of version 2 skip it.
 fn tzif(types: &[(i32, bool, &str)], transitions: &[(i64, u8)], footer: &str) -> Vec<u8> {
+    tzif_with_leap_seconds(types, transitions, &[], footer)
+}
+
+/// The same with a leap-second table of (leap time, correction) records, as a
+/// `right/` zone has; its transitions are then counted in leap time.
+fn tzif_with_leap_seconds(
+    types: &[(i32, bool, &str)],
+    transitions: &[(i64, u8)],
+    leap_seconds: &[(i64, i32)],
+    footer: &str,
+) -> Vec<u8> {
     fn header(out: &mut Vec<u8>, counts: [u32; 6]) {
         out.extend_from_slice(b"TZif2");
         out.extend_from_slice(&[0; 15]);
@@ -147,7 +159,7 @@ fn tzif(types: &[(i32, bool, &str)], transitions: &[(i64, u8)], footer: &str) ->
         [
             0,
             0,
-            0,
+            count(leap_seconds.len()),
             count(transitions.len()),
             count(types.len()),
             count(chars.len()),
@@ -165,6 +177,10 @@ fn tzif(types: &[(i32, bool, &str)], transitions: &[(i64, u8)], footer: &str) ->
         out.push(*at);
     }
     out.extend_from_slice(&chars);
+    for (at, correction) in leap_seconds {
+        out.extend_from_slice(&at.to_be_bytes());
+        out.extend_from_slice(&correction.to_be_bytes());
+    }
     out.push(b'\n');
     out.extend_from_slice(footer.as_bytes());
     out.push(b'\n');
@@ -315,6 +331,29 @@ fn a_zone_file_is_read_by_its_transitions_and_then_by_its_rule() {
 }
 
 #[test]
+fn a_zone_file_with_leap_seconds_changes_on_the_unix_second() {
+    let harness = Harness::new();
+    // The 2026 changes in leap time, two leap seconds after Unix time.
+    let file = tzif_with_leap_seconds(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_002, 1), (1_792_890_002, 0)],
+        &[(78_796_800, 1), (94_694_401, 2)],
+        CET_RULE,
+    );
+    let tz = format!(":{}", harness.zone_file("right-cet.tzif", &file));
+    let cases = [
+        ("2026-03-29T00:59:59Z", "2026-03-29 01:59:59 +01:00"),
+        ("2026-03-29T01:00:00Z", "2026-03-29 03:00:00 +02:00"),
+        ("2026-10-25T00:59:59Z", "2026-10-25 02:59:59 +02:00"),
+        ("2026-10-25T01:00:00Z", "2026-10-25 02:00:00 +01:00"),
+        ("2030-03-31T01:00:00Z", "2030-03-31 03:00:00 +02:00"),
+    ];
+    for (utc, shown) in cases {
+        assert_eq!(finished(&harness, &tz, utc), shown, "{utc}");
+    }
+}
+
+#[test]
 fn an_offset_with_seconds_is_shown_to_the_nearest_minute() {
     let harness = Harness::new();
     let tz = format!(":{}", harness.zone_file("seconds.tzif", &seconds_file()));
@@ -380,6 +419,40 @@ fn a_refused_switch_keeps_its_time_forms_up_to_the_largest_year() {
     let value = harness.status_json();
     assert!(value["data"].get("switch_refusal").is_none(), "{value}");
     assert!(!harness.status("UTC0", &[]).contains("Last switch:"));
+}
+
+#[test]
+fn a_summer_time_past_year_9999_keeps_its_daylight_saving_offset() {
+    let harness = Harness::new();
+    let cet = format!(":{}", harness.zone_file("cet.tzif", &cet_file()));
+    // 10000-07-01T00:00:00Z and 262142-07-01T00:00:00Z.
+    let cases = [
+        (CET_RULE, 253_418_025_600, "+10000-07-01 02:00:00 +02:00"),
+        (
+            cet.as_str(),
+            253_418_025_600,
+            "+10000-07-01 02:00:00 +02:00",
+        ),
+        (
+            "EST5EDT,M3.2.0,M11.1.0",
+            253_418_025_600,
+            "+10000-06-30 20:00:00 -04:00",
+        ),
+        (CET_RULE, 8_210_250_979_200, "+262142-07-01 02:00:00 +02:00"),
+        (
+            cet.as_str(),
+            8_210_250_979_200,
+            "+262142-07-01 02:00:00 +02:00",
+        ),
+    ];
+    for (tz, at, shown) in cases {
+        harness.refused_at(at);
+        let stdout = harness.status(tz, &[]);
+        assert!(
+            stdout.contains(&format!("Last switch:        refused at {shown}\n")),
+            "TZ={tz} {at}:\n{stdout}"
+        );
+    }
 }
 
 #[test]

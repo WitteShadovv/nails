@@ -23,11 +23,13 @@
 //!
 //! The calendar arithmetic and the RFC 3339 reading are NAILS's own, small
 //! enough to check by hand and pinned by tests; the time zone rules (TZif files
-//! and POSIX TZ strings) are read with jiff, which reads no file itself.
+//! and POSIX TZ strings) are read with jiff, which reads no file itself, and a
+//! zone file's leap seconds and footer rule here (see [`tzif`]).
 
 mod civil;
 mod posix;
 mod rfc3339;
+mod tzif;
 mod zone;
 
 #[cfg(test)]

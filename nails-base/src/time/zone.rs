@@ -3,8 +3,9 @@
 
 //! The zone a time is shown in, and how the local zone is found.
 //!
-//! The local zone is looked for as NAILS has always looked for it, and in no
-//! other file:
+//! The local zone is looked for in these files and in no other, as NAILS
+//! looked for it before, less the OpenWrt `/etc/config/system` it once also
+//! tried:
 //!
 //! 1. `TZ` unset (or not UTF-8), or `TZ=localtime`: `/etc/localtime`.
 //! 2. `TZ` empty: UTC.
@@ -15,7 +16,9 @@
 //!    holds (see [`super::posix`]).
 //! 5. When that gives no zone: the zone named by where `/etc/localtime` links
 //!    (below `/usr/share/zoneinfo/` or `/etc/zoneinfo/`), else by
-//!    `/etc/timezone`, read from `/usr/share/zoneinfo/<name>`.
+//!    `/etc/timezone`, read from `/usr/share/zoneinfo/<name>`: the name is
+//!    put after that directory as it stands, so a name that starts with `/`
+//!    names no file.
 //! 6. Else UTC.
 //!
 //! No directory is listed and no zone database is searched: a zone file is
@@ -29,6 +32,7 @@ use std::sync::OnceLock;
 
 use super::Timestamp;
 use super::civil::{Civil, write_offset};
+use super::tzif::Extras;
 
 /// A time zone: a fixed offset, a POSIX rule or a zone file's transitions,
 /// or the local zone, found when a time is first shown in it.
@@ -37,20 +41,90 @@ pub struct Zone(Rules);
 
 #[derive(Debug, Clone)]
 enum Rules {
-    Known(jiff::tz::TimeZone),
+    Known(Known),
     Local,
+}
+
+/// The rules of a zone that is known.
+#[derive(Debug, Clone)]
+struct Known {
+    /// The offsets, as jiff reads them.
+    tz: jiff::tz::TimeZone,
+    /// The POSIX rule that holds after the last transition: a zone file's
+    /// footer, or the rule of a POSIX zone.
+    rule: Option<jiff::tz::TimeZone>,
+    /// What a zone file says beyond that (see [`super::tzif`]).
+    extras: Extras,
+}
+
+/// The seconds of 400 Gregorian years, after which weekdays and leap years
+/// repeat.
+const CYCLE: i64 = 146_097 * 86_400;
+
+impl Known {
+    fn new(tz: jiff::tz::TimeZone) -> Self {
+        Self {
+            tz,
+            rule: None,
+            extras: Extras::default(),
+        }
+    }
+
+    /// The offset at Unix time `unix`.
+    ///
+    /// A zone file's transitions are compared with the instant in their leap
+    /// time. From the last transition on (or with none) the POSIX rule holds
+    /// at the instant itself; it repeats every 400 years, so outside the years
+    /// jiff reaches (-9999 to 9999) the rule is read at the same day and time
+    /// of a year 400 years nearer. Any other zone keeps its offset there.
+    fn offset_at(&self, unix: i64) -> i32 {
+        let min = jiff::Timestamp::MIN.as_second();
+        let max = jiff::Timestamp::MAX.as_second();
+        let last = self.extras.last_transition;
+        let leap = self.extras.leap_time(unix);
+        let at = match (&self.rule, last) {
+            (_, Some(last)) if leap < last => return offset(&self.tz, leap.clamp(min, max)),
+            (Some(rule), _) => return offset(rule, into_range(unix, min, max)),
+            // No rule: the last transition's offset, or the zone's only one.
+            (None, Some(last)) => unix.max(last),
+            (None, None) => unix,
+        };
+        offset(&self.tz, at.clamp(min, max))
+    }
+}
+
+/// The offset `tz` gives at `second`, which is within jiff's range.
+fn offset(tz: &jiff::tz::TimeZone, second: i64) -> i32 {
+    // The callers keep `second` within jiff's range, so the conversion holds.
+    let at = jiff::Timestamp::from_second(second).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    tz.to_offset(at).seconds()
+}
+
+/// `unix` moved by whole 400-year cycles into `min..=max` when outside it.
+fn into_range(unix: i64, min: i64, max: i64) -> i64 {
+    // The cycles to move by, rounded up; the distance is positive.
+    let cycles = |distance: i64| (distance + CYCLE - 1) / CYCLE;
+    if unix > max {
+        unix - cycles(unix - max) * CYCLE
+    } else if unix < min {
+        unix + cycles(min - unix) * CYCLE
+    } else {
+        unix
+    }
 }
 
 impl Zone {
     /// UTC.
     pub fn utc() -> Self {
-        Self(Rules::Known(jiff::tz::TimeZone::UTC))
+        Self(Rules::Known(Known::new(jiff::tz::TimeZone::UTC)))
     }
 
     /// A fixed offset of `seconds` east of UTC, or `None` beyond ±25:59:59.
     pub fn fixed(seconds: i32) -> Option<Self> {
         let offset = jiff::tz::Offset::from_seconds(seconds).ok()?;
-        Some(Self(Rules::Known(jiff::tz::TimeZone::fixed(offset))))
+        Some(Self(Rules::Known(Known::new(jiff::tz::TimeZone::fixed(
+            offset,
+        )))))
     }
 
     /// The zone of a POSIX TZ string as `TZ` may hold it, or `None`.
@@ -60,17 +134,23 @@ impl Zone {
         if !super::posix::accepted(rule) {
             return None;
         }
-        jiff::tz::TimeZone::posix(rule)
-            .ok()
-            .map(|tz| Self(Rules::Known(tz)))
+        let tz = jiff::tz::TimeZone::posix(rule).ok()?;
+        Some(Self(Rules::Known(Known {
+            rule: Some(tz.clone()),
+            ..Known::new(tz)
+        })))
     }
 
     /// The zone of a TZif file's bytes (RFC 8536), or `None` when they are no
     /// valid one.
     pub fn tzif(bytes: &[u8]) -> Option<Self> {
-        jiff::tz::TimeZone::tzif("localtime", bytes)
-            .ok()
-            .map(|tz| Self(Rules::Known(tz)))
+        let tz = jiff::tz::TimeZone::tzif("localtime", bytes).ok()?;
+        let extras = super::tzif::read(bytes)?;
+        let rule = extras
+            .footer
+            .as_deref()
+            .and_then(|footer| jiff::tz::TimeZone::posix(footer).ok());
+        Some(Self(Rules::Known(Known { tz, rule, extras })))
     }
 
     /// The local zone of this process (see the module documentation). It is
@@ -83,15 +163,15 @@ impl Zone {
 
     /// The rules behind this zone, looking for the local zone's the first
     /// time they are needed.
-    fn rules(&self) -> &jiff::tz::TimeZone {
-        static LOCAL: OnceLock<jiff::tz::TimeZone> = OnceLock::new();
+    fn rules(&self) -> &Known {
+        static LOCAL: OnceLock<Known> = OnceLock::new();
         match &self.0 {
-            Rules::Known(tz) => tz,
+            Rules::Known(known) => known,
             Rules::Local => LOCAL.get_or_init(|| {
                 match Self::find(std::env::var("TZ").ok().as_deref(), &SystemFiles).0 {
-                    Rules::Known(tz) => tz,
+                    Rules::Known(known) => known,
                     // `find` gives known rules only.
-                    Rules::Local => jiff::tz::TimeZone::UTC,
+                    Rules::Local => Known::new(jiff::tz::TimeZone::UTC),
                 }
             }),
         }
@@ -106,15 +186,11 @@ impl Zone {
 
     /// The offset from UTC in seconds at `instant`.
     ///
-    /// The offset is taken at the second `instant` falls in. Past the years a
-    /// zone's rules reach (-9999 to 9999) it is the offset at their end.
+    /// The offset is taken at the second `instant` falls in, in every year a
+    /// timestamp covers: a zone's POSIX rule holds in every year after its
+    /// last transition.
     pub fn offset_at(&self, instant: Timestamp) -> i32 {
-        let min = jiff::Timestamp::MIN.as_second();
-        let max = jiff::Timestamp::MAX.as_second();
-        let second = instant.unix_seconds().clamp(min, max);
-        // Within jiff's range by the clamp, so the conversion holds.
-        let at = jiff::Timestamp::from_second(second).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-        self.rules().to_offset(at).seconds()
+        self.rules().offset_at(instant.unix_seconds())
     }
 
     /// `instant` in this zone with its offset, as `status` shows a time:
@@ -239,7 +315,10 @@ fn from_file(file: ZoneFile) -> Option<Zone> {
 /// Step 5: the zone named by `/etc/localtime`'s link or by `/etc/timezone`.
 fn linked_zone(files: &dyn ZoneFiles) -> Option<Zone> {
     let name = linked_name(files).or_else(|| timezone_file_name(files))?;
-    from_file(files.read(&Path::new("/usr/share/zoneinfo").join(name)))
+    // The name follows the directory as it stands, as it always has: a name
+    // that starts with `/` makes a path with `//` that names no zone file,
+    // where joining paths would read the file the name gives.
+    from_file(files.read(Path::new(&format!("/usr/share/zoneinfo/{name}"))))
 }
 
 /// The zone name in `/etc/localtime`'s link: what follows
