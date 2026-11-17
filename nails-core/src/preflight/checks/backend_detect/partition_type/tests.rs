@@ -1314,6 +1314,43 @@ fn a_doubt_about_the_boot_disks_matters_for_a_partition_off_the_known_ones() {
     assert!(check(&host.fs, &devices("nvme0n1", &gpt(LINUX_FILESYSTEM, 0))).is_pass());
 }
 
+/// What the check could read decides first: on an md mirror of partitions 5
+/// and 6, where sysfs shows partition 6's `partition` but NAILS cannot read
+/// it, partition 5 of a type the check refuses is refused all the same, and
+/// only where partition 5 would pass does the check say it could not check.
+#[test]
+fn a_partition_the_check_could_judge_is_refused_beside_one_it_cannot_read() {
+    let host = Host::new("9:0", "ext4", "/dev/md0")
+        .partition_at("nvme0n1p5", "259:5", "nvme0n1", 5, P5_START)
+        .partition_at("nvme0n1p6", "259:6", "nvme0n1", 6, P5_END + 1)
+        .device(
+            "/sys/devices/virtual/block/md0",
+            "md0",
+            "9:0",
+            &["nvme0n1p5", "nvme0n1p6"],
+        );
+    host.fs.mock_set_lookup_error(
+        "/sys/devices/pci0/nvme0n1/nvme0n1p6/partition",
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let refused = check(&host.fs, &devices("nvme0n1", &gpt(SRV, 0)));
+    assert!(refused.is_fail(), "{refused:?}");
+    assert!(
+        refused
+            .message()
+            .contains("(nvme0n1p5) has the GPT type of a /srv partition"),
+        "{refused:?}"
+    );
+    let passes = check(&host.fs, &devices("nvme0n1", &gpt(LINUX_FILESYSTEM, 0)));
+    assert_eq!(
+        warning(&passes),
+        format!(
+            "Could not check the partition type of the hidden root at {ROOT}: sysfs shows \
+             partition of a device below it, but NAILS cannot read it."
+        )
+    );
+}
+
 /// Where sysfs shows the device of the decoy's root file system, or one on
 /// the way down from it, but NAILS cannot read what decides it, the check
 /// cannot tell which disk systemd-gpt-auto-generator reads. A mapping's
