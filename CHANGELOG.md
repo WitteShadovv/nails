@@ -1104,6 +1104,23 @@ of this changelog for that version becomes the release notes word for word, and
   where it used low urgency. A desktop may show a notification of low urgency without a banner, so
   the channel could be reported as planted while the desktop showed no banner for it. The operator
   guide says when `plant` counts the channel as planted.
+- On NixOS, with `--allow-decoy-storage`, `suspicious-nails-reference` lets be the decoy's own names
+  for the filesystem a hidden root the flag accepts is a folder or a btrfs subvolume of, where the
+  decoy itself mounts another part of that filesystem at `/` or at a system folder: a line of
+  `/etc/nixos` that names only a device that filesystem lies on, by its device path, kernel name,
+  `/dev/block` link, `/dev/disk/by-*` links, uuid, `PARTUUID`, label, partition label or LUKS
+  mapping, passes, and the check says how many lines name that device. Before, the
+  `hardware-configuration.nix` of nearly every install, which names the device of `/` and `/home`,
+  failed the check for the flag's documented cases (a bind of a folder of `/`, a subvolume beside
+  `/home`). The devices come from the attach gate's judge, by kernel name and device number, and a
+  device the kernel shows otherwise while the check reads it keeps its names. Still refused, with
+  the flag too: the root's mount point and its units, the folder the root is as another mount of the
+  filesystem shows it, its subvolume as `subvol=` or `subvolid=` names it (new: these count only
+  with the flag, where the device's names no longer do), a name of any other device the volume is
+  stored on, a place that may give such a name and cannot be read, NAILS's own text and the word
+  `nails`. Without the flag, and for a root that is the whole filesystem, that the decoy mounts no
+  other part of at `/` or at a system folder, or whose storage cannot be judged, every name refuses
+  as before.
 
 ### Fixed
 
@@ -2711,9 +2728,9 @@ of this changelog for that version becomes the release notes word for word, and
   `/` and its system folders that mount another part of that filesystem, while their mounts are
   there, and the crypttab lines its boot opens for the device that filesystem lies on (see Fixed),
   on an encrypted decoy too, while a line for another folder still fails it. On NixOS
-  `suspicious-nails-reference` still refuses such a root while the decoy's `/etc/nixos` names its
-  filesystem's device, as `hardware-configuration.nix` usually does. A separate drive that a line of
-  the fstab mounts at `/srv` passes `hidden-volume` with the flag's warning, and `backend-entries`
+  `suspicious-nails-reference` lets be the names the decoy's `/etc/nixos` gives the devices that
+  filesystem lies on, as `hardware-configuration.nix` does for `/` and `/home` (see Changed). A
+  separate drive that a line of the fstab mounts at `/srv` passes `hidden-volume` with the flag's warning, and `backend-entries`
   refuses that line, which mounts the volume itself. One also mounted at `/srv` by hand is refused,
   and so is the copy that mount propagation makes of a mount at or below a bind line's source, and a
   root whose folder a mount that no fstab line makes shows too (a `/home` or `/srv` partition that
