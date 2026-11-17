@@ -844,26 +844,27 @@ journal that starts late:
   mount covers there, say), and one that a plain soft-reboot keeps (`/usr`,
   `/etc`, one marked `x-initrd.mount`), such as NixOS's `/etc` overlay.
 
-The decoy journal imports what the kernel and PID 1 log after the cursor:
-the hidden service manager's last lines, which a plain soft-reboot logs too
-(the soft-reboot service's end and `Soft-rebooting.`, and, where the kernel's
-audit is on, the audit records of that service's start and stop, whose
-`exe=` names the program that sent them, the hidden root's systemd, and the
-kernel's records of the BPF programs it unloads), whatever line a hidden
-volume that is not ext4 logs as it is unmounted (NAILS quiets ext4's only),
-and, for a hidden volume on device-mapper, the kernel's lines of its
-teardown: on a kernel that audits device-mapper changes (Fedora's does)
-the `audit: … module=crypt op=dtr` record, and `device-mapper: ioctl:
-remove_all left N open device(s)` where another device-mapper device exists
-(a decoy on LUKS or LVM). On a volatile decoy they stay in RAM until
-power-off, as the ring buffer does; a persistent decoy journal (which the
-decoy requirements forbid) writes them to the decoy disk, with the decoy's
-own shutdown and start lines under one boot ID. The decoy's
-shutdown before entry and its start after the way back write what an ordinary
-shutdown and boot write: the random seed, a wtmp record, the journal if it is
-persistent. With the ESP read-only in the hidden session, `loader/random-seed`
-changes only when the decoy itself starts. **Power off after a session when RAM
-residue matters.**
+The decoy journal imports what the kernel and PID 1 log after the cursor: the
+hidden service manager's last lines, which a plain soft-reboot logs too (the
+soft-reboot service's end and `Soft-rebooting.`, its final kill of the helpers
+it starts after the step to close a descriptor, `Sending SIGKILL to PID N
+((sd-close))`, and, where the kernel's audit is on, the audit records of that
+service's start and stop, whose `exe=` names the program that sent them, the
+hidden root's systemd, and the kernel's records of the BPF programs it
+unloads), whatever line a hidden volume that is not ext4 logs as it is
+unmounted (NAILS quiets ext4's only), and, for a hidden volume on
+device-mapper, the kernel's lines of its teardown: on a kernel that audits
+device-mapper changes (Fedora's does) the `audit: … module=crypt op=dtr`
+record, and `device-mapper: ioctl: remove_all left N open device(s)` where
+another device-mapper device exists (a decoy on LUKS or LVM). On a volatile
+decoy they stay in RAM until power-off, as the ring buffer does; a persistent
+decoy journal (which the decoy requirements forbid) writes them to the decoy
+disk, with the decoy's own shutdown and start lines under one boot ID. The
+decoy's shutdown before entry and its start after the way back write what an
+ordinary shutdown and boot write: the random seed, a wtmp record, the journal
+if it is persistent. With the ESP read-only in the hidden session,
+`loader/random-seed` changes only when the decoy itself starts. **Power off
+after a session when RAM residue matters.**
 
 **Swap the binary only while inactive.** Replace the binary, flake or config on
 the hidden volume only when no session is active. Never stage any of them on the
