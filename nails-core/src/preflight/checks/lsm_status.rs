@@ -110,8 +110,10 @@
 //!   does not answer, and the labels a relabel of `/run` would give the
 //!   guard's files are not asked, so a policy that denies the guard only there
 //!   does not fail it;
-//! - where the copies take no label, NAILS chooses neither domain: both are
-//!   [`UnitDomain::Unknown`], and on a host where SELinux runs the check
+//! - where the copies take no label, NAILS chooses neither domain: the
+//!   processes systemd starts are [`UnitDomain::Unknown`], and so is the disk
+//!   guard where `[session_mounts] read_only` is on (where it is off the guard
+//!   is [`UnitDomain::Off`]), and on a host where SELinux runs the check
 //!   fails.
 //!
 //! Fedora, whose hosts run SELinux by default, is not admitted yet: the

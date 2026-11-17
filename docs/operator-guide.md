@@ -222,7 +222,9 @@ Keep all of it `root`-owned on the hidden volume.
    `lsm-status` (it names the Linux Security Modules the kernel runs; where
    SELinux runs, its policy must be the targeted one, NAILS must run
    unconfined, the disk guard of `[session_mounts] read_only` in a domain the
-   loaded policy grants every operation it makes, and permissive mode warns,
+   loaded policy grants every operation the check asks about (not its rules
+   for single `ioctl` numbers, nor the labels a relabel of `/run` gives the
+   guard's files), and permissive mode warns,
    see [the decoy
    requirements](decoy-requirements.md#fail-closed-activation-is-refused)),
    `systemd-version` (254 or newer), `soft-reboot-units` (the units that
