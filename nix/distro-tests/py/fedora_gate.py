@@ -388,8 +388,7 @@ SCAN_WARNINGS_EXIT = 9
 NEEDS_LABEL = "the RAM copy labelled as a program (bin_t)"
 NEEDS_LSM = "lsm-status passing on an SELinux host, so the build keeps it"
 NEEDS_SOCKETS = (
-    "a way back that empties what journald's sockets hold before the decoy "
-    "starts, which no branch builds yet"
+    "a way back that empties what journald's sockets hold before the decoy starts"
 )
 TUNED_DROPIN = "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n"
 # What PID 1 logs when the policy of the root it starts in is not loaded, and
