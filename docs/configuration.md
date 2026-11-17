@@ -193,30 +193,47 @@ gets a fixed decision before the switch:
 | an overlay entry not mounted now, its upper on a disk | kept unmounted |
 | an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
 | a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back, not for `/usr`, and with only options NAILS reads (see below) | left alone: no boot target pulls it in. A skipped unit whose pulls reach it is masked instead (see below); any other unit that pulls it in, such as a service with `RequiresMountsFor=` on it, mounts it read-write, as one of the [disks mounted during the session](#disks-mounted-during-the-session) |
-| a `noauto` entry with an option NAILS does not read, or one it reads in another form (`noauto,x-systemd.after=…`, `noauto,X-mount.subdir=…`, `noauto,nofail=1`) | masked, with its automount: the option may have the boot mount it. `nails check` names the option |
+| a `noauto` entry with an option NAILS does not read, one it reads in another form (`noauto,x-systemd.after=…`, `noauto,X-mount.subdir=…`, `noauto,nofail=1`), or an option with a backslash or a quote | masked, with its automount: the option may have the boot mount it. `nails check` names the option |
+| a `noauto` entry with a path in it that another entry needs, one the boot starts (not `noauto` itself) and that is left to the hidden systemd or put in place: a mount point below it (a tmpfs on a directory of it), a source, or a path `x-systemd.requires-mounts-for=` or `x-systemd.wants-mounts-for=` names | kept unmounted: systemd has that entry's unit require the `noauto` mount, so the boot mounts it. Skipped where a boot target requires the other entry and the device is there, masked otherwise |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | any entry whose mount point is the hidden volume root or lies below it: the hidden volume itself, a disk, a `noauto` or automount entry, a tmpfs | refused, and the activation with it |
 
 Each option of an entry is read by its name, alone or with a value, as
 systemd's fstab generator reads it: of `noauto` and `auto` the last one given
 wins whatever its value, so `noauto,auto=1` and `noauto,auto=0` are mounted at
-boot, `x-systemd.automount=0` sets up an automount, `nofail=1` is `nofail`,
-`_netdev=1` makes a network filesystem, and `x-systemd.makefs=1` has the
-mount pull in a makefs. A line for `/usr` is mounted whatever `noauto` says.
-An entry counts as one the boot never mounts only where NAILS also reads
-every option it gives, each in the form it gives it, by the lists the
-`backend-entries` check reads a plain line by (see
-[decoy-requirements.md](decoy-requirements.md#attaching-the-drive)): any
-other option may change whether the boot mounts it. An entry the policy keeps
-off anyway, swap too, is masked rather than skipped where it gives an option
-NAILS does not read and whose effect on what its units pull in the session
-does not read either (the units `x-systemd.requires=`, `x-systemd.wants=`,
-`x-systemd.requires-mounts-for=`, `x-systemd.wants-mounts-for=`,
-`x-systemd.wanted-by=` and `x-systemd.required-by=` name, `loop`, `bg` and
-`fg` of an NFS line, `x-systemd.pcrfs`, `x-systemd.validatefs` and the quota
-options): what such an option pulls in, NAILS cannot tell, and a
-skip would leave it free to start. A boot target that requires such an entry
-is then not reached, and activation warns of that, naming the option.
+boot, `x-systemd.automount=0` sets up an automount, `nofail` with any value
+(`nofail=1`, `nofail=0`) is `nofail`, `_netdev=1` makes a network filesystem,
+and `x-systemd.makefs=1` has the mount pull in a makefs. A line for `/usr` is
+mounted whatever `noauto`, `nofail` and `x-systemd.automount` say. An entry
+counts as one the boot never mounts only where NAILS also reads every option it
+gives, each in the form it gives it, by the lists the `backend-entries` check
+reads a plain line by (see
+[decoy-requirements.md](decoy-requirements.md#attaching-the-drive)): any other
+option may change whether the boot mounts it. So may an option with a
+backslash or a quote, as systemd keeps a comma after a backslash or between
+quotes in the option and decodes `\054` to a comma: it mounted
+`noauto,auto=x\,noauto` and `noauto,comment=x\054auto` at boot.
+
+An entry the policy keeps off anyway, swap too, is masked rather than skipped
+where it gives an option of systemd's own (`x-systemd.` or `x-initrd.`) whose
+effect on what its units pull in the session does not read, or an option with
+a backslash or a quote: what such an option pulls in, NAILS cannot tell, and
+a skip would leave it free to start. A boot target that requires such an
+entry is then not reached, and activation warns of that, naming the option.
+The session reads the units and paths `x-systemd.requires=`,
+`x-systemd.wants=`, `x-systemd.requires-mounts-for=`,
+`x-systemd.wants-mounts-for=`, `x-systemd.wanted-by=` and
+`x-systemd.required-by=` name, the units `x-systemd.automount`,
+`x-systemd.makefs`, `x-systemd.growfs`, `x-systemd.pcrfs` and
+`x-systemd.validatefs` pull in, and that `x-systemd.before=`,
+`x-systemd.after=`, the timeouts, `x-systemd.rw-only`,
+`x-systemd.device-bound`, `x-systemd.graceful-option=` and `x-initrd.mount`
+pull in nothing. systemd reads no other option for what a unit pulls in,
+other than flags the session reads by their names too (`noauto`, `nofail`,
+`_netdev`, `bg`, `loop`, the quota options), so an entry with `X-mount.subdir=`
+or `jqfmt=`, or an NFS or CIFS share with `hard`, `vers=` or `credentials=`,
+keeps its skip. An overlay entry that gives `upperdir` more than once, or with
+no value, is kept unmounted.
 
 The hidden volume is bound at its own path in the hidden session, so the hidden
 systemd would mount a filesystem the decoy's fstab names at or below

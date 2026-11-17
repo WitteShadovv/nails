@@ -304,16 +304,25 @@ Keep all of it `root`-owned on the hidden volume.
      mounts nothing.
    - a `noauto` entry is left to the hidden systemd, which never mounts it,
      only where NAILS reads every option it gives, each read by its name as
-     systemd's fstab generator reads it: `noauto,auto=1` and
-     `noauto,x-systemd.automount=0` are mounted at boot, and are kept off as
+     systemd's fstab generator reads it: `noauto,auto=1` is mounted at boot
+     and `noauto,x-systemd.automount=0` on access, and both are kept off as
      above. A `noauto` entry with an option outside the lists `backend-entries`
      reads a plain line by
      (see [decoy-requirements.md](decoy-requirements.md#attaching-the-drive)),
-     or one of them in another form, is masked, and
-     `nails check` names the option. An entry kept off that gives such an
-     option, whose effect on what its units pull in NAILS does not read either,
-     is masked rather than skipped, and activation warns that the hidden
-     session will not reach the target that requires it.
+     one of them in another form, or an option with a backslash or a quote,
+     is masked, and `nails check` names the option. A `noauto` entry for
+     `/usr` is kept off like any entry the boot mounts, as systemd mounts
+     `/usr` whatever `noauto`, `nofail` and `x-systemd.automount` say; and so
+     is a `noauto` entry with a path in it that another entry the boot
+     starts needs, such as a tmpfs mounted on a directory of it, where that
+     entry is left to the hidden systemd or put in place, as systemd has its
+     unit require the `noauto` mount. `nofail` with any value counts as `nofail`. An entry kept off
+     that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose
+     effect on what its units pull in NAILS does not read, or one with a
+     backslash or a quote, is masked rather than skipped, and activation
+     warns that the hidden session will not reach the target that requires
+     it. An overlay entry that gives `upperdir` more than once, or with no
+     value, is kept off.
 
    An activation without a build (`--overlay-only`, and on Debian and Ubuntu
    every activation) applies the same policy to the fstab the hidden session

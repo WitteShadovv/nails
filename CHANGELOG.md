@@ -1132,19 +1132,32 @@ of this changelog for that version becomes the release notes word for word, and
 - The fstab policy reads each option of a line by its name, alone or with a value, as systemd's
   fstab generator reads it, with the readers `backend-entries` uses. It took a line with
   `noauto,auto=1`, `noauto,auto=0` or `noauto,x-systemd.automount=0` for one the boot never
-  mounts: on such a line of the hidden session's own fstab, which an entry without a build
-  decides, the hidden systemd mounted the disk read-write, and `nails check` showed such a line of
-  the decoy's fstab as left alone. It skipped a mount with
-  `x-systemd.makefs=1` and left its makefs free, which formats a disk it finds empty, and read
-  `nofail=1`, `fail=1`, `_netdev=1`, `bg=1`, a quota option with a value such as
-  `usrjquota=aquota.user`, and a `noauto` line for `/usr`, which systemd mounts all the same,
-  otherwise than systemd. A `noauto` line is now left alone only where NAILS reads every option it
-  gives, by the lists `backend-entries` reads a plain line by; one with any other option, or a
-  known one in another form (`x-systemd.after=`, `X-mount.subdir=`, `nofail=1`), is masked with
-  its automount, and `nails check` names the option. A line kept off that gives such an option,
-  whose effect on what its units pull in the session does not read either, is masked rather than
-  skipped, so a boot target that requires it is not reached, and activation warns of that. An
-  overlay line that names its upper directory more than once is kept off.
+  mounts: on such a line of the hidden session's own fstab, which an activation without a build
+  decides, the hidden systemd mounted the disk read-write, and `nails check` did not list such a
+  line of the decoy's fstab. It skipped a mount with `x-systemd.makefs=1` and left its makefs
+  free, which formats a disk it finds empty, and read `nofail=1`, `nofail=0`, `fail=1`,
+  `_netdev=1`, `bg=1` and a quota option with a value such as `usrjquota=aquota.user` otherwise
+  than systemd. `nofail` with any value is now `nofail`.
+- A `noauto` line is now left alone only where NAILS reads every option it gives, by the lists
+  `backend-entries` reads a plain line by. One with any other option, a known one in another form
+  (`x-systemd.after=`, `X-mount.subdir=`, `nofail=1`), or an option with a backslash or a quote,
+  which systemd splits otherwise than NAILS (it mounted `noauto,auto=x\,noauto` and
+  `noauto,comment=x\054auto` at boot), is masked with its automount, and `nails check` names the
+  option. A `noauto` line for `/usr` is kept off like any line the boot mounts, as systemd mounts
+  `/usr` whatever `noauto` says, and `nofail` and `x-systemd.automount` mean nothing there either.
+- A `noauto` line with a path in it that another line needs is kept off: a line below its mount
+  point, its source, or a path `x-systemd.requires-mounts-for=` names, where the boot starts that
+  other line and it is left to the hidden systemd or put in place. systemd has that line's unit require the `noauto`
+  mount, so the boot mounts it all the same, and NAILS left it to the hidden systemd, which would
+  mount the disk read-write for a `tmpfs` line below it. It is
+  skipped where a boot target requires the other line and its device is there, and masked
+  otherwise.
+- A line kept off that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect
+  on what its units pull in NAILS does not read, or an option with a backslash or a quote, is
+  masked rather than skipped, so a boot target that requires it is not reached, and activation
+  warns of that, naming the option. Options outside systemd's namespaces, such as those of an NFS
+  or CIFS share, keep their skip. An overlay line that gives `upperdir` more than once, or with no
+  value, is kept off.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
