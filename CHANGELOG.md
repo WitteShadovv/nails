@@ -2354,13 +2354,13 @@ of this changelog for that version becomes the release notes word for word, and
   takes an updatedb link it cannot resolve for plocate's: where the lists plocate and mlocate read
   skip the volume it warns that it cannot tell whether the run is findutils' updatedb, which reads
   none of them, and where they do not, as with Debian 13's stock `/etc/updatedb.conf`, it refuses
-  as before. `binary-location` where it cannot resolve a link in a
-  `PATH` directory, `dma-protection` where it cannot read what lets it pass, and `hidden-volume`
-  where it cannot read the names of the volume's source. `backend-entries` refuses, and
-  `backend-encryption` warns that it cannot confirm, where a device link a line of fstab or crypttab
-  or the mount table names cannot be resolved, which the attach gate now counts as an input it could
-  not read, and `backend-encryption` also where it cannot resolve an image file the decoy's crypttab
-  opens, or read what kind of mapping a device is or what lies below it. `backend-partition-type`,
+  as before. `binary-location` warns where it cannot resolve a link in a `PATH` directory,
+  `dma-protection` where it cannot read what lets it pass, and `hidden-volume` where it cannot read
+  the names of the volume's source. `backend-entries` refuses, and `backend-encryption` warns that
+  it cannot confirm, where a device link a line of fstab or crypttab or the mount table names cannot
+  be resolved, which the attach gate now counts as an input it could not read, and
+  `backend-encryption` also where it cannot resolve an image file the decoy's crypttab opens, or
+  read what kind of mapping a device is or what lies below it. `backend-partition-type`,
   `outer-volume` and `backend-encryption` warn that they cannot tell where sysfs shows the devices
   of the hidden root's filesystem (a btrfs device list among them) but they cannot read them, and
   `backend-partition-type` too where it cannot read those of the decoy's root file system or a boot

@@ -161,11 +161,11 @@ mapping's own header, the one whose uuid the mapping names, shows anyone who
 reads the disk that an encrypted volume is there, and the pass line says so. A
 device that starts with no LUKS header belongs to a mapping opened with a
 detached header, which the description names; the flags and tokens of such a
-header are in its file. An unreadable device, as every device is to a check
-run without root, leaves the description as it is: the check then does not see
-an `allow-discards` flag stored in the LUKS2 header, nor its tokens or a
-leftover header, and judges discards by the mapping's `queue/discard_max_bytes`
-alone. Activation runs as root and reads the header.
+header are in its file. An unreadable device, as a device usually is to a
+check run without root, leaves the description as it is: the check then does
+not see an `allow-discards` flag stored in the LUKS2 header, nor its tokens or
+a leftover header, and judges discards by the mapping's
+`queue/discard_max_bytes` alone. Activation runs as root and reads the header.
 A mapping the VeraCrypt application made (`veracrypt<N>`, with no uuid up to
 VeraCrypt 1.26.29 and with the uuid `VERACRYPT-<serial>-veracrypt<N>` from
 1.26.30 on) is named as such, the further cipher layers of a cascade cryptsetup

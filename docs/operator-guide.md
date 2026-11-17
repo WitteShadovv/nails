@@ -1237,8 +1237,11 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   mounted yet, `decoy-persistence` and `fstab-policy` refuse until it is
   mounted, since journald's drop-ins and systemd's units below it may hold
   what they look for, and so does `upper-fs-capability` where the overlay
-  module is not loaded yet, `sleep-policy` and `locate-database` warn, and
-  `locate-database` also names each home that is not mounted yet.
+  module is not loaded yet, and `sleep-policy` warns. `locate-database`
+  warns about what it cannot look up behind the point and names each home
+  that is not mounted yet, but refuses a run whose `updatedb` may lie behind
+  the point, as a bare `updatedb` may in `/usr/local/bin`, where the lists
+  plocate and mlocate read do not skip the volume.
 - **A path that cannot be looked up is not a missing one.** Where a check
   asks whether something is at a path, or whether it is a directory, a
   regular file or a link, and the lookup fails for another reason than that
@@ -1252,15 +1255,18 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   `hidden-volume`, which takes a device-mapper name or a filesystem label of
   the volume's source it cannot read for none, so it does not warn about a
   name that betrays hidden storage. The persona reader of
-  `inherited-autostart` and of activation's persona masks reads a file that
-  holds bytes that are not UTF-8 as an empty one, so an autologin or
-  autostart setting in such a file is not read. Two checks see less without
-  root, where no read fails: where `/proc` is mounted with `hidepid=invisible`
-  or `hidepid=ptraceable`, the search of `decoy-persistence` for a syslog or
-  audit daemon started outside systemd lists no other user's process and
-  passes on what it sees (activation runs as root and sees every process),
-  and `backend-detect` cannot read the LUKS header below a mapping, so it
-  does not see an `allow-discards` flag stored in that header and judges
+  `inherited-autostart`, and of activation's persona masks where they read
+  the system's files (`/etc/xdg/autostart` and the display managers'
+  autologin files), reads a file that holds bytes that are not UTF-8 as an
+  empty one, so an autologin or autostart setting in such a file is not
+  read. Two checks see less without root. Where `/proc` is mounted with
+  `hidepid=invisible` or `hidepid=ptraceable`, the search of
+  `decoy-persistence` for a syslog or audit daemon started outside systemd
+  lists no other user's process: no read fails, so it passes on what it
+  sees (activation runs as root and sees every process). And
+  `backend-detect` usually cannot read the LUKS header below a mapping: the
+  read fails, and the check takes that for a header that tells it nothing,
+  so it does not see an `allow-discards` flag stored in that header and judges
   discards by the mapping's `queue/discard_max_bytes` alone (see
   [backends.md](backends.md#backend-detection-in-preflight)).
 
