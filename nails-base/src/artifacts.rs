@@ -234,6 +234,14 @@ pub const ARTIFACTS: &[Artifact] = &[
         description: "Runtime drop-in the way back leaves for a wtmpdb decoy's boot writer, so that it records the way back as a power cycle; removed when the writer starts, so a leftover means it never started.",
     },
     Artifact {
+        id: "nextroot-removal",
+        kind: ArtifactKind::AbsolutePath,
+        scope: ArtifactScope::Runtime,
+        severity: ArtifactSeverity::Warn,
+        value: nails_teardown::whole_root::tail::TMPFILES_PATH,
+        description: "Runtime systemd-tmpfiles line the way back leaves so that the decoy's start removes the empty /run/nextroot the switch leaves behind, and the line with it; a leftover means systemd-tmpfiles-setup.service did not run at that start, and /run/nextroot is likely still there.",
+    },
+    Artifact {
         id: "pivot-staging-run-legacy",
         kind: ArtifactKind::AbsolutePath,
         scope: ArtifactScope::Runtime,
@@ -511,6 +519,14 @@ mod tests {
             (
                 "boot-writer-dropin",
                 format!("/run/{DROPIN_DIR}/{DROPIN_NAME}"),
+            ),
+            (
+                "nextroot-removal",
+                format!(
+                    "/run/{}/{}",
+                    nails_teardown::whole_root::tail::TMPFILES_DIR,
+                    nails_teardown::whole_root::tail::TMPFILES_NAME
+                ),
             ),
         ] {
             assert_eq!(artifact(id).unwrap().value, path, "{id}");

@@ -534,7 +534,8 @@ class PureHelpersTest(unittest.TestCase):
     def test_carried_residue_is_what_was_not_there_before(self) -> None:
         machine = FakeMachine([], {"find /run": "/run/a\n/run/b\n/run/nextroot\n"})
         residue = session.carried_run_residue(machine, {"/run/a"}, "100")
-        self.assertEqual(residue, ["/run/b"])
+        # The folder the switch left counts too: a boot never has one.
+        self.assertEqual(residue, ["/run/b", "/run/nextroot"])
 
     def test_the_store_mounted_from_the_initrd_is_no_leftover(self) -> None:
         store = (

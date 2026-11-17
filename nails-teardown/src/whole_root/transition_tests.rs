@@ -448,6 +448,12 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
     let cursor = fs::read(r.join(run_scrub::KERNEL_SEQNUM)).unwrap();
     assert_eq!(u64::from_ne_bytes(cursor.try_into().unwrap()), 503);
+    // The decoy's start removes the empty /run/nextroot the switch leaves,
+    // through a line the scrub did not take away.
+    assert_eq!(
+        fs::read_to_string(r.join(tail::TMPFILES_DIR).join(tail::TMPFILES_NAME)).unwrap(),
+        tail::tmpfiles_text(true)
+    );
     // journald's sockets were closed with what they hold, after the wait for
     // the late unit: the last calls before the cursor.
     let stops: Vec<String> = tail::journal_socket_calls()

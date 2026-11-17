@@ -407,6 +407,11 @@ fn runtime_fix_guidance(id: &str, path: &Path) -> String {
              as root remove it (rm -rf {path}) and, where the decoy mounts /run noexec, \
              run: mount -o remount,noexec /run"
         ),
+        "nextroot-removal" => format!(
+            "Left by a way back whose decoy start did not run systemd-tmpfiles, in RAM, \
+             with an empty /run/nextroot beside it; power off, or remove both as root: \
+             rm {path}; rmdir /run/nextroot"
+        ),
         "runtime-dir-legacy" | "pivot-staging-run-legacy" => format!(
             "Left by a session of an earlier release, in RAM; power off (then confirm {path} \
              is gone)"

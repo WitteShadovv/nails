@@ -26,6 +26,13 @@
 //!   drops that store, which discards what they hold; the decoy's start opens
 //!   them again, as a boot does.
 //!
+//! The switch itself leaves `/run/nextroot` behind, an empty folder where the
+//! decoy root was mounted for it, which a boot never has. It is a mount point
+//! until PID 1 has left the hidden root, so nothing before the switch can
+//! remove it: [`remove_nextroot_at_start`] leaves a runtime line for the
+//! decoy's `systemd-tmpfiles-setup.service`, which removes the folder and the
+//! line with it at the decoy's start.
+//!
 //! What stays is listed in the residue catalog (`kmsg-import`): PID 1's own
 //! last generic lines (the soft-reboot service's end, `Soft-rebooting.` and,
 //! with the kernel's audit on, their audit records), a filesystem other than
@@ -282,6 +289,49 @@ pub fn quiet_hidden_unmount(
         Ok(()) => Quiet::Quieted(dir),
         Err(e) => Quiet::Failed(e.to_string()),
     }
+}
+
+/// The runtime folder of `systemd-tmpfiles` configuration, below `/run`.
+pub const TMPFILES_DIR: &str = "tmpfiles.d";
+
+/// The way back's line for the decoy's `systemd-tmpfiles-setup.service`
+/// (neutral name). It removes itself.
+pub const TMPFILES_NAME: &str = "overlay-runtime-boot.conf";
+
+/// [`TMPFILES_NAME`] on the decoy, as the artifact registry names it.
+pub const TMPFILES_PATH: &str = "/run/tmpfiles.d/overlay-runtime-boot.conf";
+
+/// The text of [`TMPFILES_NAME`]: at the decoy's start (`!`, a boot's
+/// `--boot` run only), remove `/run/nextroot` if it is an empty folder
+/// (`r` never removes a folder with anything in it, nor a mount point),
+/// this file and, when the way back made it, the folder that holds it.
+/// `systemd-tmpfiles` removes what is inside a folder before the folder.
+pub fn tmpfiles_text(made_dir: bool) -> String {
+    let mut text = format!("r! /run/nextroot\nr! {TMPFILES_PATH}\n");
+    if made_dir {
+        text.push_str(&format!("r! /run/{TMPFILES_DIR}\n"));
+    }
+    text
+}
+
+/// Leave [`TMPFILES_NAME`] in `run`'s [`TMPFILES_DIR`], making the folder
+/// when the decoy has none (it is then removed with the file). Run after
+/// the scrub, which would remove it as the session's.
+pub fn remove_nextroot_at_start(run: &Path) -> io::Result<()> {
+    let dir = run.join(TMPFILES_DIR);
+    let made_dir = !dir.is_dir();
+    if made_dir {
+        std::fs::create_dir(&dir)?;
+    }
+    let written = crate::whole_root::plan::write_atomic_with_mode(
+        &dir.join(TMPFILES_NAME),
+        tmpfiles_text(made_dir).as_bytes(),
+        crate::whole_root::plan::SERVICE_CONFIG_MODE,
+    );
+    if written.is_err() && made_dir {
+        let _ = std::fs::remove_dir(&dir);
+    }
+    written
 }
 
 #[cfg(test)]

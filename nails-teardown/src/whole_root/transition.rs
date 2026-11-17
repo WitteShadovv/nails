@@ -27,7 +27,8 @@
 //!   ([`crate::whole_root::run_scrub`]), put the decoy's records back and, once
 //!   the hidden units have stopped, put the decoy's network state back
 //!   ([`crate::whole_root::network`]), give the decoy's `utab` lines back to
-//!   the decoy mounts the way back restored, end the session's last
+//!   the decoy mounts the way back restored, leave the line that removes the
+//!   empty `/run/nextroot` at the decoy's start, end the session's last
 //!   processes, empty journald's sockets and quiet an ext4 hidden volume's
 //!   unmount line ([`crate::whole_root::tail`]), write the kmsg cursor and,
 //!   last, set the kernel's process-number counter back to where the decoy's
@@ -696,6 +697,10 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         ),
     };
     run_records::restore(&env.run, records.as_deref());
+    // The empty folder the switch leaves where the decoy root is mounted for
+    // it can only go once PID 1 has left the hidden root: the decoy's start
+    // removes it ([`tail::remove_nextroot_at_start`]).
+    let _ = tail::remove_nextroot_at_start(&env.run);
     // A hidden unit that is not ordered before the shutdown can still be
     // stopping now: its unmount rewrites utab, it may write to the kernel log
     // after a cursor taken at once, and PID 1 logs its end. Wait, bounded,
