@@ -2346,10 +2346,11 @@ of this changelog for that version becomes the release notes word for word, and
   session plan it cannot read for one an interrupted entry left, which `recover` removes, but one
   below a file for none. `fstab-policy` and `decoy-root` refuse without the mount table. `swap`
   refuses where it cannot read `/proc/swaps`, a zram device's `backing_dev`, `/sys/power/resume`
-  or `/proc/cmdline`. `suspicious-nails-reference` refuses where its walk of `/etc/nixos` cannot
-  look up a place, or it cannot read the mount table or a place that gives a name of the hidden
-  volume's storage, and says what to make readable. `locate-database` also warns where it cannot
-  resolve an updatedb link, `binary-location` where it cannot resolve a link in a `PATH`
+  or `/proc/cmdline`, and reads a swap file's name that is no UTF-8, which hid every swap from it,
+  and fails it as file swap. `suspicious-nails-reference` refuses where its walk of `/etc/nixos`
+  cannot look up a place, or it cannot read the mount table or a place that gives a name of the
+  hidden volume's storage, and says what to make readable. `locate-database` also warns where it
+  cannot resolve an updatedb link, `binary-location` where it cannot resolve a link in a `PATH`
   directory, `dma-protection` where it cannot read what lets it pass, and `hidden-volume` where it
   cannot read the names of the volume's source. `inherited-autostart` lists a directory it cannot
   list, or a file it cannot read, as not read, and `memory-wipe` no longer says the kernel zeroes
