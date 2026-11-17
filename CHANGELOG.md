@@ -1206,7 +1206,11 @@ of this changelog for that version becomes the release notes word for word, and
   as one that may mount the volume: a line that holds a control character other than a tab, or
   white space other than a space or a tab, a backslash in its first field or mount point that
   begins none of the escapes `\040`, `\011`, `\012` and `\134`, a backslash in its type or options,
-  a list of types, or a first field that is neither an absolute path nor a `UUID=`, `LABEL=`,
+  a list of types NAILS does not read (it reads a list of `btrfs`, `exfat`, `ext2`, `ext3`, `ext4`,
+  `f2fs`, `iso9660`, `msdos`, `ntfs3`, `udf`, `vfat` and `xfs` on a line that is no bind line,
+  names a device by its path in `/dev` or by a tag and gives only options of every type, such as
+  the `udf,iso9660` line Debian's installer writes for an optical drive, and judges it by that
+  device), or a first field that is neither an absolute path nor a `UUID=`, `LABEL=`,
   `PARTUUID=` or `PARTLABEL=` tag (an `ID=` tag among them, which `libmount` looks up in
   `/dev/disk/by-id` and NAILS does not), or that leads into `/dev` but does not start with `/dev/`
   or holds a `..`, such as `//dev/sdb`, unless it is the line of a RAM, kernel, host-share,

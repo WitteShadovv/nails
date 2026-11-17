@@ -135,20 +135,100 @@ fn a_backslash_in_the_type_or_the_options_is_not_plain() {
 }
 
 #[test]
-fn a_list_of_types_is_not_plain() {
+fn a_list_of_local_types_on_a_device_line_is_plain() {
+    // Debian's installer writes the first line for each optical drive of a
+    // system installed from a CD, a DVD or an ISO. mount tries each type of
+    // the list on the same source with the same options, so each of these
+    // mounts nothing a line of one of those types would not.
+    for line in [
+        "/dev/sr0        /media/cdrom0   udf,iso9660 user,noauto     0       0",
+        "/dev/sr1 /media/cdrom1 udf,iso9660 user,noauto 0 0",
+        "/dev/sdb1 /media/x ext4,xfs nofail 0 0",
+        "UUID=0A1B /media/x vfat,exfat,ntfs3 noauto,user 0 0",
+        "PARTLABEL=data /media/x btrfs,f2fs,ext2,ext3,msdos noauto 0 0",
+        "/dev/disk/by-label/disc /media/x iso9660,udf ro,noauto 0 0",
+    ] {
+        assert_eq!(why(line), [], "{line}");
+    }
+}
+
+#[test]
+fn a_list_of_types_nails_does_not_read_is_not_plain() {
+    // A type off the list, an empty one, a bind line, which mount binds
+    // whatever the type, and a first field that is no device's path in /dev
+    // and no tag NAILS resolves: a file, which mount opens through a loop
+    // device, a relative path, which libmount looks up from the folder mount
+    // runs in, for each type of the list, and an ID= tag.
+    for (line, also) in [
+        (
+            "/dev/sr0 /media/cdrom0 udf,iso9660,nfs user,noauto 0 0",
+            None,
+        ),
+        ("/dev/sdb1 /media/x ext4,fuseblk nofail 0 0", None),
+        ("/dev/sdb1 /media/x ext4,ntfs-3g nofail 0 0", None),
+        ("/dev/sdb1 none swap,ext4 sw 0 0", None),
+        ("/dev/sdb1 /media/x ext4,auto nofail 0 0", None),
+        ("/dev/sdb1 /media/x ext4,overlay nofail 0 0", None),
+        ("/dev/sdb1 /media/x ext4,zfs nofail 0 0", None),
+        ("/dev/sdb1 /media/x udf,,iso9660 nofail 0 0", None),
+        ("/dev/sdb1 /media/x udf, nofail 0 0", None),
+        ("/dev/sdb1 /media/x ext4,xfs bind 0 0", None),
+        ("/srv/x /mnt none,ext4 bind 0 0", None),
+        ("/srv/disc.iso /media/x udf,iso9660 noauto 0 0", None),
+        (
+            "dev/mapper/data /media/x ext4,xfs nofail 0 0",
+            Some(Unplain::Relative),
+        ),
+        (
+            "tmpfs /tmp tmpfs,ramfs defaults 0 0",
+            Some(Unplain::Relative),
+        ),
+        (
+            "ID=usb-disc /media/x udf,iso9660 noauto 0 0",
+            Some(Unplain::IdTag),
+        ),
+        (
+            "//dev/sr0 /media/x udf,iso9660 noauto 0 0",
+            Some(Unplain::DevOtherwise),
+        ),
+        (
+            "/dev/../dev/sr0 /media/x udf,iso9660 noauto 0 0",
+            Some(Unplain::DevOtherwise),
+        ),
+    ] {
+        let mut expected = vec![Unplain::TypeList];
+        expected.extend(also);
+        assert_eq!(why(line), expected, "{line}");
+    }
     assert_eq!(
-        why("/dev/sdb1 /media/x ext4,xfs nofail 0 0"),
-        [Unplain::TypeList]
+        Unplain::TypeList.reason(),
+        "its type is a list of types, which NAILS reads only of the types btrfs, exfat, ext2, \
+         ext3, ext4, f2fs, iso9660, msdos, ntfs3, udf, vfat and xfs, on a line that names a \
+         device by its path in /dev or by a UUID=, LABEL=, PARTUUID= or PARTLABEL= tag and is \
+         no bind line"
     );
-    // libmount looks a relative first field up from the folder mount runs
-    // in, for each type of the list.
+}
+
+#[test]
+fn a_list_of_types_gives_only_generic_options() {
+    // Its options are read as those of a line of no type NAILS knows options
+    // of: an option of one of its filesystems is not plain, as an option no
+    // list holds is, and so is loop on a device's line.
     assert_eq!(
-        why("dev/mapper/data /media/x ext4,xfs nofail 0 0"),
-        [Unplain::TypeList, Unplain::Relative]
+        why("/dev/sdb1 /media/x ext4,xfs errors=remount-ro 0 0"),
+        [Unplain::Unknown("errors".to_string())]
     );
     assert_eq!(
-        why("tmpfs /tmp tmpfs,ramfs defaults 0 0"),
-        [Unplain::TypeList, Unplain::Relative]
+        why("UUID=0A1B /media/x vfat,exfat umask=0077 0 0"),
+        [Unplain::Unknown("umask".to_string())]
+    );
+    assert_eq!(
+        why("/dev/sr0 /media/cdrom0 udf,iso9660 user,noauto,X-mount.subdir=x 0 0"),
+        [Unplain::Unknown("X-mount.subdir".to_string())]
+    );
+    assert_eq!(
+        why("/dev/sr0 /media/cdrom0 udf,iso9660 loop,noauto 0 0"),
+        [Unplain::Loop]
     );
 }
 
@@ -540,8 +620,11 @@ fn a_line_that_is_not_plain_is_kept_by_the_index_of_its_entry() {
     assert_eq!(unplain[&1].shown, "dev/mapper/data /media/x ext4,xfs");
     assert_eq!(
         unplain[&1].reason(),
-        "its type is a list of types and its first field is neither an absolute path nor a \
-         UUID=, LABEL=, PARTUUID= or PARTLABEL= tag"
+        format!(
+            "{} and its first field is neither an absolute path nor a UUID=, LABEL=, PARTUUID= \
+             or PARTLABEL= tag",
+            Unplain::TypeList.reason()
+        )
     );
     assert_eq!(unplain[&2].shown, "//server/share /mnt/s cifs");
     assert_eq!(unplain[&2].reason(), "its options hold a backslash");

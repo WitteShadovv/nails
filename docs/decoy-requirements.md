@@ -2000,8 +2000,8 @@ that holds a control character other than a tab, or white space other than a
 space or a tab; whose first field or mount point holds a backslash that begins
 none of the escapes `\040`, `\011`, `\012` and `\134` (a space, a tab, a newline
 and a backslash), such as `/data/\170`; whose type or options hold a backslash,
-such as `bin\144`, which `libmount` reads as `bind`; whose type is a list, such
-as `ext4,xfs`; or whose first field is neither an absolute path nor a `UUID=`,
+such as `bin\144`, which `libmount` reads as `bind`; whose type is a list that
+NAILS does not read, such as `ext4,nfs`; or whose first field is neither an absolute path nor a `UUID=`,
 `LABEL=`, `PARTUUID=` or `PARTLABEL=` tag, such as `dev/mapper/data`, which
 `mount` looks up from the folder it runs in, or an `ID=` tag, which `libmount`
 looks up in `/dev/disk/by-id` and NAILS does not. Such a first field is plain
@@ -2013,6 +2013,20 @@ start with `/dev/` or holds a `..`, such as `//dev/sdb` or `/dev/../dev/sdb`:
 `mount` opens `/dev/sdb` for both, and NAILS reads a device only by its own
 path in `/dev` or by a tag. A bind line is one with a `bind` or `rbind` option,
 with a value too: `libmount` reads `bind=x` as `bind`, whatever the type.
+
+`mount` tries each type of a list in turn, on the same source with the same
+options, so NAILS reads a list where each of these mounts is one it reads: every
+type in it is `btrfs`, `exfat`, `ext2`, `ext3`, `ext4`, `f2fs`, `iso9660`,
+`msdos`, `ntfs3`, `udf`, `vfat` or `xfs`, and the line is no bind line and names
+a device by its path in `/dev` or by a `UUID=`, `LABEL=`, `PARTUUID=` or
+`PARTLABEL=` tag. It judges such a line by the device it names, as it judges a
+line of one of those types, and of its options reads only those of every type,
+such as `noauto`, `user` or `nofail`. Debian's installer writes
+`/dev/sr0 /media/cdrom0 udf,iso9660 user,noauto 0 0` for the optical drive of a
+system installed from a CD, a DVD or an ISO, which passes. A list is not plain
+with another type, such as `ext4,nfs`, with an empty type, on a bind line or on
+a line for a file, and neither is a list line with an option of one of its
+filesystems, such as `uid=1000`.
 
 NAILS reads only the options it lists, each in the forms it lists, and of every
 line of local storage every option has to be on its lists: a bind line of any

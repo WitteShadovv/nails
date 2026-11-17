@@ -184,11 +184,21 @@ fn a_line_that_names_the_file_the_volume_is_stored_in_fails() {
             stored("the file it opens")
         ),
     );
-    // The root alone, and lines for another file or another container,
-    // pass.
+    // The root alone, and lines for another file or another container, or
+    // Debian's line for the optical drive it was installed from, pass.
     for (encrypted, fstab, crypttab) in [
         (true, "", ""),
         (false, "", ""),
+        (
+            true,
+            "/dev/sr0        /media/cdrom0   udf,iso9660 user,noauto     0       0\n",
+            "",
+        ),
+        (
+            false,
+            "/dev/sr0        /media/cdrom0   udf,iso9660 user,noauto     0       0\n",
+            "",
+        ),
         (true, "", "vault2 /home/op/other.img /etc/vault.key luks\n"),
         (
             false,

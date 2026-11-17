@@ -1253,7 +1253,7 @@ fn a_line_that_is_not_plain_fails_with_the_flag_too() {
         (
             "/srv/x /mnt none,ext4 bind 0 0",
             "/srv/x /mnt none,ext4",
-            "its type is a list of types".to_string(),
+            crate::hidden_root::separation::Unplain::TypeList.reason(),
         ),
     ] {
         let fs = rendered(
@@ -1305,7 +1305,10 @@ fn a_relative_device_or_a_list_of_types_fails_without_the_flag() {
         (
             "dev/mapper/data /media/x ext4,xfs nofail 0 0",
             "dev/mapper/data /media/x ext4,xfs",
-            format!("its type is a list of types and {RELATIVE}"),
+            format!(
+                "{} and {RELATIVE}",
+                crate::hidden_root::separation::Unplain::TypeList.reason()
+            ),
         ),
         (
             "dev/dm-9 /media/x cramfs nofail 0 0",
