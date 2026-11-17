@@ -1182,6 +1182,10 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     every mount is `noatime`, so neither the program's file nor its loader,
     libraries and data files, nor what it reads, get a new access time, while
     its question reaches the system as before;
+  - it asks the service manager for its version alone (`busctl
+    get-property`): `systemctl show` asks for every property of the service
+    manager, which then works out its taint list as well and reads
+    `/etc/os-release` and `/etc/adjtime` for it;
   - while activation has the service manager reload its units and asks it
     about the units the switch depends on, every mount that keeps access
     times is `noatime`, and each gets its own mode back right after: the
