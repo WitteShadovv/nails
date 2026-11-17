@@ -9,6 +9,10 @@
 //! without a sign. A rule outside that is no zone of its own, and the local
 //! zone is then looked for as for a `TZ` that names nothing (see
 //! [`super::zone`]). The rule's meaning is read by jiff once this check passes.
+//!
+//! A zone file's footer is read by jiff, extensions and all, but an offset of
+//! 24 hours or more is refused there as in `TZ`: a zone file whose footer
+//! gives one is no zone (see [`offset_of_a_day`]).
 
 /// Whether `rule` is a POSIX TZ string `TZ` may hold.
 pub(super) fn accepted(rule: &str) -> bool {
@@ -34,29 +38,61 @@ fn accepted_from(cursor: &mut Cursor<'_>) -> Option<()> {
     cursor.is_empty().then_some(())
 }
 
+/// Whether the footer rule `rule` of a zone file gives its standard offset,
+/// or its daylight saving offset where it names one, an hour of 24 or more.
+/// jiff reads an offset of 24 hours there, which POSIX allows, but NAILS has
+/// never taken one. Only the names and offsets at the start of the rule are
+/// looked at: jiff has read the rule already.
+pub(super) fn offset_of_a_day(rule: &str) -> bool {
+    let mut cursor = Cursor(rule.as_bytes());
+    offsets_of_a_day(&mut cursor).unwrap_or(false)
+}
+
+/// The same, `None` where an offset is not there to read: after the
+/// standard offset, a daylight saving name with no offset is followed by `,`
+/// or nothing.
+fn offsets_of_a_day(cursor: &mut Cursor<'_>) -> Option<bool> {
+    letters(cursor)?;
+    if signed_hhmmss(cursor)?.0 > 23 {
+        return Some(true);
+    }
+    letters(cursor)?;
+    Some(signed_hhmmss(cursor)?.0 > 23)
+}
+
 /// A zone name: letters, or `<…>` around letters, digits, `+` and `-`; three
 /// to seven of them.
 fn name(cursor: &mut Cursor<'_>) -> Option<()> {
-    let name = if cursor.peek() == Some(b'<') {
+    let name = letters(cursor)?;
+    let allowed = |b: &u8| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-');
+    ((3..=7).contains(&name.len()) && name.iter().all(allowed)).then_some(())
+}
+
+/// The characters of a zone name: letters, or what `<…>` holds.
+fn letters<'a>(cursor: &mut Cursor<'a>) -> Option<&'a [u8]> {
+    if cursor.peek() == Some(b'<') {
         cursor.take(1)?;
         let name = cursor.take_while(|b| b != b'>');
         cursor.tag(b">")?;
-        name
+        Some(name)
     } else {
-        cursor.take_while(|b| b.is_ascii_alphabetic())
-    };
-    let allowed = |b: &u8| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-');
-    ((3..=7).contains(&name.len()) && name.iter().all(allowed)).then_some(())
+        Some(cursor.take_while(|b| b.is_ascii_alphabetic()))
+    }
 }
 
 /// An offset: an optional sign, then hours below 24, optional minutes and
 /// seconds below 60.
 fn offset(cursor: &mut Cursor<'_>) -> Option<()> {
+    let (hours, minutes, seconds) = signed_hhmmss(cursor)?;
+    (hours <= 23 && minutes <= 59 && seconds <= 59).then_some(())
+}
+
+/// An optional sign, then `hh[:mm[:ss]]`.
+fn signed_hhmmss(cursor: &mut Cursor<'_>) -> Option<(i32, i32, i32)> {
     if matches!(cursor.peek(), Some(b'+' | b'-')) {
         cursor.take(1)?;
     }
-    let (hours, minutes, seconds) = hhmmss(cursor)?;
-    (hours <= 23 && minutes <= 59 && seconds <= 59).then_some(())
+    hhmmss(cursor)
 }
 
 /// The day of a change (`Mm.w.d`, `Jn` or `n`), with an optional `/time` at

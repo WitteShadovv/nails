@@ -142,10 +142,19 @@ impl Zone {
     }
 
     /// The zone of a TZif file's bytes (RFC 8536), or `None` when they are no
-    /// valid one.
+    /// valid one or their footer gives an offset of 24 hours or more, which
+    /// NAILS has never taken from a footer.
     pub fn tzif(bytes: &[u8]) -> Option<Self> {
-        let tz = jiff::tz::TimeZone::tzif("localtime", bytes).ok()?;
-        let extras = super::tzif::read(bytes)?;
+        let bytes = super::tzif::framed(bytes);
+        let tz = jiff::tz::TimeZone::tzif("localtime", &bytes).ok()?;
+        let extras = super::tzif::read(&bytes)?;
+        if extras
+            .footer
+            .as_deref()
+            .is_some_and(super::posix::offset_of_a_day)
+        {
+            return None;
+        }
         let rule = extras
             .footer
             .as_deref()

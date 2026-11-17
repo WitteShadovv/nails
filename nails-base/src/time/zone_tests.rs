@@ -411,6 +411,167 @@ fn a_corrupt_etc_localtime_is_no_zone() {
     }
 }
 
+/// [`berlin`] with the newline that ends its footer replaced by `ending`.
+fn berlin_ending_in(ending: &[u8]) -> Vec<u8> {
+    let mut bytes = berlin();
+    bytes.pop();
+    bytes.extend_from_slice(ending);
+    bytes
+}
+
+/// Berlin's 2026 transitions in a version 2 file whose footer is a single
+/// newline: no rule, so the last transition's offset holds on.
+fn berlin_with_one_newline_footer() -> Vec<u8> {
+    let mut bytes = tzif(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "",
+    );
+    bytes.pop();
+    bytes
+}
+
+/// 2026-11-17T10:00:00Z, in Berlin's winter time.
+fn winter() -> Timestamp {
+    Timestamp::from_unix_seconds(1_794_909_600).unwrap()
+}
+
+/// 2027-07-01T00:00:00Z, after [`berlin`]'s last transition, in summer time.
+fn summer_2027() -> Timestamp {
+    Timestamp::from_unix_seconds(1_814_400_000).unwrap()
+}
+
+#[test]
+fn a_footer_ending_in_a_carriage_return_or_of_one_newline_is_read_as_before() {
+    // A copy of a zone in /etc/localtime, and /etc/timezone naming another:
+    // the copy is read and nothing else, as NAILS always read such a file.
+    for bytes in [berlin_ending_in(b"\r\n"), berlin_with_one_newline_footer()] {
+        let files = Files::default()
+            .file("/etc/localtime", bytes)
+            .file("/etc/timezone", b"America/New_York\n".to_vec())
+            .file(
+                "/usr/share/zoneinfo/America/New_York",
+                fixed_file(-5 * 3600, "EST", "EST5"),
+            );
+        let zone = Zone::find(None, &files);
+        assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+        assert_eq!(zone.stamp(winter()), "2026-11-17 11:00:00 +01:00");
+        assert_eq!(files.reads(), ["/etc/localtime"]);
+    }
+    // The rule of a footer ending in `\r\n`, and of one with blanks around
+    // its rule, holds after the last transition; a footer of one newline
+    // holds none.
+    for bytes in [
+        berlin_ending_in(b"\r\n"),
+        tzif(
+            &[(3600, false, "CET"), (7200, true, "CEST")],
+            &[(1_774_746_000, 1), (1_792_890_000, 0)],
+            " \t CET-1CEST,M3.5.0,M10.5.0/3 \r",
+        ),
+    ] {
+        let zone = Zone::tzif(&bytes).unwrap();
+        assert_eq!(zone.stamp(summer_2027()), "2027-07-01 02:00:00 +02:00");
+    }
+    let zone = Zone::tzif(&berlin_with_one_newline_footer()).unwrap();
+    assert_eq!(zone.stamp(summer_2027()), "2027-07-01 01:00:00 +01:00");
+}
+
+#[test]
+fn a_footer_followed_by_more_is_left_to_jiff() {
+    // A blank or bytes after the footer's line: the file is read with the
+    // rule on that line.
+    for ending in [b"\n ".as_slice(), b"\ngarbage", b"\n\nX"] {
+        let zone = Zone::tzif(&berlin_ending_in(ending)).unwrap();
+        assert_eq!(zone.stamp(summer_2027()), "2027-07-01 02:00:00 +02:00");
+        assert_eq!(zone.stamp(winter()), "2026-11-17 11:00:00 +01:00");
+    }
+    // A rule that runs over two lines: its first line is the rule.
+    let bytes = tzif(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "CET-1\nCEST",
+    );
+    let zone = Zone::tzif(&bytes).unwrap();
+    assert_eq!(zone.stamp(summer_2027()), "2027-07-01 01:00:00 +01:00");
+    // A footer that is not UTF-8, or that holds no line, is no zone.
+    for ending in [b"\n\xff\n".as_slice(), b""] {
+        let mut bytes = berlin_with_one_newline_footer();
+        bytes.pop();
+        bytes.extend_from_slice(ending);
+        assert!(Zone::tzif(&bytes).is_none(), "{ending:?}");
+    }
+}
+
+#[test]
+fn a_footer_with_an_offset_of_24_hours_or_more_is_no_zone_as_before() {
+    // A zone of -24:00 or +24:00 as zic writes one, a footer of 25 hours,
+    // and a daylight saving offset of 24 hours in Berlin's rule: a copy in
+    // /etc/localtime is no zone, and the zone /etc/timezone names is read.
+    let berlin_24 = tzif(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "CET-1CEST-24,M3.5.0,M10.5.0/3",
+    );
+    for bytes in [
+        fixed_file(-24 * 3600, "-24", "<-24>24"),
+        fixed_file(24 * 3600, "+24", "<+24>-24"),
+        fixed_file(24 * 3600 + 30 * 60, "+2430", "<+2430>-24:30"),
+        fixed_file(25 * 3600, "+25", "<+25>-25"),
+        berlin_24,
+    ] {
+        assert!(Zone::tzif(&bytes).is_none());
+        let files = Files::default()
+            .file("/etc/localtime", bytes)
+            .file("/etc/timezone", b"America/New_York\n".to_vec())
+            .file(
+                "/usr/share/zoneinfo/America/New_York",
+                fixed_file(-5 * 3600, "EST", "EST5"),
+            );
+        assert_eq!(
+            shown(&Zone::find(None, &files)),
+            "2026-03-28 20:00:00 -05:00"
+        );
+        assert_eq!(
+            files.reads(),
+            [
+                "/etc/localtime",
+                "link /etc/localtime",
+                "/etc/timezone",
+                "/usr/share/zoneinfo/America/New_York",
+            ]
+        );
+    }
+    // An offset below 24 hours in the footer, and one of 24 hours with no
+    // rule in the footer, make a zone.
+    let daylight_23 = tzif(
+        &[(22 * 3600, false, "+22"), (23 * 3600, true, "+23")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "<+22>-22<+23>-23,M3.5.0,M10.5.0/3",
+    );
+    let cases = [
+        (daylight_23, "2026-03-30 00:00:00 +23:00"),
+        (
+            fixed_file(86_399, "XST", "XST-23:59:59"),
+            "2026-03-30 00:59:59 +24:00",
+        ),
+        (
+            fixed_file(-86_399, "XST", "XST23:59:59"),
+            "2026-03-28 01:00:01 -24:00",
+        ),
+        (
+            fixed_file(24 * 3600, "+24", ""),
+            "2026-03-30 01:00:00 +24:00",
+        ),
+        (
+            fixed_file(-24 * 3600, "-24", ""),
+            "2026-03-28 01:00:00 -24:00",
+        ),
+    ];
+    for (bytes, expected) in cases {
+        assert_eq!(shown(&Zone::tzif(&bytes).unwrap()), expected);
+    }
+}
+
 #[test]
 fn a_posix_rule_is_taken_as_tz_may_hold_it() {
     let accepted = [

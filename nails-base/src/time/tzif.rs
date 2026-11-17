@@ -17,6 +17,11 @@
 //! A leap-second table must start at or after 1970 with a correction of one
 //! second, step by one second at a time, and keep 28 days between its
 //! entries; a file with any other table is no zone.
+//!
+//! The footer is taken as NAILS has always taken it before jiff reads the
+//! file (see [`framed`]).
+
+use std::borrow::Cow;
 
 /// The parts of a TZif file read here.
 #[derive(Debug, Clone, Default)]
@@ -52,6 +57,54 @@ struct Counts {
     transitions: usize,
     types: usize,
     chars: usize,
+}
+
+/// The TZif file `bytes` as jiff is given it.
+///
+/// A footer, all that follows the version 2 data block, that starts and ends
+/// with a newline holds the rule between them with the blanks around it
+/// trimmed, as NAILS has always read it: it is given to jiff as that rule on
+/// a line of its own. So a footer that ends in `\r\n`, or is a single newline
+/// (no rule), reads as it did, where jiff alone would refuse the file. A rule
+/// that holds a newline, a footer that is not UTF-8 or does not start and end
+/// with a newline, and a version 1 file are left as they stand, for jiff to
+/// read or refuse.
+pub(super) fn framed(bytes: &[u8]) -> Cow<'_, [u8]> {
+    let Some(start) = footer_start(bytes) else {
+        return Cow::Borrowed(bytes);
+    };
+    let Ok(footer) = std::str::from_utf8(&bytes[start..]) else {
+        return Cow::Borrowed(bytes);
+    };
+    if !(footer.starts_with('\n') && footer.ends_with('\n')) {
+        return Cow::Borrowed(bytes);
+    }
+    let rule = footer.trim_matches(|c: char| c.is_ascii_whitespace());
+    if rule.contains('\n') {
+        return Cow::Borrowed(bytes);
+    }
+    let mut out = Vec::with_capacity(start + rule.len() + 2);
+    out.extend_from_slice(&bytes[..start]);
+    out.push(b'\n');
+    out.extend_from_slice(rule.as_bytes());
+    out.push(b'\n');
+    Cow::Owned(out)
+}
+
+/// Where the footer of a version 2 or later TZif file starts: after the
+/// version 1 data block, the second header and the 64-bit data block. `None`
+/// for a version 1 file, or one too short to hold those.
+fn footer_start(bytes: &[u8]) -> Option<usize> {
+    let (version, counts, _) = header(bytes)?;
+    if version == 0 {
+        return None;
+    }
+    let second = block_len(&counts, 4)?.checked_add(44)?;
+    let (_, counts, _) = header(bytes.get(second..)?)?;
+    let start = block_len(&counts, 8)?
+        .checked_add(second)?
+        .checked_add(44)?;
+    (start <= bytes.len()).then_some(start)
 }
 
 /// Read the extras of the TZif file `bytes`, or `None` when they are not

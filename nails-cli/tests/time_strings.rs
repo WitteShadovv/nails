@@ -10,8 +10,9 @@
 //! database of the machine running the tests is read. The cases cover a
 //! positive and a negative offset, both ends of a daylight saving change from
 //! a rule and from a file's transitions (counted in leap time in a file with
-//! leap seconds), times before 1970, offsets with seconds, and years past
-//! 9999 in summer and in winter. These tests name no time library: they hold
+//! leap seconds), a file whose footer ends in `\r\n` or is a single newline,
+//! times before 1970, offsets with seconds, and years past 9999 in summer and
+//! in winter. These tests name no time library: they hold
 //! for any code behind the report.
 
 use std::path::PathBuf;
@@ -327,6 +328,47 @@ fn a_zone_file_is_read_by_its_transitions_and_then_by_its_rule() {
         for (utc, shown) in cases {
             assert_eq!(finished(&harness, &tz, utc), shown, "TZ={tz} {utc}");
         }
+    }
+}
+
+#[test]
+fn a_zone_file_whose_footer_ends_in_a_carriage_return_or_is_one_newline_is_read() {
+    let harness = Harness::new();
+    // An offset no machine's zone has, so a fallback to the zone of the
+    // machine running the tests shows.
+    let mut crlf = tzif(&[(12_420, false, "XST")], &[], "XST-3:27");
+    crlf.pop();
+    crlf.extend_from_slice(b"\r\n");
+    let mut one_newline = tzif(
+        &[(12_420, false, "XST"), (16_020, false, "XDT")],
+        &[(1_774_746_000, 1)],
+        "",
+    );
+    one_newline.pop();
+    let crlf = harness.zone_file("crlf.tzif", &crlf);
+    let one_newline = harness.zone_file("one-newline.tzif", &one_newline);
+    let cases = [
+        (&crlf, "2026-03-29T00:59:59Z", "2026-03-29 04:26:59 +03:27"),
+        (&crlf, "2030-01-01T00:00:00Z", "2030-01-01 03:27:00 +03:27"),
+        (
+            &one_newline,
+            "2026-03-29T00:59:59Z",
+            "2026-03-29 04:26:59 +03:27",
+        ),
+        (
+            &one_newline,
+            "2026-03-29T01:00:00Z",
+            "2026-03-29 05:27:00 +04:27",
+        ),
+        (
+            &one_newline,
+            "2030-01-01T00:00:00Z",
+            "2030-01-01 04:27:00 +04:27",
+        ),
+    ];
+    for (path, utc, shown) in cases {
+        let tz = format!(":{path}");
+        assert_eq!(finished(&harness, &tz, utc), shown, "TZ={tz} {utc}");
     }
 }
 
