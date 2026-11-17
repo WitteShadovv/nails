@@ -41,7 +41,13 @@
 #
 # The scenario runs NAILS as an operator does: the binary from the hidden
 # volume, the configuration in /run and the hidden root on a loop device
-# backed by a tmpfs (lib/hidden-root.nix). The decoy is made amnesic, as NAILS requires, its
+# backed by a tmpfs (lib/hidden-root.nix), for an operator account it adds,
+# named by SUDO_UID and SUDO_USER as sudo names it, so that check and the
+# activation read that account's entry and inspect its home as they do for a
+# real operator. Starting sudo itself reads the decoy disk (its binary, PAM,
+# sudoers, the account databases), which the operator guide names as what is
+# left; the variables are set by the backdoor's shell, so nothing starts for
+# them. The decoy is made amnesic, as NAILS requires, its
 # timers are masked and cloud-init is turned off before the first measured
 # phase, so nothing the decoy schedules runs into a phase. apt's configuration
 # is not aged: NAILS compares its change times with the start of Debian's
@@ -120,8 +126,12 @@ distroVm.buildVmTest {
     QUIET = f"{TOOLS}/noatime-run"
     NAILS = "/mnt/data/nails"
     CONFIG = "/run/nails-atime.toml"
+    OPERATOR = "atimeop"
+    # Filled in once the operator account exists (see the header).
+    OPERATOR_ENV = ""
     NAILS_CMD = f"{NAILS} --config {CONFIG}"
     RAM_NAILS_CMD = f"/run/overlay-runtime/control --config {CONFIG}"
+    UNRESOLVED = "Target user could not be resolved"
     AGE_SECONDS = 2 * 86400
     PID1 = (
         "org.freedesktop.systemd1 /org/freedesktop/systemd1 "
@@ -301,11 +311,15 @@ distroVm.buildVmTest {
         vm.succeed(f"cp {STORE}/nails {NAILS} && chmod 0755 {NAILS}")
         ref = phase_start(f"{label}-check")
         status, _ = vm.execute(
-            f"{NAILS_CMD} check --overlay-only --json > {STORE}/{label}-check.json 2>&1"
+            f"{OPERATOR_ENV} {NAILS_CMD} check --overlay-only --json "
+            + f"> {STORE}/{label}-check.json 2>&1"
         )
         end = now_ns()
         reads = reads_of(f"{label}-check", ref)
-        print(vm.succeed(quiet(f"cat {STORE}/{label}-check.json")))
+        checked = vm.succeed(quiet(f"cat {STORE}/{label}-check.json"))
+        print(checked)
+        # The check inspected the operator's account, as it does under sudo.
+        assert UNRESOLVED not in checked, f"{label}: check resolved no operator"
         report["phases"][f"{label}-check"].update({"status": status, "end": end})
         check_findings = at.judge_check(reads)
         findings.extend(check_findings)
@@ -319,7 +333,7 @@ distroVm.buildVmTest {
         vm.succeed(quiet(f"busctl set-property {PID1} LogLevel s debug"))
         log = f"/mnt/data/{label}-activate.log"
         try:
-            switch(f"{NAILS_CMD} activate -y > {log} 2>&1", f"{label} in")
+            switch(f"{OPERATOR_ENV} {NAILS_CMD} activate -y > {log} 2>&1", f"{label} in")
         except AssertionError:
             # A refused activation stays on the decoy and says why in its log.
             print(vm.execute(quiet(f"cat {log}"))[1])
@@ -340,9 +354,9 @@ distroVm.buildVmTest {
         way_back = now_ns()
         marks.append((f"{label} {leave}", way_back))
         if leave == "deactivate":
-            trigger = f"{NAILS_CMD} deactivate -y"
+            trigger = f"{OPERATOR_ENV} {NAILS_CMD} deactivate -y"
         else:
-            trigger = f"{RAM_NAILS_CMD} emergency --json"
+            trigger = f"{OPERATOR_ENV} {RAM_NAILS_CMD} emergency --json"
         switch(trigger, f"{label} {leave}")
         on_decoy()
         wait_reconcile()
@@ -372,6 +386,13 @@ distroVm.buildVmTest {
             + "if [ -d /etc/cloud ]; then touch /etc/cloud/cloud-init.disabled; fi"
         )
         vm.succeed("""${hiddenRoot.stopAptTimers}""")
+        # The operator account, with a home and a shell as useradd makes them.
+        vm.succeed(f"useradd --create-home --shell /bin/bash {OPERATOR}")
+        operator_uid = vm.succeed(f"id -u {OPERATOR}").strip()
+        operator_gid = vm.succeed(f"id -g {OPERATOR}").strip()
+        OPERATOR_ENV = (
+            f"SUDO_UID={operator_uid} SUDO_GID={operator_gid} SUDO_USER={OPERATOR}"
+        )
         vm.wait_until_succeeds("""${hiddenRoot.aptRunsEnded}""", timeout=900)
         # A first switch, measured by nothing, so that every later phase starts
         # from a decoy that booted with the timers masked.
