@@ -291,6 +291,35 @@ fn the_devices_an_fstab_option_names_are_resolved_as_a_source_is() {
 }
 
 #[test]
+fn a_name_the_files_use_that_cannot_be_resolved_is_listed_as_unreadable() {
+    // The link may lead to the hidden root's device: it is no name of no
+    // device. One that is not there names no device.
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::Other,
+    ] {
+        let decoy = lv_in_the_decoys_group();
+        decoy.link("/dev/disk/by-uuid/e1", "/dev/nvme0n1p3");
+        decoy.fs.mock_set_lookup_error("/dev/disk/by-uuid/e1", kind);
+        let mounts = decoy.fs.mount_table().unwrap();
+        let collected = collect(&decoy.fs, &mounts, Path::new("/"));
+        assert_eq!(
+            collected.unreadable,
+            vec![PathBuf::from("/dev/disk/by-uuid/e1")],
+            "{kind:?}"
+        );
+        assert_eq!(collected.devices.node_of_spec("UUID=e1"), None);
+    }
+    let decoy = lv_in_the_decoys_group();
+    let mounts = decoy.fs.mount_table().unwrap();
+    assert!(
+        collect(&decoy.fs, &mounts, Path::new("/"))
+            .unreadable
+            .is_empty()
+    );
+}
+
+#[test]
 fn the_collector_reads_btrfs_members_and_loop_files() {
     let decoy = Decoy::new("1 0 0:30 / / rw - btrfs /dev/nvme0n1p3 rw,subvol=/\n")
         .device(NVME, "nvme0n1", "259:0", &[])

@@ -350,6 +350,83 @@ fn an_encrypted_volume_the_decoys_crypttab_opens_is_the_decoys() {
     );
 }
 
+/// The decoy's backup drive `sdc`, opened as `backup` (dm-5) and named in
+/// its crypttab by `UUID=77`, holding the hidden root as a plain image.
+fn plain_image_on_a_backup_named_by_uuid() -> Host {
+    let host = Host::with_mounts(
+        "30 1 254:5 / /srv/backup rw - ext4 /dev/mapper/backup rw\n\
+         40 1 7:0 / /mnt/data rw - ext4 /dev/loop0 rw\n",
+    )
+    .disk("sdc", "8:32")
+    .luks("dm-5", "254:5", "backup", &["sdc"])
+    .loop_device("loop0", "7:0", "/srv/backup/disk.raw")
+    .file_on("/srv/backup/disk.raw", 254, 5)
+    .file("/etc/crypttab", "vault UUID=77 none luks,noauto\n");
+    host.link("/dev/disk/by-uuid/77", "/dev/sdc");
+    host
+}
+
+#[test]
+fn a_crypttab_name_whose_link_cannot_be_resolved_cannot_be_confirmed() {
+    // Read, the link makes the backup volume the decoy's own encryption.
+    let result = plain_image_on_a_backup_named_by_uuid().run();
+    assert!(
+        warning(&result).contains("is the decoy's own: LUKS mapping dm-5"),
+        "{result:?}"
+    );
+    // Unresolved, it may still name it: no pass for encryption of its own.
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::Other,
+    ] {
+        let host = plain_image_on_a_backup_named_by_uuid();
+        host.fs.mock_set_lookup_error("/dev/disk/by-uuid/77", kind);
+        let result = host.run();
+        assert!(
+            warning(&result).starts_with(&format!(
+                "Could not confirm that the hidden root at {ROOT} is encrypted: \
+                 /dev/disk/by-uuid/77 could not be read"
+            )),
+            "{kind:?}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn a_crypttab_image_whose_link_cannot_be_resolved_cannot_be_confirmed() {
+    // The decoy's crypttab names the image by a link the check cannot
+    // follow: it may be the image under the hidden root.
+    let crypttab = "backup /var/backup-link.img none luks,noauto\n";
+    let host = Host::with_mounts(
+        "30 1 254:5 / /srv/backup rw - ext4 /dev/mapper/media rw\n\
+         40 1 7:1 / /mnt/data rw - ext4 /dev/loop1 rw\n",
+    )
+    .loop_device("loop0", "7:0", "/var/backup.img")
+    .file_on("/var/backup.img", 254, 0)
+    .recorded("loop0", 254, 0)
+    .luks("dm-5", "254:5", "media", &["loop0"])
+    .loop_device("loop1", "7:1", "/srv/backup/disk.raw")
+    .file_on("/srv/backup/disk.raw", 254, 5)
+    .recorded("loop1", 254, 5)
+    .file("/etc/crypttab", crypttab);
+    host.link("/var/backup-link.img", "/var/backup.img");
+    assert!(
+        warning(&host.run()).contains("is the decoy's own: LUKS mapping dm-5"),
+        "{:?}",
+        host.run()
+    );
+    host.fs
+        .mock_set_lookup_error("/var/backup-link.img", std::io::ErrorKind::PermissionDenied);
+    let result = host.run();
+    assert!(
+        warning(&result).starts_with(&format!(
+            "Could not confirm that the hidden root at {ROOT} is encrypted: \
+             /var/backup-link.img could not be read"
+        )),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn the_decoys_entry_for_the_hidden_volume_is_no_claim_on_it() {
     // The line opens the hidden root's own device: backend-entries refuses
@@ -638,6 +715,41 @@ fn an_image_file_on_a_btrfs_filesystem_of_several_devices_needs_each_encrypted()
         )),
         "{result:?}"
     );
+}
+
+/// The filesystem that holds a loop device's file, whose devices sysfs
+/// shows but NAILS cannot list (`/sys/fs/btrfs`), may lie on a plain disk:
+/// the check cannot confirm, by the file's path or by the loop driver's
+/// record alike, where it took the filesystem for one of one device.
+#[test]
+fn an_image_file_on_a_filesystem_whose_devices_cannot_be_read_cannot_be_confirmed() {
+    for recorded in [false, true] {
+        let host = Host::with_mounts(
+            "30 1 0:60 / /srv rw - btrfs /dev/mapper/pool rw\n\
+             40 1 7:0 / /mnt/data rw - ext4 /dev/loop0 rw\n",
+        )
+        .disk("sdb", "8:16")
+        .disk("sdc", "8:32")
+        .luks("dm-7", "254:7", "pool", &["sdb"])
+        .btrfs(&["dm-7", "sdc"])
+        .loop_device("loop0", "7:0", "/srv/vm/box.img");
+        let host = if recorded {
+            host.recorded("loop0", 0, 60)
+        } else {
+            host
+        };
+        host.fs
+            .mock_set_lookup_error("/sys/fs/btrfs", std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            warning(&host.run()),
+            format!(
+                "Could not confirm that the hidden root at {ROOT} is encrypted: loop device \
+                 loop0 reads /srv/vm/box.img, on a filesystem whose devices sysfs shows but \
+                 NAILS cannot read."
+            ),
+            "recorded: {recorded}"
+        );
+    }
 }
 
 // ------------------------------------------------------------------------

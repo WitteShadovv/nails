@@ -30,14 +30,23 @@ pub fn stack<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow) -> Vec<Layer
 /// Walk the stack down from `top` as [`stack`] does, reading at most `limit`
 /// devices, and say where the walk stopped short of the bottom: at the limit,
 /// or at a loop device `follow` lets it continue below when no block device
-/// sysfs shows holds what the loop device reads.
+/// sysfs shows holds what the loop device reads. A partition the walk reaches
+/// by a link it cannot resolve, for another reason than that it is not
+/// there, keeps that link as its disk's `dev` ([`Attribute::DiskDev`]) in
+/// [`Layer::unread`]: the walk cannot tell its disk.
 pub fn walk<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow, limit: usize) -> Walk {
     let mut walk = Walk::default();
     let mut seen = HashSet::new();
     let mut mounts = None;
     let mut pending = VecDeque::from([top.to_path_buf()]);
     while let Some(dir) = pending.pop_front() {
-        let dir = canonical(fs, &dir);
+        // A link into the device that cannot be resolved still reads the
+        // device's attributes, but not where it sits: a partition's disk is
+        // the directory above the one the link leads to.
+        let (dir, unresolved) = match fs.canonicalize(&dir) {
+            Ok(resolved) => (resolved, false),
+            Err(error) => (dir, !error.nothing_there()),
+        };
         if seen.contains(&dir) {
             continue;
         }
@@ -47,6 +56,14 @@ pub fn walk<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow, limit: usize)
         }
         seen.insert(dir.clone());
         let mut layer = read_layer(fs, &dir);
+        let partition = layer.partition.is_some()
+            || layer.unread_among(&[Attribute::Partition]).next().is_some();
+        if unresolved && partition {
+            layer.unread.push(Unread {
+                attribute: Attribute::DiskDev,
+                path: dir.clone(),
+            });
+        }
         let slaves = match fs.list_directory(&dir.join("slaves")) {
             Ok(mut slaves) => {
                 slaves.sort();
@@ -194,19 +211,14 @@ fn digits(s: &str) -> bool {
 /// name. Only paths under `/dev` are resolved, and only through links that
 /// lead to a path in `/dev` ([`follow_in_dev`]), so a file on another
 /// filesystem is never looked up through its symlinks, and neither is a path
-/// that a link in `/dev` leads to outside it.
-pub(super) fn dev_node_dir<F: Filesystem>(fs: &F, path: &Path) -> Option<PathBuf> {
-    dev_node_dir_noting(fs, path, Attribute::Dev, &RefCell::new(Vec::new()))
-}
-
-/// [`dev_node_dir`], keeping in `unread`, as `attribute`, the device node
-/// whose way NAILS could not follow, where a part of it could not be looked
-/// up or would mount an automount point ([`OutOfDev::Unreadable`],
-/// [`OutOfDev::Automount`]), or the `dev` attribute on the way that is there
-/// but could not be read for another reason than that it is not there. A
-/// node that is not there, or a link that leads out of `/dev`, names no
-/// device.
-fn dev_node_dir_noting<F: Filesystem>(
+/// that a link in `/dev` leads to outside it. The device node whose way NAILS
+/// could not follow, where a part of it could not be looked up or would mount
+/// an automount point ([`OutOfDev::Unreadable`], [`OutOfDev::Automount`]), or
+/// the `dev` attribute on the way that is there but could not be read for
+/// another reason than that it is not there, is kept in `unread` as
+/// `attribute`. A node that is not there, or a link that leads out of `/dev`,
+/// names no device.
+pub(super) fn dev_node_dir_noting<F: Filesystem>(
     fs: &F,
     path: &Path,
     attribute: Attribute,
@@ -290,13 +302,6 @@ fn text<F: Filesystem>(
 /// `path` with its symlinks resolved, or as given when that fails.
 fn canonical<F: Filesystem>(fs: &F, path: &Path) -> PathBuf {
     fs.canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// The entries of a directory, sorted; none when it cannot be listed.
-pub(super) fn sorted_listing<F: Filesystem>(fs: &F, dir: &Path) -> Vec<PathBuf> {
-    let mut entries = fs.list_directory(dir).unwrap_or_default();
-    entries.sort();
-    entries
 }
 
 /// The file names of `paths`.

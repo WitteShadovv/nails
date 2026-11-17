@@ -38,7 +38,7 @@
 //!
 //! [`discoverable`]: crate::forensic::layout::discoverable
 
-use super::graph::{Graph, filesystem_devices, unread_reason, widen_claims};
+use super::graph::{Graph, filesystem_devices, unread_devices, unread_reason, widen_claims};
 use crate::blockdev::{Attribute, Layer, LoopFollow, Partition};
 use crate::config::get_default_hidden_volume_root;
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
@@ -117,13 +117,15 @@ const BOOT: &[Attribute] = &[
 ///   or an entry does not fit within its usable blocks), and where neither
 ///   the disk nor udev's record of the partition can be read;
 /// - warns that it could not check where the mount table cannot be read,
-///   the hidden root's filesystem shows no block device, its storage or that
-///   of the decoy's root file system holds more devices than it reads, or
-///   sysfs shows an attribute of one of their devices that it decides by
-///   ([`HIDDEN`], [`BOOT`]) but NAILS cannot read it, below the decoy's root
-///   where the hidden root's storage has a partition on a disk it does not
-///   know the decoy boots from. A partition it could judge and refuses is
-///   refused all the same.
+///   the hidden root's filesystem shows no block device, sysfs shows the
+///   devices of the hidden root's filesystem but NAILS cannot read a place
+///   that shows them, its storage or that of the decoy's root file system
+///   holds more devices than it reads, or sysfs shows an attribute of one of
+///   their devices that it decides by ([`HIDDEN`], [`BOOT`]) but NAILS cannot
+///   read it; below the decoy's root, and for the devices of its root file
+///   system and boot partitions, only where the hidden root's storage has a
+///   partition on a disk it does not know the decoy boots from. A partition
+///   it could judge and refuses is refused all the same.
 ///
 /// A hidden root on no partition of such a disk passes: a disk of its own,
 /// such as an external drive, a container file, or a RAM filesystem. Each
@@ -195,14 +197,18 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
                 hidden.fstype
             )));
         }
-        let Some(roots) = filesystem_devices(fs, hidden) else {
-            return Ok(unchecked(
-                root,
-                &format!(
-                    "its {} filesystem shows no block device to follow",
-                    separation::shown_fstype(&hidden.fstype)
-                ),
-            ));
+        let roots = match filesystem_devices(fs, hidden) {
+            Ok(Some(roots)) => roots,
+            Ok(None) => {
+                return Ok(unchecked(
+                    root,
+                    &format!(
+                        "its {} filesystem shows no block device to follow",
+                        separation::shown_fstype(&hidden.fstype)
+                    ),
+                ));
+            }
+            Err(_) => return Ok(unchecked(root, &unread_devices("its filesystem"))),
         };
 
         let collected = separation::collect(fs, &table, Path::new("/"));
@@ -378,27 +384,41 @@ struct Boot {
 /// The disks the decoy boots from, by kernel name: every disk below its root
 /// file system and its EFI system or boot partition, a partition's disk and
 /// a whole disk at the bottom. `None` when the root file system's devices
-/// cannot be found, and none is found while nothing keeps the check from
-/// telling.
+/// are not there, and none is found while nothing keeps the check from
+/// telling. A device of the root file system or a boot partition that sysfs
+/// shows but NAILS cannot read keeps it from telling.
 fn boot_disks<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
     recorded: &separation::DeviceMap,
 ) -> Option<Boot> {
-    let mut roots = filesystem_devices(fs, top_mount_at(mounts, Path::new("/"))?)?;
+    let mut unread_device = false;
+    let mut roots = match filesystem_devices(fs, top_mount_at(mounts, Path::new("/"))?) {
+        Ok(roots) => roots?,
+        Err(_) => {
+            unread_device = true;
+            Vec::new()
+        }
+    };
     for point in BOOT_MOUNTS {
         // An automount not yet used shows no device, and adds no disk. One
         // that systemd-gpt-auto-generator made mounts a partition of the
         // disk it reads, which the check counts in any case.
-        if let Some(devices) =
-            top_mount_at(mounts, Path::new(point)).and_then(|mount| filesystem_devices(fs, mount))
-        {
-            roots.extend(devices);
+        let Some(mount) = top_mount_at(mounts, Path::new(point)) else {
+            continue;
+        };
+        match filesystem_devices(fs, mount) {
+            Ok(devices) => roots.extend(devices.unwrap_or_default()),
+            Err(_) => unread_device = true,
         }
     }
     let graph = Graph::read(fs, mounts, recorded, &roots, LoopFollow::BlockDevices);
     let unread = graph.unread(BOOT);
-    let untold = if !unread.is_empty() {
+    let untold = if unread_device {
+        Some(unread_devices(
+            "the decoy's root file system or a boot partition",
+        ))
+    } else if !unread.is_empty() {
         Some(unread_reason(&unread, "below the decoy's root file system"))
     } else if !graph.complete() {
         Some(

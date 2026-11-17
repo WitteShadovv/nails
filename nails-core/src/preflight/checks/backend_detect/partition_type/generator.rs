@@ -123,7 +123,9 @@ fn device<F: Filesystem>(
     else {
         return Ok(None);
     };
-    Ok((mount.fstype != "btrfs" || blockdev::btrfs_members(fs, &name).len() < 2).then_some(dir))
+    let several =
+        mount.fstype == "btrfs" && blockdev::btrfs_members(fs, &name).map_err(|_| ())?.len() >= 2;
+    Ok((!several).then_some(dir))
 }
 
 /// Where the generator ends from the device in the sysfs directory `top`,
