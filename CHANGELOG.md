@@ -724,10 +724,10 @@ of this changelog for that version becomes the release notes word for word, and
   A zone file that is not well formed may be judged otherwise: one with a blank or other bytes
   after its footer, of TZif version 4, with transitions out of order or a last one past year 9999
   is now read, where chrono refused it and NAILS fell back to the zone `/etc/localtime` links to
-  or `/etc/timezone` names, so NAILS reads fewer files for it, and one with an offset of 25 hours
-  now shows its time, where chrono panicked. A timestamp in the state file in a form NAILS never
-  wrote, such as a year without four digits, a blank around it or a leap second, now makes the
-  file corrupt, where chrono's reading took some of them.
+  or `/etc/timezone` names, so NAILS reads fewer files for it, and one whose only offset is 25
+  hours, with no rule in its footer, now shows its time, where chrono panicked. A timestamp in the
+  state file in a form NAILS never wrote, such as a year without four digits, a blank around it or
+  a leap second, now makes the file corrupt, where chrono's reading took some of them.
 
 - `decoy-persistence` warns of a `kernel.core_pattern` that hands core dumps to a handler other
   than systemd-coredump, by a pipe or the kernel's coredump socket, which it left alone before:
