@@ -463,7 +463,17 @@ manager can start it: it is enabled (a link in a `.wants`, `.requires` or
 `.upholds` directory of any directory the service manager loads units from,
 or a `systemd.wants=` on the kernel command line, as for kdump above) or
 active, or a timer, path or socket unit that is enabled or active starts it,
-and it is not masked. A process
+and it is not masked. A timer or a path starts the first `Unit=` systemd
+takes, a socket its last `Service=`, and either, without one, the service of
+its own name. In those values NAILS expands the specifiers systemd takes from
+the trigger's own name, `%n`, `%N`, `%p`, `%i` and `%j`, and `%%`, as systemd
+expands them, so Arch's `gpg-agent-ssh@etc-pacman.d-gnupg.socket` starts
+`gpg-agent@etc-pacman.d-gnupg.service`. systemd ignores a value with `%P`,
+`%I`, `%J`, `%f` or another letter it does not expand there, and so does
+NAILS. A value with a specifier systemd fills in from the host, such as `%H`
+or `%m`, counts as a trigger that may start each daemon whose unit name the
+rest of the value fits, and what it would start without that value, which
+NAILS cannot tell about. A process
 counts as it runs, by its name (`comm`), or, run through its interpreter as in
 `python3 /usr/sbin/tuned`, by the script Python runs, its options read from its
 command line, so a daemon started by hand, or one still running with the
@@ -570,9 +580,11 @@ in turn (as `logsave` or `script` does, which can copy what it logs into a
 file of their own), a variable the unit does not set, a standard stream it
 cannot follow (a pipe, a pseudo-terminal, or a descriptor a socket unit
 passes, among them), a journal namespace whose configuration it cannot read, a
-drop-in name that two
-of a unit's names hold in different files
-(the service manager takes the names in an order of its own), counts against
+drop-in name that two aliases of a unit hold in files that give the unit's
+section differently, where the name of its unit file holds no drop-in of that
+name (systemd reads the drop-ins of the unit file's name first, so one of
+those shadows one of an alias, but takes the aliases in an order of its own),
+counts against
 the decoy: tuned is refused as if it logged to a file, and firewalld and ABRT
 warn. A log to a device that keeps nothing it is given, as `/dev/null`, the
 console, a virtual console (`/dev/tty<n>`) or a serial line (`/dev/ttyS<n>`),
@@ -1546,7 +1558,8 @@ warns instead, and does not refuse, where it cannot tell: an
 on; a command or option it does not follow; findutils' updatedb, whose prune
 options it does not read; a unit directory, crontab, cron script,
 `/etc/passwd` or process it cannot read, or a `/proc` that hides processes
-from it; a timer it cannot ask the system manager about. An unprivileged
+from it; a timer it cannot ask the system manager about, or one whose `Unit=`
+has a specifier the host fills in (below). An unprivileged
 `nails check` cannot read root's crontab or a cron directory only root may
 list, so run it with sudo. It also warns when updatedb is installed but only a person starts it
 and does not skip the volume. When every run skips it, the check passes and
@@ -1563,7 +1576,12 @@ What it reads:
   `&` or `$` in it, is a script NAILS cannot tell about, however it ends. It
   runs now when the system manager shows it active. It is scheduled when a
   timer or path unit starts it (its first `Unit=` systemd takes, or the
-  service of its own name) that is enabled, or that the system manager runs
+  service of its own name, with the specifiers of the timer's own name
+  expanded as systemd expands them, see
+  [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt); one whose `Unit=`
+  has a specifier the host fills in, such as `%H`, is a timer NAILS cannot
+  tell about where the name of a unit on the disk fits the rest of the value)
+  that is enabled, or that the system manager runs
   as `systemctl list-units` shows it: one started with `systemctl start`, an
   instance of a template, a transient one as `systemd-run --on-calendar`
   makes it in `/run/systemd/transient`, and one masked, or whose file is
@@ -1579,8 +1597,9 @@ What it reads:
   directories, `/etc/systemd/system`, `/run/systemd/system`, their
   `.attached` siblings, `/usr/local/lib/systemd/system`,
   `/usr/lib/systemd/system` and `/lib/systemd/system`), with the drop-ins of
-  the unit, of its template and of its name's prefixes, and an instance is read
-  from its template. Users' managers count too: the units in each home
+  the unit, of its template, of its name's prefixes and of its aliases, read
+  as for [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt), and an
+  instance is read from its template. Users' managers count too: the units in each home
   `/etc/passwd` names, in the other directories of `/home` and in the other
   numbers of `/run/user` (`~/.config/systemd/user`,
   `~/.local/share/systemd/user`, `/run/user/<uid>/systemd/…`), and those every
