@@ -547,6 +547,7 @@ fn a_way_back_that_powers_off_writes_nothing_on_the_console() {
                 nextroot.display()
             )),
             pid_places: None,
+            zram: None,
             network: places,
             network_kernel: Some(std::sync::Arc::new(FakeNetKernel::offline())),
             power_off: PowerOff {

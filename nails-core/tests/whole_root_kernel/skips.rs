@@ -113,6 +113,7 @@ fn the_units_a_boot_target_requires_are_skipped_at_the_switch_while_their_device
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
             pid_places: None,
+            zram: None,
             network: nails_teardown::whole_root::network::Places::system(&paths.run),
             network_kernel: None,
             power_off: transition::PowerOff {

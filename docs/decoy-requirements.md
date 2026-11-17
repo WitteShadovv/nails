@@ -1302,9 +1302,11 @@ its `.wants` or `.requires` directory outside the fstab (a NixOS
 `multi-user.target`, a mount the kernel command line names) get the decision
 an fstab line with the same source, type and options would get, and the ESP
 the GPT auto-generator mounted in the decoy is bound read-only into the hidden
-root. zram-generator's swap is left to the hidden systemd as RAM-only swap
+root. zram-generator does not run in the hidden session, which runs without
+its zram swap; after the way back the decoy's start sets its zram swap up
+again. Any other zram swap is left to the hidden systemd as RAM-only swap
 while its zram device has no backing device, and kept off like disk swap when
-it has one; NAILS does not read zram-generator's configuration (see
+it has one (see
 [What the session covers](configuration.md#what-the-session-covers)).
 
 Any other mount outside the fstab is not carried into the hidden session: an
@@ -2670,7 +2672,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Audit daemon log](#fail-closed-activation-is-refused) (`auditd`) | `/var/log/audit` | all | `decoy-persistence` (refuses) | path probe (warn) | Turn auditd off for good, without a reboot: systemctl disable auditd.service and systemctl mask auditd.service, then auditctl --signal stop, which has the daemon stop itself (on Fedora and Arch its unit refuses a plain systemctl stop); on NixOS set security.auditd.enable = false, stop the daemon with auditctl --signal stop, then run nixos-rebuild switch. | `decoy-persistence-preflight` |
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
 | [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | `examiner-audit` |
-| [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
+| [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. The hidden session sets up no zram swap of its own: the entry masks zram-generator in the hidden root. | `preflight-swap` |
 | [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent: stop and disable a handler other than systemd-coredump, such as apport (systemctl disable --now apport.service), or discard the dumps with a kernel.core_pattern that pipes them to /bin/false, and mask a unit systemd-coredump starts for each crash, such as apport-coredump-hook@.service. | `examiner-audit` |
 | [Armed kdump](#fail-closed-activation-is-refused) (`kdump`) | `/var/crash` | all | `decoy-persistence` (refuses) | none: the crash-dumps row probes /var/crash, where kdump writes its dumps | Disable kdump on the decoy (Ubuntu: kdump-tools, Fedora: kdump). | none: a VM test would have to reserve crash kernel memory and panic the guest kernel; the refusal is unit tested |
 | [Locate database](#the-locate-database) (`locate-database`) | `/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`, `/var/cache/locatedb` | all | `locate-database` (refuses) | path probe (info) | Make updatedb skip the directory the volume is mounted in (PRUNEPATHS in /etc/updatedb.conf, services.locate.prunePaths on NixOS), or stop what schedules it, long before the volume is next used. Activation refuses while an updatedb that runs now, or that a timer, path unit, enabled service or cron job the check reads starts, does not skip it; the docs name what the check does not read. | `locate-database` |

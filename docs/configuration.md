@@ -365,15 +365,23 @@ refuses the activation. The GPT auto-generator does not run in the hidden
 session, but the ESP it mounted in the decoy (at `/efi` on Arch Linux) is bound
 read-only into the hidden root, as an fstab line for `/efi` would be.
 
-zram-generator's swap is left to the hidden systemd as RAM-only swap while its
-zram device keeps its pages in RAM: the device is there and
-`/sys/block/zramN/backing_dev` reads `none`, or the kernel gives zram no
-backing device at all. A zram device with a backing device, or one that is not
-there at activation, gets the decision of disk swap: kept off. The `swap`
-check refuses a zram swap with a backing device only while it is active.
-NAILS does not read zram-generator's configuration: at the switch the hidden
-session's zram-generator sets the device up again from it, so a
-`writeback-device=` set there after the decoy set its device up is not seen.
+zram-generator does not run in the hidden session: the entry masks it there,
+as it masks the GPT auto-generator, so the hidden session sets up no zram
+device of its own and runs without zram-generator's swap, whatever the hidden
+root's copy of its configuration names. The decoy's own stop at the switch
+turns the decoy's zram swap off, and its start after the way back sets it up
+again. A stop can fail to reset its zram device and leave it set up, which
+the next start of the service manager then cannot set up again; where the
+device holds a swap area that no swap uses, the way back resets it before the
+decoy starts, so the decoy's start sets it up as its cold boot did. The reset
+logs the device's change of size in the kernel's ring buffer, which the
+decoy's journal does not import. Any other zram swap unit the hidden systemd
+would start is left to it as RAM-only swap while its zram device keeps its
+pages in RAM: the device is there and `/sys/block/zramN/backing_dev` reads
+`none`, or the kernel gives zram no backing device at all. A zram device with
+a backing device, or one that is not there at activation, gets the decision
+of disk swap: kept off. The `swap` check refuses a zram swap with a backing
+device only while it is active.
 
 NAILS lists the decoy's unit directories and reads its unit files with
 `O_NOATIME`, which the kernel grants to root, and activation always runs as

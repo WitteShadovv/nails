@@ -321,10 +321,11 @@ Keep all of it `root`-owned on the hidden volume.
    The decoy's own mount, swap and automount units that a boot target links
    in its `.wants` or `.requires` directory outside the fstab (a NixOS
    `systemd.mounts` unit, the GPT auto-generator's ESP) get the same
-   decisions. zram-generator's swap stays on in the hidden session as RAM-only
-   swap while its zram device has no backing device, and is kept off like
-   disk swap when it has one; NAILS does not read zram-generator's
-   configuration. A mount unit that only another unit pulls in is not
+   decisions. zram-generator does not run in the hidden session, which runs
+   without its zram swap; after the way back the decoy's start sets its zram
+   swap up again. Any other zram swap stays on in the hidden session as
+   RAM-only swap while its zram device has no backing device, and is kept off
+   like disk swap when it has one. A mount unit that only another unit pulls in is not
    decided: the hidden systemd mounts it as the decoy's would, and the session
    watcher alerts on its read-write mount. A mount or automount unit of the
    hidden system's own that a boot target links at or below the hidden root

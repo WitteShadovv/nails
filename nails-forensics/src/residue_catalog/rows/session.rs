@@ -149,7 +149,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         preflight: Probe::Check("swap"),
         preflight_blocks: true,
         verify: Probe::Check("memory-swap"),
-        mitigation: "No disk or file swap and no resume device; RAM-only zram is fine.",
+        mitigation: "No disk or file swap and no resume device; RAM-only zram is fine. The hidden session sets up no zram swap of its own: the entry masks zram-generator in the hidden root.",
         doc_anchor: "threat-model.md#assumptions",
         e2e: E2e::Test("preflight-swap"),
         residual: false,

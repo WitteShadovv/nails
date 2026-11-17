@@ -72,6 +72,7 @@ mod kernel_tests {
                 kmsg: self.run.path().join("no-kmsg"),
                 systemctl: None,
                 pid_places: None,
+                zram: None,
                 now: 1_234,
                 mounts: read_mountinfo().expect("the live mount table"),
                 network: nails_teardown::whole_root::network::Places::system(self.run.path()),

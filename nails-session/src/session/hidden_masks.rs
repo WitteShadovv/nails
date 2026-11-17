@@ -53,7 +53,15 @@ pub const UNITS: &[&str] = &[
 /// whose separate `/usr` is mounted read-only. The fstab policy binds that
 /// `/usr` read-only into the hidden root, and with `/` on no disk the
 /// generator takes the disk of `/usr`.
-pub const GENERATORS: &[&str] = &["systemd-gpt-auto-generator"];
+///
+/// `zram-generator` sets up the zram swap its configuration names
+/// (`systemd-zram-setup@.service`). In the hidden root it would set the device
+/// up again from the hidden root's copy of that configuration, which the fstab
+/// policy does not read and which can name a disk the device writes its pages
+/// back to, and put hidden pages in a device the kernel keeps for the decoy.
+/// With it masked the hidden session sets up no zram device of its own and
+/// runs without zram swap.
+pub const GENERATORS: &[&str] = &["systemd-gpt-auto-generator", "zram-generator"];
 
 /// The [`UNITS`] installed in `root`, the next root, without those already in
 /// `masked` (the fstab policy's masks, which are written apart).
@@ -102,6 +110,7 @@ mod tests {
         let generators = generators();
         assert_eq!(generators, GENERATORS);
         assert!(generators.iter().any(|g| g == "systemd-gpt-auto-generator"));
+        assert!(generators.iter().any(|g| g == "zram-generator"));
         for generator in &generators {
             assert!(valid_generator_name(generator), "{generator}");
         }

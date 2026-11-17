@@ -143,6 +143,7 @@ mod kernel_tests {
                 kmsg: self.run.path().join("no-kmsg"),
                 systemctl: None,
                 pid_places: None,
+                zram: None,
                 now: nails_teardown::whole_root::plan::unix_now(),
                 mounts: read_mountinfo().unwrap(),
                 network: nails_teardown::whole_root::network::Places::system(self.run.path()),

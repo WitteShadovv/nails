@@ -24,6 +24,8 @@
 //! - [`fresh_pids`]: process numbers after the way back that read like a
 //!   fresh boot;
 //! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
+//! - [`zram`]: the decoy's zram swap set up after the way back as a cold boot
+//!   sets it up;
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
 //!   back;
@@ -75,3 +77,4 @@ pub mod switch_refusal;
 pub mod tools;
 pub mod transition;
 pub mod utab;
+pub mod zram;
