@@ -380,8 +380,9 @@ def carried_run_residue(
 ) -> list[str]:
     """``/run`` entries two levels deep that were carried over a soft-reboot
     (inode change time before ``since_wall``) but were not there before
-    entering: what the hidden session left behind. Sockets are carried by
-    design and never listed."""
+    entering: what the hidden session left behind, ``/run/nextroot`` among
+    it when the decoy's start did not remove it. Sockets are carried by design
+    and never listed."""
     carried = set(
         machine.succeed(
             "find /run -xdev -mindepth 1 -maxdepth 2 \\( -path /run/udev "
@@ -389,7 +390,7 @@ def carried_run_residue(
             f"-o ! -type s ! -newerct @{shlex.quote(since_wall)} -print"
         ).splitlines()
     )
-    return sorted(carried - before - {"/run/nextroot"})
+    return sorted(carried - before)
 
 
 def backend_open(machine: Machine, name: str = "data") -> bool:
