@@ -624,8 +624,23 @@ program. The last step before the switch:
   joins one to another mount that got the old ID. None of the hidden session's
   lines stay, and a line of the decoy's that names no mount the way back
   restores is not given back;
+- ends every process of the session still running, as PID 1 would at the
+  switch, so PID 1 names none of them in its last lines, and once PID 1 has
+  reaped them clears the failures their end left;
+- stops journald's socket units and drops journald's store of standard-output
+  streams, which discards what the hidden root sent journald after its own
+  journald stopped (the audit records of its last units' stops, the lines a
+  unit that stops after journald logs). The decoy's start opens the sockets
+  again, as a boot does;
+- sets the message limit of an ext4 hidden volume to zero, so the kernel does
+  not log the line, with the volume's UUID, that it logs when the switch
+  unmounts the volume;
+- leaves a line for `systemd-tmpfiles` in `/run/tmpfiles.d`, which removes at
+  the decoy's start the empty `/run/nextroot` the switch leaves behind, which
+  a boot never has, and the line with it;
 - writes journald's kernel-message cursor, so the decoy journal imports no
-  kernel record of the hidden session.
+  kernel record logged before it. What the kernel and PID 1 log after it is
+  listed under "What a soft-reboot leaves" below.
 
 PID 1 then switches back into the plain decoy root, and the decoy starts at its
 own login screen (a display manager set to log an account in automatically
@@ -794,13 +809,21 @@ journal that starts late:
   mount covers there, say), and one that a plain soft-reboot keeps (`/usr`,
   `/etc`, one marked `x-initrd.mount`), such as NixOS's `/etc` overlay.
 
-On a persistent decoy journal (which the decoy requirements forbid), the decoy's
-own shutdown and start lines appear under one boot ID, together with PID 1's
-last `Sending SIGKILL to PID N (<name>)` lines, which name each process of the
-hidden session still alive then, the kernel's `EXT4-fs … unmounting filesystem`
-line for the hidden filesystem and, on a kernel that audits device-mapper
-changes (Fedora's does), the `audit: … module=crypt op=dtr` record of the
-hidden volume's dm-crypt teardown. The decoy's
+The decoy journal imports what the kernel and PID 1 log after the cursor:
+the hidden service manager's last lines, which a plain soft-reboot logs too
+(the soft-reboot service's end and `Soft-rebooting.`, and, where the kernel's
+audit is on, the audit records of that service's start and stop, whose
+`exe=` names the program that sent them, the hidden root's systemd, and the
+kernel's records of the BPF programs it unloads), whatever line a hidden
+volume that is not ext4 logs as it is unmounted (NAILS quiets ext4's only),
+and, for a hidden volume on device-mapper, the kernel's lines of its
+teardown: on a kernel that audits device-mapper changes (Fedora's does)
+the `audit: … module=crypt op=dtr` record, and `device-mapper: ioctl:
+remove_all left N open device(s)` where another device-mapper device exists
+(a decoy on LUKS or LVM). On a volatile decoy they stay in RAM until
+power-off, as the ring buffer does; a persistent decoy journal (which the
+decoy requirements forbid) writes them to the decoy disk, with the decoy's
+own shutdown and start lines under one boot ID. The decoy's
 shutdown before entry and its start after the way back write what an ordinary
 shutdown and boot write: the random seed, a wtmp record, the journal if it is
 persistent. With the ESP read-only in the hidden session, `loader/random-seed`

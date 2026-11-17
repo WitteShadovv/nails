@@ -149,7 +149,8 @@ and the transition step before anything else is initialised.
   transition need, with no configuration and no logging
   (`nails_teardown::whole_root`): the session plan on `/run`, the mount
   primitives and the pre-switch init check, the transition step, the `/run`
-  snapshot and scrub, the kmsg cursor, the way back, the runtime units and
+  snapshot and scrub, the kmsg cursor and the hidden session's last records
+  around it, the way back, the runtime units and
   masks, the kill of all userspace and the emergency hot path. It also holds the
   mountinfo parser, the rule for opening a file without updating its access
   time, and the cgroup, pidfd and shell kills. It depends on
@@ -264,7 +265,9 @@ An activation moves through these layers; each names its modules and crates:
   leaves behind and copies the decoy's name-server records; leaving, it repoints
   back, scrubs `/run`, puts those records back and, once the hidden units have
   stopped, gives the decoy's `utab` lines back to the mounts the way back
-  restored and writes the kmsg cursor. libmount joins a `utab` line to the
+  restored, ends the session's last processes, empties journald's sockets,
+  quiets an ext4 hidden volume's unmount line and writes the kmsg cursor
+  (`whole_root::tail`). libmount joins a `utab` line to the
   mount with the line's kernel mount ID, or, for a line without one, to the
   mount at the line's path with its source and root, and the kernel hands the
   IDs of the mounts a switch leaves behind to the next mounts it makes: a stale

@@ -1030,6 +1030,18 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- The way back keeps more of the hidden session out of the decoy journal. PID 1 named every process
+  of the session still running at the switch in `Sending SIGKILL to PID N (<name>)` lines after
+  the kmsg cursor, and the kernel logged the hidden ext4 volume's `unmounting filesystem <UUID>`
+  line after it too: the last step now ends those processes itself before the cursor and sets the
+  volume's message limit to zero. journald's sockets, which a soft-reboot keeps open, handed the
+  decoy's journald what the hidden root sent them after its own journald stopped (the audit records
+  of its last units' stops, lines logged through `/dev/log`, standard output or the native socket):
+  the last step now stops those socket units and drops journald's stored streams, and the decoy's
+  start opens them again. The empty `/run/nextroot` the switch left until power-off, which a boot
+  never has, is removed at the decoy's start. The kernel's lines of a device-mapper hidden volume's
+  teardown and PID 1's own last generic lines still follow the cursor (residue catalog row
+  `kmsg-import`).
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
