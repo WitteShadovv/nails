@@ -1314,6 +1314,77 @@ fn a_user_s_fuse_mount_stays_out_of_the_window(
     std::fs::remove_dir(&point).expect("remove the FUSE mount point");
 }
 
+/// A disk mount whose mount point a user's FUSE mount covers, as an fstab
+/// mount inside a home does that a user's FUSE mount then covers, stays out of
+/// the window and as it is: root's lookup of its point fails inside FUSE, as
+/// PID 1's does, so PID 1 reads nothing on it either. The disk at `disk`,
+/// `relatime`, is in the window all the same.
+fn a_disk_below_a_user_s_fuse_mount_stays_out_of_the_window(at: &Path, disk: &Path) {
+    use nails_teardown::mountinfo::read_mountinfo;
+    use nails_teardown::noatime::QuietMounts;
+    let source = disk.join("below");
+    let outer = at.join("outer");
+    let inner = outer.join("inner");
+    mkdir(&source);
+    mkdir(&inner);
+    nix::mount::mount(
+        Some(source.as_path()),
+        &inner,
+        None::<&str>,
+        MsFlags::MS_BIND,
+        None::<&str>,
+    )
+    .expect("bind a directory of the disk below the later FUSE mount");
+    let inner_has = |word: &str| {
+        read_mountinfo()
+            .expect("read mountinfo")
+            .iter()
+            .rfind(|mount| mount.mount_point == inner)
+            .expect("the mount below the FUSE mount")
+            .mount_opts
+            .split(',')
+            .any(|option| option == word)
+    };
+    assert!(inner_has("relatime"));
+    let fuse = SilentFuse::mount_as(
+        &outer,
+        "fuse.nailstest",
+        1000,
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+    );
+    let denied =
+        std::fs::metadata(&inner).expect_err("root may not look through a user's FUSE mount");
+    assert_eq!(
+        denied.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{denied}"
+    );
+
+    let mut recorded = Vec::new();
+    let quiet = QuietMounts::open_recorded(|records| {
+        recorded = records.to_vec();
+        Ok(())
+    })
+    .expect("the window opens beside the mount below the FUSE mount");
+    assert!(
+        recorded.iter().any(|record| record.mount_point == disk),
+        "the disk is in the record: {recorded:?}"
+    );
+    assert!(
+        !recorded
+            .iter()
+            .any(|record| record.mount_point == inner || record.mount_point == outer),
+        "neither the FUSE mount nor the mount below it is: {recorded:?}"
+    );
+    assert!(inner_has("relatime"), "the mount below is left as it is");
+    quiet.close().expect("give the modes back");
+    assert!(inner_has("relatime"));
+    drop(fuse);
+    nix::mount::umount(&inner).expect("unmount the mount below");
+    std::fs::remove_dir_all(&outer).expect("remove the FUSE mount point");
+    std::fs::remove_dir(&source).expect("remove the bound directory");
+}
+
 /// What NAILS reads on the decoy leaves its access times alone: a program it
 /// starts runs with every mount of a namespace of its own `noatime`, and while
 /// it asks PID 1 for something that makes PID 1 read the decoy, the mounts
@@ -1458,6 +1529,7 @@ fn quiet_children_mounts_and_trees_change_no_access_time() {
 
     a_record_gives_a_killed_window_s_modes_back(&disk, &has, &options);
     a_user_s_fuse_mount_stays_out_of_the_window(&at, &disk, &has, &options);
+    a_disk_below_a_user_s_fuse_mount_stays_out_of_the_window(&at, &disk);
 
     // A lookup through a quiet copy of the tree follows a symlink without
     // updating the link's access time, where a plain lookup updates it.
