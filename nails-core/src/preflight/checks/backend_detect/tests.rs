@@ -561,10 +561,6 @@ fn a_device_below_the_hidden_root_that_cannot_be_read_refuses_as_discards_do() {
             "sysfs shows dm/uuid of a device below the hidden root",
         ),
         (
-            "/sys/dev/block/253:3/dm/name",
-            "sysfs shows dm/name of a device below the hidden root",
-        ),
-        (
             "/sys/dev/block/253:3/slaves/loop0/loop/backing_file",
             "sysfs shows loop/backing_file of a device below the hidden root",
         ),
@@ -593,6 +589,40 @@ fn a_device_below_the_hidden_root_that_cannot_be_read_refuses_as_discards_do() {
             "{allowed:?}"
         );
     }
+
+    // A mapping with no uuid, as the VeraCrypt application made up to
+    // 1.26.29, is told by its name: one that cannot be read leaves its kind,
+    // and whether it forwards discards, untold.
+    let fs = tcrypt_container_fixture("ext4", "0");
+    fs.mock_set_file_content("/sys/dev/block/253:3/dm/uuid", "\n");
+    fs.mock_set_file_content("/sys/dev/block/253:3/dm/name", "veracrypt1\n");
+    fs.mock_set_lookup_error("/sys/dev/block/253:3/dm/name", std::io::ErrorKind::Other);
+    let refused = assess_offline(&fs, Path::new(ROOT));
+    assert!(
+        refused.is_fail()
+            && refused.message().contains(
+                "sysfs shows dm/name of a device below the hidden root, but NAILS cannot read it, \
+                 and it may show a device that forwards them"
+            ),
+        "{refused:?}"
+    );
+
+    // Two of them.
+    let fs = tcrypt_container_fixture("ext4", "0");
+    for path in [
+        "/sys/dev/block/253:3/dm/uuid",
+        "/sys/dev/block/253:3/queue/discard_max_bytes",
+    ] {
+        fs.mock_set_lookup_error(path, std::io::ErrorKind::PermissionDenied);
+    }
+    let refused = assess_offline(&fs, Path::new(ROOT));
+    assert!(
+        refused.message().contains(
+            "sysfs shows dm/uuid and queue/discard_max_bytes of a device below the hidden root, \
+             but NAILS cannot read them, and they may show a device that forwards them"
+        ),
+        "{refused:?}"
+    );
 
     // The slaves of the mapping, which NAILS cannot list, may hold another.
     let fs = tcrypt_container_fixture("ext4", "0");
@@ -628,8 +658,25 @@ fn an_attribute_below_the_hidden_root_that_decides_nothing_refuses_nothing() {
         "/sys/dev/block/253:3/partition",
         "/sys/dev/block/253:3/slaves/loop0/loop/offset",
         "/sys/dev/block/253:3/slaves/loop0/loop/sizelimit",
+        // The name of a mapping whose uuid already says it is a TCRYPT one.
+        "/sys/dev/block/253:3/dm/name",
+        // Whether a loop device, which is no mapping, forwards discards.
+        "/sys/dev/block/253:3/slaves/loop0/queue/discard_max_bytes",
     ] {
         let fs = tcrypt_container_fixture("ext4", "0");
+        fs.mock_set_lookup_error(path, std::io::ErrorKind::PermissionDenied);
+        assert_eq!(assess_offline(&fs, Path::new(ROOT)), readable, "{path}");
+    }
+
+    // A LUKS mapping's name, and whether the partition below it forwards
+    // discards, decide nothing either.
+    let readable = assess_offline(&luks_on_partition_fixture(), Path::new(ROOT));
+    assert!(readable.is_pass(), "{readable:?}");
+    for path in [
+        "/sys/dev/block/253:2/dm/name",
+        "/sys/dev/block/253:2/slaves/sdb2/queue/discard_max_bytes",
+    ] {
+        let fs = luks_on_partition_fixture();
         fs.mock_set_lookup_error(path, std::io::ErrorKind::PermissionDenied);
         assert_eq!(assess_offline(&fs, Path::new(ROOT)), readable, "{path}");
     }

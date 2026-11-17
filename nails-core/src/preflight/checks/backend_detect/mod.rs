@@ -541,23 +541,38 @@ enum Unread {
     /// found.
     Device,
     /// This attribute or listing of a device below it, one of those the
-    /// check decides by ([`DECIDES`]).
+    /// check decides by ([`deciding`]).
     Attribute(blockdev::Attribute),
 }
 
-/// The attributes and listings of a device below the hidden root that
-/// decide whether discards reach the hidden volume: what kind of mapping it
-/// is (`dm/uuid`, and `dm/name` for one the VeraCrypt application made),
-/// whether it forwards discards (`queue/discard_max_bytes`), and the devices
+/// The attributes and listings of `device`, a device below the hidden root,
+/// that decide whether discards reach the hidden volume and that sysfs shows
+/// but NAILS could not read: what kind of mapping it is (`dm/uuid`, and
+/// `dm/name` where the uuid leaves the kind to the name: none, one that
+/// could not be read, or one the VeraCrypt application gave), whether it
+/// forwards discards (`queue/discard_max_bytes`, which only a mapping that
+/// is, or may be, a cryptsetup or VeraCrypt one forwards), and the devices
 /// below it (`slaves/`, and what a loop device reads). The others decide
 /// nothing here, but `loop/autoclear`, which decides a warning.
-const DECIDES: &[blockdev::Attribute] = &[
-    blockdev::Attribute::DmName,
-    blockdev::Attribute::DmUuid,
-    blockdev::Attribute::DiscardMaxBytes,
-    blockdev::Attribute::Slaves,
-    blockdev::Attribute::LoopBackingFile,
-];
+fn deciding(device: &blockdev::Layer) -> impl Iterator<Item = blockdev::Attribute> + '_ {
+    use blockdev::Attribute;
+    let kind = graph::dm_kind_unread(device);
+    let may_forward = !kind.is_empty()
+        || device
+            .dm
+            .as_ref()
+            .is_some_and(|dm| CryptType::of(&dm.kind).is_some());
+    device
+        .unread
+        .iter()
+        .map(|unread| unread.attribute)
+        .filter(move |attribute| match attribute {
+            Attribute::Slaves | Attribute::LoopBackingFile => true,
+            Attribute::DmUuid | Attribute::DmName => kind.contains(attribute),
+            Attribute::DiscardMaxBytes => may_forward,
+            _ => false,
+        })
+}
 
 /// Why NAILS cannot tell whether discards reach the hidden volume, where
 /// `unread` could not be read.
@@ -571,14 +586,23 @@ fn unread_stack(unread: &[Unread]) -> String {
         .collect();
     attributes.sort_unstable();
     attributes.dedup();
-    let what = if unread.contains(&Unread::Device) {
-        "the device the hidden root is mounted from".to_string()
+    let (what, them, they) = if unread.contains(&Unread::Device) {
+        (
+            "the device the hidden root is mounted from".to_string(),
+            "it",
+            "it",
+        )
     } else {
-        format!("{} of a device below the hidden root", listing(&attributes))
+        let several = attributes.len() > 1;
+        (
+            format!("{} of a device below the hidden root", listing(&attributes)),
+            if several { "them" } else { "it" },
+            if several { "they" } else { "it" },
+        )
     };
     format!(
         "NAILS cannot tell whether discards reach the hidden volume: sysfs shows {what}, but \
-         NAILS cannot read it, and it may show a device that forwards them"
+         NAILS cannot read {them}, and {they} may show a device that forwards them"
     )
 }
 
@@ -670,7 +694,7 @@ fn header_device<'a>(layers: &'a [Layer], layer: &'a Layer) -> Option<&'a str> {
 /// container, whose filesystem is not the hidden volume's
 /// ([`LoopFollow::BlockDevices`]). With it, the attributes and listings of
 /// its devices that are there but could not be read, of those the check
-/// decides by ([`DECIDES`]).
+/// decides by ([`deciding`]).
 fn device_layers<F: Filesystem>(fs: &F, top: &Path) -> (Vec<Layer>, Vec<Unread>) {
     let walk = blockdev::walk(
         fs,
@@ -681,8 +705,8 @@ fn device_layers<F: Filesystem>(fs: &F, top: &Path) -> (Vec<Layer>, Vec<Unread>)
     let unread = walk
         .layers
         .iter()
-        .flat_map(|device| device.unread_among(DECIDES))
-        .map(|unread| Unread::Attribute(unread.attribute))
+        .flat_map(deciding)
+        .map(Unread::Attribute)
         .collect();
     (walk.layers.iter().map(Layer::from_device).collect(), unread)
 }
