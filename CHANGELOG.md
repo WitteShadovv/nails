@@ -80,7 +80,16 @@ of this changelog for that version becomes the release notes word for word, and
   tell whether the namespace persists, and a namespace a unit names with a specifier by naming it
   without one. Fedora is not admitted yet, so no VM test runs them; the unit tests read the units
   Fedora 44's packages install. The unit reader that `locate-database` uses reads the drop-ins of a
-  unit's aliases, and those systemd builds with an instance's prefixes, too.
+  unit's aliases, and those systemd builds with an instance's prefixes, too. As systemd does, it
+  reads the drop-ins of the unit file's own name first, so on NixOS
+  `dbus-broker.service.d/overrides.conf` shadows the one of its alias `dbus.service`, and a drop-in
+  name that two aliases hold counts as one NAILS cannot tell about only where their files give the
+  section differently. A timer's or path's `Unit=`, which both checks read, and a socket's
+  `Service=`, which `decoy-persistence` reads, are read with the specifiers systemd takes from the
+  trigger's own name (`%n`, `%N`, `%p`, `%i`, `%j`) expanded as systemd expands them, so Arch's
+  gnupg sockets for the pacman keyring start `gpg-agent@etc-pacman.d-gnupg.service`; one systemd
+  fills in from the host, such as `%H`, counts only for a unit whose name the rest of the value
+  fits.
 - `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
   `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
   its order and every other key stay as they were, a value already set as asked is not rewritten
