@@ -151,6 +151,28 @@ fn the_backend_alert_reads_as_an_ordinary_storage_warning() {
 }
 
 #[test]
+fn an_alert_is_stamped_in_rfc_3339_with_the_utc_offset_spelled_out() {
+    // `YYYY-MM-DDTHH:MM:SS`, a fraction of 0, 3, 6 or 9 digits, and `+00:00`.
+    let stamp = backend_alert().created_at;
+    let shape: String = stamp
+        .chars()
+        .map(|c| if c.is_ascii_digit() { '9' } else { c })
+        .collect();
+    assert!(
+        [
+            "9999-99-99T99:99:99+99:99",
+            "9999-99-99T99:99:99.999+99:99",
+            "9999-99-99T99:99:99.999999+99:99",
+            "9999-99-99T99:99:99.999999999+99:99",
+        ]
+        .contains(&shape.as_str()),
+        "{stamp}"
+    );
+    assert!(stamp.ends_with("+00:00"), "{stamp}");
+    assert!(stamp.as_str() > "2026-01-01T00:00:00", "{stamp}");
+}
+
+#[test]
 fn the_cover_alert_names_the_disk_and_how_to_unmount_it() {
     let cover = MountEntry {
         mount_id: 91,

@@ -1,0 +1,16 @@
+{
+  "version": "0.3.0-rc.3",
+  "state": "Inactive",
+  "platform": null,
+  "config_fingerprint": null,
+  "decoy_system": null,
+  "last_activation": {
+    "duration_ms": 1,
+    "finished_at": "9999-12-31T23:59:59.999999999Z"
+  },
+  "last_modified": "0000-01-01T00:00:00Z",
+  "boot_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "owner_pid": 4242,
+  "owner_start_time": 987654,
+  "integrity_sha256": "2683413f2808b6d074c641758ae2487731231c2ebb075b684da0fd61dfd95c40"
+}

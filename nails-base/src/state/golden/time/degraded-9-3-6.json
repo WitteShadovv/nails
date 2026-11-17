@@ -1,0 +1,21 @@
+{
+  "version": "0.3.0-rc.3",
+  "state": {
+    "Degraded": {
+      "since": "2026-03-29T00:59:59.999999999Z",
+      "reason": "in the hidden root without a way back"
+    }
+  },
+  "platform": null,
+  "config_fingerprint": null,
+  "decoy_system": null,
+  "last_activation": {
+    "duration_ms": 92000,
+    "finished_at": "1969-12-31T23:59:59.500Z"
+  },
+  "last_modified": "2026-03-29T01:00:00.000001Z",
+  "boot_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "owner_pid": 4242,
+  "owner_start_time": 987654,
+  "integrity_sha256": "385554396f41410921dbf87c1c439a396e35c5bba88e3fc9e6b8b798f47ff9bf"
+}

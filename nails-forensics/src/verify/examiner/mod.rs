@@ -23,6 +23,8 @@ mod files;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod time_tests;
 
 use crate::Filesystem;
 use crate::residue_catalog::{self, Probe, ProbeHit, ResidueKind};
