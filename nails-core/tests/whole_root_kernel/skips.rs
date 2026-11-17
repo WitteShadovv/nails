@@ -120,6 +120,7 @@ fn the_units_a_boot_target_requires_are_skipped_at_the_switch_while_their_device
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
+            tail: None,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
         };

@@ -25,13 +25,15 @@
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule, the drop-ins and the masks, scrub `/run`
 //!   ([`crate::whole_root::run_scrub`]), put the decoy's records back and, once
-//!   the hidden units have stopped, put the decoy's network state back
-//!   ([`crate::whole_root::network`]), reset the zram devices that hold a
-//!   swap area out of use ([`crate::whole_root::zram`]), give the decoy's
-//!   `utab` lines back to the decoy mounts the way back restored, write the
-//!   kmsg cursor and, last,
-//!   set the kernel's process-number counter back to where the decoy's own
-//!   boot numbered its units ([`crate::whole_root::fresh_pids`]).
+//!   the hidden units have stopped, reset the zram devices that hold a swap
+//!   area out of use ([`crate::whole_root::zram`]), put the decoy's network
+//!   state back ([`crate::whole_root::network`]), give the decoy's
+//!   `utab` lines back to the decoy mounts the way back restored, end the
+//!   session's last processes, empty journald's sockets and quiet an ext4
+//!   hidden volume's unmount line ([`crate::whole_root::tail`]), write the
+//!   kmsg cursor and, last, set the kernel's process-number counter back to
+//!   where the decoy's own boot numbered its units
+//!   ([`crate::whole_root::fresh_pids`]).
 //!   When what it sets out to undo of the network state is still the
 //!   session's afterwards (a decoy device keeps another MAC address, a link,
 //!   rule or table of the session's is still there, or a part cannot be read
@@ -94,7 +96,7 @@ use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::{
     boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, skips,
-    switch_refusal, utab, zram,
+    switch_refusal, tail, utab, zram,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -385,6 +387,10 @@ pub struct Env {
     pub network_kernel: Option<std::sync::Arc<dyn network::NetKernel>>,
     /// How the way back powers off when it cannot put the network state back.
     pub power_off: PowerOff,
+    /// Where the way back ends the session's last processes and quiets the
+    /// hidden filesystem before the kmsg cursor ([`tail`]); `None` skips
+    /// both, as every test does: the real step kills processes.
+    pub tail: Option<tail::Places>,
     /// What gives the copy the way back leaves for the decoy's first start
     /// the label the plan records ([`Plan::program_label`]), and tells the
     /// domain this step runs in: the running kernel's SELinux, or a test's
@@ -433,6 +439,7 @@ impl Env {
             zram: Some(zram::Places::system()),
             network_kernel: None,
             power_off: PowerOff::system(),
+            tail: Some(tail::Places::system()),
             selinux: &selinux::KERNEL,
             start,
         }
@@ -829,6 +836,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     if plan.run_noexec && !fixup_installed {
         let _ = nextroot::set_noexec(&env.run, true);
     }
+    // Nothing of the hidden session may log after the cursor, and nothing it
+    // sent journald may wait for the decoy's journald.
+    finish_tail(env, plan);
     // Anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
         let _ = run_scrub::write_kernel_seqnum(&env.run, next);
@@ -848,6 +858,32 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         network: network_kept,
         pids,
         zram: zram_reset,
+    }
+}
+
+/// The last steps before the kmsg cursor ([`tail`]): kill what PID 1 would
+/// still kill at the switch, and once PID 1 has reaped it, wait until no
+/// unit waits to restart, forget the failures that left and wait for the jobs
+/// it queued; then stop journald's sockets, which discards what they hold,
+/// and quiet the hidden ext4 filesystem, whose unmount follows the switch.
+fn finish_tail(env: &Env, plan: &Plan) {
+    if let Some(places) = &env.tail {
+        let killed = tail::end_leftovers(places);
+        if let (Some(systemctl), false) = (&env.systemctl, killed.is_empty()) {
+            let _ = tail::settle_units(systemctl);
+            reset_new_failures(systemctl, &plan.failed_at_entry);
+            let _ = crate::whole_root::tools::wait_for_other_jobs(
+                systemctl,
+                &OWN_JOBS,
+                OTHER_JOBS_BUDGET,
+            );
+        }
+    }
+    if let Some(systemctl) = &env.systemctl {
+        let _ = tail::empty_journal_sockets(systemctl);
+    }
+    if let Some(places) = &env.tail {
+        let _ = tail::quiet_hidden_unmount(places, plan, &env.mounts, &env.nextroot);
     }
 }
 

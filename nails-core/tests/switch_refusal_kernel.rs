@@ -81,6 +81,7 @@ mod kernel_tests {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
                 },
+                tail: None,
                 selinux: &nails_teardown::whole_root::selinux::KERNEL,
                 start: nails_teardown::whole_root::program_label::Started::by_hand(),
             }

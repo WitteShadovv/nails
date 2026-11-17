@@ -95,10 +95,11 @@ pub fn kill_below(cgroup_root: &Path, subtree: &str, invocation: &Invocation) ->
 /// manager's own machinery. A mount, swap or automount unit's cgroup holds only
 /// PID 1's `mount`/`umount`/`swapon` helpers, and killing one mid-way leaves a
 /// half-done mount for the way back; `systemd-*` services (journald, udevd,
-/// logind, oomd) and the bus hold no hidden application, and killing journald
-/// leaves the hidden service manager's last messages queued in the journal
-/// socket that the decoy's journald reads after the switch. The shutdown stops
-/// them within moments.
+/// logind, oomd) and the bus hold no hidden application, and journald keeps
+/// recording the hidden service manager's messages into the hidden journal
+/// until the shutdown stops it (what is sent after that, the way back
+/// discards: [`crate::whole_root::tail`]). The shutdown stops them within
+/// moments.
 fn left_to_the_shutdown(unit: &str) -> bool {
     [".mount", ".swap", ".automount", ".socket", ".device"]
         .iter()
