@@ -49,13 +49,8 @@
         "status": "fail"
       },
       {
-        "message": "All 4 required host tools are present",
+        "message": "All 3 required host tools are present",
         "name": "host-tools",
-        "status": "pass"
-      },
-      {
-        "message": "The way back finds nft, and iw where a link is a Wi-Fi interface",
-        "name": "network-tools",
         "status": "pass"
       },
       {
@@ -180,7 +175,7 @@
     },
     "summary": {
       "failed": 3,
-      "passed": 16,
+      "passed": 15,
       "skipped": 6,
       "warnings": 4
     }
