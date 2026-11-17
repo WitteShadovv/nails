@@ -1111,6 +1111,15 @@ of this changelog for that version becomes the release notes word for word, and
   262142, a time a crafted btrfs image can hold: such a time is given in seconds since 1970, as the
   examiner gives an access time.
 
+- The hidden session no longer runs zram-generator: the entry masks it in the hidden root, as it
+  masks the GPT auto-generator, so the hidden session sets up no zram device of its own and runs
+  without zram-generator's swap. It set the device up again from the hidden root's copy of
+  zram-generator's configuration, which the fstab policy does not read and which can name a disk
+  the device writes its pages back to. On Fedora 45 its stop at the emergency way back failed to
+  reset the device (`Device or resource busy`), and the decoy then ran without its zram swap, with
+  `systemd-zram-setup@zram0.service` failed, until the next power-off. The way back now also resets
+  a zram device that a stop left set up with a swap area no swap uses, before the decoy starts, so
+  that the decoy's start sets its zram swap up as its cold boot did.
 - The way back's process-number set-back keeps the decoy's getty in the power-of-two range of the
   number the decoy's boot gave it, as long as the getty lands less than 64 numbers off the number
   the way back aims at. It aimed at that number itself, so a getty whose number sat just below a

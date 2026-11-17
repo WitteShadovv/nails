@@ -76,6 +76,7 @@ impl World {
             kmsg: self.kmsg(),
             systemctl: None,
             pid_places: None,
+            zram: None,
             now,
             mounts: parse_mountinfo(&table),
             network: self.network(),
@@ -1550,6 +1551,49 @@ fn the_way_back_numbers_the_decoy_s_units_from_its_own_boot_again() {
         "{outcome:?}"
     );
     assert_eq!(fs::read_to_string(&places.ns_last_pid).unwrap(), "1625\n");
+}
+
+#[test]
+fn the_way_back_resets_a_zram_swap_area_out_of_use_and_the_entry_does_not() {
+    // zram0 holds a swap area no swap uses, as a stop whose reset failed
+    // leaves it: the way back resets it, so the decoy's start can set it up
+    // again; the way in leaves it to the hidden root.
+    let world = World::new();
+    let places = zram::Places {
+        page_size: 4096,
+        ..zram::Places::under(world.dir.path())
+    };
+    let sys = places.sys_block.join("zram0");
+    fs::create_dir_all(&sys).unwrap();
+    fs::create_dir_all(&places.dev).unwrap();
+    fs::create_dir_all(places.swaps.parent().unwrap()).unwrap();
+    fs::write(sys.join("initstate"), "1\n").unwrap();
+    fs::write(&places.swaps, "Filename Type Size Used Priority\n").unwrap();
+    let mut area = vec![0u8; 8192];
+    area[4086..4096].copy_from_slice(b"SWAPSPACE2");
+    fs::write(places.dev.join("zram0"), &area).unwrap();
+    let with_places = |now: u64| Env {
+        zram: Some(places.clone()),
+        ..world.env(true, now)
+    };
+
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&with_places(1_000)), Outcome::Entered);
+    assert!(!sys.join("reset").exists());
+
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    world.init_in_nextroot(&plan.decoy.init);
+    fs::create_dir_all(world.runtime()).unwrap();
+    world.write_plan(&plan);
+    let outcome = run(&with_places(1_000));
+    let Outcome::Returned { zram, .. } = &outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(zram, &[("zram0".to_string(), zram::Reset::Done)]);
+    assert_eq!(fs::read_to_string(sys.join("reset")).unwrap(), "1");
 }
 
 /// A fake `systemctl` in `dir` that logs its arguments and exits `code`.

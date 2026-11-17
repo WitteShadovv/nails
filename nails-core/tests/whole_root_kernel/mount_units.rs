@@ -119,6 +119,7 @@ fn the_units_outside_the_fstab_are_kept_off_in_the_hidden_root_as_fstab_lines() 
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
             pid_places: None,
+            zram: None,
             network: nails_teardown::whole_root::network::Places::system(&paths.run),
             network_kernel: None,
             power_off: transition::PowerOff {

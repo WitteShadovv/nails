@@ -26,8 +26,10 @@
 //!   the rule, the drop-ins and the masks, scrub `/run`
 //!   ([`crate::whole_root::run_scrub`]), put the decoy's records back and, once
 //!   the hidden units have stopped, put the decoy's network state back
-//!   ([`crate::whole_root::network`]), give the decoy's `utab` lines back to
-//!   the decoy mounts the way back restored, write the kmsg cursor and, last,
+//!   ([`crate::whole_root::network`]), reset the zram devices that hold a
+//!   swap area out of use ([`crate::whole_root::zram`]), give the decoy's
+//!   `utab` lines back to the decoy mounts the way back restored, write the
+//!   kmsg cursor and, last,
 //!   set the kernel's process-number counter back to where the decoy's own
 //!   boot numbered its units ([`crate::whole_root::fresh_pids`]).
 //!   When what it sets out to undo of the network state is still the
@@ -92,7 +94,7 @@ use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::{
     boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, skips,
-    switch_refusal, utab,
+    switch_refusal, utab, zram,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -372,6 +374,9 @@ pub struct Env {
     /// Where the way back sets the process-number counter
     /// ([`fresh_pids::lower`]); `None` leaves it alone.
     pub pid_places: Option<fresh_pids::Places>,
+    /// Where the way back resets the zram devices that hold a swap area out
+    /// of use ([`zram::reset_idle_swaps`]); `None` leaves them alone.
+    pub zram: Option<zram::Places>,
     /// Where the way back reads and writes the network state
     /// ([`network::Places::system`]).
     pub network: network::Places,
@@ -425,6 +430,7 @@ impl Env {
             now: unix_now(),
             mounts: read_mountinfo().unwrap_or_default(),
             pid_places: Some(fresh_pids::Places::system()),
+            zram: Some(zram::Places::system()),
             network_kernel: None,
             power_off: PowerOff::system(),
             selinux: &selinux::KERNEL,
@@ -464,6 +470,8 @@ pub enum Outcome {
         network: network::Kept,
         /// What became of the process-number counter ([`fresh_pids::lower`]).
         pids: fresh_pids::Lowered,
+        /// What became of each zram device ([`zram::reset_idle_swaps`]).
+        zram: Vec<(String, zram::Reset)>,
     },
     /// `/run/nextroot` was populated but not armed for this transition, or
     /// failed the init check: it was detached, so PID 1 stays on this root.
@@ -747,6 +755,14 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
+    // Now that the hidden units have stopped, a zram device whose reset failed
+    // at a stop goes back to what the decoy's start sets up, before the kmsg
+    // cursor, so the decoy's journal does not import the reset's line.
+    let zram_reset = env
+        .zram
+        .as_ref()
+        .map(zram::reset_idle_swaps)
+        .unwrap_or_default();
     // Now that the hidden network units have stopped, give the decoy its
     // network state back: delete the links, rules and firewall tables the
     // session made, set each device's recorded address, the hostname and the
@@ -831,6 +847,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         failed: report.failed.len(),
         network: network_kept,
         pids,
+        zram: zram_reset,
     }
 }
 
