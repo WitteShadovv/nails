@@ -125,7 +125,10 @@ const BOOT: &[Attribute] = &[
 ///   read it; below the decoy's root, and for the devices of its root file
 ///   system and boot partitions, only where the hidden root's storage has a
 ///   partition on a disk it does not know the decoy boots from. A partition
-///   it could judge and refuses is refused all the same.
+///   it could judge and refuses is refused all the same, and one it could
+///   judge and warns about keeps its warning, which then says what the check
+///   could not check. A partition whose own attributes it decides by could
+///   not all be read is not judged.
 ///
 /// A hidden root on no partition of such a disk passes: a disk of its own,
 /// such as an external drive, a container file, or a RAM filesystem. Each
@@ -270,12 +273,24 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
             .filter_map(|(name, layer)| {
                 let partition = layer.partition.as_ref()?;
                 let disk = partition.disk.as_deref()?;
+                // One whose start, say, could not be read cannot be found in
+                // the table: it is among what the check could not check.
+                if layer.unread_among(HIDDEN).next().is_some() {
+                    return None;
+                }
                 boot.contains(disk)
                     .then_some((claimed.contains_key(name), (layer, partition, disk)))
             })
             .partition(|(decoys, _)| *decoys);
         let result = if on_boot.is_empty() {
-            CheckResult::Pass(if decoys.is_empty() {
+            CheckResult::Pass(if decoys.is_empty() && boot.is_empty() {
+                // No disk the decoy boots from is known: only a root on no
+                // partition passes, as any partition is off the known disks.
+                format!(
+                    "The hidden root at {} is on no partition of any disk.",
+                    root.display()
+                )
+            } else if decoys.is_empty() {
                 format!(
                     "The hidden root at {} is on no partition of a disk the decoy boots from \
                      ({}).",
@@ -306,10 +321,26 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
                 .collect();
             verdict(root, &findings)
         };
-        Ok(match untold {
-            Some(why) if !result.is_fail() => unchecked(root, &why),
-            _ => result,
+        // A refusal stands, and a warning about a partition it could judge
+        // keeps its text and fix, and says what it could not check.
+        Ok(match (untold, result) {
+            (Some(why), CheckResult::Pass(_)) => unchecked(root, &why),
+            (Some(why), CheckResult::Warn(text)) => CheckResult::Warn(also_unchecked(&text, &why)),
+            (_, result) => result,
         })
+    }
+}
+
+/// The warning `text` (its sentences, then its fix on a line of its own)
+/// with the sentence that the check could not check the rest, and `why`.
+fn also_unchecked(text: &str, why: &str) -> String {
+    let (sentences, fix) = text.split_once('\n').unwrap_or((text, ""));
+    let sentences =
+        format!("{sentences} It could not check the rest of the hidden root's storage: {why}.");
+    if fix.is_empty() {
+        sentences
+    } else {
+        format!("{sentences}\n{fix}")
     }
 }
 
