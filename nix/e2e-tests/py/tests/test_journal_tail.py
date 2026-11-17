@@ -195,6 +195,17 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(len(verdict.findings), 1)
         self.assertIn("lvm2-monitor", verdict.findings[0])
 
+    def test_the_step_s_start_is_found_by_its_description_too(self) -> None:
+        ring = [
+            r
+            if "Starting systemd-soft-reboot" not in r.text
+            else Record(
+                r.seq, r.usec, "systemd[1]: Starting Reboot System Userspace..."
+            )
+            for r in self.ring
+        ]
+        self.assertTrue(judge_records(ring, [], "NAILSIN1", []).judged)
+
     def test_without_the_marker_or_the_step_nothing_is_judged(self) -> None:
         self.assertFalse(judge_records(self.ring, [], "NOPE", []).judged)
         ring = [r for r in self.ring if "Starting systemd-soft-reboot" not in r.text]
