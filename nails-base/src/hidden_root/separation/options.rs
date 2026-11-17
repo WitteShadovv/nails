@@ -50,7 +50,10 @@
 //! opens or mounts it, as before, and so the decoy's own fstab line for the
 //! filesystem a root on its storage lies in, which formats nothing there, as
 //! that filesystem is found on its device, stays the decoy's own line for its
-//! folder.
+//! folder. For the same reason the judge lets be an fstab line with
+//! `x-systemd.makefs` for a device a filesystem is mounted from now, such as
+//! the line for the filesystem a container file the root is opened from lies
+//! in: that device holds the filesystem.
 
 use super::known::{reads_every_known, reads_every_known_crypttab};
 use super::paths::as_written;
