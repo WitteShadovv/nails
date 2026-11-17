@@ -448,6 +448,41 @@ impl HiddenRoot {
     ) -> Result<Option<MountedElsewhere>> {
         found_elsewhere(fs, root, true)
     }
+
+    /// The filesystem the root at `root` lies on, where `allow` is
+    /// `--allow-decoy-storage` and the attach gate's way to its verdict
+    /// accepts the root with it as a folder or a btrfs subvolume of a
+    /// filesystem the decoy itself mounts another part of at `/` or at a
+    /// system folder ([`separation::own_filesystem`]): a mount point, not
+    /// covered, outside the hidden session, judged
+    /// [`separation::Verdict::OnDecoyFilesystem`] by a bind or a subvolume.
+    /// The decoy's own configuration names that filesystem's devices for its
+    /// own mounts. `None` in every other case, and where the mount table or
+    /// an input of the judge cannot be read: nothing is then the decoy's own.
+    /// One reading of the mount table and the judge's inputs gives both the
+    /// decision and the devices.
+    pub fn own_filesystem<F: Filesystem>(
+        fs: &F,
+        root: &Path,
+        allow: Allow,
+    ) -> Option<separation::OwnFilesystem> {
+        if allow != Allow::DecoyStorage || root.as_os_str().is_empty() {
+            return None;
+        }
+        let table = fs.mount_table().ok()?;
+        let canonical = fs.canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        if root_is_hidden_overlay(&table, &canonical).is_some() {
+            return None;
+        }
+        let visible = top_mount_at(&table, &canonical)?;
+        if covered_mount(&table, visible).is_some() {
+            return None;
+        }
+        let collected = separation::collect(fs, &table, Path::new("/"));
+        let scene = collected.scene(&table);
+        let judgement = separation::judge(&scene, visible);
+        separation::own_filesystem(&scene, visible, &judgement)
+    }
 }
 
 /// [`HiddenRoot::mounted_elsewhere`], and with `decoy_filesystem`

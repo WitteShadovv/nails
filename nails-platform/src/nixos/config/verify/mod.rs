@@ -24,6 +24,7 @@ use crate::error::Result;
 use crate::filesystem::Filesystem;
 use nails_base::filesystem::parse_mountinfo;
 use nails_base::fstab::escape_path;
+use nails_base::hidden_root::separation::OwnFilesystem;
 use nix_text::{Context, Pattern, Shell};
 use scan::Scanner;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,17 @@ const BASE_NIXOS_DIR: &str = "/etc/nixos";
 
 /// Kernel mount table exposing the backing source of each mount point.
 const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
+
+/// What `--allow-decoy-storage` lets be of the names of a device, for the
+/// fix of a line that names one.
+macro_rules! own_device_names {
+    () => {
+        " With --allow-decoy-storage, for a hidden root that is a folder or a btrfs subvolume \
+         of a filesystem the decoy itself mounts at / or at a system folder, the names of the \
+         devices that filesystem lies on pass; the root's mount point, its folder and \
+         subvolume, and the names of any other device still fail."
+    };
+}
 
 /// What a line of the decoy's configuration names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +74,12 @@ pub enum ReferenceKind {
     /// The unit systemd names after the mount point (`mnt-data.mount`,
     /// `mnt-data.automount`).
     MountUnit,
+    /// For a root that `--allow-decoy-storage` accepted as a folder or a
+    /// btrfs subvolume of a filesystem the decoy uses, that folder as another
+    /// mount of the filesystem shows it (`/srv/x` for a bind of a folder of
+    /// `/`), or the subvolume by its path or its id as a `subvol=` or
+    /// `subvolid=` option names it.
+    RootPlace,
     /// The hidden volume's device-mapper name where it names the mapping: a
     /// `luks.devices` entry, crypttab text or a `cryptsetup` line.
     MapperName,
@@ -84,32 +102,50 @@ impl ReferenceKind {
             ReferenceKind::MountUnit => {
                 "the unit systemd names after the hidden volume's mount point"
             }
+            ReferenceKind::RootPlace => {
+                "the folder or btrfs subvolume of the decoy's filesystem that the hidden volume is"
+            }
             ReferenceKind::MapperName => "the hidden volume's device-mapper name",
             ReferenceKind::ToolName => "the name of this tool",
         }
     }
 
-    /// What the operator does about it.
+    /// What the operator does about it. For a name of a device, it says
+    /// what `--allow-decoy-storage` lets be and what it does not.
     pub fn remedy(self) -> &'static str {
         match self {
-            ReferenceKind::MapperName => {
+            ReferenceKind::MapperName => concat!(
                 "Remove it from that file long before the next use and rebuild the decoy. If \
                  the name is there for another reason, open the hidden volume under a name \
-                 that appears nowhere in /etc/nixos instead."
-            }
+                 that appears nowhere in /etc/nixos instead.",
+                own_device_names!()
+            ),
             ReferenceKind::MountPoint | ReferenceKind::MountUnit => {
                 "Remove it from that file long before the next use and rebuild the decoy. If \
                  the decoy uses that path for something else, mount the hidden volume at a \
                  path that appears nowhere in /etc/nixos instead."
             }
-            ReferenceKind::Storage => {
+            ReferenceKind::RootPlace => {
+                "Remove it from that file long before the next use and rebuild the decoy. If \
+                 the decoy uses that folder or subvolume for something else, keep the hidden \
+                 root in one that appears nowhere in /etc/nixos instead. \
+                 --allow-decoy-storage never lets it be."
+            }
+            ReferenceKind::Storage => concat!(
                 "Remove it from that file long before the next use and rebuild the decoy. If \
                  it is a label the decoy's own device carries too, give the hidden volume \
                  another label instead. If it is a kernel name such as /dev/dm-1 that the \
                  decoy's own device holds at other times, name that device by its uuid \
-                 instead."
+                 instead.",
+                own_device_names!()
+            ),
+            ReferenceKind::Device | ReferenceKind::DeviceUnit => concat!(
+                "Remove it from that file long before the next use and rebuild the decoy.",
+                own_device_names!()
+            ),
+            ReferenceKind::StagedText | ReferenceKind::ToolName => {
+                "Remove it from that file long before the next use and rebuild the decoy."
             }
-            _ => "Remove it from that file long before the next use and rebuild the decoy.",
         }
     }
 }
@@ -134,6 +170,12 @@ pub struct BaseConfigScan {
     pub files_read: usize,
     /// Every line that names the hidden environment, by file and then line.
     pub references: Vec<BaseConfigReference>,
+    /// Every other line that names a device of the filesystem that
+    /// `--allow-decoy-storage` accepted the hidden root on as a folder or a
+    /// subvolume of it, which the decoy mounts itself
+    /// ([`verify_base_config_clean_allowing`]), by file and then line: the
+    /// decoy's own names for its own filesystem, let be.
+    pub let_be: Vec<BaseConfigReference>,
     /// The places that may give a name of the hidden volume's storage that
     /// are there but could not be read: a line that names the storage by
     /// one of those names would not be found.
@@ -255,6 +297,38 @@ pub fn verify_base_config_clean<F: Filesystem>(
     fs: &F,
     hidden_volume_root: &Path,
 ) -> Result<BaseConfigScan> {
+    verify_base_config_clean_allowing(fs, hidden_volume_root, None)
+}
+
+/// [`verify_base_config_clean`], where `own` is the filesystem that
+/// `--allow-decoy-storage` accepted the hidden root on as a folder or a btrfs
+/// subvolume of it, while the decoy itself mounts another part of it at `/`
+/// or at a system folder ([`HiddenRoot::own_filesystem`]).
+///
+/// The names of the devices that filesystem lies on are then the decoy's own,
+/// as its `hardware-configuration.nix` writes them for `/` and `/home`: a line
+/// that names only such a device, by any of the forms above (its device
+/// node, its kernel name, a `/dev/disk/by-*` link, its uuid, `PARTUUID`,
+/// label or partition label, its device-mapper name), is let be
+/// ([`BaseConfigScan::let_be`]). A layer of the storage counts as one of those
+/// devices only where sysfs gives it now the same kernel name and the same
+/// device number as `own` holds, which the attach gate's judge read; every
+/// other layer's names count as before, and so does every place that could
+/// not be read. The root's own folder and subvolume count as well, as the
+/// other mounts of the filesystem name the folder (`/srv/x`) and as `subvol=`
+/// and `subvolid=` name the subvolume ([`ReferenceKind::RootPlace`]), beside
+/// its mount point.
+///
+/// # Errors
+///
+/// As [`verify_base_config_clean`].
+///
+/// [`HiddenRoot::own_filesystem`]: nails_base::hidden_root::HiddenRoot::own_filesystem
+pub fn verify_base_config_clean_allowing<F: Filesystem>(
+    fs: &F,
+    hidden_volume_root: &Path,
+    own: Option<&OwnFilesystem>,
+) -> Result<BaseConfigScan> {
     let mut files = fs.find_files_with_pattern(Path::new(BASE_NIXOS_DIR), ".nix")?;
     files.sort();
 
@@ -264,7 +338,7 @@ pub fn verify_base_config_clean<F: Filesystem>(
         return Ok(scan);
     }
 
-    let markers = markers(fs, hidden_volume_root, &mut scan.unread)?;
+    let markers = markers(fs, hidden_volume_root, own, &mut scan.unread)?;
     for file in &files {
         // Nix reads a source file as bytes, so one with a byte that is no
         // UTF-8 (a comment in Latin-1, say) still evaluates. The markers are
@@ -273,20 +347,31 @@ pub fn verify_base_config_clean<F: Filesystem>(
         // keeps every valid sequence, so every marker the file holds.
         let content = String::from_utf8_lossy(&fs.read_file_bytes(file)?).into_owned();
         scan.files_read += 1;
-        scan.references
-            .extend(references_in(file, &content, &markers));
+        let (references, let_be) = references_in(file, &content, &markers);
+        scan.references.extend(references);
+        scan.let_be.extend(let_be);
     }
     tracing::debug!(
         files = scan.files_read,
         references = scan.references.len(),
+        let_be = scan.let_be.len(),
         "scanned the decoy's /etc/nixos"
     );
     Ok(scan)
 }
 
-/// The markers for `hidden_volume_root`, in the order a line is matched.
-/// The places of the storage's names that could not be read land in
-/// `unread`.
+/// What a line is matched against: the markers that count, in order, and
+/// the names of the devices of the filesystem that `--allow-decoy-storage`
+/// accepted the root on, which are let be.
+#[derive(Debug, Default)]
+struct Markers {
+    counted: Vec<Marker>,
+    let_be: Vec<Marker>,
+}
+
+/// The markers for `hidden_volume_root`, in the order a line is matched,
+/// and with `own` the names it lets be. The places of the storage's names
+/// that could not be read land in `unread`.
 ///
 /// # Errors
 ///
@@ -297,8 +382,9 @@ pub fn verify_base_config_clean<F: Filesystem>(
 fn markers<F: Filesystem>(
     fs: &F,
     hidden_volume_root: &Path,
+    own: Option<&OwnFilesystem>,
     unread: &mut Vec<String>,
-) -> Result<Vec<Marker>> {
+) -> Result<Markers> {
     let marker = |pattern, kind| Marker { pattern, kind };
     let mut markers: Vec<Marker> = ARTIFACTS
         .iter()
@@ -319,39 +405,22 @@ fn markers<F: Filesystem>(
         Err(error) => return Err(error),
     };
     let sources = resolve_backing_sources(&mountinfo, hidden_volume_root);
-    let below = storage::below(fs, &parse_mountinfo(&mountinfo), hidden_volume_root);
+    let own_devices = own.map_or(&[][..], |own| own.devices.as_slice());
+    let (below, own_below) = storage::below_letting_be(
+        fs,
+        &parse_mountinfo(&mountinfo),
+        hidden_volume_root,
+        own_devices,
+    );
     unread.extend(below.unread.iter().cloned());
-    let mut names: Vec<String> = Vec::new();
-    let from_sources = sources
-        .iter()
-        .filter_map(|source| source.strip_prefix("/dev/mapper/"))
-        .filter(|name| !name.is_empty() && !name.contains('/'))
-        .map(str::to_string);
-    for name in from_sources.chain(below.names.iter().cloned()) {
-        push_new(&mut names, name);
-    }
-    let mut devices: Vec<String> = Vec::new();
-    for source in sources.iter().filter(|source| source.starts_with('/')) {
-        push_new(&mut devices, source.clone());
-    }
-    for name in &names {
-        push_new(&mut devices, format!("/dev/mapper/{name}"));
-        push_new(&mut devices, format!("/dev/disk/by-id/dm-name-{name}"));
-    }
-    for device in &devices {
-        markers.push(marker(Pattern::Path(device.clone()), ReferenceKind::Device));
-    }
-    for name in &names {
-        markers.push(marker(Pattern::DmUuid(name.clone()), ReferenceKind::Device));
-    }
-    for pattern in below.markers {
-        markers.push(marker(pattern, ReferenceKind::Storage));
-    }
-    for device in &devices {
-        for spelling in spellings(&unit(device, "device")) {
-            markers.push(marker(Pattern::Path(spelling), ReferenceKind::DeviceUnit));
-        }
-    }
+    // A source is a name of a device the root's filesystem lies on where the
+    // names of that device hold it.
+    let (own_sources, sources): (Vec<String>, Vec<String>) = sources
+        .into_iter()
+        .partition(|source| names_own(source, &own_below));
+    let counted = DeviceMarkers::of(&sources, &below);
+    let let_be = DeviceMarkers::of(&own_sources, &own_below);
+    markers.extend(counted.paths);
 
     // Normalised, so a configured `/mnt/data/` still matches `/mnt/data`; a
     // degenerate root (`/`) would match every path.
@@ -368,28 +437,125 @@ fn markers<F: Filesystem>(
             }
         }
     }
-
-    for name in names {
-        markers.push(marker(
-            Pattern::Name {
-                escaped: spellings(&escape_path(Path::new(&name)).to_ascii_lowercase()),
-                name,
-            },
-            ReferenceKind::MapperName,
-        ));
+    if let Some(own) = own {
+        markers.extend(root_place(own).into_iter().map(|pattern| Marker {
+            pattern,
+            kind: ReferenceKind::RootPlace,
+        }));
     }
 
-    // A kernel name is a short word (`sdb2`): it comes after every other
-    // marker, so a line that names the storage by a path reports the path.
-    for name in below.kernel_names {
-        markers.push(marker(Pattern::Word(name), ReferenceKind::Storage));
-    }
-
+    markers.extend(counted.words);
     markers.push(marker(
         Pattern::Word("nails".into()),
         ReferenceKind::ToolName,
     ));
-    Ok(markers)
+    Ok(Markers {
+        counted: markers,
+        let_be: let_be.paths.into_iter().chain(let_be.words).collect(),
+    })
+}
+
+/// Whether the mount source `source` is a name of a device in `own`, the
+/// names of the devices the accepted root's filesystem lies on: one of its
+/// paths, or its mapping's.
+fn names_own(source: &str, own: &storage::Storage) -> bool {
+    own.markers.contains(&Pattern::Path(source.to_string()))
+        || source
+            .strip_prefix("/dev/mapper/")
+            .is_some_and(|name| own.names.iter().any(|own| own == name))
+}
+
+/// The markers of the devices the mount table's `sources` and the storage
+/// below them name.
+struct DeviceMarkers {
+    /// Those matched before the mount point: the devices, their dm-uuid
+    /// links, the storage's names, the units systemd names after the
+    /// devices.
+    paths: Vec<Marker>,
+    /// Those matched after it: the device-mapper names and the kernel names,
+    /// short words that a line that names a path names too.
+    words: Vec<Marker>,
+}
+
+impl DeviceMarkers {
+    fn of(sources: &[String], storage: &storage::Storage) -> Self {
+        let marker = |pattern, kind| Marker { pattern, kind };
+        let mut names: Vec<String> = Vec::new();
+        let from_sources = sources
+            .iter()
+            .filter_map(|source| source.strip_prefix("/dev/mapper/"))
+            .filter(|name| !name.is_empty() && !name.contains('/'))
+            .map(str::to_string);
+        for name in from_sources.chain(storage.names.iter().cloned()) {
+            push_new(&mut names, name);
+        }
+        let mut devices: Vec<String> = Vec::new();
+        for source in sources.iter().filter(|source| source.starts_with('/')) {
+            push_new(&mut devices, source.clone());
+        }
+        for name in &names {
+            push_new(&mut devices, format!("/dev/mapper/{name}"));
+            push_new(&mut devices, format!("/dev/disk/by-id/dm-name-{name}"));
+        }
+        let mut paths = Vec::new();
+        for device in &devices {
+            paths.push(marker(Pattern::Path(device.clone()), ReferenceKind::Device));
+        }
+        for name in &names {
+            paths.push(marker(Pattern::DmUuid(name.clone()), ReferenceKind::Device));
+        }
+        for pattern in &storage.markers {
+            paths.push(marker(pattern.clone(), ReferenceKind::Storage));
+        }
+        for device in &devices {
+            for spelling in spellings(&unit(device, "device")) {
+                paths.push(marker(Pattern::Path(spelling), ReferenceKind::DeviceUnit));
+            }
+        }
+        let mut words = Vec::new();
+        for name in names {
+            words.push(marker(
+                Pattern::Name {
+                    escaped: spellings(&escape_path(Path::new(&name)).to_ascii_lowercase()),
+                    name,
+                },
+                ReferenceKind::MapperName,
+            ));
+        }
+        // A kernel name is a short word (`sdb2`): it comes after every other
+        // marker, so a line that names the storage by a path reports the path.
+        for name in &storage.kernel_names {
+            words.push(marker(Pattern::Word(name.clone()), ReferenceKind::Storage));
+        }
+        Self { paths, words }
+    }
+}
+
+/// The names of the root's own place in the filesystem `own`: each folder
+/// another mount of it shows the root at, and on btrfs its path inside the
+/// filesystem as `subvol=` gives it, with or without a leading `/`, and a
+/// subvolume's id as `subvolid=` gives it.
+fn root_place(own: &OwnFilesystem) -> Vec<Pattern> {
+    let mut patterns = Vec::new();
+    for folder in &own.folders {
+        patterns.push(Pattern::Path(folder.to_string_lossy().to_ascii_lowercase()));
+    }
+    if let Some(subvolume) = &own.subvolume {
+        let subvolume = subvolume.to_ascii_lowercase();
+        for value in [format!("/{subvolume}"), subvolume] {
+            patterns.push(Pattern::Tag {
+                tag: "subvol".into(),
+                value,
+            });
+        }
+    }
+    if let Some(id) = &own.subvolid {
+        patterns.push(Pattern::Tag {
+            tag: "subvolid".into(),
+            value: id.clone(),
+        });
+    }
+    patterns
 }
 
 /// Add `item` to `items` unless it is there already.
@@ -417,15 +583,21 @@ fn unit(path: &str, suffix: &str) -> String {
     format!("{}.{suffix}", escape_path(Path::new(path))).to_ascii_lowercase()
 }
 
-/// Each line of `content` that matches a marker, for the first marker it
-/// matches.
-fn references_in(file: &Path, content: &str, markers: &[Marker]) -> Vec<BaseConfigReference> {
+/// Each line of `content` that matches a marker that counts, for the first
+/// one it matches, and each other line that matches one of the names let be,
+/// for the first of those.
+fn references_in(
+    file: &Path,
+    content: &str,
+    markers: &Markers,
+) -> (Vec<BaseConfigReference>, Vec<BaseConfigReference>) {
     let original = content.as_bytes();
     let text = original.to_ascii_lowercase();
     let mut scanner = Scanner::default();
     let mut shell = Shell::default();
 
     let mut found = Vec::new();
+    let mut let_be = Vec::new();
     let mut start = 0;
     for (index, line) in text.split(|&byte| byte == b'\n').enumerate() {
         let end = start + line.len();
@@ -433,24 +605,30 @@ fn references_in(file: &Path, content: &str, markers: &[Marker]) -> Vec<BaseConf
             names: scanner.line(line),
             arguments: shell.line(line),
         };
-        let hit = markers.iter().find_map(|marker| {
-            marker
-                .pattern
-                .find(line, &context)
-                .map(|range| (marker.kind, range))
-        });
-        if let Some((kind, range)) = hit {
-            found.push(BaseConfigReference {
+        let first = |markers: &[Marker]| {
+            markers.iter().find_map(|marker| {
+                marker
+                    .pattern
+                    .find(line, &context)
+                    .map(|range| (marker.kind, range))
+            })
+        };
+        let reference =
+            |(kind, range): (ReferenceKind, std::ops::Range<usize>)| BaseConfigReference {
                 file: file.to_path_buf(),
                 line: index + 1,
                 text: String::from_utf8_lossy(&original[start + range.start..start + range.end])
                     .into_owned(),
                 kind,
-            });
+            };
+        if let Some(hit) = first(&markers.counted) {
+            found.push(reference(hit));
+        } else if let Some(hit) = first(&markers.let_be) {
+            let_be.push(reference(hit));
         }
         start = end + 1;
     }
-    found
+    (found, let_be)
 }
 
 /// Resolves the backing source(s) that the mount table `mountinfo` (the text
