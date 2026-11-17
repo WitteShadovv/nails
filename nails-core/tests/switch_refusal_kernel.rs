@@ -127,6 +127,7 @@ mod kernel_tests {
             read_only_disks: false,
             failed_at_entry: Vec::new(),
             kernel_settings: Vec::new(),
+            quiet_mounts: Vec::new(),
             pids: Default::default(),
         }
     }

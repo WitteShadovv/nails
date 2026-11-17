@@ -257,12 +257,18 @@ fn set_attr(
 
 /// Every mount of this process's mount namespace that keeps access times,
 /// made `noatime` by [`QuietMounts::open`] for as long as the value lives,
-/// and given its own mode back when it is dropped.
+/// and given its own mode back when it is closed ([`QuietMounts::close`]) or
+/// dropped.
 ///
 /// A bind made while it lives takes `noatime` from the mount it copies. When
-/// it is dropped, every mount made since that is `noatime` and shows a part
+/// it is closed, every mount made since that is `noatime` and shows a part
 /// of a filesystem it changed gets that mount's own mode too ([`inherited`]),
 /// the mode the bind would have had without it.
+///
+/// A process that dies without unwinding (`SIGKILL`, the OOM killer) closes
+/// nothing. [`QuietMounts::open_recorded`] hands what it changes to a record
+/// first, so that another process can give those mounts their modes back
+/// ([`restore`]).
 #[derive(Debug, Default)]
 pub struct QuietMounts {
     /// Each mount changed, by a descriptor of it, with the mode it had.
@@ -271,6 +277,84 @@ pub struct QuietMounts {
     sources: Vec<Source>,
     /// The IDs of the mounts the mount table listed when it was opened.
     before: Vec<i32>,
+}
+
+/// A mount [`QuietMounts`] makes `noatime`, as a record that outlives the
+/// process: which mount it is and the access-time mode it had.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QuietRecord {
+    /// The mount's ID in the mount table.
+    pub mount_id: i32,
+    /// Where it is mounted.
+    pub mount_point: std::path::PathBuf,
+    /// Its device, as the mount table writes it (`major:minor`).
+    pub dev: String,
+    /// The directory of the filesystem at its root.
+    pub root: std::path::PathBuf,
+    /// Whether it was `relatime`; `strictatime` otherwise.
+    pub relatime: bool,
+}
+
+impl QuietRecord {
+    /// The mode it had, as `mount_setattr(2)` sets it.
+    fn mode(&self) -> u64 {
+        if self.relatime {
+            MOUNT_ATTR_RELATIME
+        } else {
+            MOUNT_ATTR_STRICTATIME
+        }
+    }
+
+    /// Whether `mount` is the mount this record names: the same ID, mount
+    /// point, device and root, so that a later mount that took a reused ID
+    /// is never taken for it.
+    fn names(&self, mount: &crate::mountinfo::MountEntry) -> bool {
+        mount.mount_id == self.mount_id
+            && mount.mount_point == self.mount_point
+            && mount.dev == self.dev
+            && mount.root == self.root
+    }
+}
+
+/// Give each mount of `records` that is still mounted and still `noatime` its
+/// recorded mode back: what a [`QuietMounts`] whose process died without
+/// closing it left. A mount that is gone, or whose mode was changed since, is
+/// left as it is. Returns the mount points it could not give their mode back.
+pub fn restore(records: &[QuietRecord]) -> Vec<std::path::PathBuf> {
+    if records.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mounts) = crate::mountinfo::read_mountinfo() else {
+        return records.iter().map(|r| r.mount_point.clone()).collect();
+    };
+    let mut failed = Vec::new();
+    for (record, mount) in to_restore(records, &mounts) {
+        let done = reach(mount)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+            .and_then(|fd| set_atime_mode(&fd, record.mode()));
+        if done.is_err() {
+            failed.push(record.mount_point.clone());
+        }
+    }
+    failed
+}
+
+/// The mounts of `mounts` that a record of `records` names and that are
+/// still `noatime`, each with its record.
+fn to_restore<'a, 'm>(
+    records: &'a [QuietRecord],
+    mounts: &'m [crate::mountinfo::MountEntry],
+) -> Vec<(&'a QuietRecord, &'m crate::mountinfo::MountEntry)> {
+    records
+        .iter()
+        .filter_map(|record| {
+            mounts
+                .iter()
+                .find(|mount| record.names(mount))
+                .filter(|mount| atime_mode(&mount.mount_opts).is_none())
+                .map(|mount| (record, mount))
+        })
+        .collect()
 }
 
 /// A mount [`QuietMounts`] made `noatime`: the filesystem it shows (its
@@ -309,17 +393,32 @@ fn inherited<'a>(
 
 /// The mount at `mount`'s mount point, by a descriptor, when it is the one
 /// the mount table lists there: `None` for a mount another covers, which no
-/// lookup reaches.
+/// lookup reaches, and when it cannot be reached at all.
 fn reach(mount: &crate::mountinfo::MountEntry) -> Option<rustix::fd::OwnedFd> {
+    reach_or_covered(mount).ok().flatten()
+}
+
+/// The mount at `mount`'s mount point, by a descriptor: `Ok(None)` when no
+/// lookup of that path reaches it, because another mount covers it or one of
+/// its parents (the path then leads elsewhere or nowhere), and an error when
+/// the mount point cannot be opened or asked for its mount for another
+/// reason.
+fn reach_or_covered(
+    mount: &crate::mountinfo::MountEntry,
+) -> std::io::Result<Option<rustix::fd::OwnedFd>> {
     use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
     use rustix::mount::{OpenTreeFlags, open_tree};
     let flags = OpenTreeFlags::OPEN_TREE_CLOEXEC
         | OpenTreeFlags::AT_NO_AUTOMOUNT
         | OpenTreeFlags::AT_SYMLINK_NOFOLLOW;
-    let fd = open_tree(CWD, &mount.mount_point, flags).ok()?;
-    let reached = statx(&fd, "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID)
-        .is_ok_and(|stat| i64::try_from(stat.stx_mnt_id).ok() == Some(i64::from(mount.mount_id)));
-    reached.then_some(fd)
+    let fd = match open_tree(CWD, &mount.mount_point, flags) {
+        Ok(fd) => fd,
+        Err(Errno::NOENT | Errno::NOTDIR) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let stat = statx(&fd, "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID)?;
+    let reached = i64::try_from(stat.stx_mnt_id).ok() == Some(i64::from(mount.mount_id));
+    Ok(reached.then_some(fd))
 }
 
 impl QuietMounts {
@@ -333,12 +432,25 @@ impl QuietMounts {
     /// fails puts back the ones made before it and is the error: the caller
     /// then knows the request it guards would set access times.
     pub fn open() -> std::io::Result<Self> {
+        Self::open_recorded(|_| Ok(()))
+    }
+
+    /// [`open`](Self::open), handing `record` every mount it will change, with
+    /// its mode, before it changes any: where `record` fails, nothing changes
+    /// and that is the error. A mount that keeps access times and cannot be
+    /// reached for another reason than another mount covering it is an error
+    /// too, so that no mount is left out silently.
+    pub fn open_recorded(
+        record: impl FnOnce(&[QuietRecord]) -> std::io::Result<()>,
+    ) -> std::io::Result<Self> {
         let mut quiet = QuietMounts::default();
         if !may_spawn_without_access_times() {
             return Ok(quiet);
         }
         let mounts = crate::mountinfo::read_mountinfo()?;
         quiet.before = mounts.iter().map(|mount| mount.mount_id).collect();
+        let mut reached = Vec::new();
+        let mut records = Vec::new();
         for mount in mounts {
             let Some(mode) = atime_mode(&mount.mount_opts) else {
                 continue;
@@ -346,9 +458,20 @@ impl QuietMounts {
             if NO_DISK_ATIMES.contains(&mount.fstype.as_str()) {
                 continue;
             }
-            let Some(fd) = reach(&mount) else {
+            let Some(fd) = reach_or_covered(&mount)? else {
                 continue;
             };
+            records.push(QuietRecord {
+                mount_id: mount.mount_id,
+                mount_point: mount.mount_point.clone(),
+                dev: mount.dev.clone(),
+                root: mount.root.clone(),
+                relatime: mode == MOUNT_ATTR_RELATIME,
+            });
+            reached.push((fd, mode, mount));
+        }
+        record(&records)?;
+        for (fd, mode, mount) in reached {
             set_atime_mode(&fd, MOUNT_ATTR_NOATIME)?;
             quiet.changed.push((fd, mode));
             quiet.sources.push(Source {
@@ -369,27 +492,52 @@ impl QuietMounts {
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty()
     }
+
+    /// Give every mount it changed its own mode back, the last first, and
+    /// every mount made since that took `noatime` from one of them that one's
+    /// mode ([`inherited`]). Every mount is tried; the first error is
+    /// returned.
+    pub fn close(mut self) -> std::io::Result<()> {
+        self.give_back()
+    }
+
+    fn give_back(&mut self) -> std::io::Result<()> {
+        let mut result = Ok(());
+        let mut keep = |done: std::io::Result<()>| {
+            if let Err(e) = done
+                && result.is_ok()
+            {
+                result = Err(e);
+            }
+        };
+        for (fd, mode) in self.changed.drain(..).rev() {
+            keep(set_atime_mode(&fd, mode));
+        }
+        if self.sources.is_empty() {
+            return result;
+        }
+        let sources = std::mem::take(&mut self.sources);
+        match crate::mountinfo::read_mountinfo() {
+            Ok(mounts) => {
+                for (mount, mode) in inherited(&sources, &self.before, &mounts) {
+                    if let Some(fd) = reach(mount) {
+                        keep(set_atime_mode(&fd, mode));
+                    }
+                }
+            }
+            Err(e) => keep(Err(e)),
+        }
+        result
+    }
 }
 
 impl Drop for QuietMounts {
-    /// Give every mount it changed its own mode back, the last first, and
-    /// every mount made since that took `noatime` from one of them that one's
-    /// mode ([`inherited`]).
+    /// What [`close`](QuietMounts::close) does, for a value that was not
+    /// closed: an error unwinding, a request that failed. An error here
+    /// cannot be reported; a record of it ([`QuietMounts::open_recorded`])
+    /// lets a rollback try again ([`restore`]).
     fn drop(&mut self) {
-        for (fd, mode) in self.changed.drain(..).rev() {
-            let _ = set_atime_mode(&fd, mode);
-        }
-        if self.sources.is_empty() {
-            return;
-        }
-        let Ok(mounts) = crate::mountinfo::read_mountinfo() else {
-            return;
-        };
-        for (mount, mode) in inherited(&self.sources, &self.before, &mounts) {
-            if let Some(fd) = reach(mount) {
-                let _ = set_atime_mode(&fd, mode);
-            }
-        }
+        let _ = self.give_back();
     }
 }
 
@@ -535,6 +683,57 @@ mod tests {
                 (32, MOUNT_ATTR_STRICTATIME),
             ]
         );
+    }
+
+    fn record(id: i32, point: &str, dev: &str, root: &str, relatime: bool) -> QuietRecord {
+        QuietRecord {
+            mount_id: id,
+            mount_point: std::path::PathBuf::from(point),
+            dev: dev.to_string(),
+            root: std::path::PathBuf::from(root),
+            relatime,
+        }
+    }
+
+    /// A record gives back its mode only to the mount it names that is still
+    /// `noatime`: a mount gone, one whose ID another mount took, and one
+    /// whose mode was changed since are left as they are.
+    #[test]
+    fn a_record_restores_only_the_mount_it_names_while_noatime() {
+        let table = "\
+20 1 8:1 / / rw,noatime - ext4 /dev/sda1 rw
+22 1 0:30 /home /home rw,noatime - btrfs /dev/vda4 rw
+24 1 8:2 / /boot rw,relatime - ext4 /dev/sda2 rw
+25 1 0:31 / /srv rw,noatime - ext4 /dev/sdb1 rw
+";
+        let mounts = crate::mountinfo::parse_mountinfo(table);
+        let records = [
+            record(20, "/", "8:1", "/", true),
+            record(22, "/home", "0:30", "/home", false),
+            // Its mode was changed back since.
+            record(24, "/boot", "8:2", "/", true),
+            // Another mount took ID 25.
+            record(25, "/srv", "8:3", "/", true),
+            // Gone.
+            record(26, "/data", "8:4", "/", true),
+        ];
+        let got: Vec<(i32, u64)> = to_restore(&records, &mounts)
+            .into_iter()
+            .map(|(record, mount)| (mount.mount_id, record.mode()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(20, MOUNT_ATTR_RELATIME), (22, MOUNT_ATTR_STRICTATIME)]
+        );
+        assert!(restore(&[]).is_empty());
+    }
+
+    /// The record goes into the plan and comes back as it was.
+    #[test]
+    fn a_record_reads_back_as_it_was_written() {
+        let written = record(20, "/", "8:1", "/", true);
+        let text = serde_json::to_string(&written).unwrap();
+        assert_eq!(serde_json::from_str::<QuietRecord>(&text).unwrap(), written);
     }
 
     /// Without a mount it changed, no mount takes a mode from it.

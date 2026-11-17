@@ -1196,6 +1196,51 @@ fn a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows() {
     root.teardown();
 }
 
+/// A process that dies with the mounts quiet (here: one that forgets its
+/// value, as a SIGKILL would) leaves them `noatime`. The record it handed
+/// over before the change gives them their own mode back. `disk` is a mount
+/// that keeps access times `relatime`; `has` and `options` read its options.
+fn a_record_gives_a_killed_window_s_modes_back(
+    disk: &Path,
+    has: &dyn Fn(&str) -> bool,
+    options: &dyn Fn() -> String,
+) {
+    use nails_teardown::noatime::QuietMounts;
+    let mut recorded = Vec::new();
+    let quiet = QuietMounts::open_recorded(|records| {
+        recorded = records.to_vec();
+        Ok(())
+    })
+    .expect("quiet the mounts");
+    assert!(
+        recorded
+            .iter()
+            .any(|record| record.mount_point == disk && record.relatime),
+        "the disk is in the record: {recorded:?}"
+    );
+    std::mem::forget(quiet);
+    assert!(has("noatime"), "{}", options());
+    assert_eq!(
+        nails_teardown::noatime::restore(&recorded),
+        Vec::<std::path::PathBuf>::new()
+    );
+    assert!(
+        has("relatime"),
+        "the record gave the disk its mode back: {}",
+        options()
+    );
+    // A record whose change failed changes nothing.
+    let refused = QuietMounts::open_recorded(|_| Err(std::io::Error::other("no plan")));
+    assert!(refused.is_err());
+    assert!(has("relatime"), "{}", options());
+    // Closed, the mounts have their own mode back.
+    QuietMounts::open()
+        .expect("quiet the mounts")
+        .close()
+        .expect("give the modes back");
+    assert!(has("relatime"), "{}", options());
+}
+
 /// What NAILS reads on the decoy leaves its access times alone: a program it
 /// starts runs with every mount of a namespace of its own `noatime`, and while
 /// it asks PID 1 for something that makes PID 1 read the decoy, the mounts
@@ -1337,6 +1382,8 @@ fn quiet_children_mounts_and_trees_change_no_access_time() {
         bound_options()
     );
     nix::mount::umount(&bound).expect("unmount the bind");
+
+    a_record_gives_a_killed_window_s_modes_back(&disk, &has, &options);
 
     // A lookup through a quiet copy of the tree follows a symlink without
     // updating the link's access time, where a plain lookup updates it.
