@@ -582,27 +582,36 @@ its other side may copy all it shows into a file, as `script` does into its
 typescript, `screen -L` into its log or `tmux pipe-pane` into a command.
 Another device NAILS does not judge counts so too. Whether a unit is enabled
 or active NAILS reads from the links and markers systemd leaves, without
-following them, and from the kernel command line. A unit whose link
-or marker NAILS cannot look up, as an unprivileged `nails check` cannot in a
-directory only root may look into, counts as one that starts, wherever its
-commands would make the daemon log to a file or NAILS cannot tell whether
-they would; a unit directory NAILS cannot list at all hides the links in it.
-A socket on a running daemon's standard output or standard error counts as
-one to the decoy's own journal, which the journal's own check judges, where
-PID 1's socket table, `/proc/1/net/unix`, lists it as a connected local
-stream socket bound to no path, as the service manager connects one to the
-journal, and lists no socket of a journal namespace that persists, or whose
-configuration NAILS cannot read. While it lists one, the socket counts as
-NAILS cannot tell, and the fix is that namespace's. A socket the table lists
+following them, and from the kernel command line. Of the `SystemdOptions` EFI
+variable it reads only the copy the service manager made under
+`/run/systemd/efivars` when it last started, so a `systemd.wants=` that
+`bootctl systemd-efi-options` adds to the variable later is missed, though on
+systemd 255 to 257, booted by UEFI without Secure Boot, the way back reads the
+variable again and starts that unit. A unit whose link or marker NAILS cannot
+look up, as an unprivileged `nails check` cannot in a directory only root may
+look into, counts as one that starts, wherever its commands would make the
+daemon log to a file or NAILS cannot tell whether they would; a unit directory
+NAILS cannot list at all hides the links in it. A socket on a running daemon's
+standard output or standard error counts as one to the decoy's own journal,
+which the journal's own check judges, where PID 1's socket table,
+`/proc/1/net/unix`, lists it as a connected local stream socket bound to no
+path, as the service manager connects one to the journal, and lists no socket
+of a journal namespace that persists, or whose configuration NAILS cannot read.
+While it lists one, the socket counts as NAILS cannot tell, and the fix is that
+namespace's. A namespace's journald reads its configuration only when it
+starts, so where `journald@<namespace>.conf` or a drop-in was changed to keep
+the journal off the disk without the restart the fix names, NAILS counts the
+namespace as one that does not persist while its journald still writes to
+`/var/log/journal/<machine-id>.<namespace>`. A socket the table lists
 otherwise, or not at all, as one of another network namespace or a network
-socket, counts as NAILS cannot tell, and so does a table NAILS cannot read.
-The table does not show what holds the other end of a socket, so one of that
-kind whose other end a program other than journald holds, as the other end
-of a socket pair, counts as one to the journal, though that program may copy
-what it reads into a file. A unit that another unit pulls in with `Wants=`
-or `Requires=` in its own file is not followed, tuned-ppd's need of tuned aside, and a unit
-of another name that runs one of these programs is seen only by its process,
-while it runs. Where `/proc` is mounted with `hidepid=1`, a process an
+socket, counts as NAILS cannot tell, and so does a table NAILS cannot read. The
+table does not show what holds the other end of a socket, so one of that kind
+whose other end a program other than journald holds, as the other end of a
+socket pair, counts as one to the journal, though that program may copy what it
+reads into a file. A unit that another unit pulls in with `Wants=` or
+`Requires=` in its own file is not followed, tuned-ppd's need of tuned aside,
+and a unit of another name that runs one of these programs is seen only by its
+process, while it runs. Where `/proc` is mounted with `hidepid=1`, a process an
 unprivileged `nails check` cannot read counts against the decoy wherever the
 daemon's unit is installed; with `hidepid=2` it does not see other users'
 processes at all. Activation, which runs as root, sees them all.
