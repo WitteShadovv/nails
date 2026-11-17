@@ -179,8 +179,8 @@ mod tests {
 
     /// A file where the runtime directory would be holds no plan: below a
     /// file nothing is there (ENOTDIR), which no entry leaves. It is the
-    /// plain decoy, where it counted as an interrupted entry whose `recover`
-    /// could not remove the file, and check sent the operator to it in a
+    /// plain decoy. Counted as an interrupted entry, it would have check
+    /// send the operator to a `recover` that cannot remove the file, in a
     /// loop.
     #[test]
     fn a_plan_below_a_file_is_no_plan() {
