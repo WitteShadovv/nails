@@ -37,11 +37,13 @@
 //! # Local accounts only
 //!
 //! The passwd database is the local `/etc/passwd`, read with `O_NOATIME` so
-//! that a check or an activation leaves its access time alone. That is all the
-//! static musl build's own lookups consult: neither consults NSS, so
-//! network-directory (LDAP/SSSD) accounts will not resolve, and neither will
-//! the logind fallback for them. This is acceptable for the single-operator
-//! threat model.
+//! that a check or an activation leaves its access time alone, and nothing
+//! else. The static musl build's `getpwuid` and `getpwnam` consult no NSS
+//! either, but ask nscd (`/var/run/nscd/socket`) for an account the file
+//! lacks; this reader does not, so an account only nscd resolves, like other
+//! network-directory (LDAP/SSSD) accounts, will not resolve, and neither will
+//! the logind fallback for it. This is acceptable for the single-operator
+//! threat model, which requires the operator's account in `/etc/passwd`.
 
 use crate::constants::{ENV_TARGET_UID, ENV_TARGET_USER};
 use crate::{NailsError, Result};
@@ -241,15 +243,15 @@ pub(crate) trait SessionOwnerSource {
     fn seat0_active_uid(&self) -> Option<u32>;
 }
 
-/// The passwd database as the shipped static musl build reads it: the local
-/// `/etc/passwd` and nothing else.
+/// The passwd database NAILS reads: the local `/etc/passwd` and nothing else.
 const PASSWD_FILE: &str = "/etc/passwd";
 
 /// The local passwd database, read with `O_NOATIME`
 /// ([`open_noatime`](crate::filesystem::real::open_noatime)). musl's
 /// `getpwuid` and `getpwnam` read the same file, but with a plain open, which
 /// on a decoy root mounted `relatime` can set its access time to the moment
-/// of a check or an activation.
+/// of a check or an activation, and ask nscd for an account the file lacks,
+/// which this reader does not.
 struct SystemPasswd;
 
 impl SystemPasswd {
