@@ -1309,20 +1309,22 @@ of this changelog for that version becomes the release notes word for word, and
 - `backend-entries` now reads the devices and paths that options name, on every line, as it reads a
   line's source: a path with no link followed, and a device's path in `/dev` through its links that
   stay in `/dev`, so a udev link, a link in `/dev/block`, a volume group's link and a path with
-  `/dev/./` or a doubled `/` name the device they lead to, as they do for ext4. The options are
-  ext4's `journal_path=` and `journal_dev=` (a device by its number), XFS's `logdev=` and `rtdev=`,
-  btrfs's `device=`, `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`, cifs's
-  `credentials=`, an overlay's `lowerdir=`, `upperdir=` and `workdir=`, and a crypttab line's
-  `tpm2-device=`, `fido2-device=`, `tpm2-signature=` and `tpm2-pcrlock=`. A device the volume is
-  stored on, or a path that lies in the volume or in the root's folder, fails the line, with
-  `--allow-decoy-storage` too, and a path in the volume makes the attach gate refuse a volume of its
-  own. An option that has the boot open the device it names for writing, the device options of ext4,
-  XFS and btrfs and `tpm2-device=` and `fido2-device=`, fails the line on any other device of the
-  hidden drive too: its whole disk, a partition of it beside the volume's, or a device stacked on
-  one of these. All of these passed both checks, though ext4 and XFS write to their journal and log
-  devices and `systemd-cryptsetup` writes TPM commands to what a `tpm2-device=` names (systemd 260.5
-  wrote them to the first bytes of a file named so). `tpm2-device=auto`, `fido2-device=auto` and the
-  TPM's own node, such as `/dev/tpmrm0`, pass. A value in another form, such as a relative path or a
+  `/dev/./` or a doubled `/` name the device they lead to, as they do for ext4. A path
+  `/dev/block/<major>:<minor>` that leads to no block device, as before udev has made that link,
+  names the device with that number, in any field of a line. The options are ext4's `journal_path=`
+  and `journal_dev=` (a device by its number), XFS's `logdev=` and `rtdev=`, btrfs's `device=`,
+  `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`, cifs's `credentials=`, an
+  overlay's `lowerdir=`, `upperdir=` and `workdir=`, and a crypttab line's `tpm2-device=`,
+  `fido2-device=`, `tpm2-signature=` and `tpm2-pcrlock=`. A device the volume is stored on, or a
+  path that lies in the volume or in the root's folder, fails the line, with `--allow-decoy-storage`
+  too, and a path in the volume makes the attach gate refuse a volume of its own. An option that has
+  the boot open the device it names for writing, the device options of ext4, XFS and btrfs and
+  `tpm2-device=` and `fido2-device=`, fails the line on any other device of the hidden drive too:
+  its whole disk, a partition of it beside the volume's, or a device stacked on one of these. All of
+  these passed both checks, though ext4 and XFS write to their journal and log devices and
+  `systemd-cryptsetup` writes TPM commands to what a `tpm2-device=` names (systemd 260.5 wrote them
+  to the first bytes of a file named so). `tpm2-device=auto`, `fido2-device=auto` and the TPM's own
+  node, such as `/dev/tpmrm0`, pass. A value in another form, such as a relative path or a
   `driver:param` form of `tpm2-device=` (`cmd:…`), and an option NAILS does not know whose value may
   name a path or a device, absolute, a tag, or with a `/` or a `:` in it, make the line not plain,
   on any line.
@@ -1345,20 +1347,26 @@ of this changelog for that version becomes the release notes word for word, and
   drive that the line names itself, on its whole disk by any of its names, a partition of it or a
   device stacked on one of these, `noauto` lines and `--allow-decoy-storage` included: an fstab line
   with `x-systemd.makefs`, a mount or a swap line, and a crypttab line with `swap`, `tmp` or `tmp=`
-  or that opens its source in plain mode. systemd 260.5 has `systemd-makefs` format the line's own
-  device, or the mapping over it, wherever it finds no filesystem there, and it probes only for
-  filesystems, so a whole disk with a partition table and nothing at its own start looks empty to
-  it: `systemd-makefs ext4` formatted such a disk, and its partition table and the files of its
-  partition were gone, so a random-key swap line for the kernel name a USB drive gets at one boot
-  would destroy the volume on it. A plain mapping checks no header, so what the boot writes to it,
-  such as an fstab line with `x-systemd.makefs` for it, lands on the source, with an `offset=` into
-  the volume's partition too. The device of a crypttab line's `header=<path>:<device>`, which the
-  crypttab generator mounts read-write, fails the line on any device of the drive as well, as
-  `journal_path=` and `tpm2-device=` do. All of these passed. On a device the volume is stored on
-  such a line fails as before, so the decoy's own line for the filesystem a root accepted with the
-  flag lies in stays its own with `x-systemd.makefs`, as NixOS writes it for `autoFormat`, since
-  that device holds the filesystem. With the flag, a random-key swap line for another partition of
-  the disk such a root lies on fails as well.
+  or that opens its source in plain mode or with a `header=`. systemd 260.5 has `systemd-makefs`
+  format the line's own device, or the mapping over it, wherever it finds no filesystem there, and
+  it probes only for filesystems, so a whole disk with a partition table and nothing at its own
+  start looks empty to it: `systemd-makefs ext4` formatted such a disk, and its partition table and
+  the files of its partition were gone, so a random-key swap line for `/dev/sdb` would destroy the
+  volume on a USB drive that has that name at boot. NAILS judges such a line by the device that has
+  the name while the check runs. A plain mapping checks no header, and one opened with a `header=`
+  loads its header from elsewhere and checks nothing on its source either, so what the boot writes
+  to it, such as an fstab line with `x-systemd.makefs` for it, lands on the source, with an
+  `offset=` into the volume's partition too. The device of a crypttab line's
+  `header=<path>:<device>`, which the crypttab generator mounts read-write, and a device a `header=`
+  names itself, which `cryptsetup` writes to where it repairs a damaged copy of a LUKS2 header, fail
+  the line on any device of the drive as well, as `journal_path=` and `tpm2-device=` do. All of
+  these passed. On a device the volume is stored on such a line fails as before, so the decoy's own
+  line for the filesystem a root accepted with the flag lies in stays its own with
+  `x-systemd.makefs`, as NixOS writes it for `autoFormat`, since that device holds the filesystem,
+  and a line with it for a device a filesystem is mounted from now passes for the same reason, such
+  as the decoy's own line for the filesystem a container root lies in. For a root on the decoy's own
+  disk, one the flag accepted or one in a container or image file on a filesystem the decoy uses, a
+  random-key swap line for another partition of that disk fails as well.
 - NAILS now follows a device's path in `/dev` through its links only while they lead to a path in
   `/dev`, and stops at the first link that leads out of it, so it reads no link and makes no lookup
   past `/dev`, on the decoy's disk say, for a tag too, by the link udev makes for it in

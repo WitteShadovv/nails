@@ -4,7 +4,9 @@
 //! Backend-entries pre-flight check
 //!
 //! Refuses activation while the decoy's `/etc/fstab` or `/etc/crypttab` holds
-//! an entry that opens or mounts the hidden volume.
+//! an entry that opens or mounts the hidden volume, or has the boot write over
+//! its drive, among the lines it reads (see below, and the decoy requirements
+//! for what it lets pass).
 //!
 //! Such an entry is an enabler stored on the decoy: it names the hidden drive
 //! in the decoy's own configuration, where an examination reads it, and at boot
