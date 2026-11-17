@@ -34,7 +34,9 @@ QEMU process:
    ``init_t``; the overlay feature options pinned; the canaries land in the
    uppers; no NAILS unit and no unit the hidden root masks failed; a login
    and a failed login in the session, each recorded in the session's own
-   files; a kernel log marker and a file in ``/run``; a unit that logs
+   files; no swap on a zram device and zram-generator masked, with a marker
+   held in more memory than its unit may keep in RAM found on no zram
+   device; a kernel log marker and a file in ``/run``; a unit that logs
    through each of journald's sockets as it stops, after journald; a disk
    attached in the session read-only by the disk guard's udev rule; the
    rehearsal planted; the kernel's process numbers pushed far past a cold
@@ -46,7 +48,9 @@ QEMU process:
    the decoy made among it; ``/run/initramfs`` unchanged; the attached disk
    writable again; none of the session's files on the decoy; the SELinux
    booleans as they were; no failed unit but one a soft-reboot is known to
-   leave; the login and boot records as a power cycle leaves them, with no
+   leave; the zram devices, their swap and zram-generator's units as at the
+   cold boot, with the session's marker on none of them; the login and boot
+   records as a power cycle leaves them, with no
    record of the hidden logins and the consoles' units numbered as at the
    cold boot;
    the rehearsal's scan, which names the compressing btrfs root as not
@@ -55,8 +59,10 @@ QEMU process:
    the package database: check warns of it with its fix;
 7. a second session, as a user through sudo with the fresh-home persona and
    the sleep guard on: its home labelled ``user_home_dir_t``; the same
-   assertions in it, the rehearsal's aside; the entry's drift advisory; ended
-   with the emergency, and the same way-back assertions;
+   assertions in it, the rehearsal's aside; the entry's drift advisory; zram0
+   left set up with a swap area out of use and the marker on it, as a stop
+   whose reset failed leaves a device; ended with the emergency, and the same
+   way-back assertions;
 8. a last plain soft-reboot, the second control; the decoy disk and ``/run``
    after each way back changed only where a control changed them; and a login
    on the decoy, the positive control of the login records.
@@ -363,12 +369,16 @@ NAILS_UNITS = "overlay-runtime"
 # The units a switch is known to leave failed on these images, with why. Any
 # other failed unit fails the gate, unless the first plain soft-reboot left it
 # failed as well.
-SOFT_REBOOT_FAILURES = {
-    "systemd-zram-setup@zram0.service": "the stop of the zram swap at a switch "
-    "can fail to reset the device (status=1/FAILURE), and the next root then "
-    "cannot set it up (zram: Cannot change disksize for initialized device): "
-    "that root and every later one run without the zram swap until power-off",
-}
+SOFT_REBOOT_FAILURES: dict[str, str] = {}
+# zram-generator's setup units. Their stop at a plain soft-reboot can fail to
+# reset the device, and the next root then cannot set it up (zram: Cannot
+# change disksize for initialized device), so the first control may leave one
+# failed; the power cycle after it starts the device anew. The hidden root
+# runs none of them, and the way back resets a zram device left so: none may
+# fail in a session or after a way back.
+ZRAM_SETUP = "systemd-zram-setup@"
+# Where the entry masks zram-generator in the hidden root.
+ZRAM_MASK = "/run/systemd/system-generators/zram-generator"
 # The pieces the way back leaves in /run for the decoy's first start, which
 # its reconcile step removes: its binary's folder, its unit and the link that
 # pulls the unit in.
@@ -621,6 +631,41 @@ def pid_range(pid: int) -> tuple[int, int]:
     return (low, 2 * low - 1)
 
 
+def zram_shape(state: str) -> list[str]:
+    """What :data:`ZRAM_STATE` read of the zram devices, their swap and
+    zram-generator's units, without what use changes: each device's state,
+    size and writeback device, each swap's device, type, size and priority,
+    and each unit's states. Sorted, so two reads compare."""
+    shape: list[str] = []
+    for line in state.splitlines():
+        words = line.split()
+        if not words:
+            continue
+        if words[0].startswith("zram") and "initstate=" in line:
+            shape.append(line.split(" mm_stat=")[0].strip())
+        elif words[0].startswith("/") and len(words) >= 5:
+            shape.append(" ".join([words[0], words[1], words[2], words[4]]))
+        elif "=" in words[0]:
+            shape.append(line.strip())
+    return sorted(shape)
+
+
+def zram_marker_counts(text: str) -> dict[str, int | None]:
+    """The marker counts the zram probe printed, ``/dev/zramN=count`` each, by
+    device and the phase before it (``held``, ``stopped``, or none after a
+    way back): ``None`` where the count is not a number."""
+    counts: dict[str, int | None] = {}
+    phase = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line in ("held:", "stopped:"):
+            phase = line[:-1] + " "
+        elif line.startswith("/dev/zram") and "=" in line:
+            device, _, count = line.partition("=")
+            counts[phase + device] = int(count) if count.isdigit() else None
+    return counts
+
+
 def getty_logins(records: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     """The process number each console's unit wrote into a wtmp at the last
     start in it: the first record of each line after the last boot record
@@ -819,6 +864,8 @@ class Gate:
         # unit and by the wtmp line each wrote.
         self.cold_units: dict[str, int] = {}
         self.cold_lines: dict[str, int] = {}
+        # The zram devices, their swap and units at that cold boot.
+        self.cold_zram = ""
         # The process number each session pushed the counter to.
         self.reached: dict[int, int | None] = {}
         # Whether the kernel records the programs run from runtime data
@@ -1776,8 +1823,23 @@ class Gate:
         self.check(f"session {n}: each canary lands in its upper", not missing, missing)
         failed = self.judge_failed(f"session {n}", f"failed-hidden-{n}")
         self.facts[f"failed-hidden-{n}"] = failed
-        self.fact(f"zram-hidden-{n}", ZRAM_STATE)
-        self.zram_probe(n)
+        zram = self.fact(f"zram-hidden-{n}", ZRAM_STATE)
+        mask = self.fact(f"zram-mask-{n}", f"readlink {ZRAM_MASK}; true")
+        swaps = [line for line in zram.splitlines() if line.startswith("/dev/zram")]
+        self.check(
+            f"session {n}: no swap on a zram device, zram-generator masked",
+            not swaps and mask == "/dev/null",
+            {"zram": zram, "mask": mask},
+        )
+        counts = zram_marker_counts(self.zram_probe(n))
+        self.check(
+            f"session {n}: the marker held past its unit's RAM is on no zram "
+            "device",
+            all(count == 0 for count in counts.values()),
+            counts,
+        )
+        if n == 2:
+            self.zram_leftover(n)
         # A login and a failed login in the hidden session: their records land
         # in the session's own files, and none may reach the decoy.
         start = self.fact(
@@ -1859,7 +1921,7 @@ class Gate:
         )
         return mark, count
 
-    def zram_probe(self, n: int) -> None:
+    def zram_probe(self, n: int) -> str:
         """Whether the hidden session's pages reach a zram device: a unit holds
         a marker in its memory, and the kernel is asked to reclaim the unit's
         memory (``memory.reclaim``), which swaps it out where the session has
@@ -1868,7 +1930,7 @@ class Gate:
         unit = f"gate-zram-{n}"
         flag = f"{HIDDEN}/.gate-zram-{n}"
         mark, count = self.zram_marker(n)
-        self.fact(
+        return self.fact(
             f"zram-probe-{n}",
             f"systemd-run --unit={unit} --collect bash -c "
             f"'x=$(yes {mark} | head -c 16000000); touch {flag}; sleep 600'; "
@@ -1880,6 +1942,29 @@ class Gate:
             f"echo held:; {count}; systemctl stop {unit}; rm -f {flag}; "
             f"sleep 2; echo stopped:; {count}; swapon --show --noheadings --bytes",
             600,
+        )
+
+    def zram_leftover(self, n: int) -> None:
+        """Leave zram0 as a stop whose reset failed leaves it, with the
+        session's own swap area and the marker on it, for the way back to
+        reset: set up with a swap area out of use. Where a swap uses the
+        device, it is left alone."""
+        mark, count = self.zram_marker(n)
+        out = self.fact(
+            f"zram-leftover-{n}",
+            "grep -q '^/dev/zram0 ' /proc/swaps && { echo in use; exit; }; "
+            "if test \"$(cat /sys/block/zram0/initstate)\" = 0; then "
+            "echo 64M > /sys/block/zram0/disksize && mkswap /dev/zram0; fi; "
+            f"printf '%s\\n' {mark} | "
+            "dd of=/dev/zram0 bs=4096 seek=4 conv=notrunc,fsync status=none; "
+            f"echo initstate=$(cat /sys/block/zram0/initstate); {count}",
+        )
+        counts = zram_marker_counts(out)
+        self.check(
+            f"session {n}: zram0 is left set up with a swap area out of use "
+            "and the marker on it",
+            "initstate=1" in out and (counts.get("/dev/zram0") or 0) > 0,
+            out,
         )
 
     def plant(self) -> None:
@@ -2451,8 +2536,22 @@ class Gate:
         units = self.getty_numbers(f"after-{n}", self.cold_units)
         lines = getty_logins(after.wtmp)
         self.fact(f"pids-after-{n}", PID_LISTING)
-        self.fact(f"zram-after-{n}", ZRAM_STATE)
-        self.fact(f"zram-marker-after-{n}", self.zram_marker(n)[1])
+        zram = self.fact(f"zram-after-{n}", ZRAM_STATE)
+        cold = self.cold_zram
+        self.check(
+            f"way back {n}: the zram devices, their swap and zram-generator's "
+            "units are as at the cold boot",
+            bool(cold) and zram_shape(zram) == zram_shape(cold),
+            {"cold": zram_shape(cold), "after": zram_shape(zram)},
+        )
+        counts = zram_marker_counts(
+            self.fact(f"zram-marker-after-{n}", self.zram_marker(n)[1])
+        )
+        self.check(
+            f"way back {n}: the session's marker is on no zram device",
+            all(count == 0 for count in counts.values()),
+            counts,
+        )
         problems = [
             *getty_problems(self.cold_units, units, reached),
             *getty_problems(self.cold_lines, lines, reached),
@@ -2510,7 +2609,10 @@ class Gate:
             # What a plain soft-reboot leaves failed before any session may
             # be failed after a way back too.
             for unit in found["other"]:
-                self.allowed_failed[unit] = f"failed after the plain {label} as well"
+                if not unit.startswith(ZRAM_SETUP):
+                    self.allowed_failed[unit] = (
+                        f"failed after the plain {label} as well"
+                    )
         self.facts.setdefault("known-failed-units", {})[f"after {label}"] = [
             *found["known"],
             *found["other"],
@@ -2911,7 +3013,7 @@ class Gate:
         self.cold_units = self.getty_numbers("cold")
         self.cold_lines = getty_logins(self.records_capture("cold").wtmp)
         self.fact("pids-cold", PID_LISTING)
-        self.fact("zram-cold", ZRAM_STATE)
+        self.cold_zram = self.fact("zram-cold", ZRAM_STATE)
         self.where = "decoy before the first entry"
         # The first session: shared home, ended with deactivate.
         self.sh("hidden-root-1", HIDDEN_ROOT)
