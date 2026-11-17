@@ -1164,12 +1164,16 @@ history yourself so an interactive shell has nowhere to write:
   NixOS does by default, or keep the history file in a directory of its own:
   else the check warns for a zsh however new it is. The check reads zsh's
   files by a list of the commands it knows to be harmless, each read by its
-  name and every word, so any other command your files run where zsh may run
-  it makes it warn: an outside program, in the foreground or the background
-  (`stty`, `git` in `precmd`, `sh -c ...`, a script of yours), a key binding
-  other than `bindkey -e` or `bindkey -v`, a widget, a terminal setting, and a
-  name zsh runs as an outside program because no function of it is certainly
-  defined before it runs (see the operator guide). On NixOS, the
+  name and every word, so any other command it reads in your files where zsh
+  may run it makes it warn: an outside program, in the foreground or the
+  background (`stty`, `git` in `precmd`, `sh -c ...`, a script of yours), a
+  key binding other than `bindkey -e` or `bindkey -v`, a widget, a terminal
+  setting, and a name zsh runs as an outside program because no function of
+  it is certainly defined before it runs, or no alias, as an alias counts
+  only on a later line of the same file and in a file sourced after it, and
+  only where nothing may turn `ALIASES` off (see the operator guide). It reads
+  the files by rules that follow zsh 5.9 to 5.9.2 as far as its tests went, so
+  a form they read otherwise than zsh does can still pass. On NixOS, the
   `/etc/zshrc` that `programs.zsh` generates runs the `hostname` program and
   sources `/etc/zinputrc`, which binds keys and makes widgets, so a zsh that
   reads it warns: type the decoy commands in a zsh started as `zsh -f`, which

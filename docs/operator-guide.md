@@ -1692,22 +1692,35 @@ afterwards:
   NixOS's `/etc/zshrc`, is followed, which can change the link's (see
   [What `check` touches](#what-check-touches)). bash's files it reads for
   `history -a` or `history -w` in a file that names `PROMPT_COMMAND`, outside
-  comments as bash reads them (from a `#` that starts a word outside quotes,
-  after a space, a tab or an operator, to the end of its line, a backslash at
-  its end too, a here-document's body holding none), a line whose code ends
-  in a backslash going on in the next. zsh's it reads as zsh does and fails
-  closed where it cannot follow them:
+  comments as bash 5.3's reader starts them: from a `#` that starts a word
+  after a space, a tab or an operator, in the file's code or in a `$(...)` or
+  `<(...)`, to the end of its line, a backslash at its end too, and none in a
+  quote, a backquote pair, a `${...}`, arithmetic or a here-document's body.
+  A `((` whose first `(` group a lone `)` closes it reads as bash does, as a
+  subshell that starts with that group. A `$((` that one closes bash reads as
+  a `$(...)` it parses as code only where it expands the word, so the check
+  starts no comment in it, and warns too where bash expands it and a comment
+  in it takes the `PROMPT_COMMAND` assignment along. Where its reader cannot
+  tell what bash reads, it keeps the text, which can only make it warn: in
+  the first group of a `((` and after the `)` that ends such a subshell,
+  in a `(` it keeps open, as an extended glob's or a regular expression's
+  group is part of a word (`@(a| #b)`), and after a `)` that closes nothing
+  it saw open. A `case` in a `$(...)` it may read otherwise than bash, as a
+  pattern's `)` ends the `$(...)` for it. A line whose code ends in a
+  backslash goes on in the next. zsh's files it reads by rules that follow
+  how zsh 5.9 to 5.9.2 read them, and fails closed where those rules cannot
+  follow them:
 
-  - every command the startup files run, and every hook, widget, alias,
-    function and job they reach that zsh may run, must be on a list of the
-    commands the check knows to be harmless, each read by its name and every
-    word; any other is a doubt. The list holds the builtins that give a
-    status or print (`:`, `true`, `[[ ... ]]`, `test`, `print`, `echo` and
-    `printf` but for `print -z`, `-s`, `-S`, `-v`, `-u` and `-p`, `printf -v`
-    and a word that may be an option an expansion makes, `whence`, `type`,
-    `jobs`, `pwd`, `wait`), `return`, `break`, `continue`, `shift`, and
-    `exit`, `bye` and `logout` (as the files run, before a line is typed, and
-    read as what may end the shell in a hook), `cd`, `pushd`, `popd`,
+  - each command the check reads in the startup files, and in every hook,
+    widget, alias, function and job it follows that zsh may run, must be on a
+    list of the commands the check knows to be harmless, each read by its
+    name and every word; any other is a doubt. The list holds the builtins
+    that give a status or print (`:`, `true`, `[[ ... ]]`, `test`, `print`,
+    `echo` and `printf` but for `print -z`, `-s`, `-S`, `-v`, `-u` and `-p`,
+    `printf -v` and a word that may be an option an expansion makes, `whence`,
+    `type`, `jobs`, `pwd`, `wait`), `return`, `break`, `continue`, `shift`,
+    and `exit`, `bye` and `logout` (as the files run, before a line is typed,
+    and read as what may end the shell in a hook), `cd`, `pushd`, `popd`,
     `umask`, `rehash`, `hash -d` (not `hash cmd=path`), `setopt`, `unsetopt`,
     `set -o` and `emulate -o` of any option of zsh 5.9 to 5.9.2 by its name
     but `CSH_JUNKIE_LOOPS` (the three this check is about count as on, as
@@ -1757,8 +1770,21 @@ afterwards:
     it, or for a command after it in a chain joined by `&&` alone
     (`promptinit && prompt suse`). A regular alias counts the same way, for a
     name written with no quote or backslash in it past no precommand that is
-    a builtin, as zsh puts its value in place of the name as it reads the
-    code but not in `\later`, `'later'` or `noglob later`, and one whose value
+    a builtin (zsh puts no value in place of `\later`, `'later'` or
+    `noglob later`), and only for code zsh reads after the `alias` ran. zsh
+    reads a file's code up to a newline that leaves nothing open, runs that
+    part, then reads on, and puts an alias's value in place of the name as it
+    reads. So an alias counts on a later line of the same file and in a file
+    sourced after it, and not on the rest of its own line, on a line its line
+    goes on in (after a backslash, or a trailing `&&`, `||` or `|`), in the
+    rest of a `{ ... }` group or a compound command it stands in, or in a
+    function defined in the same part: `alias later=:; later` and
+    `alias later=:; precmd() { later }` run `~/bin/later`, a doubt. No alias
+    counts where a file or the command line may turn `ALIASES` off, in any
+    spelling (`setopt no_aliases`, `unsetopt ALIASES`, `set -o noaliases`,
+    `options[aliases]=off`, `emulate zsh -o noaliases`, `zsh +o aliases`), as
+    zsh then puts no alias in place of a name and runs what `PATH` or a
+    function gives it. One whose value
     hands the words it is used with to a command other than one that takes any
     words harmlessly (`echo`, `cd`, `:`) is a doubt where it is used with
     words (`alias k=kill`, then `k -HUP $$`). A function or an alias zsh never
@@ -2024,7 +2050,13 @@ afterwards:
     `SHARE_HISTORY` on, as `-R` sets every option to the mode's defaults (sh's,
     csh's and zsh's hold none of the three), zsh picking the mode by its first
     letter past one `r` (`ksh`, `rksh`, `korn`); an `emulate` whose flags or
-    mode an expansion, brace expansion or a glob makes is a doubt;
+    mode an expansion, brace expansion or a glob makes is a doubt. Where the
+    check reads an option by its name (as here and below), an `emulate` of a
+    mode that turns it on counts as naming it, and one whose line gives it no
+    mode (`alias em=emulate`, then `em sh`) as one of any mode, but for
+    `GLOB_SUBST`, which sh's, ksh's and csh's mode turn on: that counts where
+    the files also name the options that let a glob qualifier in a value run
+    (see below);
   - the file of each function they autoload (`autoload`, `functions -u`, and
     `typeset -fu`, `declare` and `readonly` with `-f` and `-u` or `-U`, their
     options read as zsh reads a builtin's, of either sign before or after the
@@ -2118,35 +2150,39 @@ afterwards:
     nothing, as zsh runs it as a command's name. An assignment, a declaration
     or an `unset` holds only where its builtin runs as the check reads it: a
     function or a regular alias your files define or autoload named like a
-    builtin by which the check reads a setting (the `typeset` family,
-    `unset`, `source`, `.`, `builtin`, `command` and the like, as
-    `alias export=:` or `unset() { ... }`), or whose name an expansion
-    makes, and a `disable` that may take one away are doubts, as zsh runs
-    another command in its place, and what a builtin after `command` sets,
-    which runs an outside program unless `POSIX_BUILTINS` is on, may be set
-    and need not. In sh's or ksh's mode zsh reads the user's files in the
-    home whatever `ZDOTDIR` holds, so where your files may run an
-    `emulate sh`, `bash` or `ksh` that lasts past its command (not one with
-    `-c` after its mode, nor an `emulate -L` in a function), the check reads
-    the home's file of each later stage too. The user's
-    file of each stage is read in each place `ZDOTDIR` may hold, as zsh reads
-    it with `ZDOTDIR` holding that place, and a path that code run as a
-    function names, which runs after your files define it, for every value
-    your files ever give either parameter. As for `ZDOTDIR`, a line that sets
-    or takes `XDG_CONFIG_HOME` away otherwise than by an assignment or an
-    `unset` as written (`XDG_CONFIG_HOME+=x`, `: ${XDG_CONFIG_HOME:=...}`,
-    `read`, `print -v`, `unset -m 'XDG_CONFIG_HOM?'`) is a doubt. For a zsh
-    whose environment it does not know, as one it reads because it found no
-    shell you typed into, a path that names `XDG_CONFIG_HOME` is one it
-    cannot follow, but after a certain assignment in the same file, or once a
-    user's file sets it as its first command. An assignment before a
-    command (`ZDOTDIR=/x true`), which zsh keeps for that command alone (but
-    before a special builtin where `POSIX_BUILTINS` is on), may set the
-    parameter and need not, so the check reads the files both where it puts
-    them and where they were;
+    builtin by which the check reads a setting or a definition (the
+    `typeset` family, `unset`, `source`, `.`, `alias`, `unalias`,
+    `functions`, `unfunction`, `autoload`, `unhash`, `builtin`, `command` and
+    the like, as `alias export=:`, `alias alias=:`, `unset() { ... }` or
+    `functions -c f alias`), or whose name an expansion makes, and a `disable`
+    that may take one away are doubts, as zsh runs another command in its
+    place, and what a builtin after `command` sets, which runs an outside
+    program unless `POSIX_BUILTINS` is on, may be set and need not. In sh's or
+    ksh's mode zsh reads the user's files in the home whatever `ZDOTDIR`
+    holds, so where your files may run an `emulate sh`, `bash` or `ksh` that
+    lasts past its command (not one with `-c` after its mode, nor an
+    `emulate -L` in a function), the check reads the home's file of each later
+    stage too. The user's file of each stage is read in each place `ZDOTDIR`
+    may hold, as zsh reads it with `ZDOTDIR` holding that place, and a path
+    that code run as a function names, which runs after your files define it,
+    for every value your files ever give either parameter. As for `ZDOTDIR`, a
+    line that sets or takes `XDG_CONFIG_HOME` away otherwise than by an
+    assignment or an `unset` as written (`XDG_CONFIG_HOME+=x`,
+    `: ${XDG_CONFIG_HOME:=...}`, `read`, `print -v`,
+    `unset -m 'XDG_CONFIG_HOM?'`) is a doubt. For a zsh whose environment it
+    does not know, as one it reads because it found no shell you typed into, a
+    path that names `XDG_CONFIG_HOME` is one it cannot follow, but after a
+    certain assignment in the same file, or once a user's file sets it as its
+    first command. An assignment before a command (`ZDOTDIR=/x true`), which
+    zsh keeps for that command alone (but before a special builtin where
+    `POSIX_BUILTINS` is on), may set the parameter and need not, so the check
+    reads the files both where it puts them and where they were;
   - zsh's own `promptinit`, and the `add-zsh-hook` and `add-zle-hook-widget`
     it autoloads, it knows by their bytes as zsh 5.9, 5.9.1 and 5.9.2 ship
-    them, and reads for what that code does, and a changed one as code.
+    them, and reads for what that code does, and a changed one as code, as
+    it reads a function of your files' own named `add-zsh-hook` or
+    `add-zle-hook-widget` where your files run it and where `prompt` does
+    (its `set_prompt` runs both with `-D` as it picks a theme).
     `promptinit` marks the prompt themes in `fpath`, and `prompt` runs the one
     it names: the check reads that one (`prompt suse` reads
     `prompt_suse_setup`), and `prompt_default_setup`, which the code `prompt`
@@ -2326,7 +2362,11 @@ afterwards:
   element as written (`aliases[h]+=...`, `${aliases[h]::=...}`,
   `print -v 'aliases[h]'`, `read`, `set -A aliases`, a disabled one in
   `dis_aliases`), when an expansion reads a parameter's value again (`${(e)x}`,
-  `${(%%)x}`, `${~x}`) or a file names `GLOB_SUBST`, when an alias's value, a
+  `${(%%)x}`, `${~x}`) or a file names `GLOB_SUBST`, or may run an `emulate`
+  of sh's, ksh's or csh's mode, which turns it on, where the files name
+  `SH_GLOB` (or the mode may be csh's, which leaves it off) and
+  `BARE_GLOB_QUAL` or `EXTENDED_GLOB`, with which a glob qualifier in a value
+  runs (`emulate sh; setopt bareglobqual noshglob`), when an alias's value, a
   trap's code, a `sched`'s command or a `zstyle -e`'s string holds an
   expansion, when an alias hands the words it is used with to a command that
   reads them as code, options, names or paths (`alias so=setopt`, and an alias
@@ -2395,7 +2435,10 @@ afterwards:
   (`bash --rcfile`, or a `ZDOTDIR` from the
   environment of a shell it found no command typed into), a `TMOUT` the
   environment of such a shell holds, nor a history tool
-  that keeps its own record of each command, such as atuin, as one.
+  that keeps its own record of each command, such as atuin, as one. Nor does
+  it see code that zsh or bash reads otherwise than its rules do: they
+  follow zsh 5.9 to 5.9.2 and bash 5.3 as far as its tests and the setups
+  run in those shells went, and a form none of those held can still pass.
 
   It reads an `eval` of words it can read as code, and so an alias's value, a
   trap's code, a `sched`'s command, a `zstyle -e`'s strings and a function's
@@ -2428,7 +2471,8 @@ afterwards:
   (`eval "$(tool init zsh)"`).
 
   So zsh passes only when no file it reads names the three options, every
-  command it may run is on the list of those the check knows to be harmless,
+  command the check reads where zsh may run it is on the list of those it
+  knows to be harmless,
   nothing is left the check cannot tell and, for the zsh you typed the
   command into,
   nothing it read changed after it started (with its history file in your
