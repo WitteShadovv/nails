@@ -104,11 +104,25 @@ class DecoyDiskTest(unittest.TestCase):
         self.assertEqual(
             fg.changed_paths(listing),
             {
-                f"/var/tmp/systemd-private-{boot}-chronyd.service-*",
-                f"/var/tmp/systemd-private-{boot}-chronyd.service-*/tmp",
-                f"/var/tmp/systemd-private-{boot}-dbus-broker.service-*/tmp/x",
+                "/var/tmp/systemd-private-*-chronyd.service-*",
+                "/var/tmp/systemd-private-*-chronyd.service-*/tmp",
+                "/var/tmp/systemd-private-*-dbus-broker.service-*/tmp/x",
             },
         )
+
+    def test_a_control_of_another_boot_explains_a_unit_s_private_folder(
+        self,
+    ) -> None:
+        # The control before the cold power cycle ran under another boot ID
+        # than the way back after it (seen on Fedora 45: hostnamed's folder).
+        control = fg.changed_paths(
+            f"/var/tmp/systemd-private-{'b5' * 16}-systemd-hostnamed.service-Ab12Cd"
+        )
+        way_back = fg.changed_paths(
+            f"/var/tmp/systemd-private-{'21' * 16}-systemd-hostnamed.service-Zz98Yy\n"
+            "/etc/x"
+        )
+        self.assertEqual(fg.decoy_disk_residue(way_back, [control]), ["/etc/x"])
 
     def test_another_filesystem_s_mount_point_is_left_out(self) -> None:
         listing = "/\n/nix/.ro-store\n/nix/store\n/etc/x\n/run"
