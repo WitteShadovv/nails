@@ -105,39 +105,82 @@ pub fn leftovers(proc: &Path, own: u32) -> Vec<u32> {
     pids
 }
 
-/// How many times [`end_leftovers`] lists and kills again: a process that
-/// forked before its kill leaves a child the next round finds.
+/// How many rounds [`end_leftovers`] makes: a process that forked before its
+/// kill leaves a child the next round finds, and a unit PID 1 started again
+/// before its stop job was queued leaves a new process.
 const KILL_ROUNDS: usize = 4;
 
-/// How long [`end_leftovers`] waits for PID 1 to reap the processes it
-/// killed. A process in uninterruptible sleep dies only when the sleep ends.
+/// How long [`end_leftovers`] waits in each round for PID 1 to reap the
+/// processes it killed. A process in uninterruptible sleep dies only when the
+/// sleep ends.
 const REAP_BUDGET: Duration = Duration::from_secs(5);
 
-/// Kill every process [`leftovers`] lists on the real system (`places.proc`
-/// must be `/proc`), a few rounds, and wait, bounded, until PID 1 has reaped
-/// them all: once a process is gone from `/proc`, PID 1 has also logged what
-/// its end means for its unit, and that goes before the cursor. Returns the
-/// pids killed.
-pub fn end_leftovers(places: &Places) -> Vec<u32> {
+/// How long [`end_leftovers`] waits in each round for the stop jobs it queued
+/// and for any other job but `own_jobs`.
+const JOBS_BUDGET: Duration = Duration::from_secs(5);
+
+/// The service each of `pids` runs in, under the procfs at `proc`: the
+/// outermost `.service` of its cgroup path (`user@1000.service` for a
+/// process of a user manager), each once, sorted. A process outside a
+/// service (a scope, the root cgroup) has none.
+pub fn services_of(proc: &Path, pids: &[u32]) -> Vec<String> {
+    let mut units: Vec<String> = pids
+        .iter()
+        .filter_map(|pid| {
+            let content =
+                std::fs::read_to_string(proc.join(pid.to_string()).join("cgroup")).ok()?;
+            let path = crate::cgroup::v2_path(&content)?;
+            path.split('/')
+                .find(|segment| segment.ends_with(".service") && segment.len() > ".service".len())
+                .map(str::to_string)
+        })
+        .collect();
+    units.sort();
+    units.dedup();
+    units
+}
+
+/// End every process [`leftovers`] lists on the real system (`places.proc`
+/// must be `/proc`), in rounds until none is left. Each round first queues a
+/// stop job for the services they run in, through `systemctl` when there is
+/// one, so that PID 1 does not start one of them again under `Restart=` (a
+/// queued stop job holds a restart back), then SIGKILLs them, waits, bounded,
+/// until PID 1 has reaped them (once a process is gone from `/proc`, PID 1 has
+/// also logged what its end means for its unit, and that goes before the
+/// cursor), and waits for every job but `own_jobs` and for any restart still
+/// due. Returns the pids killed.
+pub fn end_leftovers(places: &Places, systemctl: Option<&Path>, own_jobs: &[&str]) -> Vec<u32> {
     let own = std::process::id();
-    let mut handles: Vec<ProcessHandle> = Vec::new();
+    let mut killed = Vec::new();
     for _ in 0..KILL_ROUNDS {
-        let round: Vec<ProcessHandle> = leftovers(&places.proc, own)
+        let pids = leftovers(&places.proc, own);
+        if pids.is_empty() {
+            break;
+        }
+        if let Some(systemctl) = systemctl {
+            let units = services_of(&places.proc, &pids);
+            if !units.is_empty() {
+                let mut args = vec!["stop", "--no-block", "--"];
+                args.extend(units.iter().map(String::as_str));
+                let _ = tools::run(systemctl, &args, TOOL_BUDGET);
+            }
+        }
+        let handles: Vec<ProcessHandle> = pids
             .into_iter()
-            .filter(|pid| !handles.iter().any(|h| h.pid() == *pid))
             .filter_map(ProcessHandle::open)
             .filter(ProcessHandle::kill)
             .collect();
-        if round.is_empty() {
-            break;
+        let deadline = Instant::now() + REAP_BUDGET;
+        while handles.iter().any(is_unreaped) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
-        handles.extend(round);
+        killed.extend(handles.iter().map(ProcessHandle::pid));
+        if let Some(systemctl) = systemctl {
+            let _ = tools::wait_for_other_jobs(systemctl, own_jobs, JOBS_BUDGET);
+            let _ = settle_units(systemctl);
+        }
     }
-    let deadline = Instant::now() + REAP_BUDGET;
-    while handles.iter().any(is_unreaped) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    handles.iter().map(ProcessHandle::pid).collect()
+    killed
 }
 
 /// Whether the process `handle` opened is still in `/proc`: running, or a

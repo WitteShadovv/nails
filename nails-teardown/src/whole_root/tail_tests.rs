@@ -57,6 +57,29 @@ fn the_leftovers_are_every_process_pid_1_would_still_kill() {
     assert!(leftovers(&world.path().join("no-proc"), 77).is_empty());
 }
 
+#[test]
+fn each_leftover_s_outermost_service_is_named_once() {
+    let world = tempfile::tempdir().unwrap();
+    let proc = world.path().join("proc");
+    for (pid, cgroup) in [
+        (40, "0::/system.slice/systemd-udevd.service/udev\n"),
+        (41, "0::/system.slice/systemd-udevd.service\n"),
+        (
+            42,
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/x.service\n",
+        ),
+        (43, "0::/user.slice/user-1000.slice/session-2.scope\n"),
+        (44, "0::/\n"),
+    ] {
+        process(&proc, pid, 'S', 0, 0, b"p\0");
+        fs::write(proc.join(pid.to_string()).join("cgroup"), cgroup).unwrap();
+    }
+    assert_eq!(
+        services_of(&proc, &[40, 41, 42, 43, 44, 99]),
+        ["systemd-udevd.service", "user@1000.service"]
+    );
+}
+
 /// A fake `systemctl` that appends its arguments to `calls` and fails for
 /// `failing`.
 fn fake_systemctl(dir: &Path, calls: &Path, failing: &str) -> PathBuf {

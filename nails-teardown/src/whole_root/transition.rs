@@ -794,22 +794,16 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     }
 }
 
-/// The last steps before the kmsg cursor ([`tail`]): kill what PID 1 would
-/// still kill at the switch, and once PID 1 has reaped it, wait until no
-/// unit waits to restart, forget the failures that left and wait for the jobs
-/// it queued; then stop journald's sockets, which discards what they hold,
-/// and quiet the hidden ext4 filesystem, whose unmount follows the switch.
+/// The last steps before the kmsg cursor ([`tail`]): end what PID 1 would
+/// still kill at the switch ([`tail::end_leftovers`]) and forget the
+/// failures that left; then stop journald's sockets, which discards what they
+/// hold, and quiet the hidden ext4 filesystem, whose unmount follows the
+/// switch.
 fn finish_tail(env: &Env, plan: &Plan) {
     if let Some(places) = &env.tail {
-        let killed = tail::end_leftovers(places);
+        let killed = tail::end_leftovers(places, env.systemctl.as_deref(), &OWN_JOBS);
         if let (Some(systemctl), false) = (&env.systemctl, killed.is_empty()) {
-            let _ = tail::settle_units(systemctl);
             reset_new_failures(systemctl, &plan.failed_at_entry);
-            let _ = crate::whole_root::tools::wait_for_other_jobs(
-                systemctl,
-                &OWN_JOBS,
-                OTHER_JOBS_BUDGET,
-            );
         }
     }
     if let Some(systemctl) = &env.systemctl {
