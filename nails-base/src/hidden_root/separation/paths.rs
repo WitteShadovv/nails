@@ -142,7 +142,7 @@ pub(super) fn is_claimed(entry: &FstabEntry) -> bool {
 /// Whether `spec`, the first field of an fstab line or the source of a
 /// crypttab line, is the path of a device in `/dev`, which no `..` in it
 /// leads out of.
-fn is_device_path(spec: &str) -> bool {
+pub(super) fn is_device_path(spec: &str) -> bool {
     spec.starts_with("/dev/")
         && !Path::new(spec)
             .components()

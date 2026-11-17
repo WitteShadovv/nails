@@ -22,18 +22,26 @@
 //! spaces and tabs and decodes such an escape in every field, so that
 //! `bin\144` is the option `bind` to it, and it keeps a comma inside quotes in
 //! one option's value (`bind="a,b"`), where NAILS's parser ends the option. A
-//! type list (`ext4,xfs`) is mounted as each of its types in turn, which NAILS
-//! does not read either. So an fstab line is not plain ([`Unplain`]) that
+//! type list (`udf,iso9660`) is mounted as each of its types in turn, on the
+//! same source with the same options, and NAILS reads one only where each of
+//! these mounts is one it reads as a line of that single type
+//! ([`reads_type_list`]): every type in the list is a filesystem the kernel
+//! mounts from a local device ([`LISTED_TYPES`]), and the line is no
+//! bind line and names a device by its path in `/dev` or by a tag NAILS
+//! resolves. Its options are then read as those of a line of no type NAILS
+//! knows options of, so only the generic ones are plain. Debian's installer
+//! writes `/dev/sr0 /media/cdrom0 udf,iso9660 user,noauto 0 0` for the drive it
+//! was installed from. So an fstab line is not plain ([`Unplain`]) that
 //! holds a control character other than a tab, or white space other than a
 //! space or a tab; whose first field or mount point holds a backslash that
 //! begins none of the escapes `\040`, `\011`, `\012` and `\134` (a space, a
 //! tab, a newline and a backslash, which both read alike); whose type or
 //! options hold a backslash, or whose options hold a quote; whose type is a
-//! list; or that gives an option NAILS does not read as the line gives it
-//! (see the `known` module), or names a path in `/dev` by one of its options
-//! otherwise than by that path. Nor is a
-//! line whose first field is neither an absolute path nor a tag NAILS resolves
-//! (`UUID=`, `LABEL=`, `PARTUUID=` or `PARTLABEL=`): `mount` and `swapon` look
+//! list NAILS does not read; or that gives an option NAILS does not read as the
+//! line gives it (see the `known` module), or names a path in `/dev` by one of
+//! its options otherwise than by that path. Nor is a line whose first field is
+//! neither an absolute path nor a tag NAILS resolves (`UUID=`, `LABEL=`,
+//! `PARTUUID=` or `PARTLABEL=`): `mount` and `swapon` look
 //! such a path up from the folder they run in, and `libmount` looks an `ID=`
 //! tag up in `/dev/disk/by-id`, which NAILS does not. That holds for every line
 //! but one whose type names no local path by its first field
@@ -85,7 +93,7 @@
 #[path = "plain_tests.rs"]
 mod tests;
 
-use super::paths::names_dev_otherwise;
+use super::paths::{is_device_path, names_dev_otherwise};
 use crate::crypttab::{CrypttabEntry, parse_crypttab_lines};
 use crate::fstab::{
     FstabEntry, is_host_share_type, is_network_type, is_virtual_type, parse_fstab_lines,
@@ -157,7 +165,8 @@ pub enum Unplain {
     },
     /// Its type holds a backslash.
     TypeBackslash,
-    /// Its type is a list of types.
+    /// Its type is a list of types that NAILS does not read
+    /// ([`reads_type_list`]).
     TypeList,
     /// Its options hold a backslash.
     OptionsBackslash,
@@ -236,7 +245,10 @@ impl Unplain {
                  a backslash"
             ),
             Unplain::TypeBackslash => "its type holds a backslash".to_string(),
-            Unplain::TypeList => "its type is a list of types".to_string(),
+            Unplain::TypeList => format!(
+                "its type is a list of types, which NAILS reads only of {LISTED_SHOWN}, on a line \
+                 that names a device by its path in /dev or by a {TAGS_SHOWN} and is no bind line"
+            ),
             Unplain::OptionsBackslash => "its options hold a backslash".to_string(),
             Unplain::OptionsQuote => "its options hold a quote".to_string(),
             Unplain::Relative => {
@@ -330,6 +342,38 @@ const MORE_TYPES_WITHOUT_A_PATH: &[&str] = &[
     "vmhgfs",
     "xenfs",
 ];
+
+/// The types NAILS reads in a type list ([`reads_type_list`]): filesystems
+/// the kernel mounts from a local device, which a line names by its first
+/// field.
+const LISTED_TYPES: &[&str] = &[
+    "btrfs", "exfat", "ext2", "ext3", "ext4", "f2fs", "iso9660", "msdos", "ntfs3", "udf", "vfat",
+    "xfs",
+];
+
+/// The types of [`LISTED_TYPES`], as a phrase.
+const LISTED_SHOWN: &str = "the types btrfs, exfat, ext2, ext3, ext4, f2fs, iso9660, msdos, \
+                            ntfs3, udf, vfat and xfs";
+
+/// Whether NAILS reads the type list of the fstab line `entry`, whose type
+/// holds a comma: `mount` tries each type of the list in turn on the same
+/// source with the same options, so the line mounts nothing a line of one of
+/// those types would not, where every type in it is one of [`LISTED_TYPES`],
+/// none empty, and the line is no bind line, which `mount` binds whatever its
+/// type, and names a device by its path in `/dev`, with no `..` in it, or by
+/// a tag NAILS resolves. Its source is then judged as any line's is.
+pub(super) fn reads_type_list(entry: &FstabEntry) -> bool {
+    !entry.is_bind()
+        && entry
+            .vfstype
+            .split(',')
+            .all(|vfstype| LISTED_TYPES.contains(&vfstype))
+        && (is_device_path(&entry.spec)
+            || entry
+                .spec
+                .split_once('=')
+                .is_some_and(|(key, _)| TAGS.contains(&key)))
+}
 
 /// FUSE programs that take a remote source by a line's first field, a name
 /// of no path of this computer: an SSH server's folder (`sshfs`), an
@@ -518,7 +562,7 @@ pub fn unplain(entry: &FstabEntry, line: &str) -> Vec<Unplain> {
     if entry.vfstype.contains('\\') {
         why.push(Unplain::TypeBackslash);
     }
-    if entry.vfstype.contains(',') {
+    if entry.vfstype.contains(',') && !reads_type_list(entry) {
         why.push(Unplain::TypeList);
     }
     if entry.options.iter().any(|option| option.contains('\\')) {

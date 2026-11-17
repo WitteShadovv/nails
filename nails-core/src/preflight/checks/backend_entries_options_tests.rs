@@ -544,6 +544,9 @@ const STOCK_LINES: &[&str] = &[
     "UUID=0A1B /srv/s2 vfat umask=0077 0 1",
     "UUID=0a1c none swap sw 0 0",
     "/dev/sr0 /media/cdrom0 iso9660 user,noauto 0 0",
+    "/dev/sr0        /media/cdrom0   udf,iso9660 user,noauto     0       0",
+    "/dev/sr1 /media/cdrom1 udf,iso9660 user,noauto 0 0",
+    "/dev/fd0 /media/floppy0 auto rw,user,noauto 0 0",
     "PARTUUID=5e0b-01 /srv/s3 ext4 rw,discard,errors=remount-ro,x-systemd.growfs 0 1",
     "/dev/disk/by-uuid/0a1e /srv/s4 ext4 defaults 0 1",
     "/swap.img none swap sw 0 0",
@@ -615,6 +618,79 @@ fn the_lines_of_stock_installs_pass() {
     );
     let result = run_allowing(&decoy.fs, Allow::DecoyStorage);
     assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn debians_line_for_an_optical_drive_passes_and_a_list_with_another_type_fails() {
+    // Debian's installer writes the first line for the drive of a system
+    // installed from a CD, a DVD or an ISO: mount tries udf and then iso9660
+    // on /dev/sr0. With the flag the root's own line for / is the only one
+    // left, as without the optical drive's line.
+    const CDROM: &str = "/dev/sr0        /media/cdrom0   udf,iso9660 user,noauto     0       0\n";
+    let installed = decoy().file(
+        "/etc/fstab",
+        &format!("/dev/nvme0n1p3 / ext4 errors=remount-ro 0 1\n{CDROM}"),
+    );
+    for allow in [Allow::Nothing, Allow::DecoyStorage] {
+        let result = run_allowing(&installed.fs, allow);
+        assert!(result.is_pass(), "{allow:?}: {result:?}");
+    }
+    let fs = rendered(
+        BIND_OF_ROOT,
+        &format!("/dev/vda1 / ext4 errors=remount-ro 0 1\n{CDROM}"),
+    );
+    assert!(hidden_volume_with_the_flag(&fs).is_warn());
+    let result = run_allowing(&fs, Allow::DecoyStorage);
+    assert_eq!(result.message(), only_the_decoys_own_line("/"));
+    // A list with a type off NAILS's list is not plain, with the flag and
+    // without it, and so is one whose options are those of one of its types.
+    for (line, shown, reason) in [
+        (
+            "/dev/sr0 /media/cdrom0 udf,iso9660,nfs user,noauto 0 0",
+            "/dev/sr0 /media/cdrom0 udf,iso9660,nfs",
+            Unplain::TypeList.reason(),
+        ),
+        (
+            "/dev/sr0 /media/cdrom0 udf,iso9660 user,noauto,uid=1000 0 0",
+            "/dev/sr0 /media/cdrom0 udf,iso9660",
+            unknown("uid"),
+        ),
+    ] {
+        let fs = rendered(
+            BIND_OF_ROOT,
+            &format!("/dev/vda1 / ext4 errors=remount-ro 0 1\n{line}\n"),
+        );
+        let result = run_allowing(&fs, Allow::DecoyStorage);
+        assert!(result.is_fail(), "{line}: {result:?}");
+        assert_eq!(
+            result.message(),
+            may_name_the_volume(&format!(
+                "/etc/fstab: '{shown}' (NAILS reads only plain lines, and {reason})"
+            )),
+            "{line}"
+        );
+        let unplain = decoy().file(
+            "/etc/fstab",
+            &format!("/dev/nvme0n1p3 / ext4 errors=remount-ro 0 1\n{line}\n"),
+        );
+        assert!(unplain.run().is_fail(), "{line}");
+    }
+    // A list line for the volume's own mapping mounts it, as a line of one
+    // of its types does.
+    let result = decoy()
+        .file(
+            "/etc/fstab",
+            "/dev/nvme0n1p3 / ext4 defaults 0 1\n\
+             /dev/mapper/data /media/cdrom0 udf,iso9660 user,noauto 0 0\n",
+        )
+        .run();
+    assert_eq!(
+        result.message(),
+        names_the_volume(
+            "/etc/fstab: '/dev/mapper/data /media/cdrom0 udf,iso9660' (it mounts the volume at \
+             /mnt)"
+        )
+    );
 }
 
 /// The names of the volume's device and drive that udev, LVM and the kernel

@@ -100,7 +100,7 @@ fn a_relative_device_a_list_of_types_or_an_escaped_type_is_not_plain() {
         (
             "dev/mapper/veracrypt1 /media/x ext4,xfs nofail 0 0",
             "dev/mapper/veracrypt1 /media/x ext4,xfs",
-            format!("its type is a list of types and {RELATIVE}"),
+            format!("{} and {RELATIVE}", Unplain::TypeList.reason()),
         ),
         (
             "dev/dm-9 /media/x cramfs nofail 0 0",
@@ -118,9 +118,9 @@ fn a_relative_device_a_list_of_types_or_an_escaped_type_is_not_plain() {
             "its type holds a backslash".to_string(),
         ),
         (
-            "/dev/mapper/veracrypt1 /media/x ext4,xfs nofail 0 0",
-            "/dev/mapper/veracrypt1 /media/x ext4,xfs",
-            "its type is a list of types".to_string(),
+            "/dev/mapper/veracrypt1 /media/x ext4,nfs nofail 0 0",
+            "/dev/mapper/veracrypt1 /media/x ext4,nfs",
+            Unplain::TypeList.reason(),
         ),
         (
             "/dev/mapper/veracrypt1 /media/x ext4 nofail,x-systemd.after=a\\x2db.service 0 0",
@@ -136,6 +136,49 @@ fn a_relative_device_a_list_of_types_or_an_escaped_type_is_not_plain() {
             "{line}"
         );
         assert_not_plain(&judgement.entries[0], shown, &reason);
+    }
+}
+
+#[test]
+fn a_list_of_local_types_is_judged_by_the_device_it_names() {
+    // mount tries each type of the list on the volume's mapping: the line
+    // mounts the volume as the line of one of those types does, and so does
+    // the noauto line Debian's installer writes for an optical drive, here
+    // for the volume's mapping.
+    for (line, single) in [
+        (
+            "/dev/mapper/veracrypt1 /media/x ext4,xfs nofail 0 0",
+            "/dev/mapper/veracrypt1 /media/x ext4 nofail 0 0",
+        ),
+        (
+            "/dev/mapper/veracrypt1 /media/cdrom0 udf,iso9660 user,noauto 0 0",
+            "/dev/mapper/veracrypt1 /media/cdrom0 iso9660 user,noauto 0 0",
+        ),
+    ] {
+        let judged = |line: &str| {
+            let world = external_veracrypt().fstab(&with_the_decoys_lines(line));
+            let judgement = world.judge("/mnt");
+            assert!(
+                judgement.entries.iter().all(|entry| !entry.not_plain),
+                "{line}: {judgement:?}"
+            );
+            judgement
+                .entries
+                .iter()
+                .map(|entry| (entry.kind, entry.why.clone(), entry.boot_needs))
+                .collect::<Vec<_>>()
+        };
+        let list = judged(line);
+        assert_eq!(list, judged(single), "{line}");
+        assert_eq!(
+            list,
+            [(
+                EntryKind::Blocking,
+                "it mounts the volume at /mnt".to_string(),
+                false
+            )],
+            "{line}"
+        );
     }
 }
 
