@@ -26,10 +26,12 @@ use std::path::{Path, PathBuf};
 #[derive(Default)]
 pub(crate) struct FakeHost {
     reloads: Cell<u32>,
-    /// The next root to look at on the first reload.
+    /// The next root to look at on each reload.
     nextroot: Option<PathBuf>,
-    /// Whether it was a mount point then.
+    /// Whether it was a mount point at the first reload.
     populated_at_first_reload: Cell<Option<bool>>,
+    /// Whether it was a mount point at the last reload.
+    populated_at_last_reload: Cell<Option<bool>>,
     /// Request a cancel during the first reload, as a Ctrl+C would.
     cancel_at_reload: bool,
     /// The files that stand for the kernel's helper paths.
@@ -83,12 +85,13 @@ impl EntryHost for FakeHost {
         if self.cancel_at_reload && self.reloads.get() == 0 {
             nails_core::cancel::testing::request();
         }
-        if self.reloads.get() == 0
-            && let Some(nextroot) = &self.nextroot
-        {
+        if let Some(nextroot) = &self.nextroot {
             let entries = read_mountinfo().unwrap();
-            self.populated_at_first_reload
-                .set(Some(entries.iter().any(|e| e.mount_point == *nextroot)));
+            let populated = Some(entries.iter().any(|e| e.mount_point == *nextroot));
+            if self.reloads.get() == 0 {
+                self.populated_at_first_reload.set(populated);
+            }
+            self.populated_at_last_reload.set(populated);
         }
         self.reloads.set(self.reloads.get() + 1);
         Ok(())
@@ -813,7 +816,13 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
         assert!(paths.binary_copy().is_file());
         assert!(world.run.path().join(DROPIN_DIR).join(DROPIN_NAME).exists());
         assert_timeout_guard(&world, true);
-        assert_eq!(host.reloads.get(), 1);
+        // One reload loads the drop-in before anything is mounted, and one at
+        // the end, with the next root in place, has PID 1 take in what the
+        // entry mounted while the decoy's mounts are still noatime.
+        assert_eq!(
+            (host.reloads.get(), host.populated_at_last_reload.get()),
+            (2, Some(true))
+        );
         let plan = Plan::load(&paths.plan()).unwrap();
         assert!(plan.armed_for(Direction::Enter, unix_now()));
         assert_eq!(plan.hidden.init, Path::new("/usr/lib/systemd/systemd"));

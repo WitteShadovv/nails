@@ -1297,6 +1297,36 @@ fn quiet_children_mounts_and_trees_change_no_access_time() {
     read(&file);
     assert_ne!(atime(), aged, "a read after the quiet mounts updates it");
 
+    // A bind made while the mounts are quiet takes `noatime` from the mount
+    // it copies, and gets that mount's own mode when they get theirs back.
+    let bound = at.join("bound");
+    mkdir(&bound);
+    let bound_options = || {
+        top_mount_at(&read_mountinfo().expect("read mountinfo"), &bound)
+            .expect("the bind's mount")
+            .mount_opts
+            .clone()
+    };
+    let bound_has = |word: &str| bound_options().split(',').any(|option| option == word);
+    {
+        let _quiet = QuietMounts::open().expect("quiet the mounts");
+        nix::mount::mount(
+            Some(disk.as_path()),
+            &bound,
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .expect("bind the disk");
+        assert!(bound_has("noatime"), "{}", bound_options());
+    }
+    assert!(
+        bound_has("relatime"),
+        "the bind has the disk's own mode: {}",
+        bound_options()
+    );
+    nix::mount::umount(&bound).expect("unmount the bind");
+
     // A lookup through a quiet copy of the tree follows a symlink without
     // updating the link's access time, where a plain lookup updates it.
     let link = disk.join("link");

@@ -234,10 +234,68 @@ fn set_attr(
 /// Every mount of this process's mount namespace that keeps access times,
 /// made `noatime` by [`QuietMounts::open`] for as long as the value lives,
 /// and given its own mode back when it is dropped.
+///
+/// A bind made while it lives takes `noatime` from the mount it copies. When
+/// it is dropped, every mount made since that is `noatime` and shows a part
+/// of a filesystem it changed gets that mount's own mode too ([`inherited`]),
+/// the mode the bind would have had without it.
 #[derive(Debug, Default)]
 pub struct QuietMounts {
     /// Each mount changed, by a descriptor of it, with the mode it had.
     changed: Vec<(rustix::fd::OwnedFd, u64)>,
+    /// Each mount changed, as the mount table listed it, with the mode it had.
+    sources: Vec<Source>,
+    /// The IDs of the mounts the mount table listed when it was opened.
+    before: Vec<i32>,
+}
+
+/// A mount [`QuietMounts`] made `noatime`: the filesystem it shows (its
+/// device and the directory of it at its root) and the mode it had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Source {
+    dev: String,
+    root: std::path::PathBuf,
+    mode: u64,
+}
+
+/// The mounts of `mounts` that took `noatime` from a mount [`QuietMounts`]
+/// changed, with the mode to give each: one not in `before`, `noatime`, on a
+/// filesystem that keeps access times on a disk, that shows a directory at or
+/// below the root of a changed mount of its device. Of several such mounts,
+/// the one whose root is the deepest is the one a bind copied.
+fn inherited<'a>(
+    sources: &[Source],
+    before: &[i32],
+    mounts: &'a [crate::mountinfo::MountEntry],
+) -> Vec<(&'a crate::mountinfo::MountEntry, u64)> {
+    mounts
+        .iter()
+        .filter(|mount| !before.contains(&mount.mount_id))
+        .filter(|mount| atime_mode(&mount.mount_opts).is_none())
+        .filter(|mount| !NO_DISK_ATIMES.contains(&mount.fstype.as_str()))
+        .filter_map(|mount| {
+            sources
+                .iter()
+                .filter(|source| source.dev == mount.dev && mount.root.starts_with(&source.root))
+                .max_by_key(|source| source.root.components().count())
+                .map(|source| (mount, source.mode))
+        })
+        .collect()
+}
+
+/// The mount at `mount`'s mount point, by a descriptor, when it is the one
+/// the mount table lists there: `None` for a mount another covers, which no
+/// lookup reaches.
+fn reach(mount: &crate::mountinfo::MountEntry) -> Option<rustix::fd::OwnedFd> {
+    use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
+    use rustix::mount::{OpenTreeFlags, open_tree};
+    let flags = OpenTreeFlags::OPEN_TREE_CLOEXEC
+        | OpenTreeFlags::AT_NO_AUTOMOUNT
+        | OpenTreeFlags::AT_SYMLINK_NOFOLLOW;
+    let fd = open_tree(CWD, &mount.mount_point, flags).ok()?;
+    let reached = statx(&fd, "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID)
+        .is_ok_and(|stat| i64::try_from(stat.stx_mnt_id).ok() == Some(i64::from(mount.mount_id)));
+    reached.then_some(fd)
 }
 
 impl QuietMounts {
@@ -251,34 +309,29 @@ impl QuietMounts {
     /// fails puts back the ones made before it and is the error: the caller
     /// then knows the request it guards would set access times.
     pub fn open() -> std::io::Result<Self> {
-        use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
-        use rustix::mount::{OpenTreeFlags, open_tree};
         let mut quiet = QuietMounts::default();
         if !may_spawn_without_access_times() {
             return Ok(quiet);
         }
-        for mount in crate::mountinfo::read_mountinfo()? {
+        let mounts = crate::mountinfo::read_mountinfo()?;
+        quiet.before = mounts.iter().map(|mount| mount.mount_id).collect();
+        for mount in mounts {
             let Some(mode) = atime_mode(&mount.mount_opts) else {
                 continue;
             };
             if NO_DISK_ATIMES.contains(&mount.fstype.as_str()) {
                 continue;
             }
-            let flags = OpenTreeFlags::OPEN_TREE_CLOEXEC
-                | OpenTreeFlags::AT_NO_AUTOMOUNT
-                | OpenTreeFlags::AT_SYMLINK_NOFOLLOW;
-            let Ok(fd) = open_tree(CWD, &mount.mount_point, flags) else {
+            let Some(fd) = reach(&mount) else {
                 continue;
             };
-            let reached =
-                statx(&fd, "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID).is_ok_and(|stat| {
-                    i64::try_from(stat.stx_mnt_id).ok() == Some(i64::from(mount.mount_id))
-                });
-            if !reached {
-                continue;
-            }
             set_atime_mode(&fd, MOUNT_ATTR_NOATIME)?;
             quiet.changed.push((fd, mode));
+            quiet.sources.push(Source {
+                dev: mount.dev,
+                root: mount.root,
+                mode,
+            });
         }
         Ok(quiet)
     }
@@ -295,10 +348,23 @@ impl QuietMounts {
 }
 
 impl Drop for QuietMounts {
-    /// Give every mount it changed its own mode back, the last first.
+    /// Give every mount it changed its own mode back, the last first, and
+    /// every mount made since that took `noatime` from one of them that one's
+    /// mode ([`inherited`]).
     fn drop(&mut self) {
         for (fd, mode) in self.changed.drain(..).rev() {
             let _ = set_atime_mode(&fd, mode);
+        }
+        if self.sources.is_empty() {
+            return;
+        }
+        let Ok(mounts) = crate::mountinfo::read_mountinfo() else {
+            return;
+        };
+        for (mount, mode) in inherited(&self.sources, &self.before, &mounts) {
+            if let Some(fd) = reach(mount) {
+                let _ = set_atime_mode(&fd, mode);
+            }
         }
     }
 }
@@ -400,5 +466,59 @@ mod tests {
         command.args(["-c", "exit 0"]);
         spawn_without_access_times(&mut command);
         assert!(command.status().unwrap().success());
+    }
+
+    fn source(dev: &str, root: &str, mode: u64) -> Source {
+        Source {
+            dev: dev.to_string(),
+            root: std::path::PathBuf::from(root),
+            mode,
+        }
+    }
+
+    /// A bind made while the mounts were quiet gets the mode of the mount of
+    /// its filesystem whose root holds it, the deepest of several; a mount
+    /// listed before, one that keeps access times, one of another device and
+    /// one on a filesystem without them on a disk keep theirs.
+    #[test]
+    fn a_bind_made_while_quiet_gets_the_mode_of_the_mount_it_copies() {
+        let table = "\
+20 1 8:1 / / rw,noatime - ext4 /dev/sda1 rw
+21 1 0:30 /root / rw,noatime - btrfs /dev/vda4 rw
+22 1 0:30 /home /home rw,noatime - btrfs /dev/vda4 rw
+30 20 8:1 / /run/nextroot/decoy ro,noatime - ext4 /dev/sda1 rw
+31 20 0:30 /home/user /run/nextroot/home ro,noatime - btrfs /dev/vda4 rw
+32 20 0:30 /root/var /run/nextroot/var rw,noatime - btrfs /dev/vda4 rw
+33 20 8:1 /etc /run/nextroot/etc rw,relatime - ext4 /dev/sda1 rw
+34 20 8:2 / /run/nextroot/boot rw,noatime - ext4 /dev/sda2 rw
+35 20 0:40 / /run/nextroot/run rw,noatime - tmpfs tmpfs rw
+";
+        let mounts = crate::mountinfo::parse_mountinfo(table);
+        let sources = [
+            source("8:1", "/", MOUNT_ATTR_RELATIME),
+            source("0:30", "/root", MOUNT_ATTR_STRICTATIME),
+            source("0:30", "/home", MOUNT_ATTR_RELATIME),
+        ];
+        let got: Vec<(i32, u64)> = inherited(&sources, &[20, 21, 22], &mounts)
+            .into_iter()
+            .map(|(mount, mode)| (mount.mount_id, mode))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (30, MOUNT_ATTR_RELATIME),
+                (31, MOUNT_ATTR_RELATIME),
+                (32, MOUNT_ATTR_STRICTATIME),
+            ]
+        );
+    }
+
+    /// Without a mount it changed, no mount takes a mode from it.
+    #[test]
+    fn without_a_changed_mount_no_mode_is_given() {
+        let mounts = crate::mountinfo::parse_mountinfo(
+            "30 20 8:1 / /run/x ro,noatime - ext4 /dev/sda1 rw\n",
+        );
+        assert!(inherited(&[], &[], &mounts).is_empty());
     }
 }

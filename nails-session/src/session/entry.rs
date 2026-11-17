@@ -20,7 +20,9 @@
 //!    the machine off ([`transition::SWITCH_TIMEOUT_ACTION`]); the entry is
 //!    refused when a guard does not hold once loaded, or where the copy takes
 //!    a label, when PID 1 starts `systemd-soft-reboot.service` in an
-//!    `SELinuxContext=` of its own;
+//!    `SELinuxContext=` of its own. From the reload to the end of step 9 the
+//!    decoy's mounts that keep access times are `noatime` ([`quiet_mounts`]),
+//!    so nothing PID 1 reads for the entry gets a new access time;
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume. Before it is mounted the operator's home
 //!    is made in the fresh-home persona, and in either persona the directories
@@ -65,8 +67,11 @@
 //!    rollback reaches the copies other mount namespaces hold; see
 //!    [`nextroot`]); the init checked the way PID 1 will, and the soft-reboot
 //!    units the way back needs found in the next root;
-//! 9. the plan armed for the entry, where the copy takes a label once it has
-//!    taken it again and the policy has been asked again.
+//! 9. the service manager reloaded once more, so that it has loaded the units
+//!    of everything the entry mounted and wrote ([`settle`]), the mounts given
+//!    their own access-time mode back, and the plan armed for the entry, where
+//!    the copy takes a label once it has taken it again and the policy has
+//!    been asked again.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
 //! must never be left behind, or a later plain reboot would enter it. A
@@ -87,7 +92,6 @@ use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
 use crate::reporter::progress::{ActivationPhase, activation_step};
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
-use nails_teardown::noatime::QuietMounts;
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
     Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount, PolicyMountKind, RootSide,
@@ -100,6 +104,8 @@ use nails_teardown::whole_root::{
 };
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+
+use quiet::{quiet_mounts, settle};
 
 use super::guards::{GuardHost, check_stop_guards, check_switch_timeout};
 
@@ -618,6 +624,7 @@ fn build(
     if plan.run_noexec {
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
+    let quiet = quiet_mounts()?;
     install_transition(paths, inputs, host, dropin)?;
     crate::cancel::checkpoint()?;
 
@@ -757,6 +764,8 @@ fn build(
     }
 
     crate::cancel::checkpoint()?;
+    settle(host)?;
+    drop(quiet);
     activation_step(ActivationPhase::Arm, building);
     super::program_label::ready_for_entry(
         inputs.program_label,
@@ -929,12 +938,8 @@ impl HomeWay {
 /// Install the transition drop-in, reload the service manager and ask it
 /// whether the guards hold, and refuse the entry when a guard does not hold
 /// once loaded, or PID 1 starts the transition's unit outside the domain the
-/// copy's label gives it ([`super::program_label::check_switch_unit`]). PID 1
-/// reads the decoy's unit files and runs its generators for the reload, and
-/// reads the files of a unit it has not loaded for a question about it, so
-/// the decoy's mounts that keep access times are `noatime` for all of it
-/// ([`QuietMounts`]); where they cannot be made so, the entry is refused
-/// before anything is reloaded.
+/// copy's label gives it ([`super::program_label::check_switch_unit`]). The
+/// caller holds the decoy's mounts `noatime` ([`quiet_mounts`]).
 fn install_transition(
     paths: &Paths,
     inputs: &EntryInputs<'_>,
@@ -948,12 +953,6 @@ fn install_transition(
         Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
             .join(nails_teardown::whole_root::plan::BINARY_NAME)
     };
-    let _quiet = QuietMounts::open().map_err(|e| {
-        NailsError::InvalidState(format!(
-            "NAILS cannot keep the service manager's reload from setting access times on the \
-             decoy disk: making its mounts noatime for it failed ({e})"
-        ))
-    })?;
     transition::install_dropin(&paths.run, &binary).map_err(|e| io(&paths.run, e))?;
     *dropin = true;
     host.daemon_reload()?;
@@ -1178,6 +1177,7 @@ fn apply_mounts(
 
 mod hidden_build;
 mod hidden_fstab;
+mod quiet;
 
 #[cfg(test)]
 #[path = "entry_tests.rs"]
