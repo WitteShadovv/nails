@@ -73,8 +73,11 @@ DECOY_PID1_LINES = (
 #: The first line of a service manager's start.
 BANNER = re.compile(r"systemd \S+ running in system mode")
 
-#: The start of the way back's last step, which the cursor must lie past.
-STEP_START = re.compile(r"Starting systemd-soft-reboot\.service")
+#: The start of the way back's last step, which the cursor must lie past
+#: (NixOS logs the unit's description alone).
+STEP_START = re.compile(
+    r"systemd\[1\]: Starting (systemd-soft-reboot\.service - )?Reboot System Userspace"
+)
 
 #: The kernel's own records the tail may hold: the audit records of the
 #: hidden service manager's last two (the soft-reboot service's start and
