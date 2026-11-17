@@ -713,8 +713,9 @@ fn mask_unread(
 /// Keep `units` of `entry` from starting: its mount, and its automount when
 /// it has one. They are skipped where a boot target requires them, unless
 /// the device they wait for is not there now, and masked otherwise (see the
-/// module docs). A line that gives an option NAILS does not read has both
-/// its mount and its automount masked ([`mask_unread`]).
+/// module docs). A line that gives an option NAILS does not read, and whose
+/// pulls the session does not read either ([`unread_pulls`]), has both its
+/// mount and its automount masked ([`mask_unread`]).
 fn keep_off(
     entry: &FstabEntry,
     units: &Units,
