@@ -187,6 +187,26 @@ class JudgeTest(unittest.TestCase):
         self.assertFalse(judge_records(ring, [], "NAILSIN1", []).judged)
 
 
+class AllowedTest(unittest.TestCase):
+    def test_the_generic_lines_of_each_family_are_allowed(self) -> None:
+        for line in (
+            "Finished Reboot System Userspace.",
+            "Finished systemd-soft-reboot.service - Reboot System Userspace.",
+            "Sending SIGKILL to PID 387 ((sd-close)).",
+        ):
+            self.assertTrue(
+                any(p.fullmatch(line) for p in journal_tail.HIDDEN_PID1_LINES), line
+            )
+        for line in (
+            "Sending SIGKILL to PID 2236 (systemd-userdbd).",
+            "Sending SIGKILL to PID 3393 (systemd-udevd).",
+            "late-writer.service: Failed with result 'exit-code'.",
+        ):
+            self.assertFalse(
+                any(p.fullmatch(line) for p in journal_tail.HIDDEN_PID1_LINES), line
+            )
+
+
 class CommandTest(unittest.TestCase):
     def test_the_late_stop_logs_through_each_socket(self) -> None:
         stop = journal_tail.late_stop_command("/usr/bin/logger", "M")
