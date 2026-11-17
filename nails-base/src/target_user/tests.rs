@@ -277,3 +277,49 @@ fn resolve_from_is_reachable_through_the_public_wrapper() {
     let user = TargetUser::resolve_from(&env, &passwd, &no_session()).unwrap();
     assert_eq!(user.name, "operator");
 }
+
+#[test]
+fn the_passwd_file_reads_as_musl_reads_it() {
+    let content = b"root:x:0:0:root:/root:/bin/sh\n\
+# a comment\n\
++nisuser::::::\n\
+broken:x:1000\n\
+nonnumeric:x:abc:100::/home/n:/bin/sh\n\
+operator:x:1000:100:The Operator:/home/operator:/usr/bin/zsh\n\
+operator:x:1001:100::/home/second:/bin/sh\n\
+\n";
+    let entries = parse_passwd(content);
+    assert_eq!(
+        entries,
+        vec![
+            PasswdEntry {
+                uid: 0,
+                gid: 0,
+                name: "root".to_string(),
+                dir: PathBuf::from("/root"),
+                shell: PathBuf::from("/bin/sh"),
+            },
+            PasswdEntry {
+                uid: 1000,
+                gid: 100,
+                name: "operator".to_string(),
+                dir: PathBuf::from("/home/operator"),
+                shell: PathBuf::from("/usr/bin/zsh"),
+            },
+            PasswdEntry {
+                uid: 1001,
+                gid: 100,
+                name: "operator".to_string(),
+                dir: PathBuf::from("/home/second"),
+                shell: PathBuf::from("/bin/sh"),
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_passwd_file_without_a_final_newline_keeps_its_last_entry() {
+    let entries = parse_passwd(b"root:x:0:0::/root:/bin/sh\nop:x:7:7::/home/op:/bin/sh");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].dir, PathBuf::from("/home/op"));
+}
