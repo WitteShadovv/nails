@@ -235,6 +235,21 @@ pub(super) fn names<F: Filesystem>(
     Ok(Names { id, aliases })
 }
 
+/// The id of `unit` in `dirs`, the manager's unit directories (see
+/// [`names`]).
+///
+/// # Errors
+///
+/// Why NAILS cannot tell: a unit directory or a link it cannot read.
+pub(in crate::preflight::checks) fn unit_id<F: Filesystem>(
+    files: &DecoyFiles<'_, F>,
+    dirs: &[PathBuf],
+    unit: &str,
+) -> Result<String, String> {
+    let entries = Entries::read(files, dirs)?;
+    Ok(names(files, dirs, &entries, unit)?.id)
+}
+
 #[cfg(test)]
 #[path = "aliases_tests.rs"]
 mod tests;

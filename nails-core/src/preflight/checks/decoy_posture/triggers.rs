@@ -8,17 +8,21 @@
 //! A trigger counts when it is enabled (a link to it in a `.wants`,
 //! `.requires` or `.upholds` directory of a unit directory, which does not
 //! lead to `/dev/null`) or active (its invocation marker), and its unit is
-//! not masked. A timer or a path starts the first `Unit=` systemd takes, else
-//! the service of its own name, as the locate-database check reads it
-//! ([`triggered_unit`]); a socket starts its `Service=`, else the service of
-//! its own name, unless it is `Accept=yes`, which starts instances of a
-//! template of its own name instead. What NAILS cannot read of them, a
-//! directory it cannot list, a trigger's unit file, or a name with a
-//! specifier, counts as a trigger that may start any unit.
+//! not masked. A timer or a path starts the first `Unit=` systemd takes,
+//! else the service of its own name, and a socket its last `Service=`, else
+//! the service of its own name, unless it is `Accept=yes`, which starts
+//! instances of a template of its own name instead
+//! ([`timer_targets`], [`socket_targets`]). The specifiers systemd takes from
+//! the trigger's own name are expanded as systemd expands them; one it fills
+//! in from the host (`%H`, `%m` and the like) makes the trigger one that may
+//! start each unit whose name the rest of the value fits. What NAILS cannot
+//! read of the triggers, a directory it cannot list or a trigger's unit
+//! file, counts as a trigger that may start any unit.
 
+use super::super::locate_database::aliases::unit_id;
 use super::super::locate_database::files::DecoyFiles;
+use super::super::locate_database::targets::{Target, socket_targets, timer_targets};
 use super::super::locate_database::unit::{SYSTEM_UNIT_PATH, UnitSection, unit_section};
-use super::super::locate_database::units::triggered_unit;
 use super::loggers::INVOCATION_DIR;
 use crate::Filesystem;
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,6 +43,9 @@ const DEPENDENCY_SUFFIXES: &[&str] = &[".wants", ".requires", ".upholds"];
 pub(super) struct Triggers {
     /// Each unit a trigger starts, with how, as a finding names it.
     starts: BTreeMap<String, String>,
+    /// The units a trigger may start, where NAILS cannot tell which one it
+    /// starts: each with why.
+    maybe: Vec<(Target, String)>,
     /// Why NAILS cannot tell what some trigger starts, if it cannot.
     untold: Option<String>,
 }
@@ -51,44 +58,19 @@ impl Triggers {
         if let Some(how) = self.starts.get(unit) {
             return Some(Ok(how.clone()));
         }
-        self.untold.as_ref().map(|why| {
+        let whys: BTreeSet<&str> = self
+            .maybe
+            .iter()
+            .filter(|(target, _)| target.fits(unit))
+            .map(|(_, why)| why.as_str())
+            .chain(self.untold.as_deref())
+            .collect();
+        (!whys.is_empty()).then(|| {
             Err(format!(
-                "NAILS cannot tell whether a timer, path or socket unit starts {unit}: {why}"
+                "NAILS cannot tell whether a timer, path or socket unit starts {unit}: {}",
+                whys.into_iter().collect::<Vec<_>>().join("; ")
             ))
         })
-    }
-}
-
-/// The unit a socket unit `socket`, whose `[Socket]` section is
-/// `assignments`, starts, `None` for one that starts instances of a
-/// template instead.
-///
-/// # Errors
-///
-/// Why NAILS cannot tell: its `Service=` has a specifier.
-fn socket_service(
-    assignments: &[super::super::systemd_conf::Assignment],
-    socket: &str,
-) -> Result<Option<String>, String> {
-    let last = |key: &str| {
-        assignments
-            .iter()
-            .rev()
-            .find(|assignment| assignment.key == key)
-            .map(|assignment| assignment.value.as_str())
-    };
-    if last("Accept").is_some_and(|accept| ["yes", "true", "on", "1"].contains(&accept)) {
-        return Ok(None);
-    }
-    match last("Service") {
-        Some(service) if service.contains('%') => Err(format!(
-            "{socket} names the service it starts with a specifier, which NAILS does not expand"
-        )),
-        Some(service) if service.ends_with(".service") => Ok(Some(service.to_string())),
-        _ => Ok(Some(format!(
-            "{}.service",
-            socket.strip_suffix(".socket").unwrap_or(socket)
-        ))),
     }
 }
 
@@ -182,20 +164,40 @@ pub(super) fn read<F: Filesystem>(fs: &F, root: &Path, hidden: &[PathBuf]) -> Tr
                 continue;
             }
         };
-        let started = if *suffix == ".socket" {
-            socket_service(&assignments, trigger)
-        } else {
-            triggered_unit(&assignments, trigger, suffix).map(Some)
-        };
-        match started {
-            Ok(Some(unit)) => {
-                found
-                    .starts
-                    .entry(unit.clone())
-                    .or_insert_with(|| format!("{trigger} {state} and starts {unit}"));
+        let id = match unit_id(&files, &dirs, trigger) {
+            Ok(id) => id,
+            Err(why) => {
+                untold.push(why);
+                continue;
             }
-            Ok(None) => {}
-            Err(why) => untold.push(why),
+        };
+        let targets = if *suffix == ".socket" {
+            socket_targets(&assignments, &id)
+        } else {
+            timer_targets(&assignments, &id, trigger)
+        };
+        let named = match targets.as_slice() {
+            [target] => target.name(),
+            _ => None,
+        };
+        if let Some(unit) = named {
+            found
+                .starts
+                .entry(unit.to_string())
+                .or_insert_with(|| format!("{trigger} {state} and starts {unit}"));
+        } else if !targets.is_empty() {
+            let written: Vec<&str> = targets
+                .iter()
+                .map(|target| target.written.as_str())
+                .collect();
+            let why = format!(
+                "{trigger} {state} and starts {}, which of them systemd decides by the host it \
+                 runs on",
+                written.join(" or ")
+            );
+            found
+                .maybe
+                .extend(targets.iter().map(|target| (target.clone(), why.clone())));
         }
     }
     let untold: BTreeSet<String> = untold.into_iter().collect();

@@ -21,7 +21,11 @@
 //!   `systemctl start`, an instance of a template, a transient one as
 //!   `systemd-run --on-calendar` makes it, and one masked, or whose file is
 //!   gone, since it started. It starts its first `Unit=` systemd takes, or
-//!   the service of its own name. Where NAILS cannot ask the system manager,
+//!   the service of its own name, with the specifiers systemd takes from the
+//!   trigger's name expanded ([`timer_targets`]); one whose `Unit=` has a
+//!   specifier systemd fills in from the host (`%H` and the like) is one
+//!   NAILS cannot tell about where the name of a unit on disk fits the rest
+//!   of it. Where NAILS cannot ask the system manager,
 //!   and for a user's manager, which it never asks, a transient trigger whose
 //!   file is there counts;
 //! - whenever its manager starts, when it is enabled itself: an entry for it
@@ -52,10 +56,12 @@
 //! that runs updatedb, so it is one NAILS cannot tell about.
 
 use super::super::systemd_conf::Assignment;
+use super::aliases::unit_id;
 use super::exec::{ExecCommand, exec_commands, is_updatedb, mentions_updatedb};
 use super::files::{DecoyFile, DecoyFiles};
 use super::judge::Start;
 use super::read::Cwd;
+use super::targets::timer_targets;
 use super::unit::{SYSTEM_UNIT_PATH, UnitSection, list_values, unit_section};
 use crate::Filesystem;
 use std::collections::{BTreeMap, BTreeSet};
@@ -487,50 +493,6 @@ fn managers<F: Filesystem>(
     out
 }
 
-/// The unit a trigger starts: the first `Unit=` systemd takes (a unit name
-/// of a type, not the trigger itself; it ignores every later one), else the
-/// service of the trigger's own name.
-pub(in crate::preflight::checks) fn triggered_unit(
-    assignments: &[Assignment],
-    trigger: &str,
-    suffix: &str,
-) -> Result<String, String> {
-    const TYPES: &[&str] = &[
-        "service",
-        "socket",
-        "target",
-        "device",
-        "mount",
-        "automount",
-        "swap",
-        "timer",
-        "path",
-        "slice",
-        "scope",
-    ];
-    for assignment in assignments
-        .iter()
-        .filter(|assignment| assignment.key == "Unit")
-    {
-        let value = assignment.value.as_str();
-        if value.contains('%') {
-            return Err(format!(
-                "{trigger} names the unit it starts with a specifier, which NAILS does not expand"
-            ));
-        }
-        let typed = value
-            .rsplit_once('.')
-            .is_some_and(|(stem, kind)| !stem.is_empty() && TYPES.contains(&kind));
-        if typed && value != trigger {
-            return Ok(value.to_string());
-        }
-    }
-    Ok(format!(
-        "{}.service",
-        trigger.strip_suffix(suffix).unwrap_or(trigger)
-    ))
-}
-
 /// Whether a trigger runs.
 enum Runs {
     /// It runs; `now` when the system manager shows it running, which no
@@ -549,12 +511,13 @@ struct Starts {
     maybe: BTreeMap<String, (String, String)>,
 }
 
-/// What the `triggers` of `manager` start; what NAILS cannot read of them
-/// goes to `unread_runs`.
+/// What the `triggers` of `manager` start, `named` the units on its disk;
+/// what NAILS cannot read of them goes to `unread_runs`.
 fn trigger_starts<F: Filesystem>(
     files: &DecoyFiles<'_, F>,
     manager: &Manager,
     triggers: &[(&String, Runs)],
+    named: &BTreeSet<String>,
     unread_runs: &mut Vec<UnitRun>,
 ) -> Starts {
     let mut starts = Starts::default();
@@ -567,12 +530,41 @@ fn trigger_starts<F: Filesystem>(
         let own = || format!("{}.service", unit.strip_suffix(suffix).unwrap_or(unit));
         let service = match unit_section(files, &manager.dirs, unit, section) {
             UnitSection::Assignments(assignments) => {
-                match triggered_unit(&assignments, unit, suffix) {
-                    Ok(service) => service,
+                let id = match unit_id(files, &manager.dirs, unit) {
+                    Ok(id) => id,
                     Err(why) => {
                         unread_runs.push(unread(manager.label(unit), why));
                         continue;
                     }
+                };
+                let targets = timer_targets(&assignments, &id, unit);
+                let named_target = match targets.as_slice() {
+                    [target] => target.name().map(str::to_string),
+                    _ => None,
+                };
+                if let Some(service) = named_target {
+                    service
+                } else {
+                    // Where the host decides what it starts, it may start
+                    // each unit whose name the value fits.
+                    let fits = named
+                        .iter()
+                        .any(|name| targets.iter().any(|target| target.fits_template(name)));
+                    if fits {
+                        let written: Vec<&str> = targets
+                            .iter()
+                            .map(|target| target.written.as_str())
+                            .collect();
+                        unread_runs.push(unread(
+                            manager.label(unit),
+                            format!(
+                                "{unit} starts {}, which of them systemd decides by the host \
+                                 it runs on",
+                                written.join(" or ")
+                            ),
+                        ));
+                    }
+                    continue;
                 }
             }
             // Masking stops nothing that runs: the manager runs the trigger
@@ -689,7 +681,7 @@ pub fn units<F: Filesystem>(
             triggers.push((unit, state));
         }
         let Starts { triggered, maybe } =
-            trigger_starts(files, &manager, &triggers, &mut found.runs);
+            trigger_starts(files, &manager, &triggers, &named, &mut found.runs);
         // plocate's, mlocate's and NixOS's own services are looked for by
         // name too, as `systemctl start` finds them.
         let own = LOCATE_SERVICES

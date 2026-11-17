@@ -2070,7 +2070,9 @@ fn a_trigger_that_starts_tuned_after_the_way_back_counts() {
 }
 
 #[test]
-fn a_trigger_nails_cannot_read_may_start_tuned() {
+fn a_trigger_whose_unit_the_host_names_may_start_tuned() {
+    // The specifiers of the timer's own name expand as systemd expands them:
+    // odd.timer starts odd.service.
     let decoy = Decoy::new();
     decoy
         .unit("tuned.service", TUNED_UNIT)
@@ -2082,16 +2084,28 @@ fn a_trigger_nails_cannot_read_may_start_tuned() {
             "/etc/systemd/system/odd.timer",
             "[Timer]\nOnBootSec=1min\nUnit=%N.service\n",
         );
+    assert_eq!(decoy.findings(), Findings::default());
+    // One the host fills in may give tuned.service.
+    decoy.fs.mock_set_file_content(
+        "/etc/systemd/system/odd.timer",
+        "[Timer]\nOnBootSec=1min\nUnit=tune%H.service\n",
+    );
     assert_eq!(
         decoy.findings().blockers,
         [
             "NAILS cannot tell whether tuned writes a log file on the decoy disk, so it counts as \
           one that does (tuned.service would start it with -l, which logs to \
           /var/log/tuned/tuned.log, and NAILS cannot tell whether a timer, path or socket unit \
-          starts tuned.service: odd.timer names the unit it starts with a specifier, which NAILS \
-          does not expand)"
+          starts tuned.service: odd.timer is enabled and starts tune%H.service or odd.service, \
+          which of them systemd decides by the host it runs on)"
         ]
     );
+    // One whose other text no name of tuned fits starts no tuned.
+    decoy.fs.mock_set_file_content(
+        "/etc/systemd/system/odd.timer",
+        "[Timer]\nOnBootSec=1min\nUnit=odd-%H.service\n",
+    );
+    assert_eq!(decoy.findings(), Findings::default());
 }
 
 #[test]
@@ -2172,6 +2186,206 @@ fn a_timer_that_starts_auditd_after_the_way_back_refuses() {
         ),
         "{:?}",
         decoy.check(true)
+    );
+}
+
+/// The gnupg units of Arch's gnupg-2.4.9-4 in `/usr/lib/systemd/system`,
+/// copied unchanged. pacman-7.1.0 enables the six sockets for the instance
+/// `etc-pacman.d-gnupg`, its keyring in `/etc/pacman.d/gnupg`, as arch-boxes
+/// images have them.
+const ARCH_GNUPG_UNITS: &[(&str, &str)] = &[
+    (
+        "dirmngr@.service",
+        "[Unit]\n\
+         Description=GnuPG network certificate management daemon for %f\n\
+         Documentation=man:dirmngr(8)\n\
+         Requires=dirmngr@%i.socket\n\
+         \n\
+         [Service]\n\
+         ExecStart=/usr/bin/dirmngr --homedir %f --supervised\n\
+         ExecReload=/usr/bin/gpgconf --homedir %f --reload dirmngr\n",
+    ),
+    (
+        "dirmngr@.socket",
+        "[Unit]\n\
+         Description=GnuPG network certificate management daemon for %f\n\
+         Documentation=man:dirmngr(8)\n\
+         ConditionPathExists=%f\n\
+         ConditionPathIsReadWrite=%f\n\
+         \n\
+         [Socket]\n\
+         ListenStream=%f/S.dirmngr\n\
+         SocketMode=0600\n",
+    ),
+    (
+        "gpg-agent-browser@.socket",
+        "[Unit]\n\
+         Description=GnuPG cryptographic agent and passphrase cache (access for web browsers) for %f\n\
+         Documentation=man:gpg-agent(1)\n\
+         ConditionPathExists=%f\n\
+         ConditionPathIsReadWrite=%f\n\
+         \n\
+         [Socket]\n\
+         ListenStream=%f/S.gpg-agent.browser\n\
+         FileDescriptorName=browser\n\
+         Service=gpg-agent@%i.service\n\
+         SocketMode=0600\n",
+    ),
+    (
+        "gpg-agent-extra@.socket",
+        "[Unit]\n\
+         Description=GnuPG cryptographic agent and passphrase cache (restricted) for %f\n\
+         Documentation=man:gpg-agent(1)\n\
+         ConditionPathExists=%f\n\
+         ConditionPathIsReadWrite=%f\n\
+         \n\
+         [Socket]\n\
+         ListenStream=%f/S.gpg-agent.extra\n\
+         FileDescriptorName=extra\n\
+         Service=gpg-agent@%i.service\n\
+         SocketMode=0600\n",
+    ),
+    (
+        "gpg-agent-ssh@.socket",
+        "[Unit]\n\
+         Description=GnuPG cryptographic agent (ssh-agent emulation) for %f\n\
+         Documentation=man:gpg-agent(1) man:ssh-add(1) man:ssh-agent(1) man:ssh(1)\n\
+         ConditionPathExists=%f\n\
+         ConditionPathIsReadWrite=%f\n\
+         \n\
+         [Socket]\n\
+         ListenStream=%f/S.gpg-agent.ssh\n\
+         FileDescriptorName=ssh\n\
+         Service=gpg-agent@%i.service\n\
+         SocketMode=0600\n",
+    ),
+    (
+        "gpg-agent@.service",
+        "[Unit]\n\
+         Description=GnuPG cryptographic agent and passphrase cache for %f\n\
+         Documentation=man:gpg-agent(1)\n\
+         Requires=gpg-agent@%i.socket\n\
+         \n\
+         [Service]\n\
+         ExecStart=/usr/bin/gpg-agent --homedir %f --supervised\n\
+         ExecReload=/usr/bin/gpgconf --homedir %f --reload gpg-agent\n",
+    ),
+    (
+        "gpg-agent@.socket",
+        "[Unit]\n\
+         Description=GnuPG cryptographic agent and passphrase cache for %f\n\
+         Documentation=man:gpg-agent(1)\n\
+         ConditionPathExists=%f\n\
+         ConditionPathIsReadWrite=%f\n\
+         \n\
+         [Socket]\n\
+         ListenStream=%f/S.gpg-agent\n\
+         FileDescriptorName=std\n\
+         SocketMode=0600\n",
+    ),
+    (
+        "keyboxd@.service",
+        "[Unit]\n\
+         Description=GnuPG public key management service for %f\n\
+         Documentation=man:keyboxd(8)\n\
+         Requires=keyboxd@%i.socket\n\
+         \n\
+         [Service]\n\
+         ExecStart=/usr/lib/gnupg/keyboxd --homedir %f --supervised\n\
+         ExecReload=/usr/bin/gpgconf --homedir %f --reload keyboxd\n",
+    ),
+    (
+        "keyboxd@.socket",
+        "[Unit]\n\
+         Description=GnuPG public key management service for %f\n\
+         Documentation=man:keyboxd(8)\n\
+         ConditionPathExists=%f\n\
+         ConditionPathIsReadWrite=%f\n\
+         \n\
+         [Socket]\n\
+         ListenStream=%f/S.keyboxd\n\
+         FileDescriptorName=std\n\
+         SocketMode=0600\n",
+    ),
+];
+
+#[test]
+fn arch_gnupg_sockets_start_their_agent_and_no_auditd() {
+    // Arch installs auditd.service with its audit package and does not
+    // enable it.
+    let decoy = Decoy::new();
+    decoy.unit(
+        "auditd.service",
+        "[Service]\nType=forking\nExecStart=/usr/bin/auditd\n",
+    );
+    for (unit, text) in ARCH_GNUPG_UNITS {
+        decoy.unit(unit, text);
+    }
+    for socket in [
+        "dirmngr",
+        "gpg-agent",
+        "gpg-agent-browser",
+        "gpg-agent-extra",
+        "gpg-agent-ssh",
+        "keyboxd",
+    ] {
+        decoy.link(
+            &format!(
+                "/usr/lib/systemd/system/sockets.target.wants/{socket}@etc-pacman.d-gnupg.socket"
+            ),
+            &format!("../{socket}@.socket"),
+        );
+    }
+    let result = decoy.check(false);
+    assert!(result.is_pass(), "{result:?}");
+    let triggers = super::super::triggers::read(&decoy.fs, Path::new("/"), &[]);
+    assert_eq!(
+        triggers.of("gpg-agent@etc-pacman.d-gnupg.service"),
+        Some(Ok(
+            "gpg-agent-browser@etc-pacman.d-gnupg.socket is enabled and starts \
+             gpg-agent@etc-pacman.d-gnupg.service"
+                .to_string()
+        ))
+    );
+    assert_eq!(triggers.of("auditd.service"), None);
+
+    // A socket whose Service= the host fills in, which may give
+    // auditd.service, refuses.
+    decoy
+        .file(
+            "/etc/systemd/system/kick@.socket",
+            "[Socket]\nListenStream=/run/kick.sock\nService=%H.service\n",
+        )
+        .link(
+            "/etc/systemd/system/sockets.target.wants/kick@x.socket",
+            "/etc/systemd/system/kick@.socket",
+        );
+    let result = decoy.check(false);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "NAILS cannot tell whether a timer, path or socket unit starts auditd.service: \
+             kick@x.socket is enabled and starts %H.service or kick@x.service, which of them \
+             systemd decides by the host it runs on"
+        ),
+        "{result:?}"
+    );
+    // One whose instance gives it starts it.
+    decoy.fs.mock_set_file_content(
+        "/etc/systemd/system/kick@.socket",
+        "[Socket]\nListenStream=/run/kick.sock\nService=%i.service\n",
+    );
+    decoy.link(
+        "/etc/systemd/system/sockets.target.wants/kick@auditd.socket",
+        "/etc/systemd/system/kick@.socket",
+    );
+    let result = decoy.check(false);
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("kick@auditd.socket is enabled and starts auditd.service"),
+        "{result:?}"
     );
 }
 
