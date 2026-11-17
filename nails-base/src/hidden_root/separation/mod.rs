@@ -47,24 +47,26 @@
 //! a device of its stack, or mounts one of them for it, or names a file there
 //! for it, and a line an option of which opens a device of that stack, as
 //! ext4's `journal_path=` and a crypttab line's `tpm2-device=` do, or, where
-//! the option opens what it names for writing, as these two do and the device
-//! the boot mounts read-write for a crypttab line's `header=<path>:<device>`
-//! is, any device of the hidden drive: its whole disk, a partition of it, or a
-//! device stacked on one of them (see the `reads` module), or names a path
-//! there. So is a line that has the boot write over a device of the hidden
-//! drive it names itself, by an fstab line's `x-systemd.makefs` or a crypttab
-//! line's `swap`, `tmp` or plain mode (see the `options` module), and a line of
-//! either file that names the file a loop device of the root's stack reads, the
-//! container file the volume is opened from or the image it is in, by the path
-//! the loop driver shows for it or by any path to the same file, its device and
-//! inode ([`FileId`]), which the boot opens a second time (see the `placed`
-//! module), and another loop device over that file counts as a device of that
-//! stack. A device an option names by its path is resolved as a line's source
-//! is, through links that stay in `/dev`. Such an entry is an enabler stored on
-//! the decoy; the attach gate ignores the finding (writing to the root stays
-//! safe) and the `backend-entries` check reports it. A line placed by a path
-//! whose place cannot be told ([`UntoldPath`]) may mount or open the volume
-//! too, and is reported as an entry where that cannot be told
+//! the option opens what it names for writing, as these two do, any device of
+//! the hidden drive: its whole disk, a partition of it, or a device stacked on
+//! one of them (see the `reads` module), or names a path there. So is a
+//! crypttab line whose `header=` names such a device, one the boot mounts
+//! read-write for a `header=<path>:<device>` or one it reads the header from
+//! itself, which `cryptsetup` writes to where it repairs the header, a line
+//! that has the boot write over a device of the hidden drive it names itself,
+//! by an fstab line's `x-systemd.makefs` or a crypttab line's `swap`, `tmp`,
+//! plain mode or a header kept apart from it (see the `options` module), and a
+//! line of either file that names the file a loop device of the root's stack
+//! reads, the container file the volume is opened from or the image it is in,
+//! by the path the loop driver shows for it or by any path to the same file,
+//! its device and inode ([`FileId`]), which the boot opens a second time (see
+//! the `placed` module), and another loop device over that file counts as a
+//! device of that stack. A device an option names by its path is resolved as a
+//! line's source is, through links that stay in `/dev`. Such an entry is an
+//! enabler stored on the decoy; the attach gate ignores the finding (writing to
+//! the root stays safe) and the `backend-entries` check reports it. A line
+//! placed by a path whose place cannot be told ([`UntoldPath`]) may mount or
+//! open the volume too, and is reported as an entry where that cannot be told
 //! ([`EntryKind::Untold`]), wherever its text places it: a path with a symbolic
 //! link in any part, which is not followed, one that is not absolute or is a
 //! device node, one that crosses the folder of a line, a `noauto` one too,

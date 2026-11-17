@@ -805,8 +805,9 @@ fn crypttab_claims(
             }
             // One that has the boot write over its source, a device of the
             // hidden drive outside the root's stack, its whole disk say, or
-            // one that opens it with no header to check: a write over the
-            // drive at boot, or when a unit pulls in a `noauto` one.
+            // one that opens it with no header on it to check, in plain mode
+            // or with a header kept apart: a write over the drive at boot, or
+            // when a unit pulls in a `noauto` one.
             if let Some(why) = overwrites(entry).and_then(|how| {
                 overwrite_why(
                     scene,
