@@ -192,8 +192,8 @@ pub fn build_registry<F: Filesystem>(
         SwapCheck, SymlinkSupportCheck, UpgradeRunCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
-        DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
-        SoftRebootUnitsCheck, SystemdVersionCheck,
+        DecoyRootCheck, FstabPolicyCheck, KernelVersionCheck, SessionStateCheck,
+        ShutdownInhibitorsCheck, SoftRebootUnitsCheck, SystemdVersionCheck,
     };
 
     let _ = fs;
@@ -238,6 +238,11 @@ pub fn build_registry<F: Filesystem>(
         inputs.systemd_version,
         inputs.host_profile.clone(),
     )));
+    // NAILS starts the programs it runs as root, and keeps PID 1's reads of
+    // the decoy, without access times through mount_setattr (Linux 5.12) and
+    // FUSE's allow_sys_admin_access (Linux 6.0): a kernel before Linux 6.1 is
+    // refused, as is one whose release cannot be read or told.
+    registry.add_check(Box::new(KernelVersionCheck::new()));
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),
         layered,

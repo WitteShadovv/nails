@@ -20,6 +20,15 @@ of this changelog for that version becomes the release notes word for word, and
   run `<hidden-root>/nails.new config validate` inside a hidden session (it checks the
   `config/nails.toml` next to it), delete the key if it is reported, and pass
   `--allow-persistent-decoy` on the activations that need the override.
+- NAILS now requires Linux 6.1 or newer. On an older kernel `check` fails the new `kernel-version`
+  row (exit 4) and `activate` refuses, and so they do where the running kernel's release cannot be
+  read or its version told; the row names the running release and the floor. The check reads the
+  release from the kernel (`uname`) and starts no program. NAILS starts the programs it runs as root
+  with every mount `noatime` and makes the decoy's mounts `noatime` while the service manager reads
+  them, both through `mount_setattr` (Linux 5.12), and it knows that FUSE keeps root out of a user's
+  FUSE mount by FUSE's `allow_sys_admin_access` parameter (Linux 6.0). The default kernel of Debian
+  13 (6.12), Ubuntu 24.04 (6.8) and 26.04 and of current NixOS is new enough. On a NixOS decoy that
+  boots an older long-term kernel, boot a newer one before you activate with the new binary.
 - A decoy whose fstab mounts another disk or a RAM filesystem at or below the hidden root, a
   `noauto` line included, can no longer activate: `check` fails `fstab-policy` (exit 4) and
   `activate` refuses, where 0.3.0-rc.3 left the line to the hidden systemd. (A line that mounts the
@@ -2651,9 +2660,15 @@ of this changelog for that version becomes the release notes word for word, and
   `noatime` from the service manager's reload at entry, which reads every unit file again, to a
   second reload at the end of the entry, so the units of the entry's mounts and the drop-ins it
   writes are read then too; activation refuses where it cannot make one so, and names that mount
-  and its type. A user's FUSE mount that the kernel keeps root and so PID 1 out of (a desktop's
-  `gvfsd-fuse` and document portal, an `sshfs`, mounted without `allow_other`) is left as it is,
-  since PID 1 reads nothing there. It writes those mounts
+  and its type. It leaves two kinds of mount as they are, because the kernel keeps root, and so
+  PID 1, out of them and PID 1 reads nothing there. The first is a user's FUSE mount (a desktop's
+  `gvfsd-fuse` and document portal, an `sshfs`) that refuses root: one mounted without
+  `allow_other` for an owner other than root's (its `user_id` and `group_id` not both 0), where
+  FUSE's `allow_sys_admin_access` parameter is `N`, as it is by default. The second is a mount at or
+  below such a FUSE mount whose mount point root's lookup cannot reach through it, such as an fstab
+  mount inside a home that a user's FUSE mount covers. Where FUSE has no `allow_sys_admin_access`
+  (a kernel before Linux 6.0, below the `kernel-version` floor), activation refuses at such a mount
+  and names the parameter. It writes those mounts
   and their modes to the session plan first, and `nails recover`, a rollback and the emergency on
   the decoy give them their modes back where an activation was killed before it could. NAILS reads
   the operator's account from `/etc/passwd` with `O_NOATIME`, where musl's `getpwuid` read it with

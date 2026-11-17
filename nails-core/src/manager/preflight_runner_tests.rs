@@ -1465,6 +1465,30 @@ fn the_systemd_version_row_judges_the_version_it_is_given() {
     assert!(unread.is_fail(), "{unread:?}");
 }
 
+/// The running kernel is judged right after the running systemd, on every
+/// host and in every mode, overlay-only included.
+#[test]
+fn kernel_version_runs_right_after_systemd_version() {
+    let manager = manager_with(MockFilesystem::new());
+    for options in [
+        PreflightOptions::default(),
+        PreflightOptions {
+            overlay_only: true,
+            ..PreflightOptions::default()
+        },
+    ] {
+        let names = manager
+            .preflight_registry(&options)
+            .expect("registry builds")
+            .names();
+        let at = names
+            .iter()
+            .position(|name| *name == "systemd-version")
+            .expect("a systemd-version row");
+        assert_eq!(names[at + 1], "kernel-version", "{names:?}");
+    }
+}
+
 #[test]
 fn unattended_upgrade_run_runs_right_after_shutdown_inhibitors() {
     // Both refuse while something is in the middle of its work that the
