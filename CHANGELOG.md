@@ -497,8 +497,9 @@ of this changelog for that version becomes the release notes word for word, and
   `discard` command that deletes it, with `--allow-decoy-storage` when the run was given it.
 - `nails check` and activation name the Linux Security Modules the kernel runs, from
   `/sys/kernel/security/lsm`, and judge SELinux where it runs (the `lsm-status` check). A host where
-  SELinux does not run passes, Debian and Ubuntu with AppArmor among them. Where it runs, the check
-  reads its mode from `/sys/fs/selinux/enforce`, `SELINUX=` and `SELINUXTYPE=` from
+  SELinux does not run passes, Debian and Ubuntu with AppArmor among them, while a Fedora host where
+  SELinux does not run warns, since NAILS is tested on Fedora only with SELinux enforcing. Where it
+  runs, the check reads its mode from `/sys/fs/selinux/enforce`, `SELINUX=` and `SELINUXTYPE=` from
   `/etc/selinux/config` the way libselinux reads them, the policy name in its case, when that file
   last changed, and the context of the `nails` process from `/proc/self/attr/current`, without
   libselinux and writing nothing but the questions below to selinuxfs. It refuses a configuration
@@ -523,12 +524,12 @@ of this changelog for that version becomes the release notes word for word, and
   so it does not refuse a policy that denies the guard only there. It judges the two apart, since
   what NAILS sets on systemd's side does not reach what udev runs. Where the copies take no label,
   NAILS chooses neither domain, and the check refuses every host where SELinux runs. Fedora, whose
-  hosts run SELinux by default, is admitted with SELinux enforcing. It warns, where nothing
-  refuses, when SELinux is permissive or runs in another mode than `/etc/selinux/config` sets. Where the kernel's list
-  cannot be read, a mounted selinuxfs or an SELinux context of the process means SELinux runs, and
-  without either, `/sys/fs/selinux` or a configuration that sets a mode or names a policy is refused
-  without deciding: a mount over `/sys` can hide `/sys/fs/selinux`, so the check does not rule
-  SELinux out because it is missing.
+  hosts run SELinux by default, is admitted with SELinux enforcing. It warns, where nothing refuses,
+  when SELinux is permissive or runs in another mode than `/etc/selinux/config` sets. Where the
+  kernel's list cannot be read, a mounted selinuxfs or an SELinux context of the process means
+  SELinux runs, and without either, `/sys/fs/selinux` or a configuration that sets a mode or names a
+  policy is refused without deciding: a mount over `/sys` can hide `/sys/fs/selinux`, so the check
+  does not rule SELinux out because it is missing.
 - `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
   tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
   the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists

@@ -60,6 +60,7 @@ fn enforcing(label: &str) -> Facts {
         )),
         label: Some(label.to_string()),
         config_age: ConfigAge::Older,
+        fedora: false,
     }
 }
 
@@ -131,6 +132,59 @@ fn hosts_with_landlock_yama_or_no_labelling_module_pass() {
             )
         );
     }
+}
+
+/// The os-release of a Fedora 44 Cloud host.
+const FEDORA_44: &str = "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=44\nVARIANT_ID=cloud\n";
+
+#[test]
+fn a_fedora_host_where_selinux_does_not_run_warns_as_untested() {
+    // Fedora runs SELinux by default, and NAILS is tested there only with it
+    // enforcing: a Fedora host booted with selinux=0 warns, the configured
+    // mode named as on any host. A host whose ID_LIKE names Fedora warns too,
+    // and so does one that PID 1's name does not show as a systemd host.
+    for (os_release, config) in [
+        (FEDORA_44, None),
+        (FEDORA_44, Some("SELINUX=enforcing\nSELINUXTYPE=targeted\n")),
+        (
+            "ID=nobara\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=44\n",
+            None,
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_file_content("/etc/os-release", os_release);
+        fs.mock_set_file_content(
+            host_facts::LSM_LIST,
+            "lockdown,capability,landlock,yama,bpf",
+        );
+        fs.mock_set_file_content("/proc/self/mounts", "proc /proc proc rw 0 0\n");
+        if let Some(config) = config {
+            fs.mock_set_file_content(SELINUX_CONFIG, config);
+        }
+        let result = run_on(&fs, UnitDomains::UNKNOWN);
+        assert!(result.is_warn(), "{os_release:?}: {result:?}");
+        let said = match config {
+            Some(_) => "SELinux does not run, though /etc/selinux/config sets SELINUX=enforcing.",
+            None => "SELinux does not run.",
+        };
+        assert_eq!(
+            result.message(),
+            format!(
+                "{said} Active LSMs: lockdown, capability, landlock, yama, bpf. NAILS is tested \
+                 on Fedora only with SELinux enforcing the targeted policy, as Fedora installs \
+                 it, and not on a Fedora host where SELinux does not run."
+            )
+        );
+    }
+}
+
+#[test]
+fn a_debian_host_where_selinux_does_not_run_still_passes() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content("/etc/os-release", "ID=debian\nVERSION_ID=13\n");
+    fs.mock_set_file_content(host_facts::LSM_LIST, APPARMOR_LSMS);
+    let result = run_on(&fs, UnitDomains::UNKNOWN);
+    assert!(result.is_pass(), "{result:?}");
 }
 
 #[test]
@@ -644,6 +698,7 @@ fn selinux_that_cannot_be_ruled_out_without_the_lsm_list_fails() {
             selinux: Some(selinux),
             label: None,
             config_age: ConfigAge::Older,
+            fedora: false,
         };
         let result = judge(&facts, &known_units());
         assert!(result.is_fail(), "{result:?}");
@@ -668,6 +723,7 @@ fn every_finding_is_listed_failures_first() {
         )),
         label: Some("staff_u:sysadm_r:sysadm_t:s0-s15:c0.c1023".to_string()),
         config_age: ConfigAge::Changed,
+        fedora: false,
     };
     let result = judge(&facts, &UnitDomains::UNKNOWN);
     assert!(result.is_fail(), "{result:?}");
@@ -800,6 +856,7 @@ fn a_kernel_label_where_nothing_shows_selinux_runs_is_not_taken_for_it() {
         }),
         label: Some("kernel".to_string()),
         config_age: ConfigAge::Older,
+        fedora: false,
     };
     let result = judge(&facts, &known_units());
     assert!(result.is_fail(), "{result:?}");
@@ -1020,6 +1077,7 @@ proptest::proptest! {
             }),
             label,
             config_age: ConfigAge::Changed,
+            fedora: false,
         };
         proptest::prop_assert!(judge(&facts, &UnitDomains::UNKNOWN).is_pass());
     }
@@ -1077,6 +1135,7 @@ fn the_probed_hosts_pass_enforcing_and_warn_permissive() {
                     selinux: None,
                     label: None,
                     config_age: ConfigAge::Unknown("no such file".to_string()),
+                    fedora: false,
                 },
                 &UnitDomains::UNKNOWN,
             ),
