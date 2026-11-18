@@ -87,6 +87,7 @@ use super::fstab::{
     FstabEntry, automount_unit, escape_path, is_virtual_type, mount_unit, option_named,
 };
 use super::policy::{self, Decision, KeptOff, Origin, Present, Units, Unreached, Unskippable};
+pub(crate) use deps::is_unit_name;
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::plan::{MaskCause, Skip};
 use nails_teardown::whole_root::runtime_units::valid_unit_name;
