@@ -313,16 +313,22 @@ Keep all of it `root`-owned on the hidden volume.
      is masked, and `nails check` names the option. A `noauto` entry for
      `/usr` is kept off like any entry the boot mounts, as systemd mounts
      `/usr` whatever `noauto`, `nofail` and `x-systemd.automount` say; and so
-     is a `noauto` entry with a path in it that another entry the boot
-     starts needs, such as a tmpfs mounted on a directory of it, where that
-     entry is left to the hidden systemd or put in place, as systemd has its
-     unit require the `noauto` mount. `nofail` with any value counts as `nofail`. An entry kept off
-     that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose
-     effect on what its units pull in NAILS does not read, or one with a
-     backslash or a quote, is masked rather than skipped, and activation
-     warns that the hidden session will not reach the target that requires
-     it. An overlay entry that gives `upperdir` more than once, or with no
-     value, is kept off.
+     is a `noauto` entry whose mount another entry the boot starts needs,
+     where that entry is left to the hidden systemd or put in place: a tmpfs
+     mounted on a directory of it, an entry with its path as its source, or
+     an entry that names its path with `x-systemd.requires-mounts-for=` or
+     `x-systemd.wants-mounts-for=`, or its mount or path with
+     `x-systemd.requires=` or `x-systemd.wants=`, as systemd has that entry's
+     unit require or want the `noauto` mount. Every such entry counts, and
+     where a boot target requires one, the `noauto` mount is skipped, or
+     masked with a warning where its device is not there. `nofail` with any
+     value counts as `nofail`. An entry kept off that gives an option of
+     systemd's own (`x-systemd.`, `x-initrd.`) whose effect on what its
+     units pull in NAILS does not read, or one with a backslash, is masked
+     rather than skipped, and activation warns that the hidden session will
+     not reach the target that requires it. A quote does not change how
+     systemd splits the options, so it keeps the skip. An overlay entry that
+     gives `upperdir` more than once, or with no value, is kept off.
 
    An activation without a build (`--overlay-only`, and on Debian and Ubuntu
    every activation) applies the same policy to the fstab the hidden session
