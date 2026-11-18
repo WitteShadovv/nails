@@ -200,18 +200,31 @@ distroVm.buildVmTest {
             signal.signal(signal.SIGALRM, previous)
 
 
-    def switch(trigger, label, deadline_s=600.0):
+    def switch(trigger, label, output=None, deadline_s=600.0):
         # Run the trigger in the background and follow the soft-reboot it
         # enqueues to the new backdoor, as session.follow_soft_reboot does,
         # with every query of the decoy's service manager through QUIET. Its
         # exit status, and the system's state when that is not 0, reach the
-        # serial console, so a trigger that fails without switching fails here.
+        # serial console, so a trigger that fails without switching fails here
+        # at once. What it prints goes to `output`, where that names a file,
+        # and a trigger that fails copies the file to the console before its
+        # status (at.trigger_output), so the failure says what NAILS said.
+        # Nothing asks the backdoor anything after a failed trigger: the
+        # driver counts it as gone from the start of the trigger, and would
+        # wait for a new one that never comes.
         console_index = len(vm.full_console_log)
         state = f"$({QUIET} /usr/bin/systemctl is-system-running 2>/dev/null)"
+        copy = ""
+        if output is not None:
+            copy = (
+                'if [ "$status" != 0 ] && [ "$state" != stopping ]; then '
+                + f"{{ echo {at.OUTPUT_BEGIN}; {QUIET} /usr/bin/cat {output}; "
+                + f"echo {at.OUTPUT_END}; }} > {session.SERIAL_CONSOLE} 2>&1; fi; "
+            )
         vm.execute(
-            f"(set +e; ({trigger}) </dev/null >/dev/null 2>&1; status=$?; state=; "
-            f'[ "$status" = 0 ] || state={state}; '
-            f'echo "{session.TRIGGER_EXIT_MARKER}$status $state" > {session.SERIAL_CONSOLE}) &',
+            f"(set +e; ({trigger}) </dev/null >{output or '/dev/null'} 2>&1; "
+            + f'status=$?; state=; [ "$status" = 0 ] || state={state}; {copy}'
+            + f'echo "{session.TRIGGER_EXIT_MARKER}$status $state" > {session.SERIAL_CONSOLE}) &',
             check_return=False,
             check_output=False,
         )
@@ -224,7 +237,11 @@ distroVm.buildVmTest {
             failed = session.trigger_failure(lines)
             if failed is not None:
                 vm.log(f"{label}: last console lines:\n" + "\n".join(lines[-80:]))
-                raise AssertionError(f"{label}: the trigger failed ({failed})")
+                said = at.trigger_output(lines) if output is not None else None
+                raise AssertionError(
+                    f"{label}: the trigger failed ({failed}) and never switched"
+                    + ("" if said is None else f"; it printed:\n{said}")
+                )
             if any(session.BACKDOOR_MARKER in line for line in lines):
                 break
             exited = vm.process.poll() if vm.process is not None else None
@@ -317,7 +334,7 @@ distroVm.buildVmTest {
         end = now_ns()
         reads = reads_of(f"{label}-check", ref)
         checked = vm.succeed(quiet(f"cat {STORE}/{label}-check.json"))
-        print(checked)
+        print(checked, flush=True)
         # The check inspected the operator's account, as it does under sudo.
         assert UNRESOLVED not in checked, f"{label}: check resolved no operator"
         report["phases"][f"{label}-check"].update({"status": status, "end": end})
@@ -332,14 +349,9 @@ distroVm.buildVmTest {
         # lined up with what PID 1 did then. Neither reads the decoy disk.
         vm.succeed(quiet(f"busctl set-property {PID1} LogLevel s debug"))
         log = f"/mnt/data/{label}-activate.log"
-        try:
-            switch(f"{OPERATOR_ENV} {NAILS_CMD} activate -y > {log} 2>&1", f"{label} in")
-        except AssertionError:
-            # A refused activation stays on the decoy and says why in its log.
-            print(vm.execute(quiet(f"cat {log}"))[1])
-            raise
+        switch(f"{OPERATOR_ENV} {NAILS_CMD} activate -y", f"{label} in", output=log)
         session.assert_hidden_root(vm)
-        print(vm.succeed(f"cat /mnt/data/{label}-activate.log"))
+        print(vm.succeed(f"cat {log}"), flush=True)
         since = ref // 1_000_000_000 - 1
         journal = vm.succeed(
             quiet(f"journalctl _PID=1 -o short-unix --no-pager --since @{since}")
@@ -357,7 +369,9 @@ distroVm.buildVmTest {
             trigger = f"{OPERATOR_ENV} {NAILS_CMD} deactivate -y"
         else:
             trigger = f"{OPERATOR_ENV} {RAM_NAILS_CMD} emergency --json"
-        switch(trigger, f"{label} {leave}")
+        # Its output goes to /run, which every switch carries, and not to the
+        # hidden volume, whose mapping the way back closes.
+        switch(trigger, f"{label} {leave}", output=f"{STORE}/{label}-{leave}.log")
         on_decoy()
         wait_reconcile()
         stop_back, decoy_start = pid1_times()

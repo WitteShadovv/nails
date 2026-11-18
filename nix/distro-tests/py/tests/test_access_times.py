@@ -49,6 +49,33 @@ class ParseTest(unittest.TestCase):
             [1731700000123456000, 7000],
         )
 
+    def test_a_failed_trigger_s_output_is_read_from_its_copy_on_the_console(
+        self,
+    ) -> None:
+        lines = [
+            "[   37.6] audit: type=1131",
+            f"echo {at.OUTPUT_BEGIN}; cat /run/out; echo {at.OUTPUT_END}",
+            at.OUTPUT_BEGIN,
+            "Pre-flight checks failed:",
+            "[   38.1] audit: type=1130",
+            "  lsm-status: refused",
+            f"{at.OUTPUT_END} ",
+            "nails-trigger-exit=4 degraded",
+            at.OUTPUT_BEGIN,
+            "a later copy",
+        ]
+        self.assertEqual(
+            at.trigger_output(lines),
+            "Pre-flight checks failed:\n"
+            "[   38.1] audit: type=1130\n"
+            "  lsm-status: refused",
+        )
+
+    def test_a_copy_cut_short_reads_to_the_last_line_and_none_is_none(self) -> None:
+        self.assertEqual(at.trigger_output([at.OUTPUT_BEGIN, "Error"]), "Error")
+        self.assertEqual(at.trigger_output([at.OUTPUT_BEGIN]), "")
+        self.assertIsNone(at.trigger_output(["nails-trigger-exit=4 degraded"]))
+
 
 class ReadsTest(unittest.TestCase):
     def test_only_an_entry_read_and_not_changed_since_the_reference_is_a_read(
