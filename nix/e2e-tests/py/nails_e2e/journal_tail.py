@@ -15,6 +15,13 @@ back (:func:`plant`) and judges the decoy's journal after it
   its standard output and the native socket, and the hidden root's last
   audit records wait in the audit socket.
 
+Each plant proves it ran, in the ring buffer: the late writer writes a
+record after its lines, which must follow the hidden journald's stop, and
+the lingering unit's stop command writes one as the way back's last step
+ends it, which must fall inside that step. That stop command also writes a
+file to ``/run``, which the way back's scrub must have removed: the way back
+ends the session's processes before it scrubs ``/run``.
+
 The judgment reads the kernel ring buffer (RAM, where the hidden session's
 records stay until power-off) to place what the decoy's journal holds: the
 in-session marker the test wrote right before the way back, the start of the
@@ -29,7 +36,10 @@ the decoy's journal holds is the hidden session's. No record anywhere may
 name a planted process or mark, or the hidden filesystem, and no audit record
 the hidden root sent may be in the decoy's journal by any transport. The
 kernel's lines of a device-mapper teardown (:data:`DM_TEARDOWN`) are judged
-apart: they are the residue a hidden volume on device-mapper leaves.
+apart: they are the residue a hidden volume on device-mapper leaves. After
+the decoy's first line its service manager must not open journald's sockets
+anew (:data:`REOPENED`): a plain soft-reboot carries them listening, and
+their ``Listening on`` lines would tell a way back from it.
 
 :func:`nextroot_left` reads what the switch left at ``/run/nextroot``.
 """
@@ -104,6 +114,20 @@ KERNEL_LINES = (
 DM_TEARDOWN = (
     re.compile(r"audit: type=1338 .*\bmodule=crypt op=dtr\b"),
     re.compile(r"device-mapper: ioctl: remove_all left \d+ open device\(s\)"),
+)
+
+#: The hidden journald's stop, which the late writer's lines must follow
+#: (NixOS logs the unit's description alone).
+JOURNALD_STOPPED = re.compile(
+    r"systemd\[1\]: (Stopped (systemd-journald\.service - )?Journal Service\."
+    r"|systemd-journald\.service: Deactivated successfully\.)"
+)
+
+#: A service manager opening one of journald's sockets, by unit name and
+#: description, or by its description alone as NixOS logs it.
+REOPENED = re.compile(
+    r"systemd\[1\]: Listening on "
+    r"(systemd-journald(-dev-log|-audit)?\.socket - )?Journal (Audit )?Sockets?\b"
 )
 
 #: An audit record's time stamp and serial, ``audit(1794677720.975:717)``.
@@ -204,11 +228,14 @@ def judge_records(
     entries: Sequence[Mapping[str, Any]],
     marker: str,
     names: Iterable[str],
+    late_mark: str | None = None,
+    linger: str | None = None,
 ) -> Verdict:
     """Judge the decoy's journal ``entries`` against the ring buffer ``ring``,
     from the in-session kernel ``marker`` on. ``names`` are strings no record
     may hold: the planted processes' names and marks, the hidden
-    filesystem's UUID."""
+    filesystem's UUID. With ``late_mark`` and ``linger``, the plants of
+    :func:`plant` must have run (see the module docs)."""
     verdict = Verdict()
     names = [n for n in names if n]
     at = next((r for r in ring if marker in r.text), None)
@@ -226,6 +253,31 @@ def judge_records(
         verdict.findings.append("the decoy's service manager never started")
         return verdict
     verdict.judged = True
+    if late_mark is not None:
+        stopped = first_after(ring, at.seq, JOURNALD_STOPPED)
+        late = (
+            first_after(ring, stopped.seq, re.compile(re.escape(f"{late_mark}-kmsg")))
+            if stopped is not None
+            else None
+        )
+        if stopped is None or late is None or late.seq >= step.seq:
+            verdict.findings.append(
+                "not judged: the late writer did not log after the hidden "
+                "journald stopped and before the way back's last step"
+            )
+    if linger is not None:
+        ended = first_after(ring, step.seq, re.compile(re.escape(f"{linger}-stopped")))
+        if ended is None or ended.seq >= banner.seq:
+            verdict.findings.append(
+                "not judged: the lingering unit did not run until the way "
+                "back's last step ended it"
+            )
+    for record in ring:
+        if record.seq > banner.seq and REOPENED.search(record.text):
+            verdict.findings.append(
+                f"the decoy's start opened journald's socket anew: {record.seq} "
+                f"{record.text}"
+            )
 
     kernel = [e for e in entries if e.get("_TRANSPORT") == "kernel"]
     by_usec: dict[int, list[str]] = {}
@@ -304,13 +356,28 @@ LATE_UNIT = "late-writer"
 
 def late_stop_command(logger: str, mark: str) -> str:
     """The late writer's stop: one line through ``/dev/log``, its standard
-    output and the native socket, each with its own suffix of ``mark``. The
-    service manager turns the doubled backslashes into the single ones
-    printf reads as a newline."""
+    output and the native socket, each with its own suffix of ``mark``, and,
+    once all three went out, ``<mark>-kmsg`` to the kernel log, the proof it
+    ran. The service manager turns the doubled backslashes into the single
+    ones printf reads as a newline."""
     return (
-        f'/bin/sh -c "{logger} -t late {mark}-syslog; echo {mark}-stdout; '
+        f'/bin/sh -c "{logger} -t late {mark}-syslog && echo {mark}-stdout && '
         f"printf 'MESSAGE={mark}-native\\\\nSYSLOG_IDENTIFIER=late\\\\n' "
-        f'| {logger} --journald"'
+        f'| {logger} --journald && echo {mark}-kmsg > /dev/kmsg"'
+    )
+
+
+def linger_file(linger: str) -> str:
+    """The file in ``/run`` the lingering unit's stop command writes."""
+    return f"/run/{linger}-stop"
+
+
+def linger_stop_command(linger: str) -> str:
+    """The lingering unit's stop: :func:`linger_file`, then ``<linger>-stopped``
+    to the kernel log, the proof it ran."""
+    return (
+        f'/bin/sh -c "echo {linger} > {linger_file(linger)} && '
+        f'echo {linger}-stopped > /dev/kmsg"'
     )
 
 
@@ -319,7 +386,8 @@ def plant(machine: Machine, mark: str, linger: str) -> None:
     unit that stops after the hidden journald (ordered before it, without
     the default dependencies) and logs ``mark`` through each of journald's
     sockets as it does; and a process in the unit ``linger``, which the
-    shutdown does not stop, so that PID 1 would name it in its final kill.
+    shutdown does not stop, so that PID 1 would name it in its final kill,
+    with a stop command that writes to ``/run`` (:func:`linger_stop_command`).
     It runs from the root itself, so it keeps no other mount busy."""
     logger = machine.succeed("command -v logger").strip()
     sleep = machine.succeed("command -v sleep").strip()
@@ -333,6 +401,7 @@ def plant(machine: Machine, mark: str, linger: str) -> None:
     )
     machine.succeed(
         f"systemd-run --unit={shlex.quote(linger)} -p DefaultDependencies=no "
+        f"-p ExecStop={shlex.quote(linger_stop_command(linger))} "
         f"{shlex.quote(sleep)} infinity",
         f"systemctl is-active {shlex.quote(linger)}.service",
     )
@@ -361,15 +430,25 @@ JOURNAL = (
 def judge(
     machine: Machine, marker: str, mark: str, linger: str, uuid: str | None
 ) -> Verdict:
-    """After the way back, on the decoy: judge its journal (see the module
-    docs). ``uuid`` is the hidden filesystem's, or None."""
+    """After the way back, on the decoy: judge its journal and what the
+    lingering unit's stop wrote to ``/run`` (see the module docs). ``uuid``
+    is the hidden filesystem's, or None."""
     machine.succeed("journalctl --sync")
     ring = parse_kmsg(machine.succeed(RING))
     entries = parse_journal(machine.succeed(JOURNAL))
     names = [mark, linger, f"{LATE_UNIT}.service"]
     if uuid:
         names.append(uuid)
-    return judge_records(ring, entries, marker, names)
+    verdict = judge_records(ring, entries, marker, names, mark, linger)
+    left = machine.succeed(
+        f"test -e {linger_file(linger)} && echo left || echo gone"
+    ).strip()
+    if left != "gone":
+        verdict.findings.append(
+            f"{linger_file(linger)}, which the lingering unit's stop wrote, "
+            "is still in /run"
+        )
+    return verdict
 
 
 def nextroot_left(machine: Machine) -> str:

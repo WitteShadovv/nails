@@ -621,6 +621,23 @@ def stopped_after(
     return seen[then] > seen[first]
 
 
+#: The decoy's service manager opening one of journald's sockets.
+_REOPENED = re.compile(
+    r"systemd\[1\]: Listening on systemd-journald(-dev-log|-audit)?\.socket\b"
+)
+
+
+def reopened_sockets(records: Iterable[Mapping[str, Any]], after: int) -> list[str]:
+    """The kernel log's lines, past record ``after``, of a service manager
+    opening one of journald's sockets: a plain soft-reboot carries them
+    listening, and the decoy's start logs none."""
+    return [
+        str(record["msg"])
+        for record in sorted(records, key=lambda r: int(r["seq"]))
+        if int(record["seq"]) > after and _REOPENED.search(str(record["msg"]))
+    ]
+
+
 def pid_range(pid: int) -> tuple[int, int]:
     """The power-of-two range a process number falls in, as the forensic
     oracle keys one: 512 to 1023 for 700."""
@@ -2379,6 +2396,13 @@ class Gate:
             seen,
         )
         self.carried(n, state, found, records)
+        reopened = reopened_sockets(records, end) if isinstance(end, int) else None
+        self.check(
+            f"way back {n}: the decoy's start opened none of journald's sockets "
+            "anew, as after a plain soft-reboot",
+            reopened == [],
+            reopened if reopened is not None else {"not judged": {"stepEnd": end}},
+        )
         gone = self.fact(
             f"run-probe-{n}",
             f"for p in {RUN_PROBE}-{n} {RUNTIME}; do "

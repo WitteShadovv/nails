@@ -988,16 +988,39 @@ distroVm.buildVmTest {
         linger = f"lngr{label}"
         journal_tail.plant(vm, mark, linger)
         uuid = vm.succeed("findmnt -rno UUID /mnt/data || true").strip() or None
+        fstype = vm.succeed("findmnt -rno FSTYPE /mnt/data || true").strip()
+        # The name check needs the UUID wherever the kernel would log it.
+        assert uuid or fstype != "ext4", f"no UUID for the hidden ext4 volume ({fstype})"
         dm = vm.execute("test -e /dev/mapper/data")[0] == 0
         marker = f"NAILSIN{label}"
+        sockets = journald_sockets()
         journal_tail.write_marker(vm, marker)
-        return {"marker": marker, "mark": mark, "linger": linger, "uuid": uuid, "dm": dm}
+        return {
+            "marker": marker,
+            "mark": mark,
+            "linger": linger,
+            "uuid": uuid,
+            "dm": dm,
+            "sockets": sockets,
+        }
+
+
+    def journald_sockets():
+        # When journald's sockets were made, as the decoy shows it: the
+        # socket file's change time and the unit's start. Printed, not
+        # judged: the way back makes them anew (journal-socket-carry).
+        return vm.succeed(
+            "stat -c 'socket file %z' /run/systemd/journal/socket; "
+            "systemctl show -p ActiveEnterTimestamp systemd-journald.socket"
+        ).strip()
 
 
     def assert_quiet_tail(where, planted):
         # After the way back: the decoy's journal holds no record of the
         # hidden session past the kmsg cursor, nor anything the hidden root
-        # sent journald's sockets after its journald stopped; the kernel's
+        # sent journald's sockets after its journald stopped; the decoy's
+        # start opened none of journald's sockets anew; the plants ran, and
+        # what the lingering unit's stop wrote to /run is gone. The kernel's
         # lines of a device-mapper volume's teardown are the residue the
         # catalog names (kmsg-import). A line logged now reaches it.
         verdict = journal_tail.judge(
@@ -1012,6 +1035,7 @@ distroVm.buildVmTest {
         assert not findings, f"{where}: the decoy's journal holds the hidden session's records: {findings}"
         if verdict.dm_teardown:
             print(f"{where}: the device-mapper teardown's lines (kmsg-import): {verdict.dm_teardown}")
+        print(f"{where}: journald's sockets before: {planted['sockets']!r}, after: {journald_sockets()!r}")
         post = f"NAILSPOST{planted['mark']}"
         vm.succeed(f"logger -t post {post}")
         vm.wait_until_succeeds(f"journalctl --no-pager -o cat | grep -qF {post}", timeout=30)
