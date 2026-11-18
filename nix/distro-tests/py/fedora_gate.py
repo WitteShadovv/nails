@@ -409,9 +409,9 @@ COMPRESSED_BLIND_SPOT = "compresses file contents"
 SCAN_WARNINGS_EXIT = 9
 # What a check depends on that the build does not have yet. The way back
 # opens journald's sockets again, and the new native socket carries
-# journald's label (syslogd_t): a confined service of the decoy that sends to them from then
-# on logs a denial the boot's sockets did not give it (residue catalog row
-# journal-socket-carry).
+# journald's label (syslogd_t): a confined service of the decoy that sends to
+# it from then on logs a denial the boot's socket did not give it (residue
+# catalog row journal-socket-carry).
 NEEDS_SOCKET_LABEL = (
     "journald's sockets opened again at the way back with a label the decoy's "
     "services may send to, as to those of the boot"
