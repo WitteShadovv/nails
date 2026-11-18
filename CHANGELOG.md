@@ -1138,17 +1138,42 @@ of this changelog for that version becomes the release notes word for word, and
   free, which formats a disk it finds empty, and read `nofail=1`, `nofail=0`, `fail=1`,
   `_netdev=1`, `bg=1` and a quota option with a value such as `usrjquota=aquota.user` otherwise
   than systemd. `nofail` with any value is now `nofail`.
-- A `noauto` line is now left alone only where NAILS reads every option it gives, by the lists
-  `backend-entries` reads a plain line by. One with any other option, a known one in another form
-  (`x-systemd.after=`, `X-mount.subdir=`, `nofail=1`), or an option with a backslash or a quote is
-  masked with its automount, and `nails check` names the option. systemd splits the options at
-  every comma, as NAILS does, and only a backslash or a `\054` makes it split them otherwise (it
-  mounted `noauto,auto=x\,noauto` and `noauto,comment=x\054auto` at boot); a quote is unread as
-  `libmount` keeps a comma between quotes. Where the option holds a backslash, or is one of
-  systemd's own whose effect NAILS does not read, it may have a boot target require the line, and
-  activation and `nails check` warn that such a target is then not reached. A `noauto` line for
-  `/usr` is kept off like any line the boot mounts, as systemd mounts `/usr` whatever `noauto`
-  says, and `nofail` and `x-systemd.automount` mean nothing there either.
+- A `noauto` line is now taken for one the boot never mounts only where NAILS reads every option it
+  gives, by the lists `backend-entries` reads a plain line by. One with any other option, a known
+  one in another form (`x-systemd.after=`, `X-mount.subdir=`, `nofail=1`), or an option with a
+  backslash or a quote is masked with its automount, and `nails check` names the option. systemd
+  splits the options at every comma, as NAILS does, and only a backslash or a `\054` makes it split
+  them otherwise (it mounted `noauto,auto=x\,noauto` and `noauto,comment=x\054auto` at boot); a
+  quote is unread as `libmount` keeps a comma between quotes. Where the option holds a backslash, or
+  is one of systemd's own whose effect NAILS does not read, it may have a boot target require the
+  line, and activation and `nails check` warn that such a target is then not reached. A `noauto`
+  line for `/usr` is kept off like any line the boot mounts, as systemd mounts `/usr` whatever
+  `noauto` says, and `nofail` and `x-systemd.automount` mean nothing there either.
+- A `noauto` line of a local filesystem that the decoy does not mount now is masked in the hidden
+  session, with its automount, also where nothing NAILS reads pulls it in. NAILS left such a line to
+  the hidden systemd as never mounted, but a unit outside the fstab could still pull it in: a tmpfs
+  mount unit with `Requires=` on it, linked into `local-fs.target`, had the hidden systemd mount the
+  disk read-write. A unit that requires the mount now does not start in the hidden session, and a
+  boot target that requires such a unit is not reached. NAILS warns of that where it reads the pull:
+  a line of the fstab that needs the mount, as before, and a skipped unit whose pulls reach it,
+  which is masked as before; it does not read what other units pull in. A unit that a boot target
+  links for the line itself is decided as before, skipped where the target requires it and its disk
+  is there. A bind line, and one whose source NAILS ties to no device, such as a ZFS dataset, are
+  masked too; a RAM filesystem and a host share are left to the hidden systemd as before. A `noauto`
+  line kept off at or below the hidden root, in the fstab an activation without a build decides or
+  led there by a link, or on a network filesystem, whose mount a line the boot starts needs is kept
+  off as a needed line is: skipped where its target requires that line and its device is there,
+  masked with a warning where the device is not. NAILS masked it with no warning, and the target was
+  not reached.
+- A line for `/usr` is read as one its boot target requires whatever `x-systemd.wanted-by=` and
+  `x-systemd.required-by=` say, as systemd's fstab generator ignores both there and links
+  `usr.mount` into `local-fs.target.requires`. NAILS masked such a line not mounted now with no
+  warning and no record (`x-systemd.wanted-by=`), or named the unit `x-systemd.required-by=` gives
+  as the target. It is now skipped where its device is there and masked with the warning that
+  `local-fs.target` is not reached where it is not, and `nails status` lists that mask. The warning
+  for a line for `/usr` no longer says to give it `nofail`, which systemd ignores there, but to
+  attach the device or remove the line. A mask of a line for `/usr` no longer masks or records
+  `usr.automount`, which systemd never makes.
 - A `noauto` line whose mount another line needs is kept off, where the boot starts that other
   line and it is left to the hidden systemd or put in place: a line below its mount point, one with
   it as its source, or one that names it with `x-systemd.requires-mounts-for=`,
@@ -1161,30 +1186,33 @@ of this changelog for that version becomes the release notes word for word, and
   skipped if its device is there and masked with a warning if not, and where none does, it is
   masked. The warning names the lines the target requires on the way, which `nofail` lets it be
   reached without (`x-systemd.wanted-by=` in place of an `x-systemd.required-by=`). A line on the
-  way that may pull it in only through an option NAILS cannot read, or that has a backslash anywhere
-  in its options, counts as one a target may require, never as one it surely requires: systemd keeps
+  way that may pull it in only through an option NAILS cannot read counts as one a target may
+  require, never as one it surely requires, and so does a target's own step to a line that has a
+  backslash anywhere in its options; a line that surely requires such a line still requires it, and
+  such a line requires what it names before its first option with a backslash: systemd keeps
   a comma after a backslash in an option and reads `\054` as one, so it may read a `noauto`,
   `nofail` or `x-systemd.wanted-by=` there that NAILS does not, or not read one that NAILS does (it
   linked a `tmpfs` line with `comment=x\,nofail` into `local-fs.target.requires`, and read
-  `comment=x\054nofail` as `nofail`). Where only such lines lead to a target, the warning says that
+  `comment=x\054nofail` as `nofail`). Where only such steps lead to a target, the warning says that
   the target may require the mount, and `nails status` does not list the mask among the units a
-  target requires.
+  target requires. Where two fstabs the hidden systemd may read disagree about such a mount, and
+  the mask of one holds over the skip of the other that only may be required, `nails status` does
+  not list it either, and the warning that the lines disagree stays.
 - A line kept off that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
   what its units pull in NAILS does not read, or an option with a backslash, is masked rather than
   skipped, so a boot target that requires it is not reached, and activation warns of that, naming
-  the option. A backslash anywhere in a line's options means NAILS cannot read them as systemd
-  does, which keeps a comma after a backslash in an option and reads `\054` as one: it linked the
-  mounts of `comment=x\,nofail` and `comment=x\,x-systemd.wanted-by=foo.service` and the swap of
+  the option. A backslash anywhere in a line's options means NAILS cannot read them as systemd does,
+  which keeps a comma after a backslash in an option and reads `\054` as one: it linked the mounts
+  of `comment=x\,nofail` and `comment=x\,x-systemd.wanted-by=foo.service` and the swap of
   `sw,comment=x\,noauto` into their targets' `.requires`, which NAILS took for lines nothing
   requires and masked without a warning, and read `comment=x\054noauto` as `noauto`. Such a line
   kept off, other than one for `/usr`, is now masked with the warning that its target may require
   it, whatever `noauto`, `nofail` or `x-systemd.wanted-by=` NAILS reads on it, and `nails status`
   does not list the mask among the units a target requires. A line for `/usr`, which systemd mounts
-  whatever its options say, gets a plain warning that a target is not reached, naming the target
-  NAILS reads from the split options, which may not be the one systemd uses. Options outside
-  systemd's namespaces, such as those of an NFS or CIFS share, keep their skip, and so do options
-  with a quote, such as an SELinux `context=`. An overlay line that gives `upperdir` more than once,
-  or with no value, is kept off.
+  whatever its options say, gets a plain warning that its boot target is not reached. Options
+  outside systemd's namespaces, such as those of an NFS or CIFS share, keep their skip, and so do
+  options with a quote, such as an SELinux `context=`. An overlay line that gives `upperdir` more
+  than once, or with no value, is kept off.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
@@ -2249,16 +2277,17 @@ of this changelog for that version becomes the release notes word for word, and
   for a prefix of its name and for its type included), except those the fstab generator made from a
   line whose decision keeps them off or puts their mount point in place (a copy of such a unit in
   `/etc/systemd/system`, as `systemctl edit --full` makes, is decided as a unit of its own, and so
-  is the unit of a line the policy leaves as it is): a filesystem the decoy has mounted now is bound
-  read-only or overlaid, one not mounted now is skipped or masked, and the automount of a filesystem
-  put in place is kept off. RAM and kernel filesystems are left to the hidden systemd, and so is a
-  zram swap whose zram device has no backing device. One with a backing device is kept off like disk
-  swap. A unit whose files cannot be read, or that names its source by a specifier, is masked, and a
-  directory of unit links that cannot be listed refuses the activation. A mount unit that only
-  another unit pulls in is not decided. `nails check` lists the decisions with the fstab's. A mask
-  now also goes into `/run/systemd/system.control`: in `/run/systemd/system` alone it lost to a unit
-  in `/etc/systemd/system`, where NixOS installs every unit, so the hidden systemd started such a
-  unit masked there all the same.
+  is the unit of a line the policy leaves as it is, or of a `noauto` line it masks as one nothing
+  NAILS reads pulls in): a filesystem the decoy has mounted now is bound read-only or overlaid, one
+  not mounted now is skipped or masked, and the automount of a filesystem put in place is kept off.
+  RAM and kernel filesystems are left to the hidden systemd, and so is a zram swap whose zram device
+  has no backing device. One with a backing device is kept off like disk swap. A unit whose files
+  cannot be read, or that names its source by a specifier, is masked, and a directory of unit links
+  that cannot be listed refuses the activation. A mount unit that only another unit pulls in is not
+  decided. `nails check` lists the decisions with the fstab's. A mask now also goes into
+  `/run/systemd/system.control`: in `/run/systemd/system` alone it lost to a unit in
+  `/etc/systemd/system`, where NixOS installs every unit, so the hidden systemd started such a unit
+  masked there all the same.
 - A hidden session reaches `local-fs.target`, `remote-fs.target` and `swap.target` when the session
   keeps a decoy filesystem or swap off that the target requires. The session masked such a unit (an
   fstab entry without `nofail` that is not mounted now, a network filesystem, a swap line, the
