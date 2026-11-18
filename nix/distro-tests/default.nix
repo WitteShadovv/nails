@@ -99,8 +99,29 @@ let
   # matrix of the admitted families. The commit that admits a family takes its
   # image out of this list, enables it in images.json, which puts its smoke in
   # the smoke suite and makes oracle-images.nix run the release binary on it,
-  # and moves its records scenario to records.nix.
-  stagedImages = [ "arch-boxes" ];
+  # and moves its records scenario to records.nix. Each staged image names how
+  # its records scenario reads its login records.
+  stagedRecords = {
+    # Classic wtmp on systemd 262, which resets the start time across a
+    # soft-reboot, and lastlog2 through PAM's login stack.
+    arch-boxes = {
+      assertKind = "classic-wtmp-reset";
+      login = true;
+    };
+    # Classic wtmp on systemd 259 and newer, which resets the start time
+    # across a soft-reboot. Fedora 44's pam_lastlog2 fails to load, as the
+    # admission gate's runs on it show, so only Fedora 45 writes lastlog2.
+    fedora-44 = {
+      assertKind = "classic-wtmp-reset";
+      login = true;
+      lastlog2 = false;
+    };
+    fedora-45 = {
+      assertKind = "classic-wtmp-reset";
+      login = true;
+    };
+  };
+  stagedImages = builtins.attrNames stagedRecords;
   stagedScenarios = lib.listToAttrs (
     lib.concatMap (
       name:
@@ -120,14 +141,13 @@ let
           } name entry
         ))
         (lib.nameValuePair "${name}-staged-records" (
-          import ./tests/session-records.nix { inherit self pkgs nix-vm-test; } {
-            inherit entry nails;
-            # Classic wtmp on systemd 262, which resets the start time across
-            # a soft-reboot, and lastlog2 through PAM's login stack.
-            assertKind = "classic-wtmp-reset";
-            login = true;
-            target = "sandboxed";
-          }
+          import ./tests/session-records.nix { inherit self pkgs nix-vm-test; } (
+            {
+              inherit entry nails;
+              target = "sandboxed";
+            }
+            // stagedRecords.${name}
+          )
         ))
       ]
     ) stagedImages

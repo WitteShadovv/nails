@@ -12,7 +12,8 @@ name: Distro E2E
 #   probe    the fact probes of the images not admitted yet
 #   staged   the scenarios a family's admission needs, with a test-only build
 #            that admits the family: the smoke and records scenarios of each
-#            image staged for its admission (arch-boxes), and the drivers of
+#            image staged for its admission (arch-boxes, fedora-44,
+#            fedora-45), and the drivers of
 #            the admission gate of a family not admitted yet (Fedora): its
 #            gate scenarios and the resolution of the package closures they
 #            install offline, each uploading what it wrote
