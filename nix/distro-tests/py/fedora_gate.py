@@ -601,16 +601,17 @@ def stopped_after(
     return seen[then] > seen[first]
 
 
-#: The decoy's service manager opening one of journald's sockets.
+#: The decoy's service manager opening journald's socket or its /dev/log
+#: socket (the way back leaves the audit socket closed).
 _REOPENED = re.compile(
-    r"systemd\[1\]: Listening on systemd-journald(-dev-log|-audit)?\.socket\b"
+    r"systemd\[1\]: Listening on systemd-journald(-dev-log)?\.socket\b"
 )
 
 
 def reopened_sockets(records: Iterable[Mapping[str, Any]], after: int) -> list[str]:
     """The kernel log's lines, past record ``after``, of a service manager
-    opening one of journald's sockets: a plain soft-reboot carries them
-    listening, and the decoy's start logs none."""
+    opening journald's socket or its /dev/log socket: a plain soft-reboot
+    carries them listening, and the decoy's start logs neither."""
     return [
         str(record["msg"])
         for record in sorted(records, key=lambda r: int(r["seq"]))
@@ -2221,8 +2222,8 @@ class Gate:
         self.carried(n, state, found, records)
         reopened = reopened_sockets(records, end) if isinstance(end, int) else None
         self.check(
-            f"way back {n}: the decoy's start opened none of journald's sockets "
-            "anew, as after a plain soft-reboot",
+            f"way back {n}: the decoy's start opened neither journald's socket "
+            "nor its /dev/log socket anew, as after a plain soft-reboot",
             reopened == [],
             reopened if reopened is not None else {"not judged": {"stepEnd": end}},
         )
