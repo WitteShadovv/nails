@@ -15,7 +15,10 @@
 //! - every reference lies in the file: its line exists, holds its text, and
 //!   no line is reported twice;
 //! - matching ignores ASCII case, as documented: the text with the case of
-//!   every ASCII letter swapped gives the same lines, kinds and texts;
+//!   every ASCII letter swapped gives the same lines, kinds and texts. A
+//!   letter right after a backslash keeps its case: the scan reads the
+//!   escapes of a string as Nix does, and Nix reads `\n` as a newline but
+//!   `\N` as `N`;
 //! - the scan reads forward only: the first lines of the file give the
 //!   references the whole file gives for them.
 
@@ -162,13 +165,20 @@ fn links(fs: &MockFilesystem, dir: &str, targets: &[&str]) {
     fs.mock_set_directory_contents(Path::new(dir), entries);
 }
 
-/// `text` with every ASCII letter in the other case.
+/// `text` with every ASCII letter in the other case, but for one right
+/// after a backslash, which may be an escape.
 fn swap_ascii_case(text: &str) -> String {
+    let mut after_backslash = false;
     text.chars()
-        .map(|c| match c {
-            'a'..='z' => c.to_ascii_uppercase(),
-            'A'..='Z' => c.to_ascii_lowercase(),
-            _ => c,
+        .map(|c| {
+            let swapped = match c {
+                _ if after_backslash => c,
+                'a'..='z' => c.to_ascii_uppercase(),
+                'A'..='Z' => c.to_ascii_lowercase(),
+                _ => c,
+            };
+            after_backslash = c == '\\';
+            swapped
         })
         .collect()
 }
