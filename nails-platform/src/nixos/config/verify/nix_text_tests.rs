@@ -10,20 +10,27 @@ fn found(pattern: &Pattern, text: &str) -> Option<String> {
     let mut scanner = Scanner::default();
     let mut shell = Shell::default();
     let lower = text.to_ascii_lowercase();
-    let mut hit = None;
+    let mut lines = Vec::new();
     for line in lower.split('\n') {
         let context = Context {
             names: scanner.line(line.as_bytes()),
             arguments: shell.line(line.as_bytes()),
             places: scanner.places(),
+            joined: Vec::new(),
         };
-        if hit.is_none()
-            && let Some(range) = pattern.find(line.as_bytes(), &context)
-        {
-            hit = Some(line[range].to_string());
-        }
+        lines.push((line, context));
     }
-    hit
+    for joined in scanner.joined() {
+        lines[joined.line]
+            .1
+            .joined
+            .push((joined.text.clone(), joined.continued));
+    }
+    lines.iter().find_map(|(line, context)| {
+        pattern
+            .find(line.as_bytes(), context)
+            .map(|range| line[range].to_string())
+    })
 }
 
 fn data() -> Pattern {
@@ -425,12 +432,47 @@ fn a_subvolume_id_is_read_as_the_kernel_reads_it() {
     let none = Pattern::SubvolId(None);
     assert_eq!(found(&none, "subvolid=258"), None);
     assert!(found(&none, "subvolid=${id}").is_some());
-    let unread = Pattern::SubvolUnread;
+    let unread = Pattern::Unread("subvol".into());
     for hit in ["\"subvol=${name}\"", "(\"subvol=\" + name)", "subvol=;"] {
         assert!(found(&unread, hit).is_some(), "{hit}");
     }
     for miss in ["\"subvol=@\"", "\"subvolid=\"", "\"subvol=/\""] {
         assert_eq!(found(&unread, miss), None, "{miss}");
+    }
+}
+
+/// A `subvol=`, `x-mount.subdir=` or `subvolid=` value that runs to the end
+/// of a string a `+` joins to something, on its line or the next, cannot be
+/// read whole; one that ends before the end of its string, or a string
+/// joined only before it, can.
+#[test]
+fn a_value_a_plus_goes_on_with_cannot_be_read() {
+    let subvol = Pattern::Unread("subvol".into());
+    let subdir = Pattern::Unread("x-mount.subdir".into());
+    let id = Pattern::SubvolId(Some(258));
+    for (pattern, hit) in [
+        (&subvol, "(\"subvol=@va\" + \"ult\")"),
+        (&subvol, "(\"subvol=@va\"+\"ult\")"),
+        (&subvol, "(''subvol=@va'' + name)"),
+        (&subvol, "options = [ (\"subvol=@va\"\n  + \"ult\") ];"),
+        (&subvol, "# options = [ (\"subvol=@va\" + \"ult\") ];"),
+        (&subdir, "(\"X-mount.subdir=@va\" + \"ult\")"),
+        (&subdir, "\"X-mount.subdir=${name}\""),
+        (&subdir, "\"X-mount.subdir=\""),
+        (&id, "(\"subvolid=25\" + \"8\")"),
+        (&id, "(\"subvolid=2\" + toString 58)"),
+    ] {
+        assert!(found(pattern, hit).is_some(), "{hit}");
+    }
+    for (pattern, miss) in [
+        (&subvol, "(\"subvol=@home,compress=zstd\" + extra)"),
+        (&subvol, "(prefix + \"subvol=@home\")"),
+        (&subvol, "[ \"subvol=@home\" ] ++ [ \"x\" ]"),
+        (&subdir, "\"X-mount.subdir=home\""),
+        (&id, "(\"subvolid=257,ssd\" + extra)"),
+        (&id, "\"subvolid=257\""),
+    ] {
+        assert_eq!(found(pattern, miss), None, "{miss}");
     }
 }
 
