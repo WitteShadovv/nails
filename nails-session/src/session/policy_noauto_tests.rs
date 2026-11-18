@@ -340,3 +340,48 @@ fn a_noauto_mask_yields_to_a_skip_of_its_unit_on_its_device() {
         );
     }
 }
+
+/// A noauto line with an option NAILS does not read, below which a tmpfs
+/// line local-fs.target requires lies: the tmpfs requires the line's mount.
+/// The mask stands, as the option may have the boot mount the line in other
+/// ways too, but a warning now names local-fs.target, and the mount (not
+/// the automount, which nothing pulls in) is recorded as one that target
+/// requires. next masked it with no warning and no record.
+#[test]
+fn a_noauto_line_with_an_unread_option_that_a_line_needs_is_warned_of() {
+    let fstab = "/dev/vdy1 /r/a ext4 noauto,foo 0 0\ntmpfs /r/a/t tmpfs defaults 0 0\n";
+    let decisions = decide_fstab(fstab, true);
+    let decision = at(&decisions, "/r/a");
+    let Decision::Mask {
+        units, unreached, ..
+    } = decision
+    else {
+        panic!("{decision:?}");
+    };
+    assert_eq!(units, &["r-a.mount", "r-a.automount"]);
+    assert_eq!(
+        unreached.as_ref().map(|u| (u.target.as_str(), &u.cause)),
+        Some(("local-fs.target", &Unskippable::Unread)),
+        "{decision:?}"
+    );
+    let warning = decision.warning().expect("a warning");
+    for part in [
+        "/r/a is masked, as noauto, but NAILS does not read its option foo",
+        "and the line for /r/a/t needs its mount, so the boot mounts it",
+        "the hidden session will not reach local-fs.target, which requires it",
+    ] {
+        assert!(warning.contains(part), "{part}: {warning}");
+    }
+    let kept = runtime_units(&parse_fstab(fstab), &decisions);
+    assert_eq!(
+        kept.required_masks,
+        [RequiredMask {
+            unit: "r-a.mount".into(),
+            cause: MaskCause::Undetermined,
+            device: None,
+        }]
+    );
+    // Nothing needs it: the mask stands as before, with no warning.
+    let alone = decide_fstab("/dev/vdy1 /r/a ext4 noauto,foo 0 0\n", true);
+    assert_eq!(at(&alone, "/r/a").warning(), None);
+}
