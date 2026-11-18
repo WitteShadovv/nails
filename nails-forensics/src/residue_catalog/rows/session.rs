@@ -568,7 +568,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/lib/systemd/timers"]),
         platforms: Platforms::ALL,
-        risk: "Persistent=true timers stamp their last run; a stamp from the session, or a catch-up run at the next decoy boot, dates the session.",
+        risk: "Persistent=true timers stamp their last run; a stamp from the session dates the session, and a timer that came due during the session catches up right after the way back, so its stamp and what its unit writes on the decoy disk date the way back.",
         preflight: Probe::Paths {
             paths: &["/var/lib/systemd/timers"],
             severity: ProbeSeverity::Info,
@@ -578,7 +578,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             paths: &["/var/lib/systemd/timers"],
             severity: ProbeSeverity::Info,
         },
-        mitigation: "Session stamps land in the upper; expect catch-up runs at the next decoy boot.",
+        mitigation: "Session stamps land in the upper; expect the timers that came due during the session to catch up right after the way back.",
         doc_anchor: "decoy-requirements.md#session-time-records",
         e2e: E2e::Test("examiner-audit"),
         residual: true,
@@ -644,7 +644,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         mitigation: "Session writes land in the upper; on a persistent decoy, use the decoy normally after a session so its own clock activity follows the stamp.",
         doc_anchor: "decoy-requirements.md#session-time-records",
         e2e: E2e::None(
-            "asserted on the Fedora and Arch decoys by the cross-distro forensic probe once their images boot; shares the session-time-records mitigation meanwhile",
+            "no test asserts it on its own; the Fedora admission gate holds what the way back changes on the decoy disk, /var/lib/chrony among it, against what a plain soft-reboot changes",
         ),
         residual: true,
         conclusion: None,
@@ -690,9 +690,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         },
         mitigation: "Keep /var/log out of the decoy's persistent storage, or expect boot.log to date the way back; power off after the session.",
         doc_anchor: "decoy-requirements.md#session-time-records",
-        e2e: E2e::None(
-            "asserted on the Fedora and Arch decoys by the cross-distro forensic probe once their images boot",
-        ),
+        e2e: E2e::None("no test asserts it on the Fedora or Arch decoys yet"),
         residual: true,
         conclusion: None,
     },
@@ -761,9 +759,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         },
         mitigation: "Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot.",
         doc_anchor: "decoy-requirements.md#session-time-records",
-        e2e: E2e::None(
-            "asserted on the Fedora decoy by the cross-distro forensic probe once its image boots",
-        ),
+        e2e: E2e::None("no test asserts it on the Fedora decoy yet"),
         residual: true,
         conclusion: None,
     },

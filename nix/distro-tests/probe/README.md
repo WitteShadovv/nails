@@ -1,18 +1,18 @@
 # Distribution probe fixtures
 
-A probe boots one distribution's stock cloud image **without NAILS** and records
-the host facts the cross-distribution work needs but cannot assert by reading
-code, so that each becomes committed test data instead of a guess. The facts
-are the ones the platform notes leave unverified for the families that are not
-admitted yet (Fedora and Arch): the SELinux domain a backdoor-style service
-lands in, the labels and policy loads around a soft-reboot, the kernel and its
-module trees, the systemd version, the image's own mount layout and where each
-mount, swap and automount unit comes from, the host tools actually present, the
-state of the services the decoy-posture checks judge, the vendor journald
-configuration and the journal storage that results, the units that fail on
-their own, the `updatedb` prune paths, any AVC denials, whether a 9p share
-works while SELinux is enforcing, the `os-release` values a derivative carries,
-and what one plain soft-reboot changes.
+A probe boots one distribution's stock cloud image **without NAILS** and
+records the host facts the cross-distribution work needs but cannot assert by
+reading code, so that each becomes committed test data instead of a guess. The
+facts are the ones the platform notes leave unverified, those Fedora's
+admission rests on and those Arch's support would rest on: the SELinux domain a
+backdoor-style service lands in, the labels and policy loads around a
+soft-reboot, the kernel and its module trees, the systemd version, the image's
+own mount layout and where each mount, swap and automount unit comes from, the
+host tools actually present, the state of the services the decoy-posture checks
+judge, the vendor journald configuration and the journal storage that results,
+the units that fail on their own, the `updatedb` prune paths, any AVC denials,
+whether a 9p share works while SELinux is enforcing, the `os-release` values a
+derivative carries, and what one plain soft-reboot changes.
 
 These facts need a booted VM, which needs KVM, so they are recorded on a
 KVM-capable host or a hosted runner (the build server has none): one JSON file
@@ -24,7 +24,8 @@ One file per probe, named after the probe: the `../images.json` key of its
 image, with `-enforcing` added for a Fedora image booted with SELinux enforcing.
 
 - `fedora-44.json` -- the pinned Fedora 44 cloud image, booted with SELinux
-  permissive as `../images.json` pins it (recorded)
+  permissive: `../images.json` pins the image enforcing, and `../probe.nix`
+  boots this probe permissive (recorded)
 - `fedora-44-enforcing.json` -- the same image booted with SELinux enforcing
   (recorded)
 - `fedora-45.json`, `fedora-45-enforcing.json` -- the pinned Fedora 45 cloud

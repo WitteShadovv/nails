@@ -133,7 +133,7 @@ model is written down; read it before relying on NAILS.
 
 | Requirement | Notes |
 |---|---|
-| A supported host | NixOS, Debian 13, or Ubuntu 24.04 or 26.04, with **systemd 254 or newer**. A later Debian or Ubuntu release runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
+| A supported host | NixOS, Debian 13, Ubuntu 24.04 or 26.04, or, provisionally, the Cloud edition of Fedora 44 or 45, with **systemd 254 or newer**. A later Debian, Ubuntu or Fedora release, or another Fedora edition, runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
 | Linux 6.1 or newer | The default kernel of Debian 13 (6.12), Ubuntu 24.04 (6.8) and 26.04 and of current NixOS is new enough. NAILS keeps the programs it starts as root from changing the decoy's access times, and the service manager while it reads the decoy from changing those on the decoy's local disk mounts, through `mount_setattr` (Linux 5.12). The `kernel-version` check refuses an older kernel, and one whose release it cannot read or tell the version of, and names the running release. |
 | An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no tuned logging to a file, no armed kdump, no unattended-upgrades set to install at shutdown, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog, audit, tuned, kdump and install-at-shutdown refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
@@ -154,7 +154,7 @@ soft-reboot.
 | NixOS | Full | A hidden NixOS configuration (flake or `configuration.nix`) is built into the hidden root's store and entered in the same soft-reboot. It must run on the decoy's kernel. Pinned nixpkgs without `soft-reboot.target`/`systemd-soft-reboot.service` need a small module, which `nails check` prints. |
 | Debian 13 (trixie) | Root overlay | The same whole-root session; the hidden configuration is whatever the upper's `/etc` holds. Requires the merged-`/usr` layout. |
 | Ubuntu 24.04 and 26.04 | Root overlay | As Debian. On 26.04, chrony and CUPS fail in the hidden session and the decoy shows chrony failed until a full reboot; see [the Ubuntu notes](docs/decoy-requirements.md#ubuntu). |
-| Fedora 44 and 45, Cloud edition | Root overlay, provisional | The same whole-root session, with SELinux enforcing and the targeted policy as Fedora installs it; a permissive SELinux makes `nails check` warn, another policy refuses. Its tests run in virtual machines only, so its support is provisional until a run on real hardware has passed. The Workstation and KDE Plasma Desktop editions, any other edition and a host whose os-release names none run with a warning that NAILS has not been tested on them; see [the Fedora notes](docs/decoy-requirements.md#fedora). |
+| Fedora 44 and 45, Cloud edition | Root overlay, provisional | The same whole-root session, with SELinux enforcing and the targeted policy as Fedora installs it; a permissive SELinux, or none, makes `nails check` warn, another policy refuses. Its support is provisional until a run on real hardware has passed. The Workstation and KDE Plasma Desktop editions, any other edition and a host whose os-release names none run with a warning that NAILS has not been tested on them; see [the Fedora notes](docs/decoy-requirements.md#fedora). |
 | Other releases: Debian after 13, Ubuntu after 24.04, Fedora after 45 | Untested | Accepted on the same terms, with a warning in `init`, `check` and `activate` that NAILS has not been tested on the release, such as Ubuntu 25.04 or 26.10. |
 | Debian-family and Fedora derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` runs with a warning that NAILS has not tested it, when its systemd is new enough; its base release is not version-gated. One whose `ID_LIKE` also names Fedora, RHEL, CentOS or Arch is refused, wherever each stands in the list. Of Fedora's derivatives, Nobara and Ultramarine run from release 44 on with the same warning, and any other is refused. |
 | Debian 12, Ubuntu 22.04, Fedora before 44 | Refused | Debian 12 and Ubuntu 22.04: systemd is too old for a soft-reboot (252 and 249). Fedora before 44: below the release NAILS supports from. |
@@ -701,8 +701,9 @@ your setup before running the new binary.
 - **Session mode.** The per-directory overlays (`/etc`, `/home`, `/var`, ...) are
   gone. The only mode is the whole-root session entered and left with a
   soft-reboot, which needs systemd 254 or newer. Besides NixOS, Debian 13,
-  Ubuntu 24.04 and Ubuntu 26.04 are now supported as decoys, and a later Debian
-  or Ubuntu release runs with a warning. The hidden root's layers
+  Ubuntu 24.04, Ubuntu 26.04 and, provisionally, the Cloud edition of Fedora 44
+  and 45 are now supported as decoys, and a later Debian, Ubuntu or Fedora
+  release runs with a warning. The hidden root's layers
   live under `<hidden-root>/root/` (among them `upper`, `work` and `mounts`);
   the uppers of the old mode (`<hidden-root>/<name>` and
   `<hidden-root>/.work`) are not read. Move what you need from them into the
