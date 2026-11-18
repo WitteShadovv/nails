@@ -131,6 +131,20 @@ class WholeOutputTest(unittest.TestCase):
         self.assertEqual(len(run.boots[0]["records"]), sg.KMSG_PART + 1)
         self.assertIn(f"python3 - {sg.KMSG_PART} ", run.vm.commands[1])
 
+    def test_a_read_that_comes_torn_is_read_again(self) -> None:
+        body = "a big read\n"
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        whole = f"{body}\n{sg.WHOLE} {len(body)} {digest}\n"
+        torn = f"a bi\n\n{sg.WHOLE} {len(body)} {digest}\n"
+        run = gate()
+        run.vm = FakeVm(torn, whole, *[torn] * fg.KMSG_TRIES)
+        run.new_boot("first")
+        self.assertEqual(quiet(run.sh, "read", "cat x", 300, True), (0, body))
+        self.assertEqual((run.read_again, run.torn), (["0001.b0.read"], []))
+        quiet(run.sh, "again", "cat x", 300, True)
+        self.assertEqual(run.torn, ["0002.b0.again"])
+        self.assertEqual(len(run.vm.commands), 2 + fg.KMSG_TRIES)
+
     def test_an_output_that_is_not_whole_fails_the_run(self) -> None:
         body = "the output\n"
         digest = hashlib.sha256(body.encode()).hexdigest()
