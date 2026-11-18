@@ -1266,17 +1266,34 @@ of this changelog for that version becomes the release notes word for word, and
   session, with its automount, also where nothing NAILS reads pulls it in. NAILS left such a line to
   the hidden systemd as never mounted, but a unit outside the fstab could still pull it in: a tmpfs
   mount unit with `Requires=` on it, linked into `local-fs.target`, had the hidden systemd mount the
-  disk read-write. A unit that requires the mount by name (`Requires=`) now does not start in the hidden session, and a
-  boot target that requires such a unit is not reached. NAILS warns of that where it reads the pull:
-  a line of the fstab that needs the mount, as before, and a skipped unit whose pulls reach it,
-  which is masked as before; it does not read what other units pull in. A unit that a boot target
-  links for the line itself is decided as before, skipped where the target requires it and its disk
-  is there. A bind line, and one whose source NAILS ties to no device, such as a ZFS dataset, are
-  masked too; a RAM filesystem and a host share are left to the hidden systemd as before. A `noauto`
-  line kept off at or below the hidden root, in the fstab an activation without a build decides or
-  led there by a link, or on a network filesystem, whose mount a line the boot starts needs is kept
-  off as a needed line is: skipped where its target requires that line and its device is there,
-  masked with a warning where the device is not. NAILS masked it with no warning.
+  disk read-write. A unit that requires the mount by name (`Requires=`) now does not start in the
+  hidden session, and a boot target that requires such a unit is not reached, except where NAILS
+  reads the pull. systemd 260.5 started a unit that requires it by a path (`RequiresMountsFor=`, a
+  mount point below it) without the mount. Where a line of the fstab the boot starts needs the
+  mount, as before, or a mount unit linked in a boot target's `.requires` directory requires it
+  through requirements NAILS reads, such as `Requires=`, the line is kept off as a line the boot
+  mounts: skipped where its device is there, so that the target is reached, and masked with a
+  warning where it is not. A skipped unit whose pulls reach the mount is masked as before. Another
+  unit that requires the mount by name, whose pulls NAILS does not read, does not start, and nothing
+  warns of a target it keeps from being reached. A unit file of the line's name in
+  `/etc/systemd/system` or `/run/systemd/system`, which systemd reads before the fstab generator's
+  unit, is decided in the line's place where a target links it, and a unit that a boot target links
+  for the line itself is decided as before. Where another fstab line or unit file of the same name
+  is left to the hidden systemd, such as a tmpfs line for the same mount point in a hidden
+  generation's fstab, NAILS cannot tell which one the hidden systemd reads: the unit stays masked,
+  activation warns of it, and so does `nails check` where both are in the decoy's own fstab and
+  units, and `nails status` lists it where a boot target requires the other one. The `noauto` lines
+  of the fstab a hidden NixOS generation brings, or a hidden session wrote, are masked the same way,
+  as NAILS cannot tell their disks from the decoy's. A bind line, and one whose source NAILS ties to
+  no device, such as a ZFS dataset, are masked too; a RAM filesystem and a host share are left to
+  the hidden systemd as before. A `noauto` line with an option NAILS does not read stays masked, but
+  where a line the boot starts needs its mount and a boot target requires that line, or may,
+  activation and `nails check` now warn of that target, and `nails status` lists the mask where
+  NAILS reads that the target requires it. A `noauto` line kept off at or below the hidden root, in
+  the fstab an activation without a build decides or led there by a link, or on a network
+  filesystem, whose mount a line the boot starts needs is kept off as a needed line is: skipped
+  where its target requires that line and its device is there, masked with a warning where the
+  device is not. NAILS masked it with no warning.
 - A line for `/usr` is read as one its boot target requires whatever `x-systemd.wanted-by=` and
   `x-systemd.required-by=` say, as systemd's fstab generator ignores both there and links
   `usr.mount` into `local-fs.target.requires`. NAILS masked such a line not mounted now with no
