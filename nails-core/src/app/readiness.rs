@@ -419,17 +419,11 @@ impl Readiness {
             minimum_space_mb: config.minimum_space_mb,
         };
 
-        // A table that cannot be read is named, never judged as an empty one.
-        let filesystems = match nails_teardown::mountinfo::read_mountinfo() {
-            Ok(mounts) => decoy_filesystems(
-                manager.filesystem(),
-                &crate::filesystem::automount::Snapshot::read(manager.filesystem(), Path::new("/")),
-                Path::new("/"),
-                &mounts,
-                &config.hidden_volume_root,
-            ),
-            Err(error) => filesystems_without_mount_table(&error.to_string()),
-        };
+        let filesystems = decoy_filesystems_on(
+            manager.filesystem(),
+            nails_teardown::mountinfo::read_mountinfo(),
+            &config.hidden_volume_root,
+        );
         let profile = profile_summary(
             manager
                 .discover_host_target(options.overlay_only)
@@ -480,6 +474,36 @@ fn attach_refusal<F: Filesystem>(
     }
 }
 
+/// [`decoy_filesystems`] of the live decoy root `/`, with `mounts` the mount
+/// table as it was read: a table that cannot be read is named, never judged
+/// as an empty one.
+fn decoy_filesystems_on<F: Filesystem>(
+    fs: &F,
+    mounts: std::io::Result<Vec<MountEntry>>,
+    hidden_root: &Path,
+) -> Vec<String> {
+    match mounts {
+        Ok(mounts) => decoy_filesystems(
+            fs,
+            &crate::filesystem::automount::Snapshot::read(fs, Path::new("/")),
+            Path::new("/"),
+            &mounts,
+            hidden_root,
+        ),
+        Err(error) => filesystems_without_mount_table(&error.to_string()),
+    }
+}
+
+/// What the report says of the decoy filesystems where the mount table
+/// cannot be read (`error`).
+fn filesystems_without_mount_table(error: &str) -> Vec<String> {
+    vec![format!(
+        "NAILS cannot tell how each decoy filesystem would be handled: NAILS cannot read the \
+         mount table ({error}), which shows where a lookup would mount an automount point, so \
+         it looks up nothing"
+    )]
+}
+
 /// What the fstab policy would do with each filesystem in the fstab of the
 /// decoy root at `root` (`/`, but in tests), its mount points resolved in that
 /// root as activation resolves them, given the decoy's mount table `mounts`,
@@ -491,16 +515,6 @@ fn attach_refusal<F: Filesystem>(
 /// nothing is mounted on yet is not looked up, and a line names it; without
 /// the mount table nothing is looked up. An fstab that cannot be read, as
 /// `fstab-policy` refuses it, gets a line of its own.
-/// What the report says of the decoy filesystems where the mount table
-/// cannot be read (`error`).
-fn filesystems_without_mount_table(error: &str) -> Vec<String> {
-    vec![format!(
-        "NAILS cannot tell how each decoy filesystem would be handled: NAILS cannot read the \
-         mount table ({error}), which shows where a lookup would mount an automount point, so \
-         it looks up nothing"
-    )]
-}
-
 fn decoy_filesystems<F: Filesystem>(
     fs: &F,
     snapshot: &std::sync::Arc<crate::filesystem::automount::Snapshot>,

@@ -358,12 +358,12 @@ pub(super) fn widen_claims<F: Filesystem>(
 /// The error names the first place that is there but could not be read,
 /// for another reason than that it is not there, where it may have shown a
 /// device of it: a device node, a `dev` attribute, or a listing of
-/// `/sys/block` or `/sys/fs/btrfs`.
+/// `/sys/block` or `/sys/fs/btrfs`, or a source in `/dev` (or a bcachefs
+/// one) that is not valid UTF-8 text, which no lookup reads.
 pub(super) fn filesystem_devices<F: Filesystem>(
     fs: &F,
     mount: &MountEntry,
 ) -> Result<Option<Vec<PathBuf>>, PathBuf> {
-    let source = mount.source.to_string_lossy();
     let each = |devices: Vec<String>| -> Result<Option<Vec<PathBuf>>, PathBuf> {
         let mut dirs = Vec::new();
         for device in devices {
@@ -374,10 +374,18 @@ pub(super) fn filesystem_devices<F: Filesystem>(
         }
         Ok(Some(dirs))
     };
-    if mount.fstype == "bcachefs" && source.contains(':') {
-        // bcachefs names every device of a filesystem of several in its
-        // source, `/dev/sdb:/dev/sdc`; its device number is the first one's.
-        return each(source.split(':').map(str::to_string).collect());
+    if mount.fstype == "bcachefs" {
+        // A source that is not valid UTF-8 text names devices no lookup can
+        // read, and none may rest on a replaced byte: it could not be read.
+        let Some(source) = mount.source.to_str() else {
+            return Err(mount.source.clone());
+        };
+        if source.contains(':') {
+            // bcachefs names every device of a filesystem of several in its
+            // source, `/dev/sdb:/dev/sdc`; its device number is the first
+            // one's.
+            return each(source.split(':').map(str::to_string).collect());
+        }
     }
     let Some(device) = blockdev::device_of_mount_or_unread(fs, mount)? else {
         return Ok(None);

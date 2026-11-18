@@ -712,3 +712,20 @@ fn inherited_summary_lists_user_units_in_shared_home_mode() {
         "shared-home inherits the decoy's enabled user units"
     );
 }
+
+/// A mount table that cannot be read is named in the report, never judged
+/// as an empty table, which would decide every fstab line as unmounted.
+#[test]
+fn decoy_filesystems_without_a_mount_table_say_so() {
+    let rows = decoy_filesystems_on(
+        &MockFilesystem::new(),
+        Err(std::io::Error::other("no proc")),
+        Path::new("/mnt/data"),
+    );
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(
+        rows[0].starts_with("NAILS cannot tell how each decoy filesystem would be handled"),
+        "{rows:?}"
+    );
+    assert!(rows[0].contains("no proc"), "{rows:?}");
+}

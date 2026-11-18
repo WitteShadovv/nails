@@ -223,7 +223,18 @@ pub fn prepare(env: &RuntimeEnv, config_override: Option<&Path>) -> Prepared {
     let state_path = config.state_file_path.clone();
     let manager =
         NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
-    match manager.session_view() {
+    let view = manager.session_view();
+    prepared_or_unread(manager, view)
+}
+
+/// [`prepared`] on the probe's `view`, or, where the mount table could not
+/// be read, the refusal that says so: whether this is a hidden session
+/// cannot be told.
+fn prepared_or_unread(
+    manager: NailsManager<RealFilesystem>,
+    view: Result<SessionView, NailsError>,
+) -> Prepared {
+    match view {
         Ok(view) => prepared(manager, view),
         Err(error) => Prepared::MountTableUnread(error.to_string()),
     }
@@ -639,6 +650,27 @@ mod tests {
             Prepared::NotHidden => panic!("refused as not hidden"),
             Prepared::MountTableUnread(_) => panic!("refused for the mount table"),
             Prepared::Ready(_) => panic!("handed out a deactivation without a way back"),
+        }
+    }
+
+    /// A mount table that cannot be read refuses the deactivation before
+    /// anything is asked, with why it could not be read: it is never taken
+    /// for the decoy (nothing to do) nor for a session to leave.
+    #[test]
+    fn a_mount_table_that_cannot_be_read_refuses_the_deactivation() {
+        let dir = tempfile::tempdir().unwrap();
+        let unread = NailsError::io(
+            nails_teardown::mountinfo::SELF_MOUNTINFO,
+            std::io::Error::other("no proc"),
+        );
+        match prepared_or_unread(manager_at(dir.path()), Err(unread)) {
+            Prepared::MountTableUnread(reason) => {
+                assert!(reason.contains("/proc/self/mountinfo"), "{reason}");
+                assert!(reason.contains("no proc"), "{reason}");
+            }
+            Prepared::NotHidden => panic!("taken for the decoy"),
+            Prepared::WayBackUnknown(_) => panic!("refused as without a plan"),
+            Prepared::Ready(_) => panic!("handed out a deactivation"),
         }
     }
 

@@ -442,13 +442,16 @@ impl DeviceMap {
     }
 
     /// The device a mount sits on: by its `major:minor`, else by its source
-    /// (btrfs reports an anonymous device).
+    /// (btrfs reports an anonymous device), which names one only as valid
+    /// UTF-8 text.
     pub fn node_of_mount(&self, mount: &MountEntry) -> Option<&str> {
         self.by_dev
             .get(&mount.dev)
             .or_else(|| {
-                self.by_spec
-                    .get(&mount.source.to_string_lossy().into_owned())
+                mount
+                    .source
+                    .to_str()
+                    .and_then(|source| self.by_spec.get(source))
             })
             .map(String::as_str)
     }

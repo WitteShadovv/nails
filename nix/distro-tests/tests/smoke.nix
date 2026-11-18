@@ -7,7 +7,10 @@
 # into an overlay of its own root, every hidden write (including /usr) lands on
 # the hidden root, every mounted boot filesystem stays read-only, and
 # deactivation and emergency soft-reboot back to the plain decoy without a trace
-# on the decoy disk. Before the first entry, check refuses a noauto line of the
+# on the decoy disk. Before the first entry, the decoy's PID 1 names the mount
+# units of mount points whose names are not valid UTF-8 or long enough to be
+# shortened with a hash as the way back's wait names them
+# (nails_e2e.unit_names). Then check refuses a noauto line of the
 # decoy's fstab below the hidden root (fstab-policy, exit 4), and its
 # lsm-status row passes, naming the security modules the kernel runs: SELinux
 # does not run on these images but Fedora's, which boot enforcing with the
@@ -174,7 +177,7 @@ distroVm.buildVmTest {
 
     # The NixOS suite's in-VM helper package, for following a soft-reboot.
     sys.path.insert(0, "${../../e2e-tests/py}")
-    from nails_e2e import journal_tail, session  # noqa: E402
+    from nails_e2e import journal_tail, session, unit_names  # noqa: E402
 
     # The distribution-generic smoke helpers (nix/distro-tests/py), locked by
     # the `distro-checks` flake check: where a hidden write lands, which boot
@@ -1249,6 +1252,14 @@ distroVm.buildVmTest {
         assert "overlay-only" in init_out, (
             f"expected the overlay-only backend to be selected, got: {init_out}"
         )
+
+    with subtest("PID 1 names the units of odd mount points as the way back does"):
+        # The way back's wait asks PID 1 for each detached mount's unit by the
+        # name it computes; on this image's systemd, a tmpfs at each folder of
+        # unit_names.CASES (bytes that are not UTF-8, names PID 1 shortens with
+        # a hash) gets that unit, active while mounted and inactive after.
+        print(vm.succeed("systemctl --version | head -n 1").strip())
+        unit_names.check(vm)
 
     with subtest("capture the decoy baseline image"):
         # The decoy as booted, before NAILS or any test preparation touched it.

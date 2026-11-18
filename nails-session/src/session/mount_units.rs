@@ -84,7 +84,7 @@ pub mod unit_dirs;
 pub mod unit_file;
 
 use super::fstab::{
-    FstabEntry, automount_unit, escape_path, is_virtual_type, mount_unit, option_named,
+    FstabEntry, automount_unit, is_virtual_type, mount_unit, option_named, unit_name,
 };
 use super::policy::{self, Decision, KeptOff, Origin, Present, Units, Unreached, Unskippable};
 pub(crate) use deps::is_unit_name;
@@ -125,6 +125,12 @@ const UNREADABLE: &str = "its unit files cannot be read";
 /// The reason a unit whose source NAILS cannot read is masked.
 const UNRESOLVED: &str =
     "its unit names its source or options by a specifier NAILS does not resolve";
+
+/// The reason a unit whose mount the decoy's mount table shows from a source
+/// that is not valid UTF-8 text is masked: the policy decides a source as
+/// text, and no decision may rest on a replaced byte.
+const SOURCE_NOT_TEXT: &str =
+    "the mount table shows its filesystem mounted from a source that is not UTF-8 text";
 
 /// Why NAILS cannot tell what a unit pulls in, when its unit files name a
 /// unit by a specifier.
@@ -238,9 +244,14 @@ pub fn read(dirs: UnitDirs<'_>) -> Result<Vec<NativeUnit>, Unlisted> {
 /// for that path: `-` alone is `/`, every other `-` a `/`, `\xNN` the byte
 /// NN. A name that decodes to a path systemd refuses (a `..` component, a
 /// NUL), or that is not the name systemd makes for its path, stands for
-/// none.
+/// none, and so does one that may be a name PID 1 shortened with a hash
+/// ([`may_be_hashed`](nails_teardown::whole_root::unit_name::may_be_hashed)),
+/// whose path cannot be told, and one of a path that is not UTF-8 text.
 pub fn unit_path(name: &str, suffix: &str) -> Option<PathBuf> {
     let stem = name.strip_suffix(suffix)?;
+    if nails_teardown::whole_root::unit_name::may_be_hashed(name) {
+        return None;
+    }
     if stem == "-" {
         return Some(PathBuf::from("/"));
     }
@@ -273,7 +284,7 @@ pub fn unit_path(name: &str, suffix: &str) -> Option<PathBuf> {
     if path.components().any(|c| c == Component::ParentDir) {
         return None;
     }
-    (escape_path(&path) == stem).then_some(path)
+    (unit_name(&path, suffix) == name).then_some(path)
 }
 
 /// Whether the unit `name`, pulled in by a mount or swap, acts on its device
@@ -533,7 +544,8 @@ fn generator_option(option: &str) -> bool {
 /// the mount point: left to the hidden systemd, a unit of a disk would mount
 /// the disk read-write there, so the unit's files tell what it mounts, and
 /// the policy puts what is mounted there in place. `Err` with the reason
-/// when they cannot be resolved.
+/// when they cannot be resolved, or when the mounted filesystem's source is
+/// not valid UTF-8 text.
 fn as_entry(
     unit: &UnitFile,
     name: &str,
@@ -547,9 +559,10 @@ fn as_entry(
         .map_err(|()| UNRESOLVED)?
         .unwrap_or_default();
     let (spec, vfstype) = match (swap, live) {
+        // The path comes from the unit's name, as UTF-8 text.
         (true, _) => (path.to_string_lossy().into_owned(), "swap".to_string()),
         (false, Some(live)) => (
-            live.source.to_string_lossy().into_owned(),
+            live.source.to_str().ok_or(SOURCE_NOT_TEXT)?.to_string(),
             live.fstype.clone(),
         ),
         (false, None) => {
@@ -696,6 +709,16 @@ fn decide_one(
         (".mount", false)
     };
     let Some(path) = unit_path(name, suffix) else {
+        // The generator's unit of a line the fstab policy decided is the
+        // policy's, also where its name, shortened with a hash, spells no
+        // path.
+        if let Load::Loaded { unit, generated } = dirs.load(name)
+            && generated
+            && unit.last("Unit", "SourcePath") == Some(FSTAB_SOURCE)
+            && from_fstab.iter().any(|fstab| fstab == name)
+        {
+            return Vec::new();
+        }
         return vec![mask(
             PathBuf::from(name),
             vec![name.to_string()],
@@ -733,7 +756,7 @@ fn decide_one(
     }
     // An automount decides the mount it triggers, which only it starts.
     let (mount_name, mount_unit) = if automount {
-        let mount_name = format!("{}.mount", escape_path(&path));
+        let mount_name = mount_unit(&path);
         match dirs.load(&mount_name) {
             Load::Loaded { unit: mount, .. } => (mount_name, mount),
             Load::Masked => return Vec::new(),

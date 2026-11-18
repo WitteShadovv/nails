@@ -220,3 +220,61 @@ fn a_bcachefs_root_is_judged_with_every_device_its_source_names() {
         Untraced::NotFound,
     );
 }
+
+/// `decoy` refused, with or without `--allow-decoy-storage`, because the
+/// place `input` (bytes, valid UTF-8 or not) could not be read.
+fn assert_unjudged_at(what: &str, decoy: &Decoy, input: &[u8]) {
+    use std::os::unix::ffi::OsStrExt;
+    let input = Path::new(std::ffi::OsStr::from_bytes(input)).to_path_buf();
+    for allow in [Allow::Nothing, Allow::DecoyStorage] {
+        match assess(decoy, allow) {
+            Assessment::Refused(refusal) => assert_eq!(
+                refusal.kind,
+                RefusalKind::StorageUnjudged {
+                    unreadable: vec![input.clone()]
+                },
+                "{what}, {allow:?}"
+            ),
+            other => panic!("{what}, {allow:?}: {other:?}"),
+        }
+    }
+}
+
+/// A device path that is not valid UTF-8 text is never looked up with that
+/// byte replaced or kept as its escape: which device it names cannot be
+/// told, and the root is not judged.
+#[test]
+fn a_device_path_that_is_not_utf8_leaves_the_root_unjudged() {
+    // The mount table gives the log's path byte for byte (here as the
+    // escape the kernel would use for any byte).
+    assert_unjudged_at(
+        "an XFS log at a path that is not UTF-8",
+        &xfs("logdev=/dev/sd\\377"),
+        b"/dev/sd\xff",
+    );
+    let bcachefs = decoy("5 1 8:16 / /mnt rw - bcachefs /dev/sdb:/dev/sd\\377 rw\n")
+        .device(SDB, "sdb", "8:16", &[])
+        .device(SDC, "sdc", "8:32", &[]);
+    assert_unjudged_at(
+        "a bcachefs device at a path that is not UTF-8",
+        &bcachefs,
+        b"/dev/sdb:/dev/sd\xff",
+    );
+    // A decoy filesystem whose number shows no device is placed by its
+    // source, which cannot be looked up.
+    let btrfs = |dev: &str| {
+        decoy(&format!(
+            "4 1 {dev} / /srv rw - btrfs /dev/sd\\377 rw\n\
+             5 1 8:16 / /mnt rw - ext4 /dev/sdb rw\n"
+        ))
+        .device(SDB, "sdb", "8:16", &[])
+        .device(SDC, "sdc", "8:32", &[])
+    };
+    assert_unjudged_at(
+        "a decoy filesystem from a source that is not UTF-8",
+        &btrfs("0:45"),
+        b"/dev/sd\xff",
+    );
+    // Its number tells its device: the source is not needed.
+    assert_eq!(btrfs("8:32").assess(), Assessment::Attached);
+}

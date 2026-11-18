@@ -536,10 +536,10 @@ mod kernel_tests {
         });
     }
 
-    /// A tmpfs at a folder of `/run` whose name ends in byte 0xff (the
-    /// verify's probe): the mount table read as the step reads it failed on
-    /// that byte, the step took `/run/nextroot` for unmounted and did nothing
-    /// on either direction. Read byte for byte, it works as on a plain table:
+    /// A tmpfs at a folder of `/run` whose name ends in byte 0xff: read as
+    /// text, the mount table failed on that byte, the step took
+    /// `/run/nextroot` for unmounted and did nothing on either direction.
+    /// Read byte for byte, it works as on a plain table:
     /// the leftover guard detaches an unarmed tree, an armed entry is
     /// prepared, and the way back scrubs, detaches and writes the cursor.
     #[test]
@@ -602,7 +602,7 @@ mod kernel_tests {
             nextroot::detach_tree(&world.nextroot());
             nix::mount::umount2(&odd, nix::mount::MntFlags::MNT_DETACH).unwrap();
 
-            // The way back, as in the verify's probe.
+            // The way back, with the same mount in the table.
             let world = World::new();
             let run = world.run.path();
             let runtime = run.join("overlay-runtime");

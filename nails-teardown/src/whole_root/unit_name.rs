@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The name PID 1 gives the mount unit of a mount point, as systemd's
-//! `unit_name_from_path()` makes it (src/basic/unit-name.c, the same in
-//! systemd 255 and 260): the path simplified, every byte of it escaped as
+//! The name PID 1 gives the unit of a path, as systemd's
+//! `unit_name_from_path()` makes it (src/basic/unit-name.c, the same source
+//! in systemd 255 and 260): the path simplified, every byte of it escaped as
 //! `unit_name_path_escape()` escapes it, whatever the byte, and a name of 256
 //! characters or more shortened as `unit_name_hash_long()` shortens it, with
 //! the SipHash-2-4 of the whole name and its terminating NUL under systemd's
-//! fixed key. The names were checked against PID 1's own units on systemd
-//! 255 and 260 (the tests below and the e2e check of the unit names).
+//! fixed key. The mount unit names were checked against PID 1's own units on
+//! systemd 255 (the tests below) and on the systemd of the e2e test machines
+//! (the e2e check of the unit names).
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -21,63 +22,95 @@ const LONG_HASH_KEY: [u8; 16] = [
     0xec, 0xf2, 0x37, 0xfb, 0x58, 0x32, 0x4a, 0x32, 0x84, 0x9f, 0x06, 0x9b, 0x0d, 0x21, 0xeb, 0x9a,
 ];
 
-/// The suffix of a mount unit.
-const SUFFIX: &str = ".mount";
-
-/// The name of the mount unit PID 1 makes for a mount at `path`
-/// (`/run/my-disk` is `run-my\x2ddisk.mount`): every byte that is not an
-/// ASCII letter, a digit, `:`, `_` or `.` (a `.` only after the first) as
-/// `\xNN`, valid UTF-8 or not, and a name that would have 256 characters or
-/// more cut to 232 and given `_` and 16 hex digits of its hash before the
-/// suffix.
-pub fn mount_unit(path: &Path) -> String {
-    let parts: Vec<&[u8]> = path
-        .as_os_str()
-        .as_bytes()
+/// systemd's path escaping (`systemd-escape --path`), byte for byte: the
+/// name a unit for `path` carries before its suffix (`/mnt/my-disk` is
+/// `mnt-my\x2ddisk`). The path is first simplified as systemd's
+/// `path_simplify()` does: repeated slashes and `.` components go, and so
+/// does `..` at the start of an absolute path, which cannot climb above `/`
+/// (`/mnt/./data/` is `mnt-data`). Every byte that is not an ASCII letter, a
+/// digit, `:`, `_` or `.` (a `.` only after the first) is written as
+/// `\xNN`, valid UTF-8 or not. A single file name escapes as an instance
+/// name does (`vg-root` is `vg\x2droot`).
+pub fn escape_path(path: &Path) -> String {
+    let bytes = path.as_os_str().as_bytes();
+    let absolute = bytes.first() == Some(&b'/');
+    let mut kept: Vec<&[u8]> = Vec::new();
+    for component in bytes
         .split(|&b| b == b'/')
-        .filter(|part| !part.is_empty() && *part != b".")
-        .collect();
-    let mut name = String::new();
-    if parts.is_empty() {
-        name.push('-');
-    }
-    for (index, part) in parts.iter().enumerate() {
-        if index > 0 {
-            name.push('-');
+        .filter(|c| !c.is_empty() && *c != b".")
+    {
+        if absolute && kept.is_empty() && component == b".." {
+            continue;
         }
-        for (at, &byte) in part.iter().enumerate() {
-            match byte {
-                b'.' if index == 0 && at == 0 => name.push_str("\\x2e"),
-                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b':' | b'_' | b'.' => {
-                    name.push(char::from(byte));
-                }
-                other => name.push_str(&format!("\\x{other:02x}")),
+        kept.push(component);
+    }
+    if kept.is_empty() {
+        return "-".to_string();
+    }
+    let joined = kept.join(&b'/');
+    let mut out = String::new();
+    for (i, &byte) in joined.iter().enumerate() {
+        match byte {
+            b'/' => out.push('-'),
+            b'.' if i == 0 => out.push_str("\\x2e"),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b':' | b'_' | b'.' => {
+                out.push(char::from(byte));
             }
+            other => out.push_str(&format!("\\x{other:02x}")),
         }
     }
-    name.push_str(SUFFIX);
+    out
+}
+
+/// The name of the unit PID 1 makes for `path` with `suffix` (`.mount`,
+/// `.automount`, `.swap`, `.device`): [`escape_path`] and the suffix, and a
+/// name that would have 256 characters or more cut and given `_` and 16 hex
+/// digits of its hash before the suffix, 255 characters in all.
+pub fn unit_name(path: &Path, suffix: &str) -> String {
+    let name = format!("{}{suffix}", escape_path(path));
     if name.len() < UNIT_NAME_MAX {
         return name;
     }
-    hash_long(&name)
+    hash_long(&name, suffix)
+}
+
+/// The name of the mount unit PID 1 makes for a mount at `path`
+/// (`/run/my-disk` is `run-my\x2ddisk.mount`), as [`unit_name`] makes it.
+pub fn mount_unit(path: &Path) -> String {
+    unit_name(path, ".mount")
+}
+
+/// Whether `name` may be one PID 1 shortened with a hash ([`unit_name`]):
+/// 255 characters, with `_` and 16 hex digits before its suffix. Such a
+/// name is also the plain name of the path it spells, so the path it stands
+/// for cannot be told from it.
+pub fn may_be_hashed(name: &str) -> bool {
+    let Some((stem, _)) = name.rsplit_once('.') else {
+        return false;
+    };
+    name.len() == UNIT_NAME_MAX - 1
+        && stem.len() > 17
+        && stem.as_bytes()[stem.len() - 17] == b'_'
+        && stem.as_bytes()[stem.len() - 16..]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
 }
 
 /// `unit_name_hash_long()` for a name of [`UNIT_NAME_MAX`] characters or
-/// more that ends in [`SUFFIX`]: its first characters, `_`, the hash's eight
-/// bytes in little-endian order as hex, and the suffix, 255 characters in
-/// all.
-fn hash_long(name: &str) -> String {
+/// more that ends in `suffix`: its first characters, `_`, the hash's eight
+/// bytes in little-endian order as hex, and the suffix.
+fn hash_long(name: &str, suffix: &str) -> String {
     let mut hashed = name.as_bytes().to_vec();
     hashed.push(0);
     let hash = siphash24(&hashed, &LONG_HASH_KEY).to_le_bytes();
-    let keep = UNIT_NAME_MAX - 1 - (SUFFIX.len() - 1) - 2 * hash.len() - 2;
+    let keep = UNIT_NAME_MAX - 1 - (suffix.len() - 1) - 2 * hash.len() - 2;
     // The escaped name is ASCII, so any cut is at a character.
     let mut short = name[..keep].to_string();
     short.push('_');
     for byte in hash {
         short.push_str(&format!("{byte:02x}"));
     }
-    short.push_str(SUFFIX);
+    short.push_str(suffix);
     short
 }
 

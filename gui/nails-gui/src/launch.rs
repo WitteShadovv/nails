@@ -215,6 +215,23 @@ pub fn decide(
     }
 }
 
+/// Whether the window shows its Emergency control from the start, by its own
+/// reading of `mountinfo` for the hidden volume of `engine`: where `/` is the
+/// overlay of a hidden session, and where the mount table could not be read,
+/// which leaves that untold. There the control shows, as the stricter end: in
+/// a hidden session it is the way out, on the decoy it ends nothing that the
+/// person does not ask it to.
+#[must_use]
+pub fn emergency_from_start(engine: Option<&Path>, mountinfo: Result<&[u8], &str>) -> bool {
+    match (engine, mountinfo) {
+        (Some(engine), Ok(mountinfo)) => engine
+            .parent()
+            .is_some_and(|root| root_is_hidden_overlay(mountinfo, root)),
+        (_, Err(_)) => true,
+        (None, Ok(_)) => false,
+    }
+}
+
 fn refuse(engine: Option<&Path>) -> Start {
     Start::Refuse(format!(
         "The window opens from a terminal: {}",
@@ -246,7 +263,10 @@ pub fn take_launcher_socket() -> Option<UnixStream> {
 /// Whether `/` is the overlay of a hidden session whose upper lies under
 /// `root`, read from `mountinfo` (`/proc/self/mountinfo`, byte for byte: a
 /// path in it may hold any byte, valid UTF-8 or not). The last mount on `/`
-/// is the one in view. Anything unexpected reads as no.
+/// is the one in view. Anything unexpected reads as no. The upper's path
+/// carries two escapes, as the engine reads it: the kernel's octal ones,
+/// and below them the backslashes the overlay's option syntax puts before a
+/// `,`, `:` or `\` of a layer's path.
 #[must_use]
 pub fn root_is_hidden_overlay(mountinfo: &(impl AsRef<[u8]> + ?Sized), root: &Path) -> bool {
     let Some(entry) = mountinfo
@@ -264,7 +284,7 @@ pub fn root_is_hidden_overlay(mountinfo: &(impl AsRef<[u8]> + ?Sized), root: &Pa
         .super_options
         .split(|&b| b == b',')
         .filter_map(|option| option.strip_prefix(b"upperdir="))
-        .map(unescape_octal)
+        .map(|upper| unescape_overlay(&unescape_octal(upper)))
         .any(|upper| {
             upper.starts_with(b"/") && Path::new(OsStr::from_bytes(&upper)).starts_with(root)
         })
@@ -317,6 +337,21 @@ fn unescape_octal(field: &[u8]) -> Vec<u8> {
                 out.push(bytes[i]);
                 i += 1;
             }
+        }
+    }
+    out
+}
+
+/// Undo the overlay option syntax's escapes: a backslash takes the next byte
+/// as it is.
+fn unescape_overlay(value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len());
+    let mut bytes = value.iter();
+    while let Some(&byte) = bytes.next() {
+        if byte == b'\\' {
+            out.push(bytes.next().copied().unwrap_or(b'\\'));
+        } else {
+            out.push(byte);
         }
     }
     out

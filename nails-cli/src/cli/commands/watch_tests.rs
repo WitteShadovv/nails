@@ -612,3 +612,22 @@ fn the_mount_alert_names_the_mount_point_and_its_device() {
     assert_eq!(alert.icon.as_deref(), Some("drive-removable-media"));
     assert_neutral(&alert);
 }
+
+/// A round whose mount table cannot be read alerts once that the watch
+/// cannot see the disks, and judges no table; the alert comes again only
+/// after the table could be read in between.
+#[test]
+fn a_mount_table_that_cannot_be_read_alerts_once_and_judges_nothing() {
+    let mut watch = TableWatch::default();
+    let unread = || Err(std::io::Error::other("no proc"));
+    let (table, alert) = watch.read(unread());
+    assert!(table.is_none());
+    let alert = alert.expect("the first unread round alerts");
+    assert_neutral(&alert);
+    assert_eq!(alert.title, "Storage monitor cannot see the disks");
+    assert_eq!(watch.read(unread()), (None, None));
+    let (table, alert) = watch.read(Ok(mounts("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n")));
+    assert_eq!(table.map(|table| table.len()), Some(1));
+    assert!(alert.is_none());
+    assert!(watch.read(unread()).1.is_some());
+}

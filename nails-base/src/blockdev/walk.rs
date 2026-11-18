@@ -142,7 +142,20 @@ fn device_of_mount_noting<F: Filesystem>(
     }
 
     // btrfs reports an anonymous `0:N` device, so fall back to the source.
-    let source_name = mount.source.file_name()?.to_str()?;
+    // Devices are looked up by name as text: a name in `/dev` that is not
+    // valid UTF-8 (a device-mapper name may hold any byte but `/`) cannot be
+    // looked up, and is noted as a place that could not be read rather than
+    // taken for no device.
+    let source_name = mount.source.file_name()?;
+    let Some(source_name) = source_name.to_str() else {
+        if mount.source.starts_with("/dev") {
+            unread.borrow_mut().push(Unread {
+                attribute: Attribute::Dev,
+                path: mount.source.clone(),
+            });
+        }
+        return None;
+    };
     if mount.source.starts_with("/dev/mapper") {
         return find_dm_by_name(fs, source_name, unread);
     }

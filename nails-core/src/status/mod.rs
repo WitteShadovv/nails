@@ -426,7 +426,12 @@ impl<F: Filesystem> StatusCommand<F> {
     /// then, and an empty table would show a hidden session as the decoy.
     /// The state file cannot be read either.
     pub fn run(&self) -> Result<StatusReport> {
-        let entries = read_mountinfo()
+        self.run_on(read_mountinfo())
+    }
+
+    /// [`run`](Self::run), with `entries` the mount table as it was read.
+    fn run_on(&self, entries: std::io::Result<Vec<MountEntry>>) -> Result<StatusReport> {
+        let entries = entries
             .map_err(|e| crate::NailsError::io(nails_teardown::mountinfo::SELF_MOUNTINFO, e))?;
         let view = crate::session::probe::probe_with(
             &self.paths,

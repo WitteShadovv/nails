@@ -44,7 +44,7 @@ use super::unit_dirs::{Load, UnitDirs, instance_of, template_of};
 use super::unit_file::{UnitFile, resolve_specifiers};
 use super::{acts_on_device, unit_path};
 use crate::session::fstab::{
-    FstabEntry, any_named, checkers, escape_path, is_bind_option, mount_unit,
+    FstabEntry, any_named, checkers, escape_path, is_bind_option, mount_unit, unit_name,
 };
 use crate::session::policy::Units;
 use std::path::Path;
@@ -196,7 +196,7 @@ fn is_device_path(path: &str) -> bool {
 
 /// The device unit of the device node `path`.
 fn device_unit(path: &str) -> String {
-    format!("{}.device", escape_path(Path::new(path)))
+    unit_name(Path::new(path), ".device")
 }
 
 /// The slice systemd puts the unit `name` in when it names none: an

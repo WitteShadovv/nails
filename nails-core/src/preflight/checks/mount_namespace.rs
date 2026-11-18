@@ -9,6 +9,7 @@
 use super::super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
 /// Identity of a mount namespace: the `(st_dev, st_ino)` of its `nsfs` node.
 ///
@@ -168,31 +169,37 @@ impl<F: Filesystem> PreFlightCheck<F> for MountNamespaceCheck {
             ));
         }
 
-        // Fail-closed: without the mount table we cannot confirm propagation.
-        let mountinfo = match std::fs::read(MOUNTINFO) {
-            Ok(content) => content,
-            Err(e) => {
-                return Ok(CheckResult::fail(format!(
-                    "Cannot read {MOUNTINFO} to verify root mount propagation ({e}). \
-                     Run activation as root from a host shell."
-                )));
-            }
-        };
+        Ok(propagation_at(Path::new(MOUNTINFO)))
+    }
+}
 
-        if !root_has_shared_propagation(&mountinfo) {
-            return Ok(CheckResult::fail(
-                "The root mount `/` does not have shared propagation, so overlay mounts would \
-                 not reach the rest of the system. Make `/` shared (`mount --make-rshared /`) \
-                 and run activation from a host root shell - not under `unshare -m` or a service \
-                 with MountFlags=private."
-                    .to_string(),
+/// Whether the mount table at `path` (`/proc/self/mountinfo`) shows the root
+/// mount with shared propagation, read byte for byte: a mount whose fields
+/// are not valid UTF-8 is read as any other. Fail-closed: without the mount
+/// table propagation cannot be confirmed.
+fn propagation_at(path: &Path) -> CheckResult {
+    let mountinfo = match std::fs::read(path) {
+        Ok(content) => content,
+        Err(e) => {
+            return CheckResult::fail(format!(
+                "Cannot read {} to verify root mount propagation ({e}). \
+                 Run activation as root from a host shell.",
+                path.display()
             ));
         }
+    };
 
-        Ok(CheckResult::Pass(
-            "Running in PID 1's mount namespace with shared root propagation".into(),
-        ))
+    if !root_has_shared_propagation(&mountinfo) {
+        return CheckResult::fail(
+            "The root mount `/` does not have shared propagation, so overlay mounts would \
+             not reach the rest of the system. Make `/` shared (`mount --make-rshared /`) \
+             and run activation from a host root shell - not under `unshare -m` or a service \
+             with MountFlags=private."
+                .to_string(),
+        );
     }
+
+    CheckResult::Pass("Running in PID 1's mount namespace with shared root propagation".into())
 }
 
 #[cfg(test)]
@@ -287,6 +294,25 @@ mod tests {
         assert!(root_has_shared_propagation(mountinfo));
         assert!(!root_has_shared_propagation(
             b"23 28 0:21 / / rw - ext4 /dev/\xff rw\n"
+        ));
+    }
+
+    /// The check reads the table byte for byte: a mount whose path is not
+    /// valid UTF-8 failed a read as text before, and the check refused. A
+    /// table that cannot be read still fails it.
+    #[test]
+    fn the_check_reads_a_table_with_a_byte_that_is_not_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let table = dir.path().join("mountinfo");
+        std::fs::write(
+            &table,
+            b"23 28 0:21 / / rw shared:2 - ext4 /dev/sda1 rw\n30 23 0:30 / /run/a\xff rw - tmpfs t rw\n",
+        )
+        .unwrap();
+        assert!(matches!(propagation_at(&table), CheckResult::Pass(_)));
+        assert!(matches!(
+            propagation_at(&dir.path().join("none")),
+            CheckResult::Fail { .. }
         ));
     }
 

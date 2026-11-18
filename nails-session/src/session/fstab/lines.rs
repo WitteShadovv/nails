@@ -10,7 +10,9 @@
 //! any whitespace. glibc undoes the escapes `\040`, `\011`, `\012`, `\134`
 //! and `\\` in each field, libmount every three-digit octal escape, and
 //! [`parse_fstab`](super::parse_fstab) every one up to `\377` in the device
-//! and the mount point and none in the type and the options. glibc reads
+//! and the mount point (in the device one that gives a byte that is not
+//! valid UTF-8 stays written as its escape) and none in the type and the
+//! options. glibc reads
 //! 4095 bytes of a line at most and ends one at a NUL, and libmount reads the
 //! whole file as a mount table or as the list of swaps when its first line
 //! begins as a line of one does. systemd splits the options at a comma that

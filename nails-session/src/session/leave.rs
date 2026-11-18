@@ -264,15 +264,26 @@ pub fn session_disk_mounts(
 /// anything is unmounted: the disks mounted during the session could not be
 /// told.
 fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Result<Vec<PathBuf>> {
-    let mounts = read_mountinfo()
+    unmount_session_disks_in(paths, plan, read_mountinfo(), &|target| {
+        rustix::mount::unmount(target, UnmountFlags::empty()).is_ok()
+            || rustix::mount::unmount(target, UnmountFlags::DETACH).is_ok()
+    })
+}
+
+/// [`unmount_session_disks`] with `mounts` the mount table as it was read,
+/// and `unmount` taking one disk down.
+fn unmount_session_disks_in(
+    paths: &Paths,
+    plan: &Plan,
+    mounts: std::io::Result<Vec<MountEntry>>,
+    unmount: &dyn Fn(&Path) -> bool,
+) -> Result<Vec<PathBuf>> {
+    let mounts = mounts
         .map_err(|e| NailsError::io(Path::new(nails_teardown::mountinfo::SELF_MOUNTINFO), e))?;
     let is_block = |m: &MountEntry| disk_guard::mount_device(m).is_some();
     Ok(session_disk_mounts(paths, plan, &mounts, &is_block)
         .into_iter()
-        .filter(|target| {
-            rustix::mount::unmount(target, UnmountFlags::empty()).is_ok()
-                || rustix::mount::unmount(target, UnmountFlags::DETACH).is_ok()
-        })
+        .filter(|target| unmount(target))
         .collect())
 }
 
@@ -460,6 +471,40 @@ mod tests {
                 "--no-wall soft-reboot",
                 "start --no-block --job-mode=replace-irreversibly -- poweroff.target",
             ]
+        );
+    }
+
+    /// A mount table that cannot be read stops the way back before any disk
+    /// is unmounted: which disks the session mounted cannot be told, and an
+    /// empty table would leave each still mounted under the decoy.
+    #[test]
+    fn a_mount_table_that_cannot_be_read_unmounts_nothing_and_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: dir.path().to_path_buf(),
+            run: dir.path().join("run"),
+        };
+        let asked = std::cell::Cell::new(0);
+        let unmount = |_: &Path| {
+            asked.set(asked.get() + 1);
+            true
+        };
+        let result = unmount_session_disks_in(
+            &paths,
+            &plan(),
+            Err(std::io::Error::other("no proc")),
+            &unmount,
+        );
+        match result {
+            Err(NailsError::IoError { path, .. }) => {
+                assert_eq!(path, Path::new(nails_teardown::mountinfo::SELF_MOUNTINFO));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(asked.get(), 0);
+        assert_eq!(
+            unmount_session_disks_in(&paths, &plan(), Ok(Vec::new()), &unmount).unwrap(),
+            Vec::<PathBuf>::new()
         );
     }
 

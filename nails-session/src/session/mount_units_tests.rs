@@ -393,6 +393,68 @@ fn a_unit_the_fstab_generator_made_is_left_only_to_a_line_the_policy_decides() {
     );
 }
 
+/// The generator's unit of a line whose mount point is not valid UTF-8: the
+/// fstab policy names it as PID 1 does, so the unit is the policy's, though
+/// its name spells no path NAILS reads as text. Without such a line it is
+/// masked.
+#[test]
+fn a_generated_unit_whose_name_is_not_utf8_is_left_to_its_line() {
+    let name = "srv-a\\xff.mount";
+    let decoy = Decoy::new();
+    decoy.write(
+        &format!("/run/systemd/generator/{name}"),
+        "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdc1\nType=ext4\n",
+    );
+    decoy.link(
+        &format!("/run/systemd/generator/local-fs.target.requires/{name}"),
+        &format!("../{name}"),
+    );
+    let line = "/dev/vdc1 /srv/a\\377 ext4 defaults 0 2\n";
+    let fstab = policy::decide_all(
+        &crate::session::fstab::parse_fstab(line),
+        &parse_mountinfo(ROOT_ONLY),
+        Path::new(HIDDEN),
+        &|_| true,
+    );
+    assert!(
+        covered_units(&fstab).contains(&name.to_string()),
+        "{fstab:?}"
+    );
+    let decisions = decoy.decide_with(line, ROOT_ONLY, true);
+    assert!(decisions.is_empty(), "{decisions:?}");
+    let decisions = decoy.decide_with("", ROOT_ONLY, true);
+    assert_eq!(policy::masked_units(&decisions), [name.to_string()]);
+}
+
+/// A unit whose name PID 1 shortened with a hash is masked, whatever line
+/// makes it: the path its name spells is not the one it stands for, and
+/// its drop-in directory's name is too long to be read.
+#[test]
+fn a_generated_unit_with_a_hashed_name_is_masked() {
+    let long = format!("/srv/{}", "a".repeat(250));
+    let name = crate::session::fstab::mount_unit(Path::new(&long));
+    assert_eq!(name.len(), 255);
+    let decoy = Decoy::new();
+    decoy.write(
+        &format!("/run/systemd/generator/{name}"),
+        &format!(
+            "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdc1\nWhere={long}\nType=ext4\n"
+        ),
+    );
+    decoy.link(
+        &format!("/run/systemd/generator/local-fs.target.requires/{name}"),
+        &format!("../{name}"),
+    );
+    let line = format!("/dev/vdc1 {long} ext4 defaults 0 2\n");
+    for fstab in [line.as_str(), ""] {
+        let decisions = decoy.decide_with(fstab, ROOT_ONLY, true);
+        assert!(
+            policy::masked_units(&decisions).contains(&name),
+            "{decisions:?}"
+        );
+    }
+}
+
 #[test]
 fn a_generated_unit_of_a_line_the_policy_leaves_as_it_is_is_decided_as_a_unit() {
     let decoy = Decoy::new();
@@ -1104,6 +1166,22 @@ fn the_options_only_the_fstab_generator_reads_go_by_their_names() {
     assert!(!entry.is_noauto());
 }
 
+/// A filesystem the decoy mounted from a source that is not valid UTF-8 text
+/// is never decided as one from a source with that byte replaced: the unit
+/// is refused, which masks it. With text, the live source is the line's.
+#[test]
+fn a_live_source_that_is_not_utf8_is_refused_rather_than_replaced() {
+    let unit = unit_file::parse(b"[Mount]\nWhat=/dev/vdb1\nWhere=/srv/x\nType=ext4\n").unwrap();
+    let live = parse_mountinfo(b"7 1 8:17 / /srv/x rw - ext4 /dev/vdb\\377 rw\n".as_slice());
+    assert_eq!(
+        as_entry(&unit, "srv-x.mount", Path::new("/srv/x"), live.first()),
+        Err(SOURCE_NOT_TEXT)
+    );
+    let live = parse_mountinfo(b"7 1 8:17 / /srv/x rw - ext4 /dev/vdc1 rw\n".as_slice());
+    let entry = as_entry(&unit, "srv-x.mount", Path::new("/srv/x"), live.first()).unwrap();
+    assert_eq!(entry.spec, "/dev/vdc1");
+}
+
 #[test]
 fn a_zram_device_is_named_by_its_number() {
     assert_eq!(zram_device(Path::new("/dev/zram0")), Some("zram0"));
@@ -1496,4 +1574,19 @@ fn a_noauto_line_a_left_ram_line_pulls_in_is_kept_off_in_the_unit_pass_too() {
         "{kept:?}"
     );
     assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// A name PID 1 shortened with a hash spells a path whose own unit name is
+/// another: it stands for none, rather than for the path it spells.
+#[test]
+fn a_hashed_unit_name_stands_for_no_path() {
+    let long = Path::new("/run/nails-unit-probe").join("a".repeat(250));
+    let hashed = crate::session::fstab::mount_unit(&long);
+    assert_eq!(hashed.len(), 255);
+    assert_eq!(unit_path(&hashed, ".mount"), None);
+    let short = Path::new("/run/nails-unit-probe").join("c".repeat(222));
+    assert_eq!(
+        unit_path(&crate::session::fstab::mount_unit(&short), ".mount"),
+        Some(short)
+    );
 }

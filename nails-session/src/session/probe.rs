@@ -57,13 +57,14 @@ fn owner_alive(plan: &Plan) -> bool {
 }
 
 /// Probe the machine under `paths`, for the hidden volume at `hidden_root`,
-/// with a mount table that cannot be read taken for an empty one: for a
-/// caller that refuses outside a hidden session, which that table shows as
-/// none. The session-state check reads the table itself and refuses
-/// without it.
-pub fn probe(paths: &Paths, hidden_root: &Path) -> SessionView {
-    let entries = read_mountinfo().unwrap_or_default();
-    probe_with(paths, hidden_root, &entries)
+/// with the live mount table.
+///
+/// # Errors
+///
+/// The mount table cannot be read: without it this side cannot be told from
+/// the other, and an empty table would show the hidden session as the decoy.
+pub fn probe(paths: &Paths, hidden_root: &Path) -> std::io::Result<SessionView> {
+    Ok(probe_with(paths, hidden_root, &read_mountinfo()?))
 }
 
 /// [`probe`] on a given mount table.

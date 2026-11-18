@@ -238,7 +238,15 @@ pub fn bind_read_only(source: &Path, target: &Path) -> io::Result<()> {
 /// table that cannot be read is an error: nothing shows the mounts are
 /// private.
 pub fn make_below_private(target: &Path) -> io::Result<()> {
-    for entry in read_mountinfo()?
+    make_below_private_in(target, read_mountinfo())
+}
+
+/// [`make_below_private`], with `live` the mount table as it was read.
+fn make_below_private_in(
+    target: &Path,
+    live: io::Result<Vec<crate::mountinfo::MountEntry>>,
+) -> io::Result<()> {
+    for entry in live?
         .into_iter()
         .filter(|entry| entry.mount_point != target && entry.mount_point.starts_with(target))
     {
@@ -408,8 +416,14 @@ pub fn detach_under(path: &Path, mount_points: &[PathBuf]) -> Vec<PathBuf> {
 /// the kernel takes that, and returns `path`: nothing shows that the tree is
 /// gone, so no caller may take it for gone.
 pub fn detach_tree(path: &Path) -> Vec<PathBuf> {
+    detach_tree_with(path, &mount_points)
+}
+
+/// [`detach_tree`], with `points` reading the mount points of the live
+/// mount table.
+fn detach_tree_with(path: &Path, points: &dyn Fn() -> io::Result<Vec<PathBuf>>) -> Vec<PathBuf> {
     for _ in 0..8 {
-        let Ok(points) = mount_points() else {
+        let Ok(points) = points() else {
             return detach_unread(path);
         };
         if !points.iter().any(|m| m.starts_with(path)) {
@@ -419,7 +433,7 @@ pub fn detach_tree(path: &Path) -> Vec<PathBuf> {
             break;
         }
     }
-    match mount_points() {
+    match points() {
         Ok(points) => points.into_iter().filter(|m| m.starts_with(path)).collect(),
         Err(_) => detach_unread(path),
     }
@@ -443,7 +457,12 @@ fn detach_unread(path: &Path) -> Vec<PathBuf> {
 /// itself, for the root overlay), and a recursive removal would walk into it.
 /// Nothing is removed while anything stays mounted below `dir`.
 pub fn remove_runtime_dir(dir: &Path) {
-    if detach_tree(dir).is_empty() {
+    remove_runtime_dir_with(dir, &mount_points);
+}
+
+/// [`remove_runtime_dir`], with `points` as [`detach_tree_with`] takes it.
+fn remove_runtime_dir_with(dir: &Path, points: &dyn Fn() -> io::Result<Vec<PathBuf>>) {
+    if detach_tree_with(dir, points).is_empty() {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
