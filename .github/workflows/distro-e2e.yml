@@ -88,7 +88,7 @@ on:
         description: >-
           Space-separated names to run: distributions (e.g. "debian-13
           ubuntu-24.04") for the smoke and records suites, images (e.g.
-          "fedora-44") for the refusal suite, probes for the probe suite. Each
+          "arch-boxes") for the refusal suite, probes for the probe suite. Each
           suite runs what it has of them; empty runs every entry of each suite.
         type: string
         default: ""

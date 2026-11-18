@@ -61,15 +61,15 @@ of this changelog for that version becomes the release notes word for word, and
 - Fedora is admitted, provisionally: the Cloud edition of Fedora 44 and 45 runs the same whole-root
   session as Debian and Ubuntu, with SELinux enforcing and the targeted policy, as Fedora installs
   it and as the admission gate of the distribution tests ran it on both releases. A permissive
-  SELinux makes `lsm-status` warn, and another policy fails it. The Workstation and KDE Plasma
-  Desktop editions, any other edition and a Fedora host whose os-release names none run with a
-  warning that NAILS has not been tested on them, since no test runs a desktop session on Fedora; a
-  release after 45 runs with a warning too, and one before 44 is refused. Nobara and Ultramarine
-  run from release 44 on with the untested-derivative warning, and any other host whose `ID_LIKE`
-  names Fedora is still refused. Fedora's tests run in virtual machines only, so its support stays
-  provisional until a run on real hardware has passed. The distribution tests now run Fedora 44 and
-  45 in the smoke suite and in the records suite that pull requests run, and the oracle runs the
-  release binary on its Fedora images. What a Fedora decoy needs is in the Fedora section of
+  SELinux, or a Fedora host where SELinux does not run, makes `lsm-status` warn, and another policy
+  fails it. The Workstation and KDE Plasma Desktop editions, any other edition and a Fedora host
+  whose os-release names none run with a warning that NAILS has not been tested on them, since no
+  test runs a desktop session on Fedora; a release after 45 runs with a warning too, and one before
+  44 is refused. Nobara and Ultramarine run from release 44 on with the untested-derivative warning,
+  and any other host whose `ID_LIKE` names Fedora is still refused. Its support stays provisional
+  until a run on real hardware has passed. The distribution tests now run Fedora 44 and 45 in the
+  smoke suite and in the records suite that pull requests run, and the oracle runs the release
+  binary on its Fedora images. What a Fedora decoy needs is in the Fedora section of
   docs/decoy-requirements.md. The refusals of a host NAILS does not run on now end with every
   release NAILS supports: `NAILS supports NixOS and these releases: Debian 13, Ubuntu 24.04 and
   26.04, Fedora 44 and 45.`
