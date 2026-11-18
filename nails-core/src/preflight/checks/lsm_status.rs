@@ -8,7 +8,10 @@
 //! `/sys/kernel/security/lsm`. The verdicts:
 //!
 //! - **SELinux does not run: pass.** AppArmor, Landlock, Yama and the other
-//!   modules change nothing this check judges.
+//!   modules change nothing this check judges. On a host whose os-release
+//!   names Fedora, as its `ID` or in its `ID_LIKE`, the check warns instead:
+//!   Fedora runs SELinux by default, and NAILS is tested there only with
+//!   SELinux enforcing the targeted policy.
 //! - **SELinux runs, enforcing, `/etc/selinux/config` names the targeted
 //!   policy, has not changed since the boot and sets the mode SELinux runs in,
 //!   and NAILS runs unconfined: pass.**
@@ -144,6 +147,10 @@ pub const UNCONFINED_DOMAINS: [&str; 2] = ["unconfined_t", "unconfined_service_t
 
 /// The one policy this check passes, as `SELINUXTYPE=` names it.
 const TARGETED: &str = "targeted";
+
+/// The os-release `ID` of Fedora, which also names it in a derivative's
+/// `ID_LIKE`.
+const FEDORA: &str = "fedora";
 
 /// The one sensitivity of the levels of Fedora's targeted policy.
 const TARGETED_SENSITIVITY: &str = "s0";
@@ -335,6 +342,9 @@ struct Facts {
     label: Option<String>,
     /// Whether `/etc/selinux/config` changed since the boot.
     config_age: ConfigAge,
+    /// Whether the host's os-release names Fedora, as its `ID` or in its
+    /// `ID_LIKE`.
+    fedora: bool,
 }
 
 impl Facts {
@@ -344,6 +354,10 @@ impl Facts {
             selinux: host_facts::read_selinux(fs),
             label: host_facts::read_process_label(fs),
             config_age: ConfigAge::read(fs),
+            fedora: crate::platform::detect(fs).is_ok_and(|profile| {
+                profile.id.as_deref() == Some(FEDORA)
+                    || profile.id_like.iter().any(|token| token == FEDORA)
+            }),
         }
     }
 }
@@ -570,12 +584,20 @@ fn judge(facts: &Facts, units: &UnitDomains) -> CheckResult {
                 .as_ref()
                 .and_then(|status| status.config_mode.as_deref())
                 .filter(|mode| *mode != "disabled");
-            CheckResult::Pass(match configured {
+            let verdict = match configured {
                 Some(mode) => format!(
                     "SELinux does not run, though {SELINUX_CONFIG} sets SELINUX={mode}. {lsms}"
                 ),
                 None => format!("SELinux does not run. {lsms}"),
-            })
+            };
+            if facts.fedora {
+                return CheckResult::Warn(format!(
+                    "{verdict} NAILS is tested on Fedora only with SELinux enforcing the \
+                     targeted policy, as Fedora installs it, and not on a Fedora host where \
+                     SELinux does not run."
+                ));
+            }
+            CheckResult::Pass(verdict)
         }
         // Only where the LSM list could not be read, which the reason says.
         Presence::Undecided(why) => {
