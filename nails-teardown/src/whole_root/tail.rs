@@ -18,7 +18,12 @@
 //!   scrub and the restores) and once more before the cursor is taken, so
 //!   PID 1 finds none of them but udevd's, which the network restore still
 //!   needs ([`LEFT_TO_THE_SWITCH`]); [`quiet_hidden_unmount`] sets the hidden ext4
-//!   filesystem's message limit to zero, so the kernel drops that line.
+//!   filesystem's message limit to zero, so the kernel drops that line. The
+//!   `/run` scrub detaches the mounts below what it removes, such as the
+//!   tmpfs NixOS's shutdown mounts at `/run/initramfs`, and PID 1 logs the
+//!   end of each one's mount unit once it reads the mount table again, which
+//!   can be after the cursor: [`wait_for_unmounted`] waits, bounded, until
+//!   PID 1 lists those units down.
 //! - **What waits in journald's sockets.** A soft-reboot keeps the socket
 //!   units of journald open (they never stop at a shutdown), and journald's
 //!   store of standard-output streams with PID 1 (`FileDescriptorStorePreserve=yes`):
@@ -43,7 +48,9 @@
 //! processes where the soft-reboot leaves udevd running and, with the
 //! kernel's audit on, the audit records of that service's start and stop and
 //! of the BPF programs it unloads), a process of the session that stays in
-//! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), a
+//! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), the
+//! end of a detached mount's unit that PID 1 logs only past
+//! [`wait_for_unmounted`]'s bound, a
 //! filesystem other than ext4's unmount line, and the kernel's lines of the
 //! hidden mapping's teardown, which the kernel logs as PID 1 starts the
 //! decoy. A journald socket PID 1 closed during the soft-reboot is new,
@@ -657,6 +664,113 @@ pub enum Quiet {
     NotExt4,
     /// The limit could not be set.
     Failed(String),
+}
+
+/// How long [`wait_for_unmounted`] waits for PID 1 to take in the mounts the
+/// `/run` scrub detached. PID 1 limits how often it reads the mount table
+/// again (by default five times in a second), so it can take in a detach up
+/// to about a second late.
+pub const UNMOUNTED_BUDGET: Duration = Duration::from_secs(2);
+
+/// The `systemctl` call that lists every mount unit PID 1 has loaded, one a
+/// line, with its load, active and sub state.
+pub const MOUNT_UNITS: [&str; 6] = [
+    "list-units",
+    "--all",
+    "--type=mount",
+    "--plain",
+    "--no-legend",
+    "--full",
+];
+
+/// The name `systemd-escape --path --suffix=mount` gives the mount unit of
+/// `path` (`/run/my-disk` is `run-my\x2ddisk.mount`), for a path that is
+/// valid UTF-8: this reads the path as UTF-8, so a byte that is not gives
+/// another name. PID 1 gives the unit that name only up to 255
+/// characters and shortens a longer one with a hash, which this does not.
+pub fn mount_unit(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let joined = text
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    if joined.is_empty() {
+        return "-.mount".to_string();
+    }
+    let mut name = String::new();
+    for (i, byte) in joined.bytes().enumerate() {
+        match byte {
+            b'/' => name.push('-'),
+            b'.' if i == 0 => name.push_str("\\x2e"),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b':' | b'_' | b'.' => name.push(byte as char),
+            other => name.push_str(&format!("\\x{other:02x}")),
+        }
+    }
+    name + ".mount"
+}
+
+/// Which of `units` a [`MOUNT_UNITS`] `listing` shows in another active
+/// state than `inactive` or `failed`: units PID 1 has not yet taken down.
+/// A unit the listing does not show is down.
+pub fn still_up<'a>(listing: &str, units: &'a [String]) -> Vec<&'a str> {
+    let up: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line
+                .split_whitespace()
+                .skip_while(|field| !field.ends_with(".mount"));
+            let unit = fields.next()?;
+            let active = fields.nth(1)?;
+            (active != "inactive" && active != "failed").then_some(unit)
+        })
+        .collect();
+    units
+        .iter()
+        .map(String::as_str)
+        .filter(|unit| up.contains(unit))
+        .collect()
+}
+
+/// Wait, bounded by [`UNMOUNTED_BUDGET`], until PID 1 lists none of the
+/// mount units of `detached` as up ([`still_up`]): the mounts the `/run`
+/// scrub detached, whose unit's end PID 1 logs (`<unit>: Deactivated
+/// successfully.`) once it reads the mount table again, which must come
+/// before the kmsg cursor. A mount point still in `mounted()` (a mount stacked
+/// below the one detached) keeps its unit up and is left out. Returns
+/// whether PID 1 lists none of those units as up; a unit [`mount_unit`]
+/// does not name as PID 1 does never shows in the listing and counts as
+/// down, though PID 1 may still have it up. Without an answer from
+/// `systemctl` it stops at once.
+pub fn wait_for_unmounted(
+    systemctl: &Path,
+    detached: &[PathBuf],
+    mounted: impl Fn() -> Vec<PathBuf>,
+) -> bool {
+    let still_mounted = mounted();
+    let units: Vec<String> = detached
+        .iter()
+        .filter(|path| !still_mounted.contains(path))
+        .map(|path| mount_unit(path))
+        .collect();
+    if units.is_empty() {
+        return true;
+    }
+    let deadline = Instant::now() + UNMOUNTED_BUDGET;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        let Some(listing) = tools::run_output(systemctl, &MOUNT_UNITS, left.min(TOOL_BUDGET))
+        else {
+            return false;
+        };
+        if still_up(&listing, &units).is_empty() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// The ext4 setting of how many messages a filesystem may log in an interval.
