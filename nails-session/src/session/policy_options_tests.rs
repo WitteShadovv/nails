@@ -592,13 +592,20 @@ fn a_noauto_line_another_line_needs_is_kept_off() {
         &Some(Unreached {
             target: "local-fs.target".into(),
             cause: Unskippable::NoDevice("/dev/vdb1".into()),
-            origin: Origin::Needed,
+            origin: Origin::Needed {
+                lines: vec!["/data/tmp".into()],
+                may: false,
+            },
         })
     );
     let warning = absent[0].warning().expect("a warning");
-    assert!(
-        warning.ends_with("give the fstab entry that needs it the nofail option"),
-        "{warning}"
+    assert_eq!(
+        warning,
+        "/data is masked rather than skipped, as its device /dev/vdb1 is not there: the hidden \
+         session will not reach local-fs.target, which requires it, and the units only that \
+         target pulls in will not start there. Attach the device before activating, or give \
+         the fstab entry for /data/tmp the nofail option (x-systemd.wanted-by= in place of an \
+         x-systemd.required-by= it gives)"
     );
 
     for fstab in [
@@ -651,9 +658,9 @@ fn a_noauto_line_another_line_needs_is_kept_off() {
 
 /// Every line that needs a noauto line's mount is read, not the first alone:
 /// with a `nofail` tmpfs below it first and one a target requires after it,
-/// next's successor masked the noauto line with no warning, and the tmpfs
-/// local-fs.target requires could not start, the target unreached. Skipped
-/// where its device is there, masked with a warning where not.
+/// the noauto line is skipped where its device is there, as local-fs.target
+/// requires the second tmpfs, and masked with a warning that the target is
+/// not reached where its device is not there.
 #[test]
 fn a_noauto_line_is_judged_by_every_line_that_needs_it() {
     let fstab = "/dev/vdr1 /p/r1 ext4 noauto 0 0\n\
@@ -675,7 +682,10 @@ fn a_noauto_line_is_judged_by_every_line_that_needs_it() {
         &Some(Unreached {
             target: "local-fs.target".into(),
             cause: Unskippable::NoDevice("/dev/vdr1".into()),
-            origin: Origin::Needed,
+            origin: Origin::Needed {
+                lines: vec!["/p/r1/b".into()],
+                may: false,
+            },
         })
     );
     assert!(absent[0].warning().is_some());
@@ -702,6 +712,125 @@ fn a_noauto_line_is_judged_by_every_line_that_needs_it() {
     assert_eq!(
         unreached.as_ref().map(|u| u.target.as_str()),
         Some("local-fs.target and foo.service")
+    );
+}
+
+/// The warning for a noauto line that a chain of lines holds up names the
+/// lines the targets require, where `nofail` (or `x-systemd.wanted-by=` in
+/// place of `x-systemd.required-by=`, which `nofail` does not change: systemd
+/// 260.5's generator linked such a `nofail` tmpfs into `foo.service.requires`)
+/// lets the target be reached: not the `nofail` line that needs the mount
+/// itself. With several targets it speaks of them all.
+#[test]
+fn the_warning_for_a_needed_noauto_line_names_the_lines_that_hold_it_up() {
+    let chain = "/dev/vdz3 /c/n ext4 noauto 0 0\n\
+                 tmpfs /c/n/b tmpfs nofail 0 0\n\
+                 tmpfs /c/z tmpfs x-systemd.requires=/c/n/b 0 0\n";
+    let absent = decide_fstab(chain, false);
+    assert_eq!(
+        reason(&absent[0]),
+        "noauto, but the line for /c/n/b needs its mount, so the boot mounts it"
+    );
+    let warning = absent[0].warning().expect("a warning");
+    assert!(
+        warning.ends_with(
+            "give the fstab entry for /c/z the nofail option (x-systemd.wanted-by= in place \
+             of an x-systemd.required-by= it gives)"
+        ),
+        "{warning}"
+    );
+
+    let both = "/dev/vdz4 /d/n ext4 noauto 0 0\n\
+                tmpfs /d/n/a tmpfs x-systemd.required-by=foo.service 0 0\n\
+                tmpfs /d/n/b tmpfs defaults 0 0\n";
+    let absent = decide_fstab(both, false);
+    assert_eq!(
+        absent[0].warning().expect("a warning"),
+        "/d/n is masked rather than skipped, as its device /dev/vdz4 is not there: the hidden \
+         session will not reach foo.service and local-fs.target, which require it, and the units \
+         only those targets pull in will not start there. Attach the device before activating, \
+         or give the fstab entries for /d/n/a and /d/n/b the nofail option \
+         (x-systemd.wanted-by= in place of an x-systemd.required-by= they give)"
+    );
+}
+
+/// A noauto line that only a line with an option NAILS cannot read may pull
+/// in (here a backslash) is kept off, but nothing may require it: the tmpfs
+/// below gives no dependency on it in systemd 260.5's generator output. The
+/// warning says the target may require it, and the mask is not recorded as
+/// one a target requires.
+#[test]
+fn a_noauto_line_only_an_unread_option_may_pull_in_may_leave_a_target_unreached() {
+    let fstab = "/dev/vdw1 /w/a ext4 noauto 0 0\n\
+                 tmpfs /w/t2 tmpfs comment=foo\\040bar 0 0\n";
+    assert_eq!(
+        decide_fstab(fstab, true)[0].skip().expect("a skip").units,
+        ["w-a.mount"]
+    );
+    let absent = decide_fstab(fstab, false);
+    let Decision::Mask { unreached, .. } = &absent[0] else {
+        panic!("{absent:?}");
+    };
+    assert_eq!(
+        unreached,
+        &Some(Unreached {
+            target: "local-fs.target".into(),
+            cause: Unskippable::NoDevice("/dev/vdw1".into()),
+            origin: Origin::Needed {
+                lines: vec!["/w/t2".into()],
+                may: true,
+            },
+        })
+    );
+    assert_eq!(
+        absent[0].warning().expect("a warning"),
+        "/w/a is masked rather than skipped, as its device /dev/vdw1 is not there: \
+         local-fs.target may require it, and where it does, the hidden session will not reach \
+         it, and the units only that target pulls in will not start there. Attach the device \
+         before activating, or give the fstab entry for /w/t2 the nofail option \
+         (x-systemd.wanted-by= in place of an x-systemd.required-by= it gives)"
+    );
+    let kept = runtime_units(&parse_fstab(fstab), &absent);
+    assert!(kept.masks.contains(&"w-a.mount".to_string()), "{kept:?}");
+    assert_eq!(kept.required_masks, [], "{kept:?}");
+
+    // Where a line NAILS reads requires it too, the target requires it: the
+    // warning says so, names that line alone, and the mask is recorded.
+    let sure = "/dev/vdw1 /w/a ext4 noauto 0 0\n\
+                tmpfs /w/t2 tmpfs comment=foo\\040bar 0 0\n\
+                tmpfs /w/a/t3 tmpfs defaults 0 0\n";
+    let absent = decide_fstab(sure, false);
+    let warning = absent[0].warning().expect("a warning");
+    assert!(
+        warning.contains("will not reach local-fs.target, which requires it")
+            && warning.contains("the fstab entry for /w/a/t3 the nofail"),
+        "{warning}"
+    );
+    let kept = runtime_units(&parse_fstab(sure), &absent);
+    assert_eq!(
+        kept.required_masks
+            .iter()
+            .map(|m| m.unit.as_str())
+            .collect::<Vec<_>>(),
+        ["w-a.mount"]
+    );
+
+    // A line read first through an unread option and then through a chain
+    // NAILS reads: the target requires the noauto line all the same.
+    let twice = "/dev/vdx1 /x ext4 noauto 0 0\n\
+                 tmpfs /a tmpfs nofail,comment=p\\040q 0 0\n\
+                 tmpfs /m tmpfs nofail,x-systemd.requires=/x,x-systemd.requires=/a 0 0\n\
+                 tmpfs /t tmpfs x-systemd.requires=/m 0 0\n";
+    let absent = decide_fstab(twice, false);
+    let Decision::Mask { unreached, .. } = &absent[0] else {
+        panic!("{absent:?}");
+    };
+    assert_eq!(
+        unreached.as_ref().map(|u| &u.origin),
+        Some(&Origin::Needed {
+            lines: vec!["/t".into()],
+            may: false,
+        })
     );
 }
 

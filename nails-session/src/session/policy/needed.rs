@@ -15,7 +15,7 @@ use super::{Decision, NEVER_MOUNTED, Origin, Present, Units, gate};
 use crate::session::fstab::{FstabEntry, escape_path, mount_unit, required_by};
 use crate::session::mount_units::is_unit_name;
 use nails_base::hidden_root::separation::unread_fstab_options;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 /// How the unit of one fstab line needs the mount of another, the strongest
 /// first.
@@ -35,6 +35,22 @@ enum Need {
     Wants,
 }
 
+/// A boot target that requires the mount of a `noauto` line through a line
+/// it requires itself ([`boot_targets`]).
+#[derive(Debug)]
+struct Reach {
+    /// The target.
+    target: String,
+    /// The line it requires (its mount point, or a swap's device), which
+    /// holds the `noauto` mount up: where the target only wants that line,
+    /// the target is reached without the mount.
+    line: PathBuf,
+    /// Whether the target requires the mount as far as NAILS reads the
+    /// lines on the way: each requires the next, and none starts only for
+    /// an option NAILS does not read ([`Need::Unread`], a `noauto` line).
+    sure: bool,
+}
+
 /// The decision for `entries[at]`, a `noauto` line left alone as never
 /// mounted ([`NEVER_MOUNTED`]), where the unit of another line that the boot
 /// starts ([`starts`]) needs its mount ([`need`]): the boot mounts that line
@@ -42,8 +58,12 @@ enum Need {
 /// read, and through the lines that require it in turn, every boot target
 /// that requires it ([`boot_targets`]): where one does, it is skipped if its
 /// device is there, and masked with a warning that the target will not be
-/// reached if not; where none does, it is masked ([`gate`]). `None` where
-/// the decision stands.
+/// reached if not; where none does, it is masked ([`gate`]). Where NAILS
+/// reads that a target requires it, the warning names those targets; where
+/// only an option NAILS does not read may have one require it, the warning
+/// says the target may require it, and the mask is not recorded as a
+/// required one. The warning names the lines the targets require that hold
+/// the mount up ([`Origin::Needed`]). `None` where the decision stands.
 pub(super) fn needed_below(
     entries: &[FstabEntry],
     decided: &[Decision],
@@ -55,19 +75,49 @@ pub(super) fn needed_below(
         return None;
     }
     let needers = needers(entries, decided, at);
-    // The reason names a line that requires it, and one a target requires
-    // where there is such a line.
+    // The reason names a line that requires it, one the boot surely starts
+    // (not `noauto`) and that requires it as NAILS reads it where there is
+    // such a line, and one a target requires among those.
     let &(other, how) = needers
         .iter()
         .filter(|(_, how)| *how != Need::Wants)
-        .find(|(other, _)| required_by(&entries[*other]).is_some())
-        .or_else(|| needers.iter().find(|(_, how)| *how != Need::Wants))
+        .min_by_key(|(other, how)| {
+            let line = &entries[*other];
+            (
+                *how != Need::Requires || line.is_noauto(),
+                required_by(line).is_none(),
+            )
+        })
         .or_else(|| needers.first())?;
-    let mut targets = Vec::new();
-    boot_targets(entries, decided, at, &mut vec![at], &mut targets);
+    let mut reached = Vec::new();
+    boot_targets(
+        entries,
+        decided,
+        at,
+        true,
+        &mut vec![(at, true)],
+        &mut reached,
+    );
+    let may_require = !reached.iter().any(|reach| reach.sure);
+    let mut targets: Vec<String> = Vec::new();
+    let mut lines: Vec<PathBuf> = Vec::new();
+    for reach in reached
+        .into_iter()
+        .filter(|reach| reach.sure || may_require)
+    {
+        if !targets.contains(&reach.target) {
+            targets.push(reach.target);
+        }
+        if !lines.contains(&reach.line) {
+            lines.push(reach.line);
+        }
+    }
     let units = Units {
         required_by: (!targets.is_empty()).then(|| targets.join(" and ")),
-        origin: Origin::Needed,
+        origin: Origin::Needed {
+            lines,
+            may: may_require,
+        },
         ..Units::of(entry)
     };
     let line = &entries[other];
@@ -95,6 +145,24 @@ pub(super) fn needed_below(
     ))
 }
 
+/// What makes a boot target want the fstab `lines` that hold up a `noauto`
+/// mount rather than require them ([`Origin::Needed`], [`Decision::warning`]): `nofail`, or, where
+/// a line names the target with `x-systemd.required-by=`, which `nofail` does
+/// not change, `x-systemd.wanted-by=` in its place.
+pub(super) fn wanted_remedy(lines: &[PathBuf]) -> String {
+    let names: Vec<String> = lines.iter().map(|l| l.display().to_string()).collect();
+    let (entries, they) = if names.len() > 1 {
+        ("entries", "they give")
+    } else {
+        ("entry", "it gives")
+    };
+    format!(
+        "give the fstab {entries} for {} the nofail option (x-systemd.wanted-by= in place of an \
+         x-systemd.required-by= {they})",
+        names.join(" and ")
+    )
+}
+
 /// The lines among `entries`, `entries[at]` aside, that the boot starts
 /// ([`starts`]) and whose units need the mount of `entries[at]` ([`need`]),
 /// each with how.
@@ -108,28 +176,46 @@ fn needers(entries: &[FstabEntry], decided: &[Decision], at: usize) -> Vec<(usiz
         .collect()
 }
 
-/// Add to `targets` the boot targets that require the mount of
+/// Add to `reached` the boot targets that require the mount of
 /// `entries[at]`: those that require a line that requires it, or that
-/// requires a line that does in turn, as far as such lines lead. `seen`
-/// holds the lines read already.
+/// requires a line that does in turn, as far as such lines lead, each with
+/// the line it requires and whether NAILS reads every step as a requirement
+/// (`sure` for the steps up to `entries[at]`, [`Reach::sure`]). `seen` holds
+/// the lines read already, and whether they were read as sure: a line read
+/// again as sure is read through once more.
 fn boot_targets(
     entries: &[FstabEntry],
     decided: &[Decision],
     at: usize,
-    seen: &mut Vec<usize>,
-    targets: &mut Vec<String>,
+    sure: bool,
+    seen: &mut Vec<(usize, bool)>,
+    reached: &mut Vec<Reach>,
 ) {
     for (other, how) in needers(entries, decided, at) {
-        if how == Need::Wants || seen.contains(&other) {
+        if how == Need::Wants {
             continue;
         }
-        seen.push(other);
-        if let Some(target) = required_by(&entries[other])
-            && !targets.contains(&target)
+        let line = &entries[other];
+        let sure = sure && how == Need::Requires && !line.is_noauto();
+        if seen
+            .iter()
+            .any(|&(read, was_sure)| read == other && (was_sure || !sure))
         {
-            targets.push(target);
+            continue;
         }
-        boot_targets(entries, decided, other, seen, targets);
+        seen.push((other, sure));
+        if let Some(target) = required_by(line) {
+            reached.push(Reach {
+                target,
+                line: if line.is_swap() {
+                    PathBuf::from(&line.spec)
+                } else {
+                    line.file.clone()
+                },
+                sure,
+            });
+        }
+        boot_targets(entries, decided, other, sure, seen, reached);
     }
 }
 

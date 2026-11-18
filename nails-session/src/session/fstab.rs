@@ -239,7 +239,7 @@ pub fn required_by(entry: &FstabEntry) -> Option<String> {
     };
     let required = named("x-systemd.required-by=");
     if !required.is_empty() {
-        return Some(required.join(" "));
+        return Some(required.join(" and "));
     }
     let nfs_background = matches!(entry.vfstype.as_str(), "nfs" | "nfs4")
         && !entry.is_automount()
