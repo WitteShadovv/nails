@@ -24,11 +24,10 @@
 //!   store of standard-output streams with PID 1 (`FileDescriptorStorePreserve=yes`):
 //!   the decoy's journald reads at its start what the hidden root sent them
 //!   after its own journald stopped, the audit records of its last units'
-//!   stops among it. [`empty_journal_sockets`] stops those socket units and
-//!   drops that store, which discards what they hold, and opens journald's
-//!   own two sockets again, empty, so that the decoy's start finds them
-//!   listening as after a plain soft-reboot. The audit socket stays closed
-//!   ([`REOPENED_SOCKETS`]).
+//!   stops among it. [`settle_journal_sockets`] drops that store, and
+//!   [`drain_journal_sockets`] empties the sockets in place, through PID 1's
+//!   own descriptors of them, so that they stay the same sockets, as a plain
+//!   soft-reboot keeps them.
 //!
 //! The switch itself leaves `/run/nextroot` behind, an empty folder where the
 //! decoy root was mounted for it, which a boot never has. It is a mount point
@@ -47,12 +46,10 @@
 //! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), a
 //! filesystem other than ext4's unmount line, and the kernel's lines of the
 //! hidden mapping's teardown, which the kernel logs as PID 1 starts the
-//! decoy. journald's sockets are new ones, made at the way back (their files
-//! and their units' start time date from it), where a plain soft-reboot keeps
-//! those of the boot; where the kernel's audit is on,
-//! the decoy's start opens journald's audit socket anew and logs that, which
-//! a plain soft-reboot does not; and the stream of a process the soft-reboot
-//! leaves running goes with the store ([`drop_journal_streams`]).
+//! decoy. A journald socket PID 1 closed during the soft-reboot is new,
+//! made at the way back ([`settle_journal_sockets`]), and the stream of a
+//! process the soft-reboot leaves running goes with the store
+//! ([`drop_journal_streams`]).
 //!
 //! Like the rest of the transition, nothing here logs, and every step is
 //! best effort.
@@ -74,6 +71,11 @@ pub struct Places {
     pub sys_dev_block: PathBuf,
     /// `/sys/fs/ext4`, one folder per mounted ext4 filesystem.
     pub sys_fs_ext4: PathBuf,
+    /// The process that holds journald's sockets, under `proc`: PID 1.
+    pub journal_holder: u32,
+    /// The folder of journald's sockets, `/run/systemd`: they lie in its
+    /// `journal/` folder, a namespace's in `journal.<namespace>/`.
+    pub journal_run: PathBuf,
 }
 
 impl Places {
@@ -83,6 +85,8 @@ impl Places {
             proc: PathBuf::from("/proc"),
             sys_dev_block: PathBuf::from("/sys/dev/block"),
             sys_fs_ext4: PathBuf::from("/sys/fs/ext4"),
+            journal_holder: 1,
+            journal_run: PathBuf::from("/run/systemd"),
         }
     }
 }
@@ -272,34 +276,27 @@ pub fn settle_units(systemctl: &Path) -> bool {
     }
 }
 
-/// journald's socket units, those of its namespaces (a pattern `systemctl`
-/// matches against the loaded units), and the syslog socket journald forwards
-/// to, which a soft-reboot keeps open with what they hold.
-pub const JOURNAL_SOCKETS: [&str; 5] = [
-    "systemd-journald.socket",
-    "systemd-journald-dev-log.socket",
-    "systemd-journald-audit.socket",
-    "systemd-journald@*.socket",
-    "syslog.socket",
-];
+/// journald's own socket units, which the decoy's start would open anew,
+/// logging `Listening on` for each, were one closed when it starts.
+pub const OWN_SOCKETS: [&str; 2] = ["systemd-journald.socket", "systemd-journald-dev-log.socket"];
 
-/// The sockets of [`JOURNAL_SOCKETS`] that a plain soft-reboot carries into
-/// the decoy listening, and that the way back opens again once it has
-/// emptied them: journald's own two. A namespace's socket (named after a unit
-/// of the session's) and the syslog socket (stopped by the shutdown before
-/// the step) stay closed, and so does the audit socket: from its opening on
-/// it takes every audit record the kernel makes, past the kmsg cursor's
-/// reach, the kernel's record of PID 1 opening it (`EVENT_LISTENER`, with the
-/// hidden root's systemd as `exe=`) and those of the step itself among them.
-/// The decoy's start opens it again, and logs that.
-pub const REOPENED_SOCKETS: [&str; 2] =
-    ["systemd-journald.socket", "systemd-journald-dev-log.socket"];
+/// The socket units of journald's namespaces, a pattern `systemctl` matches
+/// against the loaded units.
+pub const NAMESPACE_SOCKETS: &str = "systemd-journald@*.socket";
+
+/// Whether `unit` is the socket unit of one of journald's namespaces.
+fn is_namespace_socket(unit: &str) -> bool {
+    unit.strip_prefix("systemd-journald@")
+        .and_then(|rest| rest.strip_suffix(".socket"))
+        .is_some_and(|name| !name.is_empty() && name != "*")
+}
 
 /// The service whose descriptor store holds journald's standard-output
 /// streams across its stop and the soft-reboot.
 pub const JOURNAL_SERVICE: &str = "systemd-journald.service";
 
-/// The `systemctl` call that lists which of [`REOPENED_SOCKETS`] are active.
+/// The `systemctl` call that lists which of [`OWN_SOCKETS`] and of the
+/// namespace sockets are active.
 pub fn active_sockets_call() -> Vec<&'static str> {
     let mut args = vec![
         "list-units",
@@ -308,39 +305,47 @@ pub fn active_sockets_call() -> Vec<&'static str> {
         "--state=active",
         "--",
     ];
-    args.extend(REOPENED_SOCKETS);
+    args.extend(OWN_SOCKETS);
+    args.push(NAMESPACE_SOCKETS);
     args
 }
 
-/// The units of [`REOPENED_SOCKETS`] a `systemctl list-units --plain
-/// --no-legend` `listing` names, in the order of [`REOPENED_SOCKETS`].
-pub fn listed_sockets(listing: &str) -> Vec<&'static str> {
+/// The units of [`OWN_SOCKETS`] and the namespace sockets a `systemctl
+/// list-units --plain --no-legend` `listing` names: journald's own in the
+/// order of [`OWN_SOCKETS`], then the namespaces' in the listing's order.
+pub fn listed_sockets(listing: &str) -> Vec<String> {
     let named: Vec<&str> = listing
         .lines()
         .filter_map(|line| line.split_whitespace().next())
         .collect();
-    REOPENED_SOCKETS
+    OWN_SOCKETS
         .into_iter()
         .filter(|unit| named.contains(unit))
+        .chain(
+            named
+                .iter()
+                .copied()
+                .filter(|unit| is_namespace_socket(unit)),
+        )
+        .map(str::to_string)
         .collect()
 }
 
-/// The units of [`REOPENED_SOCKETS`] active now, or `None` when `systemctl`
+/// The units of [`listed_sockets`] active now, or `None` when `systemctl`
 /// cannot say.
-pub fn active_sockets(systemctl: &Path) -> Option<Vec<&'static str>> {
+pub fn active_sockets(systemctl: &Path) -> Option<Vec<String>> {
     tools::run_output(systemctl, &active_sockets_call(), TOOL_BUDGET)
         .map(|listing| listed_sockets(&listing))
 }
 
 /// The file in the runtime directory that keeps, from the entry to the way
-/// back, which of journald's sockets the decoy had listening as it left.
+/// back, which of journald's socket units the decoy had active as it left.
 pub const SOCKETS_NAME: &str = "journal-sockets";
 
-/// Keep at `path`, at the entry, which of journald's sockets the decoy has
-/// listening now, one per line, as a plain soft-reboot would carry them; the
-/// way back opens those again ([`empty_journal_sockets`]). Without an answer
-/// from `systemctl` no file stays, and the way back goes by the sockets
-/// listening when it runs. Returns whether the file was written.
+/// Keep at `path`, at the entry, which of journald's socket units the decoy
+/// has active now ([`listed_sockets`]), one per line. Without an answer from
+/// `systemctl` no file stays, and the way back neither starts nor stops a
+/// socket unit. Returns whether the file was written.
 pub fn record_sockets(systemctl: &Path, path: &Path) -> bool {
     let written = active_sockets(systemctl).is_some_and(|units| {
         let text: String = units.iter().map(|unit| format!("{unit}\n")).collect();
@@ -352,20 +357,31 @@ pub fn record_sockets(systemctl: &Path, path: &Path) -> bool {
     written
 }
 
-/// The `systemctl` calls of [`empty_journal_sockets`], in order, where
-/// `active` are the units of [`REOPENED_SOCKETS`] to open again: stop each of
-/// [`JOURNAL_SOCKETS`] (a unit the system lacks fails alone), forget a
-/// failure of journald's (a failed service keeps its descriptor store, and
-/// PID 1 refuses to drop the store of a service that is not dead), drop that
-/// store, then start each of `active` again.
-pub fn journal_socket_calls(active: &[&'static str]) -> Vec<Vec<&'static str>> {
-    JOURNAL_SOCKETS
+/// The `systemctl` calls of [`settle_journal_sockets`], in order, where
+/// `decoy` are the socket units the decoy had active at the entry and `now`
+/// those active now: forget a failure of journald's (a failed service keeps
+/// its descriptor store, and PID 1 refuses to drop the store of a service
+/// that is not dead), drop that store, stop each namespace socket the
+/// session started, and start each of [`OWN_SOCKETS`] the decoy had and PID
+/// 1 has closed since.
+pub fn journal_socket_calls(decoy: &[String], now: &[String]) -> Vec<Vec<String>> {
+    let call = |args: &[&str]| args.iter().map(|arg| (*arg).to_string()).collect();
+    let stops = now
         .iter()
-        .map(|unit| vec!["stop", *unit])
-        .chain(std::iter::once(vec!["reset-failed", JOURNAL_SERVICE]))
-        .chain(std::iter::once(DROP_STREAMS.to_vec()))
-        .chain(active.iter().map(|unit| vec!["start", *unit]))
-        .collect()
+        .filter(|unit| is_namespace_socket(unit) && !decoy.contains(unit))
+        .map(|unit| vec!["stop".to_string(), unit.clone()]);
+    let starts = decoy
+        .iter()
+        .filter(|unit| OWN_SOCKETS.contains(&unit.as_str()) && !now.contains(unit))
+        .map(|unit| vec!["start".to_string(), unit.clone()]);
+    [
+        call(&["reset-failed", JOURNAL_SERVICE]),
+        call(&DROP_STREAMS),
+    ]
+    .into_iter()
+    .chain(stops)
+    .chain(starts)
+    .collect()
 }
 
 /// The `systemctl` call that drops journald's descriptor store of
@@ -373,7 +389,7 @@ pub fn journal_socket_calls(active: &[&'static str]) -> Vec<Vec<&'static str>> {
 pub const DROP_STREAMS: [&str; 3] = ["clean", "--what=fdstore", JOURNAL_SERVICE];
 
 /// Drop journald's stored standard-output streams at the entry, as the way
-/// back does with [`empty_journal_sockets`]. PID 1 closes each stored
+/// back does with [`settle_journal_sockets`]. PID 1 closes each stored
 /// descriptor through a helper process of its own, so the next start that
 /// releases the store uses a process number per stream: dropped before the
 /// entry records the process-number counter, neither the hidden start nor
@@ -390,30 +406,232 @@ pub fn drop_journal_streams(systemctl: &Path) -> bool {
     tools::run(systemctl, &DROP_STREAMS, TOOL_BUDGET) == tools::Outcome::Done
 }
 
-/// Discard what journald's sockets and descriptor store hold: stop the socket
-/// units, which closes them with their queues, and drop journald's stored
-/// streams (stopped by now, it no longer reads them); then open journald's
-/// own sockets again, empty, so that PID 1 carries them into the decoy
-/// listening as a plain soft-reboot does, and the decoy's start does not open
-/// them anew (its `Listening on` lines would tell a way back from a plain
-/// soft-reboot). Those to open again are `decoy`, the sockets the decoy had
-/// listening at the entry ([`record_sockets`]): a socket the hidden root's
-/// shutdown closed is opened again too (PID 1 before systemd 258 fails a
-/// socket that receives anything once journald has stopped for the
-/// soft-reboot). Without that record, those listening now. Returns the calls
+/// Put journald's socket units as the decoy had them at the entry, through
+/// `systemctl`, without touching a socket that is open: drop journald's
+/// stored streams (stopped by now, it no longer reads them), stop a
+/// namespace's socket the session started (its unit would name a namespace
+/// of the session's in the decoy's unit list), and start again one of
+/// [`OWN_SOCKETS`] the decoy had listening at the entry ([`record_sockets`],
+/// `decoy`) that PID 1 has closed since: PID 1 before systemd 258 fails a
+/// journald socket that receives anything once journald has stopped for the
+/// soft-reboot, which drops what it held, and the decoy's start would open
+/// it anew and log that. Without that record, or without an answer which
+/// units are active now, no unit is started or stopped. Returns the calls
 /// that did not succeed.
-pub fn empty_journal_sockets(systemctl: &Path, decoy: Option<&[&'static str]>) -> Vec<String> {
-    // Without a record or a listing none is opened again: the decoy's start
-    // opens them.
-    let active = match decoy {
-        Some(units) => units.to_vec(),
-        None => active_sockets(systemctl).unwrap_or_default(),
+pub fn settle_journal_sockets(systemctl: &Path, decoy: Option<&[String]>) -> Vec<String> {
+    let now = match decoy {
+        Some(_) => active_sockets(systemctl),
+        None => None,
     };
-    journal_socket_calls(&active)
-        .into_iter()
-        .filter(|args| tools::run(systemctl, args, TOOL_BUDGET) != tools::Outcome::Done)
-        .map(|args| args.join(" "))
+    let mut failed = Vec::new();
+    if decoy.is_some() && now.is_none() {
+        failed.push(active_sockets_call().join(" "));
+    }
+    let (decoy, now) = match (decoy, now) {
+        (Some(decoy), Some(now)) => (decoy.to_vec(), now),
+        _ => (Vec::new(), Vec::new()),
+    };
+    failed.extend(
+        journal_socket_calls(&decoy, &now)
+            .into_iter()
+            .filter(|args| {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                tools::run(systemctl, &args, TOOL_BUDGET) != tools::Outcome::Done
+            })
+            .map(|args| args.join(" ")),
+    );
+    failed
+}
+
+/// The netlink protocol of the kernel's audit (`NETLINK_AUDIT`).
+const NETLINK_AUDIT: u32 = 9;
+
+/// The socket inodes, in a `/proc/<pid>/net/unix` `listing`, of the sockets
+/// bound to a path below `journal_run`'s `journal/` folder or a namespace's
+/// `journal.<namespace>/` folder: journald's native, `/dev/log`, stream and
+/// any other socket there.
+pub fn journal_unix_inodes(listing: &str, journal_run: &Path) -> Vec<u64> {
+    let prefix = journal_run.join("journal");
+    let prefix = prefix.to_string_lossy();
+    listing
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let path = fields.get(7)?;
+            let rest = path.strip_prefix(prefix.as_ref())?;
+            let ours = rest.starts_with('/')
+                || rest
+                    .strip_prefix('.')
+                    .and_then(|ns| ns.split_once('/'))
+                    .is_some_and(|(ns, file)| !ns.is_empty() && !file.is_empty());
+            ours.then(|| fields.get(6)?.parse().ok()).flatten()
+        })
         .collect()
+}
+
+/// The socket inodes, in a `/proc/<pid>/net/netlink` `listing`, of the
+/// kernel audit's sockets that take its records as a multicast group
+/// subscriber, as journald's audit socket does; a socket that only sends
+/// audit messages (PID 1's own) subscribes to none.
+pub fn audit_reader_inodes(listing: &str) -> Vec<u64> {
+    listing
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let protocol: u32 = fields.get(1)?.parse().ok()?;
+            let groups = u32::from_str_radix(fields.get(3)?, 16).ok()?;
+            let inode = fields.last()?.parse().ok()?;
+            (fields.len() >= 10 && protocol == NETLINK_AUDIT && groups != 0).then_some(inode)
+        })
+        .collect()
+}
+
+/// The descriptor numbers in `fd_dir` (`/proc/<pid>/fd`) that refer to a
+/// socket with one of `inodes`, sorted.
+fn socket_fds(fd_dir: &Path, inodes: &[u64]) -> io::Result<Vec<i32>> {
+    let mut fds: Vec<i32> = std::fs::read_dir(fd_dir)?
+        .flatten()
+        .filter_map(|entry| {
+            let fd: i32 = entry.file_name().to_str()?.parse().ok()?;
+            let target = std::fs::read_link(entry.path()).ok()?;
+            let inode: u64 = target
+                .to_str()?
+                .strip_prefix("socket:[")?
+                .strip_suffix(']')?
+                .parse()
+                .ok()?;
+            inodes.contains(&inode).then_some(fd)
+        })
+        .collect();
+    fds.sort_unstable();
+    Ok(fds)
+}
+
+/// How long [`drain_journal_sockets`] reads, over all sockets: the kernel
+/// keeps adding audit records while it does.
+const DRAIN_BUDGET: Duration = Duration::from_secs(2);
+
+/// What [`drain_journal_sockets`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Drained {
+    /// How many sockets it found and emptied.
+    pub sockets: usize,
+    /// How many datagrams, audit records and waiting connections it dropped.
+    pub dropped: usize,
+    /// What it could not do, each with the reason.
+    pub failed: Vec<String>,
+}
+
+/// Empty journald's sockets in place: take the descriptors of them that
+/// `places.journal_holder` (PID 1) holds, through a pidfd (`pidfd_getfd`),
+/// and read and drop what waits in each: every datagram of the native and
+/// `/dev/log` sockets, every connection waiting on the stream socket (with
+/// what it carries), and every record waiting in the audit socket. The
+/// sockets stay the same objects, with their labels and their units' start
+/// time, as a plain soft-reboot keeps them. Reading a socket's queue does
+/// not wake PID 1, which watches the sockets only to start journald.
+///
+/// Run once the session's last writer is gone: what is sent after this
+/// reaches the decoy's journald.
+pub fn drain_journal_sockets(places: &Places) -> Drained {
+    let mut drained = Drained::default();
+    let holder = places.proc.join(places.journal_holder.to_string());
+    let read = |name: &str| std::fs::read_to_string(holder.join("net").join(name));
+    let mut inodes = Vec::new();
+    match read("unix") {
+        Ok(listing) => inodes.extend(journal_unix_inodes(&listing, &places.journal_run)),
+        Err(e) => drained.failed.push(format!("unix sockets: {e}")),
+    }
+    // A kernel without audit lists no audit socket.
+    if let Ok(listing) = read("netlink") {
+        inodes.extend(audit_reader_inodes(&listing));
+    }
+    if inodes.is_empty() {
+        return drained;
+    }
+    let fds = match socket_fds(&holder.join("fd"), &inodes) {
+        Ok(fds) if fds.is_empty() => return drained,
+        Ok(fds) => fds,
+        Err(e) => {
+            drained.failed.push(format!("descriptors: {e}"));
+            return drained;
+        }
+    };
+    let pidfd = rustix::process::Pid::from_raw(places.journal_holder as i32)
+        .ok_or(rustix::io::Errno::INVAL)
+        .and_then(|pid| rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()));
+    let pidfd = match pidfd {
+        Ok(pidfd) => pidfd,
+        Err(e) => {
+            drained.failed.push(format!("pidfd: {e}"));
+            return drained;
+        }
+    };
+    let deadline = Instant::now() + DRAIN_BUDGET;
+    for fd in fds {
+        let socket =
+            rustix::process::pidfd_getfd(&pidfd, fd, rustix::process::PidfdGetfdFlags::empty());
+        match socket
+            .map_err(io::Error::from)
+            .and_then(|socket| drain_socket(&socket, deadline))
+        {
+            Ok(dropped) => {
+                drained.sockets += 1;
+                drained.dropped += dropped;
+            }
+            Err(e) => drained.failed.push(format!("descriptor {fd}: {e}")),
+        }
+    }
+    drained
+}
+
+/// Drop what waits in `socket` until it holds nothing or `deadline` passes:
+/// on a listening socket, accept and close each waiting connection; on any
+/// other, receive each datagram or record without copying it (`MSG_TRUNC`)
+/// and without waiting (`MSG_DONTWAIT`, the descriptor's own mode, shared
+/// with PID 1, unchanged). Returns how many it dropped.
+pub fn drain_socket(socket: &impl std::os::fd::AsFd, deadline: Instant) -> io::Result<usize> {
+    use rustix::event::{PollFd, PollFlags};
+    use rustix::net::RecvFlags;
+    let listening = rustix::net::sockopt::socket_acceptconn(socket)?;
+    // A connected stream socket's end of file would read as an empty
+    // datagram: none of journald's is one.
+    if !listening && rustix::net::sockopt::socket_type(socket)? == rustix::net::SocketType::STREAM {
+        return Ok(0);
+    }
+    let mut dropped = 0;
+    let mut byte = [0_u8; 1];
+    while Instant::now() < deadline {
+        if listening {
+            let mut ready = [PollFd::new(socket, PollFlags::IN)];
+            let zero = rustix::event::Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            if rustix::event::poll(&mut ready, Some(&zero))? == 0
+                || !ready[0].revents().contains(PollFlags::IN)
+            {
+                return Ok(dropped);
+            }
+            match rustix::net::accept_with(socket, rustix::net::SocketFlags::CLOEXEC) {
+                Ok(_connection) => dropped += 1,
+                Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => {}
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            match rustix::net::recv(socket, &mut byte, RecvFlags::DONTWAIT | RecvFlags::TRUNC) {
+                Ok(_) => dropped += 1,
+                Err(rustix::io::Errno::AGAIN) => return Ok(dropped),
+                // A record the kernel could not queue: the queue still holds
+                // the others.
+                Err(rustix::io::Errno::NOBUFS | rustix::io::Errno::INTR) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    Ok(dropped)
 }
 
 /// What [`quiet_hidden_unmount`] did.
