@@ -7,10 +7,8 @@
 //! NAILS starts every program it runs as root with every mount `noatime`, and
 //! makes the decoy's mounts `noatime` while it asks PID 1 for something that
 //! makes PID 1 read the decoy ([`nails_teardown::noatime`]). Both change
-//! mounts with `mount_setattr(2)`, which Linux 5.12 added, and the second
-//! knows that FUSE keeps root out of a user's FUSE mount by FUSE's
-//! `allow_sys_admin_access` parameter, which Linux 6.0 added. 6.1 is the
-//! oldest long-term kernel with both. The check reads the release as
+//! mounts with `mount_setattr(2)`, which Linux 5.12 added. NAILS supports
+//! Linux 6.1, a long-term kernel, and newer. The check reads the release as
 //! `uname(2)` gives it, starting no program, and refuses a release it cannot
 //! read or tell the version of.
 
@@ -44,8 +42,7 @@ pub fn judge_release(release: Option<&str>) -> CheckResult {
     let (major, minor) = MIN_LINUX;
     let why = format!(
         "NAILS needs Linux {major}.{minor} or newer: it keeps the programs it starts and \
-         PID 1 from changing access times on the decoy with mount_setattr (Linux 5.12) and \
-         FUSE's allow_sys_admin_access parameter (Linux 6.0)"
+         PID 1 from changing access times on the decoy with mount_setattr (Linux 5.12)"
     );
     let boot = format!(
         "Boot a kernel of Linux {major}.{minor} or newer, as every release NAILS supports \

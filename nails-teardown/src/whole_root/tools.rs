@@ -184,7 +184,7 @@ pub const SOFT_REBOOT_TARGET: &str = "soft-reboot.target";
 
 /// Reload the service manager, so a runtime drop-in written to `/run` applies.
 /// A reload makes PID 1 run every generator and read every unit file again,
-/// so the mounts that keep access times are `noatime` while it runs
+/// so the local disk mounts that keep access times are `noatime` while it runs
 /// ([`crate::noatime::QuietMounts`]), where they can be; a caller that must
 /// not reload otherwise opens them itself first.
 pub fn daemon_reload(systemctl: &Path) -> bool {
