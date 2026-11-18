@@ -242,58 +242,150 @@ fn a_string_over_lines_or_in_an_interpolation_is_no_place_of_the_definition() {
             (6, "/dev/vda2".to_string(), "d".to_string()),
         ]
     );
-    let mut scanner = Scanner::default();
-    let whole: Vec<Vec<bool>> = text
-        .split('\n')
-        .map(|line| {
-            scanner.line(line.as_bytes());
-            scanner
-                .places()
-                .iter()
-                .filter(|place| !place.attribute)
-                .map(|place| place.whole)
-                .collect()
-        })
-        .collect();
-    assert_eq!(whole[1], [false]);
-    assert_eq!(whole[4], [true, true]);
+    // The binding's string is no definition of the configuration.
+    let option = options(text);
+    assert_eq!(option[1], [true, true, true]);
+    assert_eq!(option[5], [true, false, false]);
 }
 
-/// A lone `+` before or after a string joins it, also over a line break
-/// and in a comment; `++` and a `+` inside a word or a string do not.
-#[test]
-fn a_plus_joins_the_strings_next_to_it() {
-    let joined = |text: &str| {
-        let mut scanner = Scanner::default();
-        let lines: Vec<&str> = text.split('\n').collect();
-        for line in &lines {
+/// Whether each place of each line of `text` is a definition of the
+/// configuration ([`Place::option`]).
+fn options(text: &str) -> Vec<Vec<bool>> {
+    let mut scanner = Scanner::default();
+    text.split('\n')
+        .map(|line| {
             scanner.line(line.as_bytes());
+            scanner.places().iter().map(|place| place.option).collect()
+        })
+        .collect()
+}
+
+/// A place in a comment or in a `let` block, also one a value opened, is no
+/// definition of the configuration; one in code after the `in` is.
+#[test]
+fn a_place_in_a_comment_or_a_binding_is_no_option() {
+    let text = "{\n  # a.device = \"/dev/vda2\";\n  b = let c.device = \"/dev/vda2\"; in 1;\n  d = let e = { f.device = \"x\"; }; in e;\n  g.device = \"/dev/vda2\"; # h = \"y\";\n}";
+    let option = options(text);
+    assert_eq!(option[1], [false, false, false]);
+    assert_eq!(option[2], [true, false, false, false]);
+    assert_eq!(option[3], [true, false, false, false, false]);
+    assert_eq!(option[4], [true, true, true, false, false]);
+}
+
+/// The parts of each line of `text` that are no plain literal
+/// ([`super::Unplain`]), with the path each stands in.
+fn unplain(text: &str) -> Vec<(usize, String, String)> {
+    let mut scanner = Scanner::default();
+    let mut found = Vec::new();
+    for (index, line) in text.split('\n').enumerate() {
+        scanner.line(line.as_bytes());
+        for part in scanner.unplain() {
+            found.push((index, line[part.range].to_string(), part.path.join(".")));
         }
-        scanner
-            .joined()
-            .iter()
-            .map(|joined| {
-                (
-                    joined.line,
-                    lines[joined.line][joined.text.clone()].to_string(),
-                    joined.continued,
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        joined("x = \"a\" + \"b\";"),
-        [(0, "a".into(), true), (0, "b".into(), false)]
-    );
-    assert_eq!(joined("x = (\"a\"\n  + b);"), [(0, "a".to_string(), true)]);
-    assert_eq!(joined("x = p+\"b\";"), [(0, "b".to_string(), false)]);
-    assert_eq!(joined("# x = \"a\" + b;"), [(0, "a".to_string(), true)]);
-    for text in [
-        "x = [ \"a\" ] ++ [ \"b\" ];",
-        "x = \"a+\" \"+b\";",
-        "x = \"a\"; # + b",
-        "x = c++ \"b\";",
+    }
+    found
+}
+
+/// The form `nixos-generate-config` writes has no part that is no plain
+/// literal: strings, lists of strings, sets, and `true`, `false` or a number
+/// as a whole value. Code outside `fileSystems` and `luks.devices` is not
+/// noted, nor is a comment.
+#[test]
+fn a_generated_entry_is_plain() {
+    let text = "{ config, lib, pkgs, modulesPath, ... }:\n{\n  imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];\n  fileSystems.\"/\" =\n    { device = \"/dev/disk/by-uuid/x\";\n      fsType = \"btrfs\";\n      options = [ \"subvol=@\" \"compress=zstd\" ];\n      neededForBoot = true; # needed (early)\n    };\n  boot.initrd.luks.devices.\"luks-x\".device = \"/dev/disk/by-uuid/y\";\n  boot.initrd.luks.devices.\"luks-x\".keyFileSize = 4096;\n  swapDevices = [ ];\n  networking.useDHCP = lib.mkDefault true;\n  /* fileSystems.\"/\".device = f x; */\n}";
+    assert_eq!(unplain(text), []);
+}
+
+/// Every other part of a value below `fileSystems` or `luks.devices` is
+/// noted, with the path it stands in: a reference, a call, an operator, a
+/// parenthesis, an interpolation in a string or as a name, a path, a
+/// `''…''` string, a string that goes on over the next line, a keyword, an
+/// `inherit`, and `true` or a number in a list or as a `device`.
+#[test]
+fn every_other_part_of_an_entry_is_noted() {
+    for (text, part, path) in [
+        (
+            "fileSystems.\"/\".device = lib.mkForce \"/dev/x\";",
+            "lib.mkForce",
+            "fileSystems./.device",
+        ),
+        (
+            "fileSystems.\"/\".device = config.fileSystems.\"/\".device;",
+            "config.fileSystems.",
+            "fileSystems./.device",
+        ),
+        (
+            "fileSystems.\"/\".options = [ (\"subvol=@va\") + \"ult\" ];",
+            "(",
+            "fileSystems./.options",
+        ),
+        (
+            "fileSystems.\"/\".options = [ (if true then \"a\" else \"b\") ];",
+            "(",
+            "fileSystems./.options",
+        ),
+        (
+            "fileSystems.\"/\".device = \"/dev/${x}\";",
+            "${",
+            "fileSystems./.device",
+        ),
+        (
+            "fileSystems.\"/\" = { ${x} = \"a\"; };",
+            "${",
+            "fileSystems./",
+        ),
+        (
+            "fileSystems.\"/\".device = /dev/x;",
+            "/",
+            "fileSystems./.device",
+        ),
+        (
+            "fileSystems.\"/\".device = ''/dev/x'';",
+            "''",
+            "fileSystems./.device",
+        ),
+        (
+            "fileSystems.\"/\".device = \"/dev/x",
+            "/dev/x",
+            "fileSystems./.device",
+        ),
+        (
+            "fileSystems.\"/\" = let d = \"x\"; in { device = d; };",
+            "let",
+            "fileSystems./",
+        ),
+        (
+            "fileSystems.\"/\" = { inherit device; };",
+            "inherit",
+            "fileSystems./",
+        ),
+        (
+            "fileSystems.\"/\".options = [ true ];",
+            "true",
+            "fileSystems./.options",
+        ),
+        (
+            "fileSystems.\"/\".device = true;",
+            "true",
+            "fileSystems./.device",
+        ),
+        ("fileSystems.\"/\".label = 5;", "5", "fileSystems./.label"),
+        (
+            "fileSystems = lib.mkForce { };",
+            "lib.mkForce",
+            "fileSystems",
+        ),
+        (
+            "boot.initrd.luks.devices.x.device = \"/dev/sdb2\" + \"0\";",
+            "+",
+            "boot.initrd.luks.devices.x.device",
+        ),
     ] {
-        assert_eq!(joined(text), [], "{text}");
+        let found = unplain(text);
+        assert_eq!(
+            found.first(),
+            Some(&(0, part.to_string(), path.to_string())),
+            "{text}"
+        );
     }
 }

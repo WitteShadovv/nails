@@ -518,6 +518,107 @@ fn with_the_flag_the_roots_own_names_still_refuse() {
     );
 }
 
+/// With the flag, an entry of the decoy's own that holds anything but plain
+/// literals refuses on the line of the first such part, whatever it builds:
+/// a `+` behind a bracket, `if … then … else`, a function call, a reference
+/// to another entry's device, an interpolation in a path. A `let` block that
+/// defines a path like an entry's is no entry, and the install's device
+/// there refuses as without the flag. Without the flag each refuses for the
+/// install's device, as before.
+#[test]
+fn with_the_flag_an_own_entry_nails_cannot_read_refuses() {
+    const DEVICE: &str = "/dev/disk/by-uuid/4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f";
+    let entry = |options: &str| {
+        format!(
+            "fileSystems.\"/srv\" = {{ device = \"{DEVICE}\"; fsType = \"btrfs\"; options = [ {options} ]; }};"
+        )
+    };
+    let top = format!(
+        "fileSystems.\"/var/lib/pool\" = {{ device = \"{DEVICE}\"; fsType = \"btrfs\"; options = [ \"subvolid=5\" ]; }};"
+    );
+    let bind = |device: &str| {
+        format!("{top}\n  fileSystems.\"/srv\" = {{ device = {device}; options = [ \"bind\" ]; }};")
+    };
+    let btrfs = [
+        (entry("((\"subvol=@va\") + \"ult\")"), 2, "("),
+        (entry("((\"subvolid=25\") + \"8\")"), 2, "("),
+        (entry("((\"X-mount.subdir=@va\") + \"ult\")"), 2, "("),
+        (
+            entry("((if true then \"subvol=@va\" else \"x\") + \"ult\")"),
+            2,
+            "(",
+        ),
+        (entry("(rest + (\"ult\"))"), 2, "("),
+        (bind("(\"/var/lib/pool/@va\") + rest"), 3, "("),
+        (bind("rest + (\"ult\")"), 3, "rest"),
+        (
+            bind("lib.concatStrings [ \"/var/lib/pool/@va\" \"ult\" ]"),
+            3,
+            "lib.concatStrings",
+        ),
+        (
+            "fileSystems.\"/srv\".label = (\"nix\") + os;".to_string(),
+            2,
+            "(",
+        ),
+        (
+            "fileSystems.\"/srv\" = { device = config.fileSystems.\"/\".device; fsType = \"btrfs\"; options = [ \"subvol=@srv\" ]; };"
+                .to_string(),
+            2,
+            "config.fileSystems.",
+        ),
+    ];
+    for (line, number, text) in btrfs {
+        let content = format!("{{\n  {line}\n}}\n");
+        let machine = btrfs_install(&[("/etc/nixos/extra.nix", &content)]);
+        assert!(machine.check(Allow::Nothing).is_fail(), "{line}");
+        let result = machine.check(Allow::DecoyStorage);
+        assert!(
+            result.message().contains(&format!(
+                "/etc/nixos/extra.nix, line {number}: '{text}' ({})",
+                ReferenceKind::RootPlace.reason()
+            )),
+            "{line}: {result:?}"
+        );
+    }
+    let content = format!("{{\n  x = let fileSystems.\"/srv\".device = \"{DEVICE}\"; in 1;\n}}\n");
+    let machine = btrfs_install(&[("/etc/nixos/extra.nix", &content)]);
+    let result = machine.check(Allow::DecoyStorage);
+    assert!(
+        result.message().contains(&format!(
+            "/etc/nixos/extra.nix, line 2: '{DEVICE}' ({})",
+            ReferenceKind::Storage.reason()
+        )),
+        "{result:?}"
+    );
+    let machine = ext4_install(
+        "60 22 252:2 /home/alice/vault /mnt/vault rw,relatime shared:5 - ext4 /dev/vda2 rw\n",
+    );
+    for (device, text) in [
+        ("(\"/home/alice/va\") + rest", "("),
+        ("toString /home/alice/va${\"ult\"}", "toString"),
+        (
+            "lib.concatStrings [ \"/home/alice/va\" \"ult\" ]",
+            "lib.concatStrings",
+        ),
+    ] {
+        machine.nixos(&[(
+            "/etc/nixos/configuration.nix",
+            &format!(
+                "{{\n  fileSystems.\"/srv\" = {{ device = {device}; options = [ \"bind\" ]; }};\n}}\n"
+            ),
+        )]);
+        let result = machine.check(Allow::DecoyStorage);
+        assert!(
+            result.message().contains(&format!(
+                "line 2: '{text}' ({})",
+                ReferenceKind::RootPlace.reason()
+            )),
+            "{device}: {result:?}"
+        );
+    }
+}
+
 /// A place that may name the storage and cannot be read, a device of the
 /// install's filesystem among them, still refuses with the flag.
 #[test]

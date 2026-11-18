@@ -131,11 +131,6 @@ impl Decoded {
                     ..place.clone()
                 })
                 .collect(),
-            joined: context
-                .joined
-                .iter()
-                .map(|(string, continued)| (self.decoded(string), *continued))
-                .collect(),
         }
     }
 }

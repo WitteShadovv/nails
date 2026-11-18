@@ -106,7 +106,7 @@ fn every_name_of_the_accepted_filesystems_devices_is_let_be_in_the_decoys_own_en
             format!("fileSystems.\"/home\".device = \"{name}\";"),
             format!("fileSystems.\"/var/log\".device = \"{name}\";"),
             format!("fileSystems.\"/.snapshots\" = {{ device = \"{name}\"; }};"),
-            format!("fileSystems = {{ \"/nix\" = {{ device = lib.mkForce \"{name}\"; }}; }};"),
+            format!("fileSystems = {{ \"/nix\" = {{ device = \"{name}\"; }}; }};"),
             format!("config.fileSystems.\"/srv\".device = \"{name}\";"),
             format!("boot.initrd.luks.devices.\"cryptroot\".device = \"{name}\";"),
             format!("boot.initrd.luks.devices = {{ cryptroot = {{ device = \"{name}\"; }}; }};"),
@@ -144,7 +144,6 @@ fn the_label_the_luks_entry_and_a_generated_entry_are_let_be() {
         "{\n  boot.initrd.luks.devices.\"data\".allowDiscards = true;\n}\n",
         "{\n  boot.initrd.luks.devices.data.keyFile = \"/crypto_keyfile.bin\";\n}\n",
         "{\n  fileSystems.\"/\" =\n    { device = \"/dev/mapper/data\";\n      fsType = \"ext4\";\n    };\n}\n",
-        "{\n  # fileSystems.\"/home\".device = \"/dev/sdb2\";\n}\n",
     ] {
         let sysfs = with_udev(luks_on_a_partition());
         let without = scan(&sysfs, None, content);
@@ -163,9 +162,9 @@ fn the_label_the_luks_entry_and_a_generated_entry_are_let_be() {
 /// decoy's own entries for its own mounts still counts: in the entry for a
 /// folder that is no system folder, the hidden root's own among them, in an
 /// entry's options, in a `let` binding, a service's settings, a udev rule,
-/// a unit's dependencies, a comment outside such an entry, an attribute
-/// written in another case than Nix reads, and beside an own entry on the
-/// same line.
+/// a unit's dependencies, a comment (an entry commented out too), an
+/// attribute written in another case than Nix reads, and beside an own
+/// entry on the same line.
 #[test]
 fn a_name_of_the_accepted_filesystem_elsewhere_still_counts() {
     let own = own_luks();
@@ -219,6 +218,11 @@ fn a_name_of_the_accepted_filesystem_elsewhere_still_counts() {
             "systemd.services.x.after = [ \"dev-mapper-data.device\" ];",
             "dev-mapper-data.device",
             ReferenceKind::DeviceUnit,
+        ),
+        (
+            "# fileSystems.\"/home\".device = \"/dev/sdb2\";",
+            "/dev/sdb2",
+            ReferenceKind::Storage,
         ),
         (
             "# UUID=0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b",

@@ -3,9 +3,9 @@
 
 //! The lines of a `.nix` file matched against the markers.
 
-use super::escapes::{Decoded, Escape};
+use super::escapes::Decoded;
 use super::nix_text::{Context, Shell};
-use super::scan::{Place, Scanner};
+use super::scan::{Place, Scanner, Unplain};
 use super::{BaseConfigReference, Marker, Markers, ReferenceKind};
 use nails_base::hidden_root::separation::counts_as_system_folder;
 use std::ops::Range;
@@ -62,9 +62,9 @@ fn first(markers: &[Marker], lines: &[(&[u8], &View)]) -> Option<(ReferenceKind,
 /// for the first such name, and each other line that matches one of the
 /// names let be, for the first of those. Each line is matched as the file
 /// spells it and, when its strings hold an escape, again as Nix reads them.
-/// With a filesystem the flag accepted, a line with a string in a place of
-/// the decoy's own that the scan cannot read whole counts as well
-/// ([`unread_own_place`]).
+/// With a filesystem the flag accepted, a line with a part that is no plain
+/// literal in an entry of the decoy's own counts as well
+/// ([`unplain_in_own_entry`]).
 pub(super) fn references_in(
     file: &Path,
     content: &str,
@@ -75,9 +75,7 @@ pub(super) fn references_in(
     let mut scanner = Scanner::default();
     let mut shell = Shell::default();
 
-    // Every line is read before any is matched: the `+` that joins a string
-    // to something can stand on a later line.
-    let mut lines: Vec<(Range<usize>, Context, Vec<Escape>)> = Vec::new();
+    let mut lines = Vec::new();
     let mut start = 0;
     for line in text.split(|&byte| byte == b'\n') {
         let span = start..start + line.len();
@@ -89,20 +87,13 @@ pub(super) fn references_in(
             names,
             arguments: shell.line(line),
             places: scanner.places(),
-            joined: Vec::new(),
         };
-        lines.push((span, context, scanner.escapes()));
-    }
-    for joined in scanner.joined() {
-        lines[joined.line]
-            .1
-            .joined
-            .push((joined.text.clone(), joined.continued));
+        lines.push((span, context, scanner.escapes(), scanner.unplain()));
     }
 
     let mut found = Vec::new();
     let mut let_be = Vec::new();
-    for (index, (span, context, escapes)) in lines.into_iter().enumerate() {
+    for (index, (span, context, escapes, unplain)) in lines.into_iter().enumerate() {
         let raw = &original[span.clone()];
         let reference = |kind, range: Range<usize>| BaseConfigReference {
             file: file.to_path_buf(),
@@ -132,7 +123,7 @@ pub(super) fn references_in(
             found.push(reference(kind, range));
         } else if let Some(range) = markers
             .allowing
-            .then(|| unread_own_place(&views[0], raw, &markers.root))
+            .then(|| unplain_in_own_entry(&unplain, &markers.root))
             .flatten()
         {
             found.push(reference(ReferenceKind::RootPlace, range));
@@ -157,36 +148,34 @@ pub(super) fn references_in(
     (found, let_be)
 }
 
-/// A string in a place of the decoy's own ([`decoys_own_place`]) on the
-/// line `raw` that the scan cannot read whole: it holds an interpolation
-/// (`"${dev}"`), a `+` joins it to something before or after it
-/// (`"/srv/@va" + "ult"`), or it goes on over the next line. The range to
-/// show of it.
-fn unread_own_place(view: &View, raw: &[u8], root: &Path) -> Option<Range<usize>> {
-    let context = &view.context;
-    context
-        .places
+/// The first part of `unplain`, the parts of a line that are no plain
+/// literal ([`Unplain`]), that stands in an entry of the decoy's own
+/// ([`own_entry`]): the scan cannot tell what Nix makes of that entry, so
+/// the names it lets be there could stand for something else.
+fn unplain_in_own_entry(unplain: &[Unplain], root: &Path) -> Option<Range<usize>> {
+    unplain
         .iter()
-        .find(|place| {
-            !place.attribute
-                && decoys_own_place(place, root)
-                && (!place.whole
-                    || raw[place.range.clone()].windows(2).any(|w| w == b"${")
-                    || context.joined.iter().any(|(text, _)| *text == place.range))
-        })
-        .map(|place| {
-            // An empty string shows with its quotes.
-            let range = place.range.clone();
-            if !range.is_empty() {
-                return range;
-            }
-            let quotes = if raw[..range.start].ends_with(b"''") {
-                2
-            } else {
-                1
-            };
-            range.start.saturating_sub(quotes)..(range.end + quotes).min(raw.len())
-        })
+        .find(|part| own_entry(&part.path, root))
+        .map(|part| part.range.clone())
+}
+
+/// Whether `path` is in an entry where the decoy's own places stand
+/// ([`decoys_own_place`]): in a `fileSystems` entry for `/` or a system
+/// folder other than the hidden root at `root` and the folders inside it, or
+/// in a `boot.initrd.luks.devices` entry, or is the set of such entries
+/// itself (`fileSystems`, `boot.initrd.luks.devices`), whose value could
+/// change them. Like the places, the path counts wherever it stands.
+fn own_entry(path: &[String], root: &Path) -> bool {
+    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let set = matches!(
+        path.as_slice(),
+        [.., "fileSystems"] | [.., "initrd", "luks", "devices"]
+    );
+    set || (1..=path.len()).any(|end| match &path[..end] {
+        [.., "fileSystems", at] => counts_as_system_folder(Path::new(at), root),
+        [.., "initrd", "luks", "devices", _] => true,
+        _ => false,
+    })
 }
 
 /// Whether `place` is one where the decoy's configuration names the devices
@@ -196,8 +185,13 @@ fn unread_own_place(view: &View, raw: &[u8], root: &Path) -> Option<Range<usize>
 /// root at `root` and the folders inside it ([`counts_as_system_folder`]),
 /// the name of a `boot.initrd.luks.devices` entry, or a string that is the
 /// `device` of one. The attribute path is the one the file defines, wherever
-/// it stands (inside a service's settings too), read with its case.
+/// it stands (inside a service's settings too), read with its case, and only
+/// a definition in code outside a `let` block counts ([`Place::option`]):
+/// not a comment and not a binding.
 pub(super) fn decoys_own_place(place: &Place, root: &Path) -> bool {
+    if !place.option {
+        return false;
+    }
     let path: Vec<&str> = place.path.iter().map(String::as_str).collect();
     if place.attribute {
         return matches!(path.as_slice(), [.., "initrd", "luks", "devices", _]);
