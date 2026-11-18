@@ -462,6 +462,35 @@ fn the_counter_is_measured_from_the_aim() {
     assert_eq!(counter(&record, &fake.proc()), Some(959 - 119));
 }
 
+#[test]
+fn logind_is_measured_from_its_own_number() {
+    // logind had 1000 at the cold boot, 24 below the top of 512 to 1023, and
+    // no getty could be measured. The getty lands off logind by what it was
+    // off at the entry, so the counter goes below logind's own number, not
+    // below the getty's aim: aimed at 959, a getty at 1040 would land near
+    // 999, out of 1024 to 2047.
+    let record = Record {
+        floor: Some(700),
+        anchors: vec![logind(1000)],
+        at_switch: Some(9031),
+        counter: None,
+    };
+    let fake = FakeProc::with(&[
+        (9040, "systemd-journal", 0, BOOT),
+        (9140, "systemd-logind", 0, BOOT),
+    ]);
+    assert_ne!(aim(1000), 1000);
+    assert_eq!(counter(&record, &fake.proc()), Some(1000 - 109));
+
+    // The same near the bottom of a range: logind at 530 is not moved to 576.
+    let record = Record {
+        anchors: vec![logind(530)],
+        ..record
+    };
+    assert_ne!(aim(530), 530);
+    assert_eq!(counter(&record, &fake.proc()), Some(530 - 109));
+}
+
 /// The consoles' numbers in Fedora 44 and 45 admission gate runs before the
 /// aim: the cold boot's, after the first way back (`deactivate`) and after the
 /// second (the emergency), each session starting from the number before it.
