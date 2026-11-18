@@ -49,8 +49,10 @@ use crate::noatime;
 use crate::whole_root::boot_writer;
 use crate::whole_root::nextroot;
 use crate::whole_root::plan::{self, SERVICE_CONFIG_MODE};
+use crate::whole_root::program_label::{self, Labelling};
 use std::ffi::OsStr;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::Duration;
@@ -276,6 +278,13 @@ impl Fix {
 /// way back must make `/run` `noexec` again, which the reconcile step then does
 /// once the copy has run. The caller leaves `/run` executable until then.
 ///
+/// Where `label` is given, the binary copy takes that SELinux label right
+/// after it is written, through the descriptor it was written through, and
+/// must read it back before it is renamed into place
+/// ([`program_label::label_file`]): the decoy's PID 1 would start a copy that
+/// kept the label of the files in `/run` in its own domain, which a targeted
+/// policy confines. A copy that does not take the label fails the install.
+///
 /// The writer's drop-in goes last, after the binary copy it starts, so a way
 /// back cut short never leaves the writer a start command that points at a
 /// missing file: it then runs as the decoy has it. A failure removes every
@@ -286,8 +295,9 @@ pub fn install(
     fix: &Fix,
     switched_at: Duration,
     restore_noexec: bool,
+    label: Option<Labelling<'_>>,
 ) -> io::Result<()> {
-    let result = install_pieces(run, binary, fix, switched_at, restore_noexec);
+    let result = install_pieces(run, binary, fix, switched_at, restore_noexec, label);
     if result.is_err() {
         remove_pieces(run);
     }
@@ -300,6 +310,7 @@ fn install_pieces(
     fix: &Fix,
     switched_at: Duration,
     restore_noexec: bool,
+    label: Option<Labelling<'_>>,
 ) -> io::Result<()> {
     let bin_path = run.join(FIXUP_DIR).join(FIXUP_BINARY);
 
@@ -319,9 +330,10 @@ fn install_pieces(
     let _ = std::fs::remove_file(&link);
     std::os::unix::fs::symlink(Path::new("..").join(FIXUP_UNIT), &link)?;
 
-    // The binary copy, in its own directory so the step can remove it whole.
+    // The binary copy, in its own directory so the step can remove it whole,
+    // with its label where the plan records one.
     std::fs::create_dir_all(run.join(FIXUP_DIR))?;
-    write_executable(&bin_path, binary)?;
+    write_executable(&bin_path, binary, label)?;
 
     // Last, the writer's drop-in: it replaces the writer's start command with
     // the copy, which is in place by now.
@@ -332,9 +344,9 @@ fn install_pieces(
 }
 
 /// Write `bytes` to `path` as a private executable, through a temporary file in
-/// the same directory renamed over the target, so the copy is never seen torn
-/// or at another mode.
-fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// the same directory renamed over the target, so the copy is never seen torn,
+/// at another mode or, where `label` is given, without that label.
+fn write_executable(path: &Path, bytes: &[u8], label: Option<Labelling<'_>>) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("/"));
     let temp = dir.join(format!(".{FIXUP_BINARY}.{}", std::process::id()));
     let result = (|| {
@@ -345,6 +357,11 @@ fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
             .mode(0o700)
             .open(&temp)?;
         file.write_all(bytes)?;
+        if let Some(Labelling { selinux, label }) = label {
+            program_label::label_file(selinux, file.as_fd(), label).map_err(|unlabelled| {
+                io::Error::other(format!("the copy at {} {unlabelled}", temp.display()))
+            })?;
+        }
         drop(file);
         std::fs::rename(&temp, path)
     })();
@@ -406,23 +423,30 @@ fn remove_pieces(run: &Path) {
 }
 
 /// Run the reconcile step on the decoy's first start, then remove every piece
-/// of the fix from `/run`. `run` is the `/run` root, `root` the filesystem root
-/// the records sit under (`/` in use, a temporary tree in tests) and
-/// `switched_at` the boot clock at the switch. `restore_noexec` makes `/run`
-/// `noexec` again, last of all. Best effort: each part is attempted and a
-/// failure of one does not stop the others.
+/// of the fix from `/run` ([`clean_up`]). `run` is the `/run` root, `root` the
+/// filesystem root the records sit under (`/` in use, a temporary tree in
+/// tests) and `switched_at` the boot clock at the switch. `restore_noexec`
+/// makes `/run` `noexec` again, last of all. Best effort: each part is
+/// attempted and a failure of one does not stop the others.
 pub fn run(run: &Path, root: &Path, switched_at: Duration, restore_noexec: bool) {
-    // 1. Neutralise a backdated classic-wtmp boot record, stamping it with the
-    //    time of the switch (seconds and real microseconds): the start of the
-    //    boot it records, before anything that boot wrote.
+    // Neutralise a backdated classic-wtmp boot record, stamping it with the
+    // time of the switch (seconds and real microseconds): the start of the
+    // boot it records, before anything that boot wrote.
     let (sec, usec) = wall_clock_at(switched_at);
     let _ = reconcile_wtmp(&root.join(WTMP_PATH), sec, usec);
+    clean_up(run, restore_noexec);
+}
 
-    // 2. Remove the writer's drop-in (already gone once the writer has run),
-    //    the one-shot, its link and the binary copy.
+/// The rest of [`run`], and all of it for a step that does not run in the
+/// domain the copy's label gives it
+/// ([`crate::whole_root::program_label::enter_domain`]): the records stay as
+/// they would without the fix, as where the copy was left out, and nothing
+/// of the fix stays in `/run`. It removes the writer's drop-in (already gone
+/// once the writer has run), the one-shot, its link and the binary copy, then
+/// restores `/run`'s `noexec` flag where `restore_noexec` says, last, once
+/// the copy has run.
+pub fn clean_up(run: &Path, restore_noexec: bool) {
     remove_pieces(run);
-
-    // 3. Restore /run's noexec flag last, once the copy has run.
     if restore_noexec {
         let _ = nextroot::set_noexec(run, true);
     }

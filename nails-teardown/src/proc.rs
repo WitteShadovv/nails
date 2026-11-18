@@ -116,6 +116,23 @@ pub fn uid(pid: u32) -> Option<u32> {
     parse_status_uid(&std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
 }
 
+/// The uid a process opens files as in a `/proc/<pid>/status` body: the
+/// last of the four ids on its `Uid:` line (real, effective, saved, fs).
+pub fn parse_status_fs_uid(content: &str) -> Option<u32> {
+    content.lines().find_map(|line| {
+        line.strip_prefix("Uid:")?
+            .split_whitespace()
+            .nth(3)?
+            .parse()
+            .ok()
+    })
+}
+
+/// The uid `pid` opens files as; `None` when it is gone.
+pub fn fs_uid(pid: u32) -> Option<u32> {
+    parse_status_fs_uid(&std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
+}
+
 /// Whether `fd` of `pid` is a terminal.
 pub fn fd_is_terminal(pid: u32, fd: u32) -> bool {
     std::fs::read_link(Path::new(&format!("/proc/{pid}/fd/{fd}"))).is_ok_and(|link| {
@@ -472,6 +489,19 @@ mod tests {
         assert!(stat.start_time > 0);
         // The capture ran as root of a user namespace.
         assert_eq!(parse_status_uid(status), Some(0));
+        assert_eq!(parse_status_fs_uid(status), Some(0));
+    }
+
+    #[test]
+    fn the_fs_uid_is_the_last_of_the_four() {
+        let status = "Name:\tzsh\nUid:\t1000\t1000\t1000\t1001\nGid:\t100\t100\t100\t100\n";
+        assert_eq!(parse_status_uid(status), Some(1000));
+        assert_eq!(parse_status_fs_uid(status), Some(1001));
+        assert_eq!(parse_status_fs_uid("Uid:\t1000\t1000\n"), None);
+        // The test runs with one uid.
+        let me = std::process::id();
+        assert!(fs_uid(me).is_some());
+        assert_eq!(fs_uid(me), uid(me));
     }
 
     /// journald's stat and status as captured as root in a NixOS VM, when that

@@ -11,6 +11,7 @@
 //! an alias's value as the code of a function of its name, where it is used.
 
 use super::super::backstop::{FC_WRITES, KEPT, braces, history_path, is_fc_flag};
+use super::super::known::TAKES_ANY_WORDS;
 use super::super::lexer::{Token, Word, lex};
 use super::{Event, Walker, walk_text_in};
 
@@ -304,9 +305,31 @@ impl Walker<'_> {
         // the check counts where the files are read ([`Event::GlobalAlias`]);
         // a suffix alias's, or one whose name the check cannot read, anywhere,
         // as a hook.
+        // The command the words the alias is used with go to: its value's
+        // last, past its assignments and precommands.
+        let last = value
+            .rsplit([';', '&', '|', '(', ')', '{', '}', '\n'])
+            .next()
+            .unwrap_or_default();
+        let command = last.split_whitespace().find(|word| {
+            !word.contains('=')
+                && !matches!(
+                    *word,
+                    "builtin" | "command" | "noglob" | "nocorrect" | "exec" | "-" | "time"
+                )
+        });
         let outer = match name.filter(|_| regular) {
             Some(name) => {
-                self.events.push(Event::Define(name.to_string()));
+                // One that `aliases[name]=...` defines may last for the
+                // command after it alone.
+                self.events.push(Event::Define {
+                    name: name.to_string(),
+                    certain: self.certain_command && !text.starts_with("aliases["),
+                    alias: Some(
+                        !value.ends_with(char::is_whitespace)
+                            && command.is_some_and(|command| TAKES_ANY_WORDS.contains(&command)),
+                    ),
+                });
                 self.events.push(Event::RegularAlias(name.to_string()));
                 name.to_string()
             }
@@ -342,19 +365,6 @@ impl Walker<'_> {
         if walked.confused || walked.unfinished {
             self.events.push(doubt(self.place));
         }
-        // The command the words the alias is used with go to: its value's
-        // last, past its assignments and precommands.
-        let last = value
-            .rsplit([';', '&', '|', '(', ')', '{', '}', '\n'])
-            .next()
-            .unwrap_or_default();
-        let command = last.split_whitespace().find(|word| {
-            !word.contains('=')
-                && !matches!(
-                    *word,
-                    "builtin" | "command" | "noglob" | "nocorrect" | "exec" | "-" | "time"
-                )
-        });
         if value.ends_with(char::is_whitespace) {
             self.events.push(doubt(self.place));
         } else if let Some(name) = name.filter(|_| regular && listing_fc(last)) {
@@ -389,8 +399,13 @@ impl Walker<'_> {
                     .filter(|signal| signal.chars().all(|c| c.is_ascii_alphanumeric()))
                     .unwrap_or_default();
                 let outer = format!("TRAP{signal}");
-                // As a `TRAP...` function of its signal is defined.
-                self.events.push(Event::Define(outer.clone()));
+                // As a `TRAP...` function of its signal is defined, for what
+                // runs it as a hook, and no certain definition by that name.
+                self.events.push(Event::Define {
+                    name: outer.clone(),
+                    certain: false,
+                    alias: None,
+                });
                 self.nested_in(&code.text, unconditional, Some(outer), true);
             }
         }

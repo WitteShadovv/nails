@@ -267,9 +267,45 @@ upper changes.
   the hidden `/etc/nixos` it makes in the root upper for the hidden NixOS
   configuration, with the hidden `/etc` where it made that too. Where a label
   cannot be copied, activation is refused (see the
-  [decoy requirements](decoy-requirements.md)). For now `check` and activation
-  refuse every host where SELinux runs before any of this: `lsm-status` fails
-  there until NAILS chooses the SELinux domain of its units.
+  [decoy requirements](decoy-requirements.md)). Before any of this, `check`
+  and activation refuse a host where SELinux runs unless `lsm-status` finds it
+  running the targeted policy with NAILS's processes where they can do their
+  work (next item).
+- **The SELinux label of NAILS's program in RAM.** On a host whose kernel may
+  run SELinux, NAILS gives every copy of its binary that PID 1 starts its
+  steps from, in `/run`, the label of the system's programs, so that the
+  loaded policy starts those steps in its unconfined service domain rather
+  than in PID 1's confined one. It writes that label onto those copies alone,
+  in RAM, and installs nothing into the decoy's policy and writes nothing to
+  its disk for it; the copies go with the rest of the session's `/run`, the
+  last one at the decoy's first start after the way back. A way back whose
+  last step would run where the policy confines it could not take the kernel
+  log's cursor, and the decoy's journal would take in the hidden session's
+  kernel log: so `deactivate` refuses such a return, and the activation is
+  refused where the loaded policy would not start the steps as they need.
+  `check` and activation ask the loaded policy the same before anything else
+  (`lsm-status`), and where `[session_mounts] read_only` is on, also whether
+  it grants the domain udevd starts the disk guard in, `udev_t` under a
+  targeted policy, every operation the guard makes: where it does not, the
+  guard could leave a disk that appears in the session writable, and the host
+  is refused. That question leaves out the policy's rules for single `ioctl`
+  numbers, which selinuxfs does not answer, and the labels a relabel of `/run`
+  would give the guard's files, so a policy that denies the guard only there is
+  not refused. Fedora, whose hosts run SELinux by default, is not admitted yet,
+  so this applies only where a host of a family NAILS admits runs SELinux. The
+  emergency, which asks PID 1 nothing, powers off instead of returning where
+  the copy does not take its label again or the loaded policy would not start
+  the step from it; it does not see an `SELinuxContext=` the hidden session
+  gives `systemd-soft-reboot.service`, which `deactivate` refuses. A switch at
+  which PID 1 loads the policy anew gives the copies in `/run` the label of
+  the files there again, so the units PID 1 starts from a copy after a switch
+  check their own domain, and so does the last step of each armed switch,
+  which such a context or a relabel after the arm would start elsewhere: one
+  outside the unconfined service domain gives its copy the label again and
+  starts itself again from it. Where one still runs outside it, the watcher
+  and the sleep guard power the machine off, and the way back's last step
+  powers off instead of returning (see the
+  [decoy requirements](decoy-requirements.md)).
 - **Remote state, never rolled back.** Deactivation leaves the upper on the
   hidden volume and changes nothing else. Anything the hidden session sent through a
   shared account, token or sync client lives on the remote, and a decoy sync

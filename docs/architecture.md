@@ -244,14 +244,16 @@ An activation moves through these layers; each names its modules and crates:
   fails closed.
 - **Entry** (`session::entry`, `session::policy`, `session::nixos`, in
   `nails-session`) snapshots `/run`, writes the session plan and the RAM copy of
-  the binary to `/run/overlay-runtime` with a copy of libmount's `utab` and the
-  mount table lines of the mounts it names, mounts the root overlay at
-  `/run/nextroot`, builds and activates the hidden NixOS system there, applies
-  the fstab policy, carries the decoy filesystems the way back needs onto the
-  hidden volume, records the decoy's mounts for the way back
-  (`session::way_back`), checks the init and installs the transition drop-in.
-  Any failure undoes all of it, so a populated `/run/nextroot` is never left
-  behind.
+  the binary to `/run/overlay-runtime` (where the kernel may run SELinux, with
+  the label of the system's programs, `session::program_label`, so that PID 1
+  starts NAILS's steps from it outside its own confined domain) with a copy of
+  libmount's `utab` and the mount table lines of the mounts it names, mounts
+  the root overlay at `/run/nextroot`, builds and activates the hidden NixOS
+  system there, applies the fstab policy, carries the decoy filesystems the way
+  back needs onto the hidden volume, records the decoy's mounts for the way
+  back (`session::way_back`), checks the init and installs the transition
+  drop-in. Any failure undoes all of it, so a populated `/run/nextroot` is
+  never left behind.
   How a path under the hidden root is resolved without following a planted link
   is described in `nails_base::filesystem::safe_path`; why the overlay covers
   the whole root and is entered with a soft-reboot is explained

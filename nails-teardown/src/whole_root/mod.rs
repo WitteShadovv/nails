@@ -39,11 +39,15 @@
 //! - [`tail`]: the hidden session's last processes, journald's sockets and
 //!   the hidden filesystem's unmount line, ended, emptied and quieted before
 //!   the kmsg cursor, and the empty `/run/nextroot` the switch leaves;
-//! - [`disk_guard`]: unused disks read-only for the session (opt-in);
+//! - [`disk_guard`]: unused disks read-only for the session (opt-in), with
+//!   [`guard_policy`] (what the loaded SELinux policy lets the guard do);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
 //! - [`logind`]: the soft-reboot request of the entry and the way back, and
 //!   what logind holds of it;
 //! - [`emergency`]: the emergency hot path;
+//! - [`program_label`]: the SELinux label of the RAM copies of the binary,
+//!   which decides the domain PID 1 starts NAILS's own steps in, with
+//!   [`selinux`] (what the running kernel's SELinux answers);
 //! - [`tools`]: the bounded `systemctl`, `dmsetup` and `ip` calls.
 
 pub mod boot_records;
@@ -53,6 +57,7 @@ pub mod decoy_mounts;
 pub mod disk_guard;
 pub mod emergency;
 pub mod fresh_pids;
+pub mod guard_policy;
 pub mod kernel_helpers;
 pub mod kill;
 pub mod logind;
@@ -61,10 +66,12 @@ pub mod network_policy;
 pub mod network_run;
 pub mod nextroot;
 pub mod plan;
+pub mod program_label;
 pub mod ret;
 pub mod run_records;
 pub mod run_scrub;
 pub mod runtime_units;
+pub mod selinux;
 pub mod skips;
 pub mod switch_refusal;
 pub mod tail;

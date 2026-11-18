@@ -1,0 +1,510 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use super::*;
+use std::os::fd::AsFd;
+
+/// A kernel that made no mount point for selinuxfs runs no SELinux: no policy
+/// gives a domain, and PID 1's context is not read. Without the sysfs the
+/// mount point would be in, nothing tells.
+#[test]
+fn without_a_mount_point_for_selinuxfs_no_policy_gives_a_domain() {
+    let dir = tempfile::tempdir().unwrap();
+    let selinuxfs = dir.path().join("sys/fs/selinux");
+    let pid1 = dir.path().join("current");
+    let error = pid1_context(&selinuxfs, &pid1).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    assert!(
+        error
+            .to_string()
+            .starts_with(&dir.path().join("sys/fs").display().to_string()),
+        "{error}"
+    );
+
+    std::fs::create_dir_all(dir.path().join("sys/fs")).unwrap();
+    assert_eq!(pid1_context(&selinuxfs, &pid1).unwrap(), None);
+
+    std::fs::create_dir_all(&selinuxfs).unwrap();
+    let error = pid1_context(&selinuxfs, &pid1).unwrap_err();
+    assert!(
+        error.to_string().starts_with(&pid1.display().to_string()),
+        "{error}"
+    );
+
+    // As the kernel gives it: with its NUL.
+    std::fs::write(&pid1, "system_u:system_r:init_t:s0\0").unwrap();
+    assert_eq!(
+        pid1_context(&selinuxfs, &pid1).unwrap().as_deref(),
+        Some("system_u:system_r:init_t:s0")
+    );
+    // SELinux runs with no policy loaded.
+    std::fs::write(&pid1, "kernel\0").unwrap();
+    assert_eq!(pid1_context(&selinuxfs, &pid1).unwrap(), None);
+}
+
+/// The running kernel of a test host without SELinux, as the build servers
+/// and CI run: nothing to ask there, and a file just made carries no label.
+#[test]
+fn the_running_kernel_without_selinux_gives_no_domain_and_no_label() {
+    if Path::new(SELINUXFS).exists() {
+        return;
+    }
+    assert_eq!(Kernel.pid1().unwrap(), None);
+    let file = tempfile::tempfile().unwrap();
+    let error = Kernel.label(file.as_fd()).unwrap_err();
+    assert!(
+        matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_context_reads_without_its_end() {
+    for raw in [
+        &b"system_u:system_r:init_t:s0"[..],
+        b"system_u:system_r:init_t:s0\0",
+        b"system_u:system_r:init_t:s0\n",
+        b"system_u:system_r:init_t:s0\n\0",
+    ] {
+        assert_eq!(context_text(raw).unwrap(), "system_u:system_r:init_t:s0");
+    }
+    for odd in [
+        &b""[..],
+        b"\0",
+        b"a b:c:d",
+        b"a:b\0c:d",
+        b"\xff:b:c",
+        b"a:b:c\td",
+    ] {
+        let error = context_text(odd).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{odd:?}");
+    }
+}
+
+#[test]
+fn the_type_is_the_third_field_of_a_context() {
+    assert_eq!(type_of("system_u:system_r:init_t:s0"), Some("init_t"));
+    assert_eq!(
+        type_of("system_u:system_r:udev_t:s0-s0:c0.c1023"),
+        Some("udev_t")
+    );
+    assert_eq!(type_of("system_u:object_r:bin_t:s0"), Some("bin_t"));
+    assert_eq!(type_of("user_u:user_r:user_t"), Some("user_t"));
+    for none in ["kernel", "a:b", "a:b:", "a:b::s0", ""] {
+        assert_eq!(type_of(none), None, "{none:?}");
+    }
+}
+
+/// The classes and permissions as selinuxfs lists the loaded policy's, at
+/// `selinuxfs`.
+fn classes(selinuxfs: &Path, class: &str, index: &str, perms: &[(&str, &str)]) {
+    let dir = selinuxfs.join("class").join(class);
+    std::fs::create_dir_all(dir.join("perms")).unwrap();
+    std::fs::write(dir.join("index"), index).unwrap();
+    for (perm, number) in perms {
+        std::fs::write(dir.join("perms").join(perm), number).unwrap();
+    }
+}
+
+#[test]
+fn a_class_and_its_permissions_are_named_by_the_policy_s_numbers() {
+    let dir = tempfile::tempdir().unwrap();
+    let selinuxfs = dir.path();
+    classes(
+        selinuxfs,
+        "file",
+        "6\n",
+        &[
+            ("read", "4\n"),
+            ("execute", "14"),
+            ("first", "1"),
+            ("last", "32"),
+        ],
+    );
+    assert_eq!(class_index(selinuxfs, "file").unwrap(), 6);
+    assert_eq!(perm_bit(selinuxfs, "file", "read").unwrap(), 1 << 3);
+    assert_eq!(perm_bit(selinuxfs, "file", "execute").unwrap(), 1 << 13);
+    assert_eq!(perm_bit(selinuxfs, "file", "first").unwrap(), 1);
+    assert_eq!(perm_bit(selinuxfs, "file", "last").unwrap(), 1 << 31);
+
+    // What the policy does not define, or a number out of range, is an error.
+    assert_eq!(
+        class_index(selinuxfs, "no_class").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    let missing = perm_bit(selinuxfs, "file", "map").unwrap_err();
+    assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    assert!(
+        missing.to_string().contains("class/file/perms/map: "),
+        "{missing}"
+    );
+    classes(
+        selinuxfs,
+        "odd",
+        "x",
+        &[("zero", "0"), ("high", "33"), ("word", "x")],
+    );
+    assert_eq!(
+        class_index(selinuxfs, "odd").unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    for perm in ["zero", "high", "word"] {
+        assert_eq!(
+            perm_bit(selinuxfs, "odd", perm).unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+            "{perm}"
+        );
+    }
+}
+
+#[test]
+fn an_access_decision_allows_the_bits_of_its_first_word() {
+    // allowed, decided, auditallow, auditdeny, seqno, flags
+    assert_eq!(allowed_of(b"1d0 ffffffff 0 ffffffff 3 0").unwrap(), 0x1d0);
+    assert_eq!(allowed_of(b"0 ffffffff 0 ffffffff 1 1\0").unwrap(), 0);
+    for odd in [&b""[..], b" ", b"xyz 0", b"100000000 0"] {
+        assert_eq!(
+            allowed_of(odd).unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+            "{odd:?}"
+        );
+    }
+}
+
+/// A capability the loaded policy turns on reads `1`, one it does not `0`,
+/// and one the kernel does not know has no file: an error, as is any other
+/// answer.
+#[test]
+fn a_policy_capability_reads_as_on_or_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let selinuxfs = dir.path();
+    let capabilities = selinuxfs.join("policy_capabilities");
+    std::fs::create_dir_all(&capabilities).unwrap();
+    std::fs::write(capabilities.join("nnp_nosuid_transition"), "1").unwrap();
+    std::fs::write(capabilities.join("open_perms"), "0\n").unwrap();
+    std::fs::write(capabilities.join("odd"), "yes").unwrap();
+    assert!(capability_in(selinuxfs, "nnp_nosuid_transition").unwrap());
+    assert!(!capability_in(selinuxfs, "open_perms").unwrap());
+    let unknown = capability_in(selinuxfs, "unknown").unwrap_err();
+    assert_eq!(unknown.kind(), io::ErrorKind::NotFound);
+    assert!(
+        unknown
+            .to_string()
+            .contains("policy_capabilities/unknown: "),
+        "{unknown}"
+    );
+    assert_eq!(
+        capability_in(selinuxfs, "odd").unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+/// A transaction file that is not there, as without a mounted selinuxfs,
+/// fails with its path.
+#[test]
+fn a_transaction_needs_its_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("create");
+    let error = transact(&path, "a b 2").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    assert!(
+        error.to_string().starts_with(&path.display().to_string()),
+        "{error}"
+    );
+}
+
+/// The policy's classes as selinuxfs lists them, with the numbers of a
+/// loaded targeted policy.
+fn targeted_classes(selinuxfs: &Path) {
+    classes(selinuxfs, "process", "2\n", &[("transition", "2\n")]);
+    classes(
+        selinuxfs,
+        "file",
+        "6\n",
+        &[
+            ("read", "4"),
+            ("execute", "14"),
+            ("open", "20"),
+            ("entrypoint", "15"),
+        ],
+    );
+}
+
+/// The `create` request names both contexts and the number of the process
+/// class, and its answer, with its NUL, is the context the start enters.
+#[test]
+fn a_start_s_context_is_asked_of_the_create_file() {
+    let dir = tempfile::tempdir().unwrap();
+    targeted_classes(dir.path());
+    fn create(path: &Path, request: &str) -> io::Result<Vec<u8>> {
+        assert!(path.ends_with("create"), "{}", path.display());
+        assert_eq!(
+            request,
+            "system_u:system_r:init_t:s0 system_u:object_r:bin_t:s0 2"
+        );
+        Ok(b"system_u:system_r:unconfined_service_t:s0\0".to_vec())
+    }
+    assert_eq!(
+        exec_context_in(
+            dir.path(),
+            "system_u:system_r:init_t:s0",
+            "system_u:object_r:bin_t:s0",
+            create
+        )
+        .unwrap(),
+        "system_u:system_r:unconfined_service_t:s0"
+    );
+    fn refused(_: &Path, _: &str) -> io::Result<Vec<u8>> {
+        Err(io::Error::from(io::ErrorKind::PermissionDenied))
+    }
+    assert_eq!(
+        exec_context_in(dir.path(), "a:b:c", "d:e:f", refused)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::PermissionDenied
+    );
+}
+
+/// The `access` request names both contexts and the number of the class, and
+/// each permission whose bit its answer leaves out is denied, in the order
+/// asked.
+#[test]
+fn the_denied_permissions_are_the_bits_the_access_file_leaves_out() {
+    let dir = tempfile::tempdir().unwrap();
+    targeted_classes(dir.path());
+    // read (bit 3) and open (bit 19) allowed, execute (bit 13) not.
+    fn access(path: &Path, request: &str) -> io::Result<Vec<u8>> {
+        assert!(path.ends_with("access"), "{}", path.display());
+        assert_eq!(
+            request,
+            "system_u:system_r:init_t:s0 unconfined_u:object_r:admin_home_t:s0 6"
+        );
+        Ok(b"80008 ffffffff 0 ffffffff 7 0".to_vec())
+    }
+    let ask = |perms: &[&'static str]| {
+        denied_in(
+            dir.path(),
+            (
+                "system_u:system_r:init_t:s0",
+                "unconfined_u:object_r:admin_home_t:s0",
+                "file",
+            ),
+            perms,
+            access,
+        )
+    };
+    assert_eq!(ask(&["execute", "read", "open"]).unwrap(), ["execute"]);
+    assert_eq!(ask(&["read", "open"]).unwrap(), Vec::<&str>::new());
+    assert_eq!(
+        ask(&["entrypoint", "execute"]).unwrap(),
+        ["entrypoint", "execute"]
+    );
+    // A permission the policy does not define is no answer.
+    assert_eq!(ask(&["map"]).unwrap_err().kind(), io::ErrorKind::NotFound);
+    // Nor is an answer that reads as no access decision.
+    fn odd(_: &Path, _: &str) -> io::Result<Vec<u8>> {
+        Ok(b"denied".to_vec())
+    }
+    assert_eq!(
+        denied_in(dir.path(), ("a:b:c", "d:e:f", "file"), &["read"], odd)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+/// This process's own context reads as PID 1's does, without its end, and a
+/// file that is not there names its path.
+#[test]
+fn the_own_context_reads_without_its_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let own = dir.path().join("current");
+    let error = own_context(&own).unwrap_err();
+    assert!(
+        error.to_string().starts_with(&own.display().to_string()),
+        "{error}"
+    );
+    std::fs::write(&own, "system_u:system_r:unconfined_service_t:s0\0").unwrap();
+    assert_eq!(
+        own_context(&own).unwrap(),
+        "system_u:system_r:unconfined_service_t:s0"
+    );
+}
+
+/// The running kernel answers this process's own context from
+/// `/proc/self/attr/current`, whatever that file gives on the test host.
+#[test]
+fn the_running_kernel_reads_the_own_context_from_procfs() {
+    match std::fs::read("/proc/self/attr/current") {
+        Ok(raw) => assert_eq!(Kernel.current().ok(), context_text(&raw).ok()),
+        Err(e) => {
+            let error = Kernel.current().unwrap_err();
+            assert_eq!(error.kind(), e.kind(), "{error}");
+            assert!(
+                error.to_string().starts_with("/proc/self/attr/current: "),
+                "{error}"
+            );
+        }
+    }
+}
+
+/// A new object's label is asked of the `create` file with the number of
+/// its class, and with its name where one is given: in the clear where it
+/// holds only letters, digits, `.`, `_` and `-`, else percent-encoded, as the
+/// kernel reads `+` as a blank and a name ends at one.
+#[test]
+fn a_new_object_s_label_is_asked_with_its_class_and_its_name() {
+    let dir = tempfile::tempdir().unwrap();
+    classes(dir.path(), "file", "6\n", &[("read", "4")]);
+    classes(dir.path(), "dir", "7\n", &[("search", "16")]);
+    fn create(path: &Path, request: &str) -> io::Result<Vec<u8>> {
+        assert!(path.ends_with("create"), "{}", path.display());
+        Ok(match request {
+            "system_u:system_r:udev_t:s0 system_u:object_r:var_run_t:s0 6 read-only-devices" => {
+                b"system_u:object_r:udev_var_run_t:s0\0".to_vec()
+            }
+            "unconfined_u:unconfined_r:unconfined_t:s0 system_u:object_r:var_run_t:s0 7" => {
+                b"unconfined_u:object_r:var_run_t:s0\0".to_vec()
+            }
+            "a:b:c d:e:f 6 a%20b%2Bc%25d%2F.e_f-9" => b"g:h:i".to_vec(),
+            other => panic!("unexpected request {other:?}"),
+        })
+    }
+    let ask = |source: &str, class: &str, name: Option<&str>| {
+        new_label_in(
+            dir.path(),
+            (source, "system_u:object_r:var_run_t:s0", class),
+            name,
+            create,
+        )
+    };
+    assert_eq!(
+        ask(
+            "system_u:system_r:udev_t:s0",
+            "file",
+            Some("read-only-devices")
+        )
+        .unwrap(),
+        "system_u:object_r:udev_var_run_t:s0"
+    );
+    assert_eq!(
+        ask("unconfined_u:unconfined_r:unconfined_t:s0", "dir", None).unwrap(),
+        "unconfined_u:object_r:var_run_t:s0"
+    );
+    assert_eq!(
+        new_label_in(
+            dir.path(),
+            ("a:b:c", "d:e:f", "file"),
+            Some("a b+c%d/.e_f-9"),
+            create
+        )
+        .unwrap(),
+        "g:h:i"
+    );
+    // A class the policy does not define is no answer, nor is an answer that
+    // reads as no context.
+    assert_eq!(
+        ask("a:b:c", "no_class", None).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    fn blank(_: &Path, _: &str) -> io::Result<Vec<u8>> {
+        Ok(b"\0".to_vec())
+    }
+    assert_eq!(
+        new_label_in(dir.path(), ("a:b:c", "d:e:f", "dir"), None, blank)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+/// A process directory in a stand-in procfs: `comm`, `cgroup` and the
+/// context in `attr/current`, each where given.
+fn process(proc: &Path, pid: &str, comm: &str, cgroup: Option<&str>, context: Option<&str>) {
+    let dir = proc.join(pid);
+    std::fs::create_dir_all(dir.join("attr")).unwrap();
+    std::fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
+    if let Some(cgroup) = cgroup {
+        std::fs::write(dir.join("cgroup"), cgroup).unwrap();
+    }
+    if let Some(context) = context {
+        std::fs::write(dir.join("attr/current"), format!("{context}\0")).unwrap();
+    }
+}
+
+/// udevd is the process named `systemd-udevd` in its unit's cgroup, its
+/// subgroup included: a worker, a program of the same name elsewhere, a
+/// process whose cgroup cannot be read and the entries of procfs that are no
+/// process are passed over, and where none is left none runs.
+#[test]
+fn udevd_is_the_process_of_its_name_in_its_unit() {
+    let dir = tempfile::tempdir().unwrap();
+    let proc = dir.path();
+    std::fs::create_dir_all(proc.join("self")).unwrap();
+    std::fs::write(proc.join("uptime"), "1.0 1.0\n").unwrap();
+    assert_eq!(udevd_context_in(proc).unwrap(), None);
+
+    const UDEV: &str = "system_u:system_r:udev_t:s0-s0:c0.c1023";
+    process(
+        proc,
+        "412",
+        "(udev-worker)",
+        Some("0::/system.slice/systemd-udevd.service/udev\n"),
+        Some(UDEV),
+    );
+    process(
+        proc,
+        "500",
+        "systemd-udevd",
+        Some("0::/user.slice/user-1000.slice/session-2.scope\n"),
+        Some("unconfined_u:unconfined_r:unconfined_t:s0"),
+    );
+    process(proc, "501", "systemd-udevd", None, Some("a:b:c"));
+    assert_eq!(udevd_context_in(proc).unwrap(), None);
+
+    process(
+        proc,
+        "411",
+        "systemd-udevd",
+        Some("0::/system.slice/systemd-udevd.service/udev\n"),
+        Some(UDEV),
+    );
+    assert_eq!(udevd_context_in(proc).unwrap().as_deref(), Some(UDEV));
+
+    // udevd's context that cannot be read is an error, not "none runs".
+    std::fs::remove_file(proc.join("411/attr/current")).unwrap();
+    let error = udevd_context_in(proc).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .starts_with(&proc.join("411/attr/current").display().to_string()),
+        "{error}"
+    );
+    // A procfs that cannot be listed is an error too.
+    let missing = proc.join("none");
+    assert_eq!(
+        udevd_context_in(&missing).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
+/// The running kernel of a test host without SELinux: a file there carries no
+/// label to read by its path either, and a path that is not there fails as
+/// the kernel fails it.
+#[test]
+fn the_running_kernel_without_selinux_gives_no_label_by_path() {
+    if Path::new(SELINUXFS).exists() {
+        return;
+    }
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let error = Kernel.path_label(file.path()).unwrap_err();
+    assert!(
+        matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)),
+        "{error}"
+    );
+    let missing = file.path().with_extension("missing");
+    assert_eq!(
+        Kernel.path_label(&missing).unwrap_err().raw_os_error(),
+        Some(libc::ENOENT)
+    );
+}

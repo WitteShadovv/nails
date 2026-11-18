@@ -62,6 +62,23 @@ mod made_files;
 #[path = "zsh_candidates_tests.rs"]
 mod candidates;
 
+// Where zsh parts words: at a space or a tab alone.
+#[path = "zsh_blanks_tests.rs"]
+mod blanks;
+
+// The jobs the startup files start that may signal the shell later.
+#[path = "zsh_jobs_tests.rs"]
+mod jobs_started;
+
+// The line a widget gives zsh to run.
+#[path = "zsh_widgets_tests.rs"]
+mod widget_lines;
+
+// The list of the commands the check knows to be harmless, which the code
+// zsh may run keeps to.
+#[path = "zsh_listed_tests.rs"]
+mod listed;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
@@ -88,11 +105,49 @@ const UNKNOWN: Start = Start {
 /// A file of `text` at `path`.
 fn seed(fs: &MockFilesystem, path: &str, text: &str) {
     fs.mock_set_file_content(path, text);
+    fs.mock_set_owner(Path::new(path), ALICE, 100);
 }
 
-/// What `fs` sets for a zsh started as `start`, in the home.
+/// The user alice's id: the shell the tests read runs as her, and she owns
+/// the files they seed ([`seed`]), so that zsh opens them.
+const ALICE: u32 = 1000;
+
+/// What the check knows of a zsh that runs as alice ([`ALICE`]), and nothing
+/// else.
+fn as_alice() -> Install {
+    Install {
+        uid: Some(ALICE),
+        ..Install::default()
+    }
+}
+
+/// What `fs` sets for a zsh started as `start`, in the home, past the doubts
+/// of the commands the list of those the check knows to be harmless does not
+/// hold ([`rule`]).
 fn scan(fs: &MockFilesystem, start: Start) -> Scan {
-    zsh(fs, &[PathBuf::from(HOME)], start, &Install::default())
+    rule(scan_all(fs, start))
+}
+
+/// What `fs` sets for a zsh started as `start`, in the home, every doubt
+/// among it.
+fn scan_all(fs: &MockFilesystem, start: Start) -> Scan {
+    zsh(fs, &[PathBuf::from(HOME)], start, &as_alice())
+}
+
+/// `scan` past the doubts of the commands the list of those the check knows
+/// to be harmless does not hold ([`super::known`]), which a test of another
+/// rule leaves out: a setup that runs an outside program, or a builtin in a
+/// form the list does not hold, gives that doubt beside the rule's own. The
+/// list's own tests read every doubt ([`scan_all`], `zsh_known_tests.rs`).
+fn rule(mut scan: Scan) -> Scan {
+    scan.doubts.retain(|doubt| !unlisted(doubt));
+    scan
+}
+
+/// Whether `doubt` is one of a file's commands the list of those the check
+/// knows to be harmless does not hold.
+fn unlisted(doubt: &str) -> bool {
+    doubt.contains("runs past the commands it knows to be harmless")
 }
 
 /// The settings `fs` turns on, as the warning names them.
@@ -543,7 +598,16 @@ fn a_zdotdir_or_a_source_the_check_cannot_read_is_a_doubt() {
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
-        assert_eq!(scan(&fs, NOT_LOGIN).doubts, [doubt], "{line}");
+        let mut doubts = scan(&fs, NOT_LOGIN).doubts;
+        // A process substitution is a job of its own, whose program may
+        // signal the shell later.
+        if line.contains("<(") {
+            assert!(doubts.pop().is_some_and(|job| job.contains(
+                "as the process substitution of `mytool init zsh` in /home/alice/.zshrc may run \
+                 on after the startup files"
+            )));
+        }
+        assert_eq!(doubts, [doubt], "{line}");
     }
 }
 
@@ -1274,9 +1338,17 @@ fn a_construct_that_runs_to_the_end_of_the_file_is_a_doubt() {
             "/home/alice/.zsh/history.zsh",
             "setopt share_history\n",
         );
-        // The source it hides is a doubt too, as a line of the file names it.
+        // The source it hides is a doubt too, as a line of the file names it,
+        // and a process substitution is a job of its own.
+        let mut doubts = scan(&fs, NOT_LOGIN).doubts;
+        if line.contains("<(") {
+            assert!(doubts.pop().is_some_and(|job| job.contains(
+                "as the process substitution of `a source ~/.zsh/history.zsh` in \
+                 /home/alice/.zshrc may run on after the startup files"
+            )));
+        }
         assert_eq!(
-            scan(&fs, NOT_LOGIN).doubts,
+            doubts,
             [
                 format!("it cannot tell where the {opener} that /home/alice/.zshrc opens ends"),
                 "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run"
@@ -1673,7 +1745,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                     },
                 ]
             ),
-            Token::End(End::Line),
+            Token::End(End::Newline),
         ]
     );
     assert_eq!(
@@ -1712,7 +1784,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
         tokens("(( a << (b) ))\nc"),
         [
             Token::Arithmetic("(( a << (b) ))".to_string()),
-            Token::End(End::Line),
+            Token::End(End::Newline),
             Token::Word(Word {
                 text: "c".to_string(),
                 expands: false,
@@ -1763,7 +1835,7 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 bare: false,
                 quoted_at: None,
             }),
-            Token::End(End::Condition),
+            Token::End(End::Or),
             Token::Word(Word {
                 text: "z".to_string(),
                 expands: false,

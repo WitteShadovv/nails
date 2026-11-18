@@ -84,7 +84,7 @@ fn config() -> Config {
 fn verifier_with(fs: &MockFilesystem, config: Config) -> Verifier<MockFilesystem> {
     let state = StateFile {
         state: SystemState::Active {
-            activated_at: chrono::Utc::now(),
+            activated_at: nails_base::time::Timestamp::now(),
         },
         ..StateFile::default()
     };

@@ -103,7 +103,9 @@ The decoy also has to be one the session can enter and leave:
   one line that SELinux is configured but selinuxfs is not mounted. A kernel
   makes `/sys/fs/selinux` only where it started SELinux at boot, so where an
   empty one is left SELinux runs in the kernel, and `lsm-status` refuses the
-  host (see [Fail closed](#fail-closed-activation-is-refused)).
+  host (see [Fail closed](#fail-closed-activation-is-refused)). Such a
+  kernel lists SELinux among its security modules, so the RAM copies of
+  NAILS's own program take their label there too (next item).
   `nails check` tests part of this with the same rule
   (`upper-fs-capability`): it copies the label of the decoy's `/` onto the
   upper of its trial overlay on the hidden volume and, where the labels are
@@ -112,6 +114,99 @@ The decoy also has to be one the session can enter and leave:
   fail the check as they refuse the activation. The roots of the other decoy
   filesystems the session overlays and the way to your home are not tested
   before activation.
+- **The SELinux label of NAILS's own program in RAM**, where the kernel may
+  run SELinux: where the labels above must be copied, where the kernel lists
+  SELinux among its security modules (`/sys/kernel/security/lsm`) though no
+  selinuxfs is mounted, and where the host facts report SELinux while that
+  list cannot be read. PID 1 starts NAILS's own steps from a copy of its
+  binary in `/run`: the last step before each switch
+  (`systemd-soft-reboot.service`), the hidden session's watcher and sleep
+  guard, and after the way back the one-shot unit and the wtmpdb writer's
+  drop-in that make the decoy's login and boot records read as a power cycle.
+  Under SELinux a program PID 1 starts runs in the domain the loaded policy
+  gives the label of its file, and a file NAILS writes in `/run` carries the
+  label of the files there, which a targeted policy gives no domain of its
+  own: those steps would run in PID 1's domain, `init_t`, which such a policy
+  confines, and the way back's last step could not take the kernel log's
+  cursor, so the decoy's journal would take in the hidden session's kernel
+  log. So NAILS gives every such copy the label of the system's programs,
+  `system_u:object_r:bin_t:s0`, right after it writes it, reads it back, and
+  gives the session's copy that label again right before each switch. A
+  targeted policy starts a program of that label from PID 1 in
+  `unconfined_service_t`. The unit files and drop-ins name the copy as they do
+  on any other host, and NAILS installs nothing into the decoy's policy. The
+  udev rule of `[session_mounts] read_only` runs the copy too, but udevd
+  starts it, and a targeted policy gives udevd's start of a program of this
+  label no domain of its own: it runs in udevd's domain, `udev_t`, which such
+  a policy confines. So on such a host:
+  - the loaded policy must let PID 1 start a program labelled `bin_t`, give
+    that start the domain `unconfined_service_t` and let PID 1 change into it,
+    also from a `nosuid` mount, as `/run` is, and under `NoNewPrivileges=`
+    (the policy capability `nnp_nosuid_transition` on, `nnp_transition` and
+    `nosuid_transition` allowed), and NAILS must be able to ask it: selinuxfs
+    mounted, and `nails` run as root from an unconfined domain. Otherwise
+    `lsm-status` fails `check` and the activation, and the activation is also
+    refused before it writes anything to `/run`;
+  - where `[session_mounts] read_only` is on, the loaded policy must grant
+    udevd's domain every operation the disk guard makes, or `lsm-status`
+    fails `check` and the activation (see
+    [Fail closed](#fail-closed-activation-is-refused)). The check does not
+    ask the policy's rules for single `ioctl` numbers, which selinuxfs does
+    not answer, nor the labels a relabel of `/run` gives the guard's files,
+    so it does not fail for a denial that comes only from those;
+  - `systemd-soft-reboot.service` must not set `SELinuxContext=`, or PID 1
+    starts the step in that context: the activation is refused, and so is
+    `deactivate`, whose refusal names `deactivate --poweroff` and
+    `emergency --poweroff`. A plain emergency does not ask; its step checks
+    its own domain (last item);
+  - a copy that does not read its label back refuses the activation, which is
+    undone. On the way back `deactivate` refuses a return where the copy does
+    not read its label back or the policy would not start the step as above,
+    and names `deactivate --poweroff`; the emergency powers off instead of
+    returning in the same cases; and the copy for the decoy's first start is
+    left out with the units that would start it, so the decoy's records read
+    as they would without that fix, and `/run` is `noexec` again at once where
+    the activation had cleared it;
+  - a switch can take the label off again. Where PID 1 loads the policy anew
+    at a switch, as on a host that runs SELinux permissive or whose policy
+    lets PID 1 map its policy file (the boolean `domain_can_mmap_files` on),
+    it gives every file in `/run` the label of the files there before it
+    starts the units of the root it switched to, and a `restorecon` over
+    `/run` does the same at any time. So the watcher, the sleep guard, the
+    one-shot unit and the wtmpdb writer's drop-in check the domain they run
+    in when they start: one that runs outside `unconfined_service_t` gives
+    its copy the label again and starts itself again from it, once, which
+    from `init_t` gives it the domain a start by PID 1 gets. One that then
+    still runs outside it does not do its work there: the watcher and the
+    sleep guard power the machine off, the one-shot only removes NAILS's
+    pieces from `/run`, and makes it `noexec` again where the activation had
+    cleared it, leaving the records as they would be without that fix, and
+    the drop-in starts the wtmpdb writer as the decoy runs it;
+  - the last step of each switch checks its domain as well, once the switch
+    is armed: a relabel after the arm, or an `SELinuxContext=` of
+    `systemd-soft-reboot.service` that the emergency does not ask about,
+    would start it elsewhere. It starts itself again from its copy in the
+    same way, and the kernel applies the context an `SELinuxContext=` asks
+    for to the step's own start only. Where it still runs outside
+    `unconfined_service_t` it does nothing of the switch and refuses it, as
+    for an init that does not resolve; on the way back it first powers the
+    machine off, and only where neither PID 1 nor the kernel takes the
+    power-off does the hidden session go on.
+
+  Elsewhere, as on a stock Debian, Ubuntu or NixOS host, no copy gets a label
+  and no policy is asked anything: the units started from a copy only find
+  that no policy is loaded. The tests check this against stand-ins of the
+  kernel's SELinux and on a kernel without SELinux. Of the tests in this
+  repository only Fedora's [admission
+  gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora) runs these
+  steps under an enforcing policy and checks their domains (only a dispatch of
+  the staged distribution tests runs it). The Fedora 44 and 45 images of the
+  [oracle](../ci/oracle/README.md) run a hidden session and the way back under a
+  permissive policy, without checking the domains. The refusal scenario of the
+  distribution tests runs `nails check` on Fedora's stock image, whose loaded
+  policy `lsm-status` asks what PID 1's start of the labelled copy comes to.
+  Fedora is not admitted yet, so on the families NAILS admits all of this
+  applies only where a host was set up to run SELinux.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The
@@ -230,14 +325,36 @@ changed, and the SELinux context of the `nails` process from
   whose SELinux user is `unconfined_u` runs in and `sudo` keeps, or
   `unconfined_service_t`;
 - a fact among these that cannot be read;
-- for now, every host where SELinux runs: NAILS does not yet choose the
-  SELinux domain of the processes systemd starts from its copy in `/run`
-  (the transition step at each switch, the watcher and the sleep guard of
-  the hidden session, and the boot-record steps after the way back), nor
-  that of the hidden session's disk guard, which udev runs itself from the
-  rule NAILS installs there, so nothing shows that they run unconfined. The
-  check judges the two apart: what NAILS sets on systemd's side does not
-  reach what udev runs.
+- where the copies of NAILS's program in RAM take the label of the system's
+  programs (the item on that label at the top of this document), a loaded
+  policy that does not start such a copy from PID 1 in `unconfined_service_t`
+  with every permission the change of domain needs, or that cannot be asked
+  through selinuxfs: then nothing shows that the processes systemd starts from
+  it (the transition step at each switch, the watcher and the sleep guard of
+  the hidden session, and the boot-record steps after the way back) run
+  unconfined. Where the copies take no label, NAILS chooses no domain for
+  those processes, and the check refuses every host where SELinux runs;
+- where `[session_mounts] read_only` is on, a disk guard that could not do its
+  work. udevd starts it from the same copy, in udevd's own domain, `udev_t`
+  under a targeted policy, which that policy confines. The check asks the
+  loaded policy, through selinuxfs, whether it grants that domain every
+  operation the guard makes: udevd's reading of the rule NAILS installs in
+  `/run/udev/rules.d` to start it, starting from the copy without a change of
+  domain, reaching `/run` and the runtime directory, reading the session plan,
+  adding to or creating its record of the disks it sets read-only, opening the
+  node of a disk under each label a targeted policy gives one
+  (`fixed_disk_device_t`, `removable_device_t`, `device_t`) and setting it
+  read-only, with the capability `sys_admin`, and reading sysfs, the links in
+  `/dev` and its own mount table. It asks with the labels the policy gives
+  what NAILS writes in `/run`, from the label of `/run` and the domains that
+  write there. It refuses a policy that denies one of them, a start of the
+  copy from udevd that enters another domain than udevd's own, a host where no
+  systemd-udevd runs, and a policy it cannot ask. It does not ask the policy's
+  rules for single `ioctl` numbers, which selinuxfs does not answer, nor the
+  labels a relabel of `/run` would give those files. Where the guard is off,
+  nothing about it is asked. The check judges the guard apart from the
+  processes systemd starts: what NAILS sets on systemd's side does not reach
+  what udev runs.
 
 Where it refuses nothing, it warns when SELinux is permissive, or runs in
 another mode than `/etc/selinux/config` sets. Where the kernel's list of
@@ -1057,22 +1174,31 @@ history yourself so an interactive shell has nowhere to write:
   `HIST_FCNTL_LOCK` is on,
   so with the history file in your home or `ZDOTDIR` turn that option on, as
   NixOS does by default, or keep the history file in a directory of its own:
-  else the check warns for a zsh however new it is. With NixOS's
-  `programs.zsh`, `SHARE_HISTORY` taken out of `programs.zsh.setOptions`
-  (`HIST_FCNTL_LOCK` kept there) and `programs.zsh.enableCompletion` (or just
-  `programs.zsh.enableGlobalCompInit`) turned off, a zsh you start after the
-  rebuild and type `nails activate` into passes with the files
-  `programs.zsh` generates: the check knows the lines
-  NixOS generates there as they are written, and follows `promptinit` into
-  zsh's own directory and the Nix profiles. It warns wherever your files
-  autoload `compinit`, as NixOS's `/etc/zshrc` does with
-  `programs.zsh.enableCompletion` on, the default, and nearly every `.zshrc`
-  does: zsh's own completion functions run what programs print as code as you
-  complete a word, and the programs and settings that may change what they
-  print cannot all be listed (`tar` with a `LANGUAGE` that names a message
-  catalog of yours, `bash` with a `BASH_ENV`).
-  An option that adds lines to those files (`enableBashCompletion`,
-  `autosuggestions`, `syntaxHighlighting`) can make it warn again, and so can
+  else the check warns for a zsh however new it is. The check reads zsh's
+  files by a list of the commands it knows to be harmless, each read by its
+  name and every word, so any other command it reads in your files where zsh
+  may run it makes it warn: an outside program, in the foreground or the
+  background (`stty`, `git` in `precmd`, `sh -c ...`, a script of yours), a
+  key binding other than `bindkey -e` or `bindkey -v`, a widget, a terminal
+  setting, and a name zsh runs as an outside program because no function of
+  it is certainly defined before it runs, or no alias, as an alias counts
+  only on a later line of the same file and in a file sourced after it, and
+  only where nothing may turn `ALIASES` off (see the operator guide). It reads
+  the files by rules that follow zsh 5.9 to 5.9.2 as far as its tests went, so
+  a form they read otherwise than zsh does can still pass. On NixOS, the
+  `/etc/zshrc` that `programs.zsh` generates runs the `hostname` program and
+  sources `/etc/zinputrc`, which binds keys and makes widgets, so a zsh that
+  reads it warns: type the decoy commands in a zsh started as `zsh -f`, which
+  reads `/etc/zshenv` and the `set-environment` NixOS writes, and passes where
+  you add nothing it warns about. The check knows the lines NixOS generates
+  as they are written, and follows `promptinit` into zsh's own directory and
+  the Nix profiles. It warns wherever your files autoload `compinit`, as
+  NixOS's `/etc/zshrc` does with `programs.zsh.enableCompletion` on, the
+  default, and nearly every `.zshrc` does: zsh's own completion functions run
+  what programs print as code as you complete a word, and the programs and
+  settings that may change what they print cannot all be listed (`tar` with a
+  `LANGUAGE` that names a message catalog of yours, `bash` with a
+  `BASH_ENV`). Beside a command off the list, it warns at
   an alias, a `TRAP...` function, a `trap`, `ARGV0` or a variable of the
   dynamic loader (`LD_...`) in your `.zshenv` or in
   `programs.zsh.shellInit` or `interactiveShellInit`, which run before the
@@ -1113,6 +1239,18 @@ history yourself so an interactive shell has nowhere to write:
   writes its history then (start the shell you type in without it,
   `env -u TMOUT zsh -f`), a hook that may end the shell, which writes its
   history as it ends (`exit`, in a `$(...)` too, `exec`, `kill -HUP $$`), a
+  job your files start that may signal the shell later
+  (`{ sleep 3; kill -HUP $$ } &!`, any program in the background, a process
+  substitution, `nohup`, `setsid`, the code a shell is given with `-c`), a
+  widget that sets the line zsh runs otherwise than to a value as written
+  (`LBUFFER=...`, `BUFFER="sudo $BUFFER"`) or runs a widget of zsh's own that
+  may put other text in it (`zle up-history`, as `up-line-or-beginning-search`
+  does), a line typed or set as written that zsh may expand history in (`!`),
+  a `.zshenv` that sets `ZDOTDIR` or `XDG_CONFIG_HOME` and is not yours, is a
+  link or is one you may not read by its mode, or whose first line holds more
+  than that one assignment, as the check then reads your home's startup files
+  too (keep `export ZDOTDIR=...` alone on the first line of a `.zshenv` you
+  own), a startup file with bytes that are no UTF-8 in it, a
   builtin's name a hook runs as an outside program (after `command` or a
   `disable` of it, or of a module zsh does not load, as `stat`), a file your
   files source by a path with a modifier on `$HOME` (`source $HOME:a/x`), a

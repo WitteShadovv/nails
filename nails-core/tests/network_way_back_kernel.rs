@@ -455,6 +455,7 @@ fn way_back_plan(hidden: &Path) -> Plan {
         armed: Some(Arm::now(Direction::Leave)),
         entered_at: Some(1),
         run_noexec: false,
+        program_label: None,
         carried: Vec::new(),
         decoy_mounts: Vec::new(),
         read_only_disks: false,
@@ -554,6 +555,8 @@ fn a_way_back_that_powers_off_writes_nothing_on_the_console() {
                 kernel: || false,
             },
             tail: None,
+            selinux: &nails_teardown::whole_root::selinux::KERNEL,
+            start: nails_teardown::whole_root::program_label::Started::by_hand(),
         });
 
         // The way back ran and asked for the power-off: the stand-in kernel

@@ -36,18 +36,20 @@
 //! file of packages installed once, boots with SELinux off, or has SELinux
 //! on in the kernel without a policy, as `SELINUX=disabled` leaves a kernel
 //! that started SELinux at boot. No policy reads a label there, unless
-//! selinuxfs was unmounted after a policy was loaded. The `lsm-status`
-//! pre-flight check, which runs before the entry, refuses such a host
-//! wherever the kernel runs SELinux or may run it, so of these hosts only one
-//! whose kernel does not run SELinux reaches the entry. Such a host, and one
-//! whose facts report no SELinux, copies on a best effort basis: a label the
-//! decoy directory has is copied there too, but a decoy directory without a
-//! label (the usual case there) or none at all, a filesystem without extended
-//! attributes, or a link or a file in place of an upper directory leaves the
-//! upper as it was, so a decoy without labels gets the same hidden root there
-//! as before. Any other failure is an error either way. The activation says so
-//! in one line on a host that is configured for SELinux but shows no policy
-//! ([`configured_but_not_running`]).
+//! selinuxfs was unmounted after a policy was loaded. Where the kernel lists
+//! SELinux among its security modules, the RAM copies of the binary take their
+//! label all the same ([`super::program_label::Why::Kernel`]). The
+//! `lsm-status` pre-flight check, which runs before the entry, refuses such a
+//! host wherever the kernel runs SELinux or may run it, so of these hosts only
+//! one whose kernel does not run SELinux reaches the entry. Such a host, and
+//! one whose facts report no SELinux, copies on a best effort basis: a label
+//! the decoy directory has is copied there too, but a decoy directory without
+//! a label (the usual case there) or none at all, a filesystem without
+//! extended attributes, or a link or a file in place of an upper directory
+//! leaves the upper as it was, so a decoy without labels gets the same hidden
+//! root there as before. Any other failure is an error either way. The
+//! activation says so in one line on a host that is configured for SELinux but
+//! shows no policy ([`configured_but_not_running`]).
 //!
 //! # Where the copies go
 //!
@@ -162,12 +164,8 @@ use rustix::io::Errno;
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path};
 
-/// The extended attribute that holds a file's SELinux label.
-pub const LABEL_XATTR: &str = "security.selinux";
-
-/// The largest value the kernel returns for an extended attribute
-/// (`XATTR_SIZE_MAX`): a buffer this size reads any label in one call.
-const LABEL_MAX: usize = 64 * 1024;
+use nails_teardown::whole_root::selinux::LABEL_MAX;
+pub use nails_teardown::whole_root::selinux::LABEL_XATTR;
 
 /// How an upper directory is opened: the directory itself, for its attributes
 /// only. A symlink in the last component is not followed, and it or a file
@@ -202,6 +200,21 @@ pub enum Reason {
     MountsUnreadable,
     /// The host was not detected, so no facts rule SELinux out.
     HostUndetected,
+}
+
+/// Why SELinux runs or may run, as the start of a sentence a refusal goes on
+/// with: "SELinux runs on this host (selinuxfs is mounted), so ...".
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Reason::SelinuxRunning => "SELinux runs on this host (selinuxfs is mounted)",
+            Reason::MountsUnreadable => {
+                "the host facts report SELinux and /proc/self/mounts could not be read to \
+                 tell whether selinuxfs is mounted"
+            }
+            Reason::HostUndetected => "the host could not be detected and may run SELinux",
+        })
+    }
 }
 
 impl Labels {
@@ -494,14 +507,6 @@ fn refusal(decoy: &Path, upper: &Path, labels: Labels, failure: Failure) -> Nail
     };
     NailsError::InvalidState(match labels {
         Labels::Required(reason) => {
-            let reason = match reason {
-                Reason::SelinuxRunning => "SELinux runs on this host (selinuxfs is mounted)",
-                Reason::MountsUnreadable => {
-                    "the host facts report SELinux and /proc/self/mounts could not \
-                     be read to tell whether selinuxfs is mounted"
-                }
-                Reason::HostUndetected => "the host could not be detected and may run SELinux",
-            };
             format!("{reason}, so {upper} must carry the SELinux label of {decoy}, but {why}")
         }
         Labels::BestEffort => {

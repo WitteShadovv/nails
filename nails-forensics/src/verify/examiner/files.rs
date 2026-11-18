@@ -210,9 +210,9 @@ pub(super) fn lvm_metadata(root: &Path) -> Vec<ExaminerFinding> {
             }
             if let Some(time) = lvm_value(&text, "creation_time")
                 .and_then(|value| value.parse::<i64>().ok())
-                .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+                .and_then(nails_base::time::utc_seconds)
             {
-                evidence.push_str(&format!(" at {}", time.format("%Y-%m-%dT%H:%M:%SZ")));
+                evidence.push_str(&format!(" at {time}"));
             }
             out.push(finding(
                 "lvm-metadata-archive",
@@ -317,9 +317,7 @@ pub(super) fn store_unread(root: &Path) -> bool {
 }
 
 fn stamp(secs: i64) -> String {
-    chrono::DateTime::from_timestamp(secs, 0)
-        .map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        .unwrap_or_else(|| secs.to_string())
+    nails_base::time::utc_seconds(secs).unwrap_or_else(|| secs.to_string())
 }
 
 /// Leading bytes of the formats a container candidate must not start with.

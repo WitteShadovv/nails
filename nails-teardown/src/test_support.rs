@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Test support shared by the crates of the workspace: writing or copying a
-//! program that a test, or the code it tests, then runs, and the procfs files
-//! the way back writes.
+//! program that a test, or the code it tests, then runs, the procfs files
+//! the way back writes, and a stand-in for the running kernel's SELinux.
 //!
 //! It lives in this crate, below every other crate that has such tests, so
 //! that this crate's own tests can use it too; the base crate's `test_support`
@@ -149,6 +149,258 @@ pub fn stage_pid_measure(root: &Path) -> crate::whole_root::fresh_pids::Record {
         }],
         at_switch: Some(9031),
         counter: None,
+    }
+}
+
+/// A stand-in for the running kernel's SELinux
+/// ([`crate::whole_root::selinux::Selinux`]), which records every label it is
+/// given and every question it is asked. [`FakeSelinux::targeted`] answers as
+/// a loaded targeted policy does: PID 1 runs in `init_t` and starts a program
+/// labelled [`PROGRAM_LABEL`](crate::whole_root::program_label::PROGRAM_LABEL)
+/// in `unconfined_service_t`, allowed every permission asked, with the
+/// capability `nnp_nosuid_transition` on, and the process asking runs in
+/// `unconfined_service_t` too. systemd-udevd runs in `udev_t` and starts such
+/// a program in its own domain, `/run` is labelled `var_run_t` and `/run/udev`
+/// `udev_var_run_t`, and a new file or directory takes the label of the
+/// directory it is made in. A test changes its fields for another answer.
+#[derive(Debug, Default)]
+pub struct FakeSelinux {
+    /// PID 1's context; `None` is a kernel with no policy loaded.
+    pub pid1: Option<String>,
+    /// That PID 1's context cannot be read: its error.
+    pub pid1_error: Option<i32>,
+    /// The context of the process asking.
+    pub current: String,
+    /// That the context of the process asking cannot be read: its error.
+    pub current_error: Option<i32>,
+    /// The context of the running systemd-udevd; `None` is a host where none
+    /// runs.
+    pub udevd: Option<String>,
+    /// That udevd's context cannot be read: its error.
+    pub udevd_error: Option<i32>,
+    /// The context every start enters, where [`FakeSelinux::entered_from`]
+    /// names no other.
+    pub entered: String,
+    /// The context a start from a process of this type enters, as (the
+    /// process's type, context), before [`FakeSelinux::entered`].
+    pub entered_from: Vec<(&'static str, String)>,
+    /// The label of a new file or directory a process of this type makes, as
+    /// (the process's type, label), where not that of its directory.
+    pub created_by: Vec<(&'static str, String)>,
+    /// The labels of files by their path; any other path is not there.
+    pub path_labels: Vec<(std::path::PathBuf, String)>,
+    /// The permissions the policy denies, as (class, permission), whatever
+    /// the contexts.
+    pub denied: Vec<(&'static str, &'static str)>,
+    /// The permissions the policy denies on a label of this type only, as
+    /// (type, class, permission).
+    pub denied_on: Vec<(&'static str, &'static str, &'static str)>,
+    /// That the policy cannot be asked: the error of every question.
+    pub policy_error: Option<i32>,
+    /// Whether the policy turns `nnp_nosuid_transition` on.
+    pub capability: bool,
+    /// The error every label written fails with, or with
+    /// [`FakeSelinux::write_error_from`] every one from that one on.
+    pub write_error: Option<i32>,
+    /// The number of labels written before [`FakeSelinux::write_error`]
+    /// fails the rest, where not every one.
+    pub write_error_from: Option<usize>,
+    /// What a label reads back as, where not the last one written.
+    pub read_back: Option<Vec<u8>>,
+    /// Every label written, in order.
+    pub written: std::sync::Mutex<Vec<Vec<u8>>>,
+    /// Every question asked of the policy, in order: `pid1`, `current`,
+    /// `udevd`, `create <source> <file>`,
+    /// `new <source> <parent> <class> <name, or ->`, `label <path>`,
+    /// `access <source> <target> <class>`, `capability <name>`.
+    pub asked: std::sync::Mutex<Vec<String>>,
+}
+
+/// systemd-udevd's context under a targeted policy, as Fedora runs it.
+pub const UDEVD_CONTEXT: &str = "system_u:system_r:udev_t:s0-s0:c0.c1023";
+
+impl FakeSelinux {
+    /// A loaded targeted policy, as [`FakeSelinux`] says.
+    pub fn targeted() -> Self {
+        Self {
+            pid1: Some("system_u:system_r:init_t:s0".to_string()),
+            current: "system_u:system_r:unconfined_service_t:s0".to_string(),
+            udevd: Some(UDEVD_CONTEXT.to_string()),
+            entered: "system_u:system_r:unconfined_service_t:s0".to_string(),
+            entered_from: vec![("udev_t", UDEVD_CONTEXT.to_string())],
+            path_labels: vec![
+                (
+                    std::path::PathBuf::from("/run"),
+                    "system_u:object_r:var_run_t:s0".to_string(),
+                ),
+                (
+                    std::path::PathBuf::from("/run/udev"),
+                    "system_u:object_r:udev_var_run_t:s0".to_string(),
+                ),
+            ],
+            capability: true,
+            ..Self::default()
+        }
+    }
+
+    /// A kernel that runs no SELinux, or runs it with no policy loaded.
+    pub fn without_policy() -> Self {
+        Self::default()
+    }
+
+    /// This stand-in for as long as the test process runs, for the hosts
+    /// that hold a `&'static dyn Selinux`.
+    pub fn leak(self) -> &'static Self {
+        Box::leak(Box::new(self))
+    }
+
+    /// The labels written so far.
+    pub fn labels_written(&self) -> Vec<Vec<u8>> {
+        self.written.lock().expect("the labels written").clone()
+    }
+
+    /// The questions asked so far.
+    pub fn questions(&self) -> Vec<String> {
+        self.asked.lock().expect("the questions asked").clone()
+    }
+
+    fn ask(&self, question: String) -> std::io::Result<()> {
+        self.asked
+            .lock()
+            .expect("the questions asked")
+            .push(question);
+        match self.policy_error {
+            Some(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+            None => Ok(()),
+        }
+    }
+}
+
+impl crate::whole_root::selinux::Selinux for FakeSelinux {
+    fn pid1(&self) -> std::io::Result<Option<String>> {
+        self.asked
+            .lock()
+            .expect("the questions asked")
+            .push("pid1".to_string());
+        match self.pid1_error {
+            Some(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+            None => Ok(self.pid1.clone()),
+        }
+    }
+
+    fn current(&self) -> std::io::Result<String> {
+        self.asked
+            .lock()
+            .expect("the questions asked")
+            .push("current".to_string());
+        match self.current_error {
+            Some(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+            None => Ok(self.current.clone()),
+        }
+    }
+
+    fn udevd(&self) -> std::io::Result<Option<String>> {
+        self.asked
+            .lock()
+            .expect("the questions asked")
+            .push("udevd".to_string());
+        match self.udevd_error {
+            Some(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+            None => Ok(self.udevd.clone()),
+        }
+    }
+
+    fn exec_context(&self, source: &str, file: &str) -> std::io::Result<String> {
+        self.ask(format!("create {source} {file}"))?;
+        let kind = crate::whole_root::selinux::type_of(source);
+        Ok(self
+            .entered_from
+            .iter()
+            .find(|(from, _)| Some(*from) == kind)
+            .map_or_else(|| self.entered.clone(), |(_, entered)| entered.clone()))
+    }
+
+    fn new_label(
+        &self,
+        source: &str,
+        parent: &str,
+        class: &str,
+        name: Option<&str>,
+    ) -> std::io::Result<String> {
+        self.ask(format!(
+            "new {source} {parent} {class} {}",
+            name.unwrap_or("-")
+        ))?;
+        let kind = crate::whole_root::selinux::type_of(source);
+        Ok(self
+            .created_by
+            .iter()
+            .find(|(by, _)| Some(*by) == kind)
+            .map_or_else(|| parent.to_string(), |(_, label)| label.clone()))
+    }
+
+    fn denied(
+        &self,
+        source: &str,
+        target: &str,
+        class: &str,
+        perms: &[&'static str],
+    ) -> std::io::Result<Vec<&'static str>> {
+        self.ask(format!("access {source} {target} {class}"))?;
+        let kind = crate::whole_root::selinux::type_of(target).unwrap_or_default();
+        Ok(perms
+            .iter()
+            .copied()
+            .filter(|perm| {
+                self.denied.contains(&(class, perm))
+                    || self
+                        .denied_on
+                        .iter()
+                        .any(|&(on, of, denied)| on == kind && of == class && denied == *perm)
+            })
+            .collect())
+    }
+
+    fn capability(&self, name: &str) -> std::io::Result<bool> {
+        self.ask(format!("capability {name}"))?;
+        Ok(self.capability)
+    }
+
+    fn set_label(&self, _file: rustix::fd::BorrowedFd<'_>, value: &[u8]) -> std::io::Result<()> {
+        let mut written = self.written.lock().expect("the labels written");
+        if let Some(errno) = self.write_error
+            && self
+                .write_error_from
+                .is_none_or(|from| written.len() >= from)
+        {
+            return Err(std::io::Error::from_raw_os_error(errno));
+        }
+        written.push(value.to_vec());
+        Ok(())
+    }
+
+    fn label(&self, _file: rustix::fd::BorrowedFd<'_>) -> std::io::Result<Vec<u8>> {
+        if let Some(value) = &self.read_back {
+            return Ok(value.clone());
+        }
+        self.written
+            .lock()
+            .expect("the labels written")
+            .last()
+            .cloned()
+            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENODATA))
+    }
+
+    fn path_label(&self, path: &std::path::Path) -> std::io::Result<String> {
+        self.asked
+            .lock()
+            .expect("the questions asked")
+            .push(format!("label {}", path.display()));
+        self.path_labels
+            .iter()
+            .find(|(at, _)| at == path)
+            .map(|(_, label)| label.clone())
+            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOENT))
     }
 }
 

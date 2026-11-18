@@ -18,6 +18,7 @@ fn typed(program: &str, argv: &[&str]) -> InspectedShell {
         exe: None,
         environment: None,
         started: None,
+        uid: Some(1000),
     }
 }
 
@@ -44,9 +45,10 @@ fn warning(result: CheckResult) -> String {
     }
 }
 
-/// A file of `text` at `path`.
+/// A file of `text` at `path`, alice's.
 fn seed(fs: &MockFilesystem, path: &str, text: &str) {
     fs.mock_set_file_content(path, text);
+    fs.mock_set_owner(std::path::Path::new(path), 1000, 100);
 }
 
 #[test]
@@ -419,6 +421,175 @@ fn warns_on_bash_history_append_in_prompt_command() {
 }
 
 #[test]
+fn a_bash_comment_starts_after_a_blank_and_ends_with_its_line() {
+    // bash 5.3 runs the PROMPT_COMMAND of each: a `#` after a vertical tab or
+    // a no-break space starts no comment, and a comment ends with its line,
+    // a backslash at its end too; a backslash before a carriage return
+    // escapes it and joins no line.
+    for text in [
+        ":\u{b}#; PROMPT_COMMAND='history -a'\n",
+        ":\u{a0}#; PROMPT_COMMAND='history -a'\n",
+        "# a comment \\\nPROMPT_COMMAND='history -a'\n",
+        "# a comment \\\r\nPROMPT_COMMAND='history -a'\r\n",
+        "x=1 \\\r\nPROMPT_COMMAND='history -a'\r\n",
+        "PROMPT_COMMAND=\\\n'history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(
+            warning(bash(&fs)).contains("/home/alice/.bashrc runs `history -a`"),
+            "{text:?}"
+        );
+    }
+    // A `#` after a space or a tab, or at a line's start, does.
+    for text in [
+        ": #; PROMPT_COMMAND='history -a'\n",
+        ":\t#; PROMPT_COMMAND='history -a'\n",
+        "#\u{b}PROMPT_COMMAND='history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(matches!(bash(&fs), CheckResult::Pass(_)), "{text:?}");
+    }
+}
+
+#[test]
+fn a_bash_comment_starts_outside_quotes_alone() {
+    // bash 5.3 keeps `history -a` in PROMPT_COMMAND for each (`declare -p`
+    // shows it), and runs it at each prompt: a `#` after a blank in quotes,
+    // after an escaped blank or in a here-document's body starts no
+    // comment.
+    for text in [
+        "PROMPT_COMMAND='printf \" #\" >/dev/null; history -a'\n",
+        "PROMPT_COMMAND=\"printf ' #' >/dev/null; history -a\"\n",
+        "PROMPT_COMMAND=$'printf \" #\\\\n\" >/dev/null; history -a'\n",
+        "PROMPT_COMMAND='printf x\n #\nhistory -a'\n",
+        "x=a\\ #; PROMPT_COMMAND='history -a'\n",
+        "cat <<'EOF' >/dev/null\nit's\nEOF\nPROMPT_COMMAND='printf \" #\"; history -a'\n",
+        "cat <<EOF >/dev/null\n # x\nEOF\nPROMPT_COMMAND='history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(
+            warning(bash(&fs)).contains("/home/alice/.bashrc runs `history -a`"),
+            "{text:?}"
+        );
+    }
+    // A `#` that starts a word outside quotes does, past a closed quote too,
+    // and with interactive_comments off, which bash 5.3 reads for a line
+    // typed alone, not for a startup file.
+    for text in [
+        "shopt -u interactive_comments\ntrue # ; PROMPT_COMMAND='history -a'\n",
+        "x='a'; # PROMPT_COMMAND='history -a'\n",
+        "x=\"a\" #; PROMPT_COMMAND='history -a'\n",
+        "cat <<EOF >/dev/null\nx\nEOF\n# PROMPT_COMMAND='history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(matches!(bash(&fs), CheckResult::Pass(_)), "{text:?}");
+    }
+}
+
+#[test]
+fn a_bash_comment_starts_only_where_bash_s_reader_starts_one() {
+    // bash 5.3.9 writes each typed line with each of these in ~/.bashrc: a
+    // `#` after a blank in a backquote pair, a `${...}` or arithmetic, which
+    // bash reads to their end as part of a word, starts no comment, and one
+    // in a command substitution's code does only to its line's end.
+    for text in [
+        "X=`: #`; PROMPT_COMMAND='history -a'\n",
+        "Y=${X:- #}; PROMPT_COMMAND='history -a'\n",
+        "W=${X:-a #}b; PROMPT_COMMAND='history -a'\n",
+        "Z=$(: #\n); PROMPT_COMMAND='history -a'\n",
+        "Z=$(echo ${X:- #}); PROMPT_COMMAND='history -a'\n",
+        "Z=$(echo `: #`); PROMPT_COMMAND='history -a'\n",
+        "Z=\"${X:- #}\"; PROMPT_COMMAND='history -a'\n",
+        "Z=`: # it's`\nPROMPT_COMMAND='history -a'\n",
+        "Z=${X:-'a }b'}; PROMPT_COMMAND='history -a'\n",
+        "Z=${X:-'}' #}; PROMPT_COMMAND='history -a'\n",
+        "Z=`echo \\` #`; PROMPT_COMMAND='history -a'\n",
+        "Z=$(cat <<'EOF'\nit's # x\nEOF\n); PROMPT_COMMAND='history -a'\n",
+        "Z=$(( 1 )) ; PROMPT_COMMAND='history -a' #\n",
+        "Z=$((1))#; PROMPT_COMMAND='history -a'\n",
+        "Z=$(echo a)#; PROMPT_COMMAND='history -a'\n",
+        "echo $# ; PROMPT_COMMAND='history -a'\n",
+        "X=$(case x in x) :;; esac)#; PROMPT_COMMAND='history -a'\n",
+        "X=$(case x in (x) :;; esac)#; PROMPT_COMMAND='history -a'\n",
+        "shopt -s extglob\nX=@(a| #b); PROMPT_COMMAND='history -a'\n",
+        "shopt -s extglob\ncase x in @(a| #b)) ;; esac; PROMPT_COMMAND='history -a'\n",
+        "[[ a =~ ( #) ]]; PROMPT_COMMAND='history -a'\n",
+        // A `((` that a lone `)` closes is a subshell with a `(` group
+        // first, read as code after it. A `$((` that one closes is a command
+        // substitution, which bash reads to its `)` with quotes and no
+        // comment, and parses as code only where it expands the word, which
+        // it never does after `false &&`, in a function never called or in a
+        // `case` arm never taken.
+        "X=\"$((echo a); echo \"b #\")\"; PROMPT_COMMAND='history -a'\n",
+        "X=\"$((echo a) ; echo 'b\" #')\"; PROMPT_COMMAND='history -a'\n",
+        "X=\"$( ((echo a); echo b) ; echo \"c #\")\"; PROMPT_COMMAND='history -a'\n",
+        "((echo a # c\n); echo b); PROMPT_COMMAND='history -a'\n",
+        "true || X=\"$((echo a) ; : #)\"; PROMPT_COMMAND='history -w'\n",
+        "false && X=$((echo a)#); PROMPT_COMMAND='history -a'\n",
+        "f() { X=\"$((echo a); echo b #)\"; }; PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); : #); PROMPT_COMMAND='history -a'\n",
+        "f() { X=$((echo a); : #); }; PROMPT_COMMAND='history -a'\n",
+        "case y in x) X=$((echo a); : #);; esac; PROMPT_COMMAND='history -a'\n",
+        "false && X=$(( $(case x in x) echo 1;; esac) + 1 #)); PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); (: #)); PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); echo ') #'); PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); echo \") #\"); PROMPT_COMMAND='history -a'\n",
+        "false && X=$((echo a); echo `: #`); PROMPT_COMMAND='history -a'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        let command = if text.contains("history -w") {
+            "history -w"
+        } else {
+            "history -a"
+        };
+        assert!(
+            warning(bash(&fs)).contains(&format!("/home/alice/.bashrc runs `{command}`")),
+            "{text:?}"
+        );
+    }
+    // False alarms: bash 5.3.9 wrote none with these, as it expands the
+    // `$((...)` and parses it as code, where the `#` starts a comment that
+    // takes the `PROMPT_COMMAND` assignment along. The reader starts no
+    // comment in these `$((...)`, as it cannot tell whether bash expands them.
+    for text in [
+        "X=$((echo a); : # ; PROMPT_COMMAND='history -a'\n)\n",
+        "X=\"$((echo a); : # ; PROMPT_COMMAND='history -a'\n)\"\n",
+        "X=$((echo a)#; PROMPT_COMMAND='history -a'\n)\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(
+            warning(bash(&fs)).contains("/home/alice/.bashrc runs `history -a`"),
+            "{text:?}"
+        );
+    }
+    // bash 5.3.9 wrote none with these: the comment starts in the file's
+    // code, in a command or process substitution's code, after an arithmetic
+    // command or a subshell, and in a `((` subshell's code after its first
+    // group, and runs to its line's end.
+    for text in [
+        "X=1 # ; PROMPT_COMMAND='history -a'\n",
+        "X=$(: #); PROMPT_COMMAND='history -a'\n)\n",
+        "X=${X:-$(: #)}; PROMPT_COMMAND='history -a'\n)}\n",
+        "X=\"$(: #)\"; PROMPT_COMMAND='history -a'\n)\"\n",
+        "cat <(: #) >/dev/null; PROMPT_COMMAND='history -a'\n)\n",
+        "((1)) #; PROMPT_COMMAND='history -a'\n",
+        "Z=$(echo a) #; PROMPT_COMMAND='history -a'\n",
+        "(echo)#; PROMPT_COMMAND='history -a'\n",
+        "((echo a); : # ; PROMPT_COMMAND='history -a'\n)\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.bashrc", text);
+        assert!(matches!(bash(&fs), CheckResult::Pass(_)), "{text:?}");
+    }
+}
+
+#[test]
 fn bash_reads_the_system_files_too() {
     for path in ["/etc/profile", "/etc/bash.bashrc", "/etc/bashrc"] {
         let fs = MockFilesystem::new();
@@ -546,6 +717,7 @@ fn a_login_shell_is_named_as_one_and_judged_by_its_program() {
             exe: None,
             environment: None,
             started: None,
+            uid: Some(1000),
         }
     );
     let fs = MockFilesystem::new();
@@ -618,6 +790,7 @@ fn a_shell_of_another_account_is_read_in_both_homes() {
         exe: None,
         environment: None,
         started: None,
+        uid: None,
     };
     assert!(warning(run(&fs, shell)).contains("/home/alice/.bashrc runs `history -a`"));
 }
@@ -638,6 +811,7 @@ fn a_turn_off_in_one_of_two_homes_does_not_hide_an_option() {
         exe: None,
         environment: None,
         started: None,
+        uid: None,
     };
     let message = warning(run(&fs, shell.clone()));
     assert!(
@@ -666,6 +840,7 @@ fn a_shell_the_command_was_likely_typed_into_is_read_beside_every_shell() {
         exe: None,
         environment: None,
         started: None,
+        uid: None,
     };
     let fs = MockFilesystem::new();
     match run(&fs, likely("zsh")) {
@@ -1109,8 +1284,11 @@ fn a_warning_gives_the_fix_the_check_can_see() {
              functions the files autoload that no directory they put in front of fpath holds \
              (`compinit` and `promptinit`), which zsh then finds in one it was built with or one \
              FPATH names; it cannot tell what the `eval` of what dircolors prints in /etc/zshrc \
-             runs, as the check does not know the shell's environment, which may set ARGV0. If \
-             it does, {ON_DISK}. {fix}",
+             runs, as the check does not know the shell's environment, which may set ARGV0; it \
+             cannot tell what /etc/zshrc runs past the commands it knows to be harmless: `prompt \
+             suse`, as `prompt` is no function or alias the files certainly define before it \
+             runs, so zsh runs the outside program of that name, which may change the terminal, \
+             signal the shell or leave a process that does later. If it does, {ON_DISK}. {fix}",
             dir("$p/share/zsh/site-functions"),
             dir("$p/share/zsh/$ZSH_VERSION/functions"),
             dir("$p/share/zsh/vendor-completions"),

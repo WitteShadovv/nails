@@ -58,15 +58,16 @@ pub(in super::super) enum Event {
     /// which runs the file's code as its own.
     Source {
         path: Word,
-        unconditional: bool,
         function: Option<String>,
     },
     /// Oh My Zsh is loaded.
     OhMyZsh,
     /// `ZDOTDIR`, `XDG_CONFIG_HOME` or `NIX_PROFILES` is set to `value`, or
     /// unset (`None`); `first` when no command of the file runs before it,
-    /// and its value names no parameter but those whose expansion cannot
-    /// fail, so that zsh cannot stop the file at an error before it.
+    /// the line it is on is that one command alone, which zsh certainly
+    /// parses as the walk reads it ([`super::first::lone_first`]), and its
+    /// value names no parameter but those whose expansion cannot fail, so
+    /// that zsh cannot stop the file at an error before it.
     Assign {
         name: &'static str,
         value: Option<Word>,
@@ -85,9 +86,14 @@ pub(in super::super) enum Event {
         in_function: bool,
     },
     /// A function is marked to be autoloaded: its name, or the path of its
-    /// file; and whether a function's body marks it, which runs after the
-    /// files define it.
-    Autoload(Word, bool),
+    /// file; whether a function's body marks it, which runs after the files
+    /// define it; and whether the command that marks it certainly runs where
+    /// the file runs to it, at the file's top level.
+    Autoload {
+        function: Word,
+        in_function: bool,
+        certain: bool,
+    },
     /// An `fc` that writes the history file, as written (`fc -AI`).
     Fc(String),
     /// A prompt that holds code zsh runs as it shows it when
@@ -106,8 +112,16 @@ pub(in super::super) enum Event {
         computed: bool,
         kept: bool,
     },
-    /// The files define a function, or a regular alias, named `name`.
-    Define(String),
+    /// The files define a function, or a regular alias, named `name`;
+    /// `certain` when the definition certainly runs where the file runs to
+    /// it, at the file's top level; for a regular alias, whether the command
+    /// its value ends with takes whatever words it is used with harmlessly
+    /// ([`super::super::known::TAKES_ANY_WORDS`]).
+    Define {
+        name: String,
+        certain: bool,
+        alias: Option<bool>,
+    },
     /// A function is defined as `name ()`, where zsh puts the value of an
     /// alias named `name` in place of the name when `ALIAS_FUNC_DEF` is on.
     NamedBody(String),
@@ -225,5 +239,65 @@ pub(in super::super) enum Event {
         function: String,
         name: String,
         local: bool,
+    },
+    /// A simple command runs by the name `name`, as written, past its
+    /// precommands, with the words `args`; `outside` where `command` runs it
+    /// as an outside program. A job's code is read by these
+    /// ([`super::jobs`]); nothing else reads them.
+    Runs {
+        name: String,
+        args: Vec<Word>,
+        outside: bool,
+    },
+    /// A widget is made by the name `name` (`zle -N name`, `zle -C name`),
+    /// whose code the check reads as a hook's.
+    Widget(String),
+    /// The function `function` runs the widget `widget` by its name as
+    /// written (`zle up-history`), which may change the line zsh runs as a
+    /// widget accepts it ([`super::widgets`]).
+    Edits { function: String, widget: String },
+    /// A command none of those the check knows to be harmless
+    /// ([`super::super::known`]), in the function `function` when in one, as
+    /// written (`shown`): one by a name the files may define as a function
+    /// or an alias, which then runs in its place ([`super::super::known::Verdict::Named`]),
+    /// with whether it is given words and certainly runs where it stands, or
+    /// one the list holds in no form; and why it is a doubt.
+    Unlisted {
+        function: Option<String>,
+        shown: String,
+        name: Option<String>,
+        words: bool,
+        certain: bool,
+        /// The chain of commands joined by `&&` alone it is in, where the
+        /// events of its first start: each one before it there ran where it
+        /// runs.
+        chain: Option<usize>,
+        /// Whether zsh may put the value of an alias of the name in its
+        /// place: not for a name with a quote or a backslash in it, nor past
+        /// a precommand that is a builtin (`noglob`, `-`, `builtin`).
+        alias: bool,
+        why: String,
+    },
+    /// zsh has read the piece of a file's code before this, up to a newline
+    /// that leaves nothing open, and runs it before it reads the next: an
+    /// alias that piece defines is in place for the code zsh reads after it,
+    /// and for none of that piece's ([`super::super::reached`]).
+    Parsed,
+    /// The option `ALIASES` may be turned off, by what `what` names, after
+    /// which zsh puts no alias in place of a name: the name runs the
+    /// function or the outside program it would run without the alias.
+    AliasesOff(String),
+    /// A job that may run on after the startup files ([`super::jobs`]): one
+    /// in the background, a process substitution, or what a program that
+    /// detaches what it runs starts (`nohup`); `what` names it, as the
+    /// warning does. `calls` are the commands it runs by name, each with its
+    /// words and whether it runs as an outside program, which may signal the
+    /// shell, unless it is a builtin or a function whose code holds none;
+    /// `stops`, what in it may signal or end the shell or that the check
+    /// cannot read, each as a doubt says it.
+    Job {
+        what: String,
+        calls: Vec<(String, Vec<Word>, bool)>,
+        stops: Vec<String>,
     },
 }

@@ -280,7 +280,7 @@ impl LockedActivation {
                 return None;
             }
         };
-        let timestamp = chrono::Utc::now().to_rfc3339();
+        let timestamp = crate::time::Timestamp::now().to_rfc3339();
         match write_activation_residue_report(&RealFilesystem, &hidden_root, &result, &timestamp) {
             Ok(summary) => Some(Baseline {
                 result,

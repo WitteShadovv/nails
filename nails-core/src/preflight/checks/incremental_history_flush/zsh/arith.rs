@@ -424,6 +424,16 @@ fn segments(expr: &str) -> Vec<&str> {
     found
 }
 
+/// The parameters the expression `expr` assigns with a plain `=`, one in
+/// each of its parts ([`plain_assignment`]).
+pub(super) fn assigned(expr: &str) -> Vec<&str> {
+    segments(expr)
+        .into_iter()
+        .filter_map(plain_assignment)
+        .map(|(name, _)| name)
+        .collect()
+}
+
 /// The parameter a part of an expression, `segment`, assigns with a plain
 /// `=` outside parentheses (`i = 0`), and what it assigns; zsh reads no
 /// value of it there.

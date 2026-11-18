@@ -128,7 +128,7 @@ fn benchmark_status_command(c: &mut Criterion) {
     c.bench_function("status", |b| {
         b.iter(|| {
             let report = command
-                .report(&SessionView::Decoy, &[], chrono::Utc::now())
+                .report(&SessionView::Decoy, &[], nails_core::time::Timestamp::now())
                 .unwrap();
             black_box(report);
         });

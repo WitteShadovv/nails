@@ -10,9 +10,14 @@ use super::*;
 use crate::mountinfo::parse_mountinfo;
 use crate::test_support::write_executable;
 use crate::whole_root::plan::{Arm, sample};
+use crate::whole_root::program_label;
 use crate::whole_root::runtime_units::RuntimeUnit;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
+
+// The step's check of its own domain, where the plan records a label.
+#[path = "transition_domain_tests.rs"]
+mod domain;
 
 struct World {
     dir: tempfile::TempDir,
@@ -80,6 +85,8 @@ impl World {
                 kernel: refused_power_off,
             },
             tail: None,
+            selinux: &crate::whole_root::selinux::KERNEL,
+            start: crate::whole_root::program_label::Started::by_hand(),
         }
     }
     /// Where the way back reads and writes the network state: a fake
@@ -1525,6 +1532,83 @@ fn the_read_only_rule_lives_from_the_entry_to_the_way_back_only() {
     assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
     assert!(!rule.exists(), "the decoy's udevd must never load the rule");
     assert!(world.run().join("udev/data").is_dir());
+}
+
+/// An FHS decoy with a classic wtmp, left by a session whose plan records
+/// `label`: the binary copy in the runtime directory and the decoy init in
+/// the next root. Returns where the way back leaves its copy for the decoy's
+/// first start.
+fn fhs_way_back(world: &World, label: Option<&str>) -> PathBuf {
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    plan.decoy.system = None;
+    plan.decoy.init = PathBuf::from("/usr/lib/systemd/systemd");
+    plan.program_label = label.map(str::to_string);
+    world.init_in_nextroot(&plan.decoy.init);
+    fs::create_dir_all(world.nextroot().join("var/log")).unwrap();
+    fs::write(world.nextroot().join("var/log/wtmp"), [0u8; 384]).unwrap();
+    fs::write(world.runtime().join(BINARY_NAME), b"\x7fELF-not-really").unwrap();
+    world.write_plan(&plan);
+    world
+        .run()
+        .join(boot_records::FIXUP_DIR)
+        .join(boot_records::FIXUP_BINARY)
+}
+
+/// Where the plan records no label, the copy for the decoy's first start is
+/// left without asking SELinux anything; where it records one, the copy takes
+/// it; and where the copy does not take it, the way back leaves every piece
+/// of that fix out, so the decoy's PID 1 starts nothing from `/run` in its
+/// own domain.
+#[test]
+fn the_copy_for_the_decoy_s_first_start_takes_the_plan_s_label_or_stays_out() {
+    use crate::test_support::FakeSelinux;
+    let unit = |world: &World| {
+        world
+            .run()
+            .join("systemd/system")
+            .join(boot_records::FIXUP_UNIT)
+    };
+
+    let world = World::new();
+    let copy = fhs_way_back(&world, None);
+    let untouched = FakeSelinux {
+        write_error: Some(libc::EPERM),
+        ..FakeSelinux::targeted()
+    }
+    .leak();
+    let mut env = world.env(true, 1_000);
+    env.selinux = untouched;
+    assert!(matches!(run(&env), Outcome::Returned { .. }));
+    assert!(copy.is_file() && unit(&world).is_file());
+    assert!(untouched.labels_written().is_empty());
+    assert!(untouched.questions().is_empty(), "no question either");
+
+    let world = World::new();
+    let copy = fhs_way_back(&world, Some(program_label::PROGRAM_LABEL));
+    let selinux = FakeSelinux::targeted().leak();
+    let mut env = world.env(true, 1_000);
+    env.selinux = selinux;
+    assert!(matches!(run(&env), Outcome::Returned { .. }));
+    assert!(copy.is_file() && unit(&world).is_file());
+    assert_eq!(
+        selinux.labels_written(),
+        [b"system_u:object_r:bin_t:s0\0".to_vec()]
+    );
+
+    let world = World::new();
+    let copy = fhs_way_back(&world, Some(program_label::PROGRAM_LABEL));
+    let refused = FakeSelinux {
+        write_error: Some(libc::EACCES),
+        ..FakeSelinux::targeted()
+    }
+    .leak();
+    let mut env = world.env(true, 1_000);
+    env.selinux = refused;
+    assert!(matches!(run(&env), Outcome::Returned { .. }));
+    assert!(!copy.exists(), "no copy for the decoy's first start");
+    assert!(!unit(&world).exists(), "nor the unit that would start it");
+    assert!(!world.run().join(boot_records::FIXUP_DIR).exists());
 }
 
 #[test]

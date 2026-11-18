@@ -11,8 +11,8 @@ use super::SystemState;
 use super::is_on_hidden_volume;
 #[cfg(test)]
 use super::is_on_hidden_volume_internal;
+use crate::time::Timestamp;
 use crate::{Family, NailsError, Result};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -145,7 +145,7 @@ pub struct LastActivation {
     /// Active, in milliseconds.
     pub duration_ms: u64,
     /// When the activation committed to Active.
-    pub finished_at: DateTime<Utc>,
+    pub finished_at: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -208,7 +208,7 @@ pub struct StateFile {
     pub last_activation: Option<LastActivation>,
 
     /// Timestamp of last state modification
-    pub last_modified: DateTime<Utc>,
+    pub last_modified: Timestamp,
 
     /// Kernel boot identifier captured at write time.
     ///
@@ -258,7 +258,7 @@ impl Default for StateFile {
             config_fingerprint: None,
             decoy_system: None,
             last_activation: None,
-            last_modified: Utc::now(),
+            last_modified: Timestamp::now(),
             boot_id: None,
             owner_pid: 0,
             owner_start_time: None,

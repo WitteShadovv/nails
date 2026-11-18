@@ -63,8 +63,11 @@ on:
 
 permissions: {}
 
+# One group per branch: runs of the same branch queue and none cancels another,
+# while branches run side by side. With one group for every branch, a dispatch
+# on one branch cancelled the run another branch had waiting.
 concurrency:
-  group: oracle-real-nightly
+  group: oracle-real-nightly-${{ github.ref }}
   cancel-in-progress: false
 
 defaults:

@@ -48,6 +48,9 @@ pub struct NailsManager<F: Filesystem> {
     /// The attach-gate refusals this activation's own writes accept (set from
     /// [`EnterOptions::allow_decoy_storage`]).
     allow: crate::hidden_root::Allow,
+    /// The SELinux the pre-flight registry asks what the loaded policy makes
+    /// of NAILS's processes: the running kernel's, or a test's stand-in.
+    selinux: &'static (dyn nails_teardown::whole_root::selinux::Selinux + Sync),
 }
 
 impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
@@ -83,6 +86,7 @@ impl<F: Filesystem> NailsManager<F> {
             verbosity: crate::verbosity::Verbosity::default(),
             runtime_env: (*crate::runtime_env::current()).clone(),
             allow: crate::hidden_root::Allow::Nothing,
+            selinux: &nails_teardown::whole_root::selinux::KERNEL,
         }
     }
 
@@ -120,6 +124,16 @@ impl<F: Filesystem> NailsManager<F> {
     pub fn set_host_profile(&mut self, profile: crate::platform::HostProfile) {
         self.host_profile = Some(profile);
         self.platform_override = None;
+    }
+
+    /// Ask `selinux` in place of the running kernel's SELinux what the loaded
+    /// policy makes of NAILS's processes (tests).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_selinux(
+        &mut self,
+        selinux: &'static (dyn nails_teardown::whole_root::selinux::Selinux + Sync),
+    ) {
+        self.selinux = selinux;
     }
 
     /// Inject a fake platform (tests).

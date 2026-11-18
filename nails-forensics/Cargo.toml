@@ -46,7 +46,6 @@ nails-base = { path = "../nails-base" }
 nails-platform = { path = "../nails-platform" }
 nails-session = { path = "../nails-session" }
 nails-teardown = { path = "../nails-teardown" }
-chrono = { workspace = true }
 hex = { workspace = true }
 # Fast substring search for the raw-device canary scan (already in the tree
 # through regex-automata).

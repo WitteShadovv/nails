@@ -15,7 +15,10 @@ impl Walker<'_> {
     /// (`for x (a) cmd`).
     pub(super) fn for_header(&mut self, foreach: bool) -> (Frame, bool) {
         let mut var = match self.tokens.next() {
-            Some(Token::Word(word)) if is_name(&word.text) => Some(word.text),
+            Some(Token::Word(word)) if is_name(&word.text) => {
+                self.listed_parameter(&word.text, &word.text);
+                Some(word.text)
+            }
             // `for (( ...; ...; ... ))`, over nothing the check can list.
             Some(Token::Arithmetic(text)) => {
                 self.mention_arithmetic(&text);
@@ -34,13 +37,10 @@ impl Walker<'_> {
             }
         };
         // More variables, as zsh takes them (`for key value in ...`).
-        while self
-            .tokens
-            .next_if(|token| {
-                matches!(token, Token::Word(word) if is_name(&word.text) && !matches!(word.text.as_str(), "in" | "do"))
-            })
-            .is_some()
-        {
+        while let Some(Token::Word(word)) = self.tokens.next_if(|token| {
+            matches!(token, Token::Word(word) if is_name(&word.text) && !matches!(word.text.as_str(), "in" | "do"))
+        }) {
+            self.listed_parameter(&word.text, &word.text);
             var = None;
         }
         let mut list = Vec::new();
@@ -94,7 +94,11 @@ impl Walker<'_> {
     /// `{ ... }` or, for `foreach`, `... end`, past any line end, or with one
     /// command or group, as in zsh's short forms (then `true`).
     fn body_closer(&mut self, foreach: bool) -> (Closer, bool) {
-        while self.tokens.next_if_eq(&Token::End(End::Line)).is_some() {}
+        while self
+            .tokens
+            .next_if(|token| matches!(token, Token::End(End::Line | End::Newline)))
+            .is_some()
+        {}
         let (closer, short) = match self.tokens.peek() {
             Some(Token::Word(word)) if word.text == "do" => (Closer::Done, false),
             Some(Token::Word(word)) if word.text == "{" => (Closer::Brace, false),

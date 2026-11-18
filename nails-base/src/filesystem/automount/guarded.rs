@@ -333,6 +333,13 @@ impl<F: Filesystem> Filesystem for Guarded<F> {
         self.inner.get_permissions(path)
     }
 
+    fn owner(&self, path: &Path) -> Result<u32> {
+        // The path itself, as lstat reads it: a link at its end is not
+        // followed.
+        self.enters(path, false)?;
+        self.inner.owner(path)
+    }
+
     fn is_readable(&self, path: &Path) -> Result<bool> {
         self.enters(path, true)?;
         self.inner.is_readable(path)

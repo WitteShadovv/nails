@@ -199,6 +199,10 @@ impl Filesystem for RealFilesystem {
         file_ops::get_permissions(path)
     }
 
+    fn owner(&self, path: &Path) -> Result<u32> {
+        file_ops::owner(path)
+    }
+
     fn is_readable(&self, path: &Path) -> Result<bool> {
         file_ops::is_readable(path)
     }
@@ -286,10 +290,7 @@ impl Filesystem for RealFilesystem {
     }
 
     fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime> {
-        // `dir_ops::modified_time` (owned by another chunk) still yields a
-        // `chrono` timestamp; convert at this boundary so the trait never
-        // exposes `chrono`.
-        Ok(std::time::SystemTime::from(dir_ops::modified_time(path)?))
+        dir_ops::modified_time(path)
     }
 
     fn change_time(&self, path: &Path) -> Result<std::time::SystemTime> {

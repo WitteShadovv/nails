@@ -58,11 +58,11 @@ fuzz_target!(|data: &[u8]| {
     let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
     let database = "/rpm/rpmdb.sqlite";
     fs.mock_set_file_bytes(database, file);
-    fs.mock_set_modified_time(std::path::Path::new(database), time.into());
+    fs.mock_set_modified_time(std::path::Path::new(database), time);
     let log = wal.filter(|wal| !wal.is_empty()).map(|wal| {
         let path = "/rpm/rpmdb.sqlite-wal";
         fs.mock_set_file_bytes(path, wal);
-        fs.mock_set_modified_time(std::path::Path::new(path), time.into());
+        fs.mock_set_modified_time(std::path::Path::new(path), time);
         PathBuf::from(path)
     });
     let files = Files {

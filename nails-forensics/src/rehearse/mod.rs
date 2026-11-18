@@ -380,7 +380,7 @@ pub fn reset<F: Filesystem>(
 
 /// The current UTC time, RFC 3339.
 pub(crate) fn now() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    nails_base::time::Timestamp::now().to_utc_seconds()
 }
 
 /// The running boot's id. A soft-reboot keeps it.

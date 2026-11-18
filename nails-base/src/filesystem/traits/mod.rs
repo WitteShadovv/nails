@@ -401,6 +401,12 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// Get Unix permissions on a path (masked to 0o7777).
     fn get_permissions(&self, path: &Path) -> Result<u32>;
 
+    /// The user id that owns `path` itself (`st_uid`), as `lstat(2)` reads
+    /// it: a link at `path` is not followed; a link on the way to it is. It
+    /// changes no access time. An error when `path` cannot be looked up, a
+    /// missing one included.
+    fn owner(&self, path: &Path) -> Result<u32>;
+
     /// Check if a path is readable.
     fn is_readable(&self, path: &Path) -> Result<bool>;
 

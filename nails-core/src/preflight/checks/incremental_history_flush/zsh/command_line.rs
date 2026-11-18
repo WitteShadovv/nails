@@ -53,12 +53,18 @@ impl CommandLine {
     /// `+o rcs`; none of the other files in `/etc` with `-d`,
     /// `--no-global-rcs`, `-o noglobalrcs` or `+o globalrcs`; an option by
     /// `-o name`, `+o name`, `-oname`, `-xo name`, `--long-name` or
-    /// `+-long-name`. A zsh that emulates sh or ksh, as it does when the name
-    /// it runs under starts with `s`, `b` or `k` (past a `-` and an `r`,
-    /// Src/options.c's `emulate`) or with `--emulate sh`, reads other startup
-    /// files, which is a doubt; so is one that emulates csh (`c`), whose
-    /// quotes differ, one started under the name `su`, which takes the name
-    /// it emulates by from `SHELL`, and an `-o` that names no option.
+    /// `+-long-name`; one that turns `CSH_JUNKIE_LOOPS` on, with which zsh
+    /// reads loops otherwise than the check, is a doubt, and so is one that
+    /// turns `ALIASES` off, with which zsh puts no alias of the files in
+    /// place of its name, so the name runs what it names without the alias.
+    /// A zsh that emulates
+    /// sh or ksh, as it does
+    /// when the name it runs under starts with `s`, `b` or `k` (past a `-`
+    /// and an `r`, Src/options.c's `emulate`) or with `--emulate sh`, reads
+    /// other startup files, which is a doubt; so is one that emulates csh
+    /// (`c`), whose quotes differ, one started under the name `su`, which
+    /// takes the name it emulates by from `SHELL`, and an `-o` that names no
+    /// option.
     pub(in super::super) fn of(argv: &[String]) -> Self {
         let mut line = Self {
             start: Start {
@@ -154,8 +160,10 @@ impl CommandLine {
     fn option(&mut self, name: &str, on: bool) {
         let name = name.replace(['-', '_'], "").to_lowercase();
         let known = |name: &str| {
-            matches!(name, "rcs" | "globalrcs" | "login" | "braceexpand")
-                || walk::option(name).is_some()
+            matches!(
+                name,
+                "rcs" | "globalrcs" | "login" | "braceexpand" | "cshjunkieloops" | "aliases"
+            ) || walk::option(name).is_some()
         };
         let (name, on) = match name.strip_prefix("no") {
             Some(rest) if known(rest) => (rest.to_string(), !on),
@@ -186,6 +194,17 @@ impl CommandLine {
             "braceexpand" if !on => self.doubts.push(
                 "it cannot read the files as zsh may, as its command line turns BRACE_EXPAND \
                  off, which changes how zsh reads code"
+                    .to_string(),
+            ),
+            "aliases" if !on => self.doubts.push(
+                "it cannot tell what the names of the files' aliases run, as its command line \
+                 turns ALIASES off, with which zsh puts no alias in place of its name"
+                    .to_string(),
+            ),
+            "cshjunkieloops" if on => self.doubts.push(
+                "it cannot read the files as zsh may, as its command line turns \
+                 CSH_JUNKIE_LOOPS on, with which zsh reads a loop's body otherwise than the \
+                 check does"
                     .to_string(),
             ),
             "globsubst" if on => self.doubts.push(

@@ -127,6 +127,11 @@ pub(in super::super) struct Install {
     /// it reads that changed since may have held other code then
     /// ([`super::since`]).
     pub started: Option<Result<SystemTime, String>>,
+    /// The user the shell runs as, by the id it opens files as
+    /// ([`super::super::InspectedShell::uid`]), which decides whether zsh
+    /// can open a startup file ([`super::Reader::opens`]); `None` when the
+    /// check cannot tell.
+    pub uid: Option<u32>,
 }
 
 /// What a shell's environment holds of [`ENVIRONMENT`] but `FPATH`.
@@ -204,6 +209,7 @@ impl Install {
                     .collect(),
             }),
             started: None,
+            uid: None,
         }
     }
 }

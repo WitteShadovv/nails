@@ -727,10 +727,7 @@ Layout:
   the table lacks each fail it (`ci/tests/test_admit_row.py` runs the script
   on the family table). The family's derivatives follow the admitted row, so
   that build runs one as an untested derivative, with a warning, as the
-  release will once the family is admitted; no scenario boots one. On Fedora
-  the build also leaves out the `lsm-status` check, which refuses every host
-  where SELinux runs until NAILS chooses the SELinux domains of the processes
-  systemd and udev start from its copy in `/run`.
+  release will once the family is admitted; no scenario boots one.
 - `py/`: the scenarios' host-side helpers, unit-tested by the
   `distro-checks` flake check: `distro_checks.py`, and `btrfs_scan.py`, the
   smoke's reads of a btrfs decoy's image: its zstd frames, decompressed, and
@@ -1066,12 +1063,14 @@ smoke scenario, it asserts that:
   leaves the hidden root holding what it held;
 - `check` names the security modules the kernel runs in its `lsm-status` row.
   On Arch, where SELinux does not run, the row passes. On Fedora, where it
-  runs, the row fails, and its first two findings are the ones every such
-  host gets for now, that NAILS does not choose the SELinux domain of the
-  processes systemd starts for it, nor that of the disk guard udev starts:
-  none of the facts it reads there (the mode, `/etc/selinux/config`, the
-  context of the `nails` process) failed to read or failed its rule, and the
-  row says SELinux is permissive exactly when the kernel does;
+  runs, NAILS gives its copies in `/run` the label of the system's programs,
+  and the loaded policy, asked through selinuxfs, starts the units systemd
+  starts from them in `unconfined_service_t`; the disk guard is off in this
+  configuration. So the row warns that SELinux is permissive exactly where
+  the kernel says so, and passes, naming that domain, where it enforces: none
+  of the facts it reads there (the mode, `/etc/selinux/config`, the context of
+  the `nails` process, the policy's answers) failed to read or failed its
+  rule;
 - `activate` exits 8 before it writes a byte or a timestamp to the hidden root.
   It starts no session (no next root mounted, no `/run/overlay-runtime`, no
   soft-reboot drop-in or job, the same boot), and the top two levels of `/run`

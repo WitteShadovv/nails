@@ -5,6 +5,15 @@
 //! line to the history file as zsh runs, or hold an `fc` that writes it,
 //! read in zsh's order and failing closed on what the check cannot follow.
 //!
+//! Each command the reader reads in the files, and in every hook, widget,
+//! alias, function and job it follows that zsh may run, is held to a list of
+//! the commands the check knows to be harmless, each read by its name and
+//! every word ([`known`]): any other is a doubt where zsh may run it
+//! ([`reached`]), an outside program, a key binding, a widget and a terminal
+//! setting among them. The rules below read what the commands on the list
+//! do. They follow how zsh 5.9 to 5.9.2 read the code as far as the tests
+//! go: code zsh reads otherwise than they do is code the list never sees.
+//!
 //! zsh reads `zshenv`, then `zprofile` for a login shell, `zshrc` for an
 //! interactive one and `zlogin` for a login shell: each stage's file in `/etc`
 //! or in `/etc/zsh` (where Debian's and Arch's zsh look), then the user's own
@@ -14,7 +23,7 @@
 //! error. A zsh
 //! started with `-f` reads `/etc/zshenv` alone, and one started with `-d` no
 //! other file in `/etc` ([`Start`]), unless a file read so far names `RCS` or
-//! `GLOBAL_RCS`, which may turn them on again ([`backstop::names_rcs`]). The
+//! `GLOBAL_RCS`, which may turn them on again ([`option_words::names_rcs`]). The
 //! options its command line turns on count too ([`CommandLine`]). A file that a
 //! startup file sources is read where it is sourced, when its path resolves. A
 //! zsh runs with one home, which `~` and `$HOME` name, so for a shell that may
@@ -99,7 +108,12 @@
 //! history file as it ends, so a hook that may end it (`exit`, `exec zsh`, a
 //! `kill -HUP $$`, from a command substitution too) and a `TMOUT` above 0,
 //! with which zsh ends at a prompt left waiting, are doubts too
-//! ([`walk::ends`]), and so is what a command substitution in a hook writes.
+//! ([`walk::ends`]), and so is what a command substitution in a hook writes,
+//! a job the files start that may signal the shell later
+//! (`{ sleep 3; kill -HUP $$ } &!`, [`jobs`]), and a line a widget may give
+//! zsh to run that may end it or that the check cannot read exactly
+//! (`BUFFER=exit`, `LBUFFER=...`, `zle up-history`, [`edits`]). A file that
+//! holds bytes that are no UTF-8, which zsh keeps as they are, is a doubt.
 //! A builtin's name runs an outside program, which gets the words and the
 //! input a hook gives it, after `command` (unless `POSIX_BUILTINS` is on,
 //! which the check does not read), after a `disable` of it, and where the
@@ -118,7 +132,9 @@
 //! doubt. A path that names `ZDOTDIR` or `XDG_CONFIG_HOME` is read for each
 //! value either may hold ([`paths`]): `XDG_CONFIG_HOME` may also be empty, its
 //! default, and the one the shell's environment gives stays beside those the
-//! files set, unless a file sets it before anything that may stop the file.
+//! files set, unless a user's file that zsh certainly opens
+//! ([`Reader::opens`]) sets it before anything that may stop the file, alone
+//! on its first line that holds code, which zsh then certainly parses.
 //! An assignment before a command (`ZDOTDIR=/x cmd`), which zsh keeps for
 //! that command alone, may set it and need not.
 
@@ -127,11 +143,17 @@ mod backstop;
 mod builtins;
 mod command_line;
 mod completion;
+mod edits;
 mod functions;
 mod install;
+mod jobs;
+mod known;
 mod lexer;
 mod made;
+mod option_words;
+mod order;
 mod paths;
+mod reached;
 mod reading;
 mod runs;
 mod shadows;
@@ -210,18 +232,28 @@ struct Reader<'a, F: Filesystem> {
     /// The functions the files make hooks ([`Event::Hook`]).
     hooks: Vec<String>,
     /// What writes the history file or may, should the function it is in be
-    /// a hook: the function, and the write or the doubt it is then.
+    /// a hook: the function, and the write or the doubt it is then; and the
+    /// functions whose code may end the shell ([`Event::Ends`]).
     in_functions: Vec<(String, Result<String, String>)>,
+    ends_in: Vec<String>,
+    /// The widgets the files make, and each widget a function runs by its
+    /// name, the function and where ([`edits`]).
+    widgets: Vec<String>,
+    edits: Vec<(String, String, String)>,
+    /// The jobs the files start that may run on after them ([`jobs`]):
+    /// each as the warning names it, the commands it runs and what in it may
+    /// signal the shell.
+    jobs: Vec<jobs::Job>,
     /// What the check could not follow.
     doubts: Vec<String>,
     /// Whether a file read may turn `RCS` or `GLOBAL_RCS` on again
-    /// ([`backstop::names_rcs`]), and whether one may run an `emulate` of
+    /// ([`option_words::names_rcs`]), and whether one may run an `emulate` of
     /// sh's or ksh's mode that lasts, in which zsh reads the user's files in
     /// the home ([`Event::Emulates`]).
     rcs: bool,
     sh_mode: bool,
     /// Whether a file read may turn `PROMPT_SUBST` on
-    /// ([`backstop::names_prompt_subst`]).
+    /// ([`option_words::names_prompt_subst`]).
     prompt_subst: bool,
     /// The doubts of the prompts that hold code zsh runs as it shows them
     /// when `PROMPT_SUBST` is on ([`Event::Prompt`]).
@@ -343,6 +375,9 @@ struct Reader<'a, F: Filesystem> {
     /// The builtins the files disable, as patterns of their names
     /// ([`Reader::disable`]).
     disabled: Vec<String>,
+    /// What the list of the commands the check knows to be harmless needs
+    /// to judge the commands it does not hold ([`reached::Listed`]).
+    listed: reached::Listed,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -377,7 +412,9 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// The text of the file at `path`, unless it is being followed already,
     /// nothing is there, or the check cannot read it, which is a doubt; zsh
-    /// may run compiled code in its place, which is a doubt too.
+    /// may run compiled code in its place, which is a doubt too, and so is a
+    /// file that holds bytes that are no UTF-8, which zsh keeps as they are
+    /// (in a path too: `ZDOTDIR=~/.d\xff`) where the check reads others.
     fn text(&mut self, path: &Path) -> Option<String> {
         if self.stack.iter().any(|open| open == path) {
             return None;
@@ -386,6 +423,12 @@ impl<F: Filesystem> Reader<'_, F> {
         let text = match read(self.fs, path) {
             Ok(Some(text)) => {
                 self.missing(path, true);
+                if text.contains('\u{fffd}') {
+                    self.doubt(format!(
+                        "it cannot read {} as zsh does, as it holds bytes that are no UTF-8 text",
+                        path.display()
+                    ));
+                }
                 text
             }
             Ok(None) => {
@@ -485,6 +528,9 @@ impl<F: Filesystem> Reader<'_, F> {
     /// before the line is read whole.
     fn code_in(&mut self, path: &Path, text: &str, certain: bool, outer: Option<String>) {
         let place = path.to_string_lossy().into_owned();
+        // One reading of the file, in its two pieces too ([`reached`]).
+        self.listed.readings += 1;
+        self.listed.within.push(self.listed.readings);
         if outer.is_none()
             && self.stack.is_empty()
             && let Some((before, program, after)) = dircolors_split(self.fs, path, text)
@@ -496,11 +542,13 @@ impl<F: Filesystem> Reader<'_, F> {
                 self.snapshot(&place, program);
                 let second = events(after, &place, None);
                 self.piece(path, after, second, (!stops, certain && !stops), None);
+                self.listed.within.pop();
                 return;
             }
         }
         let read = events(text, &place, outer.clone());
         self.piece(path, text, read, (true, certain), outer);
+        self.listed.within.pop();
     }
 
     /// Follow what `text`, the code of the file at `path` or a piece of it
@@ -521,13 +569,15 @@ impl<F: Filesystem> Reader<'_, F> {
         outer: Option<String>,
     ) {
         let (whole, certain) = how;
-        self.rcs |= backstop::names_rcs(text);
-        self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
         let forms = self.lines(text, &place);
-        self.reading(text, &forms, &place);
+        self.rcs |= forms.names_rcs();
+        self.prompt_subst |= forms.names_prompt_subst();
+        self.reading(&forms, &place);
         self.shadows(&forms, &place, outer.as_deref());
-        if backstop::names_any(text, &["globsubst"]) {
+        // GLOB_SUBST, which an `emulate` of sh's, ksh's or csh's mode turns
+        // on too ([`reading`]).
+        if forms.names_any(&["globsubst"]) {
             self.doubt(format!(
                 "it cannot tell what code zsh runs from the values it expands as patterns, as \
                  {place} names GLOB_SUBST, which makes a glob qualifier in a value run"
@@ -538,12 +588,19 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         self.stack.push(path.to_path_buf());
         self.outers.push(outer);
+        self.listed.pieces += 1;
+        let piece = std::mem::replace(&mut self.listed.piece, self.listed.pieces);
+        let parsed = std::mem::replace(&mut self.listed.parsed, 0);
+        let confused = std::mem::replace(&mut self.listed.confused, read.confused);
         let before = self.start_file();
         for event in read.events {
             let sure = whole && !read.confused;
             self.apply(event, &place, (sure, certain && sure));
         }
         self.end_file(before);
+        self.listed.confused = confused;
+        self.listed.parsed = parsed;
+        self.listed.piece = piece;
         self.outers.pop();
         self.stack.pop();
     }
@@ -578,11 +635,8 @@ impl<F: Filesystem> Reader<'_, F> {
                 self.options[1] = Some(format!("Oh My Zsh, which {place} loads, sets"));
             }
             Event::Doubt(doubt) => self.doubt(doubt),
-            Event::Source {
-                path,
-                unconditional,
-                function,
-            } => self.source(&path, certain && unconditional, function, place),
+            Event::Source { path, function, .. } => self.source(&path, function, place),
+            event @ Event::Unlisted { .. } => self.unlisted_at(event, place),
             Event::Assign {
                 name: "NIX_PROFILES",
                 value,
@@ -613,7 +667,12 @@ impl<F: Filesystem> Reader<'_, F> {
                 function,
                 input,
             } => self.call(name, args, function, input, place),
-            Event::Define(name) => {
+            Event::Define {
+                name,
+                certain: defined,
+                alias,
+            } => {
+                self.defined_at(&name, defined && !self.listed.confused, alias);
                 self.shadow_function(&name, place, "defines");
                 self.shadow_setter(&name, &format!("{place} defines a function or an alias"));
                 if !self.defined.contains(&name) {
@@ -626,16 +685,18 @@ impl<F: Filesystem> Reader<'_, F> {
                 function,
                 input,
             } => self.run_in(function, &name, &args, input, place),
-            Event::HookDoubt { function, doubt }
-            | Event::Ends {
-                function, doubt, ..
-            } => {
+            Event::HookDoubt { function, doubt } => {
                 self.in_functions.push((function, Err(doubt)));
             }
             event @ (Event::WordBrace(_) | Event::NamedBody(_) | Event::RegularAlias(_)) => {
                 self.reading_event(event, place);
             }
             event @ (Event::GlobalAlias { .. }
+            | Event::Ends { .. }
+            | Event::Runs { .. }
+            | Event::Job { .. }
+            | Event::Widget(_)
+            | Event::Edits { .. }
             | Event::FpathSplits(_)
             | Event::KeysSplit { .. }
             | Event::Typed { .. }
@@ -672,34 +733,13 @@ impl<F: Filesystem> Reader<'_, F> {
                 "it cannot follow what a line of {place} may add to fpath, where zsh looks \
                  for the functions the files autoload"
             ))),
-            Event::Autoload(function, in_function) => {
-                if function.text.contains('/') {
-                    self.known_files.push(function.text.clone());
-                }
-                let name = function
-                    .text
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or_default()
-                    .to_string();
-                self.shadow_function(&name, place, "autoloads");
-                // One whose name an expansion makes is a doubt of its own.
-                if !walk::may_expand(&name) {
-                    self.shadow_setter(&name, &format!("{place} autoloads a function"));
-                }
-                if name == "compinit" && !self.compinit_places.iter().any(|known| known == place) {
-                    self.compinit_places.push(place.to_string());
-                }
-                if let Some(Some(outer)) = self.outers.last()
-                    && !function.text.contains('/')
-                {
-                    let edge = (outer.clone(), name);
-                    if !self.autoloaded_by.contains(&edge) {
-                        self.autoloaded_by.push(edge);
-                    }
-                }
-                let later = in_function || self.in_function_code();
-                self.autoload(function, place, later);
+            Event::Autoload {
+                function,
+                in_function,
+                certain: marked,
+            } => {
+                let here = marked && !self.listed.confused;
+                self.autoload_event(function, in_function, here, place);
             }
             Event::Fc(command) => {
                 let what = format!("{place} names `{command}`");
@@ -729,6 +769,10 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
             }
             Event::Emulates => self.sh_mode = true,
+            Event::Parsed => self.listed.parsed += 1,
+            Event::AliasesOff(what) => {
+                self.listed.aliases_off.get_or_insert(what);
+            }
         }
     }
 
@@ -811,7 +855,8 @@ impl<F: Filesystem> Reader<'_, F> {
     /// the check counts once the files are read: a global alias, an element
     /// given `fpath` that may split, a line keys type, a key bound, an
     /// arithmetic expression, a parameter declared, unset or set in a
-    /// function, a file a test asks about.
+    /// function, a file a test asks about, what in a function may end the
+    /// shell, and a job that may run on after the files ([`jobs`]).
     fn note(&mut self, event: Event, place: &str) {
         match event {
             Event::GlobalAlias { name, text } => {
@@ -862,6 +907,19 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
             }
             Event::Tested(word) => self.known_files.push(word),
+            Event::Ends {
+                function, doubt, ..
+            } => {
+                if !self.ends_in.contains(&function) {
+                    self.ends_in.push(function.clone());
+                }
+                self.in_functions.push((function, Err(doubt)));
+            }
+            Event::Job { what, calls, stops } => self.jobs.push((what, calls, stops)),
+            Event::Widget(name) => self.widgets.push(name),
+            Event::Edits { function, widget } => {
+                self.edits.push((function, widget, place.to_string()));
+            }
             Event::Computed {
                 function,
                 name,
@@ -959,7 +1017,7 @@ pub(super) fn zsh<F: Filesystem>(
         homes.iter().map(|home| Some(home.as_path())).collect()
     };
     for home in homes {
-        let one = in_home(fs, home, start, install);
+        let one = order::in_home(fs, home, start, install);
         for write in one.writes {
             if !scan.writes.contains(&write) {
                 scan.writes.push(write);
@@ -977,197 +1035,6 @@ pub(super) fn zsh<F: Filesystem>(
             }
         }
     }
-    scan
-}
-
-/// What zsh's startup files below `/etc` and in `home` turn on, for a zsh
-/// that runs with `home`.
-fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &Install) -> Scan {
-    let env = install.env.as_ref();
-    // The profiles the environment names, as `${(z)NIX_PROFILES}` splits
-    // them; none the check can tell when the environment holds what zsh
-    // splits otherwise.
-    let profiles =
-        env.and_then(|env| profile_words(env.nix_profiles.as_deref().unwrap_or_default()));
-    // Where the user's files are: the ZDOTDIR the environment holds, when it
-    // holds one, else the home; and what XDG_CONFIG_HOME it holds, beside
-    // its default, or any where the check does not know the environment.
-    let mut doubts = Vec::new();
-    let zdotdirs: Vec<Option<PathBuf>> = match env.and_then(|env| env.zdotdir.as_deref()) {
-        Some(dir) if Path::new(dir).is_absolute() => vec![Some(PathBuf::from(dir))],
-        Some(dir) => {
-            doubts.push(format!(
-                "it cannot follow the ZDOTDIR that the shell's environment holds (`{dir}`)"
-            ));
-            Vec::new()
-        }
-        None => vec![None],
-    };
-    let mut xdg = vec![env.and_then(|env| env.xdg_config_home.clone())];
-    if xdg[0].is_some() {
-        xdg.push(None);
-    }
-    let values = Candidates {
-        zdotdirs,
-        xdg,
-        xdg_unknown: env.is_none(),
-    };
-    let mut reader = Reader {
-        fs,
-        home,
-        options: Default::default(),
-        ever: values.clone(),
-        values,
-        given: Vec::new(),
-        late: Vec::new(),
-        stack: Vec::new(),
-        fpath: install
-            .fpath
-            .iter()
-            .flatten()
-            .map(|dir| Ok((dir.clone(), false)))
-            .collect(),
-        autoloads: Vec::new(),
-        fc: Vec::new(),
-        hooks: Vec::new(),
-        in_functions: Vec::new(),
-        doubts,
-        rcs: false,
-        sh_mode: false,
-        prompt_subst: false,
-        prompts: Vec::new(),
-        install,
-        profiles,
-        profile_fpath: Vec::new(),
-        version_set: false,
-        profile_vars_set: false,
-        expanding: Vec::new(),
-        devices: Vec::new(),
-        global_alias_defs: Vec::new(),
-        typed_keys: Vec::new(),
-        rebound: None,
-        arith: Vec::new(),
-        integers: Vec::new(),
-        keyed_arrays: Vec::new(),
-        unset: Vec::new(),
-        missing: Vec::new(),
-        read_files: Vec::new(),
-        known_files: Vec::new(),
-        looked: Vec::new(),
-        function_code: false,
-        writes: Vec::new(),
-        under: Vec::new(),
-        top_calls: Vec::new(),
-        order: 0,
-        computed: Vec::new(),
-        fc_aliases: Vec::new(),
-        texts: Vec::new(),
-        stock_texts: Vec::new(),
-        defined: Vec::new(),
-        computed_calls: Vec::new(),
-        calls: Vec::new(),
-        edges: Vec::new(),
-        promptinit: false,
-        compinit: false,
-        compinit_places: Vec::new(),
-        changers: Vec::new(),
-        dircolors: Vec::new(),
-        startup_changers: 0,
-        outers: Vec::new(),
-        autoloaded_by: Vec::new(),
-        word_split: None,
-        fpath_splits: Vec::new(),
-        keys_splits: Vec::new(),
-        reading: reading::Reading::default(),
-        disabled: Vec::new(),
-    };
-    // The prompts zsh takes from its environment, which it shows as they
-    // are unless a file sets them: code where PROMPT_SUBST may be on.
-    for (name, value) in env.map(|env| env.prompts.as_slice()).unwrap_or_default() {
-        if walk::expands(value) {
-            reader.prompts.push(format!(
-                "it cannot follow the code that `{name}` in the shell's environment holds, which \
-                 zsh runs as it shows the prompt unless a file sets it, as PROMPT_SUBST may be on"
-            ));
-        }
-    }
-    for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
-        let login_stage = matches!(stage, "zprofile" | "zlogin");
-        if login_stage && start.login == Some(false) {
-            continue;
-        }
-        // Without `RCS`, zsh reads /etc's zshenv and nothing after it;
-        // without `GLOBAL_RCS`, no other file in /etc; a file read so far
-        // may turn them on again.
-        if !(start.rcs || reader.rcs) && stage != "zshenv" {
-            break;
-        }
-        // Whether zsh certainly reads the stage's file, as an assignment
-        // that is its first command then drops the values from before it
-        // ([`paths`]): a login stage's only for a login shell. A file in /etc
-        // never, as a zsh reads its stage's file in /etc or in /etc/zsh, as
-        // it was built, which the check does not know.
-        let certain = !login_stage || start.login == Some(true);
-        if start.global_rcs || reader.rcs || stage == "zshenv" {
-            for dir in ["/etc", "/etc/zsh"] {
-                reader.file(&Path::new(dir).join(stage), false);
-            }
-            if stage == "zshenv" && !matches!(fs.inode(Path::new("/etc/NIXOS")), Ok(None)) {
-                // The zshenv nixpkgs builds into zsh reads, on NixOS,
-                // /etc/set-environment when /etc/zshenv is missing, and
-                // /etc/zshenv.local after either.
-                if matches!(fs.inode(Path::new("/etc/zshenv")), Ok(None)) {
-                    reader.file(Path::new("/etc/set-environment"), false);
-                }
-                reader.file(Path::new("/etc/zshenv.local"), false);
-            }
-        }
-        if !(start.rcs || reader.rcs) {
-            break;
-        }
-        // The user's own, from each place the files read so far may put
-        // ZDOTDIR in. Where a file read so far may turn `RCS` off, zsh reads
-        // none of them, so they may still be certain; where one may run an
-        // `emulate` of sh's mode, zsh may read the home's in their place.
-        reader.user_files(stage, certain && !reader.sh_mode);
-    }
-    reader.startup_changers = reader.changers.len();
-    reader.autoloaded();
-    reader.runs();
-    reader.reading_doubts();
-    reader.arithmetic();
-    reader.since_start();
-    reader.made();
-    // A prompt's code runs only when PROMPT_SUBST is on; whether a command
-    // line turns it on, the check reads beside the files.
-    let mut doubts = reader.doubts;
-    let mut prompts = Vec::new();
-    if reader.prompt_subst {
-        doubts.extend(reader.prompts);
-    } else {
-        prompts = reader.prompts;
-    }
-    let mut scan = Scan {
-        doubts,
-        prompts,
-        reopened: reader.rcs && !(start.rcs && start.global_rcs),
-        ..Scan::default()
-    };
-    for ((_, shown, entered), named) in OPTIONS.iter().zip(reader.options) {
-        if let Some(named) = named {
-            scan.writes.push(Write {
-                what: format!("{named} {shown}"),
-                entered: *entered,
-                option: true,
-            });
-        }
-    }
-    // A hook may run it as each line is entered (`preexec`).
-    scan.writes.extend(reader.fc.into_iter().map(|what| Write {
-        what,
-        entered: true,
-        option: false,
-    }));
     scan
 }
 

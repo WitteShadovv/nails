@@ -4,7 +4,8 @@
 //! The tokens of zsh code: words with their quotes and escapes taken off and
 //! their expansions kept as written, array assignments, arithmetic commands,
 //! the places where a command ends, and the bodies of here-documents, which
-//! are text, not code.
+//! are text, not code. Words part at a space or a tab alone ([`blank`]), as in
+//! zsh.
 
 /// A word of zsh code.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,10 +34,16 @@ pub(super) struct Word {
 /// Where a command ends, and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum End {
-    /// `;` or a newline.
+    /// `;`.
     Line,
-    /// `&&` or `||`: the next command may not run.
+    /// A newline, which ends a command as `;` does, and which zsh reads a
+    /// file's code up to before it runs any of it, where nothing is left
+    /// open ([`super::walk::Event::Parsed`]).
+    Newline,
+    /// `&&`: the next command runs where the one before it succeeded.
     Condition,
+    /// `||`: the next command runs where the one before it failed.
+    Or,
     /// `|`: the commands on both sides run in a pipeline.
     Pipe,
     /// `&`: the command before it runs in the background.
@@ -113,6 +120,16 @@ const COMMAND_FOLLOWS: &[&str] = &[
     "builtin",
     "-",
 ];
+
+/// Whether `c` parts words, as zsh's `IBLANK` characters do (Src/utils.c,
+/// `inittyptab`): a space or a tab. zsh keeps every other white space in the
+/// word, a vertical tab, a form feed, a carriage return (of a Windows line
+/// end), a no-break space and the other spaces of Unicode among them, so
+/// that a `#` after one starts no comment and a value that ends in one names
+/// another path. A newline ends a command.
+pub(super) fn blank(c: char) -> bool {
+    matches!(c, ' ' | '\t')
+}
 
 /// Whether `text` is a shell variable's name.
 pub(super) fn is_name(text: &str) -> bool {
@@ -241,12 +258,12 @@ impl Lexer<'_> {
         }
     }
 
-    /// Whether the next character ends a word: a blank, an operator or the
-    /// end of the text.
+    /// Whether the next character ends a word: a blank ([`blank`]), a
+    /// newline, an operator or the end of the text.
     fn at_word_end(&mut self) -> bool {
         self.chars
             .peek()
-            .is_none_or(|c| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')'))
+            .is_none_or(|c| blank(*c) || matches!(c, '\n' | ';' | '&' | '|' | '(' | ')'))
     }
 
     /// Read `c` and what belongs to it into the current word.
@@ -469,10 +486,8 @@ impl Lexer<'_> {
     ) -> Option<bool> {
         let at_start = commands.start;
         let separator = matches!(c, ';' | '&' | '|' | '\n');
-        let boundary = c.is_whitespace()
-            || separator
-            || matches!(c, ')' | '<' | '>')
-            || (c == '(' && at_start);
+        let boundary =
+            blank(c) || separator || matches!(c, ')' | '<' | '>') || (c == '(' && at_start);
         if boundary {
             match commands.bare.as_deref() {
                 Some("case") => {
@@ -657,7 +672,7 @@ impl Lexer<'_> {
                     break;
                 }
                 '#' if self.word.is_none() => self.comment(),
-                c if c.is_whitespace() => {
+                c if blank(c) || c == '\n' => {
                     if let Some(word) = self.word.take() {
                         items.push(word);
                     }
@@ -673,13 +688,15 @@ impl Lexer<'_> {
     }
 
     /// Read the delimiter of a here-document, after `<<` or `<<-`: a word,
-    /// its quotes and escapes taken off.
+    /// its quotes and escapes taken off, which ends at a blank ([`blank`]),
+    /// a newline or an operator.
     fn delimiter(&mut self) -> String {
-        while self.chars.next_if(|c| *c == ' ' || *c == '\t').is_some() {}
+        while self.chars.next_if(|c| blank(*c)).is_some() {}
         let mut delimiter = String::new();
-        while let Some(c) = self.chars.next_if(|c| {
-            !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>')
-        }) {
+        while let Some(c) = self
+            .chars
+            .next_if(|c| !blank(*c) && !matches!(c, '\n' | ';' | '&' | '|' | '(' | ')' | '<' | '>'))
+        {
             if !matches!(c, '\'' | '"' | '\\') {
                 delimiter.push(c);
             }
@@ -775,7 +792,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
             '\\' if lexer.chars.next_if_eq(&'\n').is_some() => {}
             '\n' => {
                 lexer.end_word();
-                lexer.tokens.push(Token::End(End::Line));
+                lexer.tokens.push(Token::End(End::Newline));
                 lexer.heredoc_bodies();
             }
             ';' => {
@@ -804,7 +821,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
             '|' => {
                 lexer.end_word();
                 let end = if lexer.chars.next_if_eq(&'|').is_some() {
-                    End::Condition
+                    End::Or
                 } else {
                     lexer.chars.next_if_eq(&'&');
                     End::Pipe
@@ -905,7 +922,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
                 }
                 lexer.tokens.push(Token::Redirect { writes, dup });
             }
-            c if c.is_whitespace() => lexer.end_word(),
+            c if blank(c) => lexer.end_word(),
             c => lexer.word_char(c),
         }
     }

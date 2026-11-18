@@ -70,9 +70,21 @@ pub(super) fn install(fs: &MockFilesystem, vars: &[(&str, &str)]) -> Install {
     )
 }
 
-/// What `fs` sets for a zsh started as `start`, in the home, with `install`.
+/// What `fs` sets for a zsh started as `start`, in the home, with `install`,
+/// that runs as alice ([`ALICE`]), past the doubts of the commands the list
+/// of those the check knows to be harmless does not hold ([`super::rule`]).
 fn scan_with(fs: &MockFilesystem, start: Start, install: &Install) -> Scan {
-    zsh(fs, &[PathBuf::from(HOME)], start, install)
+    rule(scan_with_all(fs, start, install))
+}
+
+/// What `fs` sets for a zsh started as `start` that `install` tells of,
+/// every doubt among it ([`super::scan_all`]).
+fn scan_with_all(fs: &MockFilesystem, start: Start, install: &Install) -> Scan {
+    let install = Install {
+        uid: Some(ALICE),
+        ..install.clone()
+    };
+    zsh(fs, &[PathBuf::from(HOME)], start, &install)
 }
 
 #[test]
@@ -89,6 +101,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
                 ..Default::default()
             }),
             started: None,
+            uid: None,
         }
     );
     // An FPATH in its environment replaces it, as zsh 5.9.2 takes it.
@@ -109,6 +122,7 @@ fn a_nix_zsh_s_fpath_starts_in_its_own_directory_or_where_fpath_names() {
             version: Some("5.9.2".to_string()),
             env: None,
             started: None,
+            uid: None,
         }
     );
 }
@@ -197,7 +211,7 @@ fn an_fc_alias_counts_as_used_in_a_stock_function_zsh_expands_aliases_in() {
                  it is used, as zsh hands the fc it stands for the words after it";
     // An alias named like a builtin by which the walk reads a setting runs
     // in its place, which is a doubt of its own.
-    let shadow = "it cannot tell what the files set where they run `typeset`, as \
+    let shadow = "it cannot tell what the files set or define where they run `typeset`, as \
                   /home/alice/.zshrc defines a function or an alias `typeset`, which zsh runs in \
                   place of the builtin of that name";
     for (rc, doubts) in [
@@ -673,14 +687,48 @@ const SESSION: [(&str, &str); 4] = [
 ];
 
 #[test]
-fn a_nixos_zsh_without_the_options_or_completion_passes() {
+fn a_nixos_zsh_without_the_options_or_completion_runs_only_its_hostname_and_keys_unread() {
     let fs = MockFilesystem::new();
     nixos(&fs);
     // In a session, and from a login on a console, where /etc/zshenv runs
-    // set-environment, which names the profiles.
+    // set-environment, which names the profiles, no rule finds anything. Of
+    // the commands the check knows to be harmless, /etc/zshrc runs the
+    // hostname program, an outside one, and /etc/zinputrc binds keys, which
+    // the check doubts.
     for vars in [&SESSION[..], &[("USER", "alice")][..]] {
         let known = install(&fs, vars);
         assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{vars:?}");
+        let all = scan_with_all(&fs, UNKNOWN, &known);
+        assert!(all.writes.is_empty(), "{all:?}");
+        assert_eq!(all.doubts.len(), 2, "{all:?}");
+        assert!(
+            all.doubts[0].starts_with(
+                "it cannot tell what /etc/zshrc runs past the commands it knows to be \
+                 harmless: `/nix/store/"
+            ) && all.doubts[0].contains("/bin/hostname --fqdn`, as"),
+            "{all:?}"
+        );
+        assert!(
+            all.doubts[1].starts_with(
+                "it cannot tell what /etc/zinputrc runs past the commands it knows to be \
+                 harmless: `bindkey ^[[H beginning-of-line`, as it binds a key"
+            ),
+            "{all:?}"
+        );
+    }
+    // A zsh started as `zsh -f` reads /etc/zshenv alone, set-environment and
+    // the fpath loop: commands the check knows to be harmless, so it passes.
+    let bare = Start {
+        login: None,
+        rcs: false,
+        global_rcs: true,
+    };
+    for vars in [&SESSION[..], &[("USER", "alice")][..]] {
+        assert_eq!(
+            scan_with_all(&fs, bare, &install(&fs, vars)),
+            Scan::default(),
+            "{vars:?}"
+        );
     }
     // With an empty ~/.zshrc or one with what most hold but compinit.
     seed(

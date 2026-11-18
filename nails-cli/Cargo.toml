@@ -49,7 +49,6 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 nix = { workspace = true, features = ["fs", "user", "poll"] }
-chrono = { workspace = true }
 
 # The stable machine-readable contract types: the `--json` envelope, the error
 # body, the exit-code table and the result/DTO payloads.
@@ -89,5 +88,6 @@ jsonschema = { workspace = true }
 clap_mangen = { workspace = true }
 clap-markdown = { workspace = true }
 # The signals of the tests: the Ctrl+C a cancel envelope answers and the
-# hangup a countdown must outlive (`raise`), and SIGKILL to a child (`kill`).
-nix = { workspace = true, features = ["signal"] }
+# hangup a countdown must outlive (`raise`), and SIGKILL to a child (`kill`);
+# and the children they fork and wait for (`fork`, `waitpid`).
+nix = { workspace = true, features = ["signal", "process"] }

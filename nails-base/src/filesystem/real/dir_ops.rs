@@ -26,7 +26,7 @@ pub(super) fn list_directory(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(entries.into_iter().map(|e| dir.join(e.name)).collect())
 }
 
-pub(super) fn modified_time(path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
+pub(super) fn modified_time(path: &Path) -> Result<std::time::SystemTime> {
     let metadata = std::fs::metadata(path).map_err(|e| {
         NailsError::io(
             path,
@@ -51,8 +51,7 @@ pub(super) fn modified_time(path: &Path) -> Result<chrono::DateTime<chrono::Utc>
         )
     })?;
 
-    let datetime: chrono::DateTime<chrono::Utc> = modified.into();
-    Ok(datetime)
+    Ok(modified)
 }
 
 /// Copy the contents of `src` into `dst`, atime-safe and in-process.

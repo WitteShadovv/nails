@@ -12,12 +12,19 @@
 //! body ends at a later `}` and holds the code after it; and `ALIAS_FUNC_DEF`
 //! (`emulate sh` and `emulate ksh` too), with which zsh puts an alias's
 //! value in place of the name of a function defined as `name ()`, which may
-//! then be a hook's. Each option counts where a file names it, in either
-//! form, as the three the check asks about do, and where none does, zsh
-//! reads the code as the check does.
+//! then be a hook's. An `emulate` of sh's, ksh's or csh's mode turns
+//! `GLOB_SUBST` on, with which zsh expands a value as a pattern, so that a
+//! glob qualifier in it runs code (`*(e:...:)`) where qualifiers are on,
+//! which in sh's and ksh's mode takes `SH_GLOB` off and `BARE_GLOB_QUAL` or
+//! `EXTENDED_GLOB` on: where a file runs such an `emulate` and one names
+//! those options, that is a doubt. Each option counts where a file names it, in either
+//! form and in any spelling zsh reads as its name (quotes and backslashes
+//! taken off), or runs an `emulate` of a mode that turns it on
+//! ([`super::option_words::emulates`]), as the three the check asks about do, and
+//! where none does, zsh reads the code as the check does.
 
 use super::Reader;
-use super::backstop::{Forms, code_lines, names_any, whole_words};
+use super::backstop::Forms;
 use super::walk::Event;
 use crate::Filesystem;
 
@@ -36,58 +43,14 @@ pub(super) struct Reading {
     alias_func_def: Option<String>,
     named_bodies: Vec<(String, String)>,
     regular_aliases: Vec<String>,
-}
-
-/// Whether `text`, zsh code, may run an `emulate` of a mode whose first
-/// letter past one `r` is among `modes`, as zsh picks a mode by it: past the
-/// flags of an `emulate` (and the option after `-o` or `+o`), its first
-/// word, or one an expansion, brace expansion or a glob makes, which may be
-/// any. A line that is a comment is left out.
-fn emulates(text: &str, modes: &[char]) -> bool {
-    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
-    code_lines(text).any(|line| {
-        line.match_indices("emulate").any(|(at, found)| {
-            if line[..at].chars().next_back().is_some_and(part)
-                || line[at + found.len()..].chars().next().is_some_and(part)
-            {
-                return false;
-            }
-            let rest = line[at + found.len()..]
-                .split([';', '&', '|', '(', ')', '`'])
-                .next()
-                .unwrap_or_default();
-            let mut words = rest.split_whitespace();
-            while let Some(word) = words.next() {
-                let word = word.trim_matches(['\'', '"', '\\']);
-                if matches!(word, "-o" | "+o") {
-                    words.next();
-                } else if !word.starts_with(['-', '+']) {
-                    let mode = word.strip_prefix('r').unwrap_or(word);
-                    return word.contains(['$', '`', '{', '*', '?', '['])
-                        || mode.starts_with(modes);
-                }
-            }
-            false
-        })
-    })
-}
-
-/// Whether `text`, zsh code, runs a `set`, a `setopt` or an `unsetopt` with
-/// a word of flags that holds `letter`, an option's (`set -I` for
-/// `IGNORE_BRACES`). A line that is a comment is left out.
-fn sets_letter(text: &str, letter: char) -> bool {
-    code_lines(text).any(|line| {
-        ["set", "setopt", "unsetopt"]
-            .iter()
-            .any(|command| whole_words(line, command) > 0)
-            && line.split_whitespace().any(|word| {
-                let word = word.trim_matches(['\'', '"', '\\']);
-                word.len() > 1
-                    && word.starts_with(['-', '+'])
-                    && word[1..].chars().all(|c| c.is_ascii_alphanumeric())
-                    && word.contains(letter)
-            })
-    })
+    /// Where a file read may run an `emulate` of sh's, ksh's or csh's mode,
+    /// which turns `GLOB_SUBST` on, and whether one may run csh's, whether a
+    /// file names `SH_GLOB`, and whether one names `BARE_GLOB_QUAL` or
+    /// `EXTENDED_GLOB`, which turn glob qualifiers on.
+    glob_subst: Option<String>,
+    csh: bool,
+    sh_glob: bool,
+    qualifiers: bool,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -97,7 +60,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// are doubts at once; where it may turn `IGNORE_BRACES`,
     /// `IGNORE_CLOSE_BRACES` or `ALIAS_FUNC_DEF` on is noted for
     /// [`Reader::reading_doubts`].
-    pub(super) fn reading(&mut self, text: &str, forms: &Forms, place: &str) {
+    pub(super) fn reading(&mut self, forms: &Forms, place: &str) {
         if ["histchars", "HISTCHARS"]
             .iter()
             .any(|name| forms.writes(name) > 0)
@@ -107,24 +70,30 @@ impl<F: Filesystem> Reader<'_, F> {
                  whose third character starts a comment in place of `#`"
             ));
         }
-        if names_any(text, &["rcquotes", "cshjunkiequotes"]) || emulates(text, &['c']) {
+        if forms.names_any(&["rcquotes", "cshjunkiequotes"]) || forms.emulates(&['c']) {
             self.doubt(format!(
                 "it cannot read the quotes of the files as zsh may, as {place} may turn \
                  RC_QUOTES or CSH_JUNKIE_QUOTES on, which change what a quote holds"
             ));
         }
         if self.reading.braces.is_none()
-            && (names_any(text, &["ignorebraces", "ignoreclosebraces", "braceexpand"])
-                || sets_letter(text, 'I')
-                || emulates(text, &['s', 'b']))
+            && (forms.names_any(&["ignorebraces", "ignoreclosebraces", "braceexpand"])
+                || forms.sets_letter('I')
+                || forms.emulates(&['s', 'b']))
         {
             self.reading.braces = Some(place.to_string());
         }
         if self.reading.alias_func_def.is_none()
-            && (names_any(text, &["aliasfuncdef"]) || emulates(text, &['s', 'b', 'k']))
+            && (forms.names_any(&["aliasfuncdef"]) || forms.emulates(&['s', 'b', 'k']))
         {
             self.reading.alias_func_def = Some(place.to_string());
         }
+        if self.reading.glob_subst.is_none() && forms.emulates(&['s', 'b', 'k', 'c']) {
+            self.reading.glob_subst = Some(place.to_string());
+        }
+        self.reading.csh |= forms.emulates(&['c']);
+        self.reading.sh_glob |= forms.names_any(&["shglob"]);
+        self.reading.qualifiers |= forms.names_any(&["bareglobqual", "extendedglob"]);
     }
 
     /// Note an event of the file at `place` that zsh may read otherwise
@@ -155,6 +124,18 @@ impl<F: Filesystem> Reader<'_, F> {
     /// cannot load it (a parse error), so that it makes no hook.
     pub(super) fn reading_doubts(&mut self) {
         let reading = std::mem::take(&mut self.reading);
+        if let Some(place) = &reading.glob_subst
+            && reading.qualifiers
+            && (reading.sh_glob || reading.csh)
+        {
+            self.doubt(format!(
+                "it cannot tell what code zsh runs from the values it expands as patterns, as \
+                 {place} may run an `emulate` of sh's, ksh's or csh's mode, which turns \
+                 GLOB_SUBST on, and the files name the options that turn glob qualifiers on \
+                 there (SH_GLOB, and BARE_GLOB_QUAL or EXTENDED_GLOB), with which a glob \
+                 qualifier in a value runs"
+            ));
+        }
         if let Some(set) = &reading.braces {
             for (command, place) in &reading.word_braces {
                 self.doubt(format!(

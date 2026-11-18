@@ -218,7 +218,7 @@ fn test_enforce_retention_deletes_old_numbered_logs() {
     fs.mock_set_path_exists("/mnt/hidden/logs", true);
     fs.mock_set_path_type("/mnt/hidden/logs", PathKind::Dir);
 
-    let now = chrono::Utc::now();
+    let now = std::time::SystemTime::now();
 
     // Create logs: .1 through .10
     // Logs 8-10 are 8-10 days old (should be deleted)
@@ -231,7 +231,7 @@ fn test_enforce_retention_deletes_old_numbered_logs() {
 
         // Set modification time: logs 8-10 are old
         if i >= 8 {
-            let old_time = now - chrono::Duration::days(i as i64);
+            let old_time = now - std::time::Duration::from_secs(i * 86_400);
             fs.mock_set_modified_time(Path::new(&path), old_time);
         }
     }

@@ -145,9 +145,31 @@ fn the_backend_alert_reads_as_an_ordinary_storage_warning() {
     );
     assert_eq!(alert.urgency, "critical");
     assert_eq!(alert.icon.as_deref(), Some("drive-harddisk"));
-    chrono::DateTime::parse_from_rfc3339(&alert.created_at)
+    nails_core::time::Timestamp::parse_rfc3339(&alert.created_at)
         .expect("the alert carries an RFC 3339 timestamp");
     assert_neutral(&alert);
+}
+
+#[test]
+fn an_alert_is_stamped_in_rfc_3339_with_the_utc_offset_spelled_out() {
+    // `YYYY-MM-DDTHH:MM:SS`, a fraction of 0, 3, 6 or 9 digits, and `+00:00`.
+    let stamp = backend_alert().created_at;
+    let shape: String = stamp
+        .chars()
+        .map(|c| if c.is_ascii_digit() { '9' } else { c })
+        .collect();
+    assert!(
+        [
+            "9999-99-99T99:99:99+99:99",
+            "9999-99-99T99:99:99.999+99:99",
+            "9999-99-99T99:99:99.999999+99:99",
+            "9999-99-99T99:99:99.999999999+99:99",
+        ]
+        .contains(&shape.as_str()),
+        "{stamp}"
+    );
+    assert!(stamp.ends_with("+00:00"), "{stamp}");
+    assert!(stamp.as_str() > "2026-01-01T00:00:00", "{stamp}");
 }
 
 #[test]
@@ -385,6 +407,7 @@ fn simulated(finish: Finish) -> HotReport {
         cgroup_root: dir.path().join("cgroup"),
         protected_pids: Vec::new(),
         act: false,
+        selinux: &nails_teardown::whole_root::selinux::KERNEL,
     };
     emergency::run(None, &host, finish)
 }

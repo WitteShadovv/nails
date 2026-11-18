@@ -34,6 +34,7 @@ fn report(side: Side, remaining: &[&str]) -> HotReport {
         cgroup_root: dir.path().join("cgroup"),
         protected_pids: Vec::new(),
         act: false,
+        selinux: &nails_teardown::whole_root::selinux::KERNEL,
     };
     let mut report = emergency::run(None, &host, Finish::Return);
     report.side = side;

@@ -477,25 +477,34 @@ of this changelog for that version becomes the release notes word for word, and
   reads its mode from `/sys/fs/selinux/enforce`, `SELINUX=` and `SELINUXTYPE=` from
   `/etc/selinux/config` the way libselinux reads them, the policy name in its case, when that file
   last changed, and the context of the `nails` process from `/proc/self/attr/current`, without
-  libselinux and without writing anything. It refuses a configuration that names a policy other
-  than `targeted`, as untested, and one that names `targeted` but changed after the boot, by its
-  change time against the boot time in `/proc/stat`, or whose change cannot be told, since the
-  policy SELinux loaded may then be another. It refuses a context without a level or whose level
-  has a sensitivity other than `s0`, which Fedora's targeted policy does not give, whatever the
-  file names, and a host whose kernel runs SELinux without a policy (the process is labelled
-  `kernel`, as `SELINUX=disabled` leaves Linux 6.4 and later where the kernel started SELinux at
-  boot), which it says to start with `selinux=0`. It refuses a `nails` process in a domain other
-  than `unconfined_t` or `unconfined_service_t`, and a fact it cannot read. NAILS does not yet
-  choose the SELinux domain of the processes systemd starts from its copy in `/run` (the
-  transition step at each switch, the watcher and the sleep guard of the hidden session, and the
-  boot-record steps after the way back), nor that of the disk guard, which udev runs itself from
-  the rule NAILS installs there, so for now it refuses every host where SELinux runs. It judges
-  the two apart, since what NAILS sets on systemd's side does not reach what udev runs. It warns,
-  where nothing refuses, when SELinux is permissive or runs in another mode than
-  `/etc/selinux/config` sets. Where the kernel's list cannot be read, a mounted selinuxfs or an
-  SELinux context of the process means SELinux runs, and without either, `/sys/fs/selinux` or a
-  configuration that sets a mode or names a policy is refused without deciding: a mount over `/sys`
-  can hide `/sys/fs/selinux`, so the check does not rule SELinux out because it is missing.
+  libselinux and writing nothing but the questions below to selinuxfs. It refuses a configuration
+  that names a policy other than `targeted`, as untested, and one that names `targeted` but changed
+  after the boot, by its change time against the boot time in `/proc/stat`, or whose change cannot
+  be told, since the policy SELinux loaded may then be another. It refuses a context without a level
+  or whose level has a sensitivity other than `s0`, which Fedora's targeted policy does not give,
+  whatever the file names, and a host whose kernel runs SELinux without a policy (the process is
+  labelled `kernel`, as `SELINUX=disabled` leaves Linux 6.4 and later where the kernel started
+  SELinux at boot), which it says to start with `selinux=0`. It refuses a `nails` process in a
+  domain other than `unconfined_t` or `unconfined_service_t`, and a fact it cannot read. Where the
+  copies of the binary in `/run` take the label of the system's programs (below), it asks the loaded
+  policy, through selinuxfs, what PID 1's start of such a copy comes to, and refuses a host where it
+  would not start the processes systemd starts from it (the transition step at each switch, the
+  watcher and the sleep guard of the hidden session, and the boot-record steps after the way back)
+  in `unconfined_service_t`, or cannot be asked. Where `[session_mounts] read_only` is on, it also
+  refuses a host whose loaded policy does not grant the domain udevd starts the disk guard in,
+  `udev_t` under a targeted policy, every operation the guard makes, from udevd's reading of the
+  rule that starts it to setting a disk read-only, one where no systemd-udevd runs, and one whose
+  policy cannot be asked. For the guard it does not ask the policy's rules for single `ioctl`
+  numbers, which selinuxfs does not answer, nor the labels a relabel of `/run` would give its files,
+  so it does not refuse a policy that denies the guard only there. It judges the two apart, since
+  what NAILS sets on systemd's side does not reach what udev runs. Where the copies take no label,
+  NAILS chooses neither domain, and the check refuses every host where SELinux runs. Fedora, whose
+  hosts run SELinux by default, is not admitted yet. It warns, where nothing refuses, when SELinux
+  is permissive or runs in another mode than `/etc/selinux/config` sets. Where the kernel's list
+  cannot be read, a mounted selinuxfs or an SELinux context of the process means SELinux runs, and
+  without either, `/sys/fs/selinux` or a configuration that sets a mode or names a policy is refused
+  without deciding: a mount over `/sys` can hide `/sys/fs/selinux`, so the check does not rule
+  SELinux out because it is missing.
 - `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
   tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
   the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists
@@ -702,6 +711,25 @@ of this changelog for that version becomes the release notes word for word, and
   `compressed_extents` among the classes it cannot see (ci/oracle/README.md).
 
 ### Changed
+
+- The time code no longer uses chrono, which RustSec lists as unmaintained (RUSTSEC-2026-0543).
+  NAILS writes and reads its times with code of its own, and reads the local time zone's rules with
+  jiff. The times it writes stay as they were: the state file's fields, the JSON reports, the alerts
+  and the examiner's evidence. For the zones of the tz database, the local zone comes from the same
+  files as before (`TZ`, else `/etc/localtime`, else the zone `/etc/localtime` links to or
+  `/etc/timezone` names), with no zone database listed or searched, and the local times `status`
+  shows stay the same. OpenWrt's `/etc/config/system` is no longer read. For any other zone file,
+  malformed or contrived, NAILS may read other files than before, or fewer, and show another time:
+  some that chrono read are now refused, after which NAILS falls back to the zone `/etc/localtime`
+  links to or `/etc/timezone` names, and some that chrono refused are now read. Such files include
+  one with an offset of 24 hours or more, on which chrono could panic, and one whose daylight saving
+  rule changes at a year's start or end, as in some of zic's test zones. A `TZ` value whose daylight
+  saving change falls at a year's start or end may also show another offset than before: for the
+  rules checked against glibc's `date`, NAILS shows what `date` shows. `status --details` no longer
+  lists a log line stamped with a leap second (`23:59:60`), which NAILS never writes.
+  A timestamp in the state file in a form NAILS never wrote, such as a year without four digits, a
+  blank around it or a leap second, now makes the file corrupt, where chrono's reading took some of
+  them.
 
 - `decoy-persistence` warns of a `kernel.core_pattern` that hands core dumps to a handler other
   than systemd-coredump, by a pipe or the kernel's coredump socket, which it left alone before:
@@ -989,6 +1017,43 @@ of this changelog for that version becomes the release notes word for word, and
   a label fail it as they refuse the activation. The roots of the other overlaid decoy filesystems
   and the way to the operator's home are not tested before activation; see
   docs/decoy-requirements.md.
+- Where the kernel may run SELinux, every copy of the binary in `/run` that PID 1 starts NAILS's own
+  steps from gets the label of the system's programs, `system_u:object_r:bin_t:s0`, right after it
+  is written: the copy the last step before each switch and the hidden session's watcher and sleep
+  guard start from, and the copy the way back leaves for the units that make the decoy's login and
+  boot records read as a power cycle. A copy written in `/run` carries the label of the files there,
+  from which a targeted policy starts a program in PID 1's own confined domain, `init_t`; the way
+  back's last step could then not take the kernel log's cursor, and the decoy's journal would take
+  in the hidden session's kernel log. A targeted policy starts a program of the system's label from
+  PID 1 in `unconfined_service_t`. NAILS reads each label back and gives the session's copy its
+  label again right before each switch. The activation is refused, before it writes anything to
+  `/run`, where the loaded policy would not start such a program from PID 1 in
+  `unconfined_service_t` (also from a `nosuid` mount and under `NoNewPrivileges=`) or cannot be
+  asked, and is refused and undone where the copy does not read its label back or
+  `systemd-soft-reboot.service` sets `SELinuxContext=`. `deactivate` refuses a return in the same
+  cases and names `deactivate --poweroff`, and for an `SELinuxContext=` also `emergency --poweroff`.
+  The emergency powers off instead of returning where the copy does not take its label or the policy
+  would not start the step, and the way back leaves out the copy for the decoy's first start, with
+  the units that would start it, where that copy does not take its label. A switch at which PID 1
+  loads the policy anew, as on a host that runs SELinux permissive or has `domain_can_mmap_files`
+  on, gives every file in `/run` the label of the files there again, and so does a `restorecon`: the
+  watcher, the sleep guard and the units of the decoy's first start check their domain when they
+  start. So does the last step of each armed switch, which a relabel after the arm, or an
+  `SELinuxContext=` the emergency does not ask about, would start elsewhere. One that runs outside
+  `unconfined_service_t` gives its copy the label again and starts itself again from it, a start
+  that an `SELinuxContext=` does not apply to. Where one still runs outside it, the watcher and the
+  sleep guard power off, the last step refuses its switch and on the way back powers off first, the
+  one-shot leaves the records as they are and only removes its pieces from `/run`, and the wtmpdb
+  writer runs as the decoy has it. The unit files and drop-ins are the same on every host, and
+  nothing is installed into the decoy's policy. `check` and the activation ask the loaded policy the
+  same through `lsm-status` (above), with the disk guard's operations where it is on. The kernel may
+  run SELinux where the labels of the uppers must be copied, where it lists SELinux among its
+  security modules, and where the host facts report SELinux while that list cannot be read.
+  Elsewhere, as on a stock Debian, Ubuntu or NixOS host, nothing changes. Of the tests in this
+  repository only Fedora's admission gate runs the steps under an enforcing policy and checks their
+  domains, and only a dispatch of the staged distribution tests runs it. The Fedora 44 and 45 images
+  of the oracle run a hidden session and the way back under a permissive policy, without checking
+  the domains; see docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new
@@ -1052,6 +1117,11 @@ of this changelog for that version becomes the release notes word for word, and
   left until power-off, which a boot never has, is removed at the decoy's start. The kernel's lines of a device-mapper hidden volume's
   teardown and PID 1's own last generic lines still follow the cursor (residue catalog row
   `kmsg-import`).
+
+- The catalog checks of `verify` no longer stop with a panic on a file modified after the year
+  262142, a time a crafted btrfs image can hold: such a time is given in seconds since 1970, as the
+  examiner gives an access time.
+
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
@@ -1620,9 +1690,14 @@ of this changelog for that version becomes the release notes word for word, and
   here-document that runs to the end of the file, an expansion that holds what it cannot read as
   zsh does (a `case` in a `$(...)`, a `${ command }`), a command whose name an expansion, brace
   expansion or a glob makes or may make (`$cmd`, `ali$s`), a startup file that is there but cannot
-  be read, which it passed over before, and a shell other than bash, zsh, fish and dash. The lexer
-  reads zsh's code as zsh does where that matters for what it can hide, white space aside (see
-  Known issues): a `<<` in `(( ... ))` is a shift and a quote there a character, a
+  be read, which it passed over before, a file that holds bytes that are no UTF-8, which zsh keeps
+  as they are (in a path too), and a shell other than bash, zsh, fish and dash. The lexer
+  reads zsh's code as zsh does where that matters for what it can hide: it parts words at a space or
+  a tab alone, as zsh does, and keeps any other white space in the word (a vertical tab, a form
+  feed, a carriage return of a Windows line end, a no-break space, Unicode's other spaces), so that
+  a `#` after one starts no comment and `ZDOTDIR=~/.zd` with a Windows line end names `~/.zd\r`, as
+  zsh 5.9 to 5.9.2 read them where the check took them for a space; a `<<` in `(( ... ))` is a shift
+  and a quote there a character, a
   `)` or `}` in quotes closes nothing, a `\'` does not end a `$'...'`, `$$` is a parameter, glob
   flags such as `(#i)` start a word, a command in an arm of a `case` starts after the pattern's `)`,
   the number of a descriptor before a redirection is no command, and zsh's short forms
@@ -1633,10 +1708,33 @@ of this changelog for that version becomes the release notes word for word, and
   was read as code the check follows counts as on, for an option, adds a directory the check cannot
   follow, for `fpath`, or makes the check warn that it cannot tell, so a `source` or `eval` in an
   `echo`, a string, an alias or a here-document, or an `eval` of what a command prints, warns too.
-  bash's files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a
-  backslash going on in the next. It still only warns: such a shell has written the decoy commands
-  before activation starts, so a refusal would take none of them back, and for a shell that writes a
-  line once its command ends, a refused activation would add its own.
+  bash's files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, outside comments.
+  The reader takes a comment to run from a `#` that starts a word after a space, a tab or an
+  operator, in the file's code or a `$(...)` or `<(...)`, to the end of its line, a backslash at its
+  end too, and starts none in a quote, a backquote pair, a `${...}`, arithmetic or a
+  here-document's body (bash 5.3 ran the `PROMPT_COMMAND` after `:\v#;`, on the line after
+  `# ... \`, in `PROMPT_COMMAND='printf " #"; history -a'`, and after ``X=`: #`;``, `Y=${X:- #};`
+  and `W=${X:-a #}b;`, which the check took for comments). The check's tests hold setups that bash
+  5.3 ran, and in those the reader drops only what bash read as a comment. A `((` whose first `(`
+  group a lone `)` closes bash reads as a subshell that starts with that group, and the reader
+  reads the rest of it as code. A `$((` that one closes bash reads as a `$(...)`, to its `)` with
+  quotes and no comment, and parses as code only where it expands the word. bash 5.3 wrote each
+  typed line with `X="$((echo a); echo "b #")"; PROMPT_COMMAND='history -a'`, which the check
+  passed before, and with `false && X=$((echo a)#); PROMPT_COMMAND='history -a'`, and the check
+  warns at both. Where the reader cannot tell what bash reads, in such a `$((...)`, in the first
+  group of a `((`, after the `)` that ends such a subshell, in a `(` it keeps open (an extended
+  glob's group, `@(a| #b)`) or after a `)` that closes nothing it saw open, it keeps the text. Kept
+  text can make the check warn where bash runs nothing, as where bash expands such a `$((...)` and
+  a comment in it takes the `PROMPT_COMMAND` assignment along. It can also make the check pass
+  where bash runs that assignment: where bash reads the text as a comment, the reader takes a quote
+  in it for one that opens, and may then start a comment inside a quote bash opened. A `case` in a
+  `$(...)` it may read otherwise than bash, as a pattern's `)` ends the `$(...)` for it, and where
+  that `$(...)` stands in a `"..."`, a `${...}`, a `$((...)` or an arithmetic command, it may end
+  that too soon and start a comment in it that bash never starts. Known issues names these false
+  passes. A line whose code ends in a backslash goes on in the next. It still only warns: such a
+  shell has written the decoy commands before activation starts, so a refusal would take none of
+  them back, and for a shell that writes a line once its command ends, a refused activation would
+  add its own.
 - The `incremental-history-flush` check no longer warns that it cannot tell at forms that many zsh
   setups hold, each by a rule for the form it knows, but for `compinit`, which stays a doubt (see
   below), and a hook's output to `$TTY` (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`), which stays
@@ -1689,10 +1787,10 @@ of this changelog for that version becomes the release notes word for word, and
   an `LD_` variable or `ARGV0` in a file read before it or in a function autoloaded and run before
   it, and `ARGV0` or an `LD_` variable in the shell's environment, which the check must know), and
   the loop in `/etc/zshenv` that puts three directories of each Nix profile in front of `fpath`, are
-  known as NixOS writes them, so with `SHARE_HISTORY` taken out of `programs.zsh.setOptions`
-  (`HIST_FCNTL_LOCK` kept there, as by default) and `programs.zsh.enableCompletion` off (or
-  `programs.zsh.enableGlobalCompInit` alone), which leaves out the `compinit` line, a zsh started
-  after the rebuild passes with the files `programs.zsh` generates. On NixOS the check reads the `/etc/zshenv.local` that the
+  known as NixOS writes them, so a zsh started as `zsh -f` passes with the `/etc/zshenv` and the
+  `set-environment` NixOS writes (its generated `/etc/zshrc` runs the `hostname` program and sources
+  `/etc/zinputrc`, which binds keys and makes widgets, none of the commands the check knows to be
+  harmless, see below). On NixOS the check reads the `/etc/zshenv.local` that the
   zshenv nixpkgs builds into zsh reads, and `/etc/set-environment` where there is no `/etc/zshenv`,
   and the fix `zsh -f` names it. A zsh from elsewhere, or one the check reads without a typed shell,
   warns that it cannot tell where the functions the files autoload are, as before.
@@ -1719,7 +1817,29 @@ of this changelog for that version becomes the release notes word for word, and
   command, a `return` in a trap's string or a line a key types, and a signal that may reach the
   shell's process (`kill -HUP $$`, `kill 0`, a pid an expansion makes, `pkill`, `killall`), from a
   `$(...)` too; zsh 5.9 to 5.9.2 wrote the line with `preexec() { exit }`, `bye`, `kill -HUP $$`, a
-  `TRAPZERR` that exits and each of the others. A builtin's name runs an outside program, which gets
+  `TRAPZERR` that exits and each of the others. So is a job the files start that may run on after
+  them and signal the shell later, on which zsh ends and writes the file (a list in the background,
+  `&`, `&!` or `&|`, a process substitution, a job a `$(...)` leaves running, what `nohup`,
+  `setsid`, `daemonize`, `start-stop-daemon`, `systemd-run`, `at`, `batch`, `crontab` and zsh's
+  `zpty` start, and a job the code a shell is given with `-c` starts), where its code may signal the
+  shell's process, runs code the check does not read as the job's, or runs a command that may be an
+  outside program, which may signal its parent, the shell: any but a builtin of zsh's and a function
+  or an alias whose code holds none of that; zsh 5.9 to 5.9.2 wrote the lines with
+  `{ sleep 3; kill -HUP $$ } &!`, `( sleep 3; pkill -HUP -P $PPID zsh ) &!`,
+  `exec {fd}< <(sleep 3; kill -HUP $$)`, `nohup sh -c 'sleep 3; kill -HUP $PPID' &!`,
+  `sh -c '(sleep 3; kill -HUP $PPID) &'`, in a sourced file and in a function the files run, where
+  the check passed. And the line a widget gives zsh to run is read: a value a function gives
+  `BUFFER` as written as a line typed, a doubt where zsh may expand history in it (`!1`), and any
+  other way a function sets the line (`LBUFFER=exit`, `BUFFER=$c`, `local BUFFER=exit`,
+  `print -v BUFFER`, a line that sets it where the walk reads no such assignment) and a widget of
+  zsh's own a function runs that may put other text in it (`zle .up-history`, `zle .yank`,
+  `zle .kill-word`, `zle vi-cmd-mode` and a `zle -K` of another keymap than `main`, `emacs` or
+  `viins`, after which the keys typed run vi's commands, one that completes the word at the cursor
+  where a file sets the line as written) as a doubt should a widget run the function; zsh 5.9 to
+  5.9.2 ran `exit` and wrote the lines typed before it with `BUFFER=exit` in a wrapper of
+  `accept-line`, in `zle-line-init` and in `zle-line-finish`, `LBUFFER=exit`, `BUFFER=$c` and the
+  others, where the check passed. The lines `zle -U`, `print -z` and `bindkey -s` type are doubts
+  too where zsh may expand history in them. A builtin's name runs an outside program, which gets
   its words, after `command` but where `POSIX_BUILTINS` is on (`command print -r -- "$1"`), after a
   `disable` of it (`disable print`, `disable -m 'p*'`) and for a builtin of a module zsh does not
   load as the name is first run (`stat`, `strftime`), so in a hook such a name counts as that
@@ -1871,11 +1991,19 @@ of this changelog for that version becomes the release notes word for word, and
   unset parameter under `NO_UNSET`, a read-only one, a bad subscript, a division by zero) that may
   come before the assignment, and then reads the home's files: zsh 5.9 to 5.9.2 did so with each,
   where the check read only `ZDOTDIR`'s. Only an assignment that is the first command of a user's
-  file zsh certainly reads, with a value whose expansion cannot fail, drops them (the check takes a
-  `.zshenv` you cannot read, and a first command a parse error later on its line stops, for ones
-  zsh reads and runs: see Known issues): not one in `/etc`,
+  file zsh certainly reads, with a value whose expansion cannot fail, drops them: not one in `/etc`,
   as a zsh reads its stage's file in `/etc` or in `/etc/zsh`, as it was built, nor one in
-  `.zprofile` or `.zlogin` for a shell the check cannot tell is a login shell. A `~` a quote or a
+  `.zprofile` or `.zlogin` for a shell the check cannot tell is a login shell, nor one in a file the
+  files source. As zsh opens a user's file as the user it runs as and skips one it cannot open
+  without a word, the check takes a file for one zsh reads only where that user (the shell's file
+  system uid, or yours for your login shell) owns it, its owner may read it by its mode and it is no
+  link; and as zsh parses the whole line a command stands on before it runs any of it, the
+  assignment must stand alone on the file's first line that holds code, or in an `export`,
+  `typeset`, `declare`, `readonly`, `local` or `unset` (after `builtin` or `noglob` too) of such
+  assignments and names alone, with no flag. With a `.zshenv` of mode 000 or 044, one behind a link
+  into a folder its user cannot search, and with `ZDOTDIR=~/.zd; then`, `ZDOTDIR=~/.zd;;`,
+  `ZDOTDIR=~/.zd; print >` or `export -x ZDOTDIR=~/.zd`, zsh 5.9 to 5.9.2 read `~/.zshrc` and wrote
+  each line where the check read only `~/.zd`'s. A `~` a quote or a
   backslash keeps (`ZDOTDIR="~/.zd"`, `\~/.zd`, `source "~/x.zsh"`) is a path below the working
   directory, a doubt, and a word with a quote or a backslash before its `=` assigns nothing, as zsh
   runs it as a command's name (`"ZDOTDIR=$HOME/.zd"`): with each, zsh 5.9 to 5.9.2 read another
@@ -1932,6 +2060,75 @@ of this changelog for that version becomes the release notes word for word, and
   the home or its `ZDOTDIR` without that option warns however new it is, and the warning says to
   turn the option on or to keep the history file in a directory of its own. Where the check cannot
   read when the shell started, the fix the warning gives is the usual one, not a new zsh.
+- The `incremental-history-flush` check reads zsh's startup code by a list of the commands it knows
+  to be harmless: each command it reads in the startup files, and in every hook, widget, alias,
+  function and job it follows that zsh may run, is read by its name and every word, and any other
+  is a doubt, so that a command the list does not hold makes it warn that it cannot tell instead of
+  passing. The list holds the builtins that give a status or print text (but `print -z`, `-s`, `-v`,
+  `-u`, `-p` and `printf -v`), `return`, `exit` and the like, `cd`, `umask`, `hash -d`, `setopt`,
+  `unsetopt` and `set -o` of any option of zsh 5.9 to 5.9.2 by its name but `CSH_JUNKIE_LOOPS`,
+  `emulate` of zsh's, sh's or ksh's mode, the `typeset` family, `unset` and assignments of a
+  parameter that is the user's own, one of zsh's own that steers nothing the check reads
+  (`HISTFILE`, `HISTSIZE`, `PATH`, `LANG`, `TERM`) or one it reads itself (`ZDOTDIR`, `fpath`, the
+  prompts, `TMOUT`), `source`, `eval` of words as written, `autoload`, `alias`, `trap` of code as
+  written, `zstyle`, `let`, `bindkey -e` and `-v`, `fc` and `history` that list, write or read the
+  history file, and `kill -l`. Any other of zsh's own parameters (`histchars`, `STTY`, `POSTEDIT`,
+  `commands[sudo]=...`) is a doubt, as is one the check reads itself assigned in arithmetic
+  (`(( FPATH = 1 ))`), and so is, in a function, one of the line editor's set in any form
+  (`HISTNO=1`, `(( HISTNO = 1 ))`, `${HISTNO::=1}`, `CURSOR`). So an outside program, in the
+  foreground or the background, a key binding other than zsh's own keymaps, a widget, a `zle` that
+  runs or changes one, `add-zle-hook-widget` and a terminal setting are doubts, and a name that is
+  no builtin of zsh's counts as the function or the alias the files define or autoload by it only
+  where the code it stands in certainly defines one before it (at the top level of the same file,
+  or of the file that sources that one, with nothing that may keep the definition from running):
+  else zsh runs the outside program `PATH` finds by that name. A definition in another file, or
+  after the code that runs the name, counts for nothing, as zsh stops a file at an error or a
+  `return` that may come before it. An alias counts the same way, for a name with no quote or
+  backslash in it past no precommand that is a builtin (`noglob`), and only for code zsh reads after
+  the `alias` ran: zsh reads a file up to a newline that leaves nothing open, runs that part, then
+  reads on, and puts an alias's value in place as it reads, so an alias counts on a later line and
+  in a file sourced after it, not on the rest of its own line, a line joined to it (by a backslash
+  or a trailing `&&`, `||` or `|`), the rest of a `{ ... }` group or a compound command it stands
+  in, or a function defined in the same part, and nowhere where a file or the command line may turn
+  `ALIASES` off in any spelling (`setopt no_aliases`, `unsetopt ALIASES`, `set -o noaliases`,
+  `options[aliases]=off`, `emulate zsh -o noaliases`, `zsh +o aliases`). One whose value hands the
+  words it is used with to a command that takes them otherwise than harmlessly is a doubt where it
+  is used with words. A function of the files' own named `add-zsh-hook` or `add-zle-hook-widget`
+  (or such a file of theirs in `fpath`) is read as code where they run it and where `prompt` does.
+  A function or an alias named like a builtin by which the check reads a definition (`alias`,
+  `unalias`, `functions`, `unfunction`, `autoload`, `unhash`), or a `functions -c` copy to such a
+  name, is a doubt, as is one named like the `typeset` family. An `emulate` of sh's, ksh's or csh's
+  mode, which turns `GLOB_SUBST` on, is a doubt where the files name `SH_GLOB` (or the mode may be
+  csh's) and `BARE_GLOB_QUAL` or `EXTENDED_GLOB`, with which a glob qualifier in a value runs, and
+  an `emulate` whose line gives it no mode (`alias em=emulate`) counts as one of any mode wherever
+  the check reads an option an `emulate` may turn on. zsh 5.9, 5.9.1 and 5.9.2 wrote the typed
+  lines, where the check passed, with `alias later=:; later`, `alias later=: && later`, the same
+  joined by a backslash or a trailing `&&`, in a `{ ... }` group or a function defined with the
+  alias, `stty` behind such an alias, `setopt no_aliases` and the other spellings above,
+  `add-zsh-hook() { later }`, `alias alias=:`, `alias() { : }`, `functions -c f alias`,
+  `functions() { : }`, and `emulate sh`, `ksh`, `bash` or `-R sh` with
+  `setopt bareglobqual noshglob` and a glob qualifier in a value built in two parts. A function or
+  an alias zsh never runs counts for nothing, and one named like the command a NAILS command is
+  typed with that runs the program of its own name with its words alone
+  (`sudo() { command sudo "$@" }`, `alias sudo=sudo`) passes. zsh 5.9, 5.9.1 and 5.9.2 wrote the
+  typed lines, where the check passed, with a widget that sets `HISTNO` (in `accept-line`,
+  `zle-line-init`, `zle-line-finish`, `self-insert`, by arithmetic and in a function the widget
+  runs), `bindkey w beginning-of-history`, `alias k=kill` or `alias kh='kill -HUP'` used in a job,
+  `preexec`, `precmd` or `zle-line-init`, the code a shell is given with `-c` after an option's
+  value or behind an alias (`sh -o errexit -c`, `bash -O extglob -c`, `bash --rcfile /dev/null -c`,
+  `bash -c -o errexit`, `alias s=sh`), a `coproc` in such code, a program that leaves a process of
+  its own (`sh <<'EOF'`, `sh -s <<<`, `env sh -c`, `nice sh -c`, `timeout 20 sh -c`,
+  `env setsid -f sh -c`, `perl -e '... fork ...'`, a script of one's own), `stty eof '^M'`, and a
+  call of a name before or where no function of it is certainly defined, which ran a program of that
+  name in `PATH` (`later; later() { : }`, a definition in an `if`, after `&&`, in a subshell or a
+  `$(...)`, after a `return`, in a function the files run or a hook they define before the
+  definition, in `.zshenv`, in a sourced file or an `eval` that a glob matching nothing stopped
+  before it, in the background or a pipeline, in a file sourced twice, and an alias used as `\later`
+  or `noglob later`). NixOS's generated `/etc/zshrc` runs the `hostname` program and sources
+  `/etc/zinputrc`, which binds keys and makes widgets, so a zsh that reads it warns: `zsh -f` passes
+  there. This makes the check warn at setups zsh 5.9.2 writes nothing with, as at an outside program
+  a hook runs (`precmd() { git status }`), at a definition in an `if` or another file, and at the
+  files NixOS generates.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
@@ -2750,17 +2947,26 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Known issues
 
-- The history check (`incremental-history-flush`) still passes four kinds of zsh setup with which
-  zsh 5.9 to 5.9.2 wrote the typed lines to its history file in tests: a job or a program the
-  startup files start that signals the shell later (`{ sleep 3; kill -HUP $$ } &!`, or one
-  through `nohup sh -c`), which ends it; a widget that rewrites the line zsh runs (`BUFFER=exit`
-  in a wrapper of `accept-line`, in `zle-line-init` or in `zle-line-finish`); an assignment of
-  `ZDOTDIR` or `XDG_CONFIG_HOME` as the first command of a `.zshenv` that zsh does not run (a file
-  you cannot read, as `sudo $EDITOR ~/.zshenv` can leave it under `umask 077`, or a first line
-  with a parse error after the assignment); and a vertical tab, a form feed, a carriage return (a
-  Windows line end), a no-break space or another Unicode space outside quotes, which the check
-  takes for a space where zsh keeps it in the word, so that a `#` after it starts no comment for
-  zsh. With a zsh started as `zsh -f` only `/etc/zshenv` can hold one. See docs/operator-guide.md.
+- The history check (`incremental-history-flush`) does not see a security module (SELinux,
+  AppArmor) that keeps zsh from opening a startup file you own and may read by its mode, nor a
+  program named like the command you type that zsh finds first in `PATH` (a `sudo` script in
+  `~/bin`). It reads zsh's startup code by rules that follow zsh 5.9 to 5.9.2 as far as its tests
+  and the setups run in zsh went, and bash's by rules that follow bash 5.3 as far as its tests
+  went, so a form they read otherwise than those shells do can still pass. In bash's files it
+  passes some setups with which bash 5.3.9 runs a `history -a` from `PROMPT_COMMAND`: with a quote
+  in text that bash reads as a comment and the check keeps, after the `)` that ends a subshell, in
+  a subshell's `(` or in the first group of a `((` (`(: #'` with
+  `) ; X='); : #'; PROMPT_COMMAND='history -a'` on the next line), and with a `case` in a `$(...)`
+  that stands in a `"..."`, a `${...}`, a `$((...)` or an arithmetic command
+  (`(( $(case x in x) echo 1;; esac) # )); PROMPT_COMMAND='history -a'`). It reads zsh's startup
+  code by a list of the commands it knows to be harmless, so it warns at an outside program a hook
+  runs (`precmd() { git status }`) and at the `/etc/zshrc` NixOS generates, where zsh writes
+  nothing: type the decoy commands in a zsh started as `zsh -f`. It also warns at an alias used in
+  an `eval` on the line that defines it, which zsh reads after the alias ran, and at any
+  `emulate sh` beside `setopt bareglobqual noshglob`, whatever the values hold. In bash's files it
+  warns at a `PROMPT_COMMAND` assignment in a comment inside a `$((...)` that bash reads as a
+  command substitution (`X=$((echo a)#; PROMPT_COMMAND='history -a'` with the `)` on the next
+  line), as it cannot tell where bash expands one. See docs/operator-guide.md.
 - A switch into or out of a hidden session can stop halfway: the programs have closed, but the
   screen stays dark or still and no login screen comes. Once the old system's units have stopped,
   PID 1 can go to sleep with work still queued and wait until something wakes it. This matches a

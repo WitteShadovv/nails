@@ -1,0 +1,839 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Zones: the times shown in them, and which files finding the local zone
+//! reads in each case.
+
+use super::Timestamp;
+use super::zone::{Zone, ZoneFile, ZoneFiles};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// A TZif version 2 file (RFC 8536), as `nails-cli/tests/time_strings.rs`
+/// writes one.
+fn tzif(types: &[(i32, bool, &str)], transitions: &[(i64, u8)], footer: &str) -> Vec<u8> {
+    tzif_with_leap_seconds(types, transitions, &[], footer)
+}
+
+/// The same with a leap-second table of (leap time, correction) records, as a
+/// `right/` zone has.
+fn tzif_with_leap_seconds(
+    types: &[(i32, bool, &str)],
+    transitions: &[(i64, u8)],
+    leap_seconds: &[(i64, i32)],
+    footer: &str,
+) -> Vec<u8> {
+    fn header(out: &mut Vec<u8>, counts: [u32; 6]) {
+        out.extend_from_slice(b"TZif2");
+        out.extend_from_slice(&[0; 15]);
+        for count in counts {
+            out.extend_from_slice(&count.to_be_bytes());
+        }
+    }
+    let mut out = Vec::new();
+    header(&mut out, [0, 0, 0, 0, 1, 4]);
+    out.extend_from_slice(&0i32.to_be_bytes());
+    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(b"UTC\0");
+    let mut chars = Vec::new();
+    let mut index = Vec::new();
+    for (_, _, name) in types {
+        index.push(u8::try_from(chars.len()).unwrap());
+        chars.extend_from_slice(name.as_bytes());
+        chars.push(0);
+    }
+    let count = |n: usize| u32::try_from(n).unwrap();
+    header(
+        &mut out,
+        [
+            0,
+            0,
+            count(leap_seconds.len()),
+            count(transitions.len()),
+            count(types.len()),
+            count(chars.len()),
+        ],
+    );
+    for (at, _) in transitions {
+        out.extend_from_slice(&at.to_be_bytes());
+    }
+    for (_, kind) in transitions {
+        out.push(*kind);
+    }
+    for ((offset, dst, _), at) in types.iter().zip(&index) {
+        out.extend_from_slice(&offset.to_be_bytes());
+        out.push(u8::from(*dst));
+        out.push(*at);
+    }
+    out.extend_from_slice(&chars);
+    for (at, correction) in leap_seconds {
+        out.extend_from_slice(&at.to_be_bytes());
+        out.extend_from_slice(&correction.to_be_bytes());
+    }
+    out.push(b'\n');
+    out.extend_from_slice(footer.as_bytes());
+    out.push(b'\n');
+    out
+}
+
+/// A fixed zone `name` of `offset` seconds, as a TZif file.
+fn fixed_file(offset: i32, name: &str, footer: &str) -> Vec<u8> {
+    tzif(&[(offset, false, name)], &[], footer)
+}
+
+fn berlin() -> Vec<u8> {
+    tzif(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "CET-1CEST,M3.5.0,M10.5.0/3",
+    )
+}
+
+/// Files that stand in for the machine's, recording every path read or
+/// whose link is read.
+#[derive(Default)]
+struct Files {
+    files: HashMap<PathBuf, ZoneFileKind>,
+    links: HashMap<PathBuf, PathBuf>,
+    reads: RefCell<Vec<String>>,
+}
+
+#[derive(Clone)]
+enum ZoneFileKind {
+    Bytes(Vec<u8>),
+    Directory,
+}
+
+impl Files {
+    fn file(mut self, path: &str, bytes: Vec<u8>) -> Self {
+        self.files
+            .insert(PathBuf::from(path), ZoneFileKind::Bytes(bytes));
+        self
+    }
+
+    fn directory(mut self, path: &str) -> Self {
+        self.files
+            .insert(PathBuf::from(path), ZoneFileKind::Directory);
+        self
+    }
+
+    fn link(mut self, path: &str, target: &str) -> Self {
+        self.links
+            .insert(PathBuf::from(path), PathBuf::from(target));
+        self
+    }
+
+    fn reads(&self) -> Vec<String> {
+        self.reads.borrow().clone()
+    }
+}
+
+impl ZoneFiles for Files {
+    fn read(&self, path: &Path) -> ZoneFile {
+        self.reads.borrow_mut().push(path.display().to_string());
+        match self.files.get(path) {
+            Some(ZoneFileKind::Bytes(bytes)) => ZoneFile::Read(bytes.clone()),
+            Some(ZoneFileKind::Directory) => ZoneFile::Unreadable,
+            None => ZoneFile::NotOpened,
+        }
+    }
+
+    fn read_link(&self, path: &Path) -> Option<PathBuf> {
+        self.reads
+            .borrow_mut()
+            .push(format!("link {}", path.display()));
+        self.links.get(path).cloned()
+    }
+}
+
+/// 2026-03-29T01:00:00Z, the first second of summer time in Berlin.
+fn summer() -> Timestamp {
+    Timestamp::from_unix_seconds(1_774_746_000).unwrap()
+}
+
+fn shown(zone: &Zone) -> String {
+    zone.stamp(summer())
+}
+
+/// A machine whose `/etc/localtime` is Berlin's zone file, linked as Debian
+/// links it.
+fn debian() -> Files {
+    Files::default()
+        .file("/etc/localtime", berlin())
+        .link("/etc/localtime", "/usr/share/zoneinfo/Europe/Berlin")
+        .file("/usr/share/zoneinfo/Europe/Berlin", berlin())
+        .file("/etc/timezone", b"Europe/Berlin\n".to_vec())
+}
+
+#[test]
+fn without_tz_only_etc_localtime_is_read() {
+    let files = debian();
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 03:00:00 +02:00"
+    );
+    assert_eq!(files.reads(), ["/etc/localtime"]);
+
+    let files = debian();
+    let zone = Zone::find(Some("localtime"), &files);
+    assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+    assert_eq!(files.reads(), ["/etc/localtime"]);
+}
+
+#[test]
+fn an_empty_tz_is_utc_and_reads_nothing() {
+    let files = debian();
+    assert_eq!(
+        shown(&Zone::find(Some(""), &files)),
+        "2026-03-29 01:00:00 +00:00"
+    );
+    assert!(files.reads().is_empty());
+}
+
+#[test]
+fn a_tz_rule_reads_no_file_but_the_zone_directories_it_is_looked_for_in() {
+    let files = debian();
+    let zone = Zone::find(Some("<+05>-5"), &files);
+    assert_eq!(shown(&zone), "2026-03-29 06:00:00 +05:00");
+    assert_eq!(
+        files.reads(),
+        [
+            "/usr/share/zoneinfo/<+05>-5",
+            "/share/zoneinfo/<+05>-5",
+            "/etc/zoneinfo/<+05>-5",
+            "/usr/share/lib/zoneinfo/<+05>-5",
+        ]
+    );
+}
+
+#[test]
+fn a_tz_zone_name_reads_its_file_from_the_first_directory_that_has_it() {
+    let files = Files::default()
+        .file("/etc/zoneinfo/Europe/Berlin", berlin())
+        .file(
+            "/usr/share/lib/zoneinfo/Europe/Berlin",
+            fixed_file(0, "UTC", "UTC0"),
+        );
+    let zone = Zone::find(Some("Europe/Berlin"), &files);
+    assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+    assert_eq!(
+        files.reads(),
+        [
+            "/usr/share/zoneinfo/Europe/Berlin",
+            "/share/zoneinfo/Europe/Berlin",
+            "/etc/zoneinfo/Europe/Berlin",
+        ]
+    );
+
+    // With a colon, the same.
+    let files = debian();
+    let zone = Zone::find(Some(":Europe/Berlin"), &files);
+    assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+    assert_eq!(files.reads(), ["/usr/share/zoneinfo/Europe/Berlin"]);
+}
+
+#[test]
+fn an_absolute_tz_path_is_read_as_it_stands() {
+    let files = Files::default().file("/srv/zone", fixed_file(-3 * 3600, "XXT", "XXT3"));
+    let zone = Zone::find(Some(":/srv/zone"), &files);
+    assert_eq!(shown(&zone), "2026-03-28 22:00:00 -03:00");
+    assert_eq!(files.reads(), ["/srv/zone"]);
+    let zone = Zone::find(Some("/srv/zone"), &files);
+    assert_eq!(shown(&zone), "2026-03-28 22:00:00 -03:00");
+}
+
+/// The reads of the fallback (step 5) on the [`debian`] machine.
+const FALLBACK: [&str; 2] = ["link /etc/localtime", "/usr/share/zoneinfo/Europe/Berlin"];
+
+#[test]
+fn a_tz_naming_nothing_falls_back_to_the_zone_etc_localtime_links_to() {
+    for tz in ["Nowhere/Zone", "XST5XDT", " ", "UTC", "<+02>-2 extra"] {
+        let files = debian();
+        let zone = Zone::find(Some(tz), &files);
+        assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00", "TZ={tz:?}");
+        let reads = files.reads();
+        assert_eq!(reads.len(), 6, "{reads:?}");
+        assert_eq!(reads[4..], FALLBACK, "TZ={tz:?}");
+    }
+    // A colon form is never read as a rule: no file, then the fallback.
+    let files = debian();
+    let zone = Zone::find(Some(":UTC0"), &files);
+    assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+    assert_eq!(files.reads()[4..], FALLBACK);
+}
+
+#[test]
+fn a_zone_file_that_opens_but_does_not_read_ends_the_search() {
+    // A directory under the first zone directory: no further directory, no
+    // rule, the fallback.
+    let files = debian().directory("/usr/share/zoneinfo/Europe");
+    let zone = Zone::find(Some("Europe"), &files);
+    assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+    let mut expected = vec!["/usr/share/zoneinfo/Europe".to_string()];
+    expected.extend(FALLBACK.map(String::from));
+    assert_eq!(files.reads(), expected);
+
+    // A file that is no TZif file: likewise.
+    let files = debian().file("/usr/share/zoneinfo/UTC0", b"not a zone".to_vec());
+    let zone = Zone::find(Some("UTC0"), &files);
+    assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+}
+
+#[test]
+fn a_missing_or_broken_etc_localtime_falls_back_and_then_to_utc() {
+    // Missing, no link, but /etc/timezone names the zone.
+    let files = Files::default()
+        .file("/usr/share/zoneinfo/Europe/Berlin", berlin())
+        .file("/etc/timezone", b"Europe/Berlin \n".to_vec());
+    let zone = Zone::find(None, &files);
+    assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+    assert_eq!(
+        files.reads(),
+        [
+            "/etc/localtime",
+            "link /etc/localtime",
+            "/etc/timezone",
+            "/usr/share/zoneinfo/Europe/Berlin",
+        ]
+    );
+
+    // A broken link to a zone that is not there: UTC.
+    let files = Files::default().link("/etc/localtime", "/usr/share/zoneinfo/Mars/Olympus");
+    let zone = Zone::find(None, &files);
+    assert_eq!(shown(&zone), "2026-03-29 01:00:00 +00:00");
+    assert_eq!(
+        files.reads(),
+        [
+            "/etc/localtime",
+            "link /etc/localtime",
+            "/usr/share/zoneinfo/Mars/Olympus",
+        ]
+    );
+
+    // A link NixOS writes, relative, names the zone below /etc/zoneinfo, which
+    // is still read from /usr/share/zoneinfo.
+    let files = Files::default()
+        .link("/etc/localtime", "../etc/zoneinfo/Europe/Berlin")
+        .file("/usr/share/zoneinfo/Europe/Berlin", berlin());
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 03:00:00 +02:00"
+    );
+
+    // A link elsewhere names nothing; /etc/timezone is read next, and an
+    // empty name opens no zone.
+    let files = Files::default()
+        .link("/etc/localtime", "/opt/zones/Berlin")
+        .file("/etc/timezone", b"\n".to_vec())
+        .directory("/usr/share/zoneinfo/");
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 01:00:00 +00:00"
+    );
+    assert_eq!(
+        files.reads(),
+        [
+            "/etc/localtime",
+            "link /etc/localtime",
+            "/etc/timezone",
+            "/usr/share/zoneinfo/",
+        ]
+    );
+
+    // Nothing at all: UTC, after looking where the zone could be named.
+    let files = Files::default();
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 01:00:00 +00:00"
+    );
+    assert_eq!(
+        files.reads(),
+        ["/etc/localtime", "link /etc/localtime", "/etc/timezone"]
+    );
+
+    // A name that starts with `/` follows the zone directory as it stands:
+    // it names no zone file, and the file the name itself gives is not read.
+    let files = Files::default()
+        .file("/usr/share/zoneinfo/Europe/Berlin", berlin())
+        .file(
+            "/etc/timezone",
+            b"/usr/share/zoneinfo/Europe/Berlin\n".to_vec(),
+        );
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 01:00:00 +00:00"
+    );
+    assert_eq!(
+        files.reads()[3..],
+        ["/usr/share/zoneinfo//usr/share/zoneinfo/Europe/Berlin"]
+    );
+    let files = Files::default()
+        .file("/etc/hostname", berlin())
+        .file("/etc/timezone", b"/etc/hostname\n".to_vec());
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 01:00:00 +00:00"
+    );
+    assert_eq!(files.reads()[3..], ["/usr/share/zoneinfo//etc/hostname"]);
+    // A link with a doubled slash names `/Europe/Berlin`, which still opens
+    // the zone below the directory.
+    let files = Files::default()
+        .link("/etc/localtime", "/usr/share/zoneinfo//Europe/Berlin")
+        .file("/usr/share/zoneinfo/Europe/Berlin", berlin());
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 03:00:00 +02:00"
+    );
+    assert_eq!(files.reads()[2..], ["/usr/share/zoneinfo//Europe/Berlin"]);
+
+    // /etc/timezone that is not UTF-8 names nothing.
+    let files = Files::default().file("/etc/timezone", vec![0xff, 0xfe]);
+    assert_eq!(
+        shown(&Zone::find(None, &files)),
+        "2026-03-29 01:00:00 +00:00"
+    );
+}
+
+#[test]
+fn a_corrupt_etc_localtime_is_no_zone() {
+    for bytes in [
+        Vec::new(),
+        b"TZif".to_vec(),
+        b"not a zone file at all".to_vec(),
+        berlin()[..60].to_vec(),
+    ] {
+        let files = Files::default().file("/etc/localtime", bytes);
+        assert_eq!(
+            shown(&Zone::find(None, &files)),
+            "2026-03-29 01:00:00 +00:00"
+        );
+    }
+}
+
+/// [`berlin`] with the newline that ends its footer replaced by `ending`.
+fn berlin_ending_in(ending: &[u8]) -> Vec<u8> {
+    let mut bytes = berlin();
+    bytes.pop();
+    bytes.extend_from_slice(ending);
+    bytes
+}
+
+/// Berlin's 2026 transitions in a version 2 file whose footer is a single
+/// newline: no rule, so the last transition's offset holds on.
+fn berlin_with_one_newline_footer() -> Vec<u8> {
+    let mut bytes = tzif(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "",
+    );
+    bytes.pop();
+    bytes
+}
+
+/// 2026-11-17T10:00:00Z, in Berlin's winter time.
+fn winter() -> Timestamp {
+    Timestamp::from_unix_seconds(1_794_909_600).unwrap()
+}
+
+/// 2027-07-01T00:00:00Z, after [`berlin`]'s last transition, in summer time.
+fn summer_2027() -> Timestamp {
+    Timestamp::from_unix_seconds(1_814_400_000).unwrap()
+}
+
+#[test]
+fn a_footer_ending_in_a_carriage_return_or_of_one_newline_is_read_as_before() {
+    // A copy of a zone in /etc/localtime, and /etc/timezone naming another:
+    // the copy is read and nothing else, as NAILS always read such a file.
+    for bytes in [berlin_ending_in(b"\r\n"), berlin_with_one_newline_footer()] {
+        let files = Files::default()
+            .file("/etc/localtime", bytes)
+            .file("/etc/timezone", b"America/New_York\n".to_vec())
+            .file(
+                "/usr/share/zoneinfo/America/New_York",
+                fixed_file(-5 * 3600, "EST", "EST5"),
+            );
+        let zone = Zone::find(None, &files);
+        assert_eq!(shown(&zone), "2026-03-29 03:00:00 +02:00");
+        assert_eq!(zone.stamp(winter()), "2026-11-17 11:00:00 +01:00");
+        assert_eq!(files.reads(), ["/etc/localtime"]);
+    }
+    // The rule of a footer ending in `\r\n`, and of one with blanks around
+    // its rule, holds after the last transition; a footer of one newline
+    // holds none.
+    for bytes in [
+        berlin_ending_in(b"\r\n"),
+        tzif(
+            &[(3600, false, "CET"), (7200, true, "CEST")],
+            &[(1_774_746_000, 1), (1_792_890_000, 0)],
+            " \t CET-1CEST,M3.5.0,M10.5.0/3 \r",
+        ),
+    ] {
+        let zone = Zone::tzif(&bytes).unwrap();
+        assert_eq!(zone.stamp(summer_2027()), "2027-07-01 02:00:00 +02:00");
+    }
+    let zone = Zone::tzif(&berlin_with_one_newline_footer()).unwrap();
+    assert_eq!(zone.stamp(summer_2027()), "2027-07-01 01:00:00 +01:00");
+}
+
+#[test]
+fn a_footer_followed_by_more_is_left_to_jiff() {
+    // A blank or bytes after the footer's line: the file is read with the
+    // rule on that line.
+    for ending in [b"\n ".as_slice(), b"\ngarbage", b"\n\nX"] {
+        let zone = Zone::tzif(&berlin_ending_in(ending)).unwrap();
+        assert_eq!(zone.stamp(summer_2027()), "2027-07-01 02:00:00 +02:00");
+        assert_eq!(zone.stamp(winter()), "2026-11-17 11:00:00 +01:00");
+    }
+    // A rule that runs over two lines: its first line is the rule.
+    let bytes = tzif(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "CET-1\nCEST",
+    );
+    let zone = Zone::tzif(&bytes).unwrap();
+    assert_eq!(zone.stamp(summer_2027()), "2027-07-01 01:00:00 +01:00");
+    // A footer that is not UTF-8, or that holds no line, is no zone.
+    for ending in [b"\n\xff\n".as_slice(), b""] {
+        let mut bytes = berlin_with_one_newline_footer();
+        bytes.pop();
+        bytes.extend_from_slice(ending);
+        assert!(Zone::tzif(&bytes).is_none(), "{ending:?}");
+    }
+}
+
+#[test]
+fn a_footer_with_an_offset_of_24_hours_or_more_is_no_zone_as_before() {
+    // A zone of -24:00 or +24:00 as zic writes one, a footer of 25 hours,
+    // and a daylight saving offset of 24 hours in Berlin's rule: a copy in
+    // /etc/localtime is no zone, and the zone /etc/timezone names is read.
+    let berlin_24 = tzif(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "CET-1CEST-24,M3.5.0,M10.5.0/3",
+    );
+    for bytes in [
+        fixed_file(-24 * 3600, "-24", "<-24>24"),
+        fixed_file(24 * 3600, "+24", "<+24>-24"),
+        fixed_file(24 * 3600 + 30 * 60, "+2430", "<+2430>-24:30"),
+        fixed_file(25 * 3600, "+25", "<+25>-25"),
+        berlin_24,
+    ] {
+        assert!(Zone::tzif(&bytes).is_none());
+        let files = Files::default()
+            .file("/etc/localtime", bytes)
+            .file("/etc/timezone", b"America/New_York\n".to_vec())
+            .file(
+                "/usr/share/zoneinfo/America/New_York",
+                fixed_file(-5 * 3600, "EST", "EST5"),
+            );
+        assert_eq!(
+            shown(&Zone::find(None, &files)),
+            "2026-03-28 20:00:00 -05:00"
+        );
+        assert_eq!(
+            files.reads(),
+            [
+                "/etc/localtime",
+                "link /etc/localtime",
+                "/etc/timezone",
+                "/usr/share/zoneinfo/America/New_York",
+            ]
+        );
+    }
+    // An offset below 24 hours in the footer, and one of 24 hours with no
+    // rule in the footer, make a zone.
+    let daylight_23 = tzif(
+        &[(22 * 3600, false, "+22"), (23 * 3600, true, "+23")],
+        &[(1_774_746_000, 1), (1_792_890_000, 0)],
+        "<+22>-22<+23>-23,M3.5.0,M10.5.0/3",
+    );
+    let cases = [
+        (daylight_23, "2026-03-30 00:00:00 +23:00"),
+        (
+            fixed_file(86_399, "XST", "XST-23:59:59"),
+            "2026-03-30 00:59:59 +24:00",
+        ),
+        (
+            fixed_file(-86_399, "XST", "XST23:59:59"),
+            "2026-03-28 01:00:01 -24:00",
+        ),
+        (
+            fixed_file(24 * 3600, "+24", ""),
+            "2026-03-30 01:00:00 +24:00",
+        ),
+        (
+            fixed_file(-24 * 3600, "-24", ""),
+            "2026-03-28 01:00:00 -24:00",
+        ),
+    ];
+    for (bytes, expected) in cases {
+        assert_eq!(shown(&Zone::tzif(&bytes).unwrap()), expected);
+    }
+}
+
+#[test]
+fn a_posix_rule_is_taken_as_tz_may_hold_it() {
+    let accepted = [
+        ("UTC0", "2026-03-29 01:00:00 +00:00"),
+        ("GMT0", "2026-03-29 01:00:00 +00:00"),
+        ("XST-3", "2026-03-29 04:00:00 +03:00"),
+        (" XST-3 ", "2026-03-29 04:00:00 +03:00"),
+        ("XST+3", "2026-03-28 22:00:00 -03:00"),
+        ("<+0130>-1:30", "2026-03-29 02:30:00 +01:30"),
+        ("<-0530>5:30", "2026-03-28 19:30:00 -05:30"),
+        ("XST-23:59:59", "2026-03-30 00:59:59 +24:00"),
+        ("ABCDEFG-1", "2026-03-29 02:00:00 +01:00"),
+        ("CET-1CEST,M3.5.0,M10.5.0/3", "2026-03-29 03:00:00 +02:00"),
+        ("XST5XDT,M3.2.0,M11.1.0", "2026-03-28 21:00:00 -04:00"),
+        ("XST5XDT4,J60,J300", "2026-03-28 21:00:00 -04:00"),
+        ("XST5XDT,60/2,300/2", "2026-03-28 21:00:00 -04:00"),
+        ("XST5XDT,59/24,300/0:30:59", "2026-03-28 21:00:00 -04:00"),
+        ("XST5XDT,M3.2.0/2,M11.1.0/2", "2026-03-28 21:00:00 -04:00"),
+    ];
+    for (rule, at) in accepted {
+        let zone = Zone::posix(rule).unwrap_or_else(|| panic!("{rule:?} refused"));
+        assert_eq!(shown(&zone), at, "{rule:?}");
+    }
+    let refused = [
+        "",
+        "UTC",
+        "XST",
+        "XS-3",
+        "ABCDEFGH-3",
+        "<AB>-3",
+        "<A_B>-3",
+        "<+03-3",
+        "XST-24",
+        "XST-25",
+        "XST-1:60",
+        "XST-1:00:60",
+        "XST-",
+        "XST5XDT",
+        "XST5XDT,",
+        "XST5XDT,M3.2.0",
+        "XST5XDT,M3.2.0,",
+        "XST5XDT,M13.2.0,M11.1.0",
+        "XST5XDT,M3.6.0,M11.1.0",
+        "XST5XDT,M3.0.0,M11.1.0",
+        "XST5XDT,M3.2.7,M11.1.0",
+        "XST5XDT,J0,J300",
+        "XST5XDT,J366,J300",
+        "XST5XDT,366,300",
+        "XST5XDT,M3.2.0/25,M11.1.0",
+        "XST5XDT,M3.2.0/-1,M11.1.0",
+        "XST5XDT,M3.2.0/+1,M11.1.0",
+        "XST5XDT,M3.2.0/1:60,M11.1.0",
+        "XST+5XDT+4,M3.2.0/-1,M11.1.0/26",
+        "XST5XDT,M3.2.0,M11.1.0,",
+        "XST5XDT,M3.2.0,M11.1.0x",
+        "XST-3x",
+        "XST-99999999999",
+        "XST5XDT,M300.2.0,M11.1.0",
+        "XST5XDT,J70000,J300",
+    ];
+    for rule in refused {
+        assert!(Zone::posix(rule).is_none(), "{rule:?} taken");
+    }
+}
+
+#[test]
+fn a_fixed_zone_and_utc_show_their_offset() {
+    let at = summer();
+    assert_eq!(Zone::utc().stamp(at), "2026-03-29 01:00:00 +00:00");
+    assert_eq!(
+        Zone::fixed(-1).unwrap().stamp(at),
+        "2026-03-29 00:59:59 -00:00"
+    );
+    assert_eq!(
+        Zone::fixed(29).unwrap().stamp(at),
+        "2026-03-29 01:00:29 +00:00"
+    );
+    assert_eq!(
+        Zone::fixed(30).unwrap().stamp(at),
+        "2026-03-29 01:00:30 +00:01"
+    );
+    assert_eq!(
+        Zone::fixed(-30).unwrap().stamp(at),
+        "2026-03-29 00:59:30 -00:01"
+    );
+    assert_eq!(Zone::fixed(2 * 3600).unwrap().clock(at), "03:00:00");
+    assert!(Zone::fixed(26 * 3600).is_none());
+}
+
+#[test]
+fn a_time_past_the_years_a_zone_reaches_keeps_the_offset_its_rule_gives() {
+    let zone = tzif_zone();
+    let max = Timestamp::MAX;
+    assert_eq!(zone.stamp(max), "+262143-01-01 00:59:59 +01:00");
+    assert_eq!(Zone::utc().stamp(max), "+262142-12-31 23:59:59 +00:00");
+    let min = Timestamp::MIN;
+    assert_eq!(
+        Zone::fixed(-3600).unwrap().stamp(min),
+        "-262144-12-31 23:00:00 -01:00"
+    );
+    assert_eq!(
+        zone.clock(Timestamp::from_unix_seconds(253_402_300_800).unwrap()),
+        "01:00:00"
+    );
+}
+
+/// 10000-07-01T00:00:00Z, a summer instant past year 9999.
+const SUMMER_10000: i64 = 253_418_025_600;
+/// 262142-07-01T00:00:00Z, in the last year a timestamp covers.
+const SUMMER_262142: i64 = 8_210_250_979_200;
+/// -20000-07-01T00:00:00Z, before the years a zone's transitions reach.
+const SUMMER_MINUS_20000: i64 = -693_290_534_400;
+
+#[test]
+fn a_summer_time_past_year_9999_keeps_its_daylight_saving_offset() {
+    let at = |secs: i64| Timestamp::from_unix_seconds(secs).unwrap();
+    let rule = Zone::posix("CET-1CEST,M3.5.0,M10.5.0/3").unwrap();
+    let file = tzif_zone();
+    for zone in [&rule, &file] {
+        assert_eq!(zone.stamp(at(SUMMER_10000)), "+10000-07-01 02:00:00 +02:00");
+        assert_eq!(
+            zone.stamp(at(SUMMER_262142)),
+            "+262142-07-01 02:00:00 +02:00"
+        );
+        assert_eq!(zone.clock(at(SUMMER_10000 - 7 * 3600)), "19:00:00");
+        // The changes fall on the same day and hour as in any year.
+        // 10000-03-26 is the last Sunday of March in year 10000.
+        assert_eq!(
+            zone.stamp(at(253_409_648_399)),
+            "+10000-03-26 01:59:59 +01:00"
+        );
+        assert_eq!(
+            zone.stamp(at(253_409_648_400)),
+            "+10000-03-26 03:00:00 +02:00"
+        );
+    }
+    let new_york = Zone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+    assert_eq!(
+        new_york.stamp(at(SUMMER_10000)),
+        "+10000-06-30 20:00:00 -04:00"
+    );
+    // Before year -9999 a rule holds as well; a zone file's first offset
+    // holds before its first transition.
+    assert_eq!(
+        rule.stamp(at(SUMMER_MINUS_20000)),
+        "-20000-07-01 02:00:00 +02:00"
+    );
+    assert_eq!(
+        file.stamp(at(SUMMER_MINUS_20000)),
+        "-20000-07-01 01:00:00 +01:00"
+    );
+}
+
+/// Berlin's 2026 changes as a `right/` zone has them: transitions in leap
+/// time, two leap seconds before them.
+fn right_berlin() -> Vec<u8> {
+    tzif_with_leap_seconds(
+        &[(3600, false, "CET"), (7200, true, "CEST")],
+        &[(1_774_746_002, 1), (1_792_890_002, 0)],
+        &[(78_796_800, 1), (94_694_401, 2)],
+        "CET-1CEST,M3.5.0,M10.5.0/3",
+    )
+}
+
+#[test]
+fn a_zone_with_leap_seconds_changes_its_offset_on_the_unix_second() {
+    let zone = Zone::tzif(&right_berlin()).unwrap();
+    let cases = [
+        (0, "1970-01-01 01:00:00 +01:00"),
+        (1_774_745_999, "2026-03-29 01:59:59 +01:00"),
+        (1_774_746_000, "2026-03-29 03:00:00 +02:00"),
+        (1_774_746_001, "2026-03-29 03:00:01 +02:00"),
+        (1_792_889_999, "2026-10-25 02:59:59 +02:00"),
+        (1_792_890_000, "2026-10-25 02:00:00 +01:00"),
+        // After the last transition, the footer's rule at the Unix second.
+        (1_901_149_199, "2030-03-31 01:59:59 +01:00"),
+        (1_901_149_200, "2030-03-31 03:00:00 +02:00"),
+    ];
+    for (secs, shown) in cases {
+        let at = Timestamp::from_unix_seconds(secs).unwrap();
+        assert_eq!(zone.stamp(at), shown, "{secs}");
+    }
+}
+
+#[test]
+fn a_zone_file_whose_leap_seconds_are_no_valid_table_is_no_zone() {
+    let types = [(3600, false, "CET")];
+    let refused: [&[(i64, i32)]; 5] = [
+        // The first correction is not one second.
+        &[(78_796_800, 2)],
+        // The first is before 1970.
+        &[(-1, 1)],
+        // A step of two seconds.
+        &[(78_796_800, 1), (94_694_401, 3)],
+        // Less than 28 days apart.
+        &[(78_796_800, 1), (78_796_800 + 28 * 86_400 - 2, 2)],
+        // No step.
+        &[(78_796_800, 1), (94_694_401, 1)],
+    ];
+    for table in refused {
+        let bytes = tzif_with_leap_seconds(&types, &[], table, "CET-1");
+        assert!(Zone::tzif(&bytes).is_none(), "{table:?}");
+    }
+    let taken: [&[(i64, i32)]; 3] = [
+        &[(78_796_800, -1)],
+        &[(78_796_800, 1), (78_796_800 + 28 * 86_400 - 1, 2)],
+        &[(78_796_800, 1), (94_694_401, 0)],
+    ];
+    for table in taken {
+        let bytes = tzif_with_leap_seconds(&types, &[], table, "CET-1");
+        assert!(Zone::tzif(&bytes).is_some(), "{table:?}");
+    }
+}
+
+/// A TZif version 1 file: 32-bit times, no footer, one leap second.
+fn version_1_with_a_leap_second() -> Vec<u8> {
+    let mut out = b"TZif".to_vec();
+    out.extend_from_slice(&[0; 16]);
+    // isutcnt, isstdcnt, leapcnt, timecnt, typecnt, charcnt.
+    for count in [0u32, 0, 1, 1, 2, 9] {
+        out.extend_from_slice(&count.to_be_bytes());
+    }
+    out.extend_from_slice(&1_774_746_001i32.to_be_bytes());
+    out.push(1);
+    out.extend_from_slice(&3600i32.to_be_bytes());
+    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(&7200i32.to_be_bytes());
+    out.extend_from_slice(&[1, 4]);
+    out.extend_from_slice(b"CET\0CEST\0");
+    out.extend_from_slice(&78_796_800i32.to_be_bytes());
+    out.extend_from_slice(&1i32.to_be_bytes());
+    out
+}
+
+#[test]
+fn a_version_1_zone_file_counts_its_leap_seconds_too() {
+    let zone = Zone::tzif(&version_1_with_a_leap_second()).unwrap();
+    let at = |secs| Timestamp::from_unix_seconds(secs).unwrap();
+    assert_eq!(zone.stamp(at(1_774_745_999)), "2026-03-29 01:59:59 +01:00");
+    assert_eq!(zone.stamp(at(1_774_746_000)), "2026-03-29 03:00:00 +02:00");
+    // No footer: the last transition's offset holds on.
+    assert_eq!(zone.stamp(at(SUMMER_10000)), "+10000-07-01 02:00:00 +02:00");
+}
+
+fn tzif_zone() -> Zone {
+    Zone::tzif(&berlin()).unwrap()
+}
+
+#[test]
+fn the_local_zone_is_one_and_shows_a_time() {
+    let first: *const Zone = Zone::local();
+    let second: *const Zone = Zone::local();
+    assert_eq!(first, second);
+    // Whatever zone the machine running the test has, a stamp keeps its form.
+    let stamp = Zone::local().stamp(summer());
+    let shape: String = stamp
+        .chars()
+        .map(|c| if c.is_ascii_digit() { '9' } else { c })
+        .collect();
+    assert!(
+        shape == "9999-99-99 99:99:99 +99:99" || shape == "9999-99-99 99:99:99 -99:99",
+        "{stamp}"
+    );
+    assert_eq!(stamp[11..19], Zone::local().clock(summer()));
+}

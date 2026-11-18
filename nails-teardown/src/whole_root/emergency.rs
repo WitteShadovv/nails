@@ -6,7 +6,11 @@
 //! In the hidden session the fastest safe path is:
 //!
 //! 1. prepare the way back: the decoy root at `/run/nextroot`, `/run` bound into
-//!    it, the init checked ([`crate::whole_root::ret`]);
+//!    it, the init checked ([`crate::whole_root::ret`]), and where the plan
+//!    records a label for the RAM copy of the binary, the copy given that
+//!    label again and PID 1's start of it checked against the loaded policy
+//!    ([`crate::whole_root::program_label::ready`]), so the way back's last
+//!    step does not run in PID 1's own domain;
 //! 2. mark the hidden backend for deferred removal;
 //! 3. arm the plan for the way back;
 //! 4. SIGKILL every interactive shell, the newest first, so none writes its
@@ -22,8 +26,11 @@
 //!    PID 1 has it queued by then.
 //!
 //! When the way back cannot be prepared, it powers off instead: a soft-reboot
-//! without `/run/nextroot` would restart the hidden userspace in place. When
-//! even the power action cannot be enqueued, it asks the kernel directly.
+//! without `/run/nextroot` would restart the hidden userspace in place, and a
+//! last step in PID 1's own domain, which a targeted policy confines, could
+//! not take the kernel log's cursor, so the decoy's journal would take in the
+//! hidden session's kernel log. When even the power action cannot be
+//! enqueued, it asks the kernel directly.
 //!
 //! On the decoy side (an activation was interrupted after building the next
 //! root) it signals the activation, detaches `/run/nextroot` and removes the
@@ -47,8 +54,10 @@ use crate::mountinfo::read_mountinfo;
 use crate::proc::{self, Invocation, ProcessHandle};
 use crate::whole_root::kill::{self, KillReport};
 use crate::whole_root::nextroot::{self, NEXTROOT};
-use crate::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME};
+use crate::whole_root::plan::{BINARY_NAME, PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME};
+use crate::whole_root::program_label;
 use crate::whole_root::run_scrub::Snapshot;
+use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::tools;
 use crate::whole_root::transition;
 use crate::whole_root::{kernel_helpers, logind, ret, runtime_units, skips};
@@ -104,6 +113,10 @@ pub struct Host {
     pub protected_pids: Vec<u32>,
     /// Whether to act on the host at all.
     pub act: bool,
+    /// What gives the RAM copy of the binary the label the plan records
+    /// before the way back ([`Plan::program_label`]): the running kernel's
+    /// SELinux, or a test's stand-in. It is asked whether `act` is on or off.
+    pub selinux: &'static dyn Selinux,
 }
 
 impl Host {
@@ -116,6 +129,7 @@ impl Host {
             cgroup_root: PathBuf::from(crate::cgroup::CGROUP_ROOT),
             protected_pids: Vec::new(),
             act: true,
+            selinux: &selinux::KERNEL,
         }
     }
 
@@ -310,6 +324,22 @@ fn hidden(plan: &mut Plan, host: &Host, report: &mut HotReport) {
         });
         if let Err(e) = prepared {
             report.fallback = Some(format!("{e}; powering off instead"));
+            finish = Finish::Poweroff;
+        }
+    }
+    if finish == Finish::Return
+        && let Some(label) = plan.program_label.as_deref()
+    {
+        let copy = host.runtime_dir.join(BINARY_NAME);
+        let ready = report.timed("label-program", |_| {
+            program_label::ready(host.selinux, &copy, label)
+        });
+        if let Err(not_ready) = ready {
+            report.fallback = Some(format!(
+                "{}; powering off instead",
+                program_label::not_ready_text(&copy, label, &not_ready)
+            ));
+            nextroot_cleanup(host);
             finish = Finish::Poweroff;
         }
     }

@@ -275,6 +275,7 @@ fn install_lays_out_every_piece_and_run_removes_them_all() {
         &writer_fix(),
         SWITCHED_AT,
         false,
+        None,
     )
     .unwrap();
 
@@ -325,6 +326,51 @@ fn install_lays_out_every_piece_and_run_removes_them_all() {
     );
 }
 
+/// A reconcile step that does not run in the domain its copy's label gives it
+/// only cleans up: the backdated boot record [`run`] corrects stays as it is,
+/// as where the copy was left out, and every piece still leaves `/run`.
+#[test]
+fn a_step_outside_its_domain_leaves_the_records_and_removes_every_piece() {
+    let backdated = wtmp(&[
+        record(BOOT_TIME, COLD_BOOT),
+        record(RUN_LVL, ACTIVATION),
+        record(BOOT_TIME, COLD_BOOT),
+    ]);
+    for in_domain in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path();
+        install(
+            run_dir,
+            b"\x7fELF-not-really",
+            &writer_fix(),
+            SWITCHED_AT,
+            false,
+            None,
+        )
+        .unwrap();
+        std::fs::create_dir_all(run_dir.join("var/log")).unwrap();
+        let records = run_dir.join(WTMP_PATH);
+        std::fs::write(&records, &backdated).unwrap();
+
+        if in_domain {
+            run(run_dir, run_dir, SWITCHED_AT, false);
+        } else {
+            clean_up(run_dir, false);
+        }
+
+        let after = std::fs::read(&records).unwrap();
+        assert_eq!(
+            after == backdated,
+            !in_domain,
+            "corrected only in the domain"
+        );
+        for piece in pieces(run_dir) {
+            assert!(!piece.exists(), "{} should be gone", piece.display());
+        }
+        assert!(!run_dir.join(FIXUP_DIR).exists());
+    }
+}
+
 #[test]
 fn without_a_writer_no_drop_in_is_installed() {
     let dir = tempfile::tempdir().unwrap();
@@ -332,7 +378,7 @@ fn without_a_writer_no_drop_in_is_installed() {
         writer: None,
         classic_wtmp: true,
     };
-    install(dir.path(), b"x", &fix, SWITCHED_AT, false).unwrap();
+    install(dir.path(), b"x", &fix, SWITCHED_AT, false, None).unwrap();
     let [bin, unit, _, dropin] = pieces(dir.path());
     assert!(bin.is_file() && unit.is_file());
     assert!(!dropin.exists());
@@ -347,7 +393,7 @@ fn a_failed_install_removes_what_it_wrote_and_writes_no_binary_copy() {
     let dir = tempfile::tempdir().unwrap();
     let run_dir = dir.path();
     std::fs::write(run_dir.join(FIXUP_DIR), b"in the way").unwrap();
-    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true).is_err());
+    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true, None).is_err());
     let [_, unit, link, dropin] = pieces(run_dir);
     for p in [&unit, &link, &dropin] {
         assert!(!p.exists(), "{} should be gone", p.display());
@@ -363,7 +409,7 @@ fn a_failed_install_removes_what_it_wrote_and_writes_no_binary_copy() {
     let dir = tempfile::tempdir().unwrap();
     let run_dir = dir.path();
     std::fs::write(run_dir.join("systemd"), b"not a directory").unwrap();
-    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true).is_err());
+    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true, None).is_err());
     assert!(!run_dir.join(FIXUP_DIR).exists(), "no binary copy");
 }
 
@@ -375,7 +421,7 @@ fn a_drop_in_that_cannot_be_written_takes_the_copy_and_the_unit_with_it() {
     let run_dir = dir.path();
     std::fs::create_dir_all(run_dir.join(RUNTIME_UNIT_DIR)).unwrap();
     std::fs::write(run_dir.join(boot_writer::DROPIN_DIR), b"in the way").unwrap();
-    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true).is_err());
+    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true, None).is_err());
     let [bin, unit, link, _] = pieces(run_dir);
     for p in [&bin, &unit, &link] {
         assert!(!p.exists(), "{} should be gone", p.display());
@@ -392,14 +438,106 @@ fn a_drop_in_that_cannot_be_written_takes_the_copy_and_the_unit_with_it() {
         writer: None,
         classic_wtmp: true,
     };
-    install(run_dir, b"x", &fix, SWITCHED_AT, true).unwrap();
+    install(run_dir, b"x", &fix, SWITCHED_AT, true, None).unwrap();
     assert!(bin.is_file() && unit.is_file());
+}
+
+/// Where the plan records a label, the copy takes it before it is renamed
+/// into place, and the unit and the drop-in name the copy as they do without
+/// one, word for word.
+#[test]
+fn a_labelled_copy_takes_its_label_and_the_pieces_stay_as_they_are() {
+    use crate::test_support::FakeSelinux;
+    use crate::whole_root::program_label::{Labelling, PROGRAM_LABEL};
+    let plain = tempfile::tempdir().unwrap();
+    install(plain.path(), b"x", &writer_fix(), SWITCHED_AT, true, None).unwrap();
+    let selinux = FakeSelinux::targeted();
+    let labelled = tempfile::tempdir().unwrap();
+    install(
+        labelled.path(),
+        b"x",
+        &writer_fix(),
+        SWITCHED_AT,
+        true,
+        Some(Labelling {
+            selinux: &selinux,
+            label: PROGRAM_LABEL,
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        selinux.labels_written(),
+        [b"system_u:object_r:bin_t:s0\0".to_vec()]
+    );
+    let [bin, unit, link, dropin] = pieces(labelled.path());
+    assert!(bin.is_file(), "the copy is in place");
+    let [_, plain_unit, _, plain_dropin] = pieces(plain.path());
+    let named = |text: String, run: &Path| text.replace(&run.display().to_string(), "<run>");
+    assert_eq!(
+        named(std::fs::read_to_string(&unit).unwrap(), labelled.path()),
+        named(std::fs::read_to_string(&plain_unit).unwrap(), plain.path())
+    );
+    assert_eq!(
+        named(std::fs::read_to_string(&dropin).unwrap(), labelled.path()),
+        named(
+            std::fs::read_to_string(&plain_dropin).unwrap(),
+            plain.path()
+        )
+    );
+    assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+}
+
+/// A copy that does not take the label fails the install, which leaves every
+/// piece out: the decoy's first start then runs nothing from `/run`, and no
+/// temporary copy is left either.
+#[test]
+fn a_copy_that_does_not_take_its_label_leaves_every_piece_out() {
+    use crate::test_support::FakeSelinux;
+    use crate::whole_root::program_label::{Labelling, PROGRAM_LABEL};
+    for selinux in [
+        FakeSelinux {
+            write_error: Some(libc::EOPNOTSUPP),
+            ..FakeSelinux::targeted()
+        },
+        FakeSelinux {
+            read_back: Some(b"system_u:object_r:var_run_t:s0\0".to_vec()),
+            ..FakeSelinux::targeted()
+        },
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path();
+        let error = install(
+            run_dir,
+            b"x",
+            &writer_fix(),
+            SWITCHED_AT,
+            true,
+            Some(Labelling {
+                selinux: &selinux,
+                label: PROGRAM_LABEL,
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("the copy at "), "{error}");
+        for p in pieces(run_dir) {
+            assert!(
+                std::fs::symlink_metadata(&p).is_err(),
+                "{} should be gone",
+                p.display()
+            );
+        }
+        assert!(
+            !run_dir.join(FIXUP_DIR).exists(),
+            "no copy, not even a temporary one"
+        );
+        assert!(!run_dir.join(boot_writer::DROPIN_DIR).exists());
+    }
 }
 
 #[test]
 fn the_noexec_flag_is_added_only_when_the_way_back_cleared_it() {
     let dir = tempfile::tempdir().unwrap();
-    install(dir.path(), b"x", &writer_fix(), SWITCHED_AT, true).unwrap();
+    install(dir.path(), b"x", &writer_fix(), SWITCHED_AT, true, None).unwrap();
     let text = std::fs::read_to_string(dir.path().join(RUNTIME_UNIT_DIR).join(FIXUP_UNIT)).unwrap();
     assert!(text.contains(&format!("{RECONCILE_ARG} 1234567890 {NOEXEC_FLAG}\n")));
     assert_eq!(

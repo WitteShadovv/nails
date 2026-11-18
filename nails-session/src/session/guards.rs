@@ -21,6 +21,7 @@
 
 use crate::error::{NailsError, Result};
 use nails_teardown::whole_root::plan::Direction;
+use nails_teardown::whole_root::selinux::Selinux;
 use nails_teardown::whole_root::transition;
 use std::path::Path;
 
@@ -45,6 +46,22 @@ pub trait GuardHost {
     /// look.
     fn unit_dropins(&self, _unit: &str) -> Result<String> {
         Ok(String::new())
+    }
+    /// The SELinux context PID 1 starts `unit`'s processes in, with every
+    /// drop-in loaded (`SELinuxContext`): empty where the policy picks it.
+    /// Asked only where the RAM copies of the binary take a label
+    /// ([`super::program_label`]). A host that does not ask PID 1 fails, by
+    /// default, so that such a switch is refused.
+    fn selinux_context(&self, unit: &str) -> Result<String> {
+        Err(NailsError::InvalidState(format!(
+            "PID 1 was not asked for SELinuxContext of {unit}"
+        )))
+    }
+    /// The running kernel's SELinux, which the label of the RAM copies of the
+    /// binary is written, read back and checked through
+    /// ([`super::program_label`]): tests replace it.
+    fn selinux(&self) -> &dyn Selinux {
+        &nails_teardown::whole_root::selinux::KERNEL
     }
 }
 

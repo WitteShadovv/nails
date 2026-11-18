@@ -19,7 +19,11 @@
 //! two runtime guards the entry checked in the decoy's, the stop guard of
 //! `blk-availability.service` and the switch's timeout guard ([`may_leave`]):
 //! the hidden system's own configuration, or a change in the session, can
-//! undo one.
+//! undo one. Where the plan records a label for the RAM copy of the binary, a
+//! return is refused as well while the loaded policy would not start the way
+//! back's last step from that copy in the unconfined service domain, and the
+//! copy takes the label again right before the switch is armed
+//! ([`super::program_label`]).
 
 use super::guards::{self, GuardHost};
 use super::layout::Paths;
@@ -144,6 +148,10 @@ impl GuardHost for RealTargetHost {
 
     fn service_watchdogs(&self) -> Result<String> {
         guards::show_property(self.systemctl.as_deref(), None, "ServiceWatchdogs")
+    }
+
+    fn selinux_context(&self, unit: &str) -> Result<String> {
+        guards::show_property(self.systemctl.as_deref(), Some(unit), "SELinuxContext")
     }
 }
 
@@ -393,6 +401,7 @@ pub fn leave(
         host.start_target("poweroff.target")?;
         return Ok(LeaveReport::default());
     }
+    super::program_label::check_way_back(plan, host)?;
     let unmounted = unmount_session_disks(paths, plan);
     let nextroot = paths.nextroot();
     if let Err(e) = ret::mount_decoy_root(plan, &nextroot, &paths.run) {
@@ -401,9 +410,20 @@ pub fn leave(
             &unmounted,
         ));
     }
-    let deferred = ret::close_backend_deferred(plan);
-    let armed = ret::arm_leave(plan, &paths.plan())
-        .map_err(|e| NailsError::InvalidState(e.to_string()))
+    // Whatever the session did to the copy, it carries the label again when
+    // the way back's last step starts from it; a copy that does not leaves
+    // the backend as it is.
+    let ready =
+        super::program_label::ready_for_way_back(plan, host.selinux(), &paths.binary_copy());
+    let deferred = if ready.is_ok() {
+        ret::close_backend_deferred(plan)
+    } else {
+        Vec::new()
+    };
+    let armed = ready
+        .and_then(|()| {
+            ret::arm_leave(plan, &paths.plan()).map_err(|e| NailsError::InvalidState(e.to_string()))
+        })
         .and_then(|()| host.start_target(tools::SOFT_REBOOT_TARGET));
     if let Err(e) = armed {
         nextroot::detach_tree(&nextroot);

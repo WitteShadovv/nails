@@ -50,7 +50,7 @@ use crate::session::labels::{self, Labels};
 use crate::session::package_drift::{self, Advisory};
 use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
 use crate::state::{LastActivation, SystemState};
-use chrono::Utc;
+use crate::time::Timestamp;
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use std::path::{Path, PathBuf};
 
@@ -409,9 +409,8 @@ impl<F: Filesystem> NailsManager<F> {
         let builder = self.hidden_builder(nixos, options);
         if labels::configured_but_not_running(self.host_profile()) {
             tracing::info!(
-                "SELinux is configured on this host but selinuxfs is not mounted, so no \
-                 policy reads labels: the hidden root takes the decoy's SELinux labels \
-                 where it has them, best effort"
+                "SELinux is configured on this host but selinuxfs is not mounted: the \
+                 hidden root takes the decoy's SELinux labels where it has them, best effort"
             );
         }
         // The risks that do not refuse the entry, read before the next root
@@ -432,6 +431,9 @@ impl<F: Filesystem> NailsManager<F> {
             // could not be read, has no facts to rule SELinux out, so it needs
             // the labels as one that runs it does.
             labels: Labels::for_host(self.host_profile()),
+            // Fail closed the same way: where SELinux runs or may run, the RAM
+            // copies of the binary take the label of the system's programs.
+            program_label: crate::session::program_label::for_host(self.host_profile()),
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
             accepted_decoy_storage,
@@ -510,7 +512,7 @@ impl<F: Filesystem> NailsManager<F> {
         prepared: &entry::Entry,
         elapsed: std::time::Duration,
     ) -> Result<()> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         // The FHS family of the detected host; the state file keeps only Fedora
         // and Arch (see `StateFile::mark_fhs_family`), so a Debian-family host
         // records no family and its state file stays byte identical.

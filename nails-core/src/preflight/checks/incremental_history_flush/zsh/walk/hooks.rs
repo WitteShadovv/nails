@@ -7,6 +7,7 @@
 //! hook functions, and a function copied to a hook's name.
 
 use super::super::lexer::Word;
+use super::widgets::{COMPLETING_WIDGETS, STRICT_WIDGETS, expands_history};
 use super::{Event, HOOKS, Input, Walker};
 
 /// Whether `widget`, a widget's name as written, may be one zsh runs by its
@@ -51,6 +52,18 @@ pub(in super::super) const STOCK_NAMES: &[&str] = &[
     "prompt_preview_safely",
     "prompt_preview_theme",
     "set_prompt",
+];
+
+/// The hooks the stock `add-zsh-hook` of zsh 5.9 to 5.9.2 adds a function
+/// to, which it returns before it autoloads one for any other.
+const ADD_ZSH_HOOKS: &[&str] = &[
+    "chpwd",
+    "precmd",
+    "preexec",
+    "periodic",
+    "zshaddhistory",
+    "zshexit",
+    "zsh_directory_name",
 ];
 
 /// The letters `zle` takes as options (Src/Zle/zle_main.c).
@@ -109,9 +122,17 @@ impl Walker<'_> {
     /// may an alias's in the second form ([`Event::NamedBody`]).
     pub(super) fn define(&mut self, names: Vec<Word>, paren: bool) {
         let mut first: Option<String> = None;
+        // A definition at the file's top level that certainly runs where the
+        // file runs to it, after which zsh runs the function by its name.
+        let certain =
+            self.reached(self.pending.after_condition, self.pending.piped) && self.at_top();
         for name in names {
             self.mention_word(&name);
-            self.events.push(Event::Define(name.text.clone()));
+            self.events.push(Event::Define {
+                name: name.text.clone(),
+                certain,
+                alias: None,
+            });
             if paren {
                 self.events.push(Event::NamedBody(name.text.clone()));
             }
@@ -135,7 +156,29 @@ impl Walker<'_> {
     /// (`command`) of `args`: the function it makes a hook, which zsh runs as
     /// commands are entered or end, or as each line is entered
     /// ([`Event::Hook`]), and autoloads; one an expansion names is a doubt.
-    pub(super) fn hook(&mut self, command: &str, args: &[Word]) {
+    /// It runs the function of that name, run in `function` with `input`:
+    /// the files' own or one they autoload, whose code the check reads as
+    /// any other function's they run, where the stock one's work it reads by
+    /// its bytes ([`super::super::stock`]).
+    pub(super) fn hook(
+        &mut self,
+        command: &str,
+        args: &[Word],
+        function: Option<String>,
+        input: Input,
+    ) {
+        self.hook_made(command, args);
+        self.events.push(Event::Call {
+            name: command.to_string(),
+            args: args.to_vec(),
+            function,
+            input,
+        });
+    }
+
+    /// The hook that an `add-zsh-hook` or an `add-zle-hook-widget`
+    /// (`command`) of `args` makes ([`Walker::hook`]).
+    fn hook_made(&mut self, command: &str, args: &[Word]) {
         for arg in args {
             self.mention_word(arg);
         }
@@ -159,14 +202,37 @@ impl Walker<'_> {
         self.events.push(Event::Hook(function.text.clone()));
         // Both autoload the function they add, which zsh then loads from
         // `fpath` unless the files define it; with `-d`, `-D` or `-L` they
-        // take one away or list them.
+        // take one away or list them. The stock `add-zsh-hook` certainly
+        // does only where its words are flags that change how it autoloads
+        // alone, then a hook of its list and a function: it returns before
+        // the autoload for any other.
         if !args
             .iter()
             .any(|arg| arg.text.starts_with('-') && arg.text.contains(['d', 'D', 'L']))
         {
+            let flags = args
+                .iter()
+                .take_while(|arg| arg.text.starts_with('-'))
+                .all(|arg| {
+                    !arg.expands
+                        && !arg.bare
+                        && arg.text.len() > 1
+                        && arg.text[1..].chars().all(|c| matches!(c, 'U' | 'z' | 'k'))
+                });
+            let plain = args.iter().skip_while(|arg| arg.text.starts_with('-'));
+            let valid = command == "add-zsh-hook"
+                && flags
+                && matches!(
+                    plain.collect::<Vec<_>>().as_slice(),
+                    [hook, function] if ADD_ZSH_HOOKS.contains(&hook.text.as_str())
+                        && !computed_name(function)
+                );
             let in_function = self.function().is_some();
-            self.events
-                .push(Event::Autoload((*function).clone(), in_function));
+            self.events.push(Event::Autoload {
+                function: (*function).clone(),
+                in_function,
+                certain: self.certain_command && valid,
+            });
         }
     }
 
@@ -227,6 +293,51 @@ impl Walker<'_> {
             )));
             return;
         }
+        if matches!(op, Some('N' | 'C'))
+            && let Some(widget) = words.first()
+        {
+            self.events.push(Event::Widget(widget.text.clone()));
+        }
+        if op.is_none()
+            && let Some(widget) = words.first()
+        {
+            // `zle up-history`: a widget run by its name.
+            self.runs_widget(widget);
+        }
+        // `zle -K vicmd` in a widget: the keys typed next run as the commands
+        // of that keymap, `k` fetching a line from the history.
+        if op == Some('K')
+            && let Some(keymap) = words.first()
+            && !matches!(keymap.text.as_str(), "main" | "emacs" | "viins")
+            && let Some(function) = self.function()
+        {
+            self.events.push(Event::HookDoubt {
+                doubt: format!(
+                    "it cannot tell what line the keys you type give zsh to run, as `zle {}` in \
+                     `{function}` in {} makes them run as the commands of another keymap",
+                    line(),
+                    self.place
+                ),
+                function,
+            });
+        }
+        // `zle -A up-history self-insert`: each key typed runs another
+        // widget, which may put other text in the line.
+        if op == Some('A')
+            && let [old, new, ..] = words.as_slice()
+            && matches!(new.text.as_str(), "self-insert" | "magic-space")
+            && ![STRICT_WIDGETS, COMPLETING_WIDGETS]
+                .iter()
+                .any(|known| known.contains(&old.text.trim_start_matches('.')))
+        {
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell what line the keys you type give zsh to run, as `zle {}` in {} \
+                 makes them run `{}`",
+                line(),
+                self.place,
+                old.text
+            )));
+        }
         let function = match op {
             // `zle -N widget [function]`.
             Some('N') => words.get(1).or(words.first()),
@@ -258,6 +369,7 @@ impl Walker<'_> {
                     || typed.bare
                     || typed.text.contains(['$', '`'])
                     || typed.text.chars().any(|c| c.is_control() && c != '\n')
+                    || expands_history(&typed.text)
                 {
                     self.events.push(Event::Doubt(format!(
                         "it cannot tell what `zle -U {}` in {} types",
@@ -320,7 +432,13 @@ impl Walker<'_> {
                 )));
             }
             [from, to] if !computed_name(from) => {
-                self.events.push(Event::Define(to.text.clone()));
+                // A copy of a function zsh does not have defines none, so it
+                // is no certain definition.
+                self.events.push(Event::Define {
+                    name: to.text.clone(),
+                    certain: false,
+                    alias: None,
+                });
                 // A name zsh may expand into another may be a hook's.
                 if computed_name(to) {
                     self.events.push(Event::Hook(to.text.clone()));

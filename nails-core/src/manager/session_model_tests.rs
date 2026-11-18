@@ -396,7 +396,7 @@ impl World {
             Record::Inactive => SystemState::Inactive,
             Record::Active => active(),
             Record::Degraded => SystemState::Degraded {
-                since: Utc::now(),
+                since: Timestamp::now(),
                 reason: "the way back did not finish".into(),
             },
         };
@@ -453,7 +453,7 @@ impl World {
         let entries = self.machine.mounts().expect("the fixed mount table");
         StatusCommand::new(RealFilesystem, manager.config().clone(), self.state_path())
             .with_paths(self.machine.paths.clone())
-            .report(&self.view(), &entries, Utc::now())
+            .report(&self.view(), &entries, Timestamp::now())
             .expect("status builds a report")
     }
 
@@ -581,6 +581,7 @@ impl World {
             cgroup_root: self.base.join("cgroup"),
             protected_pids: Vec::new(),
             act: false,
+            selinux: &nails_teardown::whole_root::selinux::KERNEL,
         };
         let report = emergency::run(Plan::load(&paths.plan()).ok(), &host, Finish::Poweroff);
         assert_eq!(

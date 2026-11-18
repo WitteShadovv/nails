@@ -81,6 +81,8 @@ mod kernel_tests {
                     kernel: || false,
                 },
                 tail: None,
+                selinux: &nails_teardown::whole_root::selinux::KERNEL,
+                start: nails_teardown::whole_root::program_label::Started::by_hand(),
             }
         }
     }
@@ -120,6 +122,7 @@ mod kernel_tests {
             armed: Some(Arm::now(Direction::Enter)),
             entered_at: None,
             run_noexec: false,
+            program_label: None,
             carried: Vec::new(),
             decoy_mounts: Vec::new(),
             read_only_disks: false,

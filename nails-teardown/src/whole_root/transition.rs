@@ -48,6 +48,19 @@
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
 //! restarts userspace on the current root instead of freezing.
 //!
+//! **The program's domain.** Where the plan records an SELinux label for the
+//! RAM copy of the binary ([`Plan::program_label`]), an armed step first
+//! checks that it runs in the domain that label gives it, as PID 1 started it
+//! ([`Env::start`], [`crate::whole_root::program_label::enter_domain`]): one
+//! that runs elsewhere gives the copy the label again and starts itself again
+//! from it, once. Where it still runs elsewhere it does nothing of the
+//! switch, which it could not do right there, and refuses it, as for a failed
+//! init check. On the way back it first powers off ([`power_off_instead`]):
+//! from another domain it could not take the kernel log's cursor, and a
+//! return would hand the decoy's journal the hidden session's kernel log.
+//! Only where neither PID 1 nor the kernel takes the power-off is the way back
+//! refused, and the hidden session goes on.
+//!
 //! **The leftover guard.** A populated `/run/nextroot` turns a later plain
 //! `reboot` into a soft-reboot into it (systemd >= 255). If the plan is not
 //! armed for this transition (an activation died after building the tree, or
@@ -80,7 +93,9 @@ use crate::whole_root::plan::{
     self, BINARY_NAME, Direction, PLAN_NAME, Plan, RECORDS_NAME, RUNTIME_DIR, SNAPSHOT_NAME,
     UTAB_MOUNTS_NAME, UTAB_NAME, unix_now,
 };
+use crate::whole_root::program_label::{DOMAIN, Labelling, Outside, Started};
 use crate::whole_root::run_scrub::{self, Snapshot};
+use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::{
     boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, skips,
     switch_refusal, tail, utab,
@@ -376,6 +391,14 @@ pub struct Env {
     /// hidden filesystem before the kmsg cursor ([`tail`]); `None` skips
     /// both, as every test does: the real step kills processes.
     pub tail: Option<tail::Places>,
+    /// What gives the copy the way back leaves for the decoy's first start
+    /// the label the plan records ([`Plan::program_label`]), and tells the
+    /// domain this step runs in: the running kernel's SELinux, or a test's
+    /// stand-in.
+    pub selinux: &'static dyn Selinux,
+    /// How this step was started: by PID 1 from the drop-in, as itself again,
+    /// or by hand ([`Started::by_hand`]), which checks no domain.
+    pub start: Started,
 }
 
 /// How the way back powers off instead of returning ([`PowerOff::system`]).
@@ -400,8 +423,8 @@ impl PowerOff {
 }
 
 impl Env {
-    /// The real system.
-    pub fn system() -> Self {
+    /// The real system, for a step started as `start` says.
+    pub fn system(start: Started) -> Self {
         let run = PathBuf::from("/run");
         Self {
             network: network::Places::system(&run),
@@ -416,6 +439,8 @@ impl Env {
             network_tools: None,
             power_off: PowerOff::system(),
             tail: Some(tail::Places::system()),
+            selinux: &selinux::KERNEL,
+            start,
         }
     }
 
@@ -485,13 +510,38 @@ pub fn run(env: &Env) -> Outcome {
     if !env.nextroot_mounted() {
         return Outcome::NothingToDo;
     }
-    if plan.armed_for(Direction::Enter, env.now) {
-        return enter(env, &mut plan);
+    let Some(direction) = [Direction::Enter, Direction::Leave]
+        .into_iter()
+        .find(|direction| plan.armed_for(*direction, env.now))
+    else {
+        return disarm(env, &plan, "not armed for this transition");
+    };
+    if plan.program_label.is_some()
+        && let Err(outside) = env
+            .start
+            .enter_domain(env.selinux, &env.runtime_dir.join(BINARY_NAME))
+    {
+        return outside_domain(env, &plan, direction, &outside);
     }
-    if plan.armed_for(Direction::Leave, env.now) {
-        return leave(env, &plan);
+    match direction {
+        Direction::Enter => enter(env, &mut plan),
+        Direction::Leave => leave(env, &plan),
     }
-    disarm(env, &plan, "not armed for this transition")
+}
+
+/// The end of an armed step that does not run in the program's domain (see
+/// the module docs): on the way back a power-off first, then, as on the way
+/// in, the switch refused.
+fn outside_domain(env: &Env, plan: &Plan, direction: Direction, outside: &Outside) -> Outcome {
+    if direction == Direction::Leave {
+        let _ = power_off_instead(
+            env.systemctl.as_deref(),
+            env.power_off.grace,
+            env.power_off.kernel,
+        );
+    }
+    let why = format!("the last step before the switch does not run in {DOMAIN}: {outside}");
+    disarm(env, plan, &why)
 }
 
 /// Detach a `/run/nextroot` the plan did not arm. On the decoy side (never
@@ -779,14 +829,20 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // pieces left for the decoy's first start run the binary copy from /run,
     // and the reconcile one-shot turns noexec back on once they have, so /run
     // stays executable until then. Everything else sets noexec here, and so
-    // does a failed install. Done this late so the boot clock read now dates
-    // the switch itself, which comes next.
+    // does a failed install, a copy that does not take the plan's label among
+    // them: the decoy's PID 1 would start it in its own domain. Done this late
+    // so the boot clock read now dates the switch itself, which comes next.
+    let label = plan.program_label.as_deref().map(|label| Labelling {
+        selinux: env.selinux,
+        label,
+    });
     let fixup_installed = fixup_binary
         .as_deref()
         .and_then(|binary| Some((binary, boot_records::Fix::for_decoy(&env.nextroot)?)))
         .is_some_and(|(binary, fix)| {
             let switched_at = boot_records::boot_clock();
-            boot_records::install(&env.run, binary, &fix, switched_at, plan.run_noexec).is_ok()
+            boot_records::install(&env.run, binary, &fix, switched_at, plan.run_noexec, label)
+                .is_ok()
         });
     if plan.run_noexec && !fixup_installed {
         let _ = nextroot::set_noexec(&env.run, true);
