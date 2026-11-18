@@ -180,13 +180,17 @@ const READ_SYSTEMD_OPTIONS: &[&str] = &[
 ];
 
 /// Whether the session reads what the option `option` has the units of its
-/// line pull in: not for one that holds a backslash or a quote, which systemd
-/// reads otherwise than the parser splits it, nor for one of systemd's own
-/// namespaces that is not in [`READ_SYSTEMD_OPTIONS`]; for any other option,
-/// which systemd does not read for what a unit pulls in, or reads as a flag
-/// the session reads too ([`SYSTEMD_NAMESPACES`]).
+/// line pull in: not for one that holds a backslash, as systemd keeps a
+/// comma after a backslash in the option and reads `\054` as a comma, so it
+/// splits such options otherwise than the parser; nor for one of systemd's
+/// own namespaces that is not in [`READ_SYSTEMD_OPTIONS`]; for any other
+/// option, which systemd does not read for what a unit pulls in, or reads as
+/// a flag the session reads too ([`SYSTEMD_NAMESPACES`]). A double quote
+/// changes nothing there: systemd 260.5's fstab generator split
+/// `comment="x,x-systemd.makefs,y"` at every comma, as the parser does, and
+/// had the mount pull in its makefs.
 pub fn reads_pulls_of(option: &str) -> bool {
-    if option.contains(['\\', '"']) {
+    if option.contains('\\') {
         return false;
     }
     !SYSTEMD_NAMESPACES

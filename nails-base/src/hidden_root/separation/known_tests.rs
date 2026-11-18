@@ -551,8 +551,8 @@ fn the_options_nails_does_not_read_are_named_without_their_values() {
         ),
         ("/dev/vdb1 /opt ext4 noauto,loop", &["loop"]),
         // A backslash or a quote: systemd keeps the comma after a backslash
-        // in the option, libmount decodes \054 to one, and a comma between
-        // quotes stays in the option.
+        // in the option and reads \054 as one, and libmount keeps a comma
+        // between quotes in the option.
         ("/dev/vdb1 /opt ext4 noauto,auto=x\\,noauto", &["auto"]),
         (
             "/dev/vdb1 /opt ext4 noauto,comment=x\\054auto",

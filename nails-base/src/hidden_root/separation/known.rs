@@ -596,14 +596,16 @@ pub(super) fn reads_every_known(entry: &FstabEntry) -> bool {
 /// than `local-fs.target`, a path or a device in a form NAILS does not read,
 /// `X-mount.subdir=`, `loop` on a line for a device, and an option that holds
 /// a backslash or a quote. The parser splits the options at every comma and
-/// decodes nothing in them, while systemd and `libmount` decode `\054` to a
-/// comma and keep a comma after a backslash or between quotes in its option:
+/// decodes nothing in them. systemd splits them at every comma too, quotes or
+/// not, and only a backslash, after which it keeps a comma in the option, or
+/// a `\054`, which it reads as a comma, makes it split them otherwise:
 /// systemd 260.5's fstab generator mounted `noauto,auto=x\,noauto` and
-/// `noauto,comment=x\054auto` at boot, and read `noauto,comment="x,auto"` as
-/// `noauto`. Any such option may change whether
-/// and how the boot mounts the line, so a reader that would take the line for
-/// one the boot does not mount takes it for one it may mount: the claims, and
-/// the session's fstab policy, which masks it.
+/// `noauto,comment=x\054auto` at boot. A quote is unread as `libmount`, which
+/// `mount` reads the line with, keeps a comma between quotes in one option.
+/// Any such option may change whether and how the boot or `mount` mounts the
+/// line, so a reader that would take the line for one the boot does not mount
+/// takes it for one it may mount: the claims, and the session's fstab
+/// policy, which masks it.
 pub fn unread_fstab_options(entry: &FstabEntry) -> Vec<String> {
     let lists = fstab_lists(entry);
     let mut names: Vec<String> = Vec::new();

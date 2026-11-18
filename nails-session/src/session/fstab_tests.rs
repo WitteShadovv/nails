@@ -322,3 +322,33 @@ fn the_options_of_an_entry_are_read_by_their_names() {
         assert_eq!(required_by(&entry(line)).as_deref(), required, "{line}");
     }
 }
+
+/// systemd 260.5's fstab generator split `comment="x,x-systemd.makefs,y"`,
+/// `comment="x,auto,y"` and `context="a:b:c:s0:c1,c2"` at every comma, quotes
+/// or not, as the parser does: a quote changes nothing in what an option
+/// pulls in. A backslash does, and so does an option of systemd's own that
+/// the session does not read.
+#[test]
+fn what_an_option_pulls_in_is_read_unless_it_holds_a_backslash() {
+    for option in [
+        "comment=\"x",
+        "y\"",
+        "context=\"system_u:object_r:nfs_t:s0\"",
+        "\"noauto\"",
+        "hard",
+        "x-systemd.requires=foo.service",
+        "x-systemd.makefs=1",
+        "x-initrd.mount",
+    ] {
+        assert!(reads_pulls_of(option), "{option}");
+    }
+    for option in [
+        "auto=x\\",
+        "comment=x\\054auto",
+        "x-systemd.requires=a\\054b.service",
+        "x-systemd.frobnicate",
+        "x-initrd.attach",
+    ] {
+        assert!(!reads_pulls_of(option), "{option}");
+    }
+}
