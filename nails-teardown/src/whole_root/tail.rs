@@ -16,7 +16,8 @@
 //!   [`end_leftovers`] kills those processes as PID 1 would, first thing in
 //!   the way back (their units' stop commands then run before the `/run`
 //!   scrub and the restores) and once more before the cursor is taken, so
-//!   PID 1 finds none of them; [`quiet_hidden_unmount`] sets the hidden ext4
+//!   PID 1 finds none of them but udevd's, which the network restore still
+//!   needs ([`LEFT_TO_THE_SWITCH`]); [`quiet_hidden_unmount`] sets the hidden ext4
 //!   filesystem's message limit to zero, so the kernel drops that line.
 //! - **What waits in journald's sockets.** A soft-reboot keeps the socket
 //!   units of journald open (they never stop at a shutdown), and journald's
@@ -39,7 +40,8 @@
 //! What stays is listed in the residue catalog (`kmsg-import`,
 //! `journal-socket-carry`): PID 1's own last generic lines (the soft-reboot
 //! service's end, `Soft-rebooting.`, its final kill of the `(sd-close)`
-//! helpers it starts after the step to close a descriptor and, with the
+//! helpers it starts after the step to close a descriptor and of udevd's
+//! processes where the soft-reboot leaves udevd running and, with the
 //! kernel's audit on, the audit records of that service's start and stop and
 //! of the BPF programs it unloads), a process of the session that stays in
 //! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), a
@@ -139,34 +141,67 @@ const JOBS_BUDGET: Duration = Duration::from_secs(5);
 pub fn services_of(proc: &Path, pids: &[u32]) -> Vec<String> {
     let mut units: Vec<String> = pids
         .iter()
-        .filter_map(|pid| {
-            let content =
-                std::fs::read_to_string(proc.join(pid.to_string()).join("cgroup")).ok()?;
-            let path = crate::cgroup::v2_path(&content)?;
-            path.split('/')
-                .find(|segment| segment.ends_with(".service") && segment.len() > ".service".len())
-                .map(str::to_string)
-        })
+        .filter_map(|&pid| service_of(proc, pid))
         .collect();
     units.sort();
     units.dedup();
     units
 }
 
-/// End every process [`leftovers`] lists on the real system (`places.proc`
-/// must be `/proc`), in rounds until none is left. Each round first queues a
-/// stop job for the services they run in, through `systemctl` when there is
-/// one, so that PID 1 does not start one of them again under `Restart=` (a
-/// queued stop job holds a restart back), then SIGKILLs them, waits, bounded,
-/// until PID 1 has reaped them (once a process is gone from `/proc`, PID 1 has
-/// also logged what its end means for its unit, and that goes before the
-/// cursor), and waits for every job but `own_jobs` and for any restart still
-/// due. Returns the pids killed.
+/// The outermost `.service` of the cgroup path of `pid` under the procfs at
+/// `proc`, or `None` for a process outside a service or one whose cgroup
+/// cannot be read.
+fn service_of(proc: &Path, pid: u32) -> Option<String> {
+    let content = std::fs::read_to_string(proc.join(pid.to_string()).join("cgroup")).ok()?;
+    let path = crate::cgroup::v2_path(&content)?;
+    path.split('/')
+        .find(|segment| segment.ends_with(".service") && segment.len() > ".service".len())
+        .map(str::to_string)
+}
+
+/// The services whose processes [`end_leftovers`] leaves to PID 1, which
+/// ends them at the switch as at a plain soft-reboot: udevd. Before systemd
+/// 258 the soft-reboot leaves udevd running until PID 1's final kill, and the
+/// way back hands it events after the first pass: the network restore
+/// deletes the links the session made. Stopped before them, udevd would
+/// handle none of them: its record of a deleted link would stay in
+/// `/run/udev`, and the first event would make PID 1 try to start it again
+/// inside the soft-reboot, fail its kernel socket and open that socket anew
+/// at the decoy's start.
+/// PID 1's final kill names udevd's processes by their generic names, as a
+/// plain soft-reboot does.
+pub const LEFT_TO_THE_SWITCH: [&str; 1] = ["systemd-udevd.service"];
+
+/// The processes [`end_leftovers`] ends, under the procfs at `proc`: those of
+/// [`leftovers`] that run in none of the services of [`LEFT_TO_THE_SWITCH`].
+pub fn to_end(proc: &Path, own: u32) -> Vec<u32> {
+    leftovers(proc, own)
+        .into_iter()
+        .filter(|&pid| {
+            service_of(proc, pid).is_none_or(|unit| !LEFT_TO_THE_SWITCH.contains(&unit.as_str()))
+        })
+        .collect()
+}
+
+/// End every process [`to_end`] lists on the real system (`places.proc`
+/// must be `/proc`), in rounds until none is left. First it waits, bounded,
+/// for every job but `own_jobs`, through `systemctl` when there is one, so
+/// that a unit the soft-reboot is still stopping ends as the soft-reboot
+/// stops it. Each round then queues a stop job for the services the
+/// processes run in, so that PID 1 does not start one of them again under
+/// `Restart=` (a queued stop job holds a restart back), SIGKILLs them, waits,
+/// bounded, until PID 1 has reaped them (once a process is gone from `/proc`,
+/// PID 1 has also logged what its end means for its unit, and that goes
+/// before the cursor), and waits for every job but `own_jobs` and for any
+/// restart still due. Returns the pids killed.
 pub fn end_leftovers(places: &Places, systemctl: Option<&Path>, own_jobs: &[&str]) -> Vec<u32> {
     let own = std::process::id();
     let mut killed = Vec::new();
+    if let Some(systemctl) = systemctl {
+        let _ = tools::wait_for_other_jobs(systemctl, own_jobs, JOBS_BUDGET);
+    }
     for _ in 0..KILL_ROUNDS {
-        let pids = leftovers(&places.proc, own);
+        let pids = to_end(&places.proc, own);
         if pids.is_empty() {
             break;
         }

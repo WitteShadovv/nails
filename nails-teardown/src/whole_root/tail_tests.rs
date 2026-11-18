@@ -81,6 +81,30 @@ fn each_leftover_s_outermost_service_is_named_once() {
 }
 
 #[test]
+fn udevd_s_processes_are_left_to_pid_1_and_every_other_leftover_ended() {
+    let world = tempfile::tempdir().unwrap();
+    let proc = world.path().join("proc");
+    for (pid, cgroup) in [
+        (40, "0::/system.slice/systemd-udevd.service\n"),
+        (41, "0::/system.slice/systemd-udevd.service/udev\n"),
+        (42, "0::/system.slice/lngr.service\n"),
+        (43, "0::/system.slice/systemd-userdbd.service\n"),
+        (44, "0::/user.slice/user-1000.slice/session-2.scope\n"),
+        (45, "0::/system.slice/not-systemd-udevd.service\n"),
+    ] {
+        process(&proc, pid, 'S', 0, 0, b"p\0");
+        fs::write(proc.join(pid.to_string()).join("cgroup"), cgroup).unwrap();
+    }
+    // A process whose cgroup cannot be read is ended, as PID 1 would end it.
+    process(&proc, 46, 'S', 0, 0, b"p\0");
+    fs::remove_file(proc.join("46").join("cgroup")).unwrap();
+
+    assert_eq!(leftovers(&proc, 77), [40, 41, 42, 43, 44, 45, 46]);
+    // udevd and its workers stay for the events the network restore causes.
+    assert_eq!(to_end(&proc, 77), [42, 43, 44, 45, 46]);
+}
+
+#[test]
 fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
