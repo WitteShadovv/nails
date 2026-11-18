@@ -654,6 +654,7 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     // on closing them ([`tail::drop_journal_streams`]).
     if let Some(systemctl) = &env.systemctl {
         let _ = tail::drop_journal_streams(systemctl);
+        let _ = tail::record_sockets(systemctl, &env.runtime_dir.join(tail::SOCKETS_NAME));
     }
     // The counter as PID 1 hands over: the way back measures how many numbers
     // the hidden start uses from here ([`fresh_pids::counter`]).
@@ -705,6 +706,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         .map(|text| parse_mountinfo(&text));
     let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
     let network = std::fs::read(env.runtime_dir.join(network::RECORD_NAME)).ok();
+    let sockets = std::fs::read_to_string(env.runtime_dir.join(tail::SOCKETS_NAME))
+        .ok()
+        .map(|text| tail::listed_sockets(&text));
     // On an FHS decoy, keep the binary copy before the scrub removes the runtime
     // directory: the boot-record reconcile step runs it on the decoy's first
     // start. NixOS (a decoy system toplevel) leaves records that already read as
@@ -861,7 +865,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     }
     // Nothing of the hidden session may log after the cursor, and nothing it
     // sent journald may wait for the decoy's journald.
-    let journal = finish_tail(env, plan);
+    let journal = finish_tail(env, plan, sockets.as_deref());
     // Anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
         let _ = run_scrub::write_kernel_seqnum(&env.run, next);
@@ -901,12 +905,13 @@ fn end_session_leftovers(env: &Env, plan: &Plan) {
 /// first pass unless a process started since or outlasted that pass (one in
 /// uninterruptible sleep); then empty journald's sockets
 /// and descriptor store and open its sockets again, and quiet the hidden
-/// ext4 filesystem, whose unmount follows the switch. Returns the `systemctl`
-/// calls on journald's sockets that did not succeed.
-fn finish_tail(env: &Env, plan: &Plan) -> Vec<String> {
+/// ext4 filesystem, whose unmount follows the switch. `sockets` are the
+/// journald sockets the decoy had listening at the entry. Returns the
+/// `systemctl` calls on journald's sockets that did not succeed.
+fn finish_tail(env: &Env, plan: &Plan, sockets: Option<&[&'static str]>) -> Vec<String> {
     end_session_leftovers(env, plan);
     let journal = match &env.systemctl {
-        Some(systemctl) => tail::empty_journal_sockets(systemctl),
+        Some(systemctl) => tail::empty_journal_sockets(systemctl, sockets),
         None => vec!["no systemctl".to_string()],
     };
     if let Some(places) = &env.tail {

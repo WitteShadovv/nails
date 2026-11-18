@@ -166,6 +166,40 @@ fn entering_repoints_current_system_masks_decoy_units_and_records_the_entry() {
 }
 
 #[test]
+fn entering_drops_the_stored_streams_and_keeps_the_listening_journal_sockets() {
+    let world = World::new();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    let calls = world.dir.path().join("calls");
+    let systemctl = world.dir.path().join("systemctl");
+    write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> {}\n\
+             [ \"$1\" = list-units ] && \
+             echo 'systemd-journald-dev-log.socket loaded active listening Journal Socket'\n\
+             exit 0\n",
+            calls.display()
+        ),
+        0o755,
+    );
+    let mut env = world.env(true, 1_010);
+    env.systemctl = Some(systemctl);
+
+    assert_eq!(run(&env), Outcome::Entered);
+
+    let made = fs::read_to_string(&calls).unwrap();
+    let made: Vec<&str> = made.lines().collect();
+    assert_eq!(made[0], "clean --what=fdstore systemd-journald.service");
+    assert!(made[1].starts_with("list-units "), "{made:?}");
+    assert_eq!(
+        fs::read_to_string(world.runtime().join(tail::SOCKETS_NAME)).unwrap(),
+        "systemd-journald-dev-log.socket\n"
+    );
+}
+
+#[test]
 fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
     // The decoy's initrd wrote lines for the decoy's root and store, which the
     // switch leaves behind; the kernel then hands their IDs to the next mounts
@@ -426,6 +460,12 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
         ),
         0o755,
     );
+    // The entry kept which of journald's sockets the decoy had listening.
+    fs::write(
+        world.runtime().join(tail::SOCKETS_NAME),
+        "systemd-journald.socket\nsystemd-journald-dev-log.socket\n",
+    )
+    .unwrap();
     let mut env = world.env(true, 1_000);
     env.systemctl = Some(systemctl);
 
@@ -469,12 +509,13 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
         tail::tmpfiles_text(true)
     );
     // journald's sockets were closed with what they hold, after the wait for
-    // the late unit, and the one that listened before opened again: the last
-    // calls before the cursor.
-    let stops: Vec<String> = tail::journal_socket_calls(&["systemd-journald.socket"])
-        .iter()
-        .map(|args| args.join(" "))
-        .collect();
+    // the late unit, and those the decoy had listening opened again: the
+    // last calls before the cursor.
+    let stops: Vec<String> =
+        tail::journal_socket_calls(&["systemd-journald.socket", "systemd-journald-dev-log.socket"])
+            .iter()
+            .map(|args| args.join(" "))
+            .collect();
     let every_call = fs::read_to_string(&all_calls).unwrap();
     let every_call: Vec<&str> = every_call.lines().collect();
     assert!(
