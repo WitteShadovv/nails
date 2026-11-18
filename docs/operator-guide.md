@@ -884,9 +884,10 @@ uninterruptible sleep (on a hung network or FUSE mount, say) past the last
 step's bounded wait; the `Deactivated successfully.` line of a mount unit
 whose mount the scrub detached, where PID 1 has not taken the unit down when
 the last step's wait for it ends: after about two seconds, at once when
-`systemctl` gives no answer or for a mount point whose path is not valid
-UTF-8 (the wait cannot name its unit), and with no wait at all where there is
-no `systemctl`; the hidden service manager's last lines, which a plain soft-reboot logs too (the
+`systemctl` gives no answer or for a mount point whose unit the wait cannot
+name (a path that is not valid UTF-8, or a unit name of 256 characters or
+more, which PID 1 shortens with a hash), and with no wait at all where there
+is no `systemctl`; the hidden service manager's last lines, which a plain soft-reboot logs too (the
 soft-reboot service's end and `Soft-rebooting.`, its final kill of the helpers
 it starts after the step to close a descriptor, `Sending SIGKILL to PID N
 ((sd-close))`, and, where the soft-reboot leaves udevd running (as with

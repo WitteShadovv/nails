@@ -393,9 +393,9 @@ pub struct Env {
     pub network_kernel: Option<std::sync::Arc<dyn network::NetKernel>>,
     /// How the way back powers off when it cannot put the network state back.
     pub power_off: PowerOff,
-    /// Where the way back ends the session's last processes, empties
-    /// journald's sockets and quiets the hidden filesystem before the kmsg
-    /// cursor ([`tail`]); `None` skips the three. A test gives it a fake
+    /// Where the way back ends the session's last processes but udevd's,
+    /// empties journald's sockets and quiets the hidden filesystem before the
+    /// kmsg cursor ([`tail`]); `None` skips the three. A test gives it a fake
     /// procfs or none: the real places kill processes and read PID 1's
     /// sockets.
     pub tail: Option<tail::Places>,
@@ -909,12 +909,14 @@ fn end_session_leftovers(env: &Env, plan: &Plan) {
 /// has taken down the units of the mounts the `/run` scrub detached
 /// (`detached`), so that it logs their end before the cursor
 /// ([`tail::wait_for_unmounted`]). Then end once more what PID 1 would still
-/// kill at the switch, which finds nothing after the way back's first pass
-/// unless a process started since or outlasted that pass (one in
-/// uninterruptible sleep), drop journald's descriptor store and put
-/// its socket units as the decoy had them, and quiet the hidden ext4
-/// filesystem, whose unmount follows the switch. Last, once the session's
-/// last writer is gone, empty journald's sockets in place: what reached them
+/// kill at the switch but udevd's, which it leaves to PID 1
+/// ([`tail::LEFT_TO_THE_SWITCH`]): this pass finds nothing after the way
+/// back's first one unless a process started since or outlasted the first
+/// (one in uninterruptible sleep). Then drop journald's
+/// descriptor store and put its socket units as the decoy had them, and quiet
+/// the hidden ext4 filesystem, whose unmount follows the switch. Last, once
+/// every process of the session but udevd's has ended (or outlasted that
+/// pass's bound), empty journald's sockets in place: what reached them
 /// during the steps before, the wait included, does not stay there for the
 /// decoy's journald. `sockets` are the journald socket units the decoy had
 /// active at the entry. Returns what did not succeed of the work on
