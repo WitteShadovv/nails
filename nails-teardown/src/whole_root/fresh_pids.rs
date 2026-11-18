@@ -28,12 +28,13 @@
 //!    getty, the decoy's number of it moved at least [`BAND_MARGIN`] inside
 //!    the edges of that number's power-of-two range ([`aim`]); for logind,
 //!    its own number. The decoy's anchor lands off the aim by the difference
-//!    between the numbers the decoy's start and the hidden start use up to
-//!    it; while that is less than the margin, the getty lands in the range of
-//!    its number at the entry, from 128 on. Each entry anchors on the number
-//!    the last way back gave, so the difference adds up over sessions without
-//!    a power-off between them, but each aim moves the getty in from the
-//!    edges of the range again.
+//!    between the numbers the decoy's start and the hidden start pass up to
+//!    it, kernel threads and numbers still in use included; where the getty
+//!    is the anchor and that difference is less than the margin, the getty
+//!    lands in the range of its number at the entry, from 128 on. Each entry
+//!    anchors on the number the last way back gave, so the difference adds up
+//!    over sessions without a power-off between them, but each aim moves the
+//!    getty in from the edges of the range again.
 //!
 //! A process counts as one a start ran only when it started at most
 //! [`START_WINDOW`] after the first process of that start still running: the

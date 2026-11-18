@@ -1180,10 +1180,12 @@ In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
 overlay feature options, the canaries in their uppers, the failed units (a
 zram setup unit only as the decoy's own run, with the invocation it had before
 the entry, which failed as the switch stopped it), no swap on a zram device
-with zram-generator masked in the hidden root, a marker held in more memory
-than its unit may keep in RAM found on no zram device, a login and a failed
-login that the session's own wtmp and btmp record, a
-`security.selinux` round trip on the hidden volume, and a disk attached in
+with zram-generator masked in the hidden root, a marker in a unit whose
+memory the gate asks the kernel to reclaim found on no zram device (the
+session has no swap to move the marker to, and in the gate's runs that request
+failed, so the check that no swap is on a zram device is the one that
+decides), a login and a failed login that the session's own wtmp and btmp
+record, a `security.selinux` round trip on the hidden volume, and a disk attached in
 the session read-only by the disk guard's udev rule, which records it: the
 watcher's sweep, the rule's fallback, runs once an hour in the gate's
 sessions, so it cannot set the disk read-only in the rule's place. The first

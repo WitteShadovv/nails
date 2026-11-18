@@ -35,8 +35,8 @@ QEMU process:
    uppers; no NAILS unit and no unit the hidden root masks failed; a login
    and a failed login in the session, each recorded in the session's own
    files; no swap on a zram device and zram-generator masked, with a marker
-   held in more memory than its unit may keep in RAM found on no zram
-   device; a kernel log marker and a file in ``/run``; a unit that logs
+   in a unit whose memory the gate asks the kernel to reclaim found on no
+   zram device; a kernel log marker and a file in ``/run``; a unit that logs
    through each of journald's sockets as it stops, after journald; a disk
    attached in the session read-only by the disk guard's udev rule; the
    rehearsal planted; the kernel's process numbers pushed far past a cold
@@ -1881,8 +1881,8 @@ class Gate:
         )
         counts = zram_marker_counts(self.zram_probe(n))
         self.check(
-            f"session {n}: the marker held past its unit's RAM is on no zram "
-            "device",
+            f"session {n}: the marker of a unit whose memory the kernel is asked "
+            "to reclaim is on no zram device",
             all(count == 0 for count in counts.values()),
             counts,
         )
