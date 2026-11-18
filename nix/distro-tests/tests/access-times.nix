@@ -53,6 +53,11 @@
 # is not aged: NAILS compares its change times with the start of Debian's
 # unattended-upgrades helper, and refuses where it changed after it (its
 # entries still show a read, as their access times are older than a day).
+# Nor is /etc/selinux/config, on Fedora: lsm-status compares its change time
+# with the boot, and refuses where it changed after the boot, as SELinux may
+# then run another policy than the one it names. A read of that one file may
+# not show: under relatime a read updates its access time only where that is
+# a day old, or older than the file's last change.
 #
 # Like the records scenarios it is a host driver: on a KVM host by hand, or in
 # the records suite of distro-e2e.yml.
@@ -133,6 +138,9 @@ distroVm.buildVmTest {
     RAM_NAILS_CMD = f"/run/overlay-runtime/control --config {CONFIG}"
     UNRESOLVED = "Target user could not be resolved"
     AGE_SECONDS = 2 * 86400
+    # What the aging leaves alone, as NAILS judges their change times (see
+    # the header): apt's configuration, and SELinux's on Fedora.
+    NOT_AGED = ("/etc/apt", "/etc/selinux/config")
     PID1 = (
         "org.freedesktop.systemd1 /org/freedesktop/systemd1 "
         "org.freedesktop.systemd1.Manager"
@@ -264,7 +272,7 @@ distroVm.buildVmTest {
         # (the driver's own program, see the header) and take the reference
         # past all of it.
         aged = json.loads(
-            walker(f"age {AGE_SECONDS} {MOUNT_ARGS}", skip=("/etc/apt",))
+            walker(f"age {AGE_SECONDS} {MOUNT_ARGS}", skip=NOT_AGED)
         )
         assert aged["aged"] > 1000, f"{label}: only {aged} entries aged"
         settle()

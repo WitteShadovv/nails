@@ -2695,7 +2695,8 @@ of this changelog for that version becomes the release notes word for word, and
   (What `check` touches in docs/operator-guide.md). The new access-time scenario of the
   distribution tests ages a Debian 13 decoy disk, and a Fedora 44 one with a test build, and fails
   on any other read by `check`, an activation or a way back, for an operator account, that a plain
-  soft-reboot does not make.
+  soft-reboot does not make, though it may not see a read of `/etc/selinux/config`, which it does
+  not age.
 - A switch into or out of a hidden session that hangs until `soft-reboot.target`'s job timeout
   (30 minutes) now powers the machine off. systemd ended such a switch by force
   (`JobTimeoutAction=soft-reboot-force` in every series from 254 to 262), which never runs
