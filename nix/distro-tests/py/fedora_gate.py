@@ -234,8 +234,14 @@ mkdir -p {HIDDEN}/root/work {HIDDEN}/config
 # settings (selinux_gate.KMSG_SETTINGS) hold from the sysctl step of every
 # later start on as well, so that the boot the gate counts from loses as little
 # of its kernel log as it can, and no start's console line is split, before the
-# gate sets them again.
+# gate sets them again. From the next boot on the kernel's log buffer holds
+# :data:`LOG_BUF_LEN` instead of the 256 KiB Fedora's kernel keeps: the gate
+# reads the log at every step but not while a switch runs, a switch logs about
+# 100 KB of text in the variant without dontaudit rules, and a part of the log
+# the gate reads again (:meth:`Gate.read_kmsg`) must still be in the buffer.
+LOG_BUF_LEN = "16M"
 PREPARE_DECOY = (
+    f"LOG_BUF_LEN={LOG_BUF_LEN}\n"
     """
 set -eu
 printf '%s\\n' """
@@ -248,7 +254,7 @@ printf '%s\\n' '[Coredump]' Storage=none ProcessSizeMax=0 \\
 printf '%s\\n' '[Login]' HandleLidSwitch=lock HandleLidSwitchExternalPower=lock \\
   HandleLidSwitchDocked=ignore IdleAction=ignore \\
   > /etc/systemd/logind.conf.d/10-lid.conf
-grubby --update-kernel=ALL --args=init_on_free=1
+grubby --update-kernel=ALL --args="init_on_free=1 log_buf_len=$LOG_BUF_LEN"
 systemctl disable --now sssd.service sssd-kcm.socket sssd-kcm.service || true
 rm -f /var/lib/sss/db/config.ldb /var/lib/sss/db/config_kcm.ldb \\
   /var/lib/sss/mc/passwd /var/lib/sss/mc/group /var/lib/sss/mc/initgroups \\
@@ -408,6 +414,9 @@ RECORD_PATHS = (
 )
 # The filesystem types of the decoy's disk mounts.
 DISK_FSTYPES = ("btrfs", "ext4", "xfs", "vfat")
+# How often the gate reads a part of the kernel log before it counts it as
+# torn.
+KMSG_TRIES = 5
 # The decoy's own timers and the units each starts, as the PID 1 of the root
 # that runs reports them: whether the timer is persistent, when it last
 # triggered, and when its unit last left and last entered its inactive state.
@@ -1176,6 +1185,8 @@ class Gate:
         self.exec_audit = False
         self.exec_boot = -1
         self.exec_probes: list[str] = []
+        # The guest commands whose output did not reach the gate whole.
+        self.torn: list[str] = []
 
     # --- recording -------------------------------------------------------
 
@@ -1203,8 +1214,15 @@ class Gate:
         key = f"{self.calls:04}.b{self.boot}.{label}"
         try:
             status, out = self.vm.execute(
-                f"( set +euo pipefail; {cmd} ) 2>&1", timeout=timeout
+                f"( set +euo pipefail; {cmd} ) 2>&1 | python3 -c "
+                + shlex.quote(sg.WHOLE_TEE),
+                timeout=timeout,
             )
+            checked = sg.whole(out, separated=True)
+            if checked is None:
+                self.torn.append(key)
+            else:
+                out = checked[0]
         except Exception as error:  # noqa: BLE001 - a dead guest is a result
             status, out = -1, f"<{type(error).__name__}: {error}>"
         self.raw[key] = {"cmd": cmd, "status": status, "out": out}
@@ -1307,12 +1325,29 @@ class Gate:
     # --- the kernel log --------------------------------------------------
 
     def read_kmsg(self) -> None:
+        """The kernel log from the last record read on, in parts of at most
+        :data:`selinux_gate.KMSG_PART` records, each read again until it
+        reaches the gate whole (:func:`selinux_gate.whole`): the records stay
+        in the kernel's buffer, so a read again gives the same ones. A part
+        that never does counts as torn, which fails the run."""
         current = self.boots[self.boot]
-        first = max(current["records"], default=0)
-        status, out = self.vm.execute(sg.kmsg_command(first), timeout=300)
-        found, dropped = sg.parse_kmsg(out)
-        current["dropped"] += dropped
-        sg.merge(current["records"], found)
+        while True:
+            first = max(current["records"], default=0)
+            for _ in range(KMSG_TRIES):
+                _, out = self.vm.execute(sg.kmsg_command(first), timeout=300)
+                checked = sg.whole(out)
+                if checked is not None:
+                    break
+                current["retried"] += 1
+            else:
+                current["torn"] += 1
+                return
+            body, count = checked
+            found, dropped = sg.parse_kmsg(body)
+            current["dropped"] += dropped
+            sg.merge(current["records"], found)
+            if count < sg.KMSG_PART:
+                return
 
     def mark(self, label: str) -> int | None:
         text = sg.marker(label, self.nonce)
@@ -1362,6 +1397,8 @@ class Gate:
                 "why": why,
                 "records": {},
                 "dropped": 0,
+                "retried": 0,
+                "torn": 0,
                 "markers": [],
                 "console": [],
                 "audit": [],
@@ -1451,6 +1488,12 @@ class Gate:
         btime = self.vm.succeed("awk '$1 == \"btime\" {print $2}' /proc/stat").strip()
         self.boots[self.boot]["btime"] = int(btime) if btime.isdigit() else 0
         self.prepare()
+        cmdline = self.fact(f"cmdline-{label}", "cat /proc/cmdline")
+        self.check(
+            f"the {label} boot's kernel log buffer holds {LOG_BUF_LEN}",
+            f"log_buf_len={LOG_BUF_LEN}" in cmdline.split(),
+            cmdline,
+        )
 
     def wait_reconcile(self) -> None:
         self.sh(
@@ -3265,6 +3308,11 @@ class Gate:
             dropped = boot["dropped"] or sg.gaps(sorted(boot["records"]))
             self.where = f"boot {boot['why']}"
             self.check("the kernel log lost no record", not dropped, dropped)
+            self.check(
+                "every read of the kernel log reached the gate whole",
+                not boot.get("torn"),
+                {"torn": boot.get("torn"), "readAgain": boot.get("retried")},
+            )
             missing = [m["label"] for m in boot["markers"] if m["seq"] is None]
             self.check("every marker reached the kernel log", not missing, missing)
             markers = [m for m in boot["markers"] if m["seq"] is not None]
@@ -3424,6 +3472,12 @@ class Gate:
                 self.judge_denials()
             except Exception as error:  # noqa: BLE001
                 self.check("the denials are judged", False, str(error))
+            self.where = "the run"
+            self.check(
+                "every output of the guest reached the gate whole",
+                not self.torn,
+                self.torn[:20],
+            )
             self.write()
         failed = [c["name"] for c in self.checks if not c["passed"]]
         assert not failed, f"{len(failed)} assertions of the gate do not hold: {failed}"
@@ -3438,7 +3492,6 @@ class Gate:
         if self.settings.get("dontaudit") is False:
             self.sh("no-dontaudit", NO_DONTAUDIT, 900)
         self.power_cycle("reference")
-        self.fact("cmdline", "cat /proc/cmdline")
         self.mark("boot-ready")
         self.decoy()
         self.control("control-1")

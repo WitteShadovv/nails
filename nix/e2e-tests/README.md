@@ -1319,8 +1319,19 @@ switches. It also has the kernel print only its warnings and worse to the
 console, from the start of the boot it counts from (`/etc/sysctl.d`): a
 kernel line printed in the middle of the backdoor's announcement on the
 serial console split it, and the driver, waiting for that line after a
-soft-reboot, did not see it. Every record stays in the kernel log the gate
-reads.
+soft-reboot, did not see it. The test driver carries what a guest command
+prints over the guest's console, and once a read of the kernel log reached
+the gate with bytes missing from its middle, which the driver's base64 decoded
+without an error: the gate's copy lacked 17 records that the decoy's journal
+held. So the gate reads the kernel log in parts of at most 200 records, each
+ending with their number and their SHA-256, reads a part that does not reach
+it whole again, up to five times, and fails the run when one never does; the
+output of every other guest command it keeps ends with its SHA-256 too, and
+one that does not reach it whole fails the run. From the boot it counts from
+on, the kernel's log buffer holds 16 MiB (`log_buf_len=16M`, which the gate
+checks on the kernel command line of each boot) instead of the 256 KiB of
+Fedora's kernel, so that a part read again is still there: one switch of this
+variant logs about 100 KB of text.
 
 `<image>-btrfs` plants the btrfs scan controls on the stock image, made
 amnesic first as NAILS requires (journal volatile, auditd off, the run

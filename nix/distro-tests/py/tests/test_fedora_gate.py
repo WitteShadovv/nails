@@ -4,6 +4,7 @@ Fedora decoy, that run without a VM."""
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import tempfile
 import unittest
@@ -66,6 +67,83 @@ class PrepareTest(unittest.TestCase):
         for key, value in sg.KMSG_SETTINGS:
             self.assertIn(f"'{key} = {value}'", fg.PREPARE_DECOY)
         self.assertIn("/etc/sysctl.d/", fg.PREPARE_DECOY)
+
+    def test_the_next_boots_keep_a_larger_kernel_log_buffer(self) -> None:
+        # Fedora's kernel keeps 256 KiB, the records of about two switches
+        # in the variant without dontaudit rules.
+        args = '--args="init_on_free=1 log_buf_len=$LOG_BUF_LEN"'
+        self.assertIn(f"LOG_BUF_LEN={fg.LOG_BUF_LEN}\n", fg.PREPARE_DECOY)
+        self.assertIn(args, fg.PREPARE_DECOY)
+
+
+def part(*seqs: int) -> str:
+    """One part of the kernel log as the reader prints it, whole."""
+    body = "".join(f"6,{seq},{seq * 1000},-;record {seq}\n" for seq in seqs)
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    return f"{body}{sg.WHOLE} {len(seqs)} {digest}\n"
+
+
+class FakeVm:
+    """A guest whose commands give the outputs queued for them, in turn."""
+
+    def __init__(self, *outputs: str) -> None:
+        self.outputs = list(outputs)
+        self.commands: list[str] = []
+
+    def execute(self, command: str, timeout: int = 0) -> tuple[int, str]:
+        self.commands.append(command)
+        return 0, self.outputs.pop(0)
+
+
+class WholeOutputTest(unittest.TestCase):
+    def test_a_torn_part_of_the_kernel_log_is_read_again(self) -> None:
+        whole = part(1, 2, 3)
+        # The part that came torn: bytes missing from its middle.
+        torn = whole[:20] + whole[45:]
+        run = gate()
+        run.vm = FakeVm(torn, whole)
+        run.new_boot("first")
+        run.read_kmsg()
+        boot = run.boots[0]
+        self.assertEqual(sorted(boot["records"]), [1, 2, 3])
+        self.assertEqual((boot["retried"], boot["torn"]), (1, 0))
+        self.assertEqual(len(run.vm.commands), 2)
+
+    def test_a_part_that_never_comes_whole_fails_the_run(self) -> None:
+        whole = part(1, 2, 3)
+        torn = whole[:20] + whole[45:]
+        run = gate()
+        run.vm = FakeVm(*[torn] * fg.KMSG_TRIES)
+        run.new_boot("first")
+        run.read_kmsg()
+        self.assertEqual(run.boots[0]["torn"], 1)
+        self.assertEqual(run.boots[0]["records"], {})
+        quiet(run.judge_denials)
+        judged = {c["name"]: c["passed"] for c in run.checks}
+        self.assertFalse(judged["every read of the kernel log reached the gate whole"])
+
+    def test_the_log_is_read_part_by_part(self) -> None:
+        full = list(range(1, sg.KMSG_PART + 1))
+        run = gate()
+        run.vm = FakeVm(part(*full), part(sg.KMSG_PART, sg.KMSG_PART + 1))
+        run.new_boot("first")
+        run.read_kmsg()
+        self.assertEqual(len(run.boots[0]["records"]), sg.KMSG_PART + 1)
+        self.assertIn(f"python3 - {sg.KMSG_PART} ", run.vm.commands[1])
+
+    def test_an_output_that_is_not_whole_fails_the_run(self) -> None:
+        body = "the output\n"
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        run = gate()
+        run.vm = FakeVm(
+            f"{body}\n{sg.WHOLE} {len(body)} {digest}\n",
+            f"the outp\n\n{sg.WHOLE} {len(body)} {digest}\n",
+        )
+        run.new_boot("first")
+        self.assertEqual(quiet(run.sh, "first", "echo the output"), (0, body))
+        quiet(run.sh, "second", "echo the output")
+        self.assertEqual(run.torn, ["0002.b0.second"])
+        self.assertIn("python3 -c", run.vm.commands[0])
 
 
 class RowTest(unittest.TestCase):

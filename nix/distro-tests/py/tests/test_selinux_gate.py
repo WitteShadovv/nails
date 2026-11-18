@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 
 import selinux_gate as sg
@@ -80,8 +85,50 @@ class ParseTest(unittest.TestCase):
 
     def test_the_reader_takes_the_first_sequence_number(self) -> None:
         command = sg.kmsg_command(42)
-        self.assertTrue(command.startswith("python3 - 42 <<'GATEEOF'\n"))
+        head = f"python3 - 42 {sg.KMSG_PART} <<'GATEEOF'\n"
+        self.assertTrue(command.startswith(head))
         self.assertIn("/dev/kmsg", command)
+        self.assertTrue(sg.kmsg_command(42, 7).startswith("python3 - 42 7 "))
+
+    def test_the_reader_ends_its_part_with_its_count_and_digest(self) -> None:
+        # One read of the file gives its whole content, as one read of
+        # /dev/kmsg gives one record.
+        with tempfile.TemporaryDirectory() as folder:
+            log = os.path.join(folder, "kmsg")
+            with open(log, "w", encoding="utf-8") as handle:
+                handle.write(kmsg(9, "a record") + "\n")
+            reader = sg.KMSG_READER.replace("/dev/kmsg", log)
+            done = subprocess.run(
+                [sys.executable, "-c", reader, "5", "3"],
+                capture_output=True,
+                check=True,
+            )
+        out = done.stdout.decode()
+        self.assertEqual(sg.whole(out), (kmsg(9, "a record") + "\n", 1))
+
+    def test_a_part_with_bytes_missing_is_not_whole(self) -> None:
+        body = "".join(kmsg(n, f"record {n}") + "\n" for n in range(1, 6))
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        self.assertEqual(sg.whole(f"{body}#WHOLE 5 {digest}\n"), (body, 5))
+        # Seen once on Fedora 44: bytes missing from the middle of a part.
+        torn = body[:30] + body[60:]
+        self.assertIsNone(sg.whole(f"{torn}#WHOLE 5 {digest}\n"))
+        self.assertIsNone(sg.whole(body))
+        self.assertIsNone(sg.whole(f"{body}#WHOLE five {digest}\n"))
+        self.assertIsNone(sg.whole(f"{body[:-1]}#WHOLE 5 {digest}\n"))
+
+    def test_the_tee_passes_output_through_with_its_digest(self) -> None:
+        done = subprocess.run(
+            [sys.executable, "-c", sg.WHOLE_TEE],
+            input=b"line\nnot utf-8: \xff\n",
+            capture_output=True,
+            check=True,
+        )
+        out = done.stdout.decode()
+        # U+FFFD in place of the invalid byte takes three bytes.
+        text = "line\nnot utf-8: \ufffd\n"
+        self.assertEqual(sg.whole(out, separated=True), (text, 20))
+        self.assertIsNone(sg.whole(out.replace("line", "lane"), separated=True))
 
 
 class DenialTest(unittest.TestCase):
