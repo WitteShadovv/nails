@@ -106,8 +106,13 @@ fuzz_target!(|data: &[u8]| {
                     "{entry:?} lies at or below the hidden root: {decision:?}"
                 );
             }
+            // The mask of a noauto line nothing pulls in yields to a skip
+            // of its unit that waits for its device.
             for unit in decision.masked_units() {
-                assert!(kept.masks.contains(unit), "{unit}");
+                assert!(
+                    kept.masks.contains(unit) || (decision.is_noauto_mask() && skipped(unit)),
+                    "{unit}"
+                );
             }
             for unit in decision.skip().map_or(&[][..], |skip| &skip.units) {
                 assert!(

@@ -4,9 +4,9 @@
 //! The fstab policy reads each option as systemd 260.5's fstab generator read
 //! it on a test root (`SYSTEMD_FSTAB=<file> systemd-fstab-generator <dirs>`):
 //! by its name, alone or with a value, the last of a pair winning. A line it
-//! leaves alone as never mounted gives only options NAILS reads, by the lists
-//! the `backend-entries` check reads a plain line by; any other line it keeps
-//! off is masked, with a reason that names the option.
+//! takes for one the boot never mounts gives only options NAILS reads, by the
+//! lists the `backend-entries` check reads a plain line by; any other line it
+//! keeps off is masked, with a reason that names the option.
 
 use super::*;
 use crate::session::fstab::parse_fstab;
@@ -89,9 +89,10 @@ fn a_noauto_taken_back_by_name_is_kept_off_and_never_left() {
 }
 
 /// The generator wrote noauto=yes for these, and NAILS reads every option of
-/// them: they stay left alone, as next leaves them.
+/// them: nothing NAILS reads pulls them in, and they are masked as noauto
+/// lines of a decoy disk, which next left alone.
 #[test]
-fn a_noauto_line_nails_reads_fully_is_left_alone_as_before() {
+fn a_noauto_line_nails_reads_fully_is_masked_as_a_noauto_line() {
     for line in [
         "/dev/vdb1 /opt ext4 noauto 0 0",
         "/dev/vdb1 /opt ext4 noauto=1 0 0",
@@ -103,15 +104,8 @@ fn a_noauto_line_nails_reads_fully_is_left_alone_as_before() {
         "/dev/vdb1 /opt ext4 noauto,journal_path=/dev/vdc1 0 0",
         "/dev/vdb1 /opt btrfs noauto,subvol=@x,compress=zstd:3 0 0",
     ] {
-        let target = parse_fstab(line)[0].file.clone();
-        assert_eq!(
-            decide_line(line),
-            Decision::Leave {
-                target,
-                reason: "noauto: never mounted",
-            },
-            "{line}"
-        );
+        let decision = decide_line(line);
+        assert!(decision.is_noauto_mask(), "{line}: {decision:?}");
     }
 }
 
@@ -716,12 +710,11 @@ fn a_noauto_line_another_line_needs_is_kept_off() {
         "/dev/vdb1 /data ext4 noauto 0 0\ntmpfs /data/tmp tmpfs noauto 0 0\n",
     ] {
         let decisions = decide_fstab(fstab, true);
+        // Nothing NAILS reads pulls it in: the mask of a noauto line.
+        assert!(decisions[0].is_noauto_mask(), "{fstab}: {decisions:?}");
         assert_eq!(
-            decisions[0],
-            Decision::Leave {
-                target: "/data".into(),
-                reason: NEVER_MOUNTED,
-            },
+            decisions[0].masked_units(),
+            ["data.mount", "data.automount"],
             "{fstab}"
         );
     }
@@ -1040,12 +1033,11 @@ fn a_noauto_line_a_left_line_pulls_in_is_kept_off() {
         "/dev/vdy1 /r/a ext4 noauto 0 0\n/dev/vdz1 /r/b ext4 x-systemd.requires=/r/a 0 0\n",
     ] {
         let decisions = decide_fstab(fstab, true);
+        // Nothing NAILS reads pulls it in: the mask of a noauto line.
+        assert!(decisions[0].is_noauto_mask(), "{fstab}: {decisions:?}");
         assert_eq!(
-            decisions[0],
-            Decision::Leave {
-                target: "/r/a".into(),
-                reason: NEVER_MOUNTED,
-            },
+            decisions[0].masked_units(),
+            ["r-a.mount", "r-a.automount"],
             "{fstab}"
         );
     }

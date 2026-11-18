@@ -630,6 +630,11 @@ pub struct Graph<'a> {
     pub(super) covered: &'a [String],
     /// The targets the hidden boot starts anyway ([`boot_targets`]).
     pub(super) boot: Vec<String>,
+    /// The units only the mask of a `noauto` line nothing NAILS reads pulls
+    /// in keeps off ([`KeptOff::noauto_masks`](crate::session::policy::KeptOff::noauto_masks)):
+    /// a skip that pulls one in is masked, as one that pulls in a mount
+    /// nothing keeps off is ([`super::pulls::fate`]).
+    pub(super) noauto: Vec<String>,
     /// The names with directories of links or drop-ins of their own
     /// ([`UnitDirs::named_dirs`]), each with the names its alias links lead
     /// to and whether each is an alias for sure; `Err` for one whose links
@@ -669,6 +674,7 @@ impl<'a> Graph<'a> {
             fstab,
             covered,
             boot: Vec::new(),
+            noauto: Vec::new(),
             named,
             unlisted,
         };
