@@ -32,27 +32,32 @@ Nothing here imports Nix or the test driver.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 # Prints every record of /dev/kmsg whose sequence number is at least the first
-# argument, one record per read, as the kernel formats it. A record the ring
-# buffer dropped while reading shows as one "#EPIPE" line.
+# argument, one record per read, as the kernel formats it, and at most as many
+# as the second argument, then :data:`WHOLE` with their number and the SHA-256
+# of what it printed before. A record the ring buffer dropped while reading
+# shows as one "#EPIPE" line.
 KMSG_READER = r"""
-import errno, os, sys
+import errno, hashlib, os, sys
 first = int(sys.argv[1])
+limit = int(sys.argv[2])
 fd = os.open("/dev/kmsg", os.O_RDONLY | os.O_NONBLOCK)
-out = sys.stdout.buffer
-while True:
+out = bytearray()
+count = 0
+while count < limit:
     try:
         record = os.read(fd, 65536)
     except BlockingIOError:
         break
     except OSError as error:
         if error.errno == errno.EPIPE:
-            out.write(b"#EPIPE\n")
+            out += b"#EPIPE\n"
             continue
         raise
     if not record:
@@ -60,9 +65,31 @@ while True:
     head = record.split(b",", 2)
     if len(head) > 2 and head[1].isdigit() and int(head[1]) < first:
         continue
-    out.write(record)
-out.flush()
+    out += record
+    count += 1
+sys.stdout.buffer.write(bytes(out))
+digest = hashlib.sha256(out).hexdigest().encode()
+sys.stdout.buffer.write(b"#WHOLE %d %s\n" % (count, digest))
+sys.stdout.flush()
 """
+# How many records one read of the kernel log takes at most.
+KMSG_PART = 200
+
+# The line a guest program ends its output with, so that the gate can tell
+# that the output reached it whole: the test driver carries it over the
+# guest's console, and one read of the kernel log reached the gate with 4608
+# bytes missing from its middle, which the driver's base64 decoded without an
+# error. It names how many records or bytes came before it and their SHA-256.
+WHOLE = "#WHOLE"
+# Passes its input through as UTF-8, invalid bytes replaced, and ends it with
+# :data:`WHOLE`, the number of bytes and their SHA-256.
+WHOLE_TEE = (
+    "import hashlib, sys\n"
+    "data = sys.stdin.buffer.read().decode('utf-8', 'replace').encode('utf-8')\n"
+    "sys.stdout.buffer.write(data)\n"
+    "sys.stdout.buffer.write(b'\\n#WHOLE %d %s\\n' % "
+    "(len(data), hashlib.sha256(data).hexdigest().encode()))\n"
+)
 
 # The prefix of every marker line the scenario writes to /dev/kmsg.
 MARK = "GATEMARK"
@@ -125,9 +152,30 @@ _SERIAL = re.compile(r"audit\(\d+\.\d+:(\d+)\)")
 _SYSCALL = "type=1300 "
 
 
-def kmsg_command(first: int) -> str:
-    """The guest command that prints the records from ``first`` on."""
-    return f"python3 - {int(first)} <<'GATEEOF'\n{KMSG_READER}\nGATEEOF\n"
+def kmsg_command(first: int, limit: int = KMSG_PART) -> str:
+    """The guest command that prints the records from ``first`` on, at most
+    ``limit`` of them."""
+    return (
+        f"python3 - {int(first)} {int(limit)} <<'GATEEOF'\n{KMSG_READER}\nGATEEOF\n"
+    )
+
+
+def whole(text: str, separated: bool = False) -> tuple[str, int] | None:
+    """What came before the :data:`WHOLE` line that ends ``text``, and the
+    number that line names, or None when no such line ends it or its SHA-256
+    is not that of what came before. ``separated`` is for :data:`WHOLE_TEE`'s
+    output, which puts a newline of its own before that line."""
+    body, mark, rest = text.rpartition(WHOLE + " ")
+    if not mark or (body and not body.endswith("\n")):
+        return None
+    fields = rest.split()
+    if len(fields) != 2 or not fields[0].isdigit():
+        return None
+    if separated:
+        body = body[:-1]
+    if hashlib.sha256(body.encode("utf-8")).hexdigest() != fields[1]:
+        return None
+    return body, int(fields[0])
 
 
 def parse_kmsg(text: str) -> tuple[list[dict[str, Any]], int]:
