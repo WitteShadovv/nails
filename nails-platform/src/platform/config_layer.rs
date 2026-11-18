@@ -22,14 +22,8 @@ use crate::preflight::{NixOSConfigCheck, PreFlightCheck, SuspiciousNailsReferenc
 /// The platform-specific preparation of the hidden configuration.
 pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
     /// The gate that refuses a base (decoy) configuration that references the
-    /// hidden environment. `allow` is what the operator accepted of the
-    /// attach gate's refusals: with `--allow-decoy-storage` it lets be the
-    /// decoy's own names for the filesystem it accepted the root on.
-    fn base_reference_check(
-        &self,
-        hidden_volume_root: &Path,
-        allow: Allow,
-    ) -> Box<dyn PreFlightCheck<F>>;
+    /// hidden environment.
+    fn base_reference_check(&self, hidden_volume_root: &Path) -> Box<dyn PreFlightCheck<F>>;
 
     /// The checks that inspect the staged hidden configuration.
     fn preflight_checks(&self, hidden_volume_root: &Path) -> Vec<Box<dyn PreFlightCheck<F>>>;
@@ -53,14 +47,10 @@ pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
 pub struct NixOsConfigLayer;
 
 impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
-    fn base_reference_check(
-        &self,
-        hidden_volume_root: &Path,
-        allow: Allow,
-    ) -> Box<dyn PreFlightCheck<F>> {
-        Box::new(
-            SuspiciousNailsReferenceCheck::new(hidden_volume_root.to_path_buf()).allowing(allow),
-        )
+    fn base_reference_check(&self, hidden_volume_root: &Path) -> Box<dyn PreFlightCheck<F>> {
+        Box::new(SuspiciousNailsReferenceCheck::new(
+            hidden_volume_root.to_path_buf(),
+        ))
     }
 
     fn preflight_checks(&self, hidden_volume_root: &Path) -> Vec<Box<dyn PreFlightCheck<F>>> {
@@ -102,7 +92,6 @@ mod nixos_layer_tests {
         let gate = ConfigLayer::<MockFilesystem>::base_reference_check(
             &NixOsConfigLayer,
             Path::new("/mnt/hidden"),
-            Allow::Nothing,
         );
         assert_eq!(gate.name(), "suspicious-nails-reference");
 

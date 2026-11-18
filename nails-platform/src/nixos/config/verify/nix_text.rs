@@ -14,7 +14,7 @@
 //! only where they name the mapping or the filesystem ([`Pattern::Name`],
 //! [`Pattern::Tag`]).
 
-use super::scan::{Named, Place, is_identifier_byte};
+use super::scan::{Named, is_identifier_byte};
 use std::ops::Range;
 
 /// How a marker is matched in a line.
@@ -76,9 +76,9 @@ pub(super) struct Context {
     /// The arguments of a `cryptsetup` or `systemd-cryptsetup` command that
     /// opens, closes or asks about a mapping ([`Shell`]).
     pub(super) arguments: Vec<Range<usize>>,
-    /// The attribute names the line defines and the strings it holds in the
-    /// value of a definition ([`super::scan::Scanner::places`]).
-    pub(super) places: Vec<Place>,
+    /// The attribute names the line defines, without quotes
+    /// ([`super::scan::Scanner::defined`]).
+    pub(super) defined: Vec<Range<usize>>,
 }
 
 impl Pattern {
@@ -118,11 +118,10 @@ fn component(line: &[u8], name: &str, context: &Context) -> Option<Range<usize>>
     })
     .or_else(|| {
         context
-            .places
+            .defined
             .iter()
-            .filter(|place| place.attribute)
-            .find(|place| line[place.range.clone()].eq_ignore_ascii_case(name.as_bytes()))
-            .map(|place| place.range.clone())
+            .find(|range| line[(*range).clone()].eq_ignore_ascii_case(name.as_bytes()))
+            .cloned()
     })
 }
 

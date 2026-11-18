@@ -50,8 +50,8 @@ pub use prepare::{
     prepare_nixos_config_overlay, stage_hidden_config_symlink, stage_hidden_nixos_config,
 };
 pub use verify::{
-    BaseConfigReference, BaseConfigScan, ReferenceKind, verify_base_config_clean,
-    verify_base_config_clean_allowing,
+    BaseConfigReference, BaseConfigScan, PLACED_DEVICE_REMEDY, ReferenceKind,
+    verify_base_config_clean, verify_base_config_clean_placed,
 };
 
 use std::path::PathBuf;
