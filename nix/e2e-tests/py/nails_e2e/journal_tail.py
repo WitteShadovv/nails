@@ -48,7 +48,10 @@ apart: they are the residue a hidden volume on device-mapper leaves. After
 the decoy's first line its service manager must not open journald's socket
 or its ``/dev/log`` socket anew (:data:`REOPENED`): a plain soft-reboot
 carries them listening, and their ``Listening on`` lines would tell a way
-back from it.
+back from it, unless the decoy's own shutdown had closed one already at the
+entry, which the hidden start then opened anew as well (PID 1 before
+systemd 258 fails a journald socket that receives anything once journald
+has stopped for a soft-reboot).
 
 :func:`nextroot_left` reads what the switch left at ``/run/nextroot``.
 """
@@ -149,6 +152,12 @@ REOPENED = re.compile(
     r"systemd\[1\]: Listening on "
     r"(systemd-journald(-dev-log)?\.socket - )?Journal Sockets?(\.| \(/dev/log\))"
 )
+
+
+def reopened_socket(text: str) -> str:
+    """Which of journald's sockets a :data:`REOPENED` line opens."""
+    return "dev-log" if "dev-log" in text or "/dev/log" in text else "journald"
+
 
 #: An audit record's time stamp and serial, ``audit(1794677720.975:717)``.
 AUDIT_STAMP = re.compile(r"audit\((\d+)\.(\d+):(\d+)\)")
@@ -311,8 +320,25 @@ def judge_records(
                 "not judged: the lingering unit did not run until the way "
                 "back's last step ended it"
             )
+    # The hidden service manager's start after the entry shows what a plain
+    # soft-reboot of the decoy does: a socket the decoy's own shutdown closed
+    # is opened anew there, and may be after the way back too.
+    entered = next(
+        (r for r in reversed(ring) if r.seq < at.seq and BANNER.search(r.text)), None
+    )
+    plain = {
+        reopened_socket(r.text)
+        for r in ring
+        if entered is not None
+        and entered.seq < r.seq < at.seq
+        and REOPENED.search(r.text)
+    }
     for record in ring:
-        if record.seq > banner.seq and REOPENED.search(record.text):
+        if (
+            record.seq > banner.seq
+            and REOPENED.search(record.text)
+            and reopened_socket(record.text) not in plain
+        ):
             verdict.findings.append(
                 f"the decoy's start opened journald's socket anew: {record.seq} "
                 f"{record.text}"
