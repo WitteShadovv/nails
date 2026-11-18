@@ -1140,23 +1140,31 @@ of this changelog for that version becomes the release notes word for word, and
   than systemd. `nofail` with any value is now `nofail`.
 - A `noauto` line is now left alone only where NAILS reads every option it gives, by the lists
   `backend-entries` reads a plain line by. One with any other option, a known one in another form
-  (`x-systemd.after=`, `X-mount.subdir=`, `nofail=1`), or an option with a backslash or a quote,
-  which systemd splits otherwise than NAILS (it mounted `noauto,auto=x\,noauto` and
-  `noauto,comment=x\054auto` at boot), is masked with its automount, and `nails check` names the
-  option. A `noauto` line for `/usr` is kept off like any line the boot mounts, as systemd mounts
-  `/usr` whatever `noauto` says, and `nofail` and `x-systemd.automount` mean nothing there either.
-- A `noauto` line with a path in it that another line needs is kept off: a line below its mount
-  point, its source, or a path `x-systemd.requires-mounts-for=` names, where the boot starts that
-  other line and it is left to the hidden systemd or put in place. systemd has that line's unit require the `noauto`
-  mount, so the boot mounts it all the same, and NAILS left it to the hidden systemd, which would
-  mount the disk read-write for a `tmpfs` line below it. It is
-  skipped where a boot target requires the other line and its device is there, and masked
-  otherwise.
+  (`x-systemd.after=`, `X-mount.subdir=`, `nofail=1`), or an option with a backslash or a quote is
+  masked with its automount, and `nails check` names the option. systemd splits the options at
+  every comma, as NAILS does, and only a backslash or a `\054` makes it split them otherwise (it
+  mounted `noauto,auto=x\,noauto` and `noauto,comment=x\054auto` at boot); a quote is unread as
+  `libmount` keeps a comma between quotes. Where the option holds a backslash, or is one of
+  systemd's own whose effect NAILS does not read, it may have a boot target require the line, and
+  activation and `nails check` warn that such a target is then not reached. A `noauto` line for
+  `/usr` is kept off like any line the boot mounts, as systemd mounts `/usr` whatever `noauto`
+  says, and `nofail` and `x-systemd.automount` mean nothing there either.
+- A `noauto` line whose mount another line needs is kept off, where the boot starts that other
+  line and it is left to the hidden systemd or put in place: a line below its mount point, one with
+  it as its source, or one that names it with `x-systemd.requires-mounts-for=`,
+  `x-systemd.wants-mounts-for=`, `x-systemd.requires=` or `x-systemd.wants=`. systemd has that
+  line's unit require or want the `noauto` mount, so the boot mounts it all the same, and NAILS
+  left it to the hidden systemd, which would mount the disk read-write for a `tmpfs` line below it
+  or one that names it. A line whose pulls NAILS cannot read (an option with a backslash, or
+  `x-systemd.requires=` with no value) keeps it off too. Every line that needs it is read: it is
+  skipped where a boot target requires one of them, or a line that requires one in turn, and its
+  device is there, masked with a warning that the target will not be reached where the device is
+  not there, and masked where nothing a target requires needs it.
 - A line kept off that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect
-  on what its units pull in NAILS does not read, or an option with a backslash or a quote, is
-  masked rather than skipped, so a boot target that requires it is not reached, and activation
-  warns of that, naming the option. Options outside systemd's namespaces, such as those of an NFS
-  or CIFS share, keep their skip. An overlay line that gives `upperdir` more than once, or with no
+  on what its units pull in NAILS does not read, or an option with a backslash, is masked rather
+  than skipped, so a boot target that requires it is not reached, and activation warns of that,
+  naming the option. Options outside systemd's namespaces, such as those of an NFS or CIFS share,
+  keep their skip, and so do options with a quote, such as an SELinux `context=`. An overlay line that gives `upperdir` more than once, or with no
   value, is kept off.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
