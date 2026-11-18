@@ -47,7 +47,8 @@
 //! helpers it starts after the step to close a descriptor and of udevd's
 //! processes where the soft-reboot leaves udevd running and, with the
 //! kernel's audit on, the audit records of that service's start and stop and
-//! of the BPF programs it unloads), a process of the session that stays in
+//! of the BPF programs it unloads, and the kernel's count of the audit
+//! records it held back from its log just before), a process of the session that stays in
 //! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), the
 //! end of a detached mount's unit that PID 1 logs only past
 //! [`wait_for_unmounted`]'s bound, a

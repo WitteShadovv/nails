@@ -890,8 +890,9 @@ systemd 257 and 255 on Debian 13 and Ubuntu 24.04), of udevd and its workers,
 `Sending SIGKILL to PID N (systemd-udevd)` and `((udev-worker))`, and, where
 the kernel's audit is on, the audit records of that
 service's start and stop, whose `exe=` names the program that sent them, the
-hidden root's systemd, and the kernel's records of the BPF programs it
-unloads), whatever line a hidden volume that is not ext4 logs as it is
+hidden root's systemd, the kernel's records of the BPF programs it unloads,
+and its count of the audit records it held back from its log just before,
+`kauditd_printk_skb: N callbacks suppressed`, which names nothing), whatever line a hidden volume that is not ext4 logs as it is
 unmounted (NAILS quiets ext4's only), and, for a hidden volume on
 device-mapper, the kernel's lines of its teardown: on a kernel that audits
 device-mapper changes (Fedora's does) the `audit: … module=crypt op=dtr`

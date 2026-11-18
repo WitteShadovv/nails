@@ -112,11 +112,16 @@ STEP_START = re.compile(
 #: hidden service manager's last two (the soft-reboot service's start and
 #: stop), the BPF programs it unloads as it hands over, and the decoy's
 #: service manager loading its SELinux policy (the policy's records, and
-#: PID 1's own checks on reading it).
+#: PID 1's own checks on reading it). Where the kernel prints audit records
+#: to its log, it prints at most a few in a while there and, with the first
+#: it prints after a while it held some back, how many it held back; that
+#: count can come with the soft-reboot service's records, and it names
+#: nothing.
 KERNEL_LINES = (
     re.compile(
         r"audit: type=113[01] audit\([^)]*\): pid=1 .*msg='unit=systemd-soft-reboot .*"
     ),
+    re.compile(r"kauditd_printk_skb: \d+ callbacks suppressed"),
     re.compile(r"audit: type=1334 audit\([^)]*\): prog-id=\d+ op=(UN)?LOAD"),
     re.compile(
         r"audit: type=1400 audit\([^)]*\): avc: +(denied|granted) "

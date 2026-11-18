@@ -364,6 +364,21 @@ class AllowedTest(unittest.TestCase):
             )
 
 
+    def test_the_kernel_s_count_of_held_back_audit_records_is_allowed(self) -> None:
+        allowed = journal_tail.KERNEL_LINES
+        for line in (
+            "kauditd_printk_skb: 68 callbacks suppressed",
+            "audit: type=1334 audit(1795001246.044:1251): prog-id=456 op=UNLOAD",
+        ):
+            self.assertTrue(any(p.fullmatch(line) for p in allowed), line)
+        for line in (
+            "kauditd_printk_skb: 68 callbacks suppressed lngr",
+            "EXT4-fs (dm-1): unmounting filesystem 4c60945a.",
+            "audit: type=1131 audit(1.2:3): pid=1 uid=0 msg='unit=lngr res=success'",
+        ):
+            self.assertFalse(any(p.fullmatch(line) for p in allowed), line)
+
+
 class CommandTest(unittest.TestCase):
     def test_the_late_stop_logs_through_each_socket(self) -> None:
         stop = journal_tail.late_stop_command("/usr/bin/logger", "M")
