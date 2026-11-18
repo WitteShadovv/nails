@@ -295,6 +295,19 @@ class ControlTest(unittest.TestCase):
         # The audit socket, which the way back leaves closed, aside.
         self.assertEqual(len(found), 2, found)
         self.assertTrue(all("opened journald's socket anew" in f for f in found))
+        # One the hidden start opened anew after the entry, as the decoy's own
+        # shutdown had closed it, may be opened anew after the way back too.
+        entry = [
+            Record(1400, 50000000, "systemd[1]: systemd 259 running in system mode"),
+            Record(
+                1401,
+                50000100,
+                "systemd[1]: Listening on systemd-journald.socket - Journal Sockets.",
+            ),
+        ]
+        found = self.judge(entry + ring).findings
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("(/dev/log)", found[0])
 
 
 class AllowedTest(unittest.TestCase):

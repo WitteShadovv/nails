@@ -637,7 +637,8 @@ program. The last step before the switch:
   unit that stops after journald logs), then starts journald's socket and
   its `/dev/log` socket again, empty, as far as the decoy had them listening
   as the session began, so the decoy finds them listening as after a plain
-  soft-reboot and its start does not open them anew. The audit socket stays
+  soft-reboot of the decoy, and its start opens anew only one its own
+  shutdown had closed at the entry. The audit socket stays
   closed, as it would take every audit record made after it opens, past the
   kernel-message cursor;
 - sets the message limit of an ext4 hidden volume to zero, so the kernel does
