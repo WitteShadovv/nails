@@ -28,8 +28,9 @@ Nothing that starts the hidden session is installed on the decoy.
 Website and documentation: [nails.run](https://nails.run)
 
 NixOS is the first-class platform (a declarative hidden configuration is built
-and entered in the same step); Debian 13, Ubuntu 24.04 and Ubuntu 26.04 run the
-same session with whatever the hidden `/etc` holds.
+and entered in the same step); Debian 13, Ubuntu 24.04, Ubuntu 26.04 and the
+Cloud edition of Fedora 44 and 45 run the same session with whatever the hidden
+`/etc` holds.
 
 > [!WARNING]
 > NAILS is **alpha** security software. It is meant for technically experienced
@@ -153,10 +154,11 @@ soft-reboot.
 | NixOS | Full | A hidden NixOS configuration (flake or `configuration.nix`) is built into the hidden root's store and entered in the same soft-reboot. It must run on the decoy's kernel. Pinned nixpkgs without `soft-reboot.target`/`systemd-soft-reboot.service` need a small module, which `nails check` prints. |
 | Debian 13 (trixie) | Root overlay | The same whole-root session; the hidden configuration is whatever the upper's `/etc` holds. Requires the merged-`/usr` layout. |
 | Ubuntu 24.04 and 26.04 | Root overlay | As Debian. On 26.04, chrony and CUPS fail in the hidden session and the decoy shows chrony failed until a full reboot; see [the Ubuntu notes](docs/decoy-requirements.md#ubuntu). |
-| Other releases: Debian after 13, Ubuntu after 24.04 | Untested | Accepted on the same terms, with a warning in `init`, `check` and `activate` that NAILS has not been tested on the release, such as Ubuntu 25.04 or 26.10. |
-| Debian-family derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` runs with a warning that NAILS has not tested it, when its systemd is new enough; its base release is not version-gated. One whose `ID_LIKE` also names Fedora, RHEL, CentOS or Arch is refused, wherever each stands in the list. |
-| Debian 12, Ubuntu 22.04 | Refused | systemd is too old for a soft-reboot (252 and 249). |
-| Fedora, Arch, other distributions | Refused | No validated backend yet. Planned; see [ROADMAP.md](ROADMAP.md). Once Fedora is admitted, its gate will check the edition too: Cloud will be the tested edition, so Workstation, KDE Plasma Desktop, any other edition and a Fedora host whose os-release names none will run with a warning. Its derivatives Nobara and Ultramarine will need release 44 or newer. |
+| Fedora 44 and 45, Cloud edition | Root overlay, provisional | The same whole-root session, with SELinux enforcing and the targeted policy as Fedora installs it; a permissive SELinux makes `nails check` warn, another policy refuses. Its tests run in virtual machines only, so its support is provisional until a run on real hardware has passed. The Workstation and KDE Plasma Desktop editions, any other edition and a host whose os-release names none run with a warning that NAILS has not been tested on them; see [the Fedora notes](docs/decoy-requirements.md#fedora). |
+| Other releases: Debian after 13, Ubuntu after 24.04, Fedora after 45 | Untested | Accepted on the same terms, with a warning in `init`, `check` and `activate` that NAILS has not been tested on the release, such as Ubuntu 25.04 or 26.10. |
+| Debian-family and Fedora derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` runs with a warning that NAILS has not tested it, when its systemd is new enough; its base release is not version-gated. One whose `ID_LIKE` also names Fedora, RHEL, CentOS or Arch is refused, wherever each stands in the list. Of Fedora's derivatives, Nobara and Ultramarine run from release 44 on with the same warning, and any other is refused. |
+| Debian 12, Ubuntu 22.04, Fedora before 44 | Refused | Debian 12 and Ubuntu 22.04: systemd is too old for a soft-reboot (252 and 249). Fedora before 44: below the release NAILS supports from. |
+| Arch, other distributions | Refused | No validated backend yet. Planned; see [ROADMAP.md](ROADMAP.md). |
 | ostree and image-based hosts | Refused | NAILS cannot overlay an immutable system. |
 | Non-systemd hosts (OpenRC, runit, ...) | Refused | The session is entered and left with a systemd soft-reboot. |
 

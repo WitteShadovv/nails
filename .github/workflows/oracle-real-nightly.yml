@@ -25,8 +25,9 @@ name: Oracle real-image nightly
 # channel's own positive controls in the live tree (a file it writes, and on
 # Arch a line it adds to pacman's log), so both scans must find them; it lists
 # them in controls-live.json beside the raws, for run-scan.sh's
-# ORACLE_EXTRA_CONTROLS. Neither Fedora nor Arch is admitted yet, so the driver
-# runs a test-only build that admits the image's family and is never released.
+# ORACLE_EXTRA_CONTROLS. The driver runs the release binary on the Fedora
+# images, and on the Arch one, as Arch is not admitted yet, a test-only build
+# that admits Arch and is never released.
 # On btrfs the timeline cannot run, so each of these scans, like scan-btrfs,
 # passes only on the partial verdict that names it.
 #

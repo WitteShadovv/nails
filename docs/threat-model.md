@@ -252,6 +252,32 @@ upper changes.
   the way back still cannot set back keeps the random one, until power-off,
   and nothing reports it: end such a session with `deactivate --poweroff` or
   `emergency --poweroff` when that address must never reach the decoy.
+- **The SELinux policy and the kernel log.** A soft-reboot keeps the kernel,
+  and with it the SELinux policy it holds. With the targeted policy of the
+  Fedora 44 and 45 Cloud images (`selinux-policy-targeted` 43.3-1.fc44 and
+  45.23-1.fc45), the policy denies PID 1 the `map` of the policy file at each
+  switch, so PID 1 does not load the policy of the root it starts in and logs
+  `Failed to load new SELinux policy. Continuing with old policy.`, as at a
+  plain `systemctl soft-reboot`: the hidden session runs under the policy the
+  decoy loaded at its boot, and the decoy after the way back under the policy
+  the kernel holds then. No test runs an updated policy, which could let PID 1
+  map that file and load each root's own policy at the switch. So do not
+  update `selinux-policy`, load a policy module, set a boolean or create
+  `/.autorelabel` in a hidden session: what the kernel's policy takes in there
+  would still be the kernel's after the way back. The distribution tests find
+  the decoy's booleans as they were after each way back of a session that
+  sets none, and no test covers either of the others. With auditd off, as the
+  decoy requirements ask, the kernel writes to its log the SELinux denials the
+  policy does not keep quiet with a dontaudit rule, and the audit records
+  programs send, such as the record rpm sends of every package it installs;
+  printk's rate limit can drop some of a burst. That log outlives both
+  switches, in RAM, until power-off. The way back moves the decoy journal's
+  kmsg cursor past the hidden session's records, and empties journald's
+  sockets, its audit socket among them, of what the hidden root sent them
+  after its journald stopped (see [Residual channels](#residual-channels)). On
+  Fedora 44 and 45 with SELinux enforcing the distribution tests find none of
+  those records in the decoy's journal after either way back, and no new
+  denial or SELinux error of a NAILS process or path in either root.
 - **SELinux labels.** On a host that runs SELinux, activation gives two kinds
   of directory on the hidden volume the label of the decoy directory they
   stand for: the root of each upper, which becomes the hidden `/` or the root
@@ -291,8 +317,9 @@ upper changes.
   is refused. That question leaves out the policy's rules for single `ioctl`
   numbers, which selinuxfs does not answer, and the labels a relabel of `/run`
   would give the guard's files, so a policy that denies the guard only there is
-  not refused. Fedora, whose hosts run SELinux by default, is not admitted yet,
-  so this applies only where a host of a family NAILS admits runs SELinux. The
+  not refused. Of the families NAILS admits, Fedora runs SELinux by default,
+  enforcing with the targeted policy; on the others this applies only where a
+  host was set up to run SELinux. The
   emergency, which asks PID 1 nothing, powers off instead of returning where
   the copy does not take its label again or the loaded policy would not start
   the step from it; it does not see an `SELinuxContext=` the hidden session

@@ -58,6 +58,21 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- Fedora is admitted, provisionally: the Cloud edition of Fedora 44 and 45 runs the same whole-root
+  session as Debian and Ubuntu, with SELinux enforcing and the targeted policy, as Fedora installs
+  it and as the admission gate of the distribution tests ran it on both releases. A permissive
+  SELinux makes `lsm-status` warn, and another policy fails it. The Workstation and KDE Plasma
+  Desktop editions, any other edition and a Fedora host whose os-release names none run with a
+  warning that NAILS has not been tested on them, since no test runs a desktop session on Fedora; a
+  release after 45 runs with a warning too, and one before 44 is refused. Nobara and Ultramarine
+  run from release 44 on with the untested-derivative warning, and any other host whose `ID_LIKE`
+  names Fedora is still refused. Fedora's tests run in virtual machines only, so its support stays
+  provisional until a run on real hardware has passed. The distribution tests now run Fedora 44 and
+  45 in the smoke suite and in the records suite that pull requests run, and the oracle runs the
+  release binary on its Fedora images. What a Fedora decoy needs is in the Fedora section of
+  docs/decoy-requirements.md. The refusals of a host NAILS does not run on now end with every
+  release NAILS supports: `NAILS supports NixOS and these releases: Debian 13, Ubuntu 24.04 and
+  26.04, Fedora 44 and 45.`
 - `decoy-persistence` judges tuned, tuned-ppd, firewalld and ABRT by how their units start them, the
   unit file and every drop-in read as the service manager loads them, those of the unit's aliases
   included, `ExecStart=` split as systemd splits it with the variables the unit sets itself
@@ -86,8 +101,9 @@ of this changelog for that version becomes the release notes word for word, and
   `services.firewalld.extraArgs` and a journal namespace by `Storage=volatile` in its
   `journald@<namespace>.conf`, which the refusal and the warning name too, also where NAILS cannot
   tell whether the namespace persists, and a namespace a unit names with a specifier by naming it
-  without one. Fedora is not admitted yet, so no VM test runs them; the unit tests read the units
-  Fedora 44's packages install. The unit reader that `locate-database` uses reads the drop-ins of a
+  without one. Fedora's admission gate installs all three on the Fedora 44 and 45 Cloud images and
+  checks the refusal, the warnings and their fixes; the unit tests read the units Fedora 44's
+  packages install. The unit reader that `locate-database` uses reads the drop-ins of a
   unit's aliases, and those systemd builds with an instance's prefixes, too. As systemd does, it
   reads the drop-ins of the unit file's own name first, so on NixOS
   `dbus-broker.service.d/overrides.conf` shadows the one of its alias `dbus.service`, and a drop-in
@@ -507,8 +523,8 @@ of this changelog for that version becomes the release notes word for word, and
   so it does not refuse a policy that denies the guard only there. It judges the two apart, since
   what NAILS sets on systemd's side does not reach what udev runs. Where the copies take no label,
   NAILS chooses neither domain, and the check refuses every host where SELinux runs. Fedora, whose
-  hosts run SELinux by default, is not admitted yet. It warns, where nothing refuses, when SELinux
-  is permissive or runs in another mode than `/etc/selinux/config` sets. Where the kernel's list
+  hosts run SELinux by default, is admitted with SELinux enforcing. It warns, where nothing
+  refuses, when SELinux is permissive or runs in another mode than `/etc/selinux/config` sets. Where the kernel's list
   cannot be read, a mounted selinuxfs or an SELinux context of the process means SELinux runs, and
   without either, `/sys/fs/selinux` or a configuration that sets a mode or names a policy is refused
   without deciding: a mount over `/sys` can hide `/sys/fs/selinux`, so the check does not rule
@@ -705,8 +721,9 @@ of this changelog for that version becomes the release notes word for word, and
   session's image with record-level positive controls planted (a row in lastlog2's database, made
   where the image has none, a login row in wtmpdb's where the image has one, and a file below
   /var/lib/dnf), and that verdict must fail on exactly the planted paths. The scan compares those
-  records by their files' digests. Neither Fedora nor Arch is admitted yet, so these images come
-  from a test-only build that admits the family's row and is never released (ci/oracle/README.md).
+  records by their files' digests. The Fedora images boot with SELinux enforcing and run the release
+  binary. Arch is not admitted yet, so its image comes from a test-only build that admits Arch's
+  row and is never released (ci/oracle/README.md).
 - Two kinds of line bulk_extractor writes no longer stop an oracle scan before its verdict, on ext4
   as on btrfs: a zip member's description is passed over beside its saved file, whose hash keys the
   member, a member found in decompressed data included, and a login record it names `<CACHED>` is
@@ -905,19 +922,17 @@ of this changelog for that version becomes the release notes word for word, and
   node.
 - A derivative of a supported distribution — one whose os-release `ID_LIKE` names `debian` or
   `ubuntu`, such as Linux Mint — now runs with a warning that NAILS has not tested it, instead of
-  being accepted silently. Fedora, Arch and their known derivatives, Enterprise Linux rebuilds
-  (RHEL, CentOS, AlmaLinux, Rocky, Oracle) and SteamOS are each refused with a reason that names
-  them and says NAILS has not yet validated them. A host whose `ID_LIKE` names `debian` or `ubuntu`
-  and also `fedora`, `rhel`, `centos` or `arch` is refused, naming that family, wherever each
-  stands in the list; 0.3.0-rc.3 accepted it as a Debian derivative.
-- The platform table now holds the gate Fedora and its derivatives will take once Fedora is
-  admitted. Fedora will be gated on its edition (os-release `VARIANT_ID`) as well as its release:
-  Cloud will be the tested edition, and Workstation, KDE Plasma Desktop, any other edition and a
-  Fedora host that names none will run with a warning that NAILS has not been tested on that
-  edition, in `init`, `check` and `activate`; the `platform` row of `check` will name a tested
-  edition (`Fedora 44 Cloud`). Nobara and Ultramarine will be refused below release 44 or without
-  a release, and from 44 run with the untested-derivative warning. Fedora, Nobara and Ultramarine
-  are still refused until Fedora's support has been verified, so no host's verdict changes yet.
+  being accepted silently. Arch and its known derivatives, Enterprise Linux rebuilds (RHEL, CentOS,
+  AlmaLinux, Rocky, Oracle) and SteamOS are each refused with a reason that names them and says
+  NAILS has not yet validated them or does not target them. A host whose `ID_LIKE` names `debian`
+  or `ubuntu` and also `fedora`, `rhel`, `centos` or `arch` is refused, naming that family, wherever
+  each stands in the list; 0.3.0-rc.3 accepted it as a Debian derivative.
+- The platform table gates Fedora on its edition (os-release `VARIANT_ID`) as well as its release:
+  Cloud is the tested edition, and Workstation, KDE Plasma Desktop, any other edition and a Fedora
+  host that names none run with a warning that NAILS has not been tested on that edition, in
+  `init`, `check` and `activate`; the `platform` row of `check` names a tested edition
+  (`Fedora 44 Cloud`). Nobara and Ultramarine are refused below release 44 or without a release,
+  and from 44 run with the untested-derivative warning.
 - `check` and activation now warn on Ubuntu 26.04 instead of treating it as a clean tested release.
   A known upstream issue affects it: after the switch into the hidden session, AppArmor blocks chrony
   and CUPS from reaching systemd and the journal, so the clock does not sync and printing times out,
@@ -941,7 +956,7 @@ of this changelog for that version becomes the release notes word for word, and
   `kill`, which NAILS does through system calls or systemd units rather than by spawning a binary.
 - When systemd is too old for a soft-reboot, `check` and activation now say how to upgrade this
   host, the way its distribution documents it: Debian 13 by its release notes, Ubuntu 24.04 or 26.04
-  with `do-release-upgrade`, Fedora 44 with `dnf system-upgrade`, a full `pacman -Syu` on Arch,
+  with `do-release-upgrade`, Fedora 44 or 45 with `dnf system-upgrade`, a full `pacman -Syu` on Arch,
   EndeavourOS, CachyOS and Manjaro, and on NixOS a current release for the decoy's nixpkgs, rebuilt
   and booted. Nobara, Ultramarine and a Debian derivative NAILS runs on are pointed at a release
   built on a tested one, upgraded as each documents, and any other host at the platforms NAILS runs
@@ -1059,9 +1074,9 @@ of this changelog for that version becomes the release notes word for word, and
   security modules, and where the host facts report SELinux while that list cannot be read.
   Elsewhere, as on a stock Debian, Ubuntu or NixOS host, nothing changes. Of the tests in this
   repository only Fedora's admission gate runs the steps under an enforcing policy and checks their
-  domains, and only a dispatch of the staged distribution tests runs it. The Fedora 44 and 45 images
-  of the oracle run a hidden session and the way back under a permissive policy, without checking
-  the domains; see docs/decoy-requirements.md.
+  domains, and only a dispatch of the staged distribution tests runs it. The smoke and records
+  scenarios on Fedora 44 and 45 and the Fedora images of the oracle run hidden sessions and the way
+  back under the enforcing policy, without checking the domains; see docs/decoy-requirements.md.
 - `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
   below it, in more spellings, and compare directories by what they are, their device and inode, so
   a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new
@@ -2795,7 +2810,7 @@ of this changelog for that version becomes the release notes word for word, and
   NAILS' own follows still gets a new access time, as do the files of the overlay module's first
   load, what `sudo`, `doas` or `pkexec` reads to start NAILS, and what an unprivileged `check` reads
   (What `check` touches in docs/operator-guide.md). The new access-time scenario of the
-  distribution tests ages a Debian 13 decoy disk, and a Fedora 44 one with a test build, and fails
+  distribution tests ages a Debian 13 decoy disk, and a Fedora 44 one, and fails
   on any other read by `check`, an activation or a way back, for an operator account, that a plain
   soft-reboot does not make, though it may not see a read of `/etc/selinux/config`, which it does
   not age.

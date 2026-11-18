@@ -14,19 +14,20 @@ The decoy also has to be one the session can enter and leave:
 
 - **systemd 254 or newer** with `soft-reboot.target` and
   `systemd-soft-reboot.service` installed (`systemd-version`,
-  `soft-reboot-units`). Debian 13, Ubuntu 24.04, Ubuntu 26.04 and current
-  NixOS qualify; Debian 12 and Ubuntu 22.04 are refused. On an older systemd
-  `nails check` names how to upgrade the host the way its distribution
-  documents it: Debian by its release notes, Ubuntu with `do-release-upgrade`,
-  Fedora with `dnf system-upgrade`, Arch, EndeavourOS, CachyOS and Manjaro
-  with a full `pacman -Syu`, and NixOS by moving the decoy's nixpkgs to a
-  current release. Nobara, Ultramarine and a Debian derivative NAILS runs on
-  are pointed at a release built on a tested one, upgraded as each documents.
+  `soft-reboot-units`). Debian 13, Ubuntu 24.04, Ubuntu 26.04, Fedora 44 and
+  45 and current NixOS qualify; Debian 12 and Ubuntu 22.04 are refused. On an
+  older systemd `nails check` names how to upgrade the host the way its
+  distribution documents it: Debian by its release notes, Ubuntu with
+  `do-release-upgrade`, Fedora with `dnf system-upgrade`, Arch, EndeavourOS,
+  CachyOS and Manjaro with a full `pacman -Syu`, and NixOS by moving the
+  decoy's nixpkgs to a current release. Nobara, Ultramarine and a Debian
+  derivative NAILS runs on are pointed at a release built on a tested one,
+  upgraded as each documents.
   Any other host is shown the platforms NAILS supports.
-  A later Debian or Ubuntu release runs with a warning that NAILS has not been
-  tested on it (`platform`). A NixOS decoy on a nixpkgs that does not install
-  the two units needs the module `nails check` prints (and so does a hidden
-  NixOS configuration, or the session could not leave).
+  A later Debian, Ubuntu or Fedora release runs with a warning that NAILS has
+  not been tested on it (`platform`). A NixOS decoy on a nixpkgs that does not
+  install the two units needs the module `nails check` prints (and so does a
+  hidden NixOS configuration, or the session could not leave).
 - **Linux 6.1 or newer** (`kernel-version`). NAILS starts the programs it runs
   as root with every mount `noatime`, and makes the decoy's local disk mounts
   `noatime` while the service manager reads them, through `mount_setattr`
@@ -188,13 +189,13 @@ The decoy also has to be one the session can enter and leave:
   repository only Fedora's [admission
   gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora) runs these
   steps under an enforcing policy and checks their domains (only a dispatch of
-  the staged distribution tests runs it). The Fedora 44 and 45 images of the
-  [oracle](../ci/oracle/README.md) run a hidden session and the way back under a
-  permissive policy, without checking the domains. The refusal scenario of the
-  distribution tests runs `nails check` on Fedora's stock image, whose loaded
-  policy `lsm-status` asks what PID 1's start of the labelled copy comes to.
-  Fedora is not admitted yet, so on the families NAILS admits all of this
-  applies only where a host was set up to run SELinux.
+  the staged distribution tests runs it). The smoke and records scenarios of
+  the distribution tests and the Fedora 44 and 45 images of the
+  [oracle](../ci/oracle/README.md) run hidden sessions and the way back under
+  the enforcing policy too, without checking the domains. Fedora runs SELinux
+  enforcing as it installs it, so there all of this applies; on the other
+  families NAILS admits it applies only where a host was set up to run
+  SELinux.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The
@@ -1025,6 +1026,108 @@ logind.
   [The locate database](#the-locate-database)).
 - Nix, if you use it, installed inside a hidden session, not on the decoy
   (`decoy-nix-trace`; see [Nix on the decoy](#nix-on-the-decoy)).
+
+### Fedora
+
+- **Fedora 44 or 45, Cloud edition** (systemd 259 and 262). A later release
+  runs with a warning that NAILS has not been tested on it, and a release
+  before 44 is refused, as are Fedora's ostree and composefs systems
+  (Silverblue, Kinoite, CoreOS, bootc images): NAILS cannot overlay an
+  immutable system. The Workstation and KDE Plasma Desktop editions, any
+  other edition and a host whose os-release names none run with a warning
+  that NAILS has not been tested on them: no test of this repository runs a
+  desktop session on Fedora. The distribution tests run
+  [Fedora's admission gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora)
+  on the Cloud images of Fedora 44 and 45. Every test of Fedora runs in a
+  virtual machine, so Fedora's support is provisional until a run on real
+  hardware has passed.
+- **SELinux enforcing, with the targeted policy**, as Fedora installs it:
+  the distribution tests boot the images so, but for one probe of each, which
+  records what a permissive boot shows. A permissive SELinux makes
+  `lsm-status` warn, and another policy fails it (see
+  [Fail closed](#fail-closed-activation-is-refused)). In the gate's runs the
+  kernel, which the gate has record every program run from below `/run` with
+  its domain, shows the programs NAILS runs from its copies there in
+  `unconfined_service_t` (the watcher, the sleep guard where one is set, the
+  last step of each switch and the reconcile step after the way back), and the
+  disk guard, which udev runs, in `udev_t`. None of them
+  runs from a copy labelled as runtime data. Neither root logs a denial or an
+  SELinux error of a NAILS process or path, those the policy's dontaudit rules
+  keep out of the log included, which a run of the gate with those rules off
+  counts. Do not update `selinux-policy`, load a policy module, set a boolean
+  or create `/.autorelabel` in a hidden session (see
+  [The SELinux policy and the kernel log](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
+- **Volatile journald.** Fedora's journald keeps a persistent journal, which
+  `decoy-persistence` refuses: set `Storage=volatile` under `[Journal]` in
+  `/etc/systemd/journald.conf` or in a drop-in such as
+  `/etc/systemd/journald.conf.d/50-volatile.conf`.
+- **auditd off for good.** Fedora runs auditd, which `decoy-persistence`
+  refuses, and its unit refuses `systemctl stop`. Turn it off without a
+  reboot:
+
+  ```bash
+  sudo systemctl disable auditd.service
+  sudo systemctl mask auditd.service
+  sudo auditctl --signal stop
+  ```
+
+- **tuned, firewalld and ABRT**, which the Cloud images do not install.
+  `decoy-persistence` refuses tuned while it writes its own log file, as
+  Fedora's `tuned.service` starts it (`tuned -l -P`), and warns of firewalld's
+  log file and of ABRT. The gate installs all three and shows that these
+  fixes end each: a drop-in that starts tuned without `-l`, in
+  `/etc/systemd/system/tuned.service.d/50-journal.conf`,
+
+  ```ini
+  [Service]
+  ExecStart=
+  ExecStart=/usr/sbin/tuned -P
+  ```
+
+  then `sudo systemctl daemon-reload` and `sudo systemctl restart
+  tuned.service`; `FIREWALLD_ARGS=--log-target=syslog` in
+  `/etc/sysconfig/firewalld`, then `sudo systemctl restart firewalld.service`;
+  and `sudo systemctl disable --now abrtd.service` (see
+  [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt)).
+- **sssd off.** Fedora enables `sssd-kcm.socket`, so a decoy made from it warns
+  of sssd even when it is not joined to a domain: disable it and delete its
+  state files (see [Decoys joined to a domain](#decoys-joined-to-a-domain)).
+- `Storage=none` and `ProcessSizeMax=0` in a `coredump.conf.d/*.conf` drop-in,
+  since the Cloud images run systemd-coredump; `init_on_free=1` on the kernel
+  command line (`sudo grubby --update-kernel=ALL --args=init_on_free=1`, then
+  a reboot); the lid switch set to `lock` (see
+  [Suspend and the lid switch](#suspend-and-the-lid-switch)).
+- `noatime`; no swap on a disk (the swap of the Cloud images, on zram, is in
+  RAM, and no check warns of it; see
+  [Writes that bypass the overlays](#writes-that-bypass-the-overlays)); no
+  hibernation.
+- With plocate installed (the Cloud images have none), the directory the
+  hidden volume is mounted in in `PRUNEPATHS` of `/etc/updatedb.conf`, or
+  `plocate-updatedb.timer` masked and stopped (`locate-database`; see
+  [The locate database](#the-locate-database)).
+- **btrfs.** Fedora keeps its root on btrfs mounted `compress=zstd:1`, and a
+  raw scan of the disk cannot read what a compressed file holds: on both Cloud
+  images the gate's btrfs controls find a compressed file's contents through
+  the kernel and not on the raw disk, and the gate's rehearsal, after a clean
+  session, reports the root as not checked rather than clean (see
+  [Residue catalog](#residue-catalog), copy-on-write and compressed storage
+  history). A file deleted on the decoy can still be read back: btrfs's
+  copy-on-write leaves older roots of its tree on the disk, and the controls
+  restore a deleted compressed file from them, its path and its contents,
+  from an image of the disk taken right after the deletion.
+- **Packages.** Update and install on the decoy with `dnf`, as for every
+  family (see [Package updates](#package-updates)). Where hidden sessions keep
+  their own copy of the rpm database and the decoy changed a package since,
+  `package-drift` warns and names the `dnf` command that brings the copy up to
+  date.
+- **VeraCrypt and cryptsetup.** VeraCrypt's RPM, installed on the decoy, stays
+  in its rpm database, and so does the key that checked it, imported with
+  `rpm --import`, as a `gpg-pubkey` package named after the key, so whoever
+  lists the decoy's packages sees both. cryptsetup opens VeraCrypt volumes as
+  well (see [backends](backends.md)), but the Cloud images do not install it,
+  and no test opens a VeraCrypt or LUKS volume on Fedora. The Cloud images run
+  with FIPS mode off (`/proc/sys/crypto/fips_enabled` is `0`); no test runs a
+  session with FIPS mode on.
 
 ## The sudo-log exposure and its mitigation
 
@@ -2715,9 +2818,9 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Hidden kernel records imported by the decoy journal](threat-model.md#residual-channels) (`kmsg-import`) | journald reads /dev/kmsg from its stored sequence number after every soft-reboot | all | `decoy-persistence` | `journal-scan` | The transition step writes the decoy journald's kmsg cursor past every record logged before it, and first ends every process of the hidden session that PID 1 would still kill at the switch, whose final `Sending SIGKILL to PID N (<name>)` lines would name them, but udevd's, which handles the events of the way back's network restore, sets an ext4 hidden volume's message limit to zero, so the kernel drops the line with the volume's UUID that it logs when the switch unmounts the volume, and waits, bounded, until PID 1 has taken down the units of the mounts the way back's /run scrub detached (such as the tmpfs NixOS's shutdown mounts at /run/initramfs), whose end PID 1 logs. What still follows the cursor stays in RAM on a volatile decoy until power-off: PID 1's kill line of a process of the session that stays in uninterruptible sleep (on a hung network or FUSE mount, say) past the step's bounded wait; the `Deactivated successfully.` line of such a detached mount's unit where PID 1 takes in the detach only after that wait's bound of two seconds; the hidden service manager's last lines, which it logs after the step has ended and a plain soft-reboot logs too (the soft-reboot service's end, `Soft-rebooting.`, its final kill of the helpers it starts after the step to close a descriptor, `Sending SIGKILL to PID N ((sd-close))`, and, where the soft-reboot leaves udevd running (as on Debian 13 and Ubuntu 24.04, with systemd 257 and 255), of udevd and its workers, `(systemd-udevd)` and `((udev-worker))`, and, where the kernel's audit is on, the audit records of that service's start and stop, which name the hidden root's systemd binary, and of the BPF programs it unloads, and the kernel's count of the audit records it held back from its log just before, `kauditd_printk_skb: N callbacks suppressed`, which names nothing); whatever line a hidden volume that is not ext4 logs as it is unmounted; and, for a hidden volume on device-mapper, the kernel's lines of its teardown, which come only once PID 1 has left the hidden root: on a kernel that audits device-mapper changes (Fedora's does) the dm-crypt target's audit record, and `device-mapper: ioctl: remove_all left N open device(s)` where another device-mapper device exists, such as a decoy on LUKS or LVM. | `soft-reboot-mechanics`, `decoy-journal-leak` |
 | [Hidden records journald's sockets carry into the decoy journal](#what-the-decoy-journal-keeps) (`journal-socket-carry`) | journald's sockets, which a soft-reboot keeps open, so that the decoy's journald reads at its start what waits in them | all | none: the hidden root sends them during its shutdown, after activation | none: they name the hidden root's units and processes, which no check tells from the decoy's own | The way back's last step, once every hidden process but udevd has ended, drops journald's store of standard-output streams and empties journald's sockets in place: through PID 1's own descriptors of them (pidfd_getfd), it reads and drops every datagram waiting in the native and /dev/log sockets, every connection waiting on the stream socket and every record waiting in the audit socket, so the sockets stay the ones PID 1 carried into the session, with their labels and their units' start times, as a plain soft-reboot keeps them. It also stops the socket of a journald namespace the session started, and starts journald's socket or its /dev/log socket again where the decoy had it listening as the session began and PID 1 has closed it since (systemd before 258 fails a journald socket that receives anything once journald has stopped for a soft-reboot, which drops what it held). What stays until power-off: a socket started again so is a new one, whose file below /run/systemd/journal and whose unit's start time (`systemctl show -p ActiveEnterTimestamp`) date from the way back; the decoy's start opens anew a journald socket the decoy's own shutdown had closed at the entry, as the hidden start after the entry did; a process the soft-reboot leaves running (a root storage daemon, a unit with SurviveFinalKillSignal=yes) loses its standard output and error to the journal, as the entry drops the stored streams too; and where the kernel does not give the step PID 1's descriptors, the sockets keep what they hold, and nothing says so. Where systemd is 258 or newer, a unit that stops after the hidden journald and logs through each socket leaves no line in the decoy journal, and the decoy's start opens none of journald's sockets anew unless the decoy's own shutdown had closed it at the entry, in decoy-journal-leak on NixOS, the distribution smoke on Ubuntu 26.04 and the Fedora admission gate, which also finds journald's sockets, their labels and their units' start times after each way back as they were at the cold boot, on Fedora 44 and 45. With systemd before 258 (Debian 13, Ubuntu 24.04) PID 1 itself fails journald's sockets at the first datagram after journald stops, which drops what they hold, so such a unit does not show the emptying there. | `decoy-journal-leak` |
 | [Network state the hidden session created or changed](operator-guide.md#how-it-works) (`network-state`) | a soft-reboot keeps the kernel's network state across the switch, so the links, addresses, routes, policy-routing rules, firewall tables and network settings the hidden session set up, and any MAC address or hostname it changed, are still live when the way back begins | all | none: the hidden session creates them after activation | none: a link the decoy adopted looks like one the decoy made itself | A deactivate or a plain emergency puts most of it back on its own. Stop VPN apps, containers and virtual machines in the session before you deactivate (wg-quick down, nmcli connection down, the app's own disconnect), and end the session with `--poweroff` when none of its network state may reach the decoy. | `session-dns-records`, `session-nixos-hidden-system`, `session-mac-restore`, `session-wayback-poweroff` |
-| [Access times of the decoy's links NAILS follows](operator-guide.md#what-check-touches) (`decoy-link-access-times`) | the access times of the symbolic links on the decoy root that check and activation follow or read, on a root mounted relatime or strictatime | all | none: check makes these reads itself | none: an access time a session left looks like one any other read left | Mount the decoy root noatime, which leaves the links' access times alone too, run check as root, start NAILS from a shell that is root already, and run nails recover after an interrupted activation. | none: asserted by the access-time scenario under nix/distro-tests (a Debian 13 decoy mounted relatime, and a Fedora 44 one with a test build that admits Fedora), run on a KVM host outside the NixOS e2e suite: it lists these links and fails on any other read of the decoy disk by check, activation and the way back, for an operator account named as sudo names it, that a plain soft-reboot does not make, though it may not see a read of /etc/selinux/config, which it does not age |
+| [Access times of the decoy's links NAILS follows](operator-guide.md#what-check-touches) (`decoy-link-access-times`) | the access times of the symbolic links on the decoy root that check and activation follow or read, on a root mounted relatime or strictatime | all | none: check makes these reads itself | none: an access time a session left looks like one any other read left | Mount the decoy root noatime, which leaves the links' access times alone too, run check as root, start NAILS from a shell that is root already, and run nails recover after an interrupted activation. | none: asserted by the access-time scenario under nix/distro-tests (a Debian 13 decoy mounted relatime, and a Fedora 44 one with SELinux enforcing), run on a KVM host outside the NixOS e2e suite: it lists these links and fails on any other read of the decoy disk by check, activation and the way back, for an operator account named as sudo names it, that a plain soft-reboot does not make, though it may not see a read of /etc/selinux/config, which it does not age |
 | [Soft-reboot counter and boot ID](threat-model.md#residual-channels) (`soft-reboot-counter`) | SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl | all | none: kernel and PID 1 state, not a file | none: RAM only, gone at power-off | Power off after the session; keep the decoy journal volatile. | `soft-reboot-mechanics` |
-| [Login and boot records around a switch](threat-model.md#residual-channels) (`login-boot-records`) | the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records) | all | none: the records are written by the decoy's own units after the switch, not before it | none: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran | The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. As its last step before the decoy starts, the way back also sets the kernel's process-number counter back: the entry records the number the decoy's boot gave its getty (else logind), the hidden session's own start shows how many numbers a start uses up to its copy of it, and the counter goes that many below that number, or, where it is the getty's and sits less than 64 from an edge of its power-of-two range, below the number 64 inside that edge (the middle of a range of 128 numbers or fewer). Where the getty is what it measures by, the decoy's getty then lands near the number its own boot gave it: off the aim by how many more or fewer numbers the decoy's start passes up to its getty than the hidden start did, kernel threads and numbers the kernel skips as still in use included, and, from 128 on, in the same power-of-two range as long as it lands less than 64 numbers off the number the way back aims at. A getty or logind started more than a minute after the oldest process of its start that still runs, such as a getty started again after a logout, is passed over. When the getty is passed over, the measure goes by logind, or, without logind either, the counter goes to just below the lowest number the decoy's own userspace held at entry, and no test checks where the getty lands then. The decoy's other units are not measured, and can land in another power-of-two range. In the Fedora 45 runs of the admission gate, where the way back measures by logind, systemd-journald did so after every way back, and polkitd landed below 1024 after every way back, so it changed range wherever the cold boot had given it 1024 or more. A persistent decoy journal keeps journald's number in the _PID of the lines it logs itself. That step is best effort: where it cannot write the counter, deactivate warns before the switch and the numbers continue from the decoy's boot, and where it has neither a getty nor logind to measure by, deactivate warns as well; only ending the session with --poweroff, which has no way back, leaves none of them then. | none: asserted against a power cycle past five minutes of uptime by the cross-distro login- and boot-record test under nix/distro-tests (Debian 13 and Ubuntu 24.04), run on a KVM host outside the NixOS e2e suite; the process numbers of the getty and its records after the way back, in a first session and in a second one beside a unit every soft-reboot leaves running, are asserted against two fresh boots by the NixOS test session-fresh-pids |
+| [Login and boot records around a switch](threat-model.md#residual-channels) (`login-boot-records`) | the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records) | all | none: the records are written by the decoy's own units after the switch, not before it | none: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran | The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. As its last step before the decoy starts, the way back also sets the kernel's process-number counter back: the entry records the number the decoy's boot gave its getty (else logind), the hidden session's own start shows how many numbers a start uses up to its copy of it, and the counter goes that many below that number, or, where it is the getty's and sits less than 64 from an edge of its power-of-two range, below the number 64 inside that edge (the middle of a range of 128 numbers or fewer). Where the getty is what it measures by, the decoy's getty then lands near the number its own boot gave it: off the aim by how many more or fewer numbers the decoy's start passes up to its getty than the hidden start did, kernel threads and numbers the kernel skips as still in use included, and, from 128 on, in the same power-of-two range as long as it lands less than 64 numbers off the number the way back aims at. A getty or logind started more than a minute after the oldest process of its start that still runs, such as a getty started again after a logout, is passed over. When the getty is passed over, the measure goes by logind, or, without logind either, the counter goes to just below the lowest number the decoy's own userspace held at entry, and no test checks where the getty lands then. The decoy's other units are not measured, and can land in another power-of-two range. In the Fedora 45 runs of the admission gate, where the way back measures by logind, systemd-journald did so after every way back, and polkitd landed below 1024 after every way back, so it changed range wherever the cold boot had given it 1024 or more. A persistent decoy journal keeps journald's number in the _PID of the lines it logs itself. That step is best effort: where it cannot write the counter, deactivate warns before the switch and the numbers continue from the decoy's boot, and where it has neither a getty nor logind to measure by, deactivate warns as well; only ending the session with --poweroff, which has no way back, leaves none of them then. | none: asserted against a power cycle past five minutes of uptime by the cross-distro login- and boot-record test under nix/distro-tests (Debian 13, Ubuntu 24.04, Fedora 44 and Fedora 45), run on a KVM host outside the NixOS e2e suite; the process numbers of the getty and its records after the way back, in a first session and in a second one beside a unit every soft-reboot leaves running, are asserted against two fresh boots by the NixOS test session-fresh-pids |
 | [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) (`decoy-mount-table`) | the mount table after the way back: the decoy's mounts made again with new mount IDs and peer groups, its root and its initrd's mounts (the store bind) included; /run/credentials a mount of its own; the boot's mounts below /run gone | all | none: the mount table is kernel state; activation warns about a decoy mount the way back cannot make again at a place the session carries, and about one a plain soft-reboot keeps | none: RAM only, gone at power-off | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | `session-decoy-mount-table`, `session-emergency` |
 | [EFI NVRAM, RTC and firmware pstore](threat-model.md#invariant) (`firmware-state`) | EFI variables, the real-time clock, firmware-backed pstore | all | none: not filesystem state, so nothing on the decoy root shows it | none: EFI variables and firmware storage are not part of a disk image | NAILS never writes NVRAM; avoid firmware tools inside the session. | `uefi-esp-nvram-invariant` |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) (`ram-remanence`) | DRAM contents until power-off | all | `memory-wipe` | `memory-swap` | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | none: memory forensics is out of scope; no VM test images RAM |
@@ -2734,9 +2837,9 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [unattended-upgrades set to install at shutdown](#unattended-upgrades) (`unattended-upgrades-install-on-shutdown`) | `/var/log/unattended-upgrades`, `/var/log/apt`, `/var/log/dpkg.log` | Debian | `decoy-persistence` (refuses) | none: the logs and the packages are the decoy's own, as after any shutdown that installs updates | Activation refuses while the decoy's helper runs with the setting on, or with an apt configuration NAILS cannot read or follow, one apt refuses, or one that changed since the helper started while no file sets the setting, and --allow-persistent-decoy turns that into a warning for one run; it only warns when the hidden session alone would install. Leave the setting off, or set it to false. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is an activation with the override |
 | [A daily unattended-upgrade run at the switch](#unattended-upgrades) (`unattended-upgrades-run-at-the-switch`) | `/var/log/unattended-upgrades` | Debian | `unattended-upgrade-run` (refuses) | none: the lines are the decoy's own logs, as after a shutdown during a daily run | Activation refuses while apt-daily-upgrade.service or apt-daily.service is active or a process holds /run/unattended-upgrades.lock, and looks again right before the switch; no flag lifts it. Try again in a few minutes, once the run has ended. | none: asserted on Debian 13, Ubuntu 24.04 and Ubuntu 26.04 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose positive control is a plain soft-reboot during the run |
 | [unattended-upgrades' shutdown helper without python3-gi](#unattended-upgrades) (`unattended-upgrades-polling-without-python3-gi`) | `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log` | Debian | `decoy-persistence` | none: the lines are the decoy's own log, as after any start of the helper | decoy-persistence warns while the decoy's helper is enabled and python3-gi is not installed. Install it: apt install python3-gi. | none: asserted on Debian 13 by the cross-distro unattended-upgrades scenario under nix/distro-tests, whose stock decoy warns of it and whose helper adds a pair at the way back |
-| [tuned's log file](#tuned-firewalld-and-abrt) (`tuned-log`) | `/var/log/tuned` | all | `decoy-persistence` (refuses) | path probe (warn) | Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, started by a timer, path or socket that runs, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file or to a journal namespace the decoy keeps included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, then restart them, or mask them. Where they log to a journal namespace the decoy keeps, set Storage=volatile in its `journald@<namespace>.conf` and restart that namespace's journald, or drop the unit's LogNamespace=. | none: no VM test runs tuned: Fedora, whose units pass -l, is not admitted yet and its cloud image has no tuned; the refusal is unit tested on Fedora 44's own unit files |
-| [firewalld's log file](#tuned-firewalld-and-abrt) (`firewalld-log`) | `/var/log/firewalld` | all | `decoy-persistence` | path probe (info) | decoy-persistence warns while firewalld is enabled, active or started by a timer, path or socket that runs, or runs, with a log file, a journal namespace the decoy keeps included. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it. Where it logs to a journal namespace the decoy keeps, set Storage=volatile in its `journald@<namespace>.conf` and restart that namespace's journald, or drop the unit's LogNamespace=. | none: no VM test runs firewalld: Fedora, which enables it, is not admitted yet and its cloud image has no firewalld; the warning is unit tested on Fedora 44's own unit and sysconfig file |
-| [ABRT's crash reports](#tuned-firewalld-and-abrt) (`abrt-spool`) | `/var/spool/abrt` | all | `decoy-persistence` | path probe (warn) | decoy-persistence warns while ABRT is in use on the decoy. Turn it off: systemctl disable --now abrtd.service, which the other ABRT units need. | none: no VM test runs ABRT: Fedora, which enables it, is not admitted yet and its cloud image has no ABRT; the warning is unit tested on Fedora 44's own unit |
+| [tuned's log file](#tuned-firewalld-and-abrt) (`tuned-log`) | `/var/log/tuned` | all | `decoy-persistence` (refuses) | path probe (warn) | Activation refuses while tuned or tuned-ppd can start with a log file (enabled, active, started by a timer, path or socket that runs, or tuned-ppd installed, which D-Bus starts and which needs tuned) or runs with one, its standard error sent to a file or to a journal namespace the decoy keeps included, and --allow-persistent-decoy turns that into a warning for one run. Drop -l and -d from their ExecStart= in a drop-in that also sets StandardError=journal, then restart them, or mask them. Where they log to a journal namespace the decoy keeps, set Storage=volatile in its `journald@<namespace>.conf` and restart that namespace's journald, or drop the unit's LogNamespace=. | none: asserted by Fedora's admission gate under nix/distro-tests on Fedora 44 and 45, run on a KVM host outside the NixOS e2e suite: it installs tuned on the Cloud image, which has none, and check refuses it while its unit passes -l and names it no more once a drop-in starts it without -l; the refusal is also unit tested on Fedora 44's own unit files |
+| [firewalld's log file](#tuned-firewalld-and-abrt) (`firewalld-log`) | `/var/log/firewalld` | all | `decoy-persistence` | path probe (info) | decoy-persistence warns while firewalld is enabled, active or started by a timer, path or socket that runs, or runs, with a log file, a journal namespace the decoy keeps included. Make it log to the journal: add --log-target=syslog to FIREWALLD_ARGS where its unit reads that variable (/etc/sysconfig/firewalld on Fedora), to its ExecStart= in a drop-in where it does not (Debian), or to services.firewalld.extraArgs on NixOS, then restart it. Where it logs to a journal namespace the decoy keeps, set Storage=volatile in its `journald@<namespace>.conf` and restart that namespace's journald, or drop the unit's LogNamespace=. | none: asserted by Fedora's admission gate under nix/distro-tests on Fedora 44 and 45, run on a KVM host outside the NixOS e2e suite: it installs firewalld on the Cloud image, which has none, and check warns of it with its default log target and names it no more once FIREWALLD_ARGS sets --log-target=syslog; the warning is also unit tested on Fedora 44's own unit and sysconfig file |
+| [ABRT's crash reports](#tuned-firewalld-and-abrt) (`abrt-spool`) | `/var/spool/abrt` | all | `decoy-persistence` | path probe (warn) | decoy-persistence warns while ABRT is in use on the decoy. Turn it off: systemctl disable --now abrtd.service, which the other ABRT units need. | none: asserted by Fedora's admission gate under nix/distro-tests on Fedora 44 and 45, run on a KVM host outside the NixOS e2e suite: it installs ABRT on the Cloud image, which has none, and check warns of it and names it no more once abrtd.service is disabled and stopped; the warning is also unit tested on Fedora 44's own unit |
 | [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | `preflight-checks` |
 | [sssd and the domain controller's records](#decoys-joined-to-a-domain) (`sssd-domain-records`) | the domain controller's own records of the logins and account lookups sssd makes on a decoy joined to a domain, and sssd's caches under /var/lib/sss and logs under /var/log/sssd | all | `decoy-persistence` | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: no VM test runs a domain controller; the warning is unit-tested |
 <!-- residue-catalog:end session -->

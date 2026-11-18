@@ -218,7 +218,8 @@ Keep all of it `root`-owned on the hidden volume.
 **Activation, step by step.** `nails activate` runs on the decoy:
 
 1. It runs the pre-flight checks, among them `platform` (the host is one NAILS
-   supports; a Debian or Ubuntu release it has not been tested on warns),
+   supports; a Debian, Ubuntu or Fedora release it has not been tested on
+   warns, and so does a Fedora edition other than Cloud),
    `lsm-status` (it names the Linux Security Modules the kernel runs; where
    SELinux runs, its policy must be the targeted one, NAILS must run
    unconfined, the disk guard of `[session_mounts] read_only` in a domain the
@@ -1368,8 +1369,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     are. Run `check` with `sudo`.
 
   The access-time scenario of the distribution tests checks this on a Debian
-  13 decoy mounted `relatime`, and on a Fedora 44 one with a test build that
-  admits Fedora: it ages every entry of the decoy disk but apt's
+  13 decoy mounted `relatime`, and on a Fedora 44 one with SELinux enforcing:
+  it ages every entry of the decoy disk but apt's
   configuration and `/etc/selinux/config`, whose change times NAILS judges,
   runs `check` and two sessions with their ways back for an operator account
   named as `sudo` names it (without starting `sudo`), lists the links and
@@ -3494,7 +3495,9 @@ the machine leaves your control.
 
 ### What has not been validated on hardware
 
-The session is validated in virtual machines. These are open until measured on
+The session is validated in virtual machines. On Fedora no run on real hardware
+has passed yet, so its support is provisional (see the
+[Fedora notes](decoy-requirements.md#fedora)). These are open until measured on
 real hardware:
 
 - the time from trigger to the login screen on a real desktop (in the test VM:

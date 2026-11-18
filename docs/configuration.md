@@ -7,17 +7,20 @@ whole decoy root, plus a fixed policy for every other decoy filesystem (see
 
 ## Platform support
 
-nails runs on NixOS (full, with a declarative hidden configuration) and on the
-Debian family with the same whole-root session (Debian 13, Ubuntu 24.04 and
+nails runs on NixOS (full, with a declarative hidden configuration) and, with
+the same whole-root session, on the Debian family (Debian 13, Ubuntu 24.04 and
 26.04; a later Debian or Ubuntu release runs with a warning that nails has not
 been tested on it, and `ID_LIKE=debian` derivatives are accepted provisionally
 without a release gate, unless their `ID_LIKE` also names Fedora, RHEL, CentOS
-or Arch). Every host needs systemd 254 or newer for
-`systemctl soft-reboot`, so Debian 12 and Ubuntu 22.04 are refused.
-Non-merged-`/usr` layouts, other distributions, ostree/image-based hosts and
-non-systemd hosts are refused with a documented message. On the Debian family
-there is no declarative layer: the `nixos_*` keys below are inert and the hidden
-configuration is whatever the upper's `/etc` holds. See the
+or Arch) and on the Cloud edition of Fedora 44 and 45, provisionally (a later
+Fedora release and any other edition run with a warning, Nobara and
+Ultramarine from release 44 on as untested derivatives). Every host needs
+systemd 254 or newer for `systemctl soft-reboot`, so Debian 12 and Ubuntu
+22.04 are refused. Non-merged-`/usr` layouts, other distributions,
+ostree/image-based hosts and non-systemd hosts are refused with a documented
+message. On the Debian family and Fedora there is no declarative layer: the
+`nixos_*` keys below are inert and the hidden configuration is whatever the
+upper's `/etc` holds. See the
 [platform support matrix](../README.md#requirements) for the full table.
 
 ## Where the file lives

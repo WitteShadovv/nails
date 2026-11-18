@@ -388,9 +388,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(distro.ALL, *distro.SUITES),
         help=(
             "a suite to plan, again for more: the smoke scenarios, the records "
-            "scenarios, the refusals, the fact probes of the images not admitted "
-            "yet, the scenarios of the images staged for admission and the drivers "
-            "of an admission gate, or all (smoke, records and refusal, the default)"
+            "scenarios, the refusals, the fact probes of the Fedora and Arch "
+            "images, the scenarios of the images staged for admission and the "
+            "drivers of an admission gate, or all (smoke, records and refusal, the "
+            "default)"
         ),
     )
     distro_cmd.add_argument(

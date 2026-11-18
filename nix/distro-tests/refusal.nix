@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The refusal scenario: NAILS refuses the families it has not admitted yet
-# (Fedora, Arch) and leaves nothing behind while it does. Admitting a family
+# (Arch) and leaves nothing behind while it does. Admitting a family
 # is a data change in the family table (nails-platform/src/platform/family.rs);
 # until it is made, this runs the refusal on the family's own stock cloud
 # image. The binary is shared in and a hidden root is set up as the smoke
@@ -11,10 +11,11 @@
 #   - `check` fails its platform row with the family table's reason, and the
 #     hidden root still holds what it held;
 #   - `check` names the security modules the kernel runs in its lsm-status row.
-#     Where SELinux does not run (Arch) the row passes. Where it runs (Fedora)
-#     the copies of the binary in /run take the label of the system's
-#     programs, and the loaded policy, asked through selinuxfs, starts the
-#     units systemd starts from them in unconfined_service_t; the disk guard
+#     Where SELinux does not run (Arch) the row passes. Where it runs, which
+#     it does on no refused image now, the copies of the binary in /run take
+#     the label of the system's programs, and the loaded policy, asked
+#     through selinuxfs, starts the units systemd starts from them in
+#     unconfined_service_t; the disk guard
 #     is off in this configuration. So the row only warns that SELinux is
 #     permissive where the kernel says so, and passes, naming that domain,
 #     where it enforces: no fact it reads there (the mode, /etc/selinux/config,
@@ -66,7 +67,6 @@ let
   # refusal gives the family. Once a family is admitted its scenario fails, as
   # it must, so the commit that admits it takes the family out of this list.
   refusedFamilies = {
-    fedora = "Fedora";
     arch = "Arch";
   };
   refusedImages = lib.filterAttrs (_: entry: refusedFamilies ? ${entry.osId}) images;
@@ -117,7 +117,7 @@ let
         # generates.
         reason = (
             f"{family} is not yet a validated platform. NAILS refuses it until its "
-            "support has been verified. NAILS supports NixOS and the Debian family ("
+            "support has been verified. NAILS supports NixOS and these releases: "
         )
 
         # What would name the refused run on the decoy disk, in a journal entry

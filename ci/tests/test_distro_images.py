@@ -212,18 +212,23 @@ NVT_IMAGES = {
 
 
 class LinkCheckTest(unittest.TestCase):
-    def test_offline_shipped_table_checks_staged_dates_only(self) -> None:
-        # Debian and Ubuntu, the enabled entries, are nix-vm-test pins with no
-        # lapse date: offline, nothing about them can be checked, and the
-        # staged dates it can check say nothing about what CI boots, so the
-        # run still fails rather than pass on them.
-        report = di.link_check(di.load_table(), today=THE_DAY, offline=True)
+    def test_offline_shipped_table_checks_the_dates_alone(self) -> None:
+        # Debian and Ubuntu are nix-vm-test pins with no lapse date: offline,
+        # nothing about them can be checked. The Fedora images, enabled
+        # upstream pins, carry the end of life of their release, which is
+        # checked as a staged entry's date is, so the run passes on them.
+        table = di.load_table()
+        report = di.link_check(table, today=THE_DAY, offline=True)
         self.assertTrue(report.checked)
         for line in report.checked:
-            self.assertIn(" (staged): lapses ", line)
+            self.assertIn(": lapses ", line)
+        dated = {line.split(":")[0] for line in report.checked}
+        for name, entry in table.items():
+            if entry["enabled"] and entry["upstreamUntil"] is not None:
+                self.assertIn(name, dated)
+        self.assertIn("fedora-44", dated)
         self.assertIn("debian-13: offline, and no upstreamUntil", report.unchecked)
-        self.assertEqual(len(report.failures), 1, report.failures)
-        self.assertIn("no enabled entry could be checked", report.failures[0])
+        self.assertEqual(report.failures, [])
 
     def test_shipped_table_probes_every_pin_that_names_a_url(self) -> None:
         # Every upstream and nix-vm-test pin is probed, the staged ones too;
@@ -256,9 +261,9 @@ class LinkCheckTest(unittest.TestCase):
         self.assertTrue(staged, "no staged pin to probe")
 
     def test_shipped_staged_pins_fail_before_they_lapse(self) -> None:
-        # The property the staged Fedora and Arch pins were missing: each one
-        # fails the check LEAD_DAYS before its upstreamUntil, though it is not
-        # in the matrix.
+        # The property the staged Arch pins were missing: each one fails the
+        # check LEAD_DAYS before its upstreamUntil, though it is not in the
+        # matrix.
         table = di.load_table()
         staged = {
             name: datetime.date.fromisoformat(entry["upstreamUntil"])

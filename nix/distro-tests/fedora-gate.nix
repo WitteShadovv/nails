@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The drivers of Fedora's admission gate, keyed by name: run before the commit
-# that admits Fedora, on each pinned Fedora image.
+# The drivers of Fedora's admission gate, keyed by name, on each pinned Fedora
+# image: the gate Fedora's admission passed, which a dispatch runs again.
 #
 #   <image>-rpms  boots the stock image with the guest's network on and has
 #                 its own dnf resolve the closure of one install of tuned,
@@ -12,8 +12,8 @@
 #                 is unset), which ci/e2e/rpm_closure.py turns into the lock
 #                 rpms/<image>.json that the gate installs from.
 #   <image>-gate  the gate scenario (py/fedora_gate.py) on the image booted with
-#                 SELinux enforcing, with a test-only build of nails that admits
-#                 Fedora (lib/admitted.nix) and the locked closure shared in
+#                 SELinux enforcing, with the release binary and the locked
+#                 closure shared in
 #                 over 9p. It writes <image>-gate.json, every assertion with its
 #                 outcome, and <image>-gate.kmsg.txt, the whole kernel log of
 #                 each boot. It is defined once the image has a lock.
@@ -43,11 +43,11 @@ let
 
   images = import ./images.nix { inherit pkgs; };
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
-  # The binary the gate runs: the release binary once the image table enables
-  # the image, as the commit that admits Fedora does, and until then the
-  # release binary with the image's base row admitted (lib/admitted.nix),
-  # whose build fails for a row admitted already. It keeps the lsm-status
-  # check, whose verdict the gate asserts before and after setenforce 0.
+  # The binary the gate runs: the release binary on an image the image table
+  # enables, as it enables both Fedora images, and on any other the release
+  # binary with the image's base row admitted (lib/admitted.nix), whose build
+  # fails for a row admitted already. It keeps the lsm-status check, whose
+  # verdict the gate asserts before and after setenforce 0.
   admitted = import ./lib/admitted.nix { inherit self; };
   nailsFor = entry: if entry.enabled then self.packages.x86_64-linux.nails else admitted entry.osId;
 
@@ -157,8 +157,7 @@ let
     );
 
   # What a release's gate expects of it beyond the image: whether the family
-  # table validates the release (Fedora 45 warns as untested until the
-  # commit that admits Fedora validates it), whether the image's PAM stack
+  # table validates the release, whether the image's PAM stack
   # records a login in lastlog2 (Fedora 44's pam_lastlog2 fails to load, as
   # the gate's runs on it show), and the packages the drift steps remove: one
   # in the first hidden session, one on the decoy after it.
@@ -168,7 +167,7 @@ let
       lastlog2 = false;
     };
     "45" = {
-      validated = false;
+      validated = true;
       lastlog2 = true;
     };
   };

@@ -15,9 +15,9 @@
 //!
 //! Each row carries its family, its version gate, whether it is a base
 //! distribution or a derivative, whether NAILS admits it, and how its hosts
-//! upgrade to a newer systemd. Fedora and Arch are in the table but not
-//! admitted, so they are refused as product data until their support has been
-//! verified, not hidden behind a test flag.
+//! upgrade to a newer systemd. Arch is in the table but not admitted, so it is
+//! refused as product data until its support has been verified, not hidden
+//! behind a test flag.
 //!
 //! A distribution that ships editions (Fedora's Cloud, Workstation, KDE Plasma
 //! Desktop) also lists them in its row, as os-release `VARIANT_ID` names them:
@@ -188,8 +188,8 @@ const UBUNTU_2604_CAVEAT: &str = "Ubuntu 26.04 is tested, but a known upstream i
 /// flag) plus its gate run — the backend ([`FhsPlatform`](super::FhsPlatform))
 /// is already generic.
 ///
-/// Fedora and Arch sit here with `admitted: false`: recognised, named in their
-/// refusal, and ready to flip to admitted once their support has been verified.
+/// Arch sits here with `admitted: false`: recognised, named in its refusal,
+/// and ready to flip to admitted once its support has been verified.
 const TABLE: &[FamilyRow] = &[
     FamilyRow {
         id: "debian",
@@ -228,18 +228,20 @@ const TABLE: &[FamilyRow] = &[
         family: Family::Fedora,
         gate: Gate::Versioned {
             min: FEDORA_MIN,
-            validated: &[DistroVersion::new(44, 0)],
+            // The releases whose Cloud image passed Fedora's admission gate
+            // (nix/distro-tests/fedora-gate.nix).
+            validated: &[DistroVersion::new(44, 0), DistroVersion::new(45, 0)],
             caveats: &[],
         },
         kind: Kind::Base,
-        admitted: false,
+        admitted: true,
         // The upgrade reboots by itself; Fedora supports it across at most two
         // releases.
         upgrade: Upgrade::Release("with `dnf system-upgrade`, at most two releases at a time"),
         // Cloud is the edition of the Fedora distro-test images
         // (Fedora-Cloud-Base-Generic, in nix/distro-tests), so it is the one
-        // admission validates. Workstation and KDE Plasma Desktop warn until a
-        // run of NAILS on each has passed, as any other edition does.
+        // the admission validates. Workstation and KDE Plasma Desktop warn
+        // until a run of NAILS on each has passed, as any other edition does.
         editions: &[
             Edition {
                 id: "cloud",
@@ -300,7 +302,8 @@ const TABLE: &[FamilyRow] = &[
         upgrade: PACMAN_FULL_UPGRADE,
         editions: &[],
     },
-    // Fedora derivatives, gated on the Fedora release each is built on.
+    // Fedora derivatives, gated on the Fedora release each is built on: they
+    // warn as untested derivatives from Fedora's minimum release on.
     FamilyRow {
         id: "nobara",
         label: "Nobara",
@@ -440,8 +443,9 @@ pub(crate) fn edition_label(id: &str, variant_id: &str) -> Option<&'static str> 
 /// - A non-table `ID` whose `ID_LIKE` names `fedora`, `rhel`, `centos` or `arch`
 ///   anywhere is refused, naming the first such family in the list's
 ///   closest-first order. This holds whatever else `ID_LIKE` names: a host that
-///   declares kinship with a family NAILS has not validated is refused rather
-///   than run as a Debian derivative, even when `debian` comes first.
+///   declares kinship with a family NAILS has not validated, or that is a
+///   derivative of Fedora the table does not name, is refused rather than run
+///   as a derivative, even when `debian` comes first.
 /// - Otherwise, a non-table `ID` whose `ID_LIKE` names `debian` or `ubuntu` is
 ///   accepted provisionally, with a warning that NAILS has not tested the
 ///   derivative.
@@ -464,8 +468,8 @@ pub(crate) fn classify(
         }
     }
 
-    // An unvalidated family wins over a Debian-family token, wherever each
-    // stands in `ID_LIKE`: the host is refused rather than admitted.
+    // A family other than Debian's wins over a Debian-family token, wherever
+    // each stands in `ID_LIKE`: the host is refused rather than admitted.
     if let Some(family) = family_from_id_like(id_like) {
         return Classification {
             family: Some(family),
@@ -513,10 +517,11 @@ fn base_admitted(family: Family) -> bool {
         .any(|row| row.kind == Kind::Base && row.family == family && row.admitted)
 }
 
-/// The first family NAILS has not validated that an `ID_LIKE` token names, in
-/// the list's closest-first order, for an `ID` the table does not list.
-/// `debian` and `ubuntu` are not among them: they admit a derivative only when
-/// no token names an unvalidated family.
+/// The first family other than Debian's that an `ID_LIKE` token names, in the
+/// list's closest-first order, for an `ID` the table does not list: NAILS has
+/// not validated Arch, and admits of Fedora's family only the rows the table
+/// names. `debian` and `ubuntu` are not among them: they admit a derivative
+/// only when no token names such a family.
 fn family_from_id_like(id_like: &[String]) -> Option<Family> {
     for token in id_like {
         match token.as_str() {
@@ -550,11 +555,11 @@ fn rehearse_line() -> String {
 fn derivative_refusal(row: &FamilyRow) -> String {
     format!(
         "{} is based on {}, which NAILS has not yet validated. NAILS refuses it until {} \
-         support has been verified. NAILS supports NixOS and the Debian family ({}).",
+         support has been verified. {}",
         row.label,
         row.family.label(),
         row.family.label(),
-        supported_platforms(),
+        supported_sentence(),
     )
 }
 
@@ -562,34 +567,45 @@ fn derivative_refusal(row: &FamilyRow) -> String {
 fn not_validated_refusal(row: &FamilyRow) -> String {
     format!(
         "{} is not yet a validated platform. NAILS refuses it until its support has been \
-         verified. NAILS supports NixOS and the Debian family ({}).",
+         verified. {}",
         row.label,
-        supported_platforms(),
+        supported_sentence(),
     )
 }
 
-/// The refusal for a host whose `ID_LIKE` names an unvalidated family.
+/// The refusal for a host whose `ID_LIKE` names a family it is not a row of:
+/// one NAILS has not validated, or, where NAILS admits the family, a
+/// derivative it does not know. NAILS tests none of those, so it refuses them
+/// rather than run them as the family's derivatives.
 fn unvalidated_like_reason(id: Option<&str>, family: Family) -> String {
     let who = match id {
         Some(id) => format!("host '{id}'"),
         None => "this host".to_string(),
     };
+    if base_admitted(family) {
+        return format!(
+            "{who} declares itself part of the {} family, but it is not a release or a \
+             derivative of that family that NAILS knows, and NAILS has not tested it. {} \
+             Other distributions are not yet validated.",
+            family.label(),
+            supported_sentence(),
+        );
+    }
     format!(
-        "{who} declares itself part of the {} family, which NAILS has not yet validated. \
-         NAILS supports NixOS and the Debian family ({}); other distributions are not yet \
-         validated.",
+        "{who} declares itself part of the {} family, which NAILS has not yet validated. {} \
+         Other distributions are not yet validated.",
         family.label(),
-        supported_platforms(),
+        supported_sentence(),
     )
 }
 
 /// The refusal for a named distribution NAILS declines explicitly.
 fn named_refusal(row: &NamedRefusal) -> String {
     format!(
-        "{} is not a supported platform; {}. NAILS supports NixOS and the Debian family ({}).",
+        "{} is not a supported platform; {}. {}",
         row.label,
         row.note,
-        supported_platforms(),
+        supported_sentence(),
     )
 }
 
@@ -597,20 +613,30 @@ fn named_refusal(row: &NamedRefusal) -> String {
 fn unknown_reason(id: Option<&str>) -> String {
     match id {
         Some(id) => format!(
-            "host '{id}' is not a supported platform. NAILS supports NixOS and the Debian \
-             family ({}); other distributions are not yet validated.",
-            supported_platforms(),
+            "host '{id}' is not a supported platform. {} Other distributions are not yet \
+             validated.",
+            supported_sentence(),
         ),
         None => format!(
-            "this host declares no os-release ID; NAILS supports NixOS and the Debian family \
-             ({}) and refuses hosts it cannot identify.",
-            supported_platforms(),
+            "this host declares no os-release ID, and NAILS refuses hosts it cannot identify. \
+             {}",
+            supported_sentence(),
         ),
     }
 }
 
+/// The sentence a refusal ends with, generated from the table: `NAILS supports
+/// NixOS and these releases: Debian 13, Ubuntu 24.04 and 26.04, Fedora 44 and
+/// 45.`
+fn supported_sentence() -> String {
+    format!(
+        "NAILS supports NixOS and these releases: {}.",
+        supported_platforms()
+    )
+}
+
 /// The admitted platforms as one sentence fragment, generated from the table:
-/// `Debian 13, Ubuntu 24.04 and 26.04`.
+/// `Debian 13, Ubuntu 24.04 and 26.04, Fedora 44 and 45`.
 fn supported_platforms() -> String {
     let parts: Vec<String> = TABLE
         .iter()

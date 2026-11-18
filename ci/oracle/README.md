@@ -291,18 +291,12 @@ reboot (control2), and after one more boot, a hidden session and the way back
 power-off instead of exiting, so the images are one disk's lineage: each is a
 copy of the paused disk, and a reset boots it again.
 
-Fedora is not admitted yet, so the driver runs a test-only build of the release
-binary in which only the Fedora row of the family table is admitted
-(`nix/distro-tests/lib/admitted.nix`). It also leaves out the `lsm-status`
-check, which judges the SELinux this decoy runs, so that the images do not
-depend on its verdict; the check only reads. Fedora's derivatives
-follow that row there, as they will once Fedora is admitted, and no image of
-one runs. That build is never released, and once the image table enables the
-image, as the commit that admits Fedora does, the driver runs the release
-binary on it instead. The verdict on the images says what the oracle's channels
-see of a session on a Fedora Cloud decoy of that release, with what they do not
-see listed under [What it does not see](#what-it-does-not-see), not that NAILS
-supports Fedora.
+Fedora is admitted and the image table enables both images, so the driver
+runs the release binary on them, its `lsm-status` check included, and the
+decoys boot with SELinux enforcing, as the image table pins them. The verdict
+on the images says what the oracle's channels see of a session on a Fedora
+Cloud decoy of that release, with what they do not see listed under
+[What it does not see](#what-it-does-not-see).
 
 Before the first image the driver makes the decoy's journal volatile and turns
 auditd off (the posture NAILS requires), creates `/mnt/data` and writes the
@@ -418,12 +412,12 @@ The `produce-btrfs` job runs `arch-boxes-oracle-images` as well, the same
 driver on the stock arch-boxes basic image. Its root is a btrfs filesystem
 compressed with zstd and mounted from its top level, next to a vfat ESP that
 systemd's GPT auto-generator mounts on demand at `/efi` and a BIOS boot
-partition. Arch is not admitted yet either, so the driver runs a test-only
-build of the release binary in which only the Arch row of the family table is
-admitted, never released, as for Fedora: Arch's derivatives follow that row
-there, and the release binary takes its place once the image table enables the
-image. The decoy is prepared and imaged as the Fedora one is, and before the
-first image the driver also makes the swap line of its fstab
+partition. Arch is not admitted yet, so the driver runs a test-only build of
+the release binary in which only the Arch row of the family table is admitted
+(`nix/distro-tests/lib/admitted.nix`), never released: Arch's derivatives
+follow that row there, and the release binary takes its place once the image
+table enables the image. The decoy is prepared and imaged as the Fedora one
+is, and before the first image the driver also makes the swap line of its fstab
 (`/swap/swapfile`) `noauto` and turns the swap off: the swap check refuses an
 active disk swap, and no boot of the run turns it on again. Its live controls
 hold the line added to pacman's log as well. `scan-btrfs-real` scans its
