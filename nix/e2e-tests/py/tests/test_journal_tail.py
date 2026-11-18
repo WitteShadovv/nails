@@ -5,6 +5,9 @@ before the way back emptied journald's sockets and quieted the tail."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import tempfile
 import unittest
 from typing import Any
 
@@ -293,8 +296,12 @@ class ControlTest(unittest.TestCase):
             ring.append(Record(last.seq + n, last.usec + n, text))
         found = self.judge(ring).findings
         # The audit socket, which the way back leaves closed, aside.
-        self.assertEqual(len(found), 2, found)
-        self.assertTrue(all("opened journald's socket anew" in f for f in found))
+        self.assertEqual(len(found), 3, found)
+        self.assertEqual(
+            [f.split(":")[0] for f in found],
+            ["the decoy's start opened journald's socket anew"] * 2
+            + ["the decoy's start opened udevd's socket anew"],
+        )
         # One the hidden start opened anew after the entry, as the decoy's own
         # shutdown had closed it, may be opened anew after the way back too.
         entry = [
@@ -304,10 +311,34 @@ class ControlTest(unittest.TestCase):
                 50000100,
                 "systemd[1]: Listening on systemd-journald.socket - Journal Sockets.",
             ),
+            Record(1402, 50000200, "systemd[1]: Listening on udev Control Socket."),
         ]
         found = self.judge(entry + ring).findings
         self.assertEqual(len(found), 1, found)
         self.assertIn("(/dev/log)", found[0])
+
+    def test_udevd_s_kernel_socket_opened_anew_by_the_decoy_is_found(self) -> None:
+        # Stopped before the restores' events, udevd leaves PID 1 to fail its
+        # kernel socket inside the soft-reboot, and the decoy opens it anew.
+        ring = with_controls(parse_kmsg(RING))
+        last = ring[-1]
+        for n, text in enumerate(
+            (
+                "systemd[1]: Listening on systemd-udevd-kernel.socket - udev "
+                "Kernel Socket.",
+                "systemd[1]: Listening on udev Kernel Socket.",
+            ),
+            start=1,
+        ):
+            ring.append(Record(last.seq + n, last.usec + n, text))
+        found = self.judge(ring).findings
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(all("opened udevd's socket anew" in f for f in found))
+        self.assertEqual(
+            [journal_tail.reopened(r.text) for r in ring[-2:]],
+            ["udev-kernel", "udev-kernel"],
+        )
+        self.assertIsNone(journal_tail.reopened("systemd[1]: Listening on D-Bus."))
 
 
 class AllowedTest(unittest.TestCase):
@@ -316,13 +347,16 @@ class AllowedTest(unittest.TestCase):
             "Finished Reboot System Userspace.",
             "Finished systemd-soft-reboot.service - Reboot System Userspace.",
             "Sending SIGKILL to PID 387 ((sd-close)).",
+            "Sending SIGKILL to PID 3393 (systemd-udevd).",
+            "Sending SIGKILL to PID 3394 ((udev-worker)).",
         ):
             self.assertTrue(
                 any(p.fullmatch(line) for p in journal_tail.HIDDEN_PID1_LINES), line
             )
         for line in (
             "Sending SIGKILL to PID 2236 (systemd-userdbd).",
-            "Sending SIGKILL to PID 3393 (systemd-udevd).",
+            "Sending SIGKILL to PID 3395 (udev-worker).",
+            "Sending SIGKILL to PID 3396 (lngr-udevd).",
             "late-writer.service: Failed with result 'exit-code'.",
         ):
             self.assertFalse(
@@ -347,6 +381,61 @@ class CommandTest(unittest.TestCase):
             journal_tail.linger_stop_command("L"),
             '/bin/sh -c "echo L > /run/L-stop && echo L-stopped > /dev/kmsg"',
         )
+
+
+class UdevDatabase:
+    """A machine whose ``/run/udev/data`` is a folder of the host, where each
+    command runs in a shell."""
+
+    def __init__(self, data: str) -> None:
+        self.data = data
+        self.commands: list[str] = []
+
+    def succeed(self, *commands: str) -> str:
+        out = ""
+        for command in commands:
+            self.commands.append(command)
+            if command.startswith(("ip ", "udevadm ")):
+                continue
+            out += subprocess.run(
+                ["sh", "-c", command.replace("/run/udev/data", self.data)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        return out
+
+
+class LinkTest(unittest.TestCase):
+    def test_only_a_record_that_names_the_link_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as data:
+            machine = UdevDatabase(data)
+            self.assertEqual(journal_tail.udev_records_of(machine, "nl1"), [])
+            for name, text in (
+                ("n3", "I:1\nE:ID_NET_NAME=nl1\nE:ID_NET_DRIVER=dummy\n"),
+                ("n4", "E:INTERFACE=nl1\n"),
+                ("n5", "E:ID_NET_NAME=nl10\nE:ID_NET_NAME_MAC=nl1\n"),
+                ("b8:0", "E:ID_NET_NAME=nl1\n"),
+            ):
+                with open(os.path.join(data, name), "w", encoding="utf-8") as handle:
+                    handle.write(text)
+            self.assertEqual(
+                sorted(os.path.basename(f) for f in journal_tail.udev_records_of(machine, "nl1")),
+                ["n3", "n4"],
+            )
+
+    def test_the_plant_proves_udevd_recorded_its_link(self) -> None:
+        with tempfile.TemporaryDirectory() as data:
+            machine = UdevDatabase(data)
+            with self.assertRaises(AssertionError):
+                journal_tail.plant_link(machine, "nl1")
+            self.assertEqual(
+                machine.commands[:3],
+                ["ip link add nl1 type dummy", "ip link set nl1 up", "udevadm settle -t 30"],
+            )
+            with open(os.path.join(data, "n3"), "w", encoding="utf-8") as handle:
+                handle.write("E:ID_NET_NAME=nl1\n")
+            journal_tail.plant_link(machine, "nl1")
 
 
 if __name__ == "__main__":
