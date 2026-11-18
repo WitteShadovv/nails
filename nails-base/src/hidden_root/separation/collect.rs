@@ -93,7 +93,7 @@ mod tests;
 
 use super::{DeviceMap, NamedPaths, SYS_CLASS_BLOCK, Served, UnplainLines, Untraced};
 use super::{FileHolder, FileId, FileIds, Judgement, LoopFile, Node, NodeKind, Scene, judge};
-use super::{read_crypttab, read_fstab};
+use super::{OwnFilesystem, own_filesystem, read_crypttab, read_fstab};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
 use crate::crypttab::CrypttabEntry;
@@ -151,12 +151,28 @@ pub fn judge_storage<F: Filesystem>(
     hidden: &MountEntry,
     etc_root: &Path,
 ) -> Judgement {
+    judge_storage_owning(fs, mounts, hidden, etc_root).0
+}
+
+/// [`judge_storage`], and from the same inputs the filesystem the judgement
+/// places the root on as a folder or a subvolume of it, while the decoy
+/// itself mounts another part of it at `/` or at a system folder
+/// ([`own_filesystem`]).
+pub fn judge_storage_owning<F: Filesystem>(
+    fs: &F,
+    mounts: &[MountEntry],
+    hidden: &MountEntry,
+    etc_root: &Path,
+) -> (Judgement, Option<OwnFilesystem>) {
     let collected = if super::judge::is_ram(&hidden.fstype) {
         Collected::default()
     } else {
         collect(fs, mounts, etc_root)
     };
-    judge(&collected.scene(mounts), hidden)
+    let scene = collected.scene(mounts);
+    let judgement = judge(&scene, hidden);
+    let own = own_filesystem(&scene, hidden, &judgement);
+    (judgement, own)
 }
 
 /// Collect the judge's inputs. See the module docs.

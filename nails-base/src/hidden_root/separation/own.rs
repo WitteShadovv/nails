@@ -9,8 +9,9 @@
 //! mounts, as NixOS's `hardware-configuration.nix` does for `/` and `/home`.
 //! What the judge decided gives the devices by kernel name and device number,
 //! so a reader that reads sysfs again lets be only the names of a device it
-//! finds with the same name and the same number, and the folders and the
-//! subvolume of the root itself, which no line of the decoy's needs.
+//! finds with the same name and the same number. It gives the root's own
+//! place as well, its folders and its name and id inside the filesystem,
+//! which no line of the decoy's needs.
 
 use super::judge::hidden_stack;
 use super::lines::mount_option;
@@ -37,6 +38,8 @@ pub struct OwnFilesystem {
     pub how: Sharing,
     /// Where the decoy mounts another part of it ([`Judgement::own_place`]).
     pub at: PathBuf,
+    /// The hidden root's mount point, as the mount table shows it.
+    pub root: PathBuf,
     /// The devices it lies on: the device the root's mount is on and every
     /// device below it, as the judge walked them, each with its device
     /// number. A device whose number the judge did not read is left out.
@@ -47,12 +50,25 @@ pub struct OwnFilesystem {
     /// the mount point of each other mount that shows a folder inside it.
     /// Never `/`.
     pub folders: Vec<PathBuf>,
-    /// On btrfs, the path of the root's folder or subvolume inside the
-    /// filesystem, with no leading `/`, as `subvol=` names a subvolume
-    /// (`@vault`).
-    pub subvolume: Option<String>,
+    /// The path of the root's folder or subvolume inside the filesystem,
+    /// from its top, as the mount table shows it (`/@vault`, `/home/alice/vault`).
+    /// Never the top itself.
+    pub inside: PathBuf,
+    /// The filesystem is btrfs.
+    pub btrfs: bool,
     /// For a btrfs subvolume, its id, as `subvolid=` names it.
-    pub subvolid: Option<String>,
+    pub subvolid: Option<u64>,
+}
+
+impl OwnFilesystem {
+    /// The last part of [`Self::inside`]: the name of the root's folder or
+    /// subvolume (`@vault`, `vault`).
+    pub fn name(&self) -> String {
+        self.inside
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
 }
 
 /// The filesystem `hidden` (the visible mount at the hidden root) lies on,
@@ -64,7 +80,8 @@ pub struct OwnFilesystem {
 /// case `--allow-decoy-storage` accepts and the decoy's own lines for that
 /// filesystem name its devices. `None` otherwise: for a root that is the
 /// whole filesystem, for any other verdict, and where no device of it is
-/// known by its number.
+/// known by its number or a subvolume's id is not a number in the mount
+/// table.
 pub fn own_filesystem(
     scene: &Scene<'_>,
     hidden: &MountEntry,
@@ -95,24 +112,26 @@ pub fn own_filesystem(
     if devices.is_empty() {
         return None;
     }
+    // The root's place inside the filesystem: never its top, which a root
+    // that is the whole filesystem shows.
+    let inside = hidden.root.clone();
+    inside.file_name()?;
     let btrfs = hidden.fstype == "btrfs";
-    let inside = hidden
-        .root
-        .strip_prefix("/")
-        .ok()
-        .map(|path| path.to_string_lossy().into_owned())
-        .filter(|path| !path.is_empty());
+    // A subvolume whose id the mount table does not give as a number could
+    // be named by it unseen: nothing is then the decoy's own.
     let subvolid = if btrfs && how == Sharing::Subvolume {
-        mount_option(hidden, "subvolid").map(str::to_string)
+        Some(mount_option(hidden, "subvolid")?.parse().ok()?)
     } else {
         None
     };
     Some(OwnFilesystem {
         how,
         at,
+        root: hidden.mount_point.clone(),
         devices,
         folders: folders(scene.mounts, hidden),
-        subvolume: inside.filter(|_| btrfs),
+        inside,
+        btrfs,
         subvolid,
     })
 }

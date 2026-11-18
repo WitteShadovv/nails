@@ -23,16 +23,18 @@ const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
 /// opens it, or NAILS ([`verify_base_config_clean`](crate::verify_base_config_clean)
 /// lists the forms).
 ///
-/// With `--allow-decoy-storage`, for a root the attach gate's judge places on
-/// a filesystem the decoy uses as a folder or a btrfs subvolume of it, while
-/// the decoy itself mounts another part of that filesystem at `/` or at a
-/// system folder ([`HiddenRoot::own_filesystem`]), the names of the devices
-/// that filesystem lies on are the decoy's own, as its
-/// `hardware-configuration.nix` writes them for `/` and `/home`: a line that
-/// names only such a device is let be
-/// ([`verify_base_config_clean_allowing`]). The root's mount point, its own
-/// folder and subvolume, every other device's names, a place that cannot be
-/// read, and every name without the flag still refuse.
+/// With `--allow-decoy-storage`, for a root the attach gate accepts with it
+/// as a folder or a btrfs subvolume of a filesystem the decoy uses, while the
+/// decoy itself mounts another part of that filesystem at `/` or at a system
+/// folder ([`HiddenRoot::own_filesystem`]), the names of the devices that
+/// filesystem lies on are the decoy's own where its configuration names its
+/// own mounts with them, as its `hardware-configuration.nix` does for `/`
+/// and `/home`: in the `device` or `label` of a `fileSystems` entry for `/`
+/// or a system folder, and in a `boot.initrd.luks.devices` entry's name or
+/// `device` ([`verify_base_config_clean_allowing`]). Such a name anywhere
+/// else, the root's mount point, its own folder and subvolume by their
+/// names, every other device's names, a place that cannot be read, and
+/// every name without the flag still refuse.
 #[derive(Debug, Clone, Default)]
 pub struct SuspiciousNailsReferenceCheck {
     hidden_volume_root: PathBuf,
@@ -95,10 +97,16 @@ impl<F: Filesystem> PreFlightCheck<F> for SuspiciousNailsReferenceCheck {
                 &readable_fix(&shown),
             ));
         }
-        // The filesystem the flag accepted the root on, by one reading of the
-        // judge's inputs; none without the flag, or where they cannot be
-        // read, so then nothing is let be.
-        let own = HiddenRoot::own_filesystem(fs, &self.hidden_volume_root, self.allow);
+        // The filesystem the flag accepted the root on, as the attach gate
+        // decides it; none without the flag, where the gate refuses the root
+        // or cannot tell, so then nothing is let be. The gate looks the root
+        // up through the automount guard, as the hidden-volume check does: a
+        // lookup the guard would not make lets nothing be either, and never
+        // mounts a point.
+        let own = HiddenRoot::own_filesystem(&guarded, &self.hidden_volume_root, self.allow)
+            .ok()
+            .flatten()
+            .filter(|_| guarded.skipped().is_empty());
         match verify_base_config_clean_allowing(fs, &self.hidden_volume_root, own.as_ref()) {
             Ok(scan) => Ok(scan_result(&scan)),
             Err(error) => Ok(cannot_tell(&error.to_string(), &scan_fix(&error))),
