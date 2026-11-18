@@ -29,7 +29,8 @@
 //!    of that number's power-of-two range ([`aim`]). The decoy's anchor lands
 //!    off the aim by the difference between the numbers the decoy's start
 //!    and the hidden start use up to it; while that is less than the margin,
-//!    it lands in the range of its number at the entry. Each entry anchors on
+//!    it lands in the range of its number at the entry, from 128 on. Each
+//!    entry anchors on
 //!    the number the last way back gave, so the difference adds up over
 //!    sessions without a power-off between them, but each aim moves it in
 //!    from the edges of the range again.
@@ -100,7 +101,8 @@ const START_SPAN: u32 = 4096;
 /// decoy's anchor ([`aim`]). The decoy's start after a way back need not run
 /// as many processes up to its anchor as the hidden start did, and the kernel
 /// skips the numbers still in use, so the anchor lands off the aim by some
-/// numbers either way: on the Fedora 44 and 45 admission gate, up to 35.
+/// numbers either way: on the Fedora 44 and 45 admission gate the consoles'
+/// units landed up to 35 off their number before the session.
 pub const BAND_MARGIN: u32 = 64;
 
 /// The clock ticks a second in which `/proc/<pid>/stat` gives a process's
@@ -331,10 +333,10 @@ pub fn pid_range(pid: u32) -> Option<(u32, u32)> {
 /// The number the way back aims the decoy's anchor at, from its number at the
 /// entry: that number, but at least [`BAND_MARGIN`] inside the edges of its
 /// power-of-two range ([`pid_range`]), or the middle of a range narrower than
-/// two margins. An anchor that lands off its aim by less than the margin
-/// stays in the range its number at the entry was in, after one session and
-/// after each further one without a power-off between them, since each entry
-/// anchors on the number the last way back gave.
+/// two margins. From 128 on, an anchor that lands off its aim by less than
+/// the margin stays in the range its number at the entry was in, after one
+/// session and after each further one without a power-off between them,
+/// since each entry anchors on the number the last way back gave.
 pub fn aim(anchor: u32) -> u32 {
     let Some((low, high)) = pid_range(anchor) else {
         return anchor;

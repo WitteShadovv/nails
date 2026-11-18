@@ -7,7 +7,7 @@
 //! manager (`systemd-zram-setup@zramN.service`) and reset when that unit
 //! stops. A soft-reboot keeps the kernel, and with it every zram device: when
 //! the reset at the stop fails (the device is still busy), the device keeps
-//! its size and its swap area, and the next start cannot set it up again
+//! its size and what it holds, and the next start cannot set it up again
 //! (the kernel refuses a new size for a device that has one), so that root
 //! runs without its zram swap and with the unit failed. The decoy's own stop
 //! at the entry can leave its device so, as a plain soft-reboot can.
