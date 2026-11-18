@@ -560,6 +560,34 @@ fn a_unit_that_stays_up_or_no_answer_lets_the_way_back_go_on() {
     assert!(start.elapsed() < UNMOUNTED_BUDGET, "{:?}", start.elapsed());
 }
 
+#[test]
+fn a_mount_point_that_is_not_utf8_is_not_waited_for() {
+    // systemd escapes every byte of the path, one that is not UTF-8 too
+    // (`systemd-escape --path` gives `run-a\xff` for `/run/a` and byte 0xff).
+    // The wait names the unit from the path read as UTF-8, finds no such unit
+    // in PID 1's listing and takes it for down at once.
+    use std::os::unix::ffi::OsStrExt;
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    let systemctl = world.path().join("systemctl");
+    write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\n\
+             printf '%s loaded active mounted /x\\n' 'run-a\\xff.mount'\n",
+            calls = calls.display()
+        ),
+        0o755,
+    );
+    let detached = [PathBuf::from(std::ffi::OsStr::from_bytes(b"/run/a\xff"))];
+
+    assert_ne!(mount_unit(&detached[0]), "run-a\\xff.mount");
+    let start = Instant::now();
+    assert!(wait_for_unmounted(&systemctl, &detached, Vec::new));
+    assert!(start.elapsed() < UNMOUNTED_BUDGET, "{:?}", start.elapsed());
+    assert_eq!(fs::read_to_string(&calls).unwrap().lines().count(), 1);
+}
+
 /// A fake `/sys` with block device `dev` named `name` and, when `ext4`, an
 /// ext4 filesystem on it with message limits `burst` and `interval`.
 fn sys(dir: &Path, dev: &str, name: &str, ext4: bool, interval: &str) -> Places {

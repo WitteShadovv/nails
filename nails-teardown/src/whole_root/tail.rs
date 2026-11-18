@@ -52,8 +52,11 @@
 //! of the BPF programs it unloads, and the kernel's count of the audit
 //! records it held back from its log just before), a process of the session that stays in
 //! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), the
-//! end of a detached mount's unit that PID 1 logs only past
-//! [`wait_for_unmounted`]'s bound, a
+//! end of a detached mount's unit that PID 1 logs after
+//! [`wait_for_unmounted`] has ended (past its bound of about two seconds, at
+//! once without an answer from `systemctl` or for a mount point whose path is
+//! not valid UTF-8, whose unit [`mount_unit`] cannot name, or without
+//! `systemctl`, where the wait does not run), a
 //! filesystem other than ext4's unmount line, and the kernel's lines of the
 //! hidden mapping's teardown, which the kernel logs as PID 1 starts the
 //! decoy. A journald socket PID 1 closed during the soft-reboot is new,
