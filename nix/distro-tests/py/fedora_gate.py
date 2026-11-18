@@ -1188,8 +1188,10 @@ class Gate:
         self.exec_audit = False
         self.exec_boot = -1
         self.exec_probes: list[str] = []
-        # The guest commands whose output did not reach the gate whole.
+        # The guest commands whose output did not reach the gate whole, and
+        # those read again before it did.
         self.torn: list[str] = []
+        self.read_again: list[str] = []
 
     # --- recording -------------------------------------------------------
 
@@ -1211,29 +1213,41 @@ class Gate:
         print(f"GATE {word}: {name}{extra}: {text[:2000]}")
         return bool(passed)
 
-    def sh(self, label: str, cmd: str, timeout: int = 300) -> tuple[int, str]:
-        """Run ``cmd`` in the guest and keep its output; never fails."""
+    def sh(
+        self, label: str, cmd: str, timeout: int = 300, again: bool = False
+    ) -> tuple[int, str]:
+        """Run ``cmd`` in the guest and keep its output; never fails. An
+        output that does not reach the gate whole counts as torn, which fails
+        the run; with ``again``, for a command that only reads, it is run
+        again first, up to :data:`KMSG_TRIES` times in all."""
         self.calls += 1
         key = f"{self.calls:04}.b{self.boot}.{label}"
+        tries = KMSG_TRIES if again else 1
         try:
-            status, out = self.vm.execute(
-                f"( set +euo pipefail; {cmd} ) 2>&1 | python3 -c "
-                + shlex.quote(sg.WHOLE_TEE),
-                timeout=timeout,
-            )
-            checked = sg.whole(out, separated=True)
-            if checked is None:
-                self.torn.append(key)
+            for attempt in range(tries):
+                status, out = self.vm.execute(
+                    f"( set +euo pipefail; {cmd} ) 2>&1 | python3 -c "
+                    + shlex.quote(sg.WHOLE_TEE),
+                    timeout=timeout,
+                )
+                checked = sg.whole(out, separated=True)
+                if checked is not None:
+                    out = checked[0]
+                    break
+                if attempt + 1 < tries:
+                    self.read_again.append(key)
             else:
-                out = checked[0]
+                self.torn.append(key)
         except Exception as error:  # noqa: BLE001 - a dead guest is a result
             status, out = -1, f"<{type(error).__name__}: {error}>"
         self.raw[key] = {"cmd": cmd, "status": status, "out": out}
         print(f"=== {key} (exit {status}) ===\n{out.rstrip()}")
         return status, out
 
-    def fact(self, label: str, cmd: str, timeout: int = 300) -> str:
-        _, out = self.sh(label, cmd, timeout)
+    def fact(
+        self, label: str, cmd: str, timeout: int = 300, again: bool = False
+    ) -> str:
+        _, out = self.sh(label, cmd, timeout, again)
         self.facts[f"b{self.boot}.{label}"] = out.strip()
         return out.strip()
 
@@ -1377,10 +1391,11 @@ class Gate:
         running auditd every audit record instead of its log, so the denials
         of those moments are only there."""
         current = self.boots[self.boot]
-        _, out = self.vm.execute(
+        _, out = self.sh(
+            "audit-log",
             "cat $(ls -r /var/log/audit/audit.log* 2>/dev/null) 2>/dev/null; true",
-            check_return=False,
-            timeout=300,
+            300,
+            again=True,
         )
         os.makedirs(self.out_dir, exist_ok=True)
         with open(
@@ -2581,6 +2596,7 @@ class Gate:
             "--output-fields=_TRANSPORT,_PID,_COMM,SYSLOG_IDENTIFIER,MESSAGE,"
             "_AUDIT_ID,_SYSTEMD_UNIT,_SOURCE_REALTIME_TIMESTAMP",
             600,
+            again=True,
         )
         entries = sg.journal_entries(text)
         leave, end = self.seq_of(f"leave-{n}"), cursor.get("stepEnd")
@@ -2703,6 +2719,7 @@ class Gate:
             "journalctl -D /run/log/journal -k -b 0 -o json "
             "--output-fields=_SOURCE_MONOTONIC_TIMESTAMP,MESSAGE --no-pager",
             300,
+            again=True,
         )
         found = sg.cursor(
             records,
@@ -3479,7 +3496,7 @@ class Gate:
             self.check(
                 "every output of the guest reached the gate whole",
                 not self.torn,
-                self.torn[:20],
+                {"torn": self.torn[:20], "readAgain": self.read_again[:20]},
             )
             self.write()
         failed = [c["name"] for c in self.checks if not c["passed"]]

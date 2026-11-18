@@ -1344,7 +1344,9 @@ held. So the gate reads the kernel log in parts of at most 200 records, each
 ending with their number and their SHA-256, reads a part that does not reach
 it whole again, up to five times, and fails the run when one never does; the
 output of every other guest command it keeps ends with its SHA-256 too, and
-one that does not reach it whole fails the run. From the boot it counts from
+one that does not reach it whole fails the run, but for the reads of the
+decoy's journal and of auditd's log, the largest, which are read again first
+as a part of the kernel log is. From the boot it counts from
 on, the kernel's log buffer holds 16 MiB (`log_buf_len=16M`, which the gate
 checks on the kernel command line of each boot) instead of the 256 KiB of
 Fedora's kernel, so that a part read again is still there: one switch of this
