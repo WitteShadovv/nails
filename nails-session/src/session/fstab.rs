@@ -18,8 +18,8 @@
 //! fstab generator reads them ([`FstabEntry::has_named`],
 //! [`FstabEntry::yes_no_option`]): `noauto,auto=1` is `auto`, `nofail=1` is
 //! `nofail`, and `x-systemd.makefs=1` has the mount pull in its makefs. The
-//! policy leaves a line alone as never mounted only where NAILS reads every
-//! option it gives
+//! policy takes a `noauto` line for one the boot never mounts only where
+//! NAILS reads every option it gives
 //! ([`unread_fstab_options`](nails_base::hidden_root::separation::unread_fstab_options)).
 //!
 //! That parser reads some lines otherwise than systemd's fstab generator

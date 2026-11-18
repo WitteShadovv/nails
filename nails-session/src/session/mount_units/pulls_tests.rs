@@ -61,7 +61,8 @@ fn assert_has(text: &str, parts: &[&str]) {
     }
 }
 
-/// The noauto disk at /srv/b, which nothing keeps off.
+/// The noauto disk at /srv/b, which only the mask of a noauto line keeps
+/// off: a skip that pulls it in is masked, as next masked it.
 const NOAUTO_B: &str = "/dev/vdb1 /srv/b ext4 noauto 0 2\n";
 
 /// The fstab with the noauto disk at /srv/b and the disk at /srv/data, which
@@ -89,9 +90,10 @@ fn with_boot(decoy: &Decoy) {
 fn a_skip_that_pulls_in_a_decoy_mount_nothing_keeps_off_is_masked() {
     // systemd has a mount require the mount of its parent directory and,
     // unless it is a network filesystem that is no bind or loop mount, the
-    // mounts for its source. Each pulls in the noauto /srv/b, which the
-    // hidden systemd would mount read-write before the skip's condition is
-    // tested.
+    // mounts for its source. Each pulls in the noauto /srv/b, which only the
+    // mask of a noauto line keeps off: the skip is masked, as next masked it
+    // for a mount the hidden systemd would make read-write before the skip's
+    // condition is tested.
     for (line, how) in [
         (
             "/dev/vdc1 /srv/b/data ext4 defaults 0 2\n",
@@ -154,7 +156,10 @@ fn a_skip_that_pulls_in_a_decoy_mount_nothing_keeps_off_is_masked() {
         assert_eq!(warnings.len(), 1, "{line}: {warnings:?}");
         assert_has(
             &warnings[0],
-            &[how, "which the session does not keep off", "decoy's disk"],
+            &[
+                how,
+                "the mount of a noauto line of a decoy disk, which the session masks",
+            ],
         );
     }
     // A network filesystem's source is the server's: no pull.
@@ -736,10 +741,19 @@ fn a_skip_whose_pulls_mount_nothing_of_a_disk_stays_a_skip() {
         "/etc/systemd/system/srv-disk.mount",
         "[Mount]\nWhat=/dev/vdq1\nType=ext4\n",
     );
-    masked(
+    let warning = masked(
         &decoy,
         &data_requiring("srv-disk.mount"),
         MaskCause::PullsInMount,
+    );
+    // A unit file no target links is no fstab line the session masks.
+    assert_has(
+        &warning,
+        &[
+            "srv-disk.mount (x-systemd.requires= on its fstab line)",
+            "which the session does not keep off",
+            "the hidden systemd would mount it from the decoy's disk",
+        ],
     );
     assert_skipped(&decoy, "server:/srv/b /srv/data nfs defaults 0 0\n");
 }

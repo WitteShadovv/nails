@@ -11,7 +11,7 @@
 //! `noauto` says, and is kept off like any line the boot mounts
 //! ([`super::decide_all`]).
 
-use super::{Decision, NEVER_MOUNTED, Origin, Present, Units, gate};
+use super::{Decision, Origin, Present, Units, gate};
 use crate::session::fstab::{
     FstabEntry, escape_path, holds_a_backslash, may_be_required_by, mount_unit,
 };
@@ -56,10 +56,11 @@ struct Reach {
     sure: bool,
 }
 
-/// The decision for `entries[at]`, a `noauto` line left alone as never
-/// mounted ([`NEVER_MOUNTED`]), where the unit of another line that the boot
-/// starts ([`starts`]) needs its mount ([`need`]): the boot mounts that line
-/// whatever `noauto` says, so it is kept off. Every line that needs it is
+/// The decision for `entries[at]`, a `noauto` line masked as one nothing
+/// NAILS reads pulls in ([`super::NOAUTO_KEPT`]), where the unit of another line
+/// that the boot starts ([`starts`]) needs its mount ([`need`]): the boot
+/// mounts that line whatever `noauto` says, so it is kept off as a line the
+/// boot mounts is. Every line that needs it is
 /// read, and through the lines that require it in turn, every boot target
 /// that requires it, or may ([`boot_targets`]): where one does, or may, it is
 /// skipped if its device is there, and masked with a warning that the target
@@ -78,7 +79,7 @@ pub(super) fn needed_below(
     present: Present<'_>,
 ) -> Option<Decision> {
     let entry = &entries[at];
-    if !matches!(&decided[at], Decision::Leave { reason, .. } if *reason == NEVER_MOUNTED) {
+    if !decided[at].is_noauto_mask() {
         return None;
     }
     let needers = needers(entries, decided, at);
@@ -241,11 +242,10 @@ fn boot_targets(
 /// nothing; what a skip pulls in is walked in the unit pass
 /// ([`super::super::mount_units`]).
 fn starts(line: &FstabEntry, decision: &Decision) -> bool {
-    let left = match decision {
-        Decision::Leave { reason, .. } => *reason != NEVER_MOUNTED,
-        Decision::ReadOnlyBind { .. } | Decision::Overlay { .. } => true,
-        _ => false,
-    };
+    let left = matches!(
+        decision,
+        Decision::Leave { .. } | Decision::ReadOnlyBind { .. } | Decision::Overlay { .. }
+    );
     left && (!line.is_noauto() || !unread_fstab_options(line).is_empty())
 }
 

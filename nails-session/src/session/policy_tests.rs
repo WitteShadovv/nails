@@ -249,12 +249,13 @@ fn a_unit_no_boot_target_requires_stays_masked() {
 }
 
 #[test]
-fn ram_kernel_noauto_and_root_entries_are_left_alone() {
+fn ram_kernel_and_root_entries_are_left_alone() {
     for line in [
         "/dev/vda2 / ext4 defaults 0 1",
         "tmpfs /tmp tmpfs defaults 0 0",
+        "tmpfs /tmp/x tmpfs noauto 0 0",
         "share /mnt/share virtiofs defaults 0 0",
-        "/dev/sdb1 /mnt/usb vfat noauto 0 0",
+        "share2 /mnt/share2 virtiofs noauto 0 0",
         "overlay /var/cache overlay lowerdir=/usr,upperdir=/tmp/up,workdir=/tmp/w 0 0",
     ] {
         assert!(
@@ -262,6 +263,41 @@ fn ram_kernel_noauto_and_root_entries_are_left_alone() {
             "{line}: {:?}",
             decide_line(line)
         );
+    }
+}
+
+/// A noauto line of a decoy disk that nothing NAILS reads pulls in is masked,
+/// mount and automount, whatever pulls it in: a unit outside the fstab (a
+/// `Requires=` of a mount unit a target links) would have the hidden systemd
+/// mount the disk read-write. next left it as "noauto: never mounted". A
+/// bind and a source NAILS ties to no device (a ZFS dataset) are masked too.
+#[test]
+fn a_noauto_disk_line_is_masked_whatever_pulls_it() {
+    for (line, unit) in [
+        ("/dev/sdb1 /mnt/usb vfat noauto 0 0", "mnt-usb"),
+        ("UUID=1234 /srv/x ext4 noauto 0 2", "srv-x"),
+        ("/srv/a /srv/b none bind,noauto 0 0", "srv-b"),
+        ("tank/data /srv/tank zfs noauto 0 0", "srv-tank"),
+    ] {
+        let decision = decide_line(line);
+        assert!(decision.is_noauto_mask(), "{line}: {decision:?}");
+        assert_eq!(
+            decision.masked_units(),
+            [format!("{unit}.mount"), format!("{unit}.automount")],
+            "{line}"
+        );
+        assert_eq!(decision.warning(), None, "{line}");
+        assert_eq!(
+            decision.describe(),
+            format!(
+                "{}: masked (noauto, but a unit that pulls it in would have the hidden \
+                 session mount it read-write)",
+                parse_fstab(line)[0].file.display()
+            )
+        );
+        let kept = runtime_units(&parse_fstab(line), std::slice::from_ref(&decision));
+        assert_eq!(kept.masks, decision.masked_units(), "{line}");
+        assert!(kept.required_masks.is_empty(), "{line}");
     }
 }
 
@@ -317,10 +353,7 @@ fn every_entry_at_or_below_the_hidden_root_is_refused() {
         (vec!["dev-vdb2.swap".to_string()], vec![])
     );
     // A path that only begins with the root's name is not below it.
-    assert!(matches!(
-        decide_below("/mnt", "/dev/sdb4 /mnt2 ext4 noauto 0 0"),
-        Decision::Leave { .. }
-    ));
+    assert!(decide_below("/mnt", "/dev/sdb4 /mnt2 ext4 noauto 0 0").is_noauto_mask());
     assert_eq!(
         decide_below("/mnt", "/dev/sdb4 /mnt2 ext4 defaults,nofail 0 2").masked_units(),
         ["mnt2.mount"]
@@ -640,10 +673,7 @@ fn a_noauto_entry_a_named_unit_pulls_in_is_kept_off_not_left() {
             vec!["systemd-fsck@dev-vdb1.service".to_string()]
         )
     );
-    assert!(matches!(
-        decide_present("/dev/vdb1 /srv/x ext4 noauto 0 2"),
-        Decision::Leave { .. }
-    ));
+    assert!(decide_present("/dev/vdb1 /srv/x ext4 noauto 0 2").is_noauto_mask());
 }
 
 #[test]

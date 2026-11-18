@@ -1,6 +1,6 @@
 # The fstab policy reads each option of a line by its name, as systemd's fstab
-# generator reads it, and leaves a line alone as never mounted only where
-# NAILS reads every option it gives.
+# generator reads it, and takes a noauto line for one the boot never mounts
+# only where NAILS reads every option it gives.
 #
 # Six disks stand in for decoy disks the decoy does not mount now, five
 # with a decoy filesystem and one empty:

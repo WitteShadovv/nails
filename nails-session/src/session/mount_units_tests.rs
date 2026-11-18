@@ -1393,6 +1393,9 @@ fn a_ram_filesystem_over_a_disk_unit_s_mount_point_is_put_in_place_not_left_to_t
 #[path = "mount_units/pulls_tests.rs"]
 mod pulls_tests;
 
+#[path = "mount_units/noauto_tests.rs"]
+mod noauto_tests;
+
 /// Where the automount guard answers for the path of a unit file, a direct
 /// automount point there is neither a mask nor a link, since it is a
 /// directory, and the unit, which the guard does not let be read there, is

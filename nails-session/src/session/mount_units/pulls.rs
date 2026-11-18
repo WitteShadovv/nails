@@ -13,7 +13,9 @@
 //! A mount, swap or automount it reaches that the session neither keeps off nor
 //! puts in place, and that does not mount the root, a RAM or kernel filesystem
 //! or a host share, the hidden systemd would mount from the decoy's disk
-//! ([`fate`]): the skip is masked instead ([`super::kept_off`]). So it is where
+//! ([`fate`]): the skip is masked instead ([`super::kept_off`]). So it is
+//! where it reaches the mount of a `noauto` line that only the mask the
+//! session gives every such line keeps off (a disk of the decoy's), and where
 //! NAILS cannot tell all a unit on the way pulls in: a unit file it cannot
 //! read, a specifier it does not resolve, any specifier in an fstab option, a
 //! unit that does not load (a generator of the hidden session may make it; a
@@ -50,6 +52,10 @@ pub enum Fate {
     Absent,
     /// The session masks it: a unit that requires it does not start.
     Masked,
+    /// Only the mask of a `noauto` line that nothing NAILS reads pulls in
+    /// keeps it off ([`Graph::noauto`]): a disk of the decoy's that a skip
+    /// must not pull in.
+    NoautoMasked,
     /// The hidden systemd would mount it, or swap onto it, from the decoy's
     /// disk: nothing keeps it off.
     Mounted,
@@ -60,6 +66,9 @@ pub enum Fate {
 /// covers is judged by what its fstab lines or its unit files mount; one
 /// whose files cannot be read counts as one that mounts a disk.
 pub fn fate(graph: &Graph<'_>, pull: &str, masks: &[String]) -> Fate {
+    if graph.noauto.iter().any(|unit| unit == pull) {
+        return Fate::NoautoMasked;
+    }
     if masks.iter().any(|unit| unit == pull) {
         return Fate::Masked;
     }
@@ -154,6 +163,16 @@ pub fn walk(graph: &Graph<'_>, start: &str, masks: &[String]) -> Result<Vec<Stri
                             format!(
                                 "{start} pulls in {}, which the session does not keep off, and \
                                  the hidden systemd would mount it from the decoy's disk",
+                                chain(&reached, at)
+                            ),
+                            MaskCause::PullsInMount,
+                        ));
+                    }
+                    Fate::NoautoMasked => {
+                        return Err((
+                            format!(
+                                "{start} pulls in {}, the mount of a noauto line of a decoy disk, \
+                                 which the session masks",
                                 chain(&reached, at)
                             ),
                             MaskCause::PullsInMount,
