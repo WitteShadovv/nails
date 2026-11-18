@@ -46,12 +46,14 @@ the hidden root sent may be in the decoy's journal by any transport. The
 kernel's lines of a device-mapper teardown (:data:`DM_TEARDOWN`) are judged
 apart: they are the residue a hidden volume on device-mapper leaves. After
 the decoy's first line its service manager must not open journald's socket
-or its ``/dev/log`` socket anew (:data:`REOPENED`): a plain soft-reboot
-carries them listening, and their ``Listening on`` lines would tell a way
-back from it, unless the decoy's own shutdown had closed one already at the
-entry, which the hidden start then opened anew as well (PID 1 before
-systemd 258 fails a journald socket that receives anything once journald
-has stopped for a soft-reboot).
+or its ``/dev/log`` socket anew (:data:`REOPENED`), nor udevd's kernel or
+control socket (:data:`UDEV_REOPENED`): a plain soft-reboot carries them
+listening, and their ``Listening on`` lines would tell a way back from it,
+unless the decoy's own shutdown had closed one already at the entry, which
+the hidden start then opened anew as well (PID 1 before systemd 258 fails a
+journald socket that receives anything once journald has stopped for a
+soft-reboot). A network link the session leaves up (:func:`plant_link`),
+which the way back deletes, must leave no record in udevd's database.
 
 :func:`nextroot_left` reads what the switch left at ``/run/nextroot``.
 """
@@ -74,14 +76,18 @@ class Machine(Protocol):
 
 #: The hidden service manager's own last lines after the step: the end of the
 #: soft-reboot service (with its unit name, or its description alone, as
-#: NixOS logs it) and the switch, and the final kill of the helpers it forks
-#: to close a descriptor, which it starts after the step and which carry no
-#: name of the session. A plain soft-reboot logs them as well.
+#: NixOS logs it) and the switch, the final kill of the helpers it forks to
+#: close a descriptor, which it starts after the step, and the final kill of
+#: udevd and its workers, which the way back leaves running for the events
+#: its network restore causes, where the soft-reboot leaves udevd running (systemd
+#: before 258). None carries a name of the session, and a plain soft-reboot
+#: logs them as well.
 HIDDEN_PID1_LINES = (
     re.compile(r"systemd-soft-reboot\.service: Deactivated successfully\."),
     re.compile(r"Finished (systemd-soft-reboot\.service - )?Reboot System Userspace\."),
     re.compile(r"Soft-rebooting\."),
     re.compile(r"Sending SIGKILL to PID \d+ \(\(sd-close\)\)\."),
+    re.compile(r"Sending SIGKILL to PID \d+ \((systemd-udevd|\(udev-worker\))\)\."),
 )
 
 #: The decoy's service manager before its first line: it loads its SELinux
@@ -157,6 +163,32 @@ REOPENED = re.compile(
 def reopened_socket(text: str) -> str:
     """Which of journald's sockets a :data:`REOPENED` line opens."""
     return "dev-log" if "dev-log" in text or "/dev/log" in text else "journald"
+
+
+#: A service manager opening udevd's kernel or control socket, by unit name
+#: and description, or by its description alone. Before systemd 258 PID 1
+#: fails udevd's kernel socket when an event comes in while udevd is stopped
+#: inside a soft-reboot, and the decoy's start then opens it anew, which a
+#: plain soft-reboot does not.
+UDEV_REOPENED = re.compile(
+    r"systemd\[1\]: Listening on "
+    r"(systemd-udevd-(kernel|control)\.socket - )?udev (Kernel|Control) Socket\."
+)
+
+
+def reopened_udev_socket(text: str) -> str:
+    """Which of udevd's sockets a :data:`UDEV_REOPENED` line opens."""
+    return "udev-control" if "ontrol" in text else "udev-kernel"
+
+
+def reopened(text: str) -> str | None:
+    """Which socket of journald's or udevd's a ``Listening on`` line opens,
+    or None for any other line."""
+    if REOPENED.search(text):
+        return reopened_socket(text)
+    if UDEV_REOPENED.search(text):
+        return reopened_udev_socket(text)
+    return None
 
 
 #: An audit record's time stamp and serial, ``audit(1794677720.975:717)``.
@@ -327,20 +359,16 @@ def judge_records(
         (r for r in reversed(ring) if r.seq < at.seq and BANNER.search(r.text)), None
     )
     plain = {
-        reopened_socket(r.text)
+        reopened(r.text)
         for r in ring
-        if entered is not None
-        and entered.seq < r.seq < at.seq
-        and REOPENED.search(r.text)
+        if entered is not None and entered.seq < r.seq < at.seq
     }
     for record in ring:
-        if (
-            record.seq > banner.seq
-            and REOPENED.search(record.text)
-            and reopened_socket(record.text) not in plain
-        ):
+        socket = reopened(record.text) if record.seq > banner.seq else None
+        if socket is not None and socket not in plain:
+            owner = "udevd" if socket.startswith("udev") else "journald"
             verdict.findings.append(
-                f"the decoy's start opened journald's socket anew: {record.seq} "
+                f"the decoy's start opened {owner}'s socket anew: {record.seq} "
                 f"{record.text}"
             )
 
@@ -475,6 +503,30 @@ def plant(machine: Machine, mark: str, linger: str) -> None:
     )
 
 
+def plant_link(machine: Machine, link: str) -> None:
+    """In the hidden session, right before its way back: a network link the
+    session made and leaves up (a dummy link named ``link``), which the way
+    back's network restore deletes, and udevd's record of it, which udevd
+    removes when it handles the deletion. The record must be there now, or
+    its absence after the way back would prove nothing."""
+    machine.succeed(
+        f"ip link add {shlex.quote(link)} type dummy",
+        f"ip link set {shlex.quote(link)} up",
+        "udevadm settle -t 30",
+    )
+    if not udev_records_of(machine, link):
+        raise AssertionError(f"udevd keeps no record of the planted link {link}")
+
+
+def udev_records_of(machine: Machine, link: str) -> list[str]:
+    """The files of udevd's database that name the network link ``link``."""
+    return machine.succeed(
+        "grep -lsxE -e "
+        + shlex.quote(f"E:(INTERFACE|ID_NET_NAME)={re.escape(link)}")
+        + " /run/udev/data/n* || true"
+    ).split()
+
+
 def write_marker(machine: Machine, marker: str) -> None:
     """Write ``marker`` to the kernel log: a record of the session, which the
     decoy's journal must not hold."""
@@ -502,12 +554,14 @@ def judge(
     linger: str,
     uuid: str | None,
     ended_by_step: bool = True,
+    link: str | None = None,
 ) -> Verdict:
     """After the way back, on the decoy: judge its journal and what the
     lingering unit's stop wrote to ``/run`` (see the module docs). ``uuid``
     is the hidden filesystem's, or None. ``ended_by_step`` is false after an
     emergency, which ends the lingering unit before the way back's last
-    step."""
+    step. ``link`` is the network link :func:`plant_link` planted, or None:
+    no record of udevd's may name it after the way back."""
     machine.succeed("journalctl --sync")
     ring = parse_kmsg(machine.succeed(RING))
     entries = parse_journal(machine.succeed(JOURNAL))
@@ -525,6 +579,13 @@ def judge(
             f"{linger_file(linger)}, which the lingering unit's stop wrote, "
             "is still in /run"
         )
+    if link is not None:
+        records = udev_records_of(machine, link)
+        if records:
+            verdict.findings.append(
+                f"udevd's records of the session's link {link} are still in "
+                f"/run/udev: {records}"
+            )
     return verdict
 
 

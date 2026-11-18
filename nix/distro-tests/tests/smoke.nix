@@ -981,12 +981,15 @@ distroVm.buildVmTest {
 
     def plant_tail(label):
         # Right before a way back: what would reach the decoy's journal past
-        # the kmsg cursor or through journald's sockets (journal_tail), the
-        # in-session kernel marker, the hidden filesystem's UUID and whether
-        # the hidden volume is a device-mapper device.
+        # the kmsg cursor or through journald's sockets (journal_tail), a
+        # network link the session leaves up, which the way back deletes,
+        # the in-session kernel marker, the hidden filesystem's UUID and
+        # whether the hidden volume is a device-mapper device.
         mark = f"NAILSLATE{label}"
         linger = f"lngr{label}"
+        link = f"nlnk{label}"
         journal_tail.plant(vm, mark, linger)
+        journal_tail.plant_link(vm, link)
         uuid = vm.succeed("findmnt -rno UUID /mnt/data || true").strip() or None
         fstype = vm.succeed("findmnt -rno FSTYPE /mnt/data || true").strip()
         # The name check needs the UUID wherever the kernel would log it.
@@ -999,6 +1002,7 @@ distroVm.buildVmTest {
             "marker": marker,
             "mark": mark,
             "linger": linger,
+            "link": link,
             "uuid": uuid,
             "dm": dm,
             "sockets": sockets,
@@ -1020,8 +1024,9 @@ distroVm.buildVmTest {
         # hidden session past the kmsg cursor, nor anything the hidden root
         # sent journald's sockets after its journald stopped; the decoy's
         # start opened neither journald's socket nor its /dev/log socket
-        # anew; the plants ran, and
-        # what the lingering unit's stop wrote to /run is gone. The kernel's
+        # anew, nor udevd's sockets; the plants ran, and what the lingering
+        # unit's stop wrote to /run and udevd's record of the session's link
+        # are gone. The kernel's
         # lines of a device-mapper volume's teardown are the residue the
         # catalog names (kmsg-import). A line logged now reaches it.
         verdict = journal_tail.judge(
@@ -1031,6 +1036,7 @@ distroVm.buildVmTest {
             planted["linger"],
             planted["uuid"],
             ended_by_step,
+            planted["link"],
         )
         print(f"=== {where}: the kernel log from the step's start to the decoy's first line ===")
         print("\n".join(verdict.tail))
