@@ -387,8 +387,7 @@ as its cold boot did. That includes a device the decoy itself set up and left
 with its swap off, which the way back leaves reset. A device in use, one never
 set up and one that holds anything but a swap area are left alone. The reset
 logs the device's change of size in the kernel's ring buffer, before the way
-back takes the kernel log's cursor; in the Fedora admission gate's runs the
-decoy's journal still took that line in.
+back takes the kernel log's cursor.
 
 NAILS lists the decoy's unit directories and reads its unit files with
 `O_NOATIME`, which the kernel grants to root, and activation always runs as
