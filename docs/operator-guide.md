@@ -1268,11 +1268,13 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
 
   The access-time scenario of the distribution tests checks this on a Debian
   13 decoy mounted `relatime`, and on a Fedora 44 one with a test build that
-  admits Fedora: it ages every entry of the decoy disk, runs `check` and two
-  sessions with their ways back for an operator account named as `sudo`
-  names it (without starting `sudo`), lists the links and udevd's directories,
-  and fails on any other read of the decoy disk that a plain soft-reboot of
-  the decoy does not make. Mount the decoy root `noatime` to leave no access
+  admits Fedora: it ages every entry of the decoy disk but apt's
+  configuration and `/etc/selinux/config`, whose change times NAILS judges,
+  runs `check` and two sessions with their ways back for an operator account
+  named as `sudo` names it (without starting `sudo`), lists the links and
+  udevd's directories, and fails on any other read of the decoy disk that a
+  plain soft-reboot of the decoy does not make, though it may not see a read
+  of `/etc/selinux/config`. Mount the decoy root `noatime` to leave no access
   time at all, the links' included.
 - **No lookup that would mount an automount point.** A lookup that passes an
   automount point that nothing is mounted on yet mounts it: a direct or

@@ -1041,11 +1041,16 @@ the same logins on the decoy as the positive control.
 `access-times.nix` runs `tests/access-times.nix` on Debian 13, with the release
 binary, and on Fedora 44, with the test-only build that admits Fedora's row of
 the family table (`lib/admitted.nix`), as one host driver per image
-(`<image>-access-times`). It finds every read of the decoy disk that NAILS makes
+(`<image>-access-times`). It finds the reads of the decoy disk that NAILS makes
 and a plain soft-reboot does not, on a root mounted `relatime`: before each
 phase it sets the access time of every entry of the decoy disk's filesystems two
 days back, so that each read in the phase updates one, and after it lists the
-entries read and not changed since. Two plain soft-reboots of the decoy into
+entries read and not changed since. It leaves two places unaged whose change
+times NAILS judges, as the aging would have NAILS refuse the entry: apt's
+configuration, which NAILS compares with the start of Debian's
+unattended-upgrades helper (its entries still show a read, as their access times
+are older than a day), and `/etc/selinux/config`, which `lsm-status` compares
+with the boot (a read of it may not show). Two plain soft-reboots of the decoy into
 itself, one before and one after the sessions, each with the hidden root
 mounted as for a session, are the controls: what the decoy's own stop and start
 read. Every read in the window of `nails check` is
