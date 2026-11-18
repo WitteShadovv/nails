@@ -419,10 +419,8 @@ class LinkTest(unittest.TestCase):
             ):
                 with open(os.path.join(data, name), "w", encoding="utf-8") as handle:
                     handle.write(text)
-            self.assertEqual(
-                sorted(os.path.basename(f) for f in journal_tail.udev_records_of(machine, "nl1")),
-                ["n3", "n4"],
-            )
+            found = journal_tail.udev_records_of(machine, "nl1")
+            self.assertEqual(sorted(os.path.basename(f) for f in found), ["n3", "n4"])
 
     def test_the_plant_proves_udevd_recorded_its_link(self) -> None:
         with tempfile.TemporaryDirectory() as data:
@@ -431,7 +429,11 @@ class LinkTest(unittest.TestCase):
                 journal_tail.plant_link(machine, "nl1")
             self.assertEqual(
                 machine.commands[:3],
-                ["ip link add nl1 type dummy", "ip link set nl1 up", "udevadm settle -t 30"],
+                [
+                    "ip link add nl1 type dummy",
+                    "ip link set nl1 up",
+                    "udevadm settle -t 30",
+                ],
             )
             with open(os.path.join(data, "n3"), "w", encoding="utf-8") as handle:
                 handle.write("E:ID_NET_NAME=nl1\n")
