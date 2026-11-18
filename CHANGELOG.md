@@ -1136,6 +1136,29 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- NAILS reads the mount table byte for byte. One byte that is not valid UTF-8 anywhere in
+  `/proc/self/mountinfo` (in a mount point, a root, a source or an option) failed the whole read,
+  and most of its readers then took the table for empty: the last step before a switch saw no
+  `/run/nextroot` and did nothing on either direction, so a way back neither scrubbed `/run`, nor
+  put the decoy's records back, nor wrote the kmsg cursor, and an entry skipped the leftover guard.
+  A path now keeps every byte the kernel gives once its octal escapes are undone, and option text
+  keeps such a byte as an octal escape (`\377`), so no decision rests on a replaced byte. libmount's
+  `utab` lines and the copy of the mount table the entry keeps for the way back are read byte for
+  byte too. Where the mount table cannot be read at all, each safety path takes its fail-closed
+  end: the last step refuses the switch, and on the way back powers off first; the emergency, which
+  cannot tell then which side it runs on, powers off at once past PID 1's queue (or reboots, as
+  asked), and its JSON names the side `unknown`; `activate`, `deactivate`, `discard` and `recover`
+  refuse; the way back's preparation stops before it unmounts or mounts anything; the detach of
+  the next root and of the runtime directory detaches what it can but never takes the tree for
+  gone, so nothing below it is removed; and the read-only guard and the watcher's sweep keep
+  writable only the devices the session plan names. `status` reports the place as unknown and
+  names the mount table, the watcher sends one alert that it cannot see the disks, verify warns
+  that it cannot tell whether `/run/nextroot` is populated, `check` says it cannot tell how each
+  decoy filesystem would be handled, and the window refuses a menu entry's start, saying the table
+  could not be read. A btrfs decoy root whose subvolume name is not valid UTF-8 is refused, and so
+  is an overlay layer at such a path: the option text `mount(2)` takes cannot hold that name
+  unchanged. A btrfs mount whose `subvol=` holds an octal escape (a space in the subvolume's name)
+  now counts as that subvolume in the decoy-storage checks, as it already did for the way back.
 - The way back keeps more of the hidden session out of the decoy journal. PID 1 named every process
   of the session still running at the switch in `Sending SIGKILL to PID N (<name>)` lines after
   the kmsg cursor, and the kernel logged the hidden ext4 volume's `unmounting filesystem <UUID>`
@@ -1144,10 +1167,10 @@ of this changelog for that version becomes the release notes word for word, and
   message limit to zero. The `/run` scrub detaches the mounts below what it removes, such as the
   tmpfs NixOS's shutdown mounts at `/run/initramfs`, and PID 1 could log the end of that mount's
   unit after the cursor: the step now waits, for about two seconds at most, until PID 1 has taken
-  those units down. The line still follows the cursor where PID 1 has not by then, where
-  `systemctl` gives no answer or is missing, and for a mount point whose unit the wait cannot name
-  (a unit name of 256 characters or more, which PID 1 shortens with a hash). It leaves udevd
-  running, as before, for the events of the network restore, so
+  those units down, asking PID 1 for each unit by the name PID 1 gives it, also for a mount point
+  that is not valid UTF-8 or one whose unit name PID 1 shortens with a hash. The line still follows
+  the cursor where PID 1 has not by then, and where `systemctl` gives no answer or is missing. It
+  leaves udevd running, as before, for the events of the network restore, so
   where the soft-reboot leaves udevd running
   (as with systemd 257 and 255 on Debian 13 and Ubuntu 24.04) PID 1 still ends udevd and its
   workers after the cursor with the generic lines a plain soft-reboot logs. journald's sockets,
