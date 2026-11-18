@@ -21,7 +21,6 @@
 //! `$${` is no escape: Nix keeps both dollars and reads no interpolation.
 
 use super::nix_text::Context;
-use super::scan::Place;
 use std::ops::Range;
 
 /// One escape in a string: the bytes of the line it takes, and what Nix
@@ -123,14 +122,7 @@ impl Decoded {
                 .map(|(range, named)| (self.decoded(range), *named))
                 .collect(),
             arguments: context.arguments.iter().map(|r| self.decoded(r)).collect(),
-            places: context
-                .places
-                .iter()
-                .map(|place| Place {
-                    range: self.decoded(&place.range),
-                    ..place.clone()
-                })
-                .collect(),
+            defined: context.defined.iter().map(|r| self.decoded(r)).collect(),
         }
     }
 }

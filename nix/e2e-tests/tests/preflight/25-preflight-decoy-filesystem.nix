@@ -39,10 +39,10 @@
 #      line for /srv, whose mount is not there, and the fix keeps it, and a
 #      bind line of the fstab for the root's folder fails it as well, the fix
 #      removing it; for a bind of a folder of / the flag lets the
-#      decoy's line for / be as well, and suspicious-nails-reference lets be
-#      the label by which the decoy's /etc/nixos names the device it lies on,
-#      so check passes it (exit 0), while a line there that names the folder
-#      the root is still refuses it (exit 4);
+#      decoy's line for / be as well, while suspicious-nails-reference refuses
+#      that root (exit 4), as the decoy's /etc/nixos names the device it lies
+#      on by its label, with a fix that says the flag does not let that name
+#      be, and refuses a line there that names the folder the root is;
 #  10. a LUKS container file on /srv passes the hidden-volume check with a
 #      warning that names /srv and its copy-on-write snapshots;
 #  11. a LUKS volume on the separate data disk passes the hidden-volume check;
@@ -616,9 +616,9 @@ in
     with subtest("--allow-decoy-storage lets the line for / be for a bind of a folder of /"):
         # The decoy's line for / mounts the filesystem the root is part of,
         # and backend-entries lets it be. The decoy's /etc/nixos names that
-        # filesystem's device too, by the label nixos: the NixOS config check
-        # lets that name be, as one of the device the flag accepted the root
-        # on, and nothing refuses the root.
+        # filesystem's device too, by the label nixos, so the NixOS config
+        # check refuses the root for a reason of its own, which the flag does
+        # not cover.
         machine.succeed(
             "mkdir -p /var/lib/gate /mnt/rootbind && mount --bind /var/lib/gate /mnt/rootbind"
         )
@@ -627,14 +627,17 @@ in
             "--allow-decoy-storage"
         )
         result = run_command_capture("gate-root-bind", command)
-        assert_passes_with_the_flag(result, "/mnt/rootbind", "a bind mount of a folder of /", "/")
-        row = check_row(last_json(result), "suspicious-nails-reference")
-        assert row["status"] == "pass", row
-        assert row["message"].endswith(
-            "other than the device of the filesystem that --allow-decoy-storage accepted the "
-            "hidden root on, which the decoy mounts itself (1 line names that device)"
-        ), row
-        # The folder the root is, as / shows it, still refuses with the flag.
+        report = last_json(result)
+        assert_lets_the_decoys_line_be(report, "/mnt/rootbind", "a bind mount of a folder of /", "/")
+        failed = failed_rows(report)
+        assert [row["name"] for row in failed] == ["suspicious-nails-reference"], failed
+        assert "'/dev/disk/by-label/nixos'" in failed[0]["message"], failed
+        assert (
+            "--allow-decoy-storage does not make this check pass such a line"
+            in failed[0]["remediation"]
+        ), failed
+        assert_exit_code(result, 4)
+        # The folder the root is, as / shows it, refuses as well.
         machine.succeed(
             "echo '{ services.x.dataDir = \"/var/lib/gate\"; }' > /etc/nixos/gate.nix"
         )

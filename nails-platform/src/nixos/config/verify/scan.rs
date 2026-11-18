@@ -27,51 +27,12 @@
 //! lines keep no indentation of their own. A block whose lines are indented
 //! less than its first is not followed. Parentheses are not followed.
 //!
-//! In code, the scanner also notes each part of a value that is no plain
-//! literal ([`Unplain`]), so the check can tell an entry Nix may read
-//! otherwise than its text from one written out in full.
+//! The scanner also records the escapes of the strings and quoted attribute
+//! names it reads, in code and in comments ([`Scanner::escapes`]), and the
+//! attribute names each line defines ([`Scanner::defined`]).
 
 use super::escapes::{self, Escape};
 use std::ops::Range;
-
-/// A range of a line that the file defines something at: an attribute name
-/// being defined, or the text of a string in the value of a definition.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Place {
-    /// The range, without quotes.
-    pub(super) range: Range<usize>,
-    /// For an attribute name, the attribute path it ends
-    /// (`boot.initrd.luks.devices."root"` for `"root"`); for a string, the
-    /// path of the definition whose value holds it
-    /// (`fileSystems."/".device`), as the file spells it.
-    pub(super) path: Vec<String>,
-    /// An attribute name, not a string.
-    pub(super) attribute: bool,
-    /// Defined in code, outside a `let` block: a definition of the
-    /// configuration, not a comment or a binding.
-    pub(super) option: bool,
-}
-
-/// A part of a value, read in code, that is no plain literal, and the path
-/// it stands in: the definition whose value holds it, or the set or list
-/// whose attributes or elements it stands among. Plain are a `"…"` string
-/// that ends on its line and holds no interpolation (its escapes are
-/// plain), the brackets of a set or a list, the `;` that ends a
-/// definition, the attribute names being defined and, as the whole value
-/// of a definition other than a `device` or a `label`, `true`, `false` or
-/// a number. Everything else is noted: a name that refers to something, a
-/// function call, an operator, a parenthesis, an interpolation, a path, a
-/// `''…''` string, a string that goes on over the next line, a keyword
-/// (`let`, `if`, `with`, `inherit`, `rec`). Only the parts in a path below a
-/// `fileSystems` or `luks.devices` attribute are noted, outside a `let`
-/// block ([`Scanner::unplain`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Unplain {
-    /// The range of the line.
-    pub(super) range: Range<usize>,
-    /// The path, as the file spells it.
-    pub(super) path: Vec<String>,
-}
 
 /// What a range of a line names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,13 +81,9 @@ enum Frame {
     },
     /// An interpolation, `${ … }`.
     Interpolation,
-    /// A string: `''…''` when `indented`, else `"…"`. `opened`, for a
-    /// string the line being read opened: where its text starts, the path
-    /// of the definition whose value holds it, and whether that is a
-    /// definition of the configuration ([`Place::option`]).
+    /// A string: `''…''` when `indented`, else `"…"`.
     Str {
         indented: bool,
-        opened: Option<(usize, Vec<String>, bool)>,
     },
 }
 
@@ -170,22 +127,19 @@ pub(super) struct Scanner {
     comment: Option<Comment>,
     /// Inside a `/* … */` comment.
     in_block_comment: bool,
-    /// The places of the line read last ([`Scanner::places`]).
-    places: Vec<Place>,
+    /// The attribute names the line read last defines
+    /// ([`Scanner::defined`]).
+    defined: Vec<Range<usize>>,
     /// The escapes in the strings of the line read last
     /// ([`Scanner::escapes`]).
     escapes: Vec<Escape>,
-    /// The parts of the line read last that are no plain literal
-    /// ([`Scanner::unplain`]).
-    unplain: Vec<Unplain>,
 }
 
 impl Scanner {
-    /// The places of the line [`Scanner::line`] read last: each attribute
-    /// name it defines and each string it holds whole in the value of a
-    /// definition ([`Place`]).
-    pub(super) fn places(&mut self) -> Vec<Place> {
-        std::mem::take(&mut self.places)
+    /// The attribute names the line [`Scanner::line`] read last defines,
+    /// without quotes, in code and in comments, `let` bindings among them.
+    pub(super) fn defined(&mut self) -> Vec<Range<usize>> {
+        std::mem::take(&mut self.defined)
     }
 
     /// The escapes in the strings of the line [`Scanner::line`] read last,
@@ -195,38 +149,14 @@ impl Scanner {
         std::mem::take(&mut self.escapes)
     }
 
-    /// The parts of the line [`Scanner::line`] read last that are no plain
-    /// literal ([`Unplain`]), in code, where the path they stand in is below
-    /// a `fileSystems` attribute or a `luks.devices` attribute (or is one):
-    /// one for each run of such parts in the same path.
-    pub(super) fn unplain(&mut self) -> Vec<Unplain> {
-        std::mem::take(&mut self.unplain)
-    }
-
-    /// Note `range`, a part of the code that is no plain literal, in the
-    /// path the code's frames stand in, unless that is in a `let` block.
-    fn note(&mut self, range: Range<usize>) {
-        let path = context(&self.code.0);
-        if below_entries(path)
-            && !self.code.bound()
-            && self.unplain.last().is_none_or(|last| last.path != path)
-        {
-            self.unplain.push(Unplain {
-                range,
-                path: path.to_vec(),
-            });
-        }
-    }
-
     /// The ranges of `line` that name something ([`Named`]). `line` is read
-    /// as the file spells it: a keyword and an attribute name that leads to
-    /// a mapping are compared with any case, and [`Scanner::places`] keeps
-    /// the spelling.
+    /// as the file spells it, so an escape keeps its case (`\N` is no `\n`),
+    /// and a keyword and an attribute name that leads to a mapping are
+    /// compared in any case.
     pub(super) fn line(&mut self, line: &[u8]) -> Vec<(Range<usize>, Named)> {
         let mut names = Vec::new();
-        let mut places = Vec::new();
+        let mut defined = Vec::new();
         let mut escaped = Vec::new();
-        self.unplain.clear();
         let in_string = matches!(self.code.top(), Some(Frame::Str { .. }));
         let first = skip_blanks(line, 0);
         let indent = comment_text(line, first);
@@ -247,17 +177,13 @@ impl Scanner {
         let mut attribute = self.stack(in_comment).expects_attribute();
         let mut i = 0;
         while i < line.len() {
-            if let Some(Frame::Str { indented, .. }) = self.stack(in_comment).top() {
+            if let Some(Frame::Str { indented }) = self.stack(in_comment).top() {
                 let indented = *indented;
-                if !in_comment && line[i..].starts_with(b"${") {
-                    self.note(i..i + 2);
-                }
-                let (next, closed) = self.stack(in_comment).string(line, i, indented);
+                let next = self.stack(in_comment).string(line, i, indented);
                 let raw = i..next.min(line.len());
                 if let Some(text) = escapes::decode(&line[raw.clone()], indented) {
                     escaped.push(Escape { raw, text });
                 }
-                places.extend(closed);
                 i = next;
                 continue;
             }
@@ -294,15 +220,14 @@ impl Scanner {
                     continue;
                 }
                 attribute = false;
-                let (defined, named) = (places.len(), names.len());
-                let stack = self.stack(in_comment);
-                let option = !in_comment && !stack.bound();
-                if let Some((next, inherits)) =
-                    stack.definition(line, i, (indent, option), &mut names, &mut places)
+                let (attributes, named) = (defined.len(), names.len());
+                if let Some(next) =
+                    self.stack(in_comment)
+                        .definition(line, i, indent, &mut names, &mut defined)
                 {
-                    let quoted = places[defined..]
+                    // The escapes of the quoted names it defines or names.
+                    let quoted = defined[attributes..]
                         .iter()
-                        .map(|place| &place.range)
                         .chain(names[named..].iter().map(|(range, _)| range))
                         .filter(|range| range.start > 0 && line[range.start - 1] == b'"');
                     let mut ranges: Vec<Range<usize>> = quoted.cloned().collect();
@@ -311,34 +236,22 @@ impl Scanner {
                     for range in ranges {
                         escaped.extend(quoted_escapes(line, range));
                     }
-                    if inherits && !in_comment {
-                        self.note(i..i + b"inherit".len());
-                    }
                     i = next;
                     continue;
                 }
             }
             if is_token_start(line, i) {
                 let end = token_end(line, i);
-                if !in_comment && !self.code.plain_word(&line[i..end]) {
-                    self.note(i..end);
-                }
                 attribute = self.stack(in_comment).keyword(&line[i..end], indent);
                 i = end;
                 continue;
             }
-            let step = if line[i..].starts_with(b"${") || line[i..].starts_with(b"''") {
+            attribute = self.stack(in_comment).punctuation(line, i, indent);
+            i += if line[i..].starts_with(b"${") || line[i..].starts_with(b"''") {
                 2
             } else {
                 1
             };
-            if !in_comment && (step == 2 || !b"{}[];\" \t\r".contains(&line[i])) {
-                self.note(i..i + step);
-            }
-            attribute = self
-                .stack(in_comment)
-                .punctuation(line, i, indent, !in_comment);
-            i += step;
         }
         let ends = self
             .comment
@@ -349,29 +262,8 @@ impl Scanner {
         } else if let Some(comment) = &mut self.comment {
             comment.stack.end_strings(comment.base);
         }
-        // A string the next line goes on with is no plain literal, noted on
-        // the line that opened it, and a place on that line up to its end.
-        for (at, (frame, _)) in self.code.0.iter().enumerate() {
-            if let Frame::Str {
-                opened: Some((start, ..)),
-                ..
-            } = frame
-            {
-                let path = context(&self.code.0[..at]);
-                if below_entries(path) && !self.code.bound() {
-                    self.unplain.push(Unplain {
-                        range: *start..line.len(),
-                        path: path.to_vec(),
-                    });
-                }
-            }
-        }
-        places.extend(self.code.forget_openings(line.len()));
-        if let Some(comment) = &mut self.comment {
-            places.extend(comment.stack.forget_openings(line.len()));
-        }
         escaped.sort_by_key(|escape| escape.raw.start);
-        self.places = places;
+        self.defined = defined;
         self.escapes = escaped;
         names
     }
@@ -421,26 +313,6 @@ impl Stack {
         }
     }
 
-    /// Whether a `let` block is open: what is defined now is a binding.
-    fn bound(&self) -> bool {
-        self.0
-            .iter()
-            .any(|(frame, _)| matches!(frame, Frame::Attrs(Attrs { binding: true, .. })))
-    }
-
-    /// Whether the token `word`, read in code here, is a plain literal
-    /// ([`Unplain`]): `true`, `false` or a number as the whole value of a
-    /// definition other than a `device` or a `label`.
-    fn plain_word(&self, word: &[u8]) -> bool {
-        let literal = word == b"true" || word == b"false" || word.iter().all(u8::is_ascii_digit);
-        literal
-            && matches!(
-                self.top(),
-                Some(Frame::Attrs(Attrs { value: Some(path), .. }))
-                    if !path.last().is_some_and(|last| last == "device" || last == "label")
-            )
-    }
-
     /// Whether the innermost frame waits for an attribute.
     fn expects_attribute(&self) -> bool {
         matches!(self.top(), Some(Frame::Attrs(Attrs { value: None, .. })))
@@ -459,91 +331,50 @@ impl Stack {
     }
 
     /// One step inside the string that holds `i`: past an escape, into an
-    /// interpolation, or out of the string. Returns where to go on, and the
-    /// place of a string that ends here, where this line opened it.
-    fn string(&mut self, line: &[u8], i: usize, indented: bool) -> (usize, Option<Place>) {
+    /// interpolation, or out of the string. Returns where to go on.
+    fn string(&mut self, line: &[u8], i: usize, indented: bool) -> usize {
         let rest = &line[i..];
         if rest.starts_with(b"$$") {
-            return (i + 2, None);
+            return i + 2;
         }
         if rest.starts_with(b"${") {
             self.0.push((Frame::Interpolation, usize::MAX));
-            return (i + 2, None);
+            return i + 2;
         }
         if indented {
             if rest.starts_with(b"'''") || rest.starts_with(b"''$") {
-                return (i + 3, None);
+                return i + 3;
             }
             if rest.starts_with(b"''\\") {
-                return (i + 4, None);
+                return i + 4;
             }
             if rest.starts_with(b"''") {
-                return (i + 2, self.close_string(i));
+                self.0.pop();
+                return i + 2;
             }
         } else if rest[0] == b'\\' {
-            return (i + 2, None);
+            return i + 2;
         } else if rest[0] == b'"' {
-            return (i + 1, self.close_string(i));
+            self.0.pop();
         }
-        (i + 1, None)
+        i + 1
     }
 
-    /// Close the string on top, which ends at `end`: its place, where this
-    /// line opened it.
-    fn close_string(&mut self, end: usize) -> Option<Place> {
-        let (Frame::Str { opened, .. }, _) = self.0.pop()? else {
-            return None;
-        };
-        opened.map(|(start, path, option)| Place {
-            range: start..end,
-            path,
-            attribute: false,
-            option,
-        })
-    }
-
-    /// Forget where the open strings started, at the end of a line that is
-    /// `end` long: the next line goes on with them. Returns the place of
-    /// each one this line opened, up to the end of the line.
-    fn forget_openings(&mut self, end: usize) -> Vec<Place> {
-        let mut places = Vec::new();
-        for (frame, _) in &mut self.0 {
-            if let Frame::Str { opened, .. } = frame
-                && let Some((start, path, option)) = opened.take()
-            {
-                places.push(Place {
-                    range: start..end,
-                    path,
-                    attribute: false,
-                    option,
-                });
-            }
-        }
-        places
-    }
-
-    /// The byte at `i` outside a string and a token, read in code when
-    /// `code`: a bracket, a string's opening, a `;` or anything else.
-    /// Returns whether an attribute may start after it.
-    fn punctuation(&mut self, line: &[u8], i: usize, indent: usize, code: bool) -> bool {
+    /// The byte at `i` outside a string and a token: a bracket, a string's
+    /// opening, a `;` or anything else. Returns whether an attribute may
+    /// start after it.
+    fn punctuation(&mut self, line: &[u8], i: usize, indent: usize) -> bool {
         let rest = &line[i..];
         if rest.starts_with(b"${") {
             self.0.push((Frame::Interpolation, indent));
             return false;
         }
-        let option = code && !self.bound();
         if rest.starts_with(b"''") {
-            let opened = Some((i + 2, self.block_path(), option));
-            let indented = true;
-            self.0.push((Frame::Str { indented, opened }, indent));
+            self.0.push((Frame::Str { indented: true }, indent));
             return false;
         }
         match rest[0] {
-            b'"' => {
-                let opened = Some((i + 1, self.block_path(), option));
-                let indented = false;
-                self.0.push((Frame::Str { indented, opened }, indent));
-            }
+            b'"' => self.0.push((Frame::Str { indented: false }, indent)),
             b'{' => {
                 let attrs = Attrs {
                     path: self.block_path(),
@@ -644,18 +475,18 @@ impl Stack {
     }
 
     /// Read the definition that may start at `start` on a line indented by
-    /// `indent`: `inherit …;` or an attribute path and its `=`, whose places
-    /// are definitions of the configuration when `option`. Pushes what it
-    /// names to `names` and returns where to go on and whether it is an
-    /// `inherit`, or `None` when no definition starts there.
+    /// `indent`: `inherit …;` or an attribute path and its `=`. Pushes what
+    /// it names to `names` and the attribute names it defines to `defined`,
+    /// and returns where to go on, or `None` when no definition starts
+    /// there.
     fn definition(
         &mut self,
         line: &[u8],
         start: usize,
-        (indent, option): (usize, bool),
+        indent: usize,
         names: &mut Vec<(Range<usize>, Named)>,
-        places: &mut Vec<Place>,
-    ) -> Option<(usize, bool)> {
+        defined: &mut Vec<Range<usize>>,
+    ) -> Option<usize> {
         let attrs = self.attrs_mut()?;
         // The old list form's elements are no entries: `name` names one.
         let entries = !(attrs.in_list && names_entry(&attrs.path));
@@ -669,10 +500,7 @@ impl Stack {
                 .is_some_and(is_identifier_byte)
         {
             let entries = entries && names_entry(&attrs.path);
-            return Some((
-                inherit(entries, line, start + b"inherit".len(), names),
-                true,
-            ));
+            return Some(inherit(entries, line, start + b"inherit".len(), names));
         }
         let (components, end) = attribute_path(line, start)?;
         let next = skip_blanks(line, end);
@@ -690,12 +518,7 @@ impl Stack {
             if entries && names_entry(&full[..offset + index]) {
                 names.push((range.clone(), Named::Mapping));
             }
-            places.push(Place {
-                range,
-                path: full[..=offset + index].to_vec(),
-                attribute: true,
-                option,
-            });
+            defined.push(range);
         }
         let value = skip_blanks(line, next + 1);
         if let Some(named) = value_names(&full, attrs.in_list)
@@ -707,31 +530,8 @@ impl Stack {
         attrs.value_indent = indent;
         attrs.withs = 0;
         attrs.list_value = line.get(value) == Some(&b'[');
-        Some((next + 1, false))
+        Some(next + 1)
     }
-}
-
-/// The path that code read on top of `frames` stands in: the definition
-/// whose value is being read, or the set or list it is in.
-fn context(frames: &[(Frame, usize)]) -> &[String] {
-    frames
-        .iter()
-        .rev()
-        .find_map(|(frame, _)| match frame {
-            Frame::Attrs(attrs) => Some(attrs.value.as_deref().unwrap_or(&attrs.path)),
-            Frame::List { path, .. } => Some(path.as_slice()),
-            Frame::Interpolation | Frame::Str { .. } => None,
-        })
-        .unwrap_or(&[])
-}
-
-/// Whether `path` is below a `fileSystems` attribute or a `luks.devices`
-/// attribute, or is one: where an entry of the decoy's own may stand.
-fn below_entries(path: &[String]) -> bool {
-    path.iter().any(|part| part == "fileSystems")
-        || path
-            .windows(2)
-            .any(|pair| pair[0] == "luks" && pair[1] == "devices")
 }
 
 /// Read an `inherit` (`inherit data;`, `inherit (cfg) data;`) from `from`

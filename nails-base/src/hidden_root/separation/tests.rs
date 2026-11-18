@@ -14,8 +14,6 @@ use std::path::Path;
 mod extra;
 #[path = "member_lines_tests.rs"]
 mod member_lines;
-#[path = "own_tests.rs"]
-mod own_filesystem;
 #[path = "own_lines_tests.rs"]
 mod own_lines;
 #[path = "path_lines_tests.rs"]
@@ -24,6 +22,8 @@ mod path_lines;
 mod plain_lines;
 #[path = "reach_tests.rs"]
 mod reach;
+#[path = "root_place_tests.rs"]
+mod root_place;
 #[path = "stored_in_tests.rs"]
 mod stored_in;
 #[path = "write_options_tests.rs"]
@@ -245,11 +245,10 @@ impl World {
         self.ask(root, judge)
     }
 
-    /// The filesystem the root at `root` lies on where the decoy mounts
-    /// another part of it at `/` or at a system folder ([`own_filesystem`]).
-    fn own(&self, root: &str) -> Option<OwnFilesystem> {
+    /// The root's place in a filesystem the decoy uses ([`root_place`]).
+    fn place(&self, root: &str) -> Option<RootPlace> {
         self.ask(root, |scene, hidden| {
-            own_filesystem(scene, hidden, &judge(scene, hidden))
+            root_place(scene, hidden, &judge(scene, hidden))
         })
     }
 

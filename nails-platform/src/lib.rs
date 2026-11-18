@@ -42,7 +42,7 @@ pub use nixos::{
     NixOSBuilder, NixOSConfigInfo, NixParser, RealNixParser, ensure_hidden_configuration_module,
     ensure_hidden_hardware_configuration, inject_import_block, parse_check_composed_config,
     prepare_nixos_config_overlay, stage_hidden_config_symlink, stage_hidden_nixos_config,
-    verify_base_config_clean, verify_base_config_clean_allowing,
+    verify_base_config_clean, verify_base_config_clean_placed,
 };
 pub use platform::{
     ConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, Platform, PlatformKind, SelinuxMode,

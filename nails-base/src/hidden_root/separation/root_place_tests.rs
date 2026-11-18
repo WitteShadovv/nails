@@ -1,32 +1,20 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The filesystem a root that `--allow-decoy-storage` accepts as a folder or
-//! a subvolume of it lies on, where the decoy mounts another part of it at
-//! `/` or at a system folder: its devices, by name and number, and the names
-//! of the root's own folder and subvolume.
+//! The hidden root's place in a filesystem the decoy uses, for a root the
+//! judge makes a folder or a subvolume of it: the folders other mounts show
+//! it at, its path inside the filesystem and a subvolume's id.
 
 use super::*;
 
-fn device(name: &str, dev: &str) -> OwnDevice {
-    OwnDevice {
-        name: name.to_string(),
-        dev: dev.to_string(),
-    }
-}
-
 #[test]
-fn a_bind_of_a_folder_of_slash_lies_on_the_device_of_slash() {
-    let own = plain_decoy("5 1 8:1 /srv/x /mnt rw - ext4 /dev/sda1 rw\n")
-        .own("/mnt")
-        .expect("the filesystem of /");
+fn a_bind_of_a_folder_of_slash_is_placed_by_its_folder() {
+    let place = plain_decoy("5 1 8:1 /srv/x /mnt rw - ext4 /dev/sda1 rw\n")
+        .place("/mnt")
+        .expect("a folder of /");
     assert_eq!(
-        own,
-        OwnFilesystem {
-            how: Sharing::Bind,
-            at: PathBuf::from("/"),
-            root: PathBuf::from("/mnt"),
-            devices: vec![device("sda1", "8:1")],
+        place,
+        RootPlace {
             folders: vec![PathBuf::from("/srv/x")],
             inside: PathBuf::from("/srv/x"),
             btrfs: false,
@@ -51,15 +39,13 @@ fn beside_home(mounts: &str) -> World {
 }
 
 #[test]
-fn a_subvolume_beside_home_lies_on_the_device_of_home_and_is_named_by_its_path_and_id() {
-    let own = beside_home("").own("/mnt").expect("the btrfs of /home");
+fn a_subvolume_beside_home_is_placed_by_its_path_and_id() {
+    let place = beside_home("")
+        .place("/mnt")
+        .expect("a subvolume of the btrfs of /home");
     assert_eq!(
-        own,
-        OwnFilesystem {
-            how: Sharing::Subvolume,
-            at: PathBuf::from("/home"),
-            root: PathBuf::from("/mnt"),
-            devices: vec![device("sda2", "8:2")],
+        place,
+        RootPlace {
             folders: Vec::new(),
             inside: PathBuf::from("/vault"),
             btrfs: true,
@@ -69,15 +55,15 @@ fn a_subvolume_beside_home_lies_on_the_device_of_home_and_is_named_by_its_path_a
     // The filesystem's top mounted elsewhere shows the subvolume as a
     // folder there, and a mount of a folder inside it shows that folder: both
     // name the root. Another subvolume beside it names none of it.
-    let own = beside_home(
+    let place = beside_home(
         "6 1 0:40 / /media/top rw - btrfs /dev/sda2 rw,subvolid=5,subvol=/\n\
          7 1 0:40 /vault/inner /media/inner rw - btrfs /dev/sda2 rw,subvolid=300,subvol=/vault\n\
          8 1 0:40 /other /media/other rw - btrfs /dev/sda2 rw,subvolid=301,subvol=/other\n",
     )
-    .own("/mnt")
-    .expect("the btrfs of /home");
+    .place("/mnt")
+    .expect("a subvolume of the btrfs of /home");
     assert_eq!(
-        own.folders,
+        place.folders,
         [
             PathBuf::from("/media/top/vault"),
             PathBuf::from("/media/inner")
@@ -95,21 +81,18 @@ fn a_bind_of_a_folder_of_a_btrfs_root_subvolume_is_named_by_its_folder_and_path(
     .part("vda2", "253:2", "vda")
     .btrfs(&["vda2"])
     .fstab("/dev/vda2 / btrfs subvol=@ 0 0\n");
-    let own = world.own("/mnt").expect("the btrfs of /");
-    assert_eq!(own.how, Sharing::Bind);
-    assert_eq!(own.at, Path::new("/"));
-    assert_eq!(own.devices, [device("vda2", "253:2")]);
-    assert_eq!(own.folders, [PathBuf::from("/srv/x")]);
-    assert_eq!(own.inside, Path::new("/@/srv/x"));
-    assert_eq!(own.name(), "x");
-    assert!(own.btrfs);
+    let place = world.place("/mnt").expect("a folder of the btrfs of /");
+    assert_eq!(place.folders, [PathBuf::from("/srv/x")]);
+    assert_eq!(place.inside, Path::new("/@/srv/x"));
+    assert_eq!(place.name(), "x");
+    assert!(place.btrfs);
     // A bind has no subvolume id of its own: the id the mount shows is
     // that of the subvolume / shows, the decoy's own.
-    assert_eq!(own.subvolid, None);
+    assert_eq!(place.subvolid, None);
 }
 
 #[test]
-fn on_an_encrypted_decoy_the_root_lies_on_the_mapping_and_the_partition_below_it() {
+fn on_an_encrypted_decoy_a_folder_of_slash_is_placed_as_well() {
     let world = World::new(
         "1 0 254:0 / / rw - ext4 /dev/mapper/cryptroot rw\n\
          5 1 254:0 /srv/x /mnt rw - ext4 /dev/mapper/cryptroot rw\n",
@@ -120,19 +103,19 @@ fn on_an_encrypted_decoy_the_root_lies_on_the_mapping_and_the_partition_below_it
     .spec("UUID=e1", "nvme0n1p3")
     .fstab("/dev/mapper/cryptroot / ext4 defaults 0 1\n")
     .crypttab("cryptroot UUID=e1 none luks\n");
-    let own = world.own("/mnt").expect("the filesystem of /");
-    assert_eq!(
-        own.devices,
-        [device("dm-0", "254:0"), device("nvme0n1p3", "259:3")]
-    );
-    assert_eq!(own.at, Path::new("/"));
+    let place = world.place("/mnt").expect("a folder of /");
+    assert_eq!(place.folders, [PathBuf::from("/srv/x")]);
 }
 
+/// A root that is the whole filesystem, a volume of its own and a root
+/// whose storage the judge cannot read have no place; a folder of a drive
+/// the decoy mounts at a folder that is no system folder has one, as a
+/// folder of `/` has.
 #[test]
-fn no_filesystem_is_the_roots_own_unless_the_decoy_mounts_another_part_of_it_at_a_system_folder() {
+fn only_a_folder_or_subvolume_of_a_decoy_filesystem_has_a_place() {
     // The whole of /home at the root: the root is the filesystem itself.
     assert_eq!(
-        plain_decoy("5 1 8:2 / /mnt rw - ext4 /dev/sda2 rw\n").own("/mnt"),
+        plain_decoy("5 1 8:2 / /mnt rw - ext4 /dev/sda2 rw\n").place("/mnt"),
         None
     );
     // A folder of a drive the fstab mounts at /pool, no system folder.
@@ -151,32 +134,31 @@ fn no_filesystem_is_the_roots_own_unless_the_decoy_mounts_another_part_of_it_at_
         "{:?}",
         pool.verdict("/mnt")
     );
-    assert_eq!(pool.own("/mnt"), None);
+    assert_eq!(
+        pool.place("/mnt").map(|place| place.folders),
+        Some(vec![PathBuf::from("/pool/x")])
+    );
     // A volume of its own on another drive.
     assert_eq!(
         plain_decoy("5 1 8:17 / /mnt rw - ext4 /dev/sdb1 rw\n")
             .disk("sdb", "8:16")
             .part("sdb1", "8:17", "sdb")
-            .own("/mnt"),
+            .place("/mnt"),
         None
     );
     // Inputs that could not be read: the judge cannot tell.
     assert_eq!(
         plain_decoy("5 1 8:1 /srv/x /mnt rw - ext4 /dev/sda1 rw\n")
             .unreadable("/etc/crypttab")
-            .own("/mnt"),
+            .place("/mnt"),
         None
     );
-    // No device of it known by its number: nothing to tell its names by.
-    let mut world = plain_decoy("5 1 8:1 /srv/x /mnt rw - ext4 /dev/sda1 rw\n");
-    world.devices.by_dev.clear();
-    assert_eq!(world.own("/mnt"), None);
 }
 
-/// A subvolume whose id the mount table gives as no number could be named
-/// by it unseen: nothing is the decoy's own.
+/// A subvolume whose id the mount table gives as no number keeps its place
+/// by its path, with no id.
 #[test]
-fn a_subvolume_whose_id_cannot_be_read_is_no_filesystem_of_the_decoys_own() {
+fn a_subvolume_whose_id_cannot_be_read_is_placed_without_an_id() {
     let world = World::new(
         "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
          2 1 0:40 /home /home rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n\
@@ -198,5 +180,9 @@ fn a_subvolume_whose_id_cannot_be_read_is_no_filesystem_of_the_decoys_own() {
         "{:?}",
         world.verdict("/mnt")
     );
-    assert_eq!(world.own("/mnt"), None);
+    let place = world
+        .place("/mnt")
+        .expect("a subvolume of the btrfs of /home");
+    assert_eq!(place.inside, Path::new("/vault"));
+    assert_eq!(place.subvolid, None);
 }

@@ -201,11 +201,8 @@ impl Allow {
     }
 }
 
-/// The gate's refusal of `root` for `kind`, with no filesystem placed.
-fn refuse(
-    kind: RefusalKind,
-    root: &Path,
-) -> Result<(Assessment, Option<separation::OwnFilesystem>)> {
+/// The gate's refusal of `root` for `kind`, with no place of the root.
+fn refuse(kind: RefusalKind, root: &Path) -> Result<(Assessment, Option<separation::RootPlace>)> {
     Ok((Assessment::Refused(Refusal::new(kind, root)), None))
 }
 
@@ -250,14 +247,13 @@ impl HiddenRoot {
         Ok(Self::assess_placing(fs, root)?.0)
     }
 
-    /// [`assess`](Self::assess), and the filesystem its judge placed the
-    /// root on as a folder or a subvolume of it, while the decoy itself
-    /// mounts another part of that filesystem at `/` or at a system folder
-    /// ([`separation::judge_storage_owning`]), whatever the verdict became.
+    /// [`assess`](Self::assess), and the root's place in a filesystem the
+    /// decoy uses that its judge made it a folder or a subvolume of
+    /// ([`separation::judge_storage_placing`]), whatever the verdict became.
     fn assess_placing<F: Filesystem>(
         fs: &F,
         root: &Path,
-    ) -> Result<(Assessment, Option<separation::OwnFilesystem>)> {
+    ) -> Result<(Assessment, Option<separation::RootPlace>)> {
         if root.as_os_str().is_empty() {
             return refuse(RefusalKind::NotConfigured, root);
         }
@@ -318,11 +314,11 @@ impl HiddenRoot {
         }
 
         let mut warning = None;
-        let mut own = None;
+        let mut place = None;
         if !in_session {
             let (judgement, placed) =
-                separation::judge_storage_owning(fs, &table, visible, Path::new("/"));
-            own = placed;
+                separation::judge_storage_placing(fs, &table, visible, Path::new("/"));
+            place = placed;
             match (judgement.verdict.severity(), judgement.verdict) {
                 (_, separation::Verdict::CouldNotJudge { unreadable }) => {
                     return refuse(RefusalKind::StorageUnjudged { unreadable }, root);
@@ -341,7 +337,7 @@ impl HiddenRoot {
                 (severity, verdict) => {
                     let refusal = Refusal::new(RefusalKind::DecoyStorage { verdict }, root);
                     if severity == separation::Severity::Refuse {
-                        return Ok((Assessment::Refused(refusal), own));
+                        return Ok((Assessment::Refused(refusal), place));
                     }
                     warning = Some(refusal);
                 }
@@ -354,14 +350,19 @@ impl HiddenRoot {
 
         Ok((
             warning.map_or(Assessment::Attached, Assessment::Warned),
-            own,
+            place,
         ))
     }
 
     /// [`assess`](Self::assess), with the refusals `allow` covers turned into
     /// [`Assessment::Warned`].
     pub fn assess_allowing<F: Filesystem>(fs: &F, root: &Path, allow: Allow) -> Result<Assessment> {
-        Ok(allowing(Self::assess(fs, root)?, allow))
+        Ok(match Self::assess(fs, root)? {
+            Assessment::Refused(refusal) if allow.covers(&refusal.kind) => {
+                Assessment::Warned(refusal)
+            }
+            other => other,
+        })
     }
 
     /// Decide whether `root` is a mounted hidden volume NAILS may write to:
@@ -465,48 +466,21 @@ impl HiddenRoot {
         found_elsewhere(fs, root, true)
     }
 
-    /// The filesystem the root at `root` lies on, where `allow` is
-    /// `--allow-decoy-storage` and the attach gate accepts the root with it,
-    /// [`assess_allowing`](Self::assess_allowing) warning that it lies on a
-    /// filesystem the decoy uses ([`RefusalKind::DecoyStorage`]), as a folder
-    /// or a btrfs subvolume of that filesystem while the decoy itself mounts
-    /// another part of it at `/` or at a system folder
-    /// ([`separation::own_filesystem`]). The decoy's own configuration names
-    /// that filesystem's devices for its own mounts. The gate's own
-    /// assessment decides, in one reading of the mount table and the judge's
-    /// inputs, which gives the devices as well. `None` in every other case:
-    /// without the flag, for a root the gate refuses or attaches without a
-    /// warning, for a whole-filesystem root, and in the hidden session.
+    /// The hidden root's place in a filesystem the decoy uses, where the
+    /// attach gate's judge makes the root at `root` a folder or a btrfs
+    /// subvolume of it ([`separation::root_place`]), with
+    /// `--allow-decoy-storage` or without it: the gate's own assessment
+    /// decides, in one reading of the mount table and the judge's inputs.
+    /// `None` in every other case: for a root on storage of its own, for a
+    /// whole-filesystem root, for a root the gate refuses for another reason
+    /// than the decoy's storage (storage it cannot judge among them), and in
+    /// the hidden session.
     ///
     /// # Errors
     ///
     /// As [`assess`](Self::assess).
-    pub fn own_filesystem<F: Filesystem>(
-        fs: &F,
-        root: &Path,
-        allow: Allow,
-    ) -> Result<Option<separation::OwnFilesystem>> {
-        if allow != Allow::DecoyStorage {
-            return Ok(None);
-        }
-        let (assessment, own) = Self::assess_placing(fs, root)?;
-        let accepted = matches!(
-            allowing(assessment, allow),
-            Assessment::Warned(Refusal {
-                kind: RefusalKind::DecoyStorage { .. },
-                ..
-            })
-        );
-        Ok(own.filter(|_| accepted))
-    }
-}
-
-/// `assessment`, with the refusal `allow` covers turned into
-/// [`Assessment::Warned`].
-fn allowing(assessment: Assessment, allow: Allow) -> Assessment {
-    match assessment {
-        Assessment::Refused(refusal) if allow.covers(&refusal.kind) => Assessment::Warned(refusal),
-        other => other,
+    pub fn root_place<F: Filesystem>(fs: &F, root: &Path) -> Result<Option<separation::RootPlace>> {
+        Ok(Self::assess_placing(fs, root)?.1)
     }
 }
 

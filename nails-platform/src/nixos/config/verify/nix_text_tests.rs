@@ -15,7 +15,7 @@ fn found(pattern: &Pattern, text: &str) -> Option<String> {
         let context = Context {
             names: scanner.line(line.as_bytes()),
             arguments: shell.line(line.as_bytes()),
-            places: scanner.places(),
+            defined: scanner.defined(),
         };
         lines.push((line, context));
     }

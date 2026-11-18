@@ -170,222 +170,37 @@ fn ordinary_definitions_name_nothing() {
     }
 }
 
-/// Every place of `text`, read as the file spells it, as (line, text,
-/// path joined by `.`, attribute).
-fn places(text: &str) -> Vec<(usize, String, String, bool)> {
+/// Every attribute name each line of `text` defines, as (line, text).
+fn defined(text: &str) -> Vec<(usize, String)> {
     let mut scanner = Scanner::default();
     let mut found = Vec::new();
     for (index, line) in text.split('\n').enumerate() {
         scanner.line(line.as_bytes());
-        for place in scanner.places() {
-            found.push((
-                index + 1,
-                line[place.range].to_string(),
-                place.path.join("."),
-                place.attribute,
-            ));
+        for range in scanner.defined() {
+            found.push((index + 1, line[range].to_string()));
         }
     }
     found
 }
 
-/// Each attribute name a definition makes, with the path it ends, and each
-/// string the value of a definition holds whole on its line, with the
-/// definition's path: in nested sets, after a function call, in a list, in
-/// a comment, and with the case the file gives them.
+/// Each attribute name a definition makes, without quotes, as the file
+/// spells it: in nested sets, in a comment and in a `let` binding; a name
+/// that is only referred to is none.
 #[test]
-fn places_carry_the_path_of_their_definition() {
-    let text = "{\n  fileSystems.\"/\" =\n    { device = \"/dev/vda2\";\n      options = [ \"subvol=@\" ];\n    };\n  boot.initrd.luks.devices.root.device = lib.mkForce \"/dev/sda2\";\n  # fileSystems.\"/home\".label = \"nixos\";\n}";
-    let found = places(text);
-    let strings: Vec<(usize, &str, &str)> = found
-        .iter()
-        .filter(|(_, _, _, attribute)| !attribute)
-        .map(|(line, text, path, _)| (*line, text.as_str(), path.as_str()))
-        .collect();
+fn the_attribute_names_a_line_defines_are_recorded() {
+    let text = "{\n  fileSystems.\"/\" =\n    { device = \"/dev/vda2\"; };\n  # services.btrbk.Subvolume.\"@vault\" = { };\n  x = let vault = 1; in pkgs.vault;\n}";
     assert_eq!(
-        strings,
+        defined(text),
         [
-            (3, "/dev/vda2", "fileSystems./.device"),
-            (4, "subvol=@", "fileSystems./.options"),
-            (6, "/dev/sda2", "boot.initrd.luks.devices.root.device"),
-            (7, "nixos", "fileSystems./home.label"),
+            (2, "fileSystems".to_string()),
+            (2, "/".to_string()),
+            (3, "device".to_string()),
+            (4, "services".to_string()),
+            (4, "btrbk".to_string()),
+            (4, "Subvolume".to_string()),
+            (4, "@vault".to_string()),
+            (5, "x".to_string()),
+            (5, "vault".to_string()),
         ]
     );
-    assert!(found.contains(&(
-        6,
-        "root".to_string(),
-        "boot.initrd.luks.devices.root".to_string(),
-        true
-    )));
-    assert!(found.contains(&(2, "/".to_string(), "fileSystems./".to_string(), true)));
-}
-
-/// A string that goes on over several lines is a place only on the line
-/// that opens it, up to the end of that line, and not a whole one; one
-/// inside an interpolation or a `let` binding is no place of the definition
-/// around it: the interpolation's string has no path, the binding's its own.
-#[test]
-fn a_string_over_lines_or_in_an_interpolation_is_no_place_of_the_definition() {
-    let text = "{\n  x.device = ''\n    /dev/vda2\n  '';\n  y.device = \"${\"/dev/vda2\"}\";\n  z = let d = \"/dev/vda2\"; in d;\n}";
-    let found = places(text);
-    let strings: Vec<(usize, String, String)> = found
-        .into_iter()
-        .filter(|(_, _, _, attribute)| !attribute)
-        .map(|(line, text, path, _)| (line, text, path))
-        .collect();
-    assert_eq!(
-        strings,
-        [
-            (2, String::new(), "x.device".to_string()),
-            (5, "/dev/vda2".to_string(), String::new()),
-            (5, "${\"/dev/vda2\"}".to_string(), "y.device".to_string()),
-            (6, "/dev/vda2".to_string(), "d".to_string()),
-        ]
-    );
-    // The binding's string is no definition of the configuration.
-    let option = options(text);
-    assert_eq!(option[1], [true, true, true]);
-    assert_eq!(option[5], [true, false, false]);
-}
-
-/// Whether each place of each line of `text` is a definition of the
-/// configuration ([`Place::option`]).
-fn options(text: &str) -> Vec<Vec<bool>> {
-    let mut scanner = Scanner::default();
-    text.split('\n')
-        .map(|line| {
-            scanner.line(line.as_bytes());
-            scanner.places().iter().map(|place| place.option).collect()
-        })
-        .collect()
-}
-
-/// A place in a comment or in a `let` block, also one a value opened, is no
-/// definition of the configuration; one in code after the `in` is.
-#[test]
-fn a_place_in_a_comment_or_a_binding_is_no_option() {
-    let text = "{\n  # a.device = \"/dev/vda2\";\n  b = let c.device = \"/dev/vda2\"; in 1;\n  d = let e = { f.device = \"x\"; }; in e;\n  g.device = \"/dev/vda2\"; # h = \"y\";\n}";
-    let option = options(text);
-    assert_eq!(option[1], [false, false, false]);
-    assert_eq!(option[2], [true, false, false, false]);
-    assert_eq!(option[3], [true, false, false, false, false]);
-    assert_eq!(option[4], [true, true, true, false, false]);
-}
-
-/// The parts of each line of `text` that are no plain literal
-/// ([`super::Unplain`]), with the path each stands in.
-fn unplain(text: &str) -> Vec<(usize, String, String)> {
-    let mut scanner = Scanner::default();
-    let mut found = Vec::new();
-    for (index, line) in text.split('\n').enumerate() {
-        scanner.line(line.as_bytes());
-        for part in scanner.unplain() {
-            found.push((index, line[part.range].to_string(), part.path.join(".")));
-        }
-    }
-    found
-}
-
-/// The form `nixos-generate-config` writes has no part that is no plain
-/// literal: strings, lists of strings, sets, and `true`, `false` or a number
-/// as a whole value. Code outside `fileSystems` and `luks.devices` is not
-/// noted, nor is a comment.
-#[test]
-fn a_generated_entry_is_plain() {
-    let text = "{ config, lib, pkgs, modulesPath, ... }:\n{\n  imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];\n  fileSystems.\"/\" =\n    { device = \"/dev/disk/by-uuid/x\";\n      fsType = \"btrfs\";\n      options = [ \"subvol=@\" \"compress=zstd\" ];\n      neededForBoot = true; # needed (early)\n    };\n  boot.initrd.luks.devices.\"luks-x\".device = \"/dev/disk/by-uuid/y\";\n  boot.initrd.luks.devices.\"luks-x\".keyFileSize = 4096;\n  swapDevices = [ ];\n  networking.useDHCP = lib.mkDefault true;\n  /* fileSystems.\"/\".device = f x; */\n}";
-    assert_eq!(unplain(text), []);
-}
-
-/// Every other part of a value below `fileSystems` or `luks.devices` is
-/// noted, with the path it stands in: a reference, a call, an operator, a
-/// parenthesis, an interpolation in a string or as a name, a path, a
-/// `''…''` string, a string that goes on over the next line, a keyword, an
-/// `inherit`, and `true` or a number in a list or as a `device`.
-#[test]
-fn every_other_part_of_an_entry_is_noted() {
-    for (text, part, path) in [
-        (
-            "fileSystems.\"/\".device = lib.mkForce \"/dev/x\";",
-            "lib.mkForce",
-            "fileSystems./.device",
-        ),
-        (
-            "fileSystems.\"/\".device = config.fileSystems.\"/\".device;",
-            "config.fileSystems.",
-            "fileSystems./.device",
-        ),
-        (
-            "fileSystems.\"/\".options = [ (\"subvol=@va\") + \"ult\" ];",
-            "(",
-            "fileSystems./.options",
-        ),
-        (
-            "fileSystems.\"/\".options = [ (if true then \"a\" else \"b\") ];",
-            "(",
-            "fileSystems./.options",
-        ),
-        (
-            "fileSystems.\"/\".device = \"/dev/${x}\";",
-            "${",
-            "fileSystems./.device",
-        ),
-        (
-            "fileSystems.\"/\" = { ${x} = \"a\"; };",
-            "${",
-            "fileSystems./",
-        ),
-        (
-            "fileSystems.\"/\".device = /dev/x;",
-            "/",
-            "fileSystems./.device",
-        ),
-        (
-            "fileSystems.\"/\".device = ''/dev/x'';",
-            "''",
-            "fileSystems./.device",
-        ),
-        (
-            "fileSystems.\"/\".device = \"/dev/x",
-            "/dev/x",
-            "fileSystems./.device",
-        ),
-        (
-            "fileSystems.\"/\" = let d = \"x\"; in { device = d; };",
-            "let",
-            "fileSystems./",
-        ),
-        (
-            "fileSystems.\"/\" = { inherit device; };",
-            "inherit",
-            "fileSystems./",
-        ),
-        (
-            "fileSystems.\"/\".options = [ true ];",
-            "true",
-            "fileSystems./.options",
-        ),
-        (
-            "fileSystems.\"/\".device = true;",
-            "true",
-            "fileSystems./.device",
-        ),
-        ("fileSystems.\"/\".label = 5;", "5", "fileSystems./.label"),
-        (
-            "fileSystems = lib.mkForce { };",
-            "lib.mkForce",
-            "fileSystems",
-        ),
-        (
-            "boot.initrd.luks.devices.x.device = \"/dev/sdb2\" + \"0\";",
-            "+",
-            "boot.initrd.luks.devices.x.device",
-        ),
-    ] {
-        let found = unplain(text);
-        assert_eq!(
-            found.first(),
-            Some(&(0, part.to_string(), path.to_string())),
-            "{text}"
-        );
-    }
 }

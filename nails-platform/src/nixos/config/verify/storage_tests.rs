@@ -7,8 +7,8 @@ use super::*;
 use crate::filesystem::MockFilesystem;
 use nails_base::filesystem::parse_mountinfo;
 
-#[path = "own_storage_tests.rs"]
-mod own;
+#[path = "place_tests.rs"]
+mod place;
 
 const DM0: &str = "/sys/devices/virtual/block/dm-0";
 const DM1: &str = "/sys/devices/virtual/block/dm-1";

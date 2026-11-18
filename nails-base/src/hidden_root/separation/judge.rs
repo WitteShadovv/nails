@@ -47,11 +47,10 @@ pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
         return Judgement {
             verdict: Verdict::Separate,
             entries: Vec::new(),
-            own_place: None,
         };
     }
     let (top, stack) = hidden_stack(scene.devices, hidden);
-    let (claims, entries, own_place) = claims(scene, hidden, &stack);
+    let (claims, entries) = claims(scene, hidden, &stack);
     let verdict = if scene.unreadable.is_empty() {
         verdict(scene, hidden, top.as_deref(), &stack, &claims)
     } else {
@@ -59,11 +58,7 @@ pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
             unreadable: scene.unreadable.to_vec(),
         }
     };
-    Judgement {
-        verdict,
-        entries,
-        own_place,
-    }
+    Judgement { verdict, entries }
 }
 
 /// The block devices the decoy claims as its own storage when [`judge`]
@@ -489,14 +484,12 @@ fn claimed_holder(claims: &[Claim], devices: &DeviceMap, holder: &MountEntry) ->
     })
 }
 
-/// The decoy's claims, its entries for the hidden drive, and where it
-/// mounts another part of the filesystem a folder or a subvolume root is part
-/// of at `/` or at a system folder ([`Judgement::own_place`]).
+/// The decoy's claims, and its entries for the hidden drive.
 fn claims(
     scene: &Scene<'_>,
     hidden: &MountEntry,
     stack: &[String],
-) -> (Vec<Claim>, Vec<EntryFinding>, Option<PathBuf>) {
+) -> (Vec<Claim>, Vec<EntryFinding>) {
     let devices = scene.devices;
     let mut claims = Vec::new();
     let mut entries = Vec::new();
@@ -671,7 +664,7 @@ fn claims(
         &mut claims,
         &mut entries,
     );
-    (claims, entries, own_place)
+    (claims, entries)
 }
 
 /// The hidden root's devices, by which the entries for the hidden drive are
