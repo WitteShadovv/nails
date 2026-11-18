@@ -30,6 +30,23 @@ def quiet(call: Any, *args: Any) -> Any:
         return call(*args)
 
 
+class SocketLabelTest(unittest.TestCase):
+    def test_only_a_service_s_send_to_journald_s_socket_waits(self) -> None:
+        def avc(signature: str, source: str = "other") -> dict[str, Any]:
+            return {"signature": signature, "source": source}
+
+        oomd = "kernel {sendto} systemd-oomd systemd_oomd_t syslogd_t unix_dgram_socket"
+        self.assertTrue(fg.sends_to_journald(avc(oomd)))
+        for other in (
+            avc(oomd, "nails"),
+            avc("kernel {write} x x_t syslogd_t unix_dgram_socket"),
+            avc("kernel {sendto} x x_t kernel_t unix_dgram_socket"),
+            avc("kernel {sendto} x x_t syslogd_t unix_stream_socket"),
+            avc(""),
+        ):
+            self.assertFalse(fg.sends_to_journald(other), other)
+
+
 class PrepareTest(unittest.TestCase):
     def test_every_start_takes_the_gate_s_kernel_log_settings(self) -> None:
         for key, value in sg.KMSG_SETTINGS:

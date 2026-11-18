@@ -381,6 +381,15 @@ DISK_FSTYPES = ("btrfs", "ext4", "xfs", "vfat")
 # compress, and its exit status when it names one and finds nothing.
 COMPRESSED_BLIND_SPOT = "compresses file contents"
 SCAN_WARNINGS_EXIT = 9
+# What a check depends on that the build does not have yet. The way back
+# opens journald's sockets again, and the new native socket carries
+# journald's label (syslogd_t): a confined service of the decoy that sends to them from then
+# on logs a denial the boot's sockets did not give it (residue catalog row
+# journal-socket-carry).
+NEEDS_SOCKET_LABEL = (
+    "journald's sockets opened again at the way back with a label the decoy's "
+    "services may send to, as to those of the boot"
+)
 TUNED_DROPIN = "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n"
 # What PID 1 logs when the policy of the root it starts in is not loaded, and
 # when a policy is.
@@ -611,6 +620,21 @@ def reopened_sockets(records: Iterable[Mapping[str, Any]], after: int) -> list[s
         for record in sorted(records, key=lambda r: int(r["seq"]))
         if int(record["seq"]) > after and _REOPENED.search(str(record["msg"]))
     ]
+
+
+def sends_to_journald(avc: Mapping[str, Any]) -> bool:
+    """Whether the denial ``avc`` is a datagram sent to a socket of
+    journald's (``{sendto}`` on a ``syslogd_t`` ``unix_dgram_socket``) by a
+    process that is not NAILS's: what a decoy service does where the way back
+    made journald's sockets anew (:data:`NEEDS_SOCKET_LABEL`)."""
+    parts = str(avc.get("signature", "")).split()
+    return (
+        avc.get("source") != "nails"
+        and len(parts) >= 6
+        and parts[1] == "{sendto}"
+        and parts[-2] == "syslogd_t"
+        and parts[-1] == "unix_dgram_socket"
+    )
 
 
 def pid_range(pid: int) -> tuple[int, int]:
@@ -2761,6 +2785,9 @@ class Gate:
                     f"no new denial from {where} on",
                     not new,
                     [f"{a['signature']} ({a['why']}, {a['log']} log)" for a in new],
+                    NEEDS_SOCKET_LABEL
+                    if new and all(sends_to_journald(a) for a in new)
+                    else "",
                 )
                 if label is None:
                     continue
