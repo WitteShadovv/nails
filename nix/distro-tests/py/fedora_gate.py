@@ -447,6 +447,15 @@ TIMER_STAMPS = "/var/lib/systemd/timers"
 # How far apart, in seconds, a change and a run of a timer's unit may be and
 # still count as that run's: PID 1 gives the times of a run to the second.
 TIMER_SLACK = 1.0
+# How long, in seconds, a path must stay unchanged right before the gate
+# starts a timer's unit once more by hand, and at least as long right after,
+# to count as changed by that start: a path another writer changes then is not
+# the unit's.
+TIMER_QUIET = 30
+# The parts of what the gate's start of a timer's unit by hand prints: the
+# changes in the quiet time before it, those from the start until it returned,
+# and those in the quiet time after it.
+RERUN_PARTS = ("# before", "# rerun", "# after")
 # A timer of the decoy's own that the gate adds before the first entry, the
 # positive control of the comparison's reading of the decoy's timers: it
 # triggered last before the time it is set to, so the next start of PID 1 that
@@ -644,6 +653,21 @@ def file_times(text: str) -> dict[str, tuple[float, float]]:
     return found
 
 
+def timer_run_counts(run: Mapping[str, Any], lower: float) -> bool:
+    """Whether ``run`` (one of :func:`timer_runs`) may explain a change: it
+    started at or after ``lower``, it has ended, and its timer triggered it,
+    as the timer's last trigger came when the run started. A run something
+    else started, one still going, or one from before ``lower`` explains
+    nothing."""
+    last = run.get("last")
+    return (
+        run["start"] >= lower
+        and run["end"] is not None
+        and last is not None
+        and abs(last - run["start"]) <= TIMER_SLACK
+    )
+
+
 def timer_explained(
     paths: Iterable[str],
     timers: Mapping[str, Any],
@@ -652,19 +676,19 @@ def timer_explained(
     with the unit or timer that explains it. ``timers`` is what the gate took
     of the decoy's timers right after the listing of the changes: ``lower``,
     the time from which a run counts (after the hidden session's last mark,
-    for a way back), ``now``, ``runs`` (:func:`timer_runs`), ``times``
-    (:func:`file_times`) and ``reruns``, each unit's own changes when the gate
-    started it once more by hand.
+    for a way back), ``runs`` (:func:`timer_runs`), ``times``
+    (:func:`file_times`) and ``reruns``, the paths each unit changed when the
+    gate started it once more by hand and nothing else changed in the quiet
+    times around that start (:func:`rerun_changes`).
 
-    A path counts as a run's when that run started at or after ``lower`` and
-    the path's inode changed while it ran, and either the unit's run by hand
-    changed the path too, or the path is the stamp of the run's persistent
-    timer, dated at its trigger, which came while the run did. A path with no
-    times, one no run started that changed it, or one changed only outside the
-    run of the unit, is not explained: a write of the session or of NAILS on
-    the decoy disk shows."""
+    A path counts as a run's when that run counts (:func:`timer_run_counts`)
+    and the path's inode changed while it ran, and either the unit's run by
+    hand changed the path too, or the path is the stamp of the run's
+    persistent timer, dated at its trigger. A path with no times, one no
+    counting run changed, or one changed only outside the run of the unit, is
+    not explained: a write of the session or of NAILS on the decoy disk
+    shows."""
     lower = float(timers.get("lower") or 0.0)
-    now = timers.get("now")
     runs = timers.get("runs") or []
     times = timers.get("times") or {}
     reruns = timers.get("reruns") or {}
@@ -674,26 +698,45 @@ def timer_explained(
             continue
         changed, modified = times[path]
         for run in runs:
-            start = run["start"]
-            end = run["end"] if run["end"] is not None else now
-            if start < lower or end is None:
+            if not timer_run_counts(run, lower):
                 continue
+            start, end = run["start"], run["end"]
             if not start - TIMER_SLACK <= changed <= end + TIMER_SLACK:
                 continue
             if path in reruns.get(run["unit"], ()):
                 found[path] = run["unit"]
                 break
-            last = run["last"]
             if (
                 run["persistent"]
                 and path == f"{TIMER_STAMPS}/stamp-{run['timer']}"
-                and last is not None
-                and start - TIMER_SLACK <= last <= end + TIMER_SLACK
-                and abs(modified - last) <= TIMER_SLACK
+                and abs(modified - run["last"]) <= TIMER_SLACK
             ):
                 found[path] = run["timer"]
                 break
     return found
+
+
+def rerun_changes(out: str, mount_points: Iterable[str] = ()) -> list[str]:
+    """The paths the gate's start of a timer's unit by hand changed, from what
+    that start printed (:data:`RERUN_PARTS`): those listed from the start
+    until it returned, less every path listed in the quiet time before or
+    after it, which another writer changed. Output without all three parts
+    gives no path."""
+    parts: dict[str, list[str]] = {}
+    current = None
+    for line in out.splitlines():
+        line = line.strip()
+        if line in RERUN_PARTS:
+            current = line
+            parts[current] = []
+        elif current is not None:
+            parts[current].append(line)
+    if any(part not in parts for part in RERUN_PARTS):
+        return []
+    before, rerun, after = (
+        changed_paths("\n".join(parts[part]), mount_points) for part in RERUN_PARTS
+    )
+    return sorted(rerun - before - after)
 
 
 def decoy_reference(
@@ -1684,11 +1727,32 @@ class Gate:
     def decoy_timers(self, label: str, lower: float) -> None:
         """What the decoy's own timers did around the switch of ``label``,
         taken right after the listing of its changes on the decoy disk: the
-        last run of each that PID 1 reports, the times of each path the
+        last run of each that PID 1 reports, once every run started since
+        ``lower`` has ended (two minutes at most), the times of each path the
         listing has that no control taken so far has, and, for each unit whose
-        run held such a change, that unit's changes when the gate starts it
-        once more by hand (:func:`timer_explained` reads them)."""
+        counting run (:func:`timer_run_counts`) held such a change, the paths
+        that unit changed when the gate started it once more by hand
+        (:func:`rerun_changes`; :func:`timer_explained` reads them)."""
         runs, now = timer_runs(self.fact(f"decoy-timers-{label}", DECOY_TIMERS))
+        going = sorted(
+            {
+                run["unit"]
+                for run in runs
+                if run["start"] >= lower and run["end"] is None
+            }
+        )
+        if going:
+            units = " ".join(shlex.quote(unit) for unit in going)
+            self.vm.execute(
+                f"for i in $(seq 120); do busy=0; for u in {units}; do "
+                'case "$(systemctl show -P ActiveState "$u")" in '
+                "inactive|failed) ;; *) busy=1 ;; esac; done; "
+                '[ "$busy" = 0 ] && break; sleep 1; done',
+                timeout=180,
+            )
+            runs, now = timer_runs(
+                self.fact(f"decoy-timers-ended-{label}", DECOY_TIMERS)
+            )
         known: set[str] = set()
         for other, paths in self.disk.items():
             if "control" in other and other != label:
@@ -1708,32 +1772,38 @@ class Gate:
             )
         reruns: dict[str, list[str]] = {}
         for run in runs:
-            end = run["end"] if run["end"] is not None else now
-            if run["start"] < lower or end is None or run["unit"] in reruns:
+            if not timer_run_counts(run, lower) or run["unit"] in reruns:
                 continue
             held = [
                 path
                 for path, (changed, _) in times.items()
-                if run["start"] - TIMER_SLACK <= changed <= end + TIMER_SLACK
+                if run["start"] - TIMER_SLACK <= changed <= run["end"] + TIMER_SLACK
             ]
             if not held:
                 continue
-            # Once the unit's own run has ended, the gate starts it and lists
-            # what changed from then on.
+            # Once the unit's own run has ended, the gate lists what changes in
+            # a quiet time, starts the unit, lists what changed from then on,
+            # and lists what changes in a quiet time as long as the start
+            # took, TIMER_QUIET at least.
             unit = shlex.quote(run["unit"])
+            before, during, after = RERUN_PARTS
             out = self.fact(
                 f"timer-rerun-{label}-{run['unit']}",
                 f"for i in $(seq 120); do s=$(systemctl show -P ActiveState {unit}); "
                 'case "$s" in inactive|failed) break ;; esac; sleep 1; done; '
-                "since=$(date +%s.%N); "
+                f"quiet=$(date +%s.%N); sleep {TIMER_QUIET}; echo '{before}'; "
+                + disk_listing('"$quiet"')
+                + "; since=$(date +%s.%N); "
                 f"timeout 300 systemctl start {unit}; echo rc=$?; "
-                + disk_listing('"$since"'),
-                600,
+                f"ended=$(date +%s.%N); echo '{during}'; "
+                + disk_listing('"$since"')
+                + "; d=$(( ${ended%.*} - ${since%.*} + 1 )); "
+                f'[ "$d" -ge {TIMER_QUIET} ] || d={TIMER_QUIET}; sleep "$d"; '
+                f"echo '{after}'; "
+                + disk_listing('"$ended"'),
+                1200,
             )
-            listed = [line for line in out.splitlines() if line.startswith("/")]
-            reruns[run["unit"]] = sorted(
-                changed_paths("\n".join(listed), self.other_mounts())
-            )
+            reruns[run["unit"]] = rerun_changes(out, self.other_mounts())
         self.timers[label] = {
             "lower": lower,
             "now": now,
