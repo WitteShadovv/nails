@@ -816,12 +816,17 @@ fn a_noauto_line_only_an_unread_option_may_pull_in_may_leave_a_target_unreached(
     );
 
     // A line read first through an unread option and then through a chain
-    // NAILS reads: the target requires the noauto line all the same.
+    // NAILS reads: the target requires the noauto line all the same, and the
+    // reason names the line that surely needs its mount, not the first.
     let twice = "/dev/vdx1 /x ext4 noauto 0 0\n\
                  tmpfs /a tmpfs nofail,comment=p\\040q 0 0\n\
                  tmpfs /m tmpfs nofail,x-systemd.requires=/x,x-systemd.requires=/a 0 0\n\
                  tmpfs /t tmpfs x-systemd.requires=/m 0 0\n";
     let absent = decide_fstab(twice, false);
+    assert_eq!(
+        reason(&absent[0]),
+        "noauto, but the line for /m needs its mount, so the boot mounts it"
+    );
     let Decision::Mask { unreached, .. } = &absent[0] else {
         panic!("{absent:?}");
     };
