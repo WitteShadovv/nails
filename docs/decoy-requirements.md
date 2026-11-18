@@ -29,9 +29,8 @@ The decoy also has to be one the session can enter and leave:
   NixOS configuration, or the session could not leave).
 - **Linux 6.1 or newer** (`kernel-version`). NAILS starts the programs it runs
   as root with every mount `noatime`, and makes the decoy's mounts `noatime`
-  while the service manager reads them, through `mount_setattr` (Linux 5.12),
-  and it knows that FUSE keeps root out of a user's FUSE mount by FUSE's
-  `allow_sys_admin_access` parameter (Linux 6.0). The default kernel of each
+  while the service manager reads them, through `mount_setattr` (Linux 5.12).
+  The default kernel of each
   release above is new enough; a NixOS decoy that boots an older long-term
   kernel is refused, and so is a kernel whose release `check` cannot read or
   tell the version of. The check names the running release and the floor.

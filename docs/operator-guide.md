@@ -229,11 +229,9 @@ Keep all of it `root`-owned on the hidden volume.
    requirements](decoy-requirements.md#fail-closed-activation-is-refused)),
    `systemd-version` (254 or newer), `kernel-version` (Linux 6.1 or newer,
    read from the kernel without starting a program: NAILS changes mounts
-   with `mount_setattr`, which Linux 5.12 added, and knows that FUSE keeps
-   root out of a user's FUSE mount by FUSE's `allow_sys_admin_access`
-   parameter, which Linux 6.0 added; an older kernel, or a release it cannot
-   read or tell the version of, fails it, naming the running release and the
-   floor), `soft-reboot-units` (the units that
+   with `mount_setattr`, which Linux 5.12 added; an older kernel than 6.1,
+   or a release it cannot read or tell the version of, fails it, naming the
+   running release and the floor), `soft-reboot-units` (the units that
    implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
    root can be mounted again by device for the way back), `session-state` (no
    session and no leftovers of an interrupted one), `shutdown-inhibitors` (no
@@ -1195,43 +1193,33 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     manager, which then works out its taint list as well and reads
     `/etc/os-release` and `/etc/adjtime` for it;
   - from the moment activation has the service manager reload its units to
-    the end of its preparation, every mount that keeps access times is
-    `noatime`: the reload makes PID 1 run every generator and read every unit
+    the end of its preparation, the decoy's local disk mounts that keep
+    access times (which ones, below) are `noatime`: the reload makes PID 1 run every generator and read every unit
     file again, each mount activation makes shows to PID 1 as a unit (a bind
     of the root's device makes it read `blockdev@.target`), and a drop-in
     activation writes makes it list the unit directories again. Activation
     ends its preparation with a second reload, so PID 1 has taken all of it
     in before each mount gets its own mode back, a bind made meanwhile the
-    mode of the mount it copies. A mount that another mount covers, so that
-    a lookup of its mount point leads elsewhere or nowhere, is left as it is,
-    since no lookup reaches it. So is a user's FUSE mount that the
-    kernel keeps root out of, such as the desktop's `gvfsd-fuse` and
-    document portal in `/run/user/UID`, an AppImage's `squashfuse` or an
-    `sshfs`: of type `fuse`, `fuse.*` or `fuseblk`, mounted without
-    `allow_other` for a user or a group other than root's, refusing NAILS'
-    look at it with `EACCES` or `EPERM`, on a kernel whose FUSE parameter
-    `allow_sys_admin_access` is off, its default. FUSE then refuses PID 1,
-    which runs as root, the same, so PID 1 reads nothing there. A mount at or
-    below such a FUSE mount whose mount point NAILS' lookup cannot reach,
-    refused with `EACCES` or `EPERM`, is left as it is too, such as an fstab
-    mount inside a home that a user's FUSE mount covers: PID 1's lookup
-    stops in FUSE the same way. Where FUSE has no `allow_sys_admin_access`
-    parameter, as before Linux 6.0, activation refuses at such a mount and
-    names the parameter: NAILS needs Linux 6.1 or newer, which the
-    `kernel-version` check asks for (see step 1 above). While it makes the
-    mounts `noatime`, activation asks no FUSE daemon and no network server
-    anything, so a dead or hung one neither stops nor holds it: it looks
-    each mount up from the kernel's caches alone (`openat2` with
-    `RESOLVE_CACHED`), and in full only where no FUSE or network mount is
-    on the way, reads the mount's ID from `/proc/self/fdinfo`, and
-    asks a FUSE mount only FUSE's owner check, with `AT_STATX_DONT_SYNC`. A
-    mount that a FUSE or network mount covers is left as it is. Where the
-    caches cannot answer the lookup of a mount mounted inside a FUSE or
-    network mount, such as a disk mounted inside an `sshfs` or an NFS
-    share, activation refuses and names both: a full lookup would ask that
-    mount. Activation
-    refuses, naming the mount and its type, where it cannot make another
-    mount `noatime`. It refuses as well where it runs in a user namespace of
+    mode of the mount it copies. These are the mounts of local disk
+    filesystems (ext4, xfs, btrfs, f2fs, vfat and the other local disk
+    filesystems NAILS lists) whose mount points a lookup reaches through
+    local filesystems alone: local disk filesystems, the kernel's in-memory
+    ones such as tmpfs and proc, and read-only images such as squashfs.
+    NAILS decides which they are from `/proc/self/mountinfo` alone. A FUSE
+    mount (`fuse`, `fuse.*`, `fuseblk`), a network or cluster filesystem's
+    (NFS, SMB, 9p, virtiofs and the like), a mount of any type NAILS does
+    not list as local (an overlay, an automount point, an unknown type),
+    and every mount inside one of them, by the mount table's parents, or
+    below its mount point keep their access-time mode, as earlier releases
+    left every mount. NAILS never looks them up, opens or stats them, nor
+    anything inside them, so a dead or hung FUSE daemon neither makes this
+    step refuse nor makes it wait. Access times on a FUSE or network mount
+    are its daemon's or its server's to keep, which a mount flag on this
+    side does not change. A mount that another mount covers, so that a
+    lookup of its mount point leads elsewhere or nowhere, is left as it is,
+    since no lookup reaches it. Activation refuses, naming the mount and
+    its type, where it cannot look up a mount it must change or make it
+    `noatime`. It refuses as well where it runs in a user namespace of
     its own, which may not change the system's mounts. Before it changes a mount
     it writes the mount and its mode to the session plan: where activation is
     killed before it gives the modes back, `nails recover` gives them back
@@ -1252,6 +1240,10 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     (the units enabled, the masks): no open flag covers a link on the way;
   - the files modprobe and udevd read for the overlay module's first load,
     where it is not loaded yet (see above);
+  - what the service manager reads during activation on a mount the quiet
+    mounts leave out (see above): a mount of a type NAILS does not list as
+    local, or a disk mounted inside or below a FUSE, network, overlay,
+    automount or unknown mount;
   - the directories udevd lists for its rules and link files, which it does
     whenever it handles a kernel event, whatever made the event, every three
     seconds at most;
