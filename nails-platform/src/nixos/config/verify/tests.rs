@@ -453,6 +453,98 @@ fn commented_out_blocks_as_tools_write_them_are_refused() {
     }
 }
 
+/// A keyword in a commented-out block is read in any case, as it was when
+/// the scan read lowercased text: `INHERIT`, `Inherit`, `WITH` and `LET …
+/// IN` still lead to the mapping's name, on one line and over several, and
+/// so do the keywords in lower case and an attribute path in upper case.
+#[test]
+fn a_keyword_in_a_comment_is_read_in_any_case() {
+    for (content, line, text) in [
+        (
+            "{ }\n# boot.initrd.luks.devices = { inherit data; };\n",
+            2,
+            "data",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = { INHERIT data; };\n",
+            2,
+            "data",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = { Inherit data; };\n",
+            2,
+            "data",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = {\n#   INHERIT data;\n# };\n",
+            3,
+            "data",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = with lib; mkForce { data = { }; };\n",
+            2,
+            "data",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = WITH lib; mkForce { data = { }; };\n",
+            2,
+            "data",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = WITH lib;\n#   mkForce {\n#     data = { };\n#   };\n",
+            4,
+            "data",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = LET x = 1; IN { data = { }; };\n",
+            2,
+            "data",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = let x = 1; in { data = { }; };\n",
+            2,
+            "data",
+        ),
+        (
+            "{ }\n# BOOT.INITRD.LUKS.DEVICES.DATA.DEVICE = \"/dev/x\";\n",
+            2,
+            "DATA",
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = [ { NAME = \"data\"; } ];\n",
+            2,
+            "data",
+        ),
+        (
+            "{ }\n# fileSystems.\"/x\".ENCRYPTED.LABEL = \"data\";\n",
+            2,
+            "data",
+        ),
+        (
+            "let\n  In = 1;\n  x = In;\n  luks.devices.data = { };\nin { }\n",
+            4,
+            "data",
+        ),
+        (
+            "{\n  x = With;\n  boot.initrd.luks.devices.data = { };\n}\n",
+            3,
+            "data",
+        ),
+        (
+            "{\n  x = Let;\n  boot.initrd.luks.devices.data = { };\n}\n",
+            3,
+            "data",
+        ),
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(
+            only_reference(&scan),
+            (line, text, ReferenceKind::MapperName),
+            "{content}"
+        );
+    }
+}
+
 /// cryptsetup's other names for an open and a close: `create`, the obsolete
 /// plain open that takes the name first, and the `…Close` forms. Each is
 /// refused as `open` and `close` are, in a script and in a comment.
