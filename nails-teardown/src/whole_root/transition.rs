@@ -32,7 +32,7 @@
 //!   ([`crate::whole_root::network`]), give the decoy's `utab` lines back to
 //!   the decoy mounts the way back restored, leave the line that removes the
 //!   empty `/run/nextroot` at the decoy's start, end what process of the
-//!   session started since, empty journald's sockets and open them again, and
+//!   session started since, empty journald's sockets in place, and
 //!   quiet an ext4 hidden volume's unmount line ([`crate::whole_root::tail`]), write the kmsg cursor and,
 //!   last, set the kernel's process-number counter back to where the decoy's
 //!   own boot numbered its units ([`crate::whole_root::fresh_pids`]).
@@ -387,9 +387,11 @@ pub struct Env {
     pub network_tools: Option<network::NetTools>,
     /// How the way back powers off when it cannot put the network state back.
     pub power_off: PowerOff,
-    /// Where the way back ends the session's last processes and quiets the
-    /// hidden filesystem before the kmsg cursor ([`tail`]); `None` skips
-    /// both, as every test does: the real step kills processes.
+    /// Where the way back ends the session's last processes, empties
+    /// journald's sockets and quiets the hidden filesystem before the kmsg
+    /// cursor ([`tail`]); `None` skips the three. A test gives it a fake
+    /// procfs or none: the real places kill processes and read PID 1's
+    /// sockets.
     pub tail: Option<tail::Places>,
     /// What gives the copy the way back leaves for the decoy's first start
     /// the label the plan records ([`Plan::program_label`]), and tells the
@@ -476,8 +478,8 @@ pub enum Outcome {
         network: network::Kept,
         /// What became of the process-number counter ([`fresh_pids::lower`]).
         pids: fresh_pids::Lowered,
-        /// The `systemctl` calls that emptied journald's sockets and store
-        /// and did not succeed ([`tail::empty_journal_sockets`]).
+        /// What did not succeed of emptying journald's sockets and store
+        /// ([`tail::settle_journal_sockets`], [`tail::drain_journal_sockets`]).
         journal: Vec<String>,
     },
     /// `/run/nextroot` was populated but not armed for this transition, or
@@ -886,18 +888,20 @@ fn end_session_leftovers(env: &Env, plan: &Plan) {
 
 /// The last steps before the kmsg cursor ([`tail`]): end once more what PID 1
 /// would still kill at the switch, which finds nothing after the way back's
-/// first pass unless a process started since; then empty journald's sockets
-/// and descriptor store and open its sockets again, and quiet the hidden
-/// ext4 filesystem, whose unmount follows the switch. `sockets` are the
-/// journald sockets the decoy had listening at the entry. Returns the
-/// `systemctl` calls on journald's sockets that did not succeed.
-fn finish_tail(env: &Env, plan: &Plan, sockets: Option<&[&'static str]>) -> Vec<String> {
+/// first pass unless a process started since; then drop journald's
+/// descriptor store and put its socket units as the decoy had them, empty
+/// journald's sockets in place once the session's last writer is gone, and
+/// quiet the hidden ext4 filesystem, whose unmount follows the switch.
+/// `sockets` are the journald socket units the decoy had active at the
+/// entry. Returns what did not succeed of the work on journald's sockets.
+fn finish_tail(env: &Env, plan: &Plan, sockets: Option<&[String]>) -> Vec<String> {
     end_session_leftovers(env, plan);
-    let journal = match &env.systemctl {
-        Some(systemctl) => tail::empty_journal_sockets(systemctl, sockets),
+    let mut journal = match &env.systemctl {
+        Some(systemctl) => tail::settle_journal_sockets(systemctl, sockets),
         None => vec!["no systemctl".to_string()],
     };
     if let Some(places) = &env.tail {
+        journal.extend(tail::drain_journal_sockets(places).failed);
         let _ = tail::quiet_hidden_unmount(places, plan, &env.mounts, &env.nextroot);
     }
     journal
