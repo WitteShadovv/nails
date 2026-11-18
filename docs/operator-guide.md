@@ -650,6 +650,12 @@ say) stays open after the switch, its key in RAM, until power-off:
 (`backend_left_open` under `--json`). The orderly shutdown stops every hidden
 program. The last step before the switch:
 
+- first ends every process of the session still running, as PID 1 would at
+  the switch, so PID 1 names none of them in its last lines (one that stays
+  in uninterruptible sleep, say on a hung network or FUSE mount, outlives
+  the step's bounded wait, and PID 1 names it), and once PID 1 has reaped
+  them clears the failures their end left. Their units' stop commands run
+  now, so the scrub and the restores below take what they changed;
 - scrubs the top of `/run`: it judges the entries two levels deep (three
   below `/run/systemd`), so a daemon's state deeper down stays, such as
   NetworkManager's per-link records. It deletes from an allowlist (the
@@ -677,14 +683,13 @@ program. The last step before the switch:
   joins one to another mount that got the old ID. None of the hidden session's
   lines stay, and a line of the decoy's that names no mount the way back
   restores is not given back;
-- ends every process of the session still running, as PID 1 would at the
-  switch, so PID 1 names none of them in its last lines, and once PID 1 has
-  reaped them clears the failures their end left;
+- ends once more any process of the session that started since;
 - stops journald's socket units and drops journald's store of standard-output
   streams, which discards what the hidden root sent journald after its own
   journald stopped (the audit records of its last units' stops, the lines a
-  unit that stops after journald logs). The decoy's start opens the sockets
-  again, as a boot does;
+  unit that stops after journald logs), then starts journald's own sockets
+  again, empty, so the decoy finds them listening as after a plain
+  soft-reboot and its start does not open them anew;
 - sets the message limit of an ext4 hidden volume to zero, so the kernel does
   not log the line, with the volume's UUID, that it logs when the switch
   unmounts the volume;
@@ -817,6 +822,13 @@ journal that starts late:
   back to the boot. What waits in journald's sockets, which the switch keeps
   open, does not reach it: the way back empties them (see
   [What the decoy journal keeps](decoy-requirements.md#what-the-decoy-journal-keeps)).
+- journald's sockets made anew at the way back, which a plain soft-reboot
+  keeps from the boot: their files below `/run/systemd/journal` date from
+  the way back. A process the soft-reboot leaves running (a root storage
+  daemon, a unit with `SurviveFinalKillSignal=yes`) loses its standard
+  output and error to the journal at the entry, where NAILS drops journald's
+  stored streams as well: its later output reaches no journal, and its
+  writes there fail.
 - the decoy's root and the mounts its initrd made (NixOS's store bind) as new
   mounts, where a plain soft-reboot keeps them; it unmounts the decoy's other
   mounts and mounts again what its fstab and units name, under new mount IDs
@@ -843,8 +855,10 @@ journal that starts late:
   mount covers there, say), and one that a plain soft-reboot keeps (`/usr`,
   `/etc`, one marked `x-initrd.mount`), such as NixOS's `/etc` overlay.
 
-The decoy journal imports what the kernel and PID 1 log after the cursor: the
-hidden service manager's last lines, which a plain soft-reboot logs too (the
+The decoy journal imports what the kernel and PID 1 log after the cursor: PID
+1's kill line, with its name, of a process of the session that stays in
+uninterruptible sleep (on a hung network or FUSE mount, say) past the last
+step's bounded wait; the hidden service manager's last lines, which a plain soft-reboot logs too (the
 soft-reboot service's end and `Soft-rebooting.`, its final kill of the helpers
 it starts after the step to close a descriptor, `Sending SIGKILL to PID N
 ((sd-close))`, and, where the kernel's audit is on, the audit records of that
