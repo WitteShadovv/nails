@@ -1256,7 +1256,9 @@ with its socket inode and its label, and the state and start time of
 journald's socket units as they were at the cold boot; `/run` at every depth,
 udev's device database aside, held against `/run` right before the entry and
 the shapes of what the plain soft-reboots added there (a new journal stream,
-session or unit file of the decoy's own start, its numbers left out), with
+session or unit file of the decoy's own start, its numbers left out) and the
+link PID 1 keeps for a unit's run where it leads to the run the decoy's PID 1
+started after the way back began, with
 `/run/udev/rules.d` and `/run/systemd/system` as the decoy had them, the
 session's file and NAILS's runtime folder gone, and `/run/nextroot` gone, the
 reconcile step's pieces left to their own check; `utab` given back, the bind mount's line under its new

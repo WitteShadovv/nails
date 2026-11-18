@@ -160,6 +160,9 @@ RUN_FIND = (
     "-o -path /run/udev/links -o -path /run/udev/watch -o -path /run/credentials "
     "-o -path /run/nextroot \\) -prune -o -printf '%y %p\\n'"
 )
+# The link PID 1 keeps in /run for each unit it runs, named after the unit,
+# whose target is that run's invocation ID.
+INVOCATION_LINK = "/run/systemd/units/invocation:"
 # Where a session's udev rules and runtime units go, which the way back must
 # leave as the decoy had them.
 RUN_UNIT_TREES = ("/run/udev/rules.d", "/run/systemd/system")
@@ -1083,20 +1086,67 @@ def run_residue(
     after: set[str],
     controls: Iterable[tuple[set[str], set[str]]],
     pieces: Iterable[str] = (),
+    own: Iterable[str] = (),
 ) -> list[str]:
     """What a way back left in /run: the entries after it that /run did not
     hold right before the entry, but those of a shape that a plain
     soft-reboot also added (``controls``, each its /run before and after),
-    and the reconcile step's ``pieces`` that stayed, with what they hold and
-    the folders that hold them, which a check of their own judges."""
+    the reconcile step's ``pieces`` that stayed, with what they hold and
+    the folders that hold them, which a check of their own judges, and the
+    invocation links of the decoy's own runs since the way back (``own``,
+    :func:`decoy_invocations`)."""
+    mine = set(own)
     shapes: set[str] = set()
     for was, now in controls:
         shapes |= {run_shape(entry) for entry in now - was}
     return sorted(
         entry
         for entry in after - before
-        if run_shape(entry) not in shapes and not of_pieces(entry, pieces)
+        if run_shape(entry) not in shapes
+        and not of_pieces(entry, pieces)
+        and entry not in mine
     )
+
+
+def invocation_reading(entries: Iterable[str]) -> str:
+    """The guest command that reads, for each invocation link among
+    ``entries`` (``<type> <path>``), its target and the unit's invocation ID
+    and last start as the decoy's PID 1 reports them."""
+    units = sorted(
+        entry[len("l " + INVOCATION_LINK) :]
+        for entry in entries
+        if entry.startswith("l " + INVOCATION_LINK)
+    )
+    return "".join(
+        f"u={shlex.quote(unit)}; echo \"unit=$u "
+        f'link=$(readlink {shlex.quote(INVOCATION_LINK + unit)}) '
+        'id=$(systemctl show -P InvocationID "$u") '
+        'start=$(systemctl show -P InactiveExitTimestamp --timestamp=unix "$u")"; '
+        for unit in units
+    )
+
+
+def decoy_invocations(text: str, lower: float) -> set[str]:
+    """The invocation links of :func:`invocation_reading`'s output that are
+    the decoy's own: each leads to the invocation ID the decoy's PID 1 gives
+    its unit now, and that run started at or after ``lower``, once the way
+    back had begun. A link that leads elsewhere, or to a run from before, is
+    not."""
+    own = set()
+    for line in text.splitlines():
+        fields = dict(_TIMER_FIELD.findall(line))
+        unit, link, ident = fields.get("unit"), fields.get("link"), fields.get("id")
+        start = _unix_time(fields.get("start", ""))
+        if (
+            unit
+            and ident
+            and re.fullmatch(r"[0-9a-f]{32}", ident)
+            and link == ident
+            and start is not None
+            and start >= lower
+        ):
+            own.add(f"l {INVOCATION_LINK}{unit}")
+    return own
 
 
 def of_pieces(entry: str, pieces: Iterable[str]) -> bool:
@@ -1212,6 +1262,7 @@ class Gate:
         # step's pieces that stayed after each way back.
         self.runs: dict[str, tuple[set[str], set[str]]] = {}
         self.pieces: dict[int, list[str]] = {}
+        self.run_own: dict[str, set[str]] = {}
         # The failed units a plain soft-reboot left, which a way back may leave
         # too, with why.
         self.allowed_failed: dict[str, str] = dict(SOFT_REBOOT_FAILURES)
@@ -2772,7 +2823,20 @@ class Gate:
         # its own, and the decoy disk's changes before the harness writes
         # anything.
         self.wait_reconcile()
-        self.runs[f"way-back-{n}"] = (state["run"], self.run_listing(f"after-{n}"))
+        run_after = self.run_listing(f"after-{n}")
+        self.runs[f"way-back-{n}"] = (state["run"], run_after)
+        # Right away, while the units it names still run: the invocation
+        # links /run did not hold before the entry, against the decoy's
+        # PID 1.
+        new_links = invocation_reading(run_after - state["run"])
+        self.run_own[f"way-back-{n}"] = (
+            decoy_invocations(
+                self.fact(f"invocations-after-{n}", new_links),
+                float(self.facts[f"leave-wall-{n}"]),
+            )
+            if new_links
+            else set()
+        )
         after = self.records_capture(f"after-{n}")
         self.disk_changes(f"way-back-{n}", state["since"])
         self.decoy_timers(f"way-back-{n}", float(self.facts[f"leave-wall-{n}"]))
@@ -3216,16 +3280,23 @@ class Gate:
 
     def judge_run(self) -> None:
         """/run after each way back holds, at every depth, only what it held
-        right before the entry and entries of a shape that a plain soft-reboot
-        also adds: a journal stream, a session or a unit file of the decoy's
-        own start (:func:`run_residue`)."""
+        right before the entry, entries of a shape that a plain soft-reboot
+        also adds (a journal stream, a session or a unit file of the decoy's
+        own start), and the invocation links of runs the decoy's PID 1 started
+        since the way back began (:func:`run_residue`)."""
         self.where = "/run"
         controls = [pair for label, pair in self.runs.items() if "control" in label]
         for label, (before, after) in self.runs.items():
             if not label.startswith("way-back-"):
                 continue
             n = int(label.rsplit("-", 1)[-1])
-            residue = run_residue(before, after, controls, self.pieces.get(n, []))
+            residue = run_residue(
+                before,
+                after,
+                controls,
+                self.pieces.get(n, []),
+                self.run_own.get(label, set()),
+            )
             self.facts[f"run-residue-{label}"] = residue
             # As the unit check after the way back: without the RAM copy's
             # label the emergency leaves the session's wants links.

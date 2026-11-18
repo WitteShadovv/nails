@@ -728,6 +728,53 @@ class RunResidueTest(unittest.TestCase):
         self.assertTrue(fg.of_pieces("l /run/overlay-runtime-boot -> x", pieces))
         self.assertFalse(fg.of_pieces("d /run/overlay-runtime-bootx", pieces))
 
+    def test_the_decoy_s_own_invocation_link_since_the_way_back_is_no_residue(
+        self,
+    ) -> None:
+        # Seen on Fedora 44: hostnamed had exited idle before the second
+        # entry, and NetworkManager's start after the way back started it
+        # again, while in both plain soft-reboots it ran before and after.
+        link = "l /run/systemd/units/invocation:systemd-hostnamed.service"
+        ident = "1" * 32
+        control = ({link}, {link})
+        after = {*self.BEFORE, link}
+        self.assertEqual(fg.run_residue(self.BEFORE, after, [control]), [link])
+        own = fg.decoy_invocations(
+            f"unit=systemd-hostnamed.service link={ident} id={ident} "
+            "start=@1795029500\n",
+            1795029400.0,
+        )
+        self.assertEqual(own, {link})
+        self.assertEqual(fg.run_residue(self.BEFORE, after, [control], [], own), [])
+
+    def test_an_invocation_link_of_another_run_stays_residue(self) -> None:
+        ident = "1" * 32
+        other = "2" * 32
+        for line in (
+            # The link leads to another run than the one PID 1 runs now.
+            f"unit=a.service link={other} id={ident} start=@1795029500",
+            # The run started before the way back began.
+            f"unit=a.service link={ident} id={ident} start=@1795029300",
+            # The unit no longer runs: no link, and no start.
+            f"unit=a.service link= id={ident} start=",
+            "unit=a.service link= id= start=@1795029500",
+        ):
+            self.assertEqual(fg.decoy_invocations(line, 1795029400.0), set(), line)
+
+    def test_the_invocation_reading_names_only_invocation_links(self) -> None:
+        command = fg.invocation_reading(
+            {
+                "l /run/systemd/units/invocation:systemd-hostnamed.service",
+                "f /run/systemd/units/invocation:odd.service",
+                "l /run/gate-link",
+            }
+        )
+        self.assertEqual(command.count("u="), 1)
+        self.assertIn(
+            "readlink /run/systemd/units/invocation:systemd-hostnamed", command
+        )
+        self.assertEqual(fg.invocation_reading({"f /run/x"}), "")
+
     def test_reads_the_listing(self) -> None:
         listing = "d /run/a\nf /run/a/b c\n\nfind: oops\n"
         self.assertEqual(fg.run_entries(listing), {"d /run/a", "f /run/a/b c"})
