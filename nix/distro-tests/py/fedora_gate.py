@@ -407,17 +407,22 @@ DISK_FSTYPES = ("btrfs", "ext4", "xfs", "vfat")
 # compress, and its exit status when it names one and finds nothing.
 COMPRESSED_BLIND_SPOT = "compresses file contents"
 SCAN_WARNINGS_EXIT = 9
-# Each of journald's sockets PID 1 holds, with its socket inode and the
+# Each socket PID 1 listens on for journald, with its socket inode and the
 # label of the socket itself (the inode behind PID 1's descriptor), and the
 # state and start time of journald's socket units: a plain soft-reboot keeps
-# the boot's, and so must a way back. The audit socket is the netlink socket
-# of the kernel's audit that takes its records (protocol 9, a group set).
+# the boot's, and so must a way back. A connection accepted on the stream
+# socket shows its path too (journald's stored streams, which PID 1 holds and
+# which change with every start), and is left out: a stream socket counts
+# only while it listens (flag 00010000). The audit socket is the netlink
+# socket of the kernel's audit that takes its records (protocol 9, a group
+# set).
 JOURNAL_SOCKETS = r"""
 for f in /proc/1/fd/*; do
   l=$(readlink "$f") || continue
   case "$l" in socket:\[*\]) ;; *) continue ;; esac
   i=${l#socket:[}; i=${i%]}
-  p=$(awk -v i="$i" '$7 == i { print $8 }' /proc/1/net/unix)
+  p=$(awk -v i="$i" '$7 == i && ($5 != "0001" || $4 == "00010000") { print $8 }' \
+       /proc/1/net/unix)
   case "$p" in
     /run/systemd/journal/*|/run/systemd/journal.*/*) ;;
     *) p=$(awk -v i="$i" \
