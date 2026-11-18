@@ -853,10 +853,9 @@ fn the_drain_of_journald_s_sockets_is_the_last_step_before_the_cursor() {
     );
     let every_call = fs::read_to_string(&calls).unwrap();
     assert_eq!(sent, every_call.lines().count(), "{every_call}");
+    let wait = tail::unit_states_call(&[tail::mount_unit(&detached[0])]).join(" ");
     assert!(
-        every_call
-            .lines()
-            .any(|call| call == tail::MOUNT_UNITS.join(" ")),
+        every_call.lines().any(|call| call == wait),
         "the wait for the detached mount's unit ran: {every_call}"
     );
     assert!(

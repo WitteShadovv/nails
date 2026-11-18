@@ -497,17 +497,18 @@ mod kernel_tests {
                 &systemctl,
                 format!(
                     "#!/bin/sh\n\
-                     [ \"$1 $3\" = 'list-units --type=mount' ] || exit 0\n\
+                     [ \"$1 $2 $3\" = 'is-active -- {unit}' ] || exit 0\n\
                      echo x >> {count}\n\
                      n=$(wc -l < {count})\n\
                      if [ \"$n\" -lt 3 ]; then\n\
-                       printf '%s loaded active mounted %s\\n' '{unit}' '{path}'\n\
-                     elif [ \"$n\" -eq 3 ]; then\n\
-                       printf '6,501,2,-;systemd[1]: %s: Deactivated successfully.\\n' \
-                         '{unit}' >> {kmsg}\n\
+                       echo active\n\
+                     else\n\
+                       [ \"$n\" -eq 3 ] && \
+                         printf '6,501,2,-;systemd[1]: %s: Deactivated successfully.\\n' \
+                           '{unit}' >> {kmsg}\n\
+                       echo inactive\n\
                      fi\n",
                     count = count.display(),
-                    path = initramfs.display(),
                     kmsg = kmsg.display(),
                 ),
                 0o755,
