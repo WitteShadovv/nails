@@ -74,6 +74,41 @@ class FailedUnitsTest(unittest.TestCase):
         )
 
 
+class DecoyZramFailuresTest(unittest.TestCase):
+    """A zram setup unit failed in a hidden session counts as the decoy's own
+    run only with the invocation ID it had in the decoy before the entry."""
+
+    UNIT = "systemd-zram-setup@zram0.service"
+    BEFORE = f"Id={UNIT}\nInvocationID=0f3a9c\n"
+
+    def test_the_decoy_s_run_failed_at_its_stop_is_allowed(self) -> None:
+        # Fedora 45: the decoy's stop at the switch failed to reset zram0, and
+        # the hidden session shows the decoy's run failed.
+        found = fg.decoy_zram_failures([self.UNIT], self.BEFORE, self.BEFORE)
+        self.assertEqual(list(found), [self.UNIT])
+        problems = fg.failed_units_problems([self.UNIT], found)
+        self.assertEqual(problems["other"], [])
+
+    def test_a_run_of_the_hidden_session_is_not(self) -> None:
+        hidden = f"Id={self.UNIT}\nInvocationID=77e01b\n"
+        self.assertEqual(fg.decoy_zram_failures([self.UNIT], self.BEFORE, hidden), {})
+        problems = fg.failed_units_problems([self.UNIT], {})
+        self.assertEqual(problems["other"], [self.UNIT])
+
+    def test_without_an_invocation_on_either_side_nothing_is_allowed(self) -> None:
+        none = f"Id={self.UNIT}\nInvocationID=\n"
+        for before, hidden in (("", self.BEFORE), (self.BEFORE, ""), (none, none)):
+            self.assertEqual(fg.decoy_zram_failures([self.UNIT], before, hidden), {})
+
+    def test_only_zram_setup_units_and_only_failed_ones(self) -> None:
+        other = "chronyd.service"
+        both = self.BEFORE + f"\nId={other}\nInvocationID=0f3a9c\n"
+        self.assertEqual(
+            list(fg.decoy_zram_failures([other, self.UNIT], both, both)), [self.UNIT]
+        )
+        self.assertEqual(fg.decoy_zram_failures([], both, both), {})
+
+
 class ZramTest(unittest.TestCase):
     COLD = "\n".join(
         (
