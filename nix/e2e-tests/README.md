@@ -802,9 +802,10 @@ again, which the scenario asserts and turns off at once; the second session
 runs with the line made `noauto`, which masks its unit in the session and
 keeps the swap off through the way back. It asserts masked at runtime the units
 NAILS masks in the hidden root that the decoy has loaded, the fstab swap units
-in the second session and the ESP's automount, the residue report of each activation free
-of warnings (the first session's loop device is detached before the second
-entry), an ESP that systemd mounts on demand bound read-only at its mount point
+in the second session and the ESP's automount, the residue report of each
+activation free of warnings (the first session's loop device is detached
+before the second entry), but for the warning of the audit log an image's
+auditd wrote at its boot before the scenario stopped it, as Fedora's does, an ESP that systemd mounts on demand bound read-only at its mount point
 in each hidden session, with its automount masked there and back on the decoy
 after each way back (the first entry finds the ESP mounted, the second idle,
 with only its automount there), and the rehearsal's scan exiting 9 with the
@@ -812,8 +813,9 @@ blind spot on a btrfs root's device, 0 on any other root. The disk-image check
 looks for the canaries of both sessions, for the canary files' names and for
 the token the rehearsal planted, which its files carry in their names. Before
 each image it also reads the decoy root's files through the decoy's kernel,
-from a read-only bind of `/`: none of these may be in them, and the positive
-control's token must be. On a btrfs root the check also decompresses every
+from a read-only bind of each mount of the root's filesystem (`/`, and the
+btrfs subvolumes Fedora mounts at `/home` and `/var`): none of these may be in
+them, and the positive control's token must be. On a btrfs root the check also decompresses every
 zstd frame on the root's partition (`py/btrfs_scan.py`): btrfs writes each
 compressed extent as one, so with the raw scan this reads what each extent of
 the partition holds, plain or compressed with zstd, of a file live or deleted,
@@ -825,11 +827,17 @@ It also reads the older roots of the image's tree that `btrfs-find-root`
 lists, as btrfs-progs does, at the canary paths and the rehearsal's files:
 none may keep a file at a canary's path or one of the rehearsal's files named
 after its token, nor a canary or the token, and a restore that could not read
-a file or a folder it was asked for fails the check. Three planted controls
-show what each read sees: a plain file the raw scan finds, a compressed file
-the raw scan misses and the read through the kernel and the carve find, and a
-compressed file written and deleted that the raw scan and the read through the
-kernel miss and the carve and an older root find. `btrfs restore` reads the
+a file or a folder it was asked for fails the check. An older root whose own
+tree the disk no longer holds, which `btrfs restore` reports as a tree root
+read back at another level than its root item names, is passed over: a busy
+decoy writes over the blocks of older roots, as the Fedora images do. Three
+planted controls show what each read sees: a plain file the raw scan finds, a
+compressed file the raw scan misses and the read through the kernel and the
+carve find, and a compressed file written and deleted that the raw scan and
+the read through the kernel miss and the carve and an older root find. The
+image of these controls is copied with the guest paused right after the
+deletion, so that nothing the decoy writes later takes the deleted file's
+blocks. `btrfs restore` reads the
 older roots only, since it cannot read about 11,000 inline zstd extents of the
 arch-boxes image, which the kernel and the carve read. It lists the failed
 units seven times, on the decoy before the first switch, right after each

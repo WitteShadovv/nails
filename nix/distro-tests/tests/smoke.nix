@@ -600,7 +600,10 @@ distroVm.buildVmTest {
         # `paths` it writes (it writes a file it then cannot read as well),
         # and each root whose restore exited with an error or could not read
         # a file or a folder in that scope, with what it printed: btrfs
-        # restore -i goes on and exits 0 after such a file.
+        # restore -i goes on and exits 0 after such a file. A root whose own
+        # tree the disk no longer holds (btrfs_scan.root_gone), as a busy
+        # decoy writes over the blocks of older ones, is shown and passed
+        # over: nothing of it is left to read.
         roots = btrfs_scan.find_roots(BTRFS_FIND_ROOT, part)
         print(f"{label}: {len(roots)} roots, generations {[r.generation for r in roots]}")
         found, present, unread = set(), set(), []
@@ -616,7 +619,9 @@ distroVm.buildVmTest {
                 + f"found {sorted(here) or 'nothing'}, paths {sorted(there) or 'none'}, "
                 + f"errors {errors or 'none'}"
             )
-            if done.returncode != 0 or errors:
+            if errors and btrfs_scan.root_gone(errors) and not here and not there:
+                print(f"{label}-gen-{root.generation}: the disk no longer holds this root")
+            elif done.returncode != 0 or errors:
                 unread.append((root.generation, done.returncode, errors or done.stderr[-2000:]))
             found |= here
             present |= set(there)
@@ -710,6 +715,59 @@ distroVm.buildVmTest {
     def image_decoy(label):
         persist_root_disk()
         return disk_forensics.snapshot(vm, label, restart=False)
+
+
+    def image_paused(label):
+        # The decoy's disk whole, as a sparse raw image, copied with the guest
+        # paused, so that nothing the decoy writes afterwards, such as what a
+        # busy decoy writes at its shutdown, takes the blocks of a file it
+        # deleted right before. The guest goes on after the copy.
+        roots = [
+            block
+            for block in qmp("query-block")
+            if block.get("inserted") and not block.get("removable", False)
+        ]
+        assert len(roots) == 1, f"cannot identify the root drive: {roots}"
+        device = roots[0]["device"]
+        size = roots[0]["inserted"]["image"]["virtual-size"]
+        out_dir = tempfile.mkdtemp(prefix="nails-forensic-")
+        full = os.path.join(out_dir, f"{label}.full")
+        with open(full, "wb") as handle:
+            handle.truncate(size)
+        node = f"paused-{time.monotonic_ns()}"
+        qmp("stop")
+        try:
+            qmp(
+                "blockdev-add",
+                {"driver": "raw", "node-name": node, "file": {"driver": "file", "filename": full}},
+            )
+            qmp(
+                "blockdev-backup",
+                {
+                    "job-id": node,
+                    "device": device,
+                    "target": node,
+                    "sync": "full",
+                    "auto-dismiss": False,
+                },
+            )
+            deadline = time.monotonic() + 900
+            while True:
+                jobs = [job for job in qmp("query-jobs") if job["id"] == node]
+                assert jobs, "the backup job is gone"
+                if jobs[0]["status"] == "concluded":
+                    break
+                assert time.monotonic() < deadline, "the backup did not finish"
+                time.sleep(1)
+            assert "error" not in jobs[0], f"the backup failed: {jobs[0]}"
+            qmp("job-dismiss", {"id": node})
+            qmp("blockdev-del", {"node-name": node})
+        finally:
+            qmp("cont")
+        raw = os.path.join(out_dir, f"{label}.raw")
+        subprocess.run(["${pkgs.coreutils}/bin/cp", "--sparse=always", full, raw], check=True)
+        os.remove(full)
+        return raw
 
 
     def follow(trigger, label):
@@ -1982,7 +2040,9 @@ distroVm.buildVmTest {
                 f"the read through the kernel misses controls: it found {sorted(live)}"
             )
             assert poison_token("C") not in live, "control (c): the deleted file is live"
-        positive = image_decoy("positive")
+        # Imaged with the guest paused right after the deletion of control
+        # (c), as the admission gate's btrfs controls are.
+        positive = image_paused("positive")
         found = disk_forensics.run_strings_scan(positive, [poison])
         assert found == {poison}, (
             f"positive control failed: the scanner did not see the planted token ({found})"
