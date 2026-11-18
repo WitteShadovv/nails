@@ -13,12 +13,15 @@
 #     transition seeks its kmsg cursor).
 #   - what would follow the kmsg cursor or wait in journald's sockets
 #     (nails_e2e.journal_tail): a process the shutdown leaves running, which
-#     PID 1's final kill would name, the hidden filesystem's unmount line, and
-#     a unit that stops after journald and logs through /dev/log, its standard
-#     output and the native socket.
+#     PID 1's final kill would name and whose stop command writes to /run,
+#     the hidden filesystem's unmount line, and a unit that stops after
+#     journald and logs through /dev/log, its standard output and the native
+#     socket. Each proves in the ring buffer that it ran.
 # After the way back none of these is in the live decoy journal, which holds
 # no record of the hidden session past the cursor but the kernel's lines of
-# the hidden LUKS volume's teardown, and a carve of the decoy disk image finds
+# the hidden LUKS volume's teardown, the decoy's start opened none of
+# journald's sockets anew, the file the lingering unit's stop wrote to /run is
+# gone, and a carve of the decoy disk image finds
 # none of the tokens in its journal or anywhere on the image. A line logged on
 # the decoy before activation must still be carved from the image (positive
 # control: the scan can see the journal). The empty /run/nextroot the switch
@@ -127,6 +130,9 @@ in
 
         journal_tail.plant(machine, late_socket_mark, linger)
         hidden_uuid = machine.succeed("findmnt -rno UUID /mnt/data || true").strip() or None
+        hidden_fstype = machine.succeed("findmnt -rno FSTYPE /mnt/data || true").strip()
+        # The name check needs the UUID wherever the kernel would log it.
+        assert hidden_uuid or hidden_fstype != "ext4", hidden_fstype
         journal_tail.write_marker(machine, session_marker)
 
     with subtest("deactivate: neither token is in the live decoy journal"):
