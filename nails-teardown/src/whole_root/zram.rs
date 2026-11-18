@@ -21,9 +21,8 @@
 //! kernel refuses to reset a device that is open.
 //!
 //! Resetting a device logs its change of size to the kernel log, so the way
-//! back does it before it takes the kernel log's cursor: the decoy's journal
-//! does not import the line, which stays in the ring buffer with the hidden
-//! session's other kernel messages.
+//! back does it before it takes the kernel log's cursor, among the records the
+//! cursor is there to keep from the decoy's journal.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

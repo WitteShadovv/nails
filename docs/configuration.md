@@ -374,8 +374,8 @@ again. A stop can fail to reset its zram device and leave it set up, which
 the next start of the service manager then cannot set up again; where the
 device holds a swap area that no swap uses, the way back resets it before the
 decoy starts, so the decoy's start sets it up as its cold boot did. The reset
-logs the device's change of size in the kernel's ring buffer, which the
-decoy's journal does not import. Any other zram swap unit the hidden systemd
+logs the device's change of size in the kernel's ring buffer, before the way
+back takes the kernel log's cursor. Any other zram swap unit the hidden systemd
 would start is left to it as RAM-only swap while its zram device keeps its
 pages in RAM: the device is there and `/sys/block/zramN/backing_dev` reads
 `none`, or the kernel gives zram no backing device at all. A zram device with

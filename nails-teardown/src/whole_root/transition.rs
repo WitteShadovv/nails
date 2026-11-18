@@ -757,7 +757,8 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     }
     // Now that the hidden units have stopped, a zram device whose reset failed
     // at a stop goes back to what the decoy's start sets up, before the kmsg
-    // cursor, so the decoy's journal does not import the reset's line.
+    // cursor, which is there to keep the reset's line from the decoy's
+    // journal as well.
     let zram_reset = env
         .zram
         .as_ref()
