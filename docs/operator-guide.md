@@ -687,10 +687,12 @@ program. The last step before the switch:
 - stops journald's socket units and drops journald's store of standard-output
   streams, which discards what the hidden root sent journald after its own
   journald stopped (the audit records of its last units' stops, the lines a
-  unit that stops after journald logs), then starts journald's own sockets
-  again, empty, those the decoy had listening as the session began, so the
-  decoy finds them listening as after a plain soft-reboot and its start does
-  not open them anew;
+  unit that stops after journald logs), then starts journald's socket and
+  its `/dev/log` socket again, empty, as far as the decoy had them listening
+  as the session began, so the decoy finds them listening as after a plain
+  soft-reboot and its start does not open them anew. The audit socket stays
+  closed, as it would take every audit record made after it opens, past the
+  kernel-message cursor;
 - sets the message limit of an ext4 hidden volume to zero, so the kernel does
   not log the line, with the volume's UUID, that it logs when the switch
   unmounts the volume;
@@ -825,7 +827,9 @@ journal that starts late:
   [What the decoy journal keeps](decoy-requirements.md#what-the-decoy-journal-keeps)).
 - journald's sockets made anew at the way back, which a plain soft-reboot
   keeps from the boot: their files below `/run/systemd/journal` date from
-  the way back. A process the soft-reboot leaves running (a root storage
+  the way back, and where the kernel's audit is on, the decoy's start logs
+  `Listening on` for journald's audit socket, which the way back leaves
+  closed. A process the soft-reboot leaves running (a root storage
   daemon, a unit with `SurviveFinalKillSignal=yes`) loses its standard
   output and error to the journal at the entry, where NAILS drops journald's
   stored streams as well: its later output reaches no journal, and its
