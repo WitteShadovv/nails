@@ -95,6 +95,20 @@ class FakeVm:
         return 0, self.outputs.pop(0)
 
 
+class MountsVm(FakeVm):
+    """A :class:`FakeVm` whose decoy has no other mounts."""
+
+    def succeed(self, command: str, timeout: int = 0) -> str:
+        self.commands.append(command)
+        return ""
+
+
+def whole_out(body: str) -> str:
+    """``body`` as the gate's guest commands print it, whole."""
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    return f"{body}\n{sg.WHOLE} {len(body.encode())} {digest}\n"
+
+
 class WholeOutputTest(unittest.TestCase):
     def test_a_torn_part_of_the_kernel_log_is_read_again(self) -> None:
         whole = part(1, 2, 3)
@@ -486,6 +500,86 @@ class DecoyTimersTest(unittest.TestCase):
             times={UNBOUND_STAMP: (1794959962.4, 1794950000.0)}
         )
         self.assertEqual(fg.timer_explained({UNBOUND_STAMP}, moved), {})
+
+    def test_a_run_its_timer_did_not_start_explains_nothing(self) -> None:
+        # unbound-anchor.service started once the way back had begun, but its
+        # timer last triggered a day before: something else started it.
+        runs, _ = fg.timer_runs(
+            TIMERS_AFTER_WAY_BACK.replace(
+                "last=@1794959962 start=@1794959962 end=@1794959964",
+                "last=@1794873562 start=@1794959962 end=@1794959964",
+            )
+        )
+        paths = {ROOT_KEY, "/var/lib/unbound", UNBOUND_STAMP}
+        self.assertEqual(fg.timer_explained(paths, way_back_timers(runs=runs)), {})
+
+    def test_a_run_still_going_explains_nothing(self) -> None:
+        runs, _ = fg.timer_runs(
+            TIMERS_AFTER_WAY_BACK.replace(
+                "start=@1794959962 end=@1794959964 state=inactive",
+                "start=@1794959962 end=@1794900000 state=active",
+            )
+        )
+        paths = {ROOT_KEY, "/var/lib/unbound", UNBOUND_STAMP}
+        self.assertEqual(fg.timer_explained(paths, way_back_timers(runs=runs)), {})
+
+    def test_a_path_changed_in_the_quiet_times_is_not_the_unit_s(self) -> None:
+        out = (
+            "# before\n/var/lib/other-writer\n"
+            "rc=0\n# rerun\n/var/lib/other-writer\n/var/lib/later\n"
+            f"{ROOT_KEY}\n/var/lib/unbound\n"
+            "# after\n/var/lib/later\n"
+        )
+        self.assertEqual(fg.rerun_changes(out), ["/var/lib/unbound", ROOT_KEY])
+        # Without its quiet times, a start by hand changed nothing of its own.
+        self.assertEqual(fg.rerun_changes(f"rc=0\n# rerun\n{ROOT_KEY}\n"), [])
+
+    def test_the_rerun_drops_another_writer_s_change(self) -> None:
+        # /var/lib/leaked changed while unbound-anchor ran after the way back,
+        # and again while the gate started the unit by hand, but also in the
+        # quiet time before that start: another writer's, which stays
+        # unexplained.
+        times = (
+            f"1794959963.2 1794959963.2 {ROOT_KEY}\n"
+            "1794959963.5 1794959963.5 /var/lib/leaked\n"
+        )
+        rerun = (
+            "# before\n/var/lib/leaked\nrc=0\n# rerun\n"
+            f"/var/lib/leaked\n{ROOT_KEY}\n# after\n"
+        )
+        timers = TIMERS_AFTER_WAY_BACK.replace(
+            "timer=gate-timer.timer unit=gate-timer.service persistent=yes "
+            "last=@1794959962 start=@1794959962 end=@1794959962 state=inactive\n",
+            "",
+        )
+        run = gate()
+        run.vm = MountsVm(*(whole_out(o) for o in (timers, times, rerun)))
+        run.disk = {"control-1": set(), "way-back-1": {ROOT_KEY, "/var/lib/leaked"}}
+        quiet(run.decoy_timers, "way-back-1", 1794959960.0)
+        self.assertEqual(
+            run.timers["way-back-1"]["reruns"],
+            {"unbound-anchor.service": [ROOT_KEY]},
+        )
+        command = next(c for c in run.vm.commands if "systemctl start" in c)
+        self.assertIn(f"sleep {fg.TIMER_QUIET}; echo '# before'", command)
+        self.assertIn(f'[ "$d" -ge {fg.TIMER_QUIET} ]', command)
+        self.assertEqual(
+            fg.timer_explained(run.disk["way-back-1"], run.timers["way-back-1"]),
+            {ROOT_KEY: "unbound-anchor.service"},
+        )
+
+    def test_the_runs_are_read_again_once_a_run_still_going_ended(self) -> None:
+        going = TIMERS_AFTER_WAY_BACK.replace(
+            "start=@1794959962 end=@1794959964 state=inactive",
+            "start=@1794959962 end=@1794900000 state=activating",
+        )
+        run = gate()
+        run.vm = MountsVm(whole_out(going), "", whole_out(TIMERS_AFTER_WAY_BACK))
+        run.disk = {"way-back-1": set()}
+        quiet(run.decoy_timers, "way-back-1", 1794959960.0)
+        self.assertIn("unbound-anchor.service", run.vm.commands[1])
+        ends = [r["end"] for r in run.timers["way-back-1"]["runs"]]
+        self.assertEqual(ends, [1794959964.0, 1794959962.0])
 
     def test_a_timer_s_chance_run_in_one_control_is_no_reference(self) -> None:
         controls = {
