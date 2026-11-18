@@ -775,10 +775,11 @@ logs through each socket, and a lingering unit whose stop command writes to
 only where the way back's last step ends it and not after an emergency,
 which kills it itself), and after it asserts
 that the decoy's journal holds none of it and no other line of the hidden
-session past the cursor but a device-mapper volume's teardown lines, that
-the decoy's start opened neither journald's socket nor its `/dev/log`
-socket anew where the hidden start had not either (the decoy's own shutdown
-can close one before systemd 258), that the
+session past the cursor but PID 1's own generic last lines, which a plain
+soft-reboot logs too, and a device-mapper volume's teardown lines, that the
+decoy's start opened none of journald's sockets anew where the hidden start
+had not either (the decoy's own shutdown can close one before systemd 258),
+that the
 lingering unit's file in `/run` is gone, and that `/run/nextroot` and the
 line that removes it are gone; runs a second session
 that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
@@ -1233,8 +1234,10 @@ switch's last step, syslog and native lines the kernel took in before that
 step ended, and standard output lines of a process numbered at or above what
 the session pushed the counter to; a line logged after the way back in the
 decoy's journal, the positive control of that reading; no line of the
-decoy's start that opens journald's socket or its `/dev/log` socket anew,
-which a plain soft-reboot carries listening; `/run` at every depth,
+decoy's start that opens one of journald's sockets anew, which a plain
+soft-reboot carries listening; each journald socket PID 1 holds, with its
+socket inode and its label, and the state and start time of journald's
+socket units as they were at the cold boot; `/run` at every depth,
 udev's device database aside, held against `/run` right before the entry and
 the shapes of what the plain soft-reboots added there (a new journal stream,
 session or unit file of the decoy's own start, its numbers left out), with

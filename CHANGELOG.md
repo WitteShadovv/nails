@@ -1127,18 +1127,19 @@ of this changelog for that version becomes the release notes word for word, and
   so what their units' stop commands change is scrubbed and restored too, and sets the volume's
   message limit to zero. It leaves udevd running, as before, for the events of the network
   restore, so where the soft-reboot leaves udevd running
-  (as on Debian 13 and Ubuntu 24.04) PID 1 still ends udevd and its workers by their generic names. journald's sockets, which a soft-reboot keeps open, handed the
-  decoy's journald what the hidden root sent them after its own journald stopped (the audit records
-  of its last units' stops, lines logged through `/dev/log`, standard output or the native socket):
-  the last step now stops those socket units, drops journald's stored streams and starts
-  journald's socket and its `/dev/log` socket again, empty, as the decoy had them at the entry, so
-  the decoy's start does not open them anew where a plain soft-reboot would not. The audit socket
-  stays closed, as it would take audit records past the cursor, and where the kernel's audit is on
-  the decoy's start opens it anew. A process a soft-reboot leaves running loses its standard
-  output to the journal, and journald's socket files and their units' start time date from the
-  way back. On an SELinux host the new native socket carries journald's label, and a confined
-  service of the decoy that the policy does not let send to it logs an AVC denial when it sends to
-  it, as systemd-oomd and systemd-hwdb do on Fedora 44 and 45 (residue catalog row
+  (as with systemd 257 and 255 on Debian 13 and Ubuntu 24.04) PID 1 still ends udevd and its
+  workers after the cursor with the generic lines a plain soft-reboot logs. journald's sockets,
+  which a soft-reboot keeps open, handed the decoy's journald what the hidden root sent them after
+  its own journald stopped (the audit records of its last units' stops, lines logged through
+  `/dev/log`, standard output or the native socket): the last step now drops journald's stored
+  streams and empties the sockets in place, through PID 1's own descriptors of them, so they stay
+  the ones PID 1 carried into the session, with their labels and their units' start times, as a
+  plain soft-reboot keeps them. Where PID 1 closed journald's socket or its `/dev/log` socket
+  during the soft-reboot (systemd before 258 does that when anything reaches one once journald
+  has stopped), the step starts it again if the decoy had it listening at the entry, and that
+  socket's file and its unit's start time date from the way back. A process a soft-reboot leaves
+  running loses its standard output to the journal, and where the kernel does not give the step
+  PID 1's descriptors, the sockets keep what they hold (residue catalog row
   `journal-socket-carry`). The empty `/run/nextroot` the switch
   left until power-off, which a boot never has, is removed at the decoy's start. The kernel's lines of a device-mapper hidden volume's
   teardown and PID 1's own last generic lines still follow the cursor (residue catalog row
