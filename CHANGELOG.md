@@ -1125,7 +1125,9 @@ of this changelog for that version becomes the release notes word for word, and
   the kmsg cursor, and the kernel logged the hidden ext4 volume's `unmounting filesystem <UUID>`
   line after it too: the last step now ends those processes itself first, before it scrubs `/run`,
   so what their units' stop commands change is scrubbed and restored too, and sets the volume's
-  message limit to zero. journald's sockets, which a soft-reboot keeps open, handed the
+  message limit to zero. It leaves udevd running, as before, for the events of the network
+  restore, so where the soft-reboot leaves udevd running
+  (systemd before 258) PID 1 still ends udevd and its workers by their generic names. journald's sockets, which a soft-reboot keeps open, handed the
   decoy's journald what the hidden root sent them after its own journald stopped (the audit records
   of its last units' stops, lines logged through `/dev/log`, standard output or the native socket):
   the last step now stops those socket units, drops journald's stored streams and starts
