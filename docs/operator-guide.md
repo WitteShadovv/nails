@@ -1193,37 +1193,46 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     manager, which then works out its taint list as well and reads
     `/etc/os-release` and `/etc/adjtime` for it;
   - from the moment activation has the service manager reload its units to
-    the end of its preparation, the decoy's local disk mounts that keep
-    access times (which ones, below) are `noatime`: the reload makes PID 1 run every generator and read every unit
-    file again, each mount activation makes shows to PID 1 as a unit (a bind
-    of the root's device makes it read `blockdev@.target`), and a drop-in
-    activation writes makes it list the unit directories again. Activation
-    ends its preparation with a second reload, so PID 1 has taken all of it
-    in before each mount gets its own mode back, a bind made meanwhile the
-    mode of the mount it copies. These are the mounts of local disk
-    filesystems (ext4, xfs, btrfs, f2fs, vfat and the other local disk
-    filesystems NAILS lists) whose mount points a lookup reaches through
-    local filesystems alone: local disk filesystems, the kernel's in-memory
-    ones such as tmpfs and proc, and read-only images such as squashfs.
-    NAILS decides which they are from `/proc/self/mountinfo` alone. A FUSE
-    mount (`fuse`, `fuse.*`, `fuseblk`), a network or cluster filesystem's
-    (NFS, SMB, 9p, virtiofs and the like), a mount of any type NAILS does
-    not list as local (an overlay, an automount point, an unknown type),
-    and every mount inside one of them, by the mount table's parents, or
-    below its mount point keep their access-time mode, as earlier releases
-    left every mount. NAILS never looks them up, opens or stats them, nor
-    anything inside them, so a dead or hung FUSE daemon neither makes this
-    step refuse nor makes it wait. Access times on a FUSE or network mount
-    are its daemon's or its server's to keep, which a mount flag on this
-    side does not change. A mount that another mount covers, so that a
-    lookup of its mount point leads elsewhere or nowhere, is left as it is,
-    since no lookup reaches it. Activation refuses, naming the mount and
-    its type, where it cannot look up a mount it must change or make it
-    `noatime`. It refuses as well where it runs in a user namespace of
-    its own, which may not change the system's mounts. Before it changes a mount
-    it writes the mount and its mode to the session plan: where activation is
-    killed before it gives the modes back, `nails recover` gives them back
-    (see [Interrupted activation](#specific-situations));
+    the end of its preparation, the decoy's local disk mounts that keep access
+    times (which ones, below) are `noatime`: the reload makes PID 1 run every
+    generator and read every unit file again, each mount activation makes
+    shows to PID 1 as a unit (a bind of the root's device makes it read
+    `blockdev@.target`), and a drop-in activation writes makes it list the
+    unit directories again. Activation ends its preparation with a second
+    reload, so PID 1 has taken all of it in before each mount gets its own
+    mode back. A bind made meanwhile takes `noatime` from the mount it copies,
+    and gets that mount's mode back then only where the bind itself lies in
+    this window. None of the binds activation leaves in place does: each lies
+    below the next root's overlay at `/run/nextroot`, so a bind of a changed
+    mount that activation makes there, such as the hidden volume's or a decoy
+    filesystem's, stays `noatime` after activation, in the hidden session too.
+    The mounts the window changes are those of local disk filesystems (ext4,
+    xfs, btrfs, f2fs,
+    vfat and the other local disk filesystems NAILS lists) whose mount points
+    a lookup reaches through local filesystems alone: local disk filesystems,
+    the kernel's in-memory ones such as tmpfs and proc, and read-only images
+    such as squashfs. NAILS decides which they are from `/proc/self/mountinfo`
+    alone. A FUSE mount (`fuse`, `fuse.*`, `fuseblk`), a network or cluster
+    filesystem's (NFS, SMB, 9p, virtiofs and the like), a mount of any type
+    NAILS does not list as local (an overlay, an automount point, an unknown
+    type), and every mount inside one of them, by the mount table's parents,
+    or below its mount point are left out of this window, which changes none
+    of them, as earlier releases changed the access-time mode of none of the
+    decoy's mounts. The window never looks them up, opens or stats them, nor
+    anything inside them, so a dead or hung FUSE daemon neither makes it
+    refuse nor makes it wait. Activation itself still resolves the operator's
+    home inside the decoy root, which looks up each name on the way to it, on
+    such a mount too. Access times on a FUSE or network mount are its daemon's
+    or its server's to keep, which a mount flag on this side does not change.
+    A mount that another mount covers, so that a lookup of its mount point
+    leads elsewhere or nowhere, is left as it is, since no lookup reaches it.
+    Activation refuses, naming the mount and its type, where it cannot look up
+    a mount it must change or make it `noatime`. It refuses as well where it
+    runs in a user namespace of its own, which may not change the system's
+    mounts. Before it changes a mount it writes the mount and its mode to the
+    session plan: where activation is killed before it gives the modes back,
+    `nails recover` gives them back (see [Interrupted
+    activation](#specific-situations));
   - it asks the kernel itself for the network state over netlink: no `ip`,
     `nft` or `iw` runs. It asks for the firewall tables only where nf_tables
     is in the kernel already, and deletes a Wi-Fi interface only where

@@ -945,7 +945,7 @@ impl HomeWay {
 /// whether the guards hold, and refuse the entry when a guard does not hold
 /// once loaded, or PID 1 starts the transition's unit outside the domain the
 /// copy's label gives it ([`super::program_label::check_switch_unit`]). The
-/// caller holds the decoy's mounts `noatime` ([`quiet_mounts`]).
+/// caller holds the decoy's local disk mounts `noatime` ([`quiet_mounts`]).
 fn install_transition(
     paths: &Paths,
     inputs: &EntryInputs<'_>,
