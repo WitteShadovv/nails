@@ -764,7 +764,9 @@ hidden volume; before each way back plants what would reach the decoy's
 journal past the kmsg cursor or through journald's sockets
 (`nails_e2e.journal_tail`: a unit that stops after the hidden journald and
 logs through each socket, and a lingering unit whose stop command writes to
-`/run`, each proving in the ring buffer that it ran), and after it asserts
+`/run`, each proving in the ring buffer that it ran, the lingering unit
+only where the way back's last step ends it and not after an emergency,
+which kills it itself), and after it asserts
 that the decoy's journal holds none of it and no other line of the hidden
 session past the cursor but a device-mapper volume's teardown lines, that
 the decoy's start opened none of journald's sockets anew, that the

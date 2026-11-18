@@ -1015,7 +1015,7 @@ distroVm.buildVmTest {
         ).strip()
 
 
-    def assert_quiet_tail(where, planted):
+    def assert_quiet_tail(where, planted, ended_by_step=True):
         # After the way back: the decoy's journal holds no record of the
         # hidden session past the kmsg cursor, nor anything the hidden root
         # sent journald's sockets after its journald stopped; the decoy's
@@ -1024,7 +1024,12 @@ distroVm.buildVmTest {
         # lines of a device-mapper volume's teardown are the residue the
         # catalog names (kmsg-import). A line logged now reaches it.
         verdict = journal_tail.judge(
-            vm, planted["marker"], planted["mark"], planted["linger"], planted["uuid"]
+            vm,
+            planted["marker"],
+            planted["mark"],
+            planted["linger"],
+            planted["uuid"],
+            ended_by_step,
         )
         print(f"=== {where}: the kernel log from the step's start to the decoy's first line ===")
         print("\n".join(verdict.tail))
@@ -1036,6 +1041,8 @@ distroVm.buildVmTest {
         if verdict.dm_teardown:
             print(f"{where}: the device-mapper teardown's lines (kmsg-import): {verdict.dm_teardown}")
         print(f"{where}: journald's sockets before: {planted['sockets']!r}, after: {journald_sockets()!r}")
+        if verdict.closed:
+            print(f"{where}: PID 1 had closed these sockets before the late writer: {verdict.closed}")
         post = f"NAILSPOST{planted['mark']}"
         vm.succeed(f"logger -t post {post}")
         vm.wait_until_succeeds(f"journalctl --no-pager -o cat | grep -qF {post}", timeout=30)
@@ -1500,7 +1507,9 @@ distroVm.buildVmTest {
         )
         pid1_health("after emergency")
         session.assert_decoy_root(vm)
-        assert_quiet_tail("the emergency's way back", planted)
+        # The emergency kills every unit of the session itself, the
+        # lingering one among them, before the way back's last step.
+        assert_quiet_tail("the emergency's way back", planted, ended_by_step=False)
         check_failed_units("on the decoy after the emergency", "afterReturn")
         vm.fail("mountpoint -q /mnt/data")
         for tree in canary_trees:
