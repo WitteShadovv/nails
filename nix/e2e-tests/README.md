@@ -1275,18 +1275,19 @@ before the entry, held against those that changed across either plain
 soft-reboot, the login record files aside, and a unit's private temporary
 folder counted by its unit, since each start of the unit names a new one. A
 path the decoy's own start changes at every switch therefore shows nothing of
-a session. A change a run of the decoy's own timer made after the switch, as
-the decoy's PID 1 reports the run, counts as the decoy's too, but only when it
-came while that run did and the unit makes the same change when the gate
-starts it once more by hand, or it is the stamp of the run's persistent timer,
-dated at its trigger: a daily timer of the image's that came due while the
-session ran catches up at the decoy's start, as it would after any switch. A
-change of a timer's run in only one of the plain soft-reboots does not widen
-what a way back may change. A timer the gate adds before the first entry,
-set to catch up at the next start of PID 1, is the positive control: its
-write after the first way back must count as its run's. A change of a timer's
-run before the switch, in the seconds between the time the comparison counts
-from and the entry, is not explained and still fails the check. In this driver, once auditd is off, the gate masks
+a session. A change a run of one of the decoy's own timers made counts as the
+decoy's too, but only when that run, as the decoy's PID 1 reports it, started
+once the way back had begun, the change came while it ran, and the unit makes
+the same change when the gate starts it once more by hand, or it is the stamp
+of the run's persistent timer, dated at its trigger: a daily timer of the
+image's that came due while the session ran catches up at the decoy's start,
+as it would after any switch. A change of a timer's run in only one of the
+plain soft-reboots does not widen what a way back may change. A timer the
+gate adds before the first entry, set to catch up at the next start of PID 1,
+is the positive control: its write after the first way back must count as its
+run's. A change of a timer's run before the switch, in the seconds between the
+time the comparison counts from and the entry, is not explained and still
+fails the check. In this driver, once auditd is off, the gate masks
 `audit-rules.service`, which loads the image's rules at every start and with
 them one that keeps every process from being audited, and has the kernel
 record every program run from below `/run`, with the domain it runs in, and
