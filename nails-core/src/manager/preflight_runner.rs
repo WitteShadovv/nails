@@ -238,10 +238,11 @@ pub fn build_registry<F: Filesystem>(
         inputs.systemd_version,
         inputs.host_profile.clone(),
     )));
-    // NAILS starts the programs it runs as root, and keeps PID 1's reads of
-    // the decoy, without access times through mount_setattr (Linux 5.12) and
-    // FUSE's allow_sys_admin_access (Linux 6.0): a kernel before Linux 6.1 is
-    // refused, as is one whose release cannot be read or told.
+    // NAILS starts the programs it runs as root, and keeps PID 1's reads on
+    // the decoy's local disk mounts during the entry, without access times
+    // through mount_setattr (Linux 5.12): a kernel before Linux 6.1, the
+    // oldest NAILS supports, is refused, as is one whose release cannot be
+    // read or told.
     registry.add_check(Box::new(KernelVersionCheck::new()));
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),

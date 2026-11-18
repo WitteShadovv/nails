@@ -21,8 +21,9 @@
 //!    refused when a guard does not hold once loaded, or where the copy takes
 //!    a label, when PID 1 starts `systemd-soft-reboot.service` in an
 //!    `SELinuxContext=` of its own. From the reload to the end of step 9 the
-//!    decoy's mounts that keep access times are `noatime` ([`quiet_mounts`]),
-//!    so nothing PID 1 reads for the entry gets a new access time;
+//!    decoy's local disk mounts that keep access times are `noatime`
+//!    ([`quiet_mounts`]), so nothing PID 1 reads on them for the entry gets a
+//!    new access time;
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume. Before it is mounted the operator's home
 //!    is made in the fresh-home persona, and in either persona the directories

@@ -3,8 +3,8 @@
 
 //! The window of an entry (see [`super`]): from the first reload of the
 //! service manager to the second, at the end of the entry, the decoy's
-//! mounts that keep access times are `noatime` ([`QuietMounts`]), so that
-//! nothing PID 1 reads for the entry gets a new access time.
+//! local disk mounts that keep access times are `noatime` ([`QuietMounts`]),
+//! so that nothing PID 1 reads on them for the entry gets a new access time.
 
 use super::EntryHost;
 use crate::error::{NailsError, Result};
@@ -12,9 +12,9 @@ use crate::session::layout::Paths;
 use nails_teardown::noatime::QuietMounts;
 use nails_teardown::whole_root::plan::Plan;
 
-/// Make the decoy's mounts that keep access times `noatime` for the rest of
-/// the entry ([`QuietMounts`]); where they cannot be made so, the entry is
-/// refused before anything is reloaded.
+/// Make the decoy's local disk mounts that keep access times `noatime` for
+/// the rest of the entry ([`QuietMounts`]); where one cannot be made so, the
+/// entry is refused before anything is reloaded.
 ///
 /// PID 1 reads the decoy's unit files and runs its generators for a reload,
 /// and reads the files of a unit it has not loaded for a question about it.

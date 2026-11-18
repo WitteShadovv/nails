@@ -25,7 +25,8 @@
 //! time, on such a btrfs filesystem too: a child's mount namespace, the quiet
 //! mounts and the quiet copy of a tree change mounts as only root of the
 //! initial namespace may. The two loop driver tests also mount a FUSE
-//! filesystem through `/dev/fuse`, which no daemon serves:
+//! filesystem through `/dev/fuse`, which no daemon serves, and the test of the
+//! reads mounts such a one and one that a thread of the test serves:
 //!
 //! ```sh
 //! cargo test -p nails-core --test privileged_mounts --no-run
@@ -944,12 +945,6 @@ impl SilentFuse {
     /// One of type `fstype` that the account `owner` (its user and group)
     /// mounted without `allow_other`, as `fusermount3` mounts a user's.
     fn mount_as(at: &Path, fstype: &str, owner: u32, flags: MsFlags) -> Self {
-        Self::mount_with(at, fstype, owner, flags, "")
-    }
-
-    /// One as [`SilentFuse::mount_as`] mounts it, with `extra` added to its
-    /// options (`,allow_other`).
-    fn mount_with(at: &Path, fstype: &str, owner: u32, flags: MsFlags, extra: &str) -> Self {
         use std::os::fd::AsRawFd;
         let device = std::fs::OpenOptions::new()
             .read(true)
@@ -957,7 +952,7 @@ impl SilentFuse {
             .open("/dev/fuse")
             .expect("open /dev/fuse");
         let options = format!(
-            "fd={},rootmode=40000,user_id={owner},group_id={owner}{extra}",
+            "fd={},rootmode=40000,user_id={owner},group_id={owner}",
             device.as_raw_fd()
         );
         nix::mount::mount(
@@ -972,15 +967,6 @@ impl SilentFuse {
             device: Some(device),
             at: at.to_path_buf(),
         }
-    }
-}
-
-impl SilentFuse {
-    /// End the daemon as a crash does: the device closes, the kernel ends
-    /// the connection, and the mount stays, failing every request with
-    /// `ENOTCONN`.
-    fn end_daemon(&mut self) {
-        drop(self.device.take());
     }
 }
 
@@ -1263,173 +1249,208 @@ fn a_record_gives_a_killed_window_s_modes_back(
     assert!(has("relatime"), "{}", options());
 }
 
-/// A user's FUSE mount without `allow_other` (a desktop's `gvfsd-fuse` or
-/// document portal, an `sshfs`), which the kernel keeps root and so PID 1
-/// out of, stays out of the quiet mounts: they open beside it, leave it
-/// `relatime` and close, while `disk`, a mount that keeps access times
-/// `relatime` (`has` and `options` read its options), is `noatime` between.
-fn a_user_s_fuse_mount_stays_out_of_the_window(
-    at: &Path,
-    disk: &Path,
-    has: &dyn Fn(&str) -> bool,
-    options: &dyn Fn() -> String,
+/// What the daemon of an [`AnsweringFuse`] does with a request.
+const LIVE: u8 = 0;
+/// It reads each request, counts it and never answers it, as a hung daemon.
+const HUNG: u8 = 1;
+/// It closes the device, as a daemon that died: the kernel ends the
+/// connection and fails every request with `ENOTCONN`.
+const DEAD: u8 = 2;
+
+/// A FUSE filesystem everyone may enter (`allow_other`, as `bindfs` or
+/// `sshfs -o allow_other` mounts it), served by a thread of the test that
+/// answers what a mount inside it needs: its root and one directory,
+/// `inner`, whose lookup the kernel may keep for no time at all, so that
+/// every later lookup of `inner` asks the daemon again. The daemon can then
+/// hang ([`HUNG`]) or die ([`DEAD`]).
+struct AnsweringFuse {
+    state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// The lookups of `inner` it answered.
+    answered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The requests it read while hung.
+    unanswered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    daemon: Option<std::thread::JoinHandle<()>>,
+    at: PathBuf,
+}
+
+impl AnsweringFuse {
+    fn mount(at: &Path) -> Self {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::sync::atomic::{AtomicU8, AtomicUsize};
+        let device = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open("/dev/fuse")
+            .expect("open /dev/fuse");
+        let options = format!(
+            "fd={},rootmode=40000,user_id=0,group_id=0,allow_other",
+            device.as_raw_fd()
+        );
+        nix::mount::mount(
+            Some("nails-test"),
+            at,
+            Some("fuse.nailstest"),
+            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+            Some(options.as_str()),
+        )
+        .expect("mount a FUSE filesystem");
+        let state = std::sync::Arc::new(AtomicU8::new(LIVE));
+        let answered = std::sync::Arc::new(AtomicUsize::new(0));
+        let unanswered = std::sync::Arc::new(AtomicUsize::new(0));
+        let daemon = {
+            let (state, answered, unanswered) =
+                (state.clone(), answered.clone(), unanswered.clone());
+            std::thread::spawn(move || serve(device, &state, &answered, &unanswered))
+        };
+        Self {
+            state,
+            answered,
+            unanswered,
+            daemon: Some(daemon),
+            at: at.to_path_buf(),
+        }
+    }
+
+    fn set(&self, state: u8) {
+        self.state.store(state, std::sync::atomic::Ordering::SeqCst);
+        if state == DEAD {
+            // Wait for the device to close, so that the connection is over.
+            while !self
+                .daemon
+                .as_ref()
+                .is_none_or(|daemon| daemon.is_finished())
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    fn answered(&self) -> usize {
+        self.answered.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn unanswered(&self) -> usize {
+        self.unanswered.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for AnsweringFuse {
+    fn drop(&mut self) {
+        self.set(DEAD);
+        let _ = Mounts.unmount(&self.at, true);
+    }
+}
+
+/// The attributes of a directory, as FUSE's `struct fuse_attr` (88 bytes).
+fn fuse_dir_attr(node: u64) -> Vec<u8> {
+    let mut attr = Vec::with_capacity(88);
+    attr.extend_from_slice(&node.to_ne_bytes()); // ino
+    attr.extend_from_slice(&[0; 5 * 8 + 3 * 4]); // size, blocks, times
+    attr.extend_from_slice(&0o040_755_u32.to_ne_bytes()); // mode
+    attr.extend_from_slice(&2_u32.to_ne_bytes()); // nlink
+    attr.extend_from_slice(&[0; 3 * 4]); // uid, gid, rdev
+    attr.extend_from_slice(&4096_u32.to_ne_bytes()); // blksize
+    attr.extend_from_slice(&0_u32.to_ne_bytes()); // flags
+    attr
+}
+
+/// The daemon of an [`AnsweringFuse`]: it answers `FUSE_INIT`, a lookup of
+/// `inner` in the root (node 2, valid for no time) and the attributes of
+/// either, needs no answer for a `FORGET` or an `INTERRUPT`, and answers
+/// anything else with `ENOSYS`, while `state` is [`LIVE`].
+fn serve(
+    mut device: std::fs::File,
+    state: &std::sync::atomic::AtomicU8,
+    answered: &std::sync::atomic::AtomicUsize,
+    unanswered: &std::sync::atomic::AtomicUsize,
 ) {
-    use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
-    use nails_teardown::noatime::QuietMounts;
-    let parameter = std::fs::read_to_string("/sys/module/fuse/parameters/allow_sys_admin_access")
-        .expect("read the FUSE module's allow_sys_admin_access");
-    assert_eq!(
-        parameter.trim(),
-        "N",
-        "the kernel's default: FUSE lets CAP_SYS_ADMIN no further than root"
-    );
-    let point = at.join("user-fuse");
-    mkdir(&point);
-    let fuse = SilentFuse::mount_as(
-        &point,
-        "fuse.nailstest",
-        1000,
-        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-    );
-    let fuse_has = |word: &str| {
-        top_mount_at(&read_mountinfo().expect("read mountinfo"), &point)
-            .expect("the FUSE mount")
-            .mount_opts
-            .split(',')
-            .any(|option| option == word)
-    };
-    assert!(fuse_has("relatime"));
-    let denied = std::fs::metadata(&point).expect_err("root may not look into a user's FUSE mount");
-    assert_eq!(
-        denied.kind(),
-        std::io::ErrorKind::PermissionDenied,
-        "{denied}"
-    );
-
-    let mut recorded = Vec::new();
-    let quiet = QuietMounts::open_recorded(|records| {
-        recorded = records.to_vec();
-        Ok(())
-    })
-    .expect("the window opens beside the FUSE mount");
-    assert!(
-        recorded.iter().any(|record| record.mount_point == disk),
-        "the disk is in the record: {recorded:?}"
-    );
-    assert!(
-        !recorded.iter().any(|record| record.mount_point == point),
-        "the FUSE mount is not: {recorded:?}"
-    );
-    assert!(has("noatime"), "{}", options());
-    assert!(fuse_has("relatime"), "the FUSE mount is left as it is");
-    quiet.close().expect("give the modes back");
-    assert!(has("relatime"), "{}", options());
-    assert!(fuse_has("relatime"));
-    drop(fuse);
-    std::fs::remove_dir(&point).expect("remove the FUSE mount point");
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::sync::atomic::Ordering::SeqCst;
+    let mut buffer = vec![0_u8; 1 << 20];
+    loop {
+        if state.load(SeqCst) == DEAD {
+            drop(device);
+            return;
+        }
+        let mut fds = [PollFd::new(device.as_fd(), PollFlags::POLLIN)];
+        if poll(&mut fds, PollTimeout::from(50_u16)).unwrap_or(0) == 0 {
+            continue;
+        }
+        let length = match device.read(&mut buffer) {
+            Ok(length) if length >= 40 => length,
+            Ok(_) => continue,
+            Err(error) if error.raw_os_error() == Some(nix::libc::ENODEV) => return,
+            Err(_) => continue,
+        };
+        let word = |at: usize| u32::from_ne_bytes(buffer[at..at + 4].try_into().expect("4 bytes"));
+        let long = |at: usize| u64::from_ne_bytes(buffer[at..at + 8].try_into().expect("8 bytes"));
+        let (opcode, unique, node) = (word(4), long(8), long(16));
+        if state.load(SeqCst) == HUNG {
+            // A FORGET, a BATCH_FORGET or an INTERRUPT asks for no answer.
+            if !matches!(opcode, 2 | 36 | 42) {
+                unanswered.fetch_add(1, SeqCst);
+            }
+            continue;
+        }
+        let name = &buffer[40..length];
+        let (error, body): (i32, Vec<u8>) = match opcode {
+            // FUSE_INIT: protocol 7.31, writes of at most 4 KiB.
+            26 => {
+                let mut init = Vec::with_capacity(64);
+                for value in [7_u32, 31, 0, 0] {
+                    init.extend_from_slice(&value.to_ne_bytes());
+                }
+                init.extend_from_slice(&[0; 4]); // max_background, congestion
+                init.extend_from_slice(&4096_u32.to_ne_bytes()); // max_write
+                init.extend_from_slice(&1_u32.to_ne_bytes()); // time_gran
+                init.resize(64, 0);
+                (0, init)
+            }
+            // FUSE_LOOKUP of `inner` in the root.
+            1 if node == 1 && name.starts_with(b"inner\0") => {
+                answered.fetch_add(1, SeqCst);
+                let mut entry = Vec::with_capacity(128);
+                entry.extend_from_slice(&2_u64.to_ne_bytes()); // nodeid
+                entry.extend_from_slice(&[0; 3 * 8 + 2 * 4]); // generation, validity
+                entry.extend_from_slice(&fuse_dir_attr(2));
+                (0, entry)
+            }
+            1 => (-nix::libc::ENOENT, Vec::new()),
+            // FUSE_GETATTR.
+            3 => {
+                let mut out = vec![0_u8; 16]; // valid for no time
+                out.extend_from_slice(&fuse_dir_attr(node));
+                (0, out)
+            }
+            // FUSE_FORGET, FUSE_INTERRUPT, FUSE_BATCH_FORGET.
+            2 | 36 | 42 => continue,
+            _ => (-nix::libc::ENOSYS, Vec::new()),
+        };
+        let mut reply = Vec::with_capacity(16 + body.len());
+        let total = u32::try_from(16 + body.len()).expect("a short reply");
+        reply.extend_from_slice(&total.to_ne_bytes());
+        reply.extend_from_slice(&error.to_ne_bytes());
+        reply.extend_from_slice(&unique.to_ne_bytes());
+        reply.extend_from_slice(&body);
+        let _ = device.write_all(&reply);
+    }
 }
 
-/// A disk mount whose mount point a user's FUSE mount covers, as an fstab
-/// mount inside a home does that a user's FUSE mount then covers, stays out of
-/// the window and as it is: root's lookup of its point fails inside FUSE, as
-/// PID 1's does, so PID 1 reads nothing on it either. The disk at `disk`,
-/// `relatime`, is in the window all the same.
-fn a_disk_below_a_user_s_fuse_mount_stays_out_of_the_window(at: &Path, disk: &Path) {
+/// FUSE mounts, and the mounts inside them, stay out of the quiet mounts and
+/// as they are, and the window asks their daemons nothing: it opens and
+/// closes within ten seconds while `disk`, a btrfs mount that keeps access
+/// times `relatime`, is `noatime` between. Below `disk` lie a user's FUSE
+/// mount without `allow_other` that no daemon serves, with a disk mount it
+/// covers at `user-fuse/inner`, and an [`AnsweringFuse`] everyone may enter,
+/// with a disk mount inside it at `everyones/inner`, whose every lookup asks
+/// its daemon: first one that never answers, then one that is gone.
+fn fuse_mounts_and_what_is_inside_them_stay_out_of_the_window(disk: &Path) {
     use nails_teardown::mountinfo::read_mountinfo;
     use nails_teardown::noatime::QuietMounts;
-    let source = disk.join("below");
-    let outer = at.join("outer");
-    let inner = outer.join("inner");
-    mkdir(&source);
-    mkdir(&inner);
-    nix::mount::mount(
-        Some(source.as_path()),
-        &inner,
-        None::<&str>,
-        MsFlags::MS_BIND,
-        None::<&str>,
-    )
-    .expect("bind a directory of the disk below the later FUSE mount");
-    let inner_has = |word: &str| {
-        read_mountinfo()
-            .expect("read mountinfo")
-            .iter()
-            .rfind(|mount| mount.mount_point == inner)
-            .expect("the mount below the FUSE mount")
-            .mount_opts
-            .split(',')
-            .any(|option| option == word)
-    };
-    assert!(inner_has("relatime"));
-    let fuse = SilentFuse::mount_as(
-        &outer,
-        "fuse.nailstest",
-        1000,
-        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-    );
-    let denied =
-        std::fs::metadata(&inner).expect_err("root may not look through a user's FUSE mount");
-    assert_eq!(
-        denied.kind(),
-        std::io::ErrorKind::PermissionDenied,
-        "{denied}"
-    );
-
-    let mut recorded = Vec::new();
-    let quiet = QuietMounts::open_recorded(|records| {
-        recorded = records.to_vec();
-        Ok(())
-    })
-    .expect("the window opens beside the mount below the FUSE mount");
-    assert!(
-        recorded.iter().any(|record| record.mount_point == disk),
-        "the disk is in the record: {recorded:?}"
-    );
-    assert!(
-        !recorded
-            .iter()
-            .any(|record| record.mount_point == inner || record.mount_point == outer),
-        "neither the FUSE mount nor the mount below it is: {recorded:?}"
-    );
-    assert!(inner_has("relatime"), "the mount below is left as it is");
-    quiet.close().expect("give the modes back");
-    assert!(inner_has("relatime"));
-    drop(fuse);
-    nix::mount::umount(&inner).expect("unmount the mount below");
-    std::fs::remove_dir_all(&outer).expect("remove the FUSE mount point");
-    std::fs::remove_dir(&source).expect("remove the bound directory");
-}
-
-/// The window asks no FUSE daemon anything: beside a FUSE mount that
-/// everyone may enter (`allow_other`, as an `sshfs` or `rclone` mounts it)
-/// and that no daemon answers, first one that never answers and then one
-/// that is gone, it opens and closes within ten seconds. It makes that mount
-/// `noatime` and gives it its mode back, and it leaves a disk mount that the
-/// FUSE mount covers as it is, for no lookup reaches that one. A full stat
-/// of the FUSE mount, which asks the daemon, fails once the daemon is gone.
-fn a_fuse_daemon_that_does_not_answer_neither_stops_nor_holds_the_window(at: &Path, disk: &Path) {
-    use nails_teardown::mountinfo::read_mountinfo;
-    use nails_teardown::noatime::QuietMounts;
-    let source = disk.join("covered");
-    let outer = at.join("everyones");
-    let inner = outer.join("inner");
-    mkdir(&source);
-    mkdir(&inner);
-    nix::mount::mount(
-        Some(source.as_path()),
-        &inner,
-        None::<&str>,
-        MsFlags::MS_BIND,
-        None::<&str>,
-    )
-    .expect("bind a directory of the disk below the later FUSE mount");
-    let mut fuse = SilentFuse::mount_with(
-        &outer,
-        "fuse.nailstest",
-        1000,
-        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-        ",allow_other",
-    );
     /// The options of each mount at `point`, the topmost last.
     fn modes(point: &Path) -> Vec<String> {
         read_mountinfo()
@@ -1445,14 +1466,53 @@ fn a_fuse_daemon_that_does_not_answer_neither_stops_nor_holds_the_window(at: &Pa
             .last()
             .is_some_and(|options| options.split(',').any(|option| option == word))
     }
-    for daemon in ["one that never answers", "one that is gone"] {
-        if daemon == "one that is gone" {
-            fuse.end_daemon();
-            let gone = std::fs::metadata(&outer).expect_err("a full stat asks the daemon");
-            assert_eq!(gone.raw_os_error(), Some(nix::libc::ENOTCONN), "{gone}");
-        }
+    let bind = |source: &Path, target: &Path| {
+        nix::mount::mount(
+            Some(source),
+            target,
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .expect("bind a directory of the disk");
+    };
+    let source = disk.join("source");
+    let user = disk.join("user-fuse");
+    let covered = user.join("inner");
+    let everyones = disk.join("everyones");
+    let inside = everyones.join("inner");
+    mkdir(&source);
+    mkdir(&covered);
+    mkdir(&everyones);
+    let fuse = AnsweringFuse::mount(&everyones);
+    bind(&source, &inside);
+    // The disk mount the user's FUSE mount covers, mounted before it.
+    bind(&source, &covered);
+    let user_fuse = SilentFuse::mount_as(
+        &user,
+        "fuse.nailstest",
+        1000,
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+    );
+    // Every lookup of the disk mount inside asks the daemon.
+    let before = fuse.answered();
+    assert!(std::fs::metadata(&inside).expect("look it up").is_dir());
+    assert!(fuse.answered() > before, "a lookup of it asks the daemon");
+    let out = [&user, &covered, &everyones, &inside];
+    for point in out {
+        assert!(
+            has(point, "relatime"),
+            "{}: {:?}",
+            point.display(),
+            modes(point)
+        );
+    }
+
+    for (daemon, state) in [("one that never answers", HUNG), ("one that is gone", DEAD)] {
+        fuse.set(state);
         let (sent, answer) = std::sync::mpsc::channel();
-        let watched = (outer.clone(), inner.clone());
+        let watched: Vec<PathBuf> = out.iter().map(|point| point.to_path_buf()).collect();
+        let disk_point = disk.to_path_buf();
         std::thread::spawn(move || {
             let mut recorded = Vec::new();
             let opened = QuietMounts::open_recorded(|records| {
@@ -1460,8 +1520,10 @@ fn a_fuse_daemon_that_does_not_answer_neither_stops_nor_holds_the_window(at: &Pa
                 Ok(())
             });
             let outcome = opened.map(|quiet| {
-                let during = (has(&watched.0, "noatime"), has(&watched.1, "relatime"));
-                (quiet.close(), during)
+                let during: Vec<bool> =
+                    watched.iter().map(|point| has(point, "relatime")).collect();
+                let disk_quiet = has(&disk_point, "noatime");
+                (quiet.close(), during, disk_quiet)
             });
             let _ = sent.send((outcome, recorded));
         });
@@ -1470,25 +1532,43 @@ fn a_fuse_daemon_that_does_not_answer_neither_stops_nor_holds_the_window(at: &Pa
             drop(fuse);
             panic!("the window waits on a FUSE daemon: {daemon}");
         };
-        let (closed, (fuse_quiet, inner_kept)) =
+        let (closed, during, disk_quiet) =
             outcome.unwrap_or_else(|error| panic!("the window opens beside {daemon}: {error}"));
         closed.expect("give the modes back");
+        if state == HUNG {
+            assert_eq!(fuse.unanswered(), 0, "the window asked the hung daemon");
+        }
+        assert!(disk_quiet, "the disk is noatime in the window");
         assert!(
-            recorded.iter().any(|record| record.mount_point == outer),
-            "the FUSE mount is in the record: {recorded:?}"
+            recorded.iter().any(|record| record.mount_point == disk),
+            "the disk is in the record: {recorded:?}"
         );
-        assert!(
-            !recorded.iter().any(|record| record.mount_point == inner),
-            "the covered disk mount is not: {recorded:?}"
-        );
-        assert!(fuse_quiet, "the FUSE mount is noatime in the window");
-        assert!(inner_kept, "the covered disk mount is left as it is");
-        assert!(has(&outer, "relatime"), "{:?}", modes(&outer));
-        assert!(has(&inner, "relatime"), "{:?}", modes(&inner));
+        for (point, kept) in out.iter().zip(during) {
+            assert!(
+                !recorded.iter().any(|record| record.mount_point == **point),
+                "{} is not in the record: {recorded:?}",
+                point.display()
+            );
+            assert!(kept, "{} stays relatime in the window", point.display());
+            assert!(
+                has(point, "relatime"),
+                "{}: {:?}",
+                point.display(),
+                modes(point)
+            );
+        }
     }
+    // Gone, the daemon fails a lookup of the mount inside.
+    let gone = std::fs::metadata(&inside).expect_err("a lookup asks the daemon");
+    assert_eq!(gone.raw_os_error(), Some(nix::libc::ENOTCONN), "{gone}");
+
     drop(fuse);
-    nix::mount::umount(&inner).expect("unmount the covered mount");
-    std::fs::remove_dir_all(&outer).expect("remove the FUSE mount point");
+    drop(user_fuse);
+    Mounts
+        .unmount(&covered, true)
+        .expect("unmount the covered disk mount");
+    std::fs::remove_dir_all(&user).expect("remove the user's FUSE mount point");
+    std::fs::remove_dir(&everyones).expect("remove the FUSE mount point");
     std::fs::remove_dir(&source).expect("remove the bound directory");
 }
 
@@ -1635,9 +1715,7 @@ fn quiet_children_mounts_and_trees_change_no_access_time() {
     nix::mount::umount(&bound).expect("unmount the bind");
 
     a_record_gives_a_killed_window_s_modes_back(&disk, &has, &options);
-    a_user_s_fuse_mount_stays_out_of_the_window(&at, &disk, &has, &options);
-    a_disk_below_a_user_s_fuse_mount_stays_out_of_the_window(&at, &disk);
-    a_fuse_daemon_that_does_not_answer_neither_stops_nor_holds_the_window(&at, &disk);
+    fuse_mounts_and_what_is_inside_them_stay_out_of_the_window(&disk);
 
     // A lookup through a quiet copy of the tree follows a symlink without
     // updating the link's access time, where a plain lookup updates it.
