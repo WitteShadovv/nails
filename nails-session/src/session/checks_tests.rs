@@ -749,10 +749,10 @@ fn a_refusal_of_a_path_not_looked_up_leaves_the_fix_to_the_guard() {
         below: None,
     }];
     let skipped = |target: &Path| target == Path::new("/usr/local/lib/systemd/system");
-    let result = judge_fstab_not_looked_up(&refused, &[], &skipped);
+    let result = judge_fstab_not_looked_up(&refused, &[], &[], &skipped);
     assert!(result.is_fail());
     assert_eq!(result.remediation(), None);
-    let result = judge_fstab_not_looked_up(&refused, &[], &|_| false);
+    let result = judge_fstab_not_looked_up(&refused, &[], &[], &|_| false);
     assert!(
         result
             .remediation()
@@ -840,4 +840,66 @@ fn the_decoy_s_units_outside_its_fstab_are_decided_as_activation_decides_them() 
     let decisions = decoy_units(dirs, &[], &mounts, Path::new("/mnt/data"));
     assert_eq!(decisions.len(), 1, "{decisions:?}");
     assert_eq!(decisions[0].masked_units(), ["srv-scratch.mount"]);
+}
+
+/// A noauto line of a decoy disk whose mount a tmpfs mount unit that
+/// local-fs.target requires needs (`Requires=`) is skipped in the hidden
+/// session where its disk is there, not masked: `check` says skipped. It said
+/// masked, as the decision for the line alone does. Where the target only
+/// wants the tmpfs, the line stays masked, and `check` says so.
+#[test]
+fn check_says_skipped_for_a_noauto_line_the_hidden_session_skips() {
+    for (links, skipped) in [("requires", true), ("wants", false)] {
+        let root = tempfile::tempdir().unwrap();
+        let run = tempfile::tempdir().unwrap();
+        let units = root.path().join("etc/systemd/system");
+        std::fs::create_dir_all(units.join(format!("local-fs.target.{links}"))).unwrap();
+        std::fs::write(
+            units.join("r-t9.mount"),
+            "[Unit]\nRequires=r-a.mount\nAfter=r-a.mount\n[Mount]\nWhat=tmpfs\nWhere=/r/t9\n\
+             Type=tmpfs\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "../r-t9.mount",
+            units.join(format!("local-fs.target.{links}/r-t9.mount")),
+        )
+        .unwrap();
+        let dirs = crate::session::mount_units::UnitDirs {
+            root: root.path(),
+            run: run.path(),
+            guard: None,
+        };
+        let entries = parse_fstab("/dev/vdy1 /r/a ext4 noauto 0 2\n");
+        let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+        let hidden = Path::new("/mnt/data");
+        let mut decisions = policy::decide_all(&entries, &mounts, hidden, &|_| true);
+        let native = mount_units::read(dirs).unwrap();
+        let unit_decisions = mount_units::decide(
+            dirs,
+            &native,
+            &decisions,
+            &mounts,
+            hidden,
+            &|_| true,
+            Path::new("/sys"),
+        );
+        decisions.extend(unit_decisions);
+        let (kept, unskipped) = mount_units::kept_off(dirs, &entries, &decisions, &|_| true);
+        let result = judge_fstab_not_looked_up(&decisions, &kept.skips, &unskipped, &|_| false);
+        let message = result.message();
+        assert_eq!(
+            message.contains(
+                "/r/a: skipped (noauto, but a unit that pulls it in would have the hidden \
+                 session mount it read-write)"
+            ),
+            skipped,
+            "{links}: {result:?}"
+        );
+        assert_eq!(
+            message.contains("/r/a: masked"),
+            !skipped,
+            "{links}: {result:?}"
+        );
+    }
 }
