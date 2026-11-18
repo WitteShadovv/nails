@@ -1115,7 +1115,10 @@ of this changelog for that version becomes the release notes word for word, and
   stays closed, as it would take audit records past the cursor, and where the kernel's audit is on
   the decoy's start opens it anew. A process a soft-reboot leaves running loses its standard
   output to the journal, and journald's socket files and their units' start time date from the
-  way back (residue catalog row `journal-socket-carry`). The empty `/run/nextroot` the switch
+  way back. On an SELinux host the new native socket carries journald's label, and a confined
+  service of the decoy that the policy does not let send to it logs an AVC denial when it sends to
+  it, as systemd-oomd and systemd-hwdb do on Fedora 44 and 45 (residue catalog row
+  `journal-socket-carry`). The empty `/run/nextroot` the switch
   left until power-off, which a boot never has, is removed at the decoy's start. The kernel's lines of a device-mapper hidden volume's
   teardown and PID 1's own last generic lines still follow the cursor (residue catalog row
   `kmsg-import`).
