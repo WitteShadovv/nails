@@ -74,7 +74,10 @@
 //! is skipped as before. Where a boot target requires the units, the warning
 //! says it will not be reached ([`Decision::warning`]); where such an option
 //! on a masked `noauto` line may have a target require it, the warning says
-//! that target is then not reached.
+//! that target is then not reached. On a line the boot mounts, other than
+//! one for `/usr`, a backslash may hide a comma before `noauto` or `nofail`,
+//! so that nothing requires the line: the warning then says the same as for
+//! a `noauto` line, and the mask is not recorded as a required one.
 //!
 //! A mounted host share or overlay is overlaid rather than left to the hidden
 //! systemd because the next root must already hold its contents when PID 1
@@ -341,9 +344,12 @@ pub enum Unskippable {
     /// ([`super::mount_units`]).
     Unread,
     /// A `noauto` line masked for an option whose effect on what pulls the
-    /// line in NAILS does not read ([`reads_pulls_of`]): NAILS cannot tell
-    /// whether that option has a boot target require the line, and where it
-    /// does, the target is not reached. Not recorded as a required mask.
+    /// line in NAILS does not read ([`reads_pulls_of`]), or a line the boot
+    /// mounts, other than one for `/usr`, that is kept off and masked for an
+    /// option with a backslash, which may hide a comma before `noauto` or
+    /// `nofail` ([`mask_unread`]): NAILS cannot tell whether that option has
+    /// a boot target require the line, and where it does, the target is not
+    /// reached. Not recorded as a required mask.
     MayRequire,
 }
 
@@ -755,7 +761,11 @@ fn unread_pulls(entry: &FstabEntry, units: &Units) -> Option<String> {
 /// ([`unread_pulls`]): it may pull in more than NAILS can tell, which a skip
 /// would leave free to start, so the units are masked whatever pulls them in,
 /// and a boot target that requires them is not reached
-/// ([`Unskippable::Unread`]).
+/// ([`Unskippable::Unread`]). Where an option of the line holds a backslash,
+/// which may hide a comma before `noauto` or `nofail` that systemd reads, so
+/// that nothing requires the line, the target only may require them
+/// ([`Unskippable::MayRequire`]), unless the generator mounts the line
+/// whatever its options say ([`FstabEntry::is_mandatory`]).
 fn mask_unread(
     entry: &FstabEntry,
     kept: Vec<String>,
@@ -768,13 +778,18 @@ fn mask_unread(
     } else {
         entry.file.clone()
     };
+    let cause = if !entry.is_mandatory() && entry.options.iter().any(|o| o.contains('\\')) {
+        Unskippable::MayRequire
+    } else {
+        Unskippable::Unread
+    };
     Decision::Mask {
         target,
         units: kept,
         reason: format!("{reason}; NAILS cannot tell what its option {option} pulls in").into(),
         unreached: units.required_by.clone().map(|boot| Unreached {
             target: boot,
-            cause: Unskippable::Unread,
+            cause,
             origin: units.origin.clone(),
         }),
     }

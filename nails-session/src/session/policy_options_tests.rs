@@ -241,34 +241,40 @@ fn a_line_a_named_unit_pulls_in_is_kept_off_as_before() {
 /// read, or one with a backslash, is masked rather than skipped:
 /// the option may pull in units that act on the disk, which a skip would
 /// leave free to start. The warning says the target that requires it is not
-/// reached.
+/// reached, or, for a backslash, which may hide a comma before `noauto` or
+/// `nofail`, that the target may require it.
 #[test]
 fn a_mounted_at_boot_line_with_a_systemd_option_nails_does_not_read_is_masked() {
-    for (line, units, named) in [
+    for (line, units, named, cause) in [
         (
             "/dev/vdb1 /opt ext4 defaults,x-systemd.nails-probe=1 0 0",
             &["opt.mount", "opt.automount"][..],
             "x-systemd.nails-probe",
+            Unskippable::Unread,
         ),
         (
             "/dev/vdb1 /opt ext4 defaults,x-initrd.attach 0 0",
             &["opt.mount", "opt.automount"],
             "x-initrd.attach",
+            Unskippable::Unread,
         ),
         (
             "/dev/vdb1 /opt ext4 defaults,x-systemd.requires=a\\054b.service 0 0",
             &["opt.mount", "opt.automount"],
             "x-systemd.requires",
+            Unskippable::MayRequire,
         ),
         (
             "/dev/vdb1 /opt ext4 defaults,x-systemd.after=a\\,b.service 0 0",
             &["opt.mount", "opt.automount"],
             "x-systemd.after",
+            Unskippable::MayRequire,
         ),
         (
             "/dev/vdb2 none swap sw,x-systemd.nails-probe 0 0",
             &["dev-vdb2.swap"],
             "x-systemd.nails-probe",
+            Unskippable::Unread,
         ),
     ] {
         let decision = decide_line(line);
@@ -281,11 +287,7 @@ fn a_mounted_at_boot_line_with_a_systemd_option_nails_does_not_read_is_masked() 
             panic!("{line}: {decision:?}");
         };
         assert_eq!(masked, units, "{line}");
-        assert_eq!(
-            unreached.as_ref().map(|u| &u.cause),
-            Some(&Unskippable::Unread),
-            "{line}"
-        );
+        assert_eq!(unreached.as_ref().map(|u| &u.cause), Some(&cause), "{line}");
         assert!(
             reason(&decision).ends_with(&format!(
                 "; NAILS cannot tell what its option {named} pulls in"
@@ -303,6 +305,84 @@ fn a_mounted_at_boot_line_with_a_systemd_option_nails_does_not_read_is_masked() 
         panic!("not masked");
     };
     assert_eq!(unreached, None);
+}
+
+/// A backslash may hide a comma before `noauto` or `nofail`: systemd 260.5's
+/// fstab generator read `comment=x\054noauto` as `noauto` and linked the mount
+/// into no target. A line the boot mounts as NAILS reads it, masked for such
+/// an option, says that its target may require it, as a `noauto` line masked
+/// for one does, and the mask is not recorded as a required one. A line for
+/// `/usr`, which the generator mounts whatever its options say, still says
+/// that the target is not reached.
+#[test]
+fn a_mounted_at_boot_line_with_a_backslash_says_its_target_may_require_it() {
+    for (line, units, boot) in [
+        (
+            "/dev/vdj2 /p/j2 ext4 comment=x\\054noauto 0 0",
+            &["p-j2.mount", "p-j2.automount"][..],
+            "local-fs.target",
+        ),
+        (
+            "/dev/vdj3 /p/j3 ext4 comment=x\\054nofail 0 0",
+            &["p-j3.mount", "p-j3.automount"],
+            "local-fs.target",
+        ),
+        (
+            "/dev/vdj4 none swap sw,comment=x\\054nofail 0 0",
+            &["dev-vdj4.swap"],
+            "swap.target",
+        ),
+    ] {
+        for decision in [decide_line(line), decide_own(line)] {
+            let Decision::Mask {
+                units: masked,
+                unreached,
+                ..
+            } = &decision
+            else {
+                panic!("{line}: {decision:?}");
+            };
+            assert_eq!(masked, units, "{line}");
+            assert_eq!(
+                unreached,
+                &Some(Unreached {
+                    target: boot.into(),
+                    cause: Unskippable::MayRequire,
+                    origin: Origin::Fstab,
+                }),
+                "{line}"
+            );
+            let warning = decision.warning().expect("a warning");
+            assert!(
+                warning.contains(&format!(
+                    "where that option has {boot} or another unit require it, the hidden \
+                     session will not reach that unit"
+                )),
+                "{warning}"
+            );
+            assert!(!warning.contains("which requires it"), "{warning}");
+            assert!(
+                runtime_units(&[], std::slice::from_ref(&decision))
+                    .required_masks
+                    .is_empty(),
+                "{line}"
+            );
+        }
+    }
+    let usr = decide_line("/dev/vdj5 /usr ext4 comment=x\\054noauto 0 0");
+    let Decision::Mask { unreached, .. } = &usr else {
+        panic!("{usr:?}");
+    };
+    assert_eq!(
+        unreached.as_ref().map(|u| &u.cause),
+        Some(&Unskippable::Unread)
+    );
+    let warning = usr.warning().expect("a warning");
+    assert!(
+        warning.contains("the hidden session will not reach local-fs.target, which requires it"),
+        "{warning}"
+    );
+    assert_eq!(runtime_units(&[], &[usr]).required_masks.len(), 2);
 }
 
 /// systemd reads no option outside its own namespaces for what a unit pulls
