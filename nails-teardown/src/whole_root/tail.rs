@@ -285,8 +285,35 @@ pub fn listed_sockets(listing: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The units of [`REOPENED_SOCKETS`] active now, or `None` when `systemctl`
+/// cannot say.
+pub fn active_sockets(systemctl: &Path) -> Option<Vec<&'static str>> {
+    tools::run_output(systemctl, &active_sockets_call(), TOOL_BUDGET)
+        .map(|listing| listed_sockets(&listing))
+}
+
+/// The file in the runtime directory that keeps, from the entry to the way
+/// back, which of journald's sockets the decoy had listening as it left.
+pub const SOCKETS_NAME: &str = "journal-sockets";
+
+/// Keep at `path`, at the entry, which of journald's sockets the decoy has
+/// listening now, one per line, as a plain soft-reboot would carry them; the
+/// way back opens those again ([`empty_journal_sockets`]). Without an answer
+/// from `systemctl` no file stays, and the way back goes by the sockets
+/// listening when it runs. Returns whether the file was written.
+pub fn record_sockets(systemctl: &Path, path: &Path) -> bool {
+    let written = active_sockets(systemctl).is_some_and(|units| {
+        let text: String = units.iter().map(|unit| format!("{unit}\n")).collect();
+        crate::whole_root::plan::write_private_atomic(path, text.as_bytes()).is_ok()
+    });
+    if !written {
+        let _ = std::fs::remove_file(path);
+    }
+    written
+}
+
 /// The `systemctl` calls of [`empty_journal_sockets`], in order, where
-/// `active` are the units of [`REOPENED_SOCKETS`] active before: stop each of
+/// `active` are the units of [`REOPENED_SOCKETS`] to open again: stop each of
 /// [`JOURNAL_SOCKETS`] (a unit the system lacks fails alone), forget a
 /// failure of journald's (a failed service keeps its descriptor store, and
 /// PID 1 refuses to drop the store of a service that is not dead), drop that
@@ -326,16 +353,22 @@ pub fn drop_journal_streams(systemctl: &Path) -> bool {
 /// Discard what journald's sockets and descriptor store hold: stop the socket
 /// units, which closes them with their queues, and drop journald's stored
 /// streams (stopped by now, it no longer reads them); then open journald's
-/// own sockets again that were open before, empty, so that PID 1 carries
-/// them into the decoy listening as a plain soft-reboot does, and the
-/// decoy's start does not open them anew (its `Listening on` lines would
-/// tell a way back from a plain soft-reboot). Returns the calls that did not
-/// succeed.
-pub fn empty_journal_sockets(systemctl: &Path) -> Vec<String> {
-    // Without the listing none is opened again: the decoy's start opens them.
-    let active = tools::run_output(systemctl, &active_sockets_call(), TOOL_BUDGET)
-        .map(|listing| listed_sockets(&listing))
-        .unwrap_or_default();
+/// own sockets again, empty, so that PID 1 carries them into the decoy
+/// listening as a plain soft-reboot does, and the decoy's start does not open
+/// them anew (its `Listening on` lines would tell a way back from a plain
+/// soft-reboot). Those to open again are `decoy`, the sockets the decoy had
+/// listening at the entry ([`record_sockets`]): a socket the hidden root's
+/// shutdown closed is opened again too (PID 1 before systemd 258 fails a
+/// socket that receives anything once journald has stopped for the
+/// soft-reboot). Without that record, those listening now. Returns the calls
+/// that did not succeed.
+pub fn empty_journal_sockets(systemctl: &Path, decoy: Option<&[&'static str]>) -> Vec<String> {
+    // Without a record or a listing none is opened again: the decoy's start
+    // opens them.
+    let active = match decoy {
+        Some(units) => units.to_vec(),
+        None => active_sockets(systemctl).unwrap_or_default(),
+    };
     journal_socket_calls(&active)
         .into_iter()
         .filter(|args| tools::run(systemctl, args, TOOL_BUDGET) != tools::Outcome::Done)
