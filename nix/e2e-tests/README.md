@@ -1184,9 +1184,9 @@ step ended, and standard output lines of a process numbered at or above what
 the session pushed the counter to; a line logged after the way back in the
 decoy's journal, the positive control of that reading; no line of the
 decoy's start that opens one of journald's sockets anew, which a plain
-soft-reboot carries listening; each journald socket PID 1 holds, with its
-socket inode and its label, and the state and start time of journald's
-socket units as they were at the cold boot; `/run` at every depth,
+soft-reboot carries listening; each socket PID 1 listens on for journald,
+with its socket inode and its label, and the state and start time of
+journald's socket units as they were at the cold boot; `/run` at every depth,
 udev's device database aside, held against `/run` right before the entry and
 the shapes of what the plain soft-reboots added there (a new journal stream,
 session or unit file of the decoy's own start, its numbers left out), with
