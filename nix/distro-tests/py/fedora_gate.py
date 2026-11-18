@@ -187,6 +187,9 @@ ZRAM_STATE = (
     "systemctl show -p Id,LoadState,ActiveState,Result "
     "systemd-zram-setup@zram0.service dev-zram0.swap; true"
 )
+# The run of each zram-generator setup unit: a unit keeps its invocation ID
+# across a soft-reboot until it is started again.
+ZRAM_RUNS = "systemctl show -p Id,InvocationID 'systemd-zram-setup@*'; true"
 # The process numbers around the consoles' units: every process with its
 # parent, terminal and name, in the order of their numbers.
 PID_LISTING = "ps -e -o pid=,ppid=,tty=,comm= --sort=pid | head -n 900"
@@ -374,7 +377,8 @@ SOFT_REBOOT_FAILURES: dict[str, str] = {}
 # change disksize for initialized device), so the first control may leave one
 # failed; the power cycle after it starts the device anew. The hidden root
 # runs none of them, and the way back resets a zram device left so: none may
-# fail in a session or after a way back.
+# fail after a way back, and in a session only the decoy's own run that failed
+# as the switch stopped it, which the session shows failed.
 ZRAM_SETUP = "systemd-zram-setup@"
 # Where the entry masks zram-generator in the hidden root.
 ZRAM_MASK = "/run/systemd/system-generators/zram-generator"
@@ -647,6 +651,38 @@ def zram_shape(state: str) -> list[str]:
         elif "=" in words[0]:
             shape.append(line.strip())
     return sorted(shape)
+
+
+def unit_invocations(text: str) -> dict[str, str]:
+    """The invocation ID of each unit in a ``systemctl show -p
+    Id,InvocationID`` listing, by unit: units without one left out."""
+    found: dict[str, str] = {}
+    unit = ""
+    for line in text.splitlines():
+        key, _, value = line.strip().partition("=")
+        if key == "Id":
+            unit = value
+        elif key == "InvocationID" and unit and value:
+            found[unit] = value
+    return found
+
+
+def decoy_zram_failures(
+    failed: Iterable[str], before: str, hidden: str
+) -> dict[str, str]:
+    """The failed zram-generator setup units of a hidden session that are the
+    decoy's own runs, which failed as the switch stopped them (their reset
+    found the device busy): each has the invocation ID it had in the decoy
+    before the entry, so the hidden session never started it. Each with
+    why."""
+    decoy = unit_invocations(before)
+    now = unit_invocations(hidden)
+    return {
+        unit: "the decoy's own run, failed at its stop at the switch "
+        f"(invocation {now[unit]}); the hidden session never started it"
+        for unit in failed
+        if unit.startswith(ZRAM_SETUP) and unit in now and decoy.get(unit) == now[unit]
+    }
 
 
 def zram_marker_counts(text: str) -> dict[str, int | None]:
@@ -1169,16 +1205,25 @@ class Gate:
         )
         return [line.split()[0] for line in out.splitlines() if line.strip()]
 
-    def judge_failed(self, where: str, label: str) -> list[str]:
+    def judge_failed(
+        self, where: str, label: str, decoy_runs: str | None = None
+    ) -> list[str]:
         """The failed units of the root the gate is in: none of NAILS's, none
         the hidden root masks, and no other but one a soft-reboot is known to
         leave failed (:data:`SOFT_REBOOT_FAILURES`, empty now) or the first
-        plain soft-reboot left failed, a zram setup unit never. Each known one
-        is recorded with where it was seen, and the swap the root runs with
-        beside it."""
+        plain soft-reboot left failed, a zram setup unit never. In a hidden
+        session, where ``decoy_runs`` is the decoy's :data:`ZRAM_RUNS` before
+        the entry, a zram setup unit may be failed only as the decoy's own run
+        that failed at its stop at the switch (:func:`decoy_zram_failures`).
+        Each known one is recorded with where it was seen, and the swap the
+        root runs with beside it."""
         failed = self.failed_units(label)
         swap = self.fact(f"swap-{label}", "swapon --show --noheadings; true")
-        found = failed_units_problems(failed, self.allowed_failed)
+        allowed = dict(self.allowed_failed)
+        if decoy_runs is not None:
+            runs = self.fact(f"zram-runs-{label}", ZRAM_RUNS)
+            allowed.update(decoy_zram_failures(failed, decoy_runs, runs))
+        found = failed_units_problems(failed, allowed)
         self.check(f"{where}: no NAILS unit failed", not found["nails"], failed)
         self.check(
             f"{where}: no unit the hidden root keeps off failed",
@@ -1190,7 +1235,7 @@ class Gate:
             not found["other"],
             {
                 "failed": failed,
-                "known": {unit: self.allowed_failed[unit] for unit in found["known"]},
+                "known": {unit: allowed[unit] for unit in found["known"]},
                 "swap": swap,
             },
         )
@@ -1673,6 +1718,7 @@ class Gate:
         state["failed"] = self.failed_units(f"failed-before-{n}")
         self.fact(f"swap-before-{n}", "swapon --show --noheadings; true")
         self.fact(f"zram-before-{n}", ZRAM_STATE)
+        state["zram_runs"] = self.fact(f"zram-runs-before-{n}", ZRAM_RUNS)
         state["booleans"] = self.booleans(f"before-{n}")
         state["trees"] = self.unit_trees(f"before-{n}")
         return state
@@ -1821,7 +1867,9 @@ class Gate:
             ):
                 missing.append(upper)
         self.check(f"session {n}: each canary lands in its upper", not missing, missing)
-        failed = self.judge_failed(f"session {n}", f"failed-hidden-{n}")
+        failed = self.judge_failed(
+            f"session {n}", f"failed-hidden-{n}", state.get("zram_runs", "")
+        )
         self.facts[f"failed-hidden-{n}"] = failed
         zram = self.fact(f"zram-hidden-{n}", ZRAM_STATE)
         mask = self.fact(f"zram-mask-{n}", f"readlink {ZRAM_MASK}; true")

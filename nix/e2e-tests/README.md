@@ -1177,10 +1177,12 @@ operator does before activating.
 In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
 `/var`, the type a copied-up and a new file take, NAILS's processes outside
 `init_t` (the watcher's, and the sleep guard's in the second session), the
-overlay feature options, the canaries in their uppers, the failed units, no
-swap on a zram device with zram-generator masked in the hidden root, a marker
-held in more memory than its unit may keep in RAM found on no zram device, a
-login and a failed login that the session's own wtmp and btmp record, a
+overlay feature options, the canaries in their uppers, the failed units (a
+zram setup unit only as the decoy's own run, with the invocation it had before
+the entry, which failed as the switch stopped it), no swap on a zram device
+with zram-generator masked in the hidden root, a marker held in more memory
+than its unit may keep in RAM found on no zram device, a login and a failed
+login that the session's own wtmp and btmp record, a
 `security.selinux` round trip on the hidden volume, and a disk attached in
 the session read-only by the disk guard's udev rule, which records it: the
 watcher's sweep, the rule's fallback, runs once an hour in the gate's
