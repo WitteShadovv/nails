@@ -385,7 +385,7 @@ fn assess_with_dev_dir<F: Filesystem>(
     dev_dir: &Path,
     allow_discards: bool,
 ) -> CheckResult {
-    let content = match fs.read_file_content(Path::new(MOUNTINFO)) {
+    let content = match fs.read_file_bytes(Path::new(MOUNTINFO)) {
         Ok(content) => content,
         Err(error) => return no_mount_table(&error, allow_discards),
     };

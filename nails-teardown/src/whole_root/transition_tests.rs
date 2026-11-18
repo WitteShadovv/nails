@@ -78,6 +78,7 @@ impl World {
             pid_places: None,
             zram: None,
             now,
+            mounts_unread: None,
             mounts: parse_mountinfo(&table),
             network: self.network(),
             network_kernel: Some(std::sync::Arc::new(
@@ -2019,6 +2020,50 @@ fn fake_systemctl(dir: &Path, code: i32) -> PathBuf {
         0o755,
     );
     tool
+}
+
+/// A mount table the step cannot read made it take `/run/nextroot` for
+/// unmounted and return NothingToDo on both directions: no leftover guard on
+/// the way in, and no scrub, no records put back and no kmsg cursor on the
+/// way back. Now the way back powers off first and both refuse the switch.
+#[test]
+fn a_mount_table_the_step_cannot_read_refuses_the_switch_on_both_directions() {
+    for direction in [Direction::Enter, Direction::Leave] {
+        let world = World::new();
+        let mut plan = armed(direction);
+        if direction == Direction::Leave {
+            plan.entered_at = Some(900);
+            world.init_in_nextroot(&plan.decoy.init);
+        } else {
+            world.init_in_nextroot(&plan.hidden.init);
+        }
+        world.write_plan(&plan);
+        let mut env = world.env(false, 1_010);
+        env.mounts_unread = Some("Permission denied (os error 13)".to_string());
+        env.systemctl = Some(fake_systemctl(world.dir.path(), 0));
+
+        let outcome = run(&env);
+
+        let Outcome::Disarmed(why) = &outcome else {
+            panic!("{direction:?}: {outcome:?}");
+        };
+        assert!(why.contains("could not read the mount table"), "{why}");
+        let calls = fs::read_to_string(world.dir.path().join("calls")).unwrap_or_default();
+        assert_eq!(
+            calls.contains("--force poweroff"),
+            direction == Direction::Leave,
+            "{direction:?}: {calls}"
+        );
+        assert!(
+            !world.run().join(run_scrub::KERNEL_SEQNUM).exists(),
+            "{direction:?}: no cursor"
+        );
+    }
+    // Without a plan the step is not NAILS's to judge, table or not.
+    let world = World::new();
+    let mut env = world.env(false, 1_010);
+    env.mounts_unread = Some("Permission denied (os error 13)".to_string());
+    assert_eq!(run(&env), Outcome::NothingToDo);
 }
 
 /// The way back asks PID 1 to power off at once and, should it still run

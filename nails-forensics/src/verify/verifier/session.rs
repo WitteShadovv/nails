@@ -90,19 +90,26 @@ impl HiddenSession {
 }
 
 impl<F: Filesystem> Verifier<F> {
-    /// The live mount table, read through the filesystem seam.
-    fn mount_table(&self) -> Vec<MountEntry> {
-        self.filesystem
-            .read_file_content(Path::new(SELF_MOUNTINFO))
-            .map(|text| parse_mountinfo(&text))
-            .unwrap_or_default()
+    /// The live mount table, read through the filesystem seam byte for byte.
+    /// One that is not there, as on a test's tree, shows no mount, as the
+    /// other checks that read it through the seam take it; one that is there
+    /// but cannot be read is an error.
+    fn mount_table(&self) -> Result<Vec<MountEntry>> {
+        match self.filesystem.read_file_bytes(Path::new(SELF_MOUNTINFO)) {
+            Ok(bytes) => Ok(parse_mountinfo(&bytes)),
+            Err(error) if error.nothing_there() => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
     }
 
     /// The hidden session this run is inside, if any: `/` is an overlay whose
     /// upper is the one the session plan names or, without a readable plan,
-    /// one that lies on the configured hidden volume.
+    /// one that lies on the configured hidden volume. Without a mount table
+    /// none is found, and every check judges the live root as the decoy's,
+    /// the stricter reading; the leftovers check says that the table could
+    /// not be read.
     pub(super) fn hidden_session(&self) -> Option<HiddenSession> {
-        let entries = self.mount_table();
+        let entries = self.mount_table().ok()?;
         let upper = top_mount_at(&entries, Path::new("/"))
             .filter(|root| root.fstype == "overlay")
             .and_then(|root| parse_overlay_opts(&root.super_opts).upperdir)?;
@@ -170,13 +177,23 @@ impl<F: Filesystem> Verifier<F> {
                 error,
             )
         };
-        if nails_teardown::whole_root::nextroot::is_mount_point(
-            &self.mount_table(),
-            Path::new(NEXTROOT),
-        ) {
-            findings.push(critical(format!(
-                "{NEXTROOT} is populated: a later soft-reboot would enter it"
-            )));
+        match self.mount_table() {
+            Ok(table) => {
+                if nails_teardown::whole_root::nextroot::is_mount_point(&table, Path::new(NEXTROOT))
+                {
+                    findings.push(critical(format!(
+                        "{NEXTROOT} is populated: a later soft-reboot would enter it"
+                    )));
+                }
+            }
+            Err(error) => findings.push(untold_left(
+                format!(
+                    "{NEXTROOT} is populated or an overlay writes into the hidden volume: the \
+                     mount table {SELF_MOUNTINFO} cannot be read"
+                ),
+                Path::new(SELF_MOUNTINFO),
+                &error,
+            )),
         }
         findings.extend(self.leftover_hidden_overlays());
         let runtime = Path::new(RUNTIME_DIR);
@@ -232,7 +249,9 @@ impl<F: Filesystem> Verifier<F> {
         let Some(hidden) = self.hidden_root() else {
             return Vec::new();
         };
+        // A table that cannot be read is reported by the leftovers check.
         self.mount_table()
+            .unwrap_or_default()
             .iter()
             .filter(|m| m.fstype == "overlay" && !m.mount_point.starts_with(NEXTROOT))
             .filter(|m| {

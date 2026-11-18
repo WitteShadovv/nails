@@ -260,17 +260,20 @@ pub fn session_disk_mounts(
 /// Unmount the disks mounted during the session before the way back,
 /// so a filesystem the decoy mounts again is not still held, read-only, by the
 /// hidden session. A busy mount is detached instead; the soft-reboot ends its
-/// users.
-fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Vec<PathBuf> {
-    let mounts = read_mountinfo().unwrap_or_default();
+/// users. A mount table that cannot be read stops the way back before
+/// anything is unmounted: the disks mounted during the session could not be
+/// told.
+fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Result<Vec<PathBuf>> {
+    let mounts = read_mountinfo()
+        .map_err(|e| NailsError::io(Path::new(nails_teardown::mountinfo::SELF_MOUNTINFO), e))?;
     let is_block = |m: &MountEntry| disk_guard::mount_device(m).is_some();
-    session_disk_mounts(paths, plan, &mounts, &is_block)
+    Ok(session_disk_mounts(paths, plan, &mounts, &is_block)
         .into_iter()
         .filter(|target| {
             rustix::mount::unmount(target, UnmountFlags::empty()).is_ok()
                 || rustix::mount::unmount(target, UnmountFlags::DETACH).is_ok()
         })
-        .collect()
+        .collect())
 }
 
 /// What the last step of the way back could not undo of the links in the
@@ -326,7 +329,7 @@ pub fn leave(
         return Ok(LeaveReport::default());
     }
     super::program_label::check_way_back(plan, host)?;
-    let unmounted = unmount_session_disks(paths, plan);
+    let unmounted = unmount_session_disks(paths, plan)?;
     let nextroot = paths.nextroot();
     if let Err(e) = ret::mount_decoy_root(plan, &nextroot, &paths.run) {
         return Err(still_unmounted(

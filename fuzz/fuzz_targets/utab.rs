@@ -35,16 +35,20 @@ const NEXTROOT: &str = "/run/nextroot";
 const MODEL_LINES: usize = 64;
 
 fuzz_target!(|data: &[u8]| {
-    let parts = nails_fuzz::parts(data, 3);
-    let utab = parts[0].as_bytes();
-    let entry_text = parts.get(1).map_or("", String::as_str);
-    let back_text = parts.get(2).map_or(entry_text, String::as_str);
+    let parts = nails_fuzz::byte_parts(data, 3);
+    let utab = parts[0];
+    let entry_text = parts.get(1).copied().unwrap_or_default();
+    let back_text = parts.get(2).copied().unwrap_or(entry_text);
     let at_entry = parse_mountinfo(entry_text);
     let at_back = parse_mountinfo(back_text);
     let nextroot = Path::new(NEXTROOT);
 
-    for line in parts[0].split('\n').take(MODEL_LINES) {
-        read_like_libmount(line, nextroot);
+    // The model reads text; a line that is not valid UTF-8 is read by the
+    // checks below only.
+    for line in utab.split(|&b| b == b'\n').take(MODEL_LINES) {
+        if let Ok(line) = std::str::from_utf8(line) {
+            read_like_libmount(line, nextroot);
+        }
     }
 
     let kept = surviving_lines(utab, &at_entry, nextroot);
@@ -58,11 +62,14 @@ fuzz_target!(|data: &[u8]| {
     );
 
     let named = named_mounts(utab, entry_text);
-    // Each kept line of `str::lines()`, with a newline added.
-    for line in named.split_terminator('\n') {
+    // Each kept line is a line of the table, byte for byte, with a newline.
+    assert!(named.is_empty() || named.ends_with(b"\n"));
+    for line in lines(&named) {
         assert!(
-            entry_text.lines().any(|original| original == line),
-            "{line}"
+            entry_text
+                .split(|&b| b == b'\n')
+                .any(|original| original == line),
+            "{line:?}"
         );
     }
     let named = parse_mountinfo(&named);
@@ -102,7 +109,7 @@ fn read_like_libmount(line: &str, nextroot: &Path) {
         .iter()
         .map(|id| format!("{id} 1 0:1 / /x rw - t s o\n"))
         .collect();
-    let named: Vec<i32> = parse_mountinfo(&named_mounts(utab.as_bytes(), &table))
+    let named: Vec<i32> = parse_mountinfo(&named_mounts(utab.as_bytes(), table.as_bytes()))
         .iter()
         .map(|mount| mount.mount_id)
         .collect();

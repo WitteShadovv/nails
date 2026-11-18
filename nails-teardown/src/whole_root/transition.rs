@@ -71,6 +71,14 @@
 //! the arming expired), this step detaches `/run/nextroot` instead of letting
 //! PID 1 enter it.
 //!
+//! **The mount table.** The step reads the mount table byte for byte, so a
+//! mount whose path or options are not valid UTF-8 is read as any other. Where
+//! the table cannot be read at all, a plan's step does nothing of the switch:
+//! it cannot tell whether `/run/nextroot` is there. On the way back it powers
+//! off first ([`power_off_instead`]), as a step outside the program's domain
+//! does; then, on either side, it detaches `/run/nextroot` and refuses the
+//! switch, as the leftover guard does.
+//!
 //! **The timeout guard.** systemd gives a switch 30 minutes: from 254 to 262
 //! `soft-reboot.target` sets `JobTimeoutSec=30min` and
 //! `JobTimeoutAction=soft-reboot-force`. A switch that hangs that long (a unit
@@ -379,6 +387,10 @@ pub struct Env {
     pub now: u64,
     /// The live mount table.
     pub mounts: Vec<MountEntry>,
+    /// Why the live mount table could not be read, if it could not: then
+    /// `mounts` is empty and the step does nothing of the switch (see
+    /// [`run`]).
+    pub mounts_unread: Option<String>,
     /// Where the way back sets the process-number counter
     /// ([`fresh_pids::lower`]); `None` leaves it alone.
     pub pid_places: Option<fresh_pids::Places>,
@@ -431,10 +443,20 @@ impl PowerOff {
     }
 }
 
+/// The live mount table, as [`Env::system`] reads it, byte for byte, or
+/// none and why it could not be read.
+pub fn live_mounts() -> (Vec<MountEntry>, Option<String>) {
+    match read_mountinfo() {
+        Ok(mounts) => (mounts, None),
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    }
+}
+
 impl Env {
     /// The real system, for a step started as `start` says.
     pub fn system(start: Started) -> Self {
         let run = PathBuf::from("/run");
+        let (mounts, mounts_unread) = live_mounts();
         Self {
             network: network::Places::system(&run),
             run,
@@ -443,7 +465,8 @@ impl Env {
             kmsg: PathBuf::from("/dev/kmsg"),
             systemctl: crate::whole_root::tools::find(None, "systemctl"),
             now: unix_now(),
-            mounts: read_mountinfo().unwrap_or_default(),
+            mounts,
+            mounts_unread,
             pid_places: Some(fresh_pids::Places::system()),
             zram: Some(zram::Places::system()),
             network_kernel: None,
@@ -520,6 +543,9 @@ pub fn run(env: &Env) -> Outcome {
         // tool's staged root.
         return Outcome::NothingToDo;
     };
+    if let Some(why) = &env.mounts_unread {
+        return unread_mount_table(env, &plan, why);
+    }
     if !env.nextroot_mounted() {
         return Outcome::NothingToDo;
     }
@@ -540,6 +566,24 @@ pub fn run(env: &Env) -> Outcome {
         Direction::Enter => enter(env, &mut plan),
         Direction::Leave => leave(env, &plan),
     }
+}
+
+/// The end of a step that cannot read the mount table (see the module docs):
+/// it cannot tell whether `/run/nextroot` is there, nor detach, scrub or
+/// wait by it. On the way back it powers off first, as a step outside the
+/// program's domain does; then, as for the leftover guard and on the way in,
+/// it detaches `/run/nextroot` and refuses the switch.
+fn unread_mount_table(env: &Env, plan: &Plan, unread: &str) -> Outcome {
+    let leaving = plan.armed_for(Direction::Leave, env.now);
+    if leaving {
+        let _ = power_off_instead(
+            env.systemctl.as_deref(),
+            env.power_off.grace,
+            env.power_off.kernel,
+        );
+    }
+    let why = format!("the last step before the switch could not read the mount table: {unread}");
+    disarm(env, plan, &why)
 }
 
 /// The end of an armed step that does not run in the program's domain (see
@@ -706,9 +750,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // Read everything the scrub needs before it removes the runtime directory.
     let snapshot = env.saved_snapshot();
     let saved_utab = std::fs::read(env.runtime_dir.join(UTAB_NAME)).ok();
-    let utab_mounts = std::fs::read_to_string(env.runtime_dir.join(UTAB_MOUNTS_NAME))
+    let utab_mounts = std::fs::read(env.runtime_dir.join(UTAB_MOUNTS_NAME))
         .ok()
-        .map(|text| parse_mountinfo(&text));
+        .map(|bytes| parse_mountinfo(&bytes));
     let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
     let network = std::fs::read(env.runtime_dir.join(network::RECORD_NAME)).ok();
     let sockets = std::fs::read_to_string(env.runtime_dir.join(tail::SOCKETS_NAME))

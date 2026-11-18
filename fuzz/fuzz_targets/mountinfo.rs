@@ -5,10 +5,11 @@
 //! overlay options in it. Any mount on the system, made by anyone, puts its
 //! paths and options into this text.
 //!
-//! The input is a mount table. The target checks that:
+//! The input is a mount table, read byte for byte as NAILS reads it: a path
+//! there may hold any byte but the newline. The target checks that:
 //!
 //! - the entries, printed back the way the kernel prints them, parse to the
-//!   same entries;
+//!   same entries, every byte of their paths kept;
 //! - every overlay's layers, given to mount(2) with NAILS's escaping and
 //!   printed back with the kernel's, decode to the same paths in both forms;
 //! - a lookup answers with a mount of the table at exactly the path asked
@@ -28,9 +29,8 @@ use std::path::Path;
 const LOOKUPS: usize = 32;
 
 fuzz_target!(|data: &[u8]| {
-    let text = String::from_utf8_lossy(data);
-    let entries = parse_mountinfo(&text);
-    assert!(entries.len() <= text.lines().count());
+    let entries = parse_mountinfo(data);
+    assert!(entries.len() <= data.split(|&b| b == b'\n').count());
     round_trip(&entries);
     for entry in &entries {
         let _ = entry.read_only();
@@ -41,20 +41,18 @@ fuzz_target!(|data: &[u8]| {
 
 /// Printed and parsed again, the entries come back unchanged.
 fn round_trip(entries: &[MountEntry]) {
-    // `str::lines` takes a carriage return right before a newline for part of
-    // the line end, so a last field that ends in one does not come back.
-    let printable: Vec<&MountEntry> = entries
+    let text: Vec<u8> = entries
         .iter()
-        .filter(|entry| !entry.super_opts.ends_with('\r'))
-        .collect();
-    let text: String = printable
-        .iter()
-        .map(|entry| kernel::mountinfo_line(entry) + "\n")
+        .flat_map(|entry| {
+            let mut line = kernel::mountinfo_line(entry);
+            line.push(b'\n');
+            line
+        })
         .collect();
     let again = parse_mountinfo(&text);
-    assert_eq!(again.len(), printable.len(), "{text}");
-    for (read, entry) in again.iter().zip(printable) {
-        assert_eq!(read, entry, "{text}");
+    assert_eq!(again.len(), entries.len(), "{text:?}");
+    for (read, entry) in again.iter().zip(entries) {
+        assert_eq!(read, entry, "{text:?}");
     }
 }
 

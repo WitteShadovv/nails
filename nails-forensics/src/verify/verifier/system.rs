@@ -6,6 +6,7 @@
 use super::session::{HiddenSession, check_decoy_offline};
 use super::*;
 use nails_base::blockdev::{self, LoopFollow};
+use std::os::unix::ffi::OsStrExt;
 
 impl<F: Filesystem> Verifier<F> {
     /// Check for leftover NAILS artifacts drawn from the shared registry.
@@ -240,7 +241,9 @@ impl<F: Filesystem> Verifier<F> {
             return (Vec::new(), BTreeSet::new());
         };
 
-        let Ok(mountinfo) = self.filesystem.read_file_content(Path::new(SELF_MOUNTINFO)) else {
+        // Without the mount table no device is the hidden volume's own: each
+        // open one is then reported as another, the stricter end.
+        let Ok(mountinfo) = self.filesystem.read_file_bytes(Path::new(SELF_MOUNTINFO)) else {
             return (Vec::new(), BTreeSet::new());
         };
 
@@ -250,9 +253,13 @@ impl<F: Filesystem> Verifier<F> {
             .into_iter()
             .filter(|entry| entry.mount_point == root)
             .collect();
+        // A source that is not valid UTF-8 is compared in the kernel's escaped
+        // form, never with a byte replaced.
         let sources = mounts
             .iter()
-            .map(|entry| entry.source.to_string_lossy().into_owned())
+            .map(|entry| {
+                crate::filesystem::mountinfo::escaped_text(entry.source.as_os_str().as_bytes())
+            })
             .collect();
         let mut devices = BTreeSet::new();
         for mount in &mounts {

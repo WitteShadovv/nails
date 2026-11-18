@@ -249,12 +249,29 @@ fn the_mounts_utab_marks_as_an_initrd_s_are_found_as_libmount_joins_them() {
 #[test]
 fn the_mounts_utab_names_are_recorded_with_it() {
     let mountinfo = format!("{DECOY_AT_ENTRY}99 62 0:60 / /tmp rw - tmpfs tmpfs rw\n");
-    let named = named_mounts(SAVED.as_bytes(), &mountinfo);
-    assert_eq!(named, DECOY_AT_ENTRY);
+    let named = named_mounts(SAVED.as_bytes(), mountinfo.as_bytes());
+    assert_eq!(named, DECOY_AT_ENTRY.as_bytes());
+    assert!(named_mounts(b"SRC=overlay TARGET=/ ROOT=/\n", mountinfo.as_bytes()).is_empty());
+}
+
+/// A mount at a folder whose name is not valid UTF-8: its line is recorded
+/// byte for byte, and a utab line that names its path joins it only with
+/// that exact byte.
+#[test]
+fn a_mount_whose_path_is_not_utf8_is_recorded_and_joined_byte_for_byte() {
+    let mountinfo =
+        b"70 1 0:60 / /srv/a\xff rw - tmpfs tmpfs rw\n71 1 0:61 / /srv/a\xfe rw - tmpfs tmpfs rw\n";
+    let utab = b"ID=70 SRC=tmpfs TARGET=/srv/a\xff ROOT=/ OPTS=x-initrd.mount\n";
     assert_eq!(
-        named_mounts(b"SRC=overlay TARGET=/ ROOT=/\n", &mountinfo),
-        ""
+        named_mounts(utab, mountinfo),
+        b"70 1 0:60 / /srv/a\xff rw - tmpfs tmpfs rw\n"
     );
+    let mounts = parse_mountinfo(mountinfo);
+    assert_eq!(initrd_mounts(utab, &mounts), [70]);
+    let by_path = b"SRC=tmpfs TARGET=/srv/a\xfe ROOT=/ OPTS=x-initrd.mount\n";
+    assert_eq!(initrd_mounts(by_path, &mounts), [71]);
+    let neither = b"SRC=tmpfs TARGET=/srv/a\xfd ROOT=/ OPTS=x-initrd.mount\n";
+    assert!(initrd_mounts(neither, &mounts).is_empty());
 }
 
 #[test]

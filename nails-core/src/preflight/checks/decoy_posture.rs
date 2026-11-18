@@ -547,7 +547,7 @@ impl DecoyPersistenceCheck {
     ///
     /// The mount table cannot be read.
     fn root_mount_options<F: Filesystem>(fs: &F) -> Result<Option<String>> {
-        let content = fs.read_file_content(Path::new(MOUNTINFO))?;
+        let content = fs.read_file_bytes(Path::new(MOUNTINFO))?;
         Ok(parse_mountinfo(&content)
             .into_iter()
             .find(|e| e.mount_point == Path::new("/"))

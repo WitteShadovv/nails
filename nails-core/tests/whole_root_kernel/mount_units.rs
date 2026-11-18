@@ -117,6 +117,7 @@ fn the_units_outside_the_fstab_are_kept_off_in_the_hidden_root_as_fstab_lines() 
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
             now: unix_now(),
+            mounts_unread: None,
             mounts: read_mountinfo().unwrap(),
             pid_places: None,
             zram: None,

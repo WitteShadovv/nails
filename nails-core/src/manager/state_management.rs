@@ -107,7 +107,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// Plan a `discard` for `target`. Refused in the hidden session (the
     /// upper is the live root there) and for a relative path or `/` itself.
     pub fn plan_reset_upper(&self, target: &Path) -> Result<ResetUpperPlan> {
-        if self.session_view().is_hidden() {
+        if self.session_view()?.is_hidden() {
             return Err(NailsError::InvalidState(
                 "discard cannot run in the hidden session: the upper is the live root; \
                  deactivate first"

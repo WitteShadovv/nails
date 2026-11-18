@@ -431,7 +431,7 @@ impl World {
             Spot::Decoy | Spot::Entering | Spot::Interrupted => DECOY_TABLE.to_string(),
             Spot::Hidden | Spot::HiddenNoPlan => hidden_table(&self.hidden.join("root/upper")),
         };
-        self.machine.mounts = Some(parse_mountinfo(&table));
+        self.machine.mounts = Some(Ok(parse_mountinfo(&table)));
     }
 
     /// A power-off or a reset, and the next boot: `/run` starts empty and the
@@ -439,12 +439,14 @@ impl World {
     fn power_cycle(&mut self) {
         let _ = std::fs::remove_dir_all(&self.machine.paths.run);
         std::fs::create_dir_all(&self.machine.paths.run).expect("an empty /run");
-        self.machine.mounts = Some(parse_mountinfo(DECOY_TABLE));
+        self.machine.mounts = Some(Ok(parse_mountinfo(DECOY_TABLE)));
     }
 
     /// The live view the operations read: the real probe of the machine.
     fn view(&self) -> SessionView {
-        self.manager().session_view_on(&self.machine)
+        self.manager()
+            .session_view_on(&self.machine)
+            .expect("the model's mount table")
     }
 
     /// What `status` reports about the machine now.
@@ -580,6 +582,7 @@ impl World {
             runtime_dir: paths.runtime(),
             cgroup_root: self.base.join("cgroup"),
             protected_pids: Vec::new(),
+            mountinfo: std::path::PathBuf::from(nails_teardown::mountinfo::SELF_MOUNTINFO),
             act: false,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
         };

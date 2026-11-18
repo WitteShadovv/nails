@@ -81,7 +81,9 @@ const MOUNTS: &str = "\
 fuzz_target!(|data: &[u8]| {
     let parts = nails_fuzz::parts(data, 3);
     let fstab = parse_fstab(&parts[0]);
-    let mounts = parse_mountinfo(parts.get(2).map_or(MOUNTS, String::as_str));
+    // The mount table byte for byte, as NAILS reads it.
+    let table = nails_fuzz::byte_parts(data, 3);
+    let mounts = parse_mountinfo(table.get(2).copied().unwrap_or(MOUNTS.as_bytes()));
     let hidden = Path::new(HIDDEN_ROOT);
 
     for there in [true, false] {

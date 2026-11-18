@@ -76,6 +76,9 @@ pub fn execute(
                 println!();
                 match sudo {
                     Some(line) => println!("Run it as root: {line}"),
+                    None if nails_core::app::status::is_mount_table_error(&source) => {
+                        println!("Run status again where /proc is mounted and readable")
+                    }
                     None => println!("Fix access to the state file, then run status again"),
                 }
             }

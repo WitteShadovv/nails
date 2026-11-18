@@ -758,6 +758,27 @@ fn outside_a_hidden_session_deactivate_refuses_with_invalid_state() {
     }
 }
 
+/// A mount table that cannot be read refuses before anything is asked or
+/// done, as a session without a way back is refused: whether a hidden
+/// session runs cannot be told.
+#[test]
+fn a_mount_table_that_cannot_be_read_refuses_with_invalid_state() {
+    for args in [
+        DeactivateArgs::default(),
+        DeactivateArgs {
+            yes: true,
+            poweroff: true,
+        },
+    ] {
+        let status = super::deactivate_prepared(
+            &json(),
+            &args,
+            Prepared::MountTableUnread("Permission denied".to_string()),
+        );
+        assert_eq!(status, ExitStatus::InvalidState, "{args:?}");
+    }
+}
+
 /// The prompt as it is shown before the answer, where the way back is
 /// `bound` to power off, if it is.
 fn prompt_bound(poweroff: bool, bound: Option<&PowerOffReason>) -> String {

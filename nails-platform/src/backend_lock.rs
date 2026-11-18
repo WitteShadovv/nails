@@ -73,7 +73,7 @@ pub fn resolve_backend_chain<F: Filesystem>(
     fs: &F,
     hidden_root: &Path,
 ) -> crate::Result<Option<BackendChain>> {
-    let content = match fs.read_file_content(Path::new(SELF_MOUNTINFO)) {
+    let content = match fs.read_file_bytes(Path::new(SELF_MOUNTINFO)) {
         Ok(content) => content,
         Err(error) if error.nothing_there() => return Ok(None),
         Err(error) => return Err(error),

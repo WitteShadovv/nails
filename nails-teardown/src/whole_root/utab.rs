@@ -47,7 +47,7 @@
 //! The transition writes `utab` the way libmount does ([`update`]): under
 //! libmount's lock, through a new file renamed over the old one.
 
-use crate::mountinfo::{MountEntry, unescape_octal};
+use crate::mountinfo::{MountEntry, escaped_text, unescape_octal_path};
 use std::borrow::Cow;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Write};
@@ -150,23 +150,23 @@ pub fn surviving_lines(utab: &[u8], mounts: &[MountEntry], nextroot: &Path) -> V
 
 /// The lines of `mountinfo` (`/proc/self/mountinfo` read just after `utab`)
 /// for the mounts `utab` names by ID: what the way back needs to find each
-/// of them again ([`restored_lines`]).
-pub fn named_mounts(utab: &[u8], mountinfo: &str) -> String {
+/// of them again ([`restored_lines`]). Each line is copied byte for byte.
+pub fn named_mounts(utab: &[u8], mountinfo: &[u8]) -> Vec<u8> {
     let ids: Vec<i32> = utab
         .split(|&b| b == b'\n')
         .filter_map(Line::parse)
         .map(|line| line.id)
         .filter(|&id| id > 0)
         .collect();
-    let mut named = String::new();
-    for line in mountinfo.lines() {
+    let mut named = Vec::new();
+    for line in mountinfo.split(|&b| b == b'\n') {
         let id = line
-            .split_whitespace()
-            .next()
-            .and_then(|id| id.parse().ok());
+            .split(u8::is_ascii_whitespace)
+            .find(|word| !word.is_empty())
+            .and_then(|id| std::str::from_utf8(id).ok()?.parse().ok());
         if id.is_some_and(|id| ids.contains(&id)) {
-            named.push_str(line);
-            named.push('\n');
+            named.extend_from_slice(line);
+            named.push(b'\n');
         }
     }
     named
@@ -276,7 +276,8 @@ struct Line {
     source: Option<PathBuf>,
     target: Option<PathBuf>,
     root: Option<PathBuf>,
-    /// The options (`OPTS=`), still escaped.
+    /// The options (`OPTS=`), still escaped, a byte that is not valid UTF-8
+    /// as an octal escape ([`escaped_text`]).
     options: Option<String>,
     /// Whether it has attributes (`ATTRS=`).
     attributes: bool,
@@ -331,13 +332,15 @@ impl Line {
                     return None;
                 }
                 set[key] = true;
-                let value = String::from_utf8_lossy(&bytes[start..end]);
-                let path = || Some(PathBuf::from(unescape_octal(&value)));
+                // Byte for byte: a path keeps every byte, and options hold a
+                // byte that is not valid UTF-8 as an octal escape.
+                let value = &bytes[start..end];
+                let path = || Some(unescape_octal_path(value));
                 match key {
                     0 => line.source = path(),
                     1 => line.target = path(),
                     2 => line.root = path(),
-                    4 => line.options = Some(value.into_owned()),
+                    4 => line.options = Some(escaped_text(value)),
                     5 => line.attributes = true,
                     _ => {}
                 }

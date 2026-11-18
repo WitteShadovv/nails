@@ -70,10 +70,52 @@ fn the_decoy_another_volume_or_another_overlay_is_not_a_hidden_session() {
 fn escapes_in_the_mount_table_are_undone() {
     let table = "1 0 0:40 / / rw - overlay overlay rw,upperdir=/mnt/my\\040drive/root/upper\n";
     assert!(root_is_hidden_overlay(table, Path::new("/mnt/my drive")));
-    assert_eq!(unescape_octal("a\\040b\\134c\\011"), "a b\\c\t");
+    assert_eq!(unescape_octal(b"a\\040b\\134c\\011"), b"a b\\c\t");
     // Not an escape: kept as it is.
-    assert_eq!(unescape_octal("a\\9b\\"), "a\\9b\\");
-    assert_eq!(unescape_octal("\\777"), "\\777");
+    assert_eq!(unescape_octal(b"a\\9b\\"), b"a\\9b\\");
+    assert_eq!(unescape_octal(b"\\777"), b"\\777");
+}
+
+/// A mount whose path is not valid UTF-8, anywhere in the table, failed the
+/// read before, and the window refused in the hidden session: the table is
+/// read byte for byte, and an upper with such a byte is matched exactly.
+#[test]
+fn a_mount_table_with_a_byte_that_is_not_utf8_is_read() {
+    let mut table = HIDDEN.as_bytes().to_vec();
+    table.extend_from_slice(b"60 1 0:50 / /run/a\xff rw - tmpfs tmpfs rw\n");
+    assert!(root_is_hidden_overlay(&table, Path::new("/mnt/data")));
+    let odd: &[u8] = b"1 0 0:40 / / rw - overlay overlay rw,upperdir=/mnt/d\xff/root/upper\n";
+    let root = |bytes: &[u8]| PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
+    assert!(root_is_hidden_overlay(odd, &root(b"/mnt/d\xff")));
+    assert!(!root_is_hidden_overlay(odd, &root(b"/mnt/d\xfe")));
+    match decide(
+        Some(PathBuf::from("/mnt/data/nails")),
+        None,
+        &program("/mnt/data"),
+        Ok(&table),
+    ) {
+        Start::Pkexec { .. } => {}
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A mount table that cannot be read refuses a named engine, and says so.
+#[test]
+fn a_mount_table_that_cannot_be_read_is_named_in_the_refusal() {
+    let Start::Refuse(line) = decide(
+        Some(PathBuf::from("/mnt/data/nails")),
+        None,
+        &program("/mnt/data"),
+        Err("Permission denied (os error 13)".to_string()),
+    ) else {
+        panic!("not refused");
+    };
+    assert_eq!(
+        line,
+        "The window could not read the mount table (Permission denied (os error 13)), so it \
+         cannot tell that it runs in a hidden session. It opens from a terminal: sudo \
+         /mnt/data/nails gui"
+    );
 }
 
 #[test]
@@ -96,7 +138,12 @@ fn a_mount_table_of_another_shape_reads_as_no() {
 #[test]
 fn the_launchers_socket_is_used_wherever_the_window_runs() {
     let (stream, _other) = UnixStream::pair().unwrap();
-    match decide(None, Some(stream), &program("/mnt/data"), None) {
+    match decide(
+        None,
+        Some(stream),
+        &program("/mnt/data"),
+        Err(String::new()),
+    ) {
         Start::Launcher { engine, .. } => {
             assert_eq!(engine, Some(PathBuf::from("/mnt/data/nails")))
         }
@@ -105,7 +152,12 @@ fn the_launchers_socket_is_used_wherever_the_window_runs() {
     // Outside a NAILS tree the pages name no engine.
     let (stream, _other) = UnixStream::pair().unwrap();
     assert!(matches!(
-        decide(None, Some(stream), Path::new("/anywhere"), None),
+        decide(
+            None,
+            Some(stream),
+            Path::new("/anywhere"),
+            Err(String::new())
+        ),
         Start::Launcher { engine: None, .. }
     ));
 }
@@ -118,7 +170,7 @@ fn a_named_engine_never_takes_standard_input_for_the_launchers_socket() {
             Some(PathBuf::from("/mnt/data/nails")),
             Some(stream),
             &program("/mnt/data"),
-            Some(mountinfo),
+            Ok(mountinfo.as_bytes()),
         );
         match start {
             Start::Pkexec { .. } => assert!(pkexec),
@@ -131,23 +183,32 @@ fn a_named_engine_never_takes_standard_input_for_the_launchers_socket() {
 #[test]
 fn the_menu_entrys_engine_gets_pkexec_only_in_a_hidden_session_of_its_volume() {
     let engine = || Some(PathBuf::from("/mnt/data/nails"));
-    match decide(engine(), None, &program("/mnt/data"), Some(HIDDEN)) {
+    match decide(engine(), None, &program("/mnt/data"), Ok(HIDDEN.as_bytes())) {
         Start::Pkexec { engine } => assert_eq!(engine, PathBuf::from("/mnt/data/nails")),
         other => panic!("{other:?}"),
     }
     // Where the window lies does not matter, the engine's volume does.
     assert!(matches!(
-        decide(engine(), None, Path::new("/usr/bin/session"), Some(HIDDEN)),
+        decide(
+            engine(),
+            None,
+            Path::new("/usr/bin/session"),
+            Ok(HIDDEN.as_bytes())
+        ),
         Start::Pkexec { .. }
     ));
     for (engine, mountinfo) in [
-        (engine(), Some(DECOY)),
-        (engine(), None),
-        (Some(PathBuf::from("/mnt/other/nails")), Some(HIDDEN)),
-        (Some(PathBuf::from("nails")), Some(HIDDEN)),
-        (Some(PathBuf::from("/")), Some(HIDDEN)),
+        (engine(), DECOY),
+        (Some(PathBuf::from("/mnt/other/nails")), HIDDEN),
+        (Some(PathBuf::from("nails")), HIDDEN),
+        (Some(PathBuf::from("/")), HIDDEN),
     ] {
-        match decide(engine.clone(), None, &program("/mnt/data"), mountinfo) {
+        match decide(
+            engine.clone(),
+            None,
+            &program("/mnt/data"),
+            Ok(mountinfo.as_bytes()),
+        ) {
             Start::Refuse(line) => assert!(
                 line.starts_with("The window opens from a terminal: sudo "),
                 "{line}"
@@ -161,7 +222,11 @@ fn the_menu_entrys_engine_gets_pkexec_only_in_a_hidden_session_of_its_volume() {
 fn without_the_launcher_or_an_engine_the_window_opens_nothing() {
     // Not even in a hidden session: only the menu entry, which names the
     // engine, starts pkexec.
-    for mountinfo in [Some(HIDDEN), Some(DECOY), None] {
+    for mountinfo in [
+        Ok(HIDDEN.as_bytes()),
+        Ok(DECOY.as_bytes()),
+        Err(String::new()),
+    ] {
         assert!(matches!(
             decide(None, None, &program("/mnt/data"), mountinfo),
             Start::Refuse(_)
@@ -171,7 +236,8 @@ fn without_the_launcher_or_an_engine_the_window_opens_nothing() {
 
 #[test]
 fn the_refusal_names_the_line_that_opens_the_window() {
-    let Start::Refuse(line) = decide(None, None, &program("/mnt/data"), Some(DECOY)) else {
+    let Start::Refuse(line) = decide(None, None, &program("/mnt/data"), Ok(DECOY.as_bytes()))
+    else {
         panic!("not refused");
     };
     assert_eq!(
@@ -182,7 +248,7 @@ fn the_refusal_names_the_line_that_opens_the_window() {
         Some(PathBuf::from("/mnt/x/nails")),
         None,
         &program("/mnt/data"),
-        Some(DECOY),
+        Ok(DECOY.as_bytes()),
     ) else {
         panic!("not refused");
     };

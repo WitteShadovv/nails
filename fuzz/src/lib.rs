@@ -30,3 +30,10 @@ pub fn parts(data: &[u8], n: usize) -> Vec<String> {
         .map(|part| String::from_utf8_lossy(part).into_owned())
         .collect()
 }
+
+/// `data` split at its first `n - 1` NUL bytes into at most `n` parts, each
+/// kept byte for byte, for a target whose file may hold any byte, as a mount
+/// table does.
+pub fn byte_parts(data: &[u8], n: usize) -> Vec<&[u8]> {
+    data.splitn(n, |&byte| byte == 0).collect()
+}
