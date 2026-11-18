@@ -728,6 +728,155 @@ class RunResidueTest(unittest.TestCase):
         self.assertTrue(fg.of_pieces("l /run/overlay-runtime-boot -> x", pieces))
         self.assertFalse(fg.of_pieces("d /run/overlay-runtime-bootx", pieces))
 
+    def test_the_decoy_s_own_invocation_link_since_the_way_back_is_no_residue(
+        self,
+    ) -> None:
+        # Seen on Fedora 44: hostnamed had exited idle before the second
+        # entry, and NetworkManager's start after the way back started it
+        # again, while in both plain soft-reboots it ran before and after.
+        link = "l /run/systemd/units/invocation:systemd-hostnamed.service"
+        ident = "1" * 32
+        control = ({link}, {link})
+        after = {*self.BEFORE, link}
+        self.assertEqual(fg.run_residue(self.BEFORE, after, [control]), [link])
+        own = fg.decoy_invocations(
+            f"unit=systemd-hostnamed.service link={ident} id={ident} "
+            "start=@1795029500 "
+            "file=/usr/lib/systemd/system/systemd-hostnamed.service\n",
+            1795029400.0,
+        )
+        self.assertEqual(own, {link})
+        self.assertEqual(fg.run_residue(self.BEFORE, after, [control], [], own), [])
+
+    def test_an_invocation_link_of_another_run_stays_residue(self) -> None:
+        ident = "1" * 32
+        other = "2" * 32
+        unit_file = "file=/usr/lib/systemd/system/a.service"
+        for line in (
+            # The link leads to another run than the one PID 1 runs now.
+            f"unit=a.service link={other} id={ident} start=@1795029500 {unit_file}",
+            # The run started before the switch.
+            f"unit=a.service link={ident} id={ident} start=@1795029300 {unit_file}",
+            # The unit no longer runs: no link, and no start.
+            f"unit=a.service link= id={ident} start= {unit_file}",
+            f"unit=a.service link= id= start=@1795029500 {unit_file}",
+        ):
+            self.assertEqual(fg.decoy_invocations(line, 1795029400.0), set(), line)
+
+    # The F44 gate of run 45566157861 at its second way back: the leave mark,
+    # and the end of the switch's last step a second and a half later.
+    LEAVE = 1795591475.0
+    SWITCH = 1795591476.572876
+
+    def test_a_run_the_hidden_root_started_before_the_switch_stays_residue(
+        self,
+    ) -> None:
+        # Started after the leave mark, by the hidden root's PID 1 as it shut
+        # down, with a link the decoy's PID 1 keeps; and within TIMER_SLACK
+        # of the switch, where a start to the second cannot tell.
+        ident = "3" * 32
+        for start in (int(self.LEAVE) + 1, int(self.SWITCH) + 1):
+            line = (
+                f"unit=hidden-only.service link={ident} id={ident} start=@{start} "
+                "file=/usr/lib/systemd/system/hidden-only.service"
+            )
+            self.assertEqual(fg.decoy_invocations(line, self.SWITCH), set(), line)
+        # Without the switch's time, nothing counts as the decoy's.
+        line = (
+            f"unit=a.service link={ident} id={ident} start=@{int(self.SWITCH) + 3} "
+            "file=/usr/lib/systemd/system/a.service"
+        )
+        self.assertEqual(fg.decoy_invocations(line, None), set())
+        self.assertEqual(
+            fg.decoy_invocations(line, self.SWITCH),
+            {"l /run/systemd/units/invocation:a.service"},
+        )
+
+    def test_a_link_of_nails_s_own_unit_stays_residue(self) -> None:
+        # The decoy's PID 1 runs the reconcile unit after the switch, but its
+        # link is a trace of NAILS.
+        ident = "4" * 32
+        line = (
+            f"unit=overlay-runtime-boot.service link={ident} id={ident} "
+            f"start=@{int(self.SWITCH) + 3} "
+            "file=/usr/lib/systemd/system/overlay-runtime-boot.service"
+        )
+        self.assertEqual(fg.decoy_invocations(line, self.SWITCH), set())
+
+    def test_a_link_of_a_unit_without_a_file_outside_run_stays_residue(
+        self,
+    ) -> None:
+        # A unit file in /run (one the session could have left, or a transient
+        # unit's) or no unit file at all.
+        ident = "5" * 32
+        start = f"start=@{int(self.SWITCH) + 3}"
+        for path in (
+            "/run/systemd/system/a.service",
+            "/run/systemd/transient/a.service",
+            "",
+            "run/x",
+        ):
+            line = f"unit=a.service link={ident} id={ident} {start} file={path}"
+            self.assertEqual(fg.decoy_invocations(line, self.SWITCH), set(), line)
+        line = f"unit=a.service link={ident} id={ident} {start}"
+        self.assertEqual(fg.decoy_invocations(line, self.SWITCH), set())
+
+    def test_judge_run_reads_the_links_against_the_switch(self) -> None:
+        # The decoy's hostnamed, started after the switch, is its own; a unit
+        # the hidden root's PID 1 started between the leave mark and the
+        # switch is not, nor is any link once the switch's time is unknown.
+        hostnamed = "l /run/systemd/units/invocation:systemd-hostnamed.service"
+        hidden = "l /run/systemd/units/invocation:hidden-only.service"
+        a, b = "6" * 32, "7" * 32
+        reading = (
+            f"unit=systemd-hostnamed.service link={a} id={a} "
+            f"start=@{int(self.SWITCH) + 2} "
+            "file=/usr/lib/systemd/system/systemd-hostnamed.service\n"
+            f"unit=hidden-only.service link={b} id={b} start=@{int(self.LEAVE) + 1} "
+            "file=/usr/lib/systemd/system/hidden-only.service\n"
+        )
+        for switch_us, left in (
+            (int(self.SWITCH * 1_000_000), [hidden]),
+            (None, [hidden, hostnamed]),
+        ):
+            run = gate()
+            run.runs = {
+                "control-1": (set(), set()),
+                "way-back-2": (set(self.BEFORE), {*self.BEFORE, hostnamed, hidden}),
+            }
+            run.run_invocations = {"way-back-2": reading}
+            run.facts["leave-wall-2"] = self.LEAVE
+            run.facts["carried-2"] = {"switchUs": switch_us}
+            quiet(run.judge_run)
+            self.assertEqual(run.facts["run-residue-way-back-2"], left, switch_us)
+            self.assertEqual(
+                [c["passed"] for c in run.checks], [False], run.checks
+            )
+        run = gate()
+        run.runs = {
+            "control-1": (set(), set()),
+            "way-back-2": (set(self.BEFORE), {*self.BEFORE, hostnamed}),
+        }
+        run.run_invocations = {"way-back-2": reading}
+        run.facts["carried-2"] = {"switchUs": int(self.SWITCH * 1_000_000)}
+        quiet(run.judge_run)
+        self.assertEqual([c["passed"] for c in run.checks], [True], run.checks)
+
+    def test_the_invocation_reading_names_only_invocation_links(self) -> None:
+        command = fg.invocation_reading(
+            {
+                "l /run/systemd/units/invocation:systemd-hostnamed.service",
+                "f /run/systemd/units/invocation:odd.service",
+                "l /run/gate-link",
+            }
+        )
+        self.assertEqual(command.count("u="), 1)
+        self.assertIn(
+            "readlink /run/systemd/units/invocation:systemd-hostnamed", command
+        )
+        self.assertIn('file=$(systemctl show -P FragmentPath "$u")', command)
+        self.assertEqual(fg.invocation_reading({"f /run/x"}), "")
+
     def test_reads_the_listing(self) -> None:
         listing = "d /run/a\nf /run/a/b c\n\nfind: oops\n"
         self.assertEqual(fg.run_entries(listing), {"d /run/a", "f /run/a/b c"})
