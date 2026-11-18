@@ -16,9 +16,9 @@ class FakeMachine:
         self.answers = answers
         self.commands: list[str] = []
 
-    def succeed(self, command: str) -> str:
-        self.commands.append(command)
-        if command.startswith("systemctl is-active"):
+    def succeed(self, *commands: str, timeout: int | None = None) -> str:
+        self.commands.extend(commands)
+        if commands[0].startswith("systemctl is-active"):
             return self.answers.pop(0)
         return ""
 
