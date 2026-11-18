@@ -491,10 +491,13 @@ boot opens as LUKS for the LUKS device that filesystem lies on while the decoy
 mounts another part of it at `/` or by such a line. On NixOS, for such a root
 while the decoy mounts another part of that filesystem at `/` or at a system
 folder, `suspicious-nails-reference` lets be the names the decoy's
-`/etc/nixos` gives the devices that filesystem lies on in its `fileSystems`
-entries for `/` and its system folders and in its `boot.initrd.luks.devices`
-entries, as `hardware-configuration.nix` does for `/` and `/home`. It still
-refuses such a name anywhere else, the root's mount point, the root's own
+`/etc/nixos` gives the devices that filesystem lies on as the `device` or
+`label` of its `fileSystems` entries for `/` and its system folders and as the
+name or `device` of its `boot.initrd.luks.devices` entries, as
+`hardware-configuration.nix` does for `/` and `/home`, where such an entry
+holds nothing but plain literals, as `nixos-generate-config` writes it. It
+still refuses such a name anywhere else, an entry's options among them, any
+other expression in such an entry, the root's mount point, the root's own
 folder and its name inside the filesystem where the text gives them (the
 check reads text and does not evaluate Nix), and a name of any other device.
 

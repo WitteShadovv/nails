@@ -1110,24 +1110,28 @@ of this changelog for that version becomes the release notes word for word, and
   device that filesystem lies on (its device path, kernel name, `/dev/block` link, `/dev/disk/by-*`
   links, uuid, `PARTUUID`, label, partition label or LUKS mapping) passes where `/etc/nixos` gives
   it as the `device` or `label` of a `fileSystems` entry for `/` or a system folder, or in the name
-  or `device` of a `boot.initrd.luks.devices` entry, and the check says how many lines it let be.
-  Before, the `hardware-configuration.nix` of nearly every install, which names the device of `/`
-  and `/home`, failed the check for the flag's documented cases (a bind of a folder of `/`, a
-  subvolume beside `/home`). The devices come from the attach gate's own decision, which the check
-  makes again through the automount guard, by kernel name and device number, and a device the kernel
-  shows otherwise while the check reads it keeps its names. Still refused, with the flag too: such a
-  name anywhere else (an entry for another folder such as `/btr_pool`, an entry's options,
-  `boot.resumeDevice`, a service's own settings, a `let` binding, a comment outside such an entry),
-  the root's mount point and its units, the folder the root is as another mount of the filesystem
-  shows it, the root's own name inside the filesystem wherever it stands as a word of its own,
-  comments included, or as a defined attribute name (`subvol=./@vault`, `/btr_pool/@vault`, btrbk's
+  or `device` of a `boot.initrd.luks.devices` entry, where that entry is written as
+  `nixos-generate-config` writes it: `"…"` strings that end on their line and hold no interpolation,
+  lists and sets of them, and `true`, `false` or a number as the value of an attribute other than
+  `device` and `label`. The check says how many lines it let be. Before, the
+  `hardware-configuration.nix` of nearly every install, which names the device of `/` and `/home`,
+  failed the check for the flag's documented cases (a bind of a folder of `/`, a subvolume beside
+  `/home`). The devices come from the attach gate's own decision, which the check makes again
+  through the automount guard, by kernel name and device number, and a device the kernel shows
+  otherwise while the check reads it keeps its names. Still refused, with the flag too: such a name
+  anywhere else (an entry for another folder such as `/btr_pool`, an entry's options,
+  `boot.resumeDevice`, a service's own settings, a `let` binding, a comment), every other expression
+  in such an entry or around the entries in the value of `fileSystems` or `boot.initrd.luks.devices`
+  (`lib.mkForce`, `lib.concatStrings`, a `+`, a parenthesis, `if`, `let`, `inherit`, a reference
+  such as `config.fileSystems."/".device`, a path, an interpolation), whatever it builds, the root's
+  mount point and its units, the folder the root is as another mount of the filesystem shows it, the
+  root's own name inside the filesystem wherever it stands as a word of its own, comments included,
+  or as a defined attribute name (`subvol=./@vault`, `/btr_pool/@vault`, btrbk's
   `subvolume."@vault"`), on btrfs a `subvolid=` with the subvolume's id in any base the kernel reads
   or that is no number, a `subvol=`, `subvolid=` (both on btrfs) or `X-mount.subdir=` value that is
-  empty, holds an interpolation or runs to the end of a string a `+` goes on with, a `device` or
-  `label` string in the places above that holds an interpolation, that a `+` joins to something or
-  that goes on over the next line, a name of any other device the volume is stored on, a place that
+  empty or holds an interpolation, a name of any other device the volume is stored on, a place that
   may give such a name and cannot be read, NAILS's own text and the word `nails`. The root's own
-  names and these values count only with the flag. Without the flag, and for a root that is the
+  names and these expressions count only with the flag. Without the flag, and for a root that is the
   whole filesystem, that the decoy mounts no other part of at `/` or at a system folder, or whose
   storage cannot be judged, every name refuses as before. The check now also reads a path with `.`
   components (`/mnt/./data`) as the kernel does, and a line with the escapes of its strings read as
@@ -1214,9 +1218,11 @@ of this changelog for that version becomes the release notes word for word, and
   with a quote, such as an SELinux `context=`. An overlay line that gives `upperdir` more than once,
   or with no value, is kept off.
 - On NixOS, `suspicious-nails-reference` reads each line of `/etc/nixos` as the file writes it and
-  again with the escapes of its strings read as Nix reads them, in code and in comments, so a name
-  of the hidden volume written with an escape (`"/mnt/d\ata"`, `"/dev/mapper/d\ata"`,
-  `luks.devices."d\ata"`) is refused as the plain name is. Before, such a line passed.
+  again with the escapes of its strings and quoted attribute names read as Nix reads them, in code
+  and in comments, so a name of the hidden volume written with an escape (`"/mnt/d\ata"`,
+  `"/dev/mapper/d\ata"`, `luks.devices."d\ata"`, `inherit "d\ata";` in a `luks.devices` block) is
+  refused as the plain name is, and so is a crypttab line that starts after a newline a string
+  writes as an escape (`"x /dev/a none\ndata /dev/sdc1 none luks"`). Before, such a line passed.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
