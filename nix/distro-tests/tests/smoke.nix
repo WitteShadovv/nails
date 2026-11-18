@@ -1346,12 +1346,16 @@ distroVm.buildVmTest {
         # A CPU quota stretches the activation, so the interrupt reaches it
         # while it runs its checks; no child process of it dies with the
         # signal there, so only the activation's own checkpoints can stop it.
+        # The unit starts it through the decoy's shell, which then becomes it:
+        # on an enforcing Fedora PID 1 did not start the binary shared in over
+        # 9p itself (exit status 203).
         log = "/run/cancelled-activation.log"
         vm.succeed(
             "systemd-run --unit=cancelled-activation --remain-after-exit "
             + "--property=CPUQuota=5% "
             + f"--property=StandardOutput=file:{log} --property=StandardError=file:{log} "
-            + f"{nails_cmd} activate -y"
+            + "sh -c "
+            + shlex.quote(f"exec {nails_cmd} activate -y")
         )
         # The residue baseline, the last step before the checks, is written,
         # or the activation ended before it. Either way what it printed by
