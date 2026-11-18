@@ -689,7 +689,8 @@ whole-root session, platform detection, the read-only ESP and the
 decoy-persistence preflight are exercised on a non-NixOS host, and on Debian
 13 a Nix installed in the hidden session. The arch-boxes image, staged for
 Arch's admission, runs the smoke and records scenarios with a test-only build
-that admits Arch, when a run asks for them. Debian 12 is not
+that admits Arch, and the Fedora 44 and 45 images, staged for Fedora's, with
+one that admits Fedora, when a run asks for them. Debian 12 is not
 in the table: its systemd is too old for a soft-reboot. A container tier cannot
 do this: a privileged container cannot host an overlay upper on an overlay2
 rootfs and cannot exercise journald or a soft-reboot.
@@ -1060,7 +1061,13 @@ and must write its lastlog2 row and its wtmp records there, and a failed login,
 a wrong password for root that an unprivileged user gives `su`, its btmp
 record, none of which may be on the decoy after the way back (its lastlog2 and
 btmp as they were, its wtmp without a record on the login's terminal), with
-the same logins on the decoy as the positive control.
+the same logins on the decoy as the positive control. The staged suite runs it
+on the Fedora 44 and 45 images too (`fedora-44-records`, `fedora-45-records`),
+booted with SELinux enforcing, with the build that admits Fedora. They keep
+classic wtmp on systemd 259 and newer, which resets the start time across a
+soft-reboot, and the scenario reads them as it reads Arch's, but for lastlog2
+on Fedora 44, whose pam_lastlog2 fails to load: there the logins' wtmp and
+btmp records are read alone.
 ### The access-time scenarios
 
 `access-times.nix` runs `tests/access-times.nix` on Debian 13, with the release

@@ -24,13 +24,17 @@ let
   ];
   probeImages = lib.filterAttrs (_: entry: builtins.elem entry.osId probeOsIds) images;
 
-  # Fedora boots SELinux permissive as images.json pins it, which hides what
-  # only an enforcing boot shows (denials, whether the 9p share still mounts,
-  # what the policy load after a soft-reboot does). Each Fedora image therefore
-  # also gets a "<name>-enforcing" variant. A probe is its image key and the
-  # entry it boots.
+  # A Fedora image's probe boots SELinux permissive, as the probe fixtures
+  # record it, which hides what only an enforcing boot shows (denials, whether
+  # the 9p share still mounts, what the policy load after a soft-reboot does).
+  # Each Fedora image therefore also gets a "<name>-enforcing" variant, which
+  # boots enforcing as images.json pins the image. A probe is its image key and
+  # the entry it boots.
   probes =
-    lib.mapAttrs (image: entry: { inherit image entry; }) probeImages
+    lib.mapAttrs (image: entry: {
+      inherit image;
+      entry = if entry.osId == "fedora" then entry // { enforcing = false; } else entry;
+    }) probeImages
     // lib.mapAttrs' (
       image: entry:
       lib.nameValuePair "${image}-enforcing" {

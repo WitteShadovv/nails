@@ -79,6 +79,9 @@ in
 #   login       whether a login and a failed login run in the hidden
 #               session and, as the positive control, on the decoy after it
 #               (default false);
+#   lastlog2    whether the image's PAM stack writes the login's lastlog2 row,
+#               which the login's assertions then read (default true); where
+#               it does not, they read wtmp and btmp alone;
 #   nails       the binary (default: the release binary), a test-only build
 #               that admits the family for an image not admitted yet;
 #   target      nix-vm-test's output (default "driver": the Debian scenario
@@ -87,6 +90,7 @@ cfg:
 let
   install = cfg.install or "";
   login = cfg.login or false;
+  lastlog2 = cfg.lastlog2 or true;
   nails = cfg.nails or self.packages.x86_64-linux.nails;
   inherit (cfg) assertKind;
 in
@@ -128,6 +132,7 @@ distroVm.buildVmTest {
     assert_kind = ${builtins.toJSON assertKind}
     install_script = ${builtins.toJSON install}
     run_login = ${if login then "True" else "False"}
+    read_lastlog2 = ${if lastlog2 then "True" else "False"}
 
     # The terminal of the login the scenario runs (`login`).
     LOGIN_TTY = "tty5"
@@ -388,7 +393,8 @@ distroVm.buildVmTest {
             hidden = capture("hidden-login")
             hidden_rows = records.sql_rows_added(reference.lastlog2, hidden.lastlog2)
             print(f"=== lastlog2 rows the hidden login wrote ===\n{hidden_rows}")
-            assert hidden_rows, "the login in the hidden session wrote no lastlog2 row"
+            if read_lastlog2:
+                assert hidden_rows, "the login in the hidden session wrote no lastlog2 row"
             hidden_wtmp = login_records(records.utmp_added(reference.wtmp, hidden.wtmp))
             print(f"=== wtmp records of the hidden login ===\n{hidden_wtmp}")
             assert hidden_wtmp, "the login in the hidden session wrote no wtmp record"
@@ -503,7 +509,8 @@ distroVm.buildVmTest {
             failed_login("decoy")
             decoy = capture("decoy-login")
             rows = records.sql_rows_added(after.lastlog2, decoy.lastlog2)
-            assert rows, "a login on the decoy wrote no lastlog2 row the reader sees"
+            if read_lastlog2:
+                assert rows, "a login on the decoy wrote no lastlog2 row the reader sees"
             logged = login_records(records.utmp_added(after.wtmp, decoy.wtmp))
             print(f"=== the decoy login's wtmp records ===\n{logged}")
             assert logged, "a login on the decoy wrote no wtmp record the reader sees"
