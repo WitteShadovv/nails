@@ -393,8 +393,9 @@ pub struct Env {
     pub network_kernel: Option<std::sync::Arc<dyn network::NetKernel>>,
     /// How the way back powers off when it cannot put the network state back.
     pub power_off: PowerOff,
-    /// Where the way back ends the session's last processes but udevd's,
-    /// empties journald's sockets and quiets the hidden filesystem before the
+    /// Where the way back ends every process of the session that PID 1 would
+    /// kill at the switch but udevd's, empties journald's sockets and quiets
+    /// the hidden filesystem before the
     /// kmsg cursor ([`tail`]); `None` skips the three. A test gives it a fake
     /// procfs or none: the real places kill processes and read PID 1's
     /// sockets.
@@ -915,8 +916,9 @@ fn end_session_leftovers(env: &Env, plan: &Plan) {
 /// (one in uninterruptible sleep). Then drop journald's
 /// descriptor store and put its socket units as the decoy had them, and quiet
 /// the hidden ext4 filesystem, whose unmount follows the switch. Last, once
-/// every process of the session but udevd's has ended (or outlasted that
-/// pass's bound), empty journald's sockets in place: what reached them
+/// every process of the session that PID 1 would kill at the switch but
+/// udevd's has ended (or outlasted that pass's bound), empty journald's
+/// sockets in place: what reached them
 /// during the steps before, the wait included, does not stay there for the
 /// decoy's journald. `sockets` are the journald socket units the decoy had
 /// active at the entry. Returns what did not succeed of the work on
