@@ -676,6 +676,9 @@ program. The last step before the switch:
   in place when it stops, and on NixOS the decoy's start would otherwise write
   the hidden session's name servers and search domains into `/etc/resolv.conf`
   on the decoy disk;
+- leaves a line for `systemd-tmpfiles` in `/run/tmpfiles.d`, which removes at
+  the decoy's start the empty `/run/nextroot` the switch leaves behind, which
+  a boot never has, and the line with it;
 - gives the kernel back the decoy's module loader, hotplug helper and firmware
   path, which a hidden NixOS activation pointed at its own store;
 - puts back most of the network state the hidden session changed, as the
@@ -687,6 +690,10 @@ program. The last step before the switch:
   joins one to another mount that got the old ID. None of the hidden session's
   lines stay, and a line of the decoy's that names no mount the way back
   restores is not given back;
+- waits, bounded at about two seconds, until PID 1 has taken down the units
+  of the mounts the `/run` scrub detached (such as the tmpfs NixOS's shutdown
+  mounts at `/run/initramfs`), so that PID 1 logs their end before the
+  cursor;
 - ends once more any process of the session that started since;
 - drops journald's store of standard-output streams, stops the socket of a
   journald namespace the session started, and starts journald's socket or its
@@ -694,26 +701,20 @@ program. The last step before the switch:
   began and PID 1 has closed it since (with systemd before 258, PID 1 fails a
   journald socket that receives anything once journald has stopped for the
   soft-reboot, which drops what it held);
-- empties journald's sockets in place: through PID 1's own descriptors of
-  them, it reads and drops every datagram waiting in the native and
+- sets the message limit of an ext4 hidden volume to zero, so the kernel does
+  not log the line, with the volume's UUID, that it logs when the switch
+  unmounts the volume;
+- last, empties journald's sockets in place: through PID 1's own descriptors
+  of them, it reads and drops every datagram waiting in the native and
   `/dev/log` sockets, every connection waiting on the stream socket and every
   record waiting in the audit socket. That discards what the hidden root sent
   journald after its own journald stopped (the audit records of its last
   units' stops, the lines a unit that stops after journald logs), and the
   sockets stay the ones PID 1 carried into the session, with their labels and
-  their units' start times, as a plain soft-reboot keeps them. Where the
-  kernel does not give the step PID 1's descriptors, the sockets keep what
-  they hold, and nothing says so;
-- sets the message limit of an ext4 hidden volume to zero, so the kernel does
-  not log the line, with the volume's UUID, that it logs when the switch
-  unmounts the volume;
-- waits, for at most two seconds, until PID 1 has taken down the units of
-  the mounts the `/run` scrub detached (such as the tmpfs NixOS's shutdown
-  mounts at `/run/initramfs`), so that PID 1 logs their end before the
-  cursor;
-- leaves a line for `systemd-tmpfiles` in `/run/tmpfiles.d`, which removes at
-  the decoy's start the empty `/run/nextroot` the switch leaves behind, which
-  a boot never has, and the line with it;
+  their units' start times, as a plain soft-reboot keeps them. It comes after
+  the steps above, the wait included, so what reached the sockets during them
+  is dropped too. Where the kernel does not give the step PID 1's
+  descriptors, the sockets keep what they hold, and nothing says so;
 - writes journald's kernel-message cursor, so the decoy journal imports no
   kernel record logged before it. What the kernel and PID 1 log after it is
   listed under "What a soft-reboot leaves" below.

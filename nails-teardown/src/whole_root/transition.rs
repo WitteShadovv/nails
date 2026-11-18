@@ -32,12 +32,14 @@
 //!   and, once the hidden units have stopped, reset the zram devices that
 //!   hold a swap area out of use ([`crate::whole_root::zram`]), put the
 //!   decoy's network state back ([`crate::whole_root::network`]), give the
-//!   decoy's `utab` lines back to the decoy mounts the way back restored, end
-//!   what process of the session started since, empty journald's sockets in
-//!   place, and quiet an ext4 hidden volume's unmount line
-//!   ([`crate::whole_root::tail`]), write the kmsg cursor and, last, set the
-//!   kernel's process-number counter back to where the decoy's own boot
-//!   numbered its units ([`crate::whole_root::fresh_pids`]).
+//!   decoy's `utab` lines back to the decoy mounts the way back restored, wait,
+//!   bounded, until PID 1 has taken down the units of the mounts the scrub
+//!   detached, end what process of the session started since, quiet an ext4
+//!   hidden volume's unmount line and, last before the cursor, empty
+//!   journald's sockets in place ([`crate::whole_root::tail`]), write the
+//!   kmsg cursor and, last, set the kernel's process-number counter back to
+//!   where the decoy's own boot numbered its units
+//!   ([`crate::whole_root::fresh_pids`]).
 //!   When what it sets out to undo of the network state is still the
 //!   session's afterwards (a decoy device keeps another MAC address, a link,
 //!   rule or table of the session's is still there, or a part cannot be read
@@ -903,35 +905,37 @@ fn end_session_leftovers(env: &Env, plan: &Plan) {
     }
 }
 
-/// The last steps before the kmsg cursor ([`tail`]): end once more what PID 1
-/// would still kill at the switch, which finds nothing after the way back's
-/// first pass unless a process started since or outlasted that pass (one in
-/// uninterruptible sleep); then drop journald's
-/// descriptor store and put its socket units as the decoy had them, empty
-/// journald's sockets in place once the session's last writer is gone, and
-/// quiet the hidden ext4 filesystem, whose unmount follows the switch. Last,
-/// wait until PID 1 has taken down the units of the mounts the `/run` scrub
-/// detached (`detached`), so that it logs their end before the cursor
-/// ([`tail::wait_for_unmounted`]). `sockets` are the journald socket units
-/// the decoy had active at the entry. Returns what did not succeed of the
-/// work on journald's sockets.
+/// The last steps before the kmsg cursor ([`tail`]). First wait until PID 1
+/// has taken down the units of the mounts the `/run` scrub detached
+/// (`detached`), so that it logs their end before the cursor
+/// ([`tail::wait_for_unmounted`]). Then end once more what PID 1 would still
+/// kill at the switch, which finds nothing after the way back's first pass
+/// unless a process started since or outlasted that pass (one in
+/// uninterruptible sleep), drop journald's descriptor store and put
+/// its socket units as the decoy had them, and quiet the hidden ext4
+/// filesystem, whose unmount follows the switch. Last, once the session's
+/// last writer is gone, empty journald's sockets in place: what reached them
+/// during the steps before, the wait included, does not stay there for the
+/// decoy's journald. `sockets` are the journald socket units the decoy had
+/// active at the entry. Returns what did not succeed of the work on
+/// journald's sockets.
 fn finish_tail(
     env: &Env,
     plan: &Plan,
     sockets: Option<&[String]>,
     detached: &[PathBuf],
 ) -> Vec<String> {
+    if let (Some(systemctl), false) = (&env.systemctl, detached.is_empty()) {
+        let _ = tail::wait_for_unmounted(systemctl, detached, nextroot::mount_points);
+    }
     end_session_leftovers(env, plan);
     let mut journal = match &env.systemctl {
         Some(systemctl) => tail::settle_journal_sockets(systemctl, sockets),
         None => vec!["no systemctl".to_string()],
     };
     if let Some(places) = &env.tail {
-        journal.extend(tail::drain_journal_sockets(places).failed);
         let _ = tail::quiet_hidden_unmount(places, plan, &env.mounts, &env.nextroot);
-    }
-    if let (Some(systemctl), false) = (&env.systemctl, detached.is_empty()) {
-        let _ = tail::wait_for_unmounted(systemctl, detached, nextroot::mount_points);
+        journal.extend(tail::drain_journal_sockets(places).failed);
     }
     journal
 }
