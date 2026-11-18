@@ -43,7 +43,7 @@ fn an_old_systemd_is_refused_with_how_the_host_upgrades() {
         (
             "ID=fedora\nVERSION_ID=38\n",
             253,
-            "Fedora 44 with `dnf system-upgrade`",
+            "Fedora 44 or 45 with `dnf system-upgrade`",
         ),
         ("ID=arch\n", 253, "`pacman -Syu`"),
         ("ID=endeavouros\nID_LIKE=arch\n", 253, "`pacman -Syu`"),
@@ -69,10 +69,9 @@ fn an_old_systemd_is_refused_with_how_the_host_upgrades() {
     // Without a detected host, the hint names the platforms NAILS runs on.
     let unknown = judge_version(Some(252), None);
     assert!(
-        unknown
-            .remediation()
-            .unwrap()
-            .contains("a release NAILS supports (Debian 13, Ubuntu 24.04 and 26.04)"),
+        unknown.remediation().unwrap().contains(
+            "a release NAILS supports (Debian 13, Ubuntu 24.04 and 26.04, Fedora 44 and 45)"
+        ),
         "{unknown:?}"
     );
 }

@@ -185,28 +185,28 @@ the code never branches on "is this NixOS?" directly.
    the `Platform` trait:
    - `NixOsPlatform` — the first-class backend, with a declarative config layer
      that builds the hidden system into the next root's store.
-   - `FhsPlatform` — the backend for Debian-family hosts: Debian 13 and newer,
-     Ubuntu 24.04 and newer, and provisionally derivatives whose `ID_LIKE`
-     names `debian` or `ubuntu`. A derivative whose `ID_LIKE` also names
-     `fedora`, `rhel`, `centos` or `arch`, anywhere in the list, is refused
-     instead. The hidden configuration is whatever the upper's `/etc` holds.
+   - `FhsPlatform` — the backend for Debian-family and Fedora hosts: Debian 13
+     and newer, Ubuntu 24.04 and newer, provisionally derivatives whose
+     `ID_LIKE` names `debian` or `ubuntu`, Fedora 44 and newer, and its
+     derivatives Nobara and Ultramarine from release 44 on. A host whose
+     `ID_LIKE` names `fedora`, `rhel`, `centos` or `arch`, anywhere in the
+     list, and that the support table does not name is refused instead. The
+     hidden configuration is whatever the upper's `/etc` holds.
      (A Debian 12 host is refused by the support table; its systemd could not
      soft-reboot either.) The support table also lists
      the releases NAILS targets. Its automated VM tests cover Debian 13,
-     Ubuntu 24.04 and Ubuntu 26.04. Ubuntu 26.04 carries a warning for a known
+     Ubuntu 24.04, Ubuntu 26.04 and the Cloud edition of Fedora 44 and 45, on
+     which a Fedora host is tested; any other Fedora edition, or none, warns.
+     Ubuntu 26.04 carries a warning for a known
      upstream issue. The tests expect its chrony half, a failed chrony in the
      hidden session and after the way back; its printing (CUPS) half is checked
      by hand, as their image has no CUPS. Any other release it admits carries a
      warning in its `HostProfile`, which `init` and the `platform` pre-flight
      check report.
    - `UnsupportedPlatform` — refuses every other host with a typed error:
-     ostree and image-based hosts, non-systemd init, Fedora, Arch and unknown
-     distributions. For those hosts the refusal *is* the behaviour. Fedora and
-     Arch are rows of the support table that are not admitted yet, and
-     Fedora's row already holds the gate it will take: the releases and the
-     edition, by os-release `VARIANT_ID`, it will be tested on (Cloud; any
-     other edition, or none, will warn), and release 44 or newer for its
-     derivatives Nobara and Ultramarine.
+     ostree and image-based hosts, non-systemd init, Arch and unknown
+     distributions. For those hosts the refusal *is* the behaviour. Arch is a
+     row of the support table that is not admitted yet.
 3. **Policy.** The trait collects the host-specific decisions: where host tools
    live (`host_command_dirs`) and which declarative build target activation and
    `check` use (`discover_build_target`). `verify` picks its read-only drift

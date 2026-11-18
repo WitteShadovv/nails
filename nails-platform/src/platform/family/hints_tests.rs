@@ -30,8 +30,8 @@ fn hint_for(os_release: &str) -> String {
 }
 
 /// The hint for a host whose own upgrade NAILS cannot name.
-const SUPPORTED: &str =
-    "Use a current NixOS or a release NAILS supports (Debian 13, Ubuntu 24.04 and 26.04).";
+const SUPPORTED: &str = "Use a current NixOS or a release NAILS supports (Debian 13, Ubuntu 24.04 \
+     and 26.04, Fedora 44 and 45).";
 
 // --- The install hint ----------------------------------------------------
 
@@ -106,7 +106,7 @@ fn ubuntu_upgrades_with_do_release_upgrade() {
 fn fedora_upgrades_with_dnf_system_upgrade() {
     assert_eq!(
         hint_for("ID=fedora\nVERSION_ID=38\n"),
-        "Upgrade to Fedora 44 with `dnf system-upgrade`, at most two releases at a time."
+        "Upgrade to Fedora 44 or 45 with `dnf system-upgrade`, at most two releases at a time."
     );
 }
 
@@ -115,11 +115,12 @@ fn a_fedora_derivative_upgrades_its_own_way_to_a_release_built_on_fedora() {
     // Nobara warns against `dnf system-upgrade`; Ultramarine documents it.
     assert_eq!(
         hint_for("ID=nobara\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=38\n"),
-        "Upgrade to a release built on Fedora 44 as Nobara's upgrade guide describes, then reboot."
+        "Upgrade to a release built on Fedora 44 or 45 as Nobara's upgrade guide describes, \
+         then reboot."
     );
     assert_eq!(
         hint_for("ID=ultramarine\nID_LIKE=fedora\nVERSION_ID=38\n"),
-        "Upgrade to a release built on Fedora 44 with `dnf system-upgrade`."
+        "Upgrade to a release built on Fedora 44 or 45 with `dnf system-upgrade`."
     );
 }
 
@@ -163,8 +164,8 @@ fn an_unlisted_debian_derivative_upgrades_to_a_release_built_on_a_tested_one() {
 fn a_host_it_cannot_advise_on_is_pointed_at_the_platforms_nails_runs_on() {
     assert_eq!(upgrade_hint(None), SUPPORTED);
     for os_release in [
-        // An unknown distribution, one refused by name, one like a family NAILS
-        // has not validated, and a host that declares no ID.
+        // An unknown distribution, one refused by name, one like Fedora that
+        // the table does not name, and a host that declares no ID.
         "ID=gentoo\n",
         "ID=rhel\nVERSION_ID=\"9.4\"\n",
         "ID=risios\nID_LIKE=fedora\n",
@@ -221,7 +222,7 @@ fn a_rolling_family_has_no_release_to_build_on() {
     assert_eq!(built_on(Family::Arch), None);
     assert_eq!(
         built_on(Family::Fedora).as_deref(),
-        Some("a release built on Fedora 44")
+        Some("a release built on Fedora 44 or 45")
     );
 }
 

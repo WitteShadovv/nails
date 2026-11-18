@@ -123,12 +123,12 @@ mod tests {
 
     #[test]
     fn a_refused_host_fails_with_the_reason_activation_gives() {
-        let result = run_on("ID=fedora\nVERSION_ID=44\n");
+        let result = run_on("ID=arch\nBUILD_ID=rolling\n");
         assert!(result.is_fail(), "{result:?}");
         assert!(
             result
                 .message()
-                .starts_with("Fedora is not yet a validated platform"),
+                .starts_with("Arch is not yet a validated platform"),
             "{result:?}"
         );
 
@@ -139,8 +139,6 @@ mod tests {
 
     #[test]
     fn a_tested_edition_passes_naming_it() {
-        // Fedora is refused until it is admitted; this is how its row passes
-        // then.
         let mut profile = FakePlatform::fhs().host_profile();
         profile.id = Some("fedora".to_string());
         profile.version_id = Some("44".to_string());
@@ -148,6 +146,22 @@ mod tests {
         let result = judge(&profile);
         assert!(result.is_pass(), "{result:?}");
         assert_eq!(result.message(), "Fedora 44 Cloud");
+
+        let result = run_on("ID=fedora\nVERSION_ID=45\nVARIANT_ID=cloud\n");
+        assert!(result.is_pass(), "{result:?}");
+        assert_eq!(result.message(), "Fedora 45 Cloud");
+    }
+
+    #[test]
+    fn a_desktop_edition_of_fedora_warns_naming_it() {
+        let result = run_on("ID=fedora\nVERSION_ID=44\nVARIANT_ID=workstation\n");
+        assert!(result.is_warn(), "{result:?}");
+        assert!(
+            result
+                .message()
+                .starts_with("Fedora 44 Workstation is not an edition NAILS has been tested on"),
+            "{result:?}"
+        );
     }
 
     #[test]

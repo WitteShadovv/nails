@@ -5,18 +5,18 @@ name: Distro E2E
 # which the NixOS-only e2e.yml suite cannot see. Its suites:
 #
 #   smoke    one smoke scenario per admitted distribution, built with nix build
-#   records  the login- and boot-record scenarios (Debian 13, Ubuntu 24.04)
-#            and the access-time scenarios (Debian 13, Fedora 44)
+#   records  the login- and boot-record scenarios (Debian 13, Ubuntu 24.04,
+#            Fedora 44 and 45) and the access-time scenarios (Debian 13,
+#            Fedora 44)
 #   refusal  the refusal of each pinned image of a family the family table
-#            does not admit (Fedora, Arch)
-#   probe    the fact probes of the images not admitted yet
-#   staged   the scenarios a family's admission needs, with a test-only build
-#            that admits the family: the smoke and records scenarios of each
-#            image staged for its admission (arch-boxes, fedora-44,
-#            fedora-45), and the drivers of
-#            the admission gate of a family not admitted yet (Fedora): its
-#            gate scenarios and the resolution of the package closures they
-#            install offline, each uploading what it wrote
+#            does not admit (Arch)
+#   probe    the fact probes of the Fedora and Arch images
+#   staged   the scenarios a family's admission needs: the smoke and records
+#            scenarios of each image staged for its admission (arch-boxes),
+#            with a test-only build that admits the family, and the drivers
+#            of Fedora's admission gate: its gate scenarios and the
+#            resolution of the package closures they install offline, each
+#            uploading what it wrote
 #
 # A smoke scenario is a derivation that nix build runs in the Nix build
 # sandbox, and so is a staged scenario of an image staged for admission. A
@@ -69,8 +69,8 @@ on:
       suite:
         description: >-
           What the VM jobs run: all (the smoke, records and refusal suites),
-          one of those three alone, the fact probes of the images not
-          admitted yet, each uploading its facts as JSON (distros then names
+          one of those three alone, the fact probes of the Fedora and Arch
+          images, each uploading its facts as JSON (distros then names
           probes, such as fedora-44-enforcing), or the scenarios of the images
           staged for admission and the drivers of an admission gate, each
           driver uploading what it wrote (distros then names them, such as

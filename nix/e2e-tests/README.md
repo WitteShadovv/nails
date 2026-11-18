@@ -683,14 +683,14 @@ Add files under `fixtures/configs/` and reference them from tests via `${./../..
 The suite above runs on `pkgs.testers.runNixOSTest`, whose driver backdoor only
 exists in NixOS guests, so it cannot catch a regression on another distribution.
 The distribution tier under `nix/distro-tests/` boots real Debian 13, Ubuntu
-24.04 and Ubuntu 26.04 cloud images on the same NixOS test driver through
+24.04, Ubuntu 26.04, Fedora 44 and Fedora 45 cloud images, the Fedora ones
+with SELinux enforcing, on the same NixOS test driver through
 [`numtide/nix-vm-test`](https://github.com/numtide/nix-vm-test), so the
 whole-root session, platform detection, the read-only ESP and the
 decoy-persistence preflight are exercised on a non-NixOS host, and on Debian
 13 a Nix installed in the hidden session. The arch-boxes image, staged for
 Arch's admission, runs the smoke and records scenarios with a test-only build
-that admits Arch, and the Fedora 44 and 45 images, staged for Fedora's, with
-one that admits Fedora, when a run asks for them. Debian 12 is not
+that admits Arch, when a run asks for them. Debian 12 is not
 in the table: its systemd is too old for a soft-reboot. A container tier cannot
 do this: a privileged container cannot host an overlay upper on an overlay2
 rootfs and cannot exercise journald or a soft-reboot.
@@ -752,7 +752,8 @@ Layout:
 Each smoke scenario shares the static musl `nails` binary into the guest over
 9p (on `/run`, off the decoy disk); asserts platform detection selects the
 overlay-only backend, and that the `lsm-status` row of `check` passes and
-names the security modules the kernel runs; images the decoy as booted for a
+names the security modules the kernel runs, for SELinux that enforces on the
+Fedora images and for none running elsewhere; images the decoy as booted for a
 baseline; runs the
 decoy-persistence preflight (a stock persistent journal is refused, and passes
 once the decoy is amnesic); runs `blk-availability.service` as lvm2 ships it
@@ -1040,8 +1041,9 @@ phase where none was failed.
 
 ### The login- and boot-record scenarios
 
-`records.nix` runs `tests/session-records.nix` on Debian 13 and Ubuntu 24.04,
-as one host driver per distribution (`<distro>-records`). A whole-root session
+`records.nix` runs `tests/session-records.nix` on Debian 13, Ubuntu 24.04,
+Fedora 44 and Fedora 45, as one host driver per distribution
+(`<distro>-records`). A whole-root session
 returns to the decoy through a soft-reboot, and the decoy's own writers record
 that start: on Debian 13 wtmpdb's boot writer, which the cloud image lacks and
 the scenario installs over the guest's network, and on Ubuntu 24.04 the classic
@@ -1054,7 +1056,13 @@ the pieces the way back leaves in `/run` are gone and that `/run` is `noexec`
 again where the decoy had it so. A plain soft-reboot afterwards is the positive
 control and must leave the trace. NixOS is not in it: its records already read
 as a power cycle. CI runs it in the records suite of `distro-e2e.yml`, and its
-driver runs by hand as the refusal's below.
+driver runs by hand as the refusal's below. The Fedora images, booted with
+SELinux enforcing, keep classic wtmp on systemd 259 and newer, which resets
+the start time across a soft-reboot, so a plain soft-reboot's boot record
+reads as a power cycle's there and the control shows that instead; a login
+and a failed login run in the session, as on arch-boxes below, and the
+scenario reads the login's lastlog2 row on Fedora 45 alone, since Fedora 44's
+pam_lastlog2 fails to load.
 
 Every records scenario makes the swap lines of the decoy's fstab `noauto` and
 turns the swap off before the power cycle. The staged suite runs the scenario
@@ -1069,19 +1077,12 @@ and must write its lastlog2 row and its wtmp records there, and a failed login,
 a wrong password for root that an unprivileged user gives `su`, its btmp
 record, none of which may be on the decoy after the way back (its lastlog2 and
 btmp as they were, its wtmp without a record on the login's terminal), with
-the same logins on the decoy as the positive control. The staged suite runs it
-on the Fedora 44 and 45 images too (`fedora-44-records`, `fedora-45-records`),
-booted with SELinux enforcing, with the build that admits Fedora. They keep
-classic wtmp on systemd 259 and newer, which resets the start time across a
-soft-reboot, and the scenario reads them as it reads Arch's, but for lastlog2
-on Fedora 44, whose pam_lastlog2 fails to load: there the logins' wtmp and
-btmp records are read alone.
+the same logins on the decoy as the positive control.
 ### The access-time scenarios
 
-`access-times.nix` runs `tests/access-times.nix` on Debian 13, with the release
-binary, and on Fedora 44, with the test-only build that admits Fedora's row of
-the family table (`lib/admitted.nix`), as one host driver per image
-(`<image>-access-times`). It finds the reads of the decoy disk that NAILS makes
+`access-times.nix` runs `tests/access-times.nix` on Debian 13 and on Fedora 44,
+booted with SELinux enforcing, with the release binary, as one host driver per
+image (`<image>-access-times`). It finds the reads of the decoy disk that NAILS makes
 and a plain soft-reboot does not, on a root mounted `relatime`: before each
 phase it sets the access time of every entry of the decoy disk's filesystems two
 days back, so that each read in the phase updates one, and after it lists the
@@ -1110,26 +1111,26 @@ for that time, so a read can be lined up with what PID 1 did. An activation,
 has not switched, and the run fails at once with its output. CI runs it in the
 records suite of `distro-e2e.yml`.
 
-### The refusal of Fedora and Arch
+### The refusal of Arch
 
-Fedora and Arch are in the image table, but the family table does not admit
-them yet, so NAILS refuses them. `refusal.nix` proves the refusal on each Fedora
-and Arch image of the table, as one host driver per image (`<name>-refusal`). On
+Arch is in the image table, but the family table does not admit it yet, so
+NAILS refuses it. `refusal.nix` proves the refusal on each Arch image of the
+table, as one host driver per image (`<name>-refusal`). On
 the stock image, with the binary shared in and a hidden root set up as in the
 smoke scenario, it asserts that:
 
 - `check` fails its `platform` row with the family table's reason (exit 4) and
   leaves the hidden root holding what it held;
 - `check` names the security modules the kernel runs in its `lsm-status` row.
-  On Arch, where SELinux does not run, the row passes. On Fedora, where it
-  runs, NAILS gives its copies in `/run` the label of the system's programs,
-  and the loaded policy, asked through selinuxfs, starts the units systemd
-  starts from them in `unconfined_service_t`; the disk guard is off in this
-  configuration. So the row warns that SELinux is permissive exactly where
-  the kernel says so, and passes, naming that domain, where it enforces: none
-  of the facts it reads there (the mode, `/etc/selinux/config`, the context of
-  the `nails` process, the policy's answers) failed to read or failed its
-  rule;
+  On Arch, where SELinux does not run, the row passes. Where SELinux runs,
+  which it does on no refused image now, NAILS gives its copies in `/run` the
+  label of the system's programs, and the loaded policy, asked through
+  selinuxfs, starts the units systemd starts from them in
+  `unconfined_service_t`; the disk guard is off in this configuration. So the
+  row warns that SELinux is permissive exactly where the kernel says so, and
+  passes, naming that domain, where it enforces: none of the facts it reads
+  there (the mode, `/etc/selinux/config`, the context of the `nails` process,
+  the policy's answers) failed to read or failed its rule;
 - `activate` exits 8 before it writes a byte or a timestamp to the hidden root.
   It starts no session (no next root mounted, no `/run/overlay-runtime`, no
   soft-reboot drop-in or job, the same boot), and the top two levels of `/run`
@@ -1138,8 +1139,8 @@ smoke scenario, it asserts that:
 - nothing on the decoy's disk filesystems or in its persistent journal names
   the refused run; a planted trace is the positive control.
 
-The decoy disk is judged inside the guest, because both images keep their root
-on btrfs compressed with zstd: debugfs and sleuthkit, which the disk-image
+The decoy disk is judged inside the guest, because the Arch images keep their
+root on btrfs compressed with zstd: debugfs and sleuthkit, which the disk-image
 helpers use, read ext4, and a raw scan misses what a compressed extent holds.
 The scenario compares the live entries of the mounted disk filesystems before
 and after the refused commands and searches the journal entries written
@@ -1159,17 +1160,17 @@ Like the probes (`probe.nix`), it needs KVM. CI runs it in the refusal suite of
 at a directory on disk:
 
 ```sh
-nix build .#legacyPackages.x86_64-linux.e2e-distro.fedora-44-refusal -o fedora-44-refusal
+nix build .#legacyPackages.x86_64-linux.e2e-distro.arch-boxes-refusal -o arch-boxes-refusal
 mkdir -p /var/tmp/r
-TMPDIR=/var/tmp/r XDG_RUNTIME_DIR=/var/tmp/r ./fedora-44-refusal/bin/test-driver
+TMPDIR=/var/tmp/r XDG_RUNTIME_DIR=/var/tmp/r ./arch-boxes-refusal/bin/test-driver
 ```
 
 ### The admission gate of Fedora
 
-Fedora is admitted in one commit with its CI matrix entry, once its admission
-gate passes on its current releases. The drivers that gate runs before that
-commit are in `fedora-gate.nix`, one set per pinned Fedora image, and run in
-the staged suite of `distro-e2e.yml`, which only a dispatch selects. Each is a
+Fedora was admitted in one commit with its CI matrix entry, once its admission
+gate passed on Fedora 44 and 45. The drivers of that gate are in
+`fedora-gate.nix`, one set per pinned Fedora image, and run in the staged
+suite of `distro-e2e.yml`, which only a dispatch selects. Each is a
 host driver that writes what it found into the directory `NAILS_GATE_OUT`
 names (the working directory when it is unset).
 
@@ -1193,9 +1194,9 @@ fetches the closure from, only when each file is the one the image's dnf saw;
 
 `<image>-gate`, defined once the image has a lock, is the gate scenario
 (`py/fedora_gate.py`, its reading of the kernel log and of auditd's log in
-`py/selinux_gate.py`). It boots the image with SELinux enforcing, with a
-test-only build that admits Fedora (`lib/admitted.nix`) and the locked closure
-shared in, and runs every `nails` command in a login session of the
+`py/selinux_gate.py`). It boots the image with SELinux enforcing, with the
+release binary and the locked closure shared in, and runs every `nails`
+command in a login session of the
 operator's own, through the login PAM stack, whose pam_selinux gives the user
 `unconfined_t` (checked with `id -Z`); the harness's own shell runs as a
 service, in the domain the gate records (`unconfined_service_t`). In one QEMU

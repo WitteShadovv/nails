@@ -11,14 +11,13 @@ host is caught instead of passing unseen. It has five suites:
   has one;
 - ``refusal``: the refusal of each pinned image of a family the family table
   does not admit;
-- ``probe``: the fact probes of the images not admitted yet whose image is
+- ``probe``: the fact probes of the Fedora and Arch images whose image is
   pinned;
-- ``staged``: the scenarios a family's admission needs, run with a test-only
-  build of NAILS that admits the family, before the commit that admits it:
-  the smoke and records scenarios of each image staged for its admission, and
-  the drivers of the admission gate of a family not admitted yet (its gate
-  scenarios, and the resolution of the package closures they install
-  offline).
+- ``staged``: the scenarios a family's admission needs: the smoke and records
+  scenarios of each image staged for its admission, run with a test-only
+  build of NAILS that admits the family before the commit that admits it, and
+  the drivers of Fedora's admission gate (its gate scenarios, and the
+  resolution of the package closures they install offline).
 
 A records scenario, a refusal and a probe are each a host driver, one job of
 its own that builds the driver and runs it on the runner, outside the sandbox.

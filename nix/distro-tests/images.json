@@ -81,7 +81,7 @@
     "rootfs": "btrfs",
     "enforcing": true,
     "memory": 2048,
-    "enabled": false,
+    "enabled": true,
     "upstreamUntil": "2027-05-19",
     "prepare": "fedora",
     "source": {
@@ -99,7 +99,7 @@
     "rootfs": "btrfs",
     "enforcing": true,
     "memory": 2048,
-    "enabled": false,
+    "enabled": true,
     "upstreamUntil": "2027-11-24",
     "prepare": "fedora",
     "source": {

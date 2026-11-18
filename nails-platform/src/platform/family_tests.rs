@@ -124,17 +124,31 @@ fn editions_are_listed_as_in_a_sentence() {
 
 #[test]
 fn the_supported_sentence_is_generated_from_the_admitted_rows() {
-    assert_eq!(supported_platforms(), "Debian 13, Ubuntu 24.04 and 26.04");
+    assert_eq!(
+        supported_platforms(),
+        "Debian 13, Ubuntu 24.04 and 26.04, Fedora 44 and 45"
+    );
+    assert_eq!(
+        supported_sentence(),
+        "NAILS supports NixOS and these releases: Debian 13, Ubuntu 24.04 and 26.04, \
+         Fedora 44 and 45."
+    );
 }
 
 #[test]
 fn refusals_name_the_generated_supported_platforms() {
     // The refusal text should carry the generated list, not a hard-coded one.
-    let FamilySupport::Refused(reason) = classify_of(Some("fedora"), &[], Some("44")).support
-    else {
-        panic!("Fedora should be refused");
+    let FamilySupport::Refused(reason) = classify_of(Some("arch"), &[], None).support else {
+        panic!("Arch should be refused");
     };
-    assert!(reason.contains(&supported_platforms()), "{reason}");
+    assert!(reason.ends_with(&supported_sentence()), "{reason}");
+    for id in [Some("someos"), None] {
+        let FamilySupport::Refused(reason) = classify_of(id, &[], Some("1")).support else {
+            panic!("{id:?} should be refused");
+        };
+        assert!(reason.contains(&supported_sentence()), "{reason}");
+        assert!(!reason.contains("Debian family"), "{reason}");
+    }
 }
 
 // --- label ---------------------------------------------------------------
@@ -273,53 +287,57 @@ fn an_unparseable_version_is_refused() {
     ));
 }
 
-// --- Fedora and Arch: in the table, refused as product data --------------
+// --- Fedora: admitted, gated on its release and its edition --------------
 
 #[test]
-fn fedora_is_refused_as_an_unvalidated_family() {
-    for version in ["44", "45", "40"] {
-        let c = classify_of(Some("fedora"), &[], Some(version));
+fn fedora_is_admitted() {
+    assert!(row("fedora").admitted);
+    assert!(base_admitted(Family::Fedora));
+}
+
+#[test]
+fn fedora_cloud_on_a_tested_release_runs_clean() {
+    for version in ["44", "45"] {
+        let c = classify_variant_of(Some("fedora"), &[], Some(version), Some("cloud"));
         assert_eq!(c.family, Some(Family::Fedora), "{version}");
-        match c.support {
-            FamilySupport::Refused(reason) => {
-                assert!(
-                    reason.starts_with("Fedora is not yet a validated platform"),
-                    "{reason}"
-                );
-            }
-            other => panic!("{version}: expected a refusal, got {other:?}"),
-        }
+        assert_eq!(c.support, FamilySupport::Supported, "{version}");
     }
 }
 
 #[test]
-fn fedora_is_refused_whatever_its_edition() {
-    // The edition gate is the one Fedora will take once admitted; until then
-    // every edition gets the same refusal.
-    for variant in [Some("cloud"), Some("workstation"), Some("server"), None] {
-        let c = classify_variant_of(Some("fedora"), &[], Some("44"), variant);
-        assert_eq!(
-            c,
-            classify_of(Some("fedora"), &[], Some("44")),
-            "{variant:?}"
-        );
-        assert!(
-            matches!(&c.support, FamilySupport::Refused(reason)
-                if reason.starts_with("Fedora is not yet a validated platform")),
-            "{variant:?}: {:?}",
-            c.support
-        );
-    }
-}
-
-// --- Fedora's gate once admitted: its release and its edition -------------
-
-#[test]
-fn fedora_cloud_on_a_tested_release_runs_clean_once_admitted() {
-    assert_eq!(
-        once_admitted("fedora", Some("44"), Some("cloud")),
-        FamilySupport::Supported
+fn fedora_below_its_minimum_is_refused_and_any_newer_release_warns() {
+    let c = classify_variant_of(Some("fedora"), &[], Some("40"), Some("cloud"));
+    assert!(
+        matches!(&c.support, FamilySupport::Refused(reason) if reason.contains("(Fedora 44)")),
+        "{:?}",
+        c.support
     );
+    let warning =
+        warning_of(classify_variant_of(Some("fedora"), &[], Some("46"), Some("cloud")).support);
+    assert!(
+        warning.starts_with(
+            "Fedora 46 is not a release NAILS has been tested on (tested: Fedora 44 and 45)."
+        ),
+        "{warning}"
+    );
+}
+
+#[test]
+fn a_fedora_desktop_edition_warns_on_a_tested_release() {
+    for (variant, label) in [
+        ("workstation", "Workstation"),
+        ("kde", "KDE Plasma Desktop"),
+    ] {
+        let warning =
+            warning_of(classify_variant_of(Some("fedora"), &[], Some("45"), Some(variant)).support);
+        assert!(
+            warning.starts_with(&format!(
+                "Fedora 45 {label} is not an edition NAILS has been tested on \
+                 (tested: Fedora Cloud)."
+            )),
+            "{warning}"
+        );
+    }
 }
 
 #[test]
@@ -378,11 +396,11 @@ fn a_fedora_host_that_names_no_edition_warns_once_admitted() {
 
 #[test]
 fn an_untested_fedora_release_of_the_tested_edition_warns_about_the_release() {
-    let warning = warning_of(once_admitted("fedora", Some("45"), Some("cloud")));
+    let warning = warning_of(once_admitted("fedora", Some("46"), Some("cloud")));
     assert!(
         warning.starts_with(
-            "Fedora 45 is not a release NAILS has been tested on (tested: Fedora 44). NAILS \
-             runs on it, but a change in this release can break the session"
+            "Fedora 46 is not a release NAILS has been tested on (tested: Fedora 44 and 45). \
+             NAILS runs on it, but a change in this release can break the session"
         ),
         "{warning}"
     );
@@ -395,11 +413,11 @@ fn an_untested_fedora_release_of_the_tested_edition_warns_about_the_release() {
 
 #[test]
 fn an_untested_release_and_edition_warn_once_naming_both() {
-    let warning = warning_of(once_admitted("fedora", Some("45"), Some("workstation")));
+    let warning = warning_of(once_admitted("fedora", Some("46"), Some("workstation")));
     assert!(
         warning.starts_with(
-            "Fedora 45 is not a release NAILS has been tested on (tested: Fedora 44). \
-             Fedora 45 Workstation is not an edition NAILS has been tested on (tested: \
+            "Fedora 46 is not a release NAILS has been tested on (tested: Fedora 44 and 45). \
+             Fedora 46 Workstation is not an edition NAILS has been tested on (tested: \
              Fedora Cloud). NAILS runs on it, but a change in this release or edition can \
              break the session"
         ),
@@ -521,16 +539,24 @@ fn an_arch_derivative_is_refused_naming_its_base() {
 }
 
 #[test]
-fn a_fedora_derivative_is_refused_naming_its_base() {
-    // Whatever its release: the base refusal comes before the release gate.
+fn a_fedora_derivative_follows_its_admitted_base() {
+    // From Fedora's minimum release on it warns as an untested derivative;
+    // below it, and without a release, it is refused.
     for id in ["nobara", "ultramarine"] {
-        for version in [Some("44"), Some("41"), None] {
-            let c = classify_of(Some(id), &["fedora"], version);
-            assert_eq!(c.family, Some(Family::Fedora), "{id}");
+        let c = classify_of(Some(id), &["fedora"], Some("44"));
+        assert_eq!(c.family, Some(Family::Fedora), "{id}");
+        assert_eq!(
+            c.support,
+            FamilySupport::Untested(derivative_warning(Family::Fedora)),
+            "{id}"
+        );
+        for version in [Some("41"), None] {
             assert!(
-                matches!(&c.support, FamilySupport::Refused(reason) if reason.contains("based on Fedora")),
-                "{id} {version:?}: {:?}",
-                c.support
+                matches!(
+                    classify_of(Some(id), &["fedora"], version).support,
+                    FamilySupport::Refused(reason) if !reason.contains("based on Fedora")
+                ),
+                "{id} {version:?}"
             );
         }
     }
@@ -580,9 +606,9 @@ fn a_fedora_derivative_from_release_44_warns_as_an_untested_derivative_once_admi
 
 #[test]
 fn a_derivative_row_is_held_to_its_gate_once_its_base_family_is_admitted() {
-    // No derivative row has an admitted base yet. Placed in the Debian family,
-    // which is admitted, Nobara's row shows the path it takes the day Fedora
-    // is: refused below its minimum, an untested derivative from it.
+    // Placed in the Debian family, which is admitted too, Nobara's row takes
+    // the path it takes as Fedora's: refused below its minimum, an untested
+    // derivative from it.
     let derivative = FamilyRow {
         family: Family::Debian,
         ..*row("nobara")
@@ -669,13 +695,24 @@ fn a_debian_like_derivative_is_accepted_with_a_warning() {
 
 #[test]
 fn a_fedora_like_unknown_id_is_refused_naming_the_family() {
-    let c = classify_of(Some("bazzite"), &["fedora"], Some("40"));
-    assert_eq!(c.family, Some(Family::Fedora));
-    assert!(
-        matches!(&c.support, FamilySupport::Refused(reason) if reason.contains("Fedora family")),
-        "{:?}",
-        c.support
-    );
+    // Fedora is admitted, but NAILS knows only the derivatives its table
+    // names: any other is refused, whatever its release, and not run as an
+    // untested derivative.
+    for version in [Some("40"), Some("44"), None] {
+        let c = classify_of(Some("bazzite"), &["fedora"], version);
+        assert_eq!(c.family, Some(Family::Fedora));
+        let FamilySupport::Refused(reason) = &c.support else {
+            panic!("{version:?}: expected a refusal, got {:?}", c.support);
+        };
+        assert!(
+            reason.starts_with(
+                "host 'bazzite' declares itself part of the Fedora family, but it is not a \
+                 release or a derivative of that family that NAILS knows"
+            ),
+            "{reason}"
+        );
+        assert!(!reason.contains("not yet validated. NAILS"), "{reason}");
+    }
 }
 
 #[test]
@@ -848,11 +885,11 @@ fn base_admitted_reports_which_families_have_an_admitted_base_row() {
     // Debian is an admitted base family in the table, so its base is admitted:
     // a derivative of it would run (with a warning) rather than be refused.
     assert!(base_admitted(Family::Debian));
-    // Arch and Fedora sit in the table but are not admitted, and neither has an
-    // admitted base row, so their base is not admitted and their derivatives are
-    // refused until the base is verified.
+    assert!(base_admitted(Family::Fedora));
+    // Arch sits in the table but is not admitted, and has no admitted base
+    // row, so its base is not admitted and its derivatives are refused until
+    // the base is verified.
     assert!(!base_admitted(Family::Arch));
-    assert!(!base_admitted(Family::Fedora));
 }
 
 #[test]
@@ -883,7 +920,9 @@ fn id_like_token() -> impl proptest::strategy::Strategy<Value = String> {
     ]
 }
 
-/// The family an `ID_LIKE` token names when it is one NAILS has not validated.
+/// The family an `ID_LIKE` token names when it is one other than Debian's: one
+/// NAILS has not validated (Arch), or one it admits only by the rows its table
+/// names (Fedora).
 fn unvalidated_family(token: &str) -> Option<Family> {
     match token {
         "fedora" | "rhel" | "centos" => Some(Family::Fedora),
@@ -932,9 +971,9 @@ fn host_id() -> impl proptest::strategy::Strategy<Value = String> {
 }
 
 proptest::proptest! {
-    /// An unknown `ID` whose `ID_LIKE` names an unvalidated family is always
-    /// refused, naming the first such family in the list's closest-first
-    /// order. That holds wherever the family stands in the list and whatever
+    /// An unknown `ID` whose `ID_LIKE` names a family other than Debian's is
+    /// always refused, naming the first such family in the list's
+    /// closest-first order. That holds wherever the family stands in the list and whatever
     /// else it names, `debian` and `ubuntu` before or after it included, and
     /// whatever the version.
     #[test]
@@ -968,9 +1007,8 @@ proptest::proptest! {
 
     /// An `ID` outside the table runs only as an untested Debian derivative:
     /// it is admitted, with the derivative warning and never as a tested
-    /// release, exactly when `ID_LIKE` names `debian` or `ubuntu` and no
-    /// unvalidated family, whatever the version; every other such host is
-    /// refused.
+    /// release, exactly when `ID_LIKE` names `debian` or `ubuntu` and no other
+    /// family, whatever the version; every other such host is refused.
     #[test]
     fn an_unknown_id_runs_only_as_an_untested_debian_derivative(
         id in "[a-z][a-z0-9_-]{0,12}",

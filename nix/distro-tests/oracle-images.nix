@@ -55,18 +55,19 @@
 # power-off instead of exiting, each image is a QMP blockdev-backup of the
 # paused disk, and system_reset then boots the same disk again.
 #
-# Neither Fedora nor Arch is admitted yet: the release `nails` refuses both
-# (the refusal scenario, refusal.nix, proves that). So for an image the image
-# table does not enable yet this driver runs a test-only build of the release
-# binary in which the base row of the image's family in the family table is
-# admitted, and no other line of the table changes (lib/admitted.nix); on
-# Fedora the lsm-status check is left out too. The family's derivatives follow
-# that row there, as they will once the family is admitted, and no image of
-# one runs here. That build is never shipped. The commit that admits a family
-# enables its image, and from then on this driver runs the release binary on
-# it. The oracle's verdict on the images says what its channels see of a
-# session on that decoy's disk (ci/oracle/README.md lists what they do not),
-# not that NAILS supports the family.
+# Fedora is admitted, and the image table enables its images, so this driver
+# runs the release binary on them, booted with SELinux enforcing as the table
+# pins them, every check included. Arch is not admitted yet: the release
+# `nails` refuses it (the refusal scenario, refusal.nix, proves that). So for
+# an image the image table does not enable yet this driver runs a test-only
+# build of the release binary in which the base row of the image's family in
+# the family table is admitted, and no other line of the table changes
+# (lib/admitted.nix). The family's derivatives follow that row there, as they
+# will once the family is admitted, and no image of one runs here. That build
+# is never shipped. The commit that admits a family enables its image, and
+# from then on this driver runs the release binary on it. The oracle's verdict
+# on an image says what its channels see of a session on that decoy's disk
+# (ci/oracle/README.md lists what they do not).
 #
 # The decoy is prepared before the before image, so all of them hold it alike:
 # its journal volatile and auditd off (lib/hidden-root.nix's
@@ -99,39 +100,8 @@ let
   # table enables the image, as the commit that admits its family does, and
   # until then the release binary with the base row of the image's family
   # admitted, for the scenarios of its admission only. That build fails for a
-  # family whose row is admitted already. For Fedora it also leaves out the
-  # lsm-status check, which judges the SELinux this decoy runs, so that the
-  # images do not depend on its verdict. The check
-  # only reads, so leaving it out changes nothing a session leaves on the
-  # disk. The build fails unless exactly that one line changes.
-  admitted =
-    family:
-    let
-      base = import ./lib/admitted.nix { inherit self; } family;
-    in
-    if family != "fedora" then
-      base
-    else
-      base.overrideAttrs (old: {
-        pname = "nails-test-fedora-admitted";
-        postPatch = (old.postPatch or "") + ''
-          registry=nails-core/src/manager/preflight_runner.rs
-          awk '
-            $0 == "    registry.add_check(Box::new(LsmStatusCheck::new(inputs.unit_domains.clone())));" {
-              print "    let _ = LsmStatusCheck::new(inputs.unit_domains.clone());"; left++; next
-            }
-            { print }
-            END { if (left != 1) exit 1 }
-          ' "$registry" > "$registry.new" || {
-            echo "the lsm-status check of $registry was not left out exactly once" >&2
-            exit 1
-          }
-          mv "$registry.new" "$registry"
-        '';
-        meta = old.meta // {
-          description = "nails with the Fedora row admitted and lsm-status left out, for the btrfs oracle images only; never released";
-        };
-      });
+  # family whose row is admitted already.
+  admitted = import ./lib/admitted.nix { inherit self; };
   nailsFor = entry: if entry.enabled then self.packages.x86_64-linux.nails else admitted entry.osId;
 
   binShare = {

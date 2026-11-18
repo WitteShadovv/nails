@@ -587,15 +587,37 @@ mod tests {
     }
 
     #[test]
-    fn fedora_is_refused_with_documented_reason() {
+    fn fedora_below_its_minimum_is_refused_with_documented_reason() {
         let profile = detect(&host(FEDORA, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
         assert_eq!(profile.family, Some(Family::Fedora));
         assert!(!profile.is_debian_like());
         let err = profile.require_supported().unwrap_err();
+        assert!(err.to_string().contains("(Fedora 44)"), "{err}");
+    }
+
+    #[test]
+    fn a_tested_fedora_release_and_edition_is_an_fhs_host() {
+        for release in ["44", "45"] {
+            let os_release = format!("ID=fedora\nVERSION_ID={release}\nVARIANT_ID=cloud\n");
+            let profile = detect(&host(&os_release, "systemd")).unwrap();
+            assert_eq!(profile.kind, PlatformKind::Fhs, "{release}");
+            assert_eq!(profile.family, Some(Family::Fedora), "{release}");
+            assert!(!profile.is_debian_like(), "{release}");
+            assert_eq!(profile.support_warning, None, "{release}");
+            assert!(profile.require_supported().is_ok(), "{release}");
+        }
+        // Fedora's Workstation edition runs with the warning that names it.
+        let profile = detect(&host(
+            "ID=fedora\nVERSION_ID=44\nVARIANT_ID=workstation\n",
+            "systemd",
+        ))
+        .unwrap();
+        assert_eq!(profile.kind, PlatformKind::Fhs);
+        let warning = profile.support_warning.expect("an untested edition warns");
         assert!(
-            err.to_string()
-                .contains("Fedora is not yet a validated platform")
+            warning.contains("Workstation is not an edition"),
+            "{warning}"
         );
     }
 
