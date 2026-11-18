@@ -60,8 +60,12 @@ pub(super) fn yield_masks(
 /// links in its `.requires` directory (`native`) that the session does not
 /// keep off requires it through a chain of requirements NAILS reads
 /// ([`pulls::requires_among`]), it is kept off as a line the boot mounts:
-/// skipped where its device is there, and masked with a warning and a record
-/// where it is not ([`KeptOff::needed_noauto`]).
+/// skipped where its device is there, and masked with a warning where it is
+/// not ([`KeptOff::needed_noauto`]). The warning says the target will not be
+/// reached, and the mask is recorded, where the chain's last step requires
+/// the mount by name; where it requires it only as the mount for a path
+/// ([`deps::Edge::by_path`]), the warning says the target may not be
+/// reached, and the mask is not recorded.
 pub(super) fn weigh_masks(
     dirs: UnitDirs<'_>,
     fstab: &[FstabEntry],
@@ -132,28 +136,44 @@ pub(super) fn weigh_masks(
         return warnings;
     }
     let graph = deps::Graph::new(dirs, fstab, covered);
-    // Each mount with the first unit found to require it, and how.
-    let mut requirers: Vec<(String, &NativeUnit, String)> = Vec::new();
+    // Each mount with the first unit found to require it, how, and whether
+    // only by a path: one found to require it by name wins.
+    let mut requirers: Vec<(String, &NativeUnit, String, bool)> = Vec::new();
     for start in starts {
-        for (unit, chain) in pulls::requires_among(&graph, &start.name, &kept.masks, &needed) {
-            if !requirers.iter().any(|(seen, ..)| *seen == unit) {
-                requirers.push((unit, start, chain));
+        for (unit, chain, by_path) in
+            pulls::requires_among(&graph, &start.name, &kept.masks, &needed)
+        {
+            match requirers.iter_mut().find(|(seen, ..)| *seen == unit) {
+                Some(seen) if seen.3 && !by_path => *seen = (unit, start, chain, by_path),
+                Some(_) => {}
+                None => requirers.push((unit, start, chain, by_path)),
             }
         }
     }
-    for (unit, start, chain) in requirers {
+    for (unit, start, chain, by_path) in requirers {
         let target = start.required_by.as_deref().unwrap_or_default();
-        let held = format!(
-            "{}, which {target} requires, requires {chain}, the mount of a noauto line of a \
-             decoy disk, so the hidden session will not reach {target}, and the units only that \
-             target pulls in will not start there",
-            start.name
-        );
+        // A requirement by a path of a masked mount may hold nothing up
+        // (see [`deps::Edge::by_path`]): the target may still be reached.
+        let held = if by_path {
+            format!(
+                "{}, which {target} requires, requires {chain}, the mount of a noauto line of a \
+                 decoy disk, only as the mount for a path, so the hidden session may not reach \
+                 {target}, and the units only that target pulls in may not start there",
+                start.name
+            )
+        } else {
+            format!(
+                "{}, which {target} requires, requires {chain}, the mount of a noauto line of a \
+                 decoy disk, so the hidden session will not reach {target}, and the units only \
+                 that target pulls in will not start there",
+                start.name
+            )
+        };
         let remedy = format!(
             "or have {target} want {} rather than require it",
             start.name
         );
-        match kept.needed_noauto(fstab, &unit, present) {
+        match kept.needed_noauto(fstab, &unit, present, !by_path) {
             NoautoNeeded::Skipped => {}
             NoautoNeeded::Absent(device) => warnings.push(format!(
                 "{unit} is masked rather than skipped, as its device {} is not there: {held}. \

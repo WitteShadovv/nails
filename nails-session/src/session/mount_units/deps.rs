@@ -96,6 +96,14 @@ pub struct Edge {
     pub start: bool,
     /// How it is pulled in, for a warning.
     pub how: &'static str,
+    /// Whether it is pulled in only as a mount for a path (`RequiresMountsFor=`,
+    /// a parent directory, a source, a path a socket listens on). systemd
+    /// 260.5 added no requirement of a masked mount for `RequiresMountsFor=`
+    /// or for a mount below it, and started the unit without that mount, so
+    /// NAILS takes a masked mount pulled in so as one that may hold nothing
+    /// up. A requirement by name (`Requires=`) of a masked unit keeps the
+    /// unit that requires it from starting.
+    pub by_path: bool,
 }
 
 /// The types of unit systemd knows.
@@ -232,6 +240,18 @@ fn push(edges: &mut Vec<Edge>, unit: String, required: bool, start: bool, how: &
         required,
         start,
         how,
+        by_path: false,
+    });
+}
+
+/// Add an edge to the mount `unit` for a path ([`Edge::by_path`]).
+fn push_mount_for(edges: &mut Vec<Edge>, unit: String, required: bool, how: &'static str) {
+    edges.push(Edge {
+        unit,
+        required,
+        start: true,
+        how,
+        by_path: true,
     });
 }
 
@@ -264,7 +284,7 @@ fn unit_words(
 fn path_edges(edges: &mut Vec<Edge>, path: &str, required: bool, how: &'static str) {
     if path.starts_with('/') {
         for unit in mounts_for(Path::new(path)) {
-            push(edges, unit, required, true, how);
+            push_mount_for(edges, unit, required, how);
         }
     }
 }
@@ -765,13 +785,7 @@ pub fn edges(graph: &Graph<'_>, name: &str) -> Result<Vec<Edge>, String> {
         };
         if let Some(parent) = unit_path(name, suffix).as_deref().and_then(Path::parent) {
             for unit in mounts_for(parent) {
-                push(
-                    &mut edges,
-                    unit,
-                    true,
-                    true,
-                    "the mount of a parent directory",
-                );
+                push_mount_for(&mut edges, unit, true, "the mount of a parent directory");
             }
         }
     }
@@ -837,8 +851,9 @@ pub fn edges(graph: &Graph<'_>, name: &str) -> Result<Vec<Edge>, String> {
         }
         match unique.iter_mut().find(|seen| seen.unit == edge.unit) {
             Some(seen) => {
-                if edge.required && !seen.required {
+                if edge.required && (!seen.required || (seen.by_path && !edge.by_path)) {
                     seen.how = edge.how;
+                    seen.by_path = edge.by_path;
                 }
                 seen.required |= edge.required;
                 seen.start |= edge.start;

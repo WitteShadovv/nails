@@ -1289,11 +1289,11 @@ of this changelog for that version becomes the release notes word for word, and
   the hidden systemd as before. A `noauto` line with an option NAILS does not read stays masked, but
   where a line the boot starts needs its mount and a boot target requires that line, or may,
   activation and `nails check` now warn of that target, and `nails status` lists the mask where
-  NAILS reads that the target requires it. A `noauto` line kept off at or below the hidden root, in
-  the fstab an activation without a build decides or led there by a link, or on a network
-  filesystem, whose mount a line the boot starts needs is kept off as a needed line is: skipped
-  where its target requires that line and its device is there, masked with a warning where the
-  device is not. NAILS masked it with no warning.
+  NAILS reads that the target requires it through a line that names the mount. A `noauto` line kept
+  off at or below the hidden root, in the fstab an activation without a build decides or led there
+  by a link, or on a network filesystem, whose mount a line the boot starts needs is kept off as a
+  needed line is: skipped where its target requires that line and its device is there, masked with a
+  warning where the device is not. NAILS masked it with no warning.
 - A line for `/usr` is read as one its boot target requires whatever `x-systemd.wanted-by=` and
   `x-systemd.required-by=` say, as systemd's fstab generator ignores both there and links
   `usr.mount` into `local-fs.target.requires`. NAILS masked such a line not mounted now with no
@@ -1303,6 +1303,16 @@ of this changelog for that version becomes the release notes word for word, and
   for a line for `/usr` no longer says to give it `nofail`, which systemd ignores there, but to
   attach the device or remove the line. A mask of a line for `/usr` no longer masks or records
   `usr.automount`, which systemd never makes.
+- The warning for a masked `noauto` mount that a line or unit the boot starts for a target needs
+  says that the target will not be reached only where that line or unit names the mount
+  (`x-systemd.requires=`, `Requires=`), and only then does `nails status` list the mask. Where it
+  requires the mount only as the mount for a path (a mount point below it, its source,
+  `x-systemd.requires-mounts-for=`, `RequiresMountsFor=`), the warning says that the target may not
+  be reached, and the mask is not listed: systemd 260.5 started a tmpfs below a masked mount, and
+  units that name a path in it with `x-systemd.requires-mounts-for=` or `RequiresMountsFor=`,
+  without the mount, and reached `local-fs.target`. For a line below the mount, or one naming it
+  with `x-systemd.requires-mounts-for=`, NAILS said that the target will not be reached, and listed
+  the mask.
 - A `noauto` line whose mount another line needs is kept off, where the boot starts that other
   line and it is left to the hidden systemd or put in place: a line below its mount point, one with
   it as its source, or one that names it with `x-systemd.requires-mounts-for=`,

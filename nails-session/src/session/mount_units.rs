@@ -91,7 +91,12 @@
 //! requires that one. A unit a target requires through its `.requires`
 //! directory that requires the mount, through a chain of requirements NAILS
 //! reads, has the line kept off as a line the boot mounts: skipped where its
-//! device is there, masked with a warning and a record where it is not. Where
+//! device is there, masked with a warning where it is not. The warning says
+//! the target will not be reached, and the mask is recorded, where the
+//! chain's last step names the mount (`Requires=`); where that step requires
+//! it only as the mount for a path (`RequiresMountsFor=`, a mount below it),
+//! the warning says the target may not be reached, and the mask is not
+//! recorded ([`deps::Edge::by_path`]). Where
 //! a target only wants such a unit, or NAILS does not read the chain, the
 //! mask stands: no unit mounts the disk, and one that requires the mount by
 //! name (`Requires=`) does not start in the hidden session.

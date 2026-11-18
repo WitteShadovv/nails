@@ -23,10 +23,16 @@ use std::path::{Component, Path, PathBuf};
 /// first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Need {
-    /// It requires it, and does not start without it: the mount is below
-    /// it, its source, a swap file or a path `x-systemd.requires-mounts-for=`
-    /// names lies in it, or `x-systemd.requires=` names it.
+    /// It requires it by name: `x-systemd.requires=` names it. It does not
+    /// start while the mount is masked.
     Requires,
+    /// It requires it as the mount for a path: the mount is below it, its
+    /// source, a swap file or a path `x-systemd.requires-mounts-for=` names
+    /// lies in it. Where the mount is masked, it may start without it:
+    /// systemd 260.5 started a mount below a masked mount, and one naming it
+    /// in `x-systemd.requires-mounts-for=`, without that mount, and listed no
+    /// requirement of it.
+    MountsFor,
     /// NAILS cannot tell whether the line pulls it in: an option with a
     /// backslash, which systemd splits otherwise than the parser, or
     /// `x-systemd.requires=` or `x-systemd.wants=` with no value. Taken for
@@ -49,10 +55,16 @@ struct Reach {
     line: PathBuf,
     /// Whether the target requires the mount as far as NAILS reads the lines
     /// on the way: each requires the next as NAILS reads it
-    /// ([`Need::Requires`]), and the line the target requires has no option
-    /// with a backslash, of which NAILS reads neither what has a target
-    /// require the line nor what keeps it out of one ([`holds_a_backslash`]).
+    /// ([`Need::Requires`], [`Need::MountsFor`]), and the line the target
+    /// requires has no option with a backslash, of which NAILS reads neither
+    /// what has a target require the line nor what keeps it out of one
+    /// ([`holds_a_backslash`]).
     sure: bool,
+    /// Whether the line on the way that needs the `noauto` mount names it
+    /// ([`Need::Requires`]), so that it does not start while the mount is
+    /// masked, rather than requiring it as the mount for a path
+    /// ([`Need::MountsFor`]), which may hold nothing up.
+    holds: bool,
 }
 
 /// The decision for `entries[at]`, a `noauto` line that its decision masks
@@ -64,13 +76,16 @@ struct Reach {
 /// off as a line the boot mounts is. Every line that needs it is
 /// read, and through the lines that require it in turn, every boot target
 /// that requires it, or may ([`boot_targets`]): where one does, or may, it is
-/// skipped if its device is there, and masked with a warning that the target
-/// will not be reached if not; where none does, it is masked ([`gate`]).
-/// Where NAILS reads that a target requires it, the warning names those
-/// targets; where a target only may require it, through an option NAILS does
-/// not read or through a line whose options hold a backslash
-/// ([`holds_a_backslash`]), the warning says the target may require it, and
-/// the mask is not recorded as a required one. The warning names the lines
+/// skipped if its device is there, and masked with a warning if not; where
+/// none does, it is masked ([`gate`]). Where NAILS reads that a target
+/// requires it through a line that names it ([`Need::Requires`]), the
+/// warning names those targets and says they will not be reached. Where the
+/// lines that need it require it only as the mount for a path
+/// ([`Need::MountsFor`]), the warning says the targets may not be reached,
+/// and the mask is not recorded as a required one. Where a target only may
+/// require it, through an option NAILS does not read or through a line whose
+/// options hold a backslash ([`holds_a_backslash`]), the warning says the
+/// target may require it, and the mask is not recorded as a required one. The warning names the lines
 /// the targets require, or may, that hold the mount up ([`Origin::Needed`]).
 /// A line with an option NAILS does not read ([`unread_fstab_options`]) stays
 /// masked, as that option may have the boot mount it in other ways too:
@@ -108,7 +123,7 @@ pub(super) fn needed_below(
         .min_by_key(|(other, how)| {
             let line = &entries[*other];
             (
-                *how != Need::Requires || line.is_noauto(),
+                !matches!(how, Need::Requires | Need::MountsFor) || line.is_noauto(),
                 holds_a_backslash(line),
                 may_be_required_by(line).is_none(),
             )
@@ -119,16 +134,21 @@ pub(super) fn needed_below(
         entries,
         decided,
         at,
-        true,
-        &mut vec![(at, true)],
+        (true, None),
+        &mut vec![(at, true, true)],
         &mut reached,
     );
     let may_require = !reached.iter().any(|reach| reach.sure);
+    // Where a target surely requires the mount, the targets a line that
+    // names it holds up are named, else those a line requires as the mount
+    // for a path, which may not be held up.
+    let held = reached.iter().any(|reach| reach.sure && reach.holds);
+    let by_path = !may_require && !held;
     let mut targets: Vec<String> = Vec::new();
     let mut lines: Vec<PathBuf> = Vec::new();
     for reach in reached
         .into_iter()
-        .filter(|reach| reach.sure || may_require)
+        .filter(|reach| may_require || (reach.sure && (reach.holds || !held)))
     {
         if !targets.contains(&reach.target) {
             targets.push(reach.target);
@@ -142,6 +162,7 @@ pub(super) fn needed_below(
         origin: Origin::Needed {
             lines,
             may: may_require,
+            by_path,
         },
         ..Units::of(entry)
     };
@@ -191,7 +212,7 @@ pub(super) fn needed_below(
         present,
     );
     if let Decision::Skip { may, .. } = &mut decision {
-        *may = may_require;
+        *may = may_require || by_path;
     }
     Some(decision)
 }
@@ -230,38 +251,42 @@ fn needers(entries: &[FstabEntry], decided: &[Decision], at: usize) -> Vec<(usiz
 /// Add to `reached` the boot targets that require the mount of
 /// `entries[at]`, or may: those that require a line that requires it, or
 /// that requires a line that does in turn, as far as such lines lead, each
-/// with the line it requires and whether NAILS reads every step as a
-/// requirement (`sure` for the steps up to `entries[at]`, [`Reach::sure`]).
-/// A target requires a line with a backslash in its options only as far as
-/// NAILS can tell, whatever `nofail`, `noauto` or `x-systemd.wanted-by=` it
-/// reads on it ([`holds_a_backslash`], [`may_be_required_by`]); a line that
-/// requires such a line requires it all the same, and that line requires
-/// what it names before its first option with a backslash ([`need`]). So the
-/// backslash makes only the target's own step a may. `seen` holds the lines
-/// read already, and whether they were read as sure: a line read again as
-/// sure is read through once more.
+/// with the line it requires, whether NAILS reads every step as a
+/// requirement (the first of `path`, for the steps up to `entries[at]`,
+/// [`Reach::sure`]) and whether the first step, from the line that needs the
+/// `noauto` mount, names it (the second of `path`, `None` before that step,
+/// [`Reach::holds`]). A target requires a line with a backslash in its
+/// options only as far as NAILS can tell, whatever `nofail`, `noauto` or
+/// `x-systemd.wanted-by=` it reads on it ([`holds_a_backslash`],
+/// [`may_be_required_by`]); a line that requires such a line requires it
+/// all the same, and that line requires what it names before its first
+/// option with a backslash ([`need`]). So the backslash makes only the
+/// target's own step a may. `seen` holds the lines read already, and whether
+/// they were read as sure and as holding: a line read again as either where
+/// it was not is read through once more.
 fn boot_targets(
     entries: &[FstabEntry],
     decided: &[Decision],
     at: usize,
-    sure: bool,
-    seen: &mut Vec<(usize, bool)>,
+    path: (bool, Option<bool>),
+    seen: &mut Vec<(usize, bool, bool)>,
     reached: &mut Vec<Reach>,
 ) {
+    let (sure, holds) = path;
     for (other, how) in needers(entries, decided, at) {
         if how == Need::Wants {
             continue;
         }
         let line = &entries[other];
         // A line another one requires starts, `noauto` or not.
-        let sure = sure && how == Need::Requires;
-        if seen
-            .iter()
-            .any(|&(read, was_sure)| read == other && (was_sure || !sure))
-        {
+        let sure = sure && matches!(how, Need::Requires | Need::MountsFor);
+        let holds = holds.unwrap_or(how == Need::Requires);
+        if seen.iter().any(|&(read, was_sure, did_hold)| {
+            read == other && (was_sure || !sure) && (did_hold || !holds)
+        }) {
             continue;
         }
-        seen.push((other, sure));
+        seen.push((other, sure, holds));
         if let Some(target) = may_be_required_by(line) {
             reached.push(Reach {
                 target,
@@ -271,9 +296,10 @@ fn boot_targets(
                     line.file.clone()
                 },
                 sure: sure && !holds_a_backslash(line),
+                holds,
             });
         }
-        boot_targets(entries, decided, other, sure, seen, reached);
+        boot_targets(entries, decided, other, (sure, Some(holds)), seen, reached);
     }
 }
 
@@ -305,10 +331,10 @@ fn need(line: &FstabEntry, entry: &FstabEntry) -> Option<Need> {
     let unit = mount_unit(dir);
     let mut needs: Vec<Need> = Vec::new();
     if !line.is_swap() && line.file != dir && line.file.starts_with(dir) {
-        needs.push(Need::Requires);
+        needs.push(Need::MountsFor);
     }
     if line.spec.starts_with('/') && Path::new(&line.spec).starts_with(dir) {
-        needs.push(Need::Requires);
+        needs.push(Need::MountsFor);
     }
     let mut after_a_backslash = false;
     for option in &line.options {
@@ -341,6 +367,7 @@ fn need(line: &FstabEntry, entry: &FstabEntry) -> Option<Need> {
             None => needs.push(Need::Unread),
             Some(true) if after_a_backslash => needs.push(Need::Unread),
             Some(true) if wanted => needs.push(Need::Wants),
+            Some(true) if by_path => needs.push(Need::MountsFor),
             Some(true) => needs.push(Need::Requires),
             Some(false) => {}
         }

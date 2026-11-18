@@ -75,22 +75,29 @@ impl KeptOff {
     /// ([`KeptOff::noauto_masks`]) and that a unit the hidden boot starts
     /// for a boot target requires, off as a line the boot mounts: skipped
     /// where the device its lines give is there, with the units they pull in
-    /// that act on it ([`checkers`]); masked, and recorded with why, where
-    /// it is not or where they give two devices.
+    /// that act on it ([`checkers`]); masked where it is not or where they
+    /// give two devices, and then recorded with why where `record`: where
+    /// that unit requires the mount by name, which keeps it from starting
+    /// while the mount is masked.
     pub fn needed_noauto(
         &mut self,
         fstab: &[FstabEntry],
         unit: &str,
         present: Present<'_>,
+        record: bool,
     ) -> NoautoNeeded {
         let units = [unit.to_string()];
         match device_of(fstab, unit) {
             Some(Some(device)) if !present(&device) => {
-                self.record_masked(&units, MaskCause::DeviceAbsent, Some(&device));
+                if record {
+                    self.record_masked(&units, MaskCause::DeviceAbsent, Some(&device));
+                }
                 NoautoNeeded::Absent(device)
             }
             None => {
-                self.record_masked(&units, MaskCause::ConflictingLines, None);
+                if record {
+                    self.record_masked(&units, MaskCause::ConflictingLines, None);
+                }
                 NoautoNeeded::Disagree
             }
             Some(device) => {
@@ -128,8 +135,9 @@ fn required_masked(decision: &Decision) -> Option<(&[String], MaskCause, Option<
         return None;
     };
     let units = match origin {
-        // NAILS cannot tell that a target requires it.
-        Origin::Needed { may: true, .. } => return None,
+        // NAILS cannot tell that a target requires it, or the targets require
+        // it only as the mount for a path, which may hold nothing up.
+        Origin::Needed { may: true, .. } | Origin::Needed { by_path: true, .. } => return None,
         // A line that needs it requires its mount, the first of them, and
         // not an automount, which it does not pull in.
         Origin::Needed { .. } => &units[..units.len().min(1)],

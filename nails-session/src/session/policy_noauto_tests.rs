@@ -128,7 +128,8 @@ fn a_backslash_on_the_way_makes_only_its_own_step_a_may() {
         unreached.origin,
         Origin::Needed {
             lines: vec!["/t1/t2".into()],
-            may: false
+            may: false,
+            by_path: false,
         }
     );
     let warning = at(&decisions, "/data").warning().expect("a warning");
@@ -171,13 +172,16 @@ fn a_backslash_on_the_way_makes_only_its_own_step_a_may() {
 /// is skipped; in the other a nofail line not mounted now, masked. The mask
 /// holds for both. next recorded it as a mask local-fs.target requires
 /// (ConflictingLines), though NAILS only reads that it may. It is not
-/// recorded now, and still warned of; a skip a target surely requires is
-/// recorded as before.
+/// recorded now, and still warned of; a skip a target surely requires through
+/// a line that names the mount (`x-systemd.requires=`) is recorded as before.
+/// A tmpfs below the mount requires it only as the mount for a path, which
+/// systemd 260.5 does not hold up for a masked mount: not recorded either.
 #[test]
 fn a_may_skip_another_line_masks_is_not_recorded_as_required() {
     for (needer, sure) in [
         ("tmpfs /data/tmp tmpfs comment=x\\054nofail 0 0", false),
-        ("tmpfs /data/tmp tmpfs defaults 0 0", true),
+        ("tmpfs /data/tmp tmpfs defaults 0 0", false),
+        ("tmpfs /srv/t tmpfs x-systemd.requires=/data 0 0", true),
     ] {
         let decoy = format!("/dev/vdb1 /data ext4 noauto 0 0\n{needer}\n");
         let mut decisions = decide_fstab(&decoy, true);
@@ -209,14 +213,28 @@ fn a_may_skip_another_line_masks_is_not_recorded_as_required() {
 
 /// A noauto line kept off at or below the hidden root, in the next root's own
 /// fstab or led there by a link, whose mount a tmpfs elsewhere requires
-/// (`x-systemd.requires-mounts-for=`), which local-fs.target requires. next
-/// masked it with no warning and no record. It is skipped where its device
-/// is there, and masked with the warning of a needed line where it is not.
+/// (`x-systemd.requires-mounts-for=`, or `x-systemd.requires=` by name),
+/// which local-fs.target requires. next masked it with no warning and no
+/// record. It is skipped where its device is there, and masked with the
+/// warning of a needed line where it is not: that the target will not be
+/// reached, recorded, where the tmpfs names the mount, and that it may not
+/// be, not recorded, where it requires the mount for a path.
 #[test]
 fn a_noauto_line_kept_off_below_the_hidden_root_that_a_line_needs_is_warned_of() {
-    let fstab = "/dev/vdb1 /mnt/data/archive ext4 noauto 0 0\n\
-                 tmpfs /srv/t tmpfs x-systemd.requires-mounts-for=/mnt/data/archive 0 0\n";
-    let entries = parse_fstab(fstab);
+    for (option, named) in [
+        ("x-systemd.requires-mounts-for=/mnt/data/archive", false),
+        ("x-systemd.requires=/mnt/data/archive", true),
+    ] {
+        kept_below_needed(option, named);
+    }
+}
+
+/// [`a_noauto_line_kept_off_below_the_hidden_root_that_a_line_needs_is_warned_of`]
+/// with a tmpfs that gives `option`, which names the mount where `named`.
+fn kept_below_needed(option: &str, named: bool) {
+    let fstab =
+        format!("/dev/vdb1 /mnt/data/archive ext4 noauto 0 0\ntmpfs /srv/t tmpfs {option} 0 0\n");
+    let entries = parse_fstab(&fstab);
     for there in [true, false] {
         let present = |_: &Path| there;
         for (decisions, kept_for) in [
@@ -249,17 +267,18 @@ fn a_noauto_line_kept_off_below_the_hidden_root_that_a_line_needs_is_warned_of()
                 );
             } else {
                 let warning = decision.warning().expect("a warning");
+                let will = if named { "will not" } else { "may not" };
                 assert!(
-                    warning.contains(
+                    warning.contains(&format!(
                         "/mnt/data/archive is masked rather than skipped, as its device \
-                         /dev/vdb1 is not there: the hidden session will not reach \
+                         /dev/vdb1 is not there: the hidden session {will} reach \
                          local-fs.target"
-                    ),
+                    )),
                     "{warning}"
                 );
                 assert_eq!(
                     runtime_units(&entries, &decisions).required_masks.len(),
-                    1,
+                    usize::from(named),
                     "{decisions:?}"
                 );
             }
@@ -341,47 +360,145 @@ fn a_noauto_mask_yields_to_a_skip_of_its_unit_on_its_device() {
     }
 }
 
-/// A noauto line with an option NAILS does not read, below which a tmpfs
-/// line local-fs.target requires lies: the tmpfs requires the line's mount.
-/// The mask stands, as the option may have the boot mount the line in other
-/// ways too, but a warning now names local-fs.target, and the mount (not
-/// the automount, which nothing pulls in) is recorded as one that target
-/// requires. next masked it with no warning and no record.
+/// A noauto line with an option NAILS does not read whose mount a tmpfs line
+/// that local-fs.target requires needs, by name (`x-systemd.requires=`) or
+/// as the mount for a path (below it). The mask stands, as the option may
+/// have the boot mount the line in other ways too, but a warning now names
+/// local-fs.target. Where the tmpfs names the mount, the warning says the
+/// target will not be reached, and the mount (not the automount, which
+/// nothing pulls in) is recorded as one that target requires; where the
+/// tmpfs lies below it, which systemd 260.5 started without a masked mount,
+/// the warning says the target may not be reached, and nothing is recorded.
+/// next masked it with no warning and no record.
 #[test]
 fn a_noauto_line_with_an_unread_option_that_a_line_needs_is_warned_of() {
-    let fstab = "/dev/vdy1 /r/a ext4 noauto,foo 0 0\ntmpfs /r/a/t tmpfs defaults 0 0\n";
-    let decisions = decide_fstab(fstab, true);
-    let decision = at(&decisions, "/r/a");
-    let Decision::Mask {
-        units, unreached, ..
-    } = decision
-    else {
-        panic!("{decision:?}");
-    };
-    assert_eq!(units, &["r-a.mount", "r-a.automount"]);
-    assert_eq!(
-        unreached.as_ref().map(|u| (u.target.as_str(), &u.cause)),
-        Some(("local-fs.target", &Unskippable::Unread)),
-        "{decision:?}"
-    );
-    let warning = decision.warning().expect("a warning");
-    for part in [
-        "/r/a is masked, as noauto, but NAILS does not read its option foo",
-        "and the line for /r/a/t needs its mount, so the boot mounts it",
-        "the hidden session will not reach local-fs.target, which requires it",
+    for (needer, named) in [
+        ("tmpfs /r/t tmpfs x-systemd.requires=/r/a 0 0", true),
+        ("tmpfs /r/a/t tmpfs defaults 0 0", false),
     ] {
-        assert!(warning.contains(part), "{part}: {warning}");
+        let fstab = format!("/dev/vdy1 /r/a ext4 noauto,foo 0 0\n{needer}\n");
+        let decisions = decide_fstab(&fstab, true);
+        let decision = at(&decisions, "/r/a");
+        let Decision::Mask {
+            units, unreached, ..
+        } = decision
+        else {
+            panic!("{decision:?}");
+        };
+        assert_eq!(units, &["r-a.mount", "r-a.automount"]);
+        assert_eq!(
+            unreached.as_ref().map(|u| (u.target.as_str(), &u.cause)),
+            Some(("local-fs.target", &Unskippable::Unread)),
+            "{decision:?}"
+        );
+        let line = if named { "/r/t" } else { "/r/a/t" };
+        let reached = if named {
+            "the hidden session will not reach local-fs.target, which requires it"
+        } else {
+            "the hidden session may not reach local-fs.target, which requires a line that needs \
+             it only as the mount for a path"
+        };
+        let warning = decision.warning().expect("a warning");
+        for part in [
+            "/r/a is masked, as noauto, but NAILS does not read its option foo",
+            &format!("and the line for {line} needs its mount, so the boot mounts it"),
+            reached,
+        ] {
+            assert!(warning.contains(part), "{part}: {warning}");
+        }
+        let kept = runtime_units(&parse_fstab(&fstab), &decisions);
+        let recorded: &[RequiredMask] = if named {
+            &[RequiredMask {
+                unit: "r-a.mount".into(),
+                cause: MaskCause::Undetermined,
+                device: None,
+            }]
+        } else {
+            &[]
+        };
+        assert_eq!(kept.required_masks, recorded, "{needer}");
     }
-    let kept = runtime_units(&parse_fstab(fstab), &decisions);
-    assert_eq!(
-        kept.required_masks,
-        [RequiredMask {
-            unit: "r-a.mount".into(),
-            cause: MaskCause::Undetermined,
-            device: None,
-        }]
-    );
     // Nothing needs it: the mask stands as before, with no warning.
     let alone = decide_fstab("/dev/vdy1 /r/a ext4 noauto,foo 0 0\n", true);
     assert_eq!(at(&alone, "/r/a").warning(), None);
+}
+
+/// Every way an fstab line the boot starts needs a noauto line's mount, with
+/// the noauto line's device not there: masked, with a warning. systemd 260.5
+/// started a tmpfs below a masked mount, and one naming it in
+/// `x-systemd.requires-mounts-for=`, without that mount, and reached
+/// local-fs.target; only `x-systemd.requires=` kept the tmpfs from starting.
+/// So the warning says the target will not be reached, and the mask is
+/// recorded, only where a line names the mount; where the lines require it
+/// only as the mount for a path (below it, a path
+/// `x-systemd.requires-mounts-for=` names), the warning says the target may
+/// not be reached, and nothing is recorded. A line that names it wins over
+/// one below it, and a chain of lines NAILS reads counts by its first step.
+#[test]
+fn a_needed_noauto_line_warns_will_not_only_where_a_line_names_its_mount() {
+    for (needers, named) in [
+        ("tmpfs /n/a/t tmpfs defaults 0 0\n", false),
+        (
+            "tmpfs /srv/t tmpfs x-systemd.requires-mounts-for=/n/a/x 0 0\n",
+            false,
+        ),
+        ("tmpfs /srv/t tmpfs x-systemd.requires=/n/a 0 0\n", true),
+        (
+            "tmpfs /srv/t tmpfs x-systemd.requires=n-a.mount 0 0\n",
+            true,
+        ),
+        (
+            "tmpfs /n/a/t tmpfs defaults 0 0\ntmpfs /srv/t tmpfs x-systemd.requires=/n/a 0 0\n",
+            true,
+        ),
+        // The tmpfs that names it is one only another line requires.
+        (
+            "tmpfs /srv/t tmpfs nofail,x-systemd.requires=/n/a 0 0\n\
+             tmpfs /srv/t/u tmpfs defaults 0 0\n",
+            true,
+        ),
+        // A line below it that another line requires in turn.
+        (
+            "tmpfs /n/a/t tmpfs nofail 0 0\n\
+             tmpfs /srv/u tmpfs x-systemd.requires=/n/a/t 0 0\n",
+            false,
+        ),
+    ] {
+        let fstab = format!("/dev/vdn1 /n/a ext4 noauto 0 0\n{needers}");
+        let decisions = decide_fstab(&fstab, false);
+        let decision = at(&decisions, "/n/a");
+        let Decision::Mask {
+            unreached: Some(unreached),
+            ..
+        } = decision
+        else {
+            panic!("{needers}: {decision:?}");
+        };
+        assert!(
+            matches!(&unreached.origin, Origin::Needed { may: false, by_path, .. } if *by_path != named),
+            "{needers}: {unreached:?}"
+        );
+        let warning = decision.warning().expect("a warning");
+        let will = if named { "will not" } else { "may not" };
+        assert!(
+            warning.contains(&format!(
+                "/n/a is masked rather than skipped, as its device /dev/vdn1 is not there: the \
+                 hidden session {will} reach local-fs.target"
+            )),
+            "{needers}: {warning}"
+        );
+        let kept = runtime_units(&parse_fstab(&fstab), &decisions);
+        assert_eq!(
+            kept.required_masks.len(),
+            usize::from(named),
+            "{needers}: {kept:?}"
+        );
+        // With the device there it is skipped either way.
+        let there = decide_fstab(&fstab, true);
+        assert_eq!(
+            at(&there, "/n/a").skip().map(|skip| skip.units.clone()),
+            Some(vec!["n-a.mount".to_string()]),
+            "{needers}"
+        );
+    }
 }

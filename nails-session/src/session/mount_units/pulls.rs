@@ -136,35 +136,32 @@ fn chain(reached: &[Reached], at: usize) -> String {
 /// The units among `noauto` that `start`, a unit the hidden boot starts,
 /// requires through a chain of requirements PID 1 adds to its start job
 /// ([`Edge::required`](super::deps::Edge::required)), each once with the
-/// chain, given `masks`, the units the session masks: a masked unit ends its
-/// chain, as do a scope and a target the hidden boot starts anyway. A unit
-/// whose pulls NAILS cannot read ends its chain too, and so does a walk
-/// deeper or wider than [`walk`] follows: what is found is all NAILS reads.
+/// chain and whether the chain's last step requires it only as a mount for a
+/// path ([`Edge::by_path`](super::deps::Edge::by_path)), a chain whose last
+/// step names it found before one that does not, given `masks`, the units the
+/// session masks: a masked unit ends its chain, as do a scope and a target
+/// the hidden boot starts anyway. A unit whose pulls NAILS cannot read ends
+/// its chain too, and so does a walk deeper or wider than [`walk`] follows:
+/// what is found is all NAILS reads.
 pub fn requires_among(
     graph: &Graph<'_>,
     start: &str,
     masks: &[String],
     noauto: &[String],
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, bool)> {
     let mut reached = vec![Reached {
         unit: start.to_string(),
         from: None,
         how: "",
     }];
     let mut queue: VecDeque<(usize, usize)> = VecDeque::from([(0, 0)]);
-    let mut found: Vec<(String, String)> = Vec::new();
+    let mut found: Vec<(String, String, bool)> = Vec::new();
     while let Some((at, depth)) = queue.pop_front() {
         let unit = reached[at].unit.clone();
-        if at != 0 {
-            if noauto.contains(&unit) {
-                if !found.iter().any(|(seen, _)| *seen == unit) {
-                    found.push((unit, chain(&reached, at)));
-                }
-                continue;
-            }
-            if masks.contains(&unit) || kind(&unit) == "scope" || graph.boot.contains(&unit) {
-                continue;
-            }
+        if at != 0
+            && (masks.contains(&unit) || kind(&unit) == "scope" || graph.boot.contains(&unit))
+        {
+            continue;
         }
         if depth >= MAX_DEPTH {
             continue;
@@ -173,10 +170,39 @@ pub fn requires_among(
             continue;
         };
         for edge in pulled {
-            if !(edge.required && edge.start)
-                || reached.iter().any(|seen| seen.unit == edge.unit)
-                || reached.len() >= MAX_UNITS
-            {
+            if !(edge.required && edge.start) {
+                continue;
+            }
+            let seen = reached.iter().any(|seen| seen.unit == edge.unit);
+            if !seen && reached.len() >= MAX_UNITS {
+                continue;
+            }
+            if noauto.contains(&edge.unit) {
+                // A noauto mount ends its chain, and counts as reached: a
+                // later step that names it wins over one for a path.
+                let step = format!("{} ({})", edge.unit, edge.how);
+                let chain = match chain(&reached, at) {
+                    before if before.is_empty() => step,
+                    before => format!("{before}, which pulls in {step}"),
+                };
+                match found.iter_mut().find(|(unit, ..)| *unit == edge.unit) {
+                    Some(known) if known.2 && !edge.by_path => {
+                        *known = (edge.unit, chain, false);
+                    }
+                    Some(_) => {}
+                    None if seen => {}
+                    None => {
+                        found.push((edge.unit.clone(), chain, edge.by_path));
+                        reached.push(Reached {
+                            unit: edge.unit,
+                            from: Some(at),
+                            how: edge.how,
+                        });
+                    }
+                }
+                continue;
+            }
+            if seen {
                 continue;
             }
             reached.push(Reached {
