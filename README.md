@@ -230,8 +230,8 @@ Also refused by the pre-flight checks:
   policy's rules for single `ioctl` numbers, or from the labels a relabel of
   `/run` gives the guard's files, is not asked), or whose SELinux facts cannot
   be read. A host where it does not run, such as Debian or Ubuntu with AppArmor,
-  passes, and the check names the security modules the kernel runs
-  (`lsm-status`);
+  passes, but a Fedora host where it does not run warns, and the check names
+  the security modules the kernel runs (`lsm-status`);
 - running inside a container or another mount namespace than PID 1's
   (`mount-namespace`).
 

@@ -285,7 +285,9 @@ leaves out).
 The `lsm-status` check names the Linux Security Modules the kernel runs, from
 `/sys/kernel/security/lsm`, and judges SELinux where it runs; no flag lifts its
 refusals. A host where SELinux does not run passes: AppArmor, Landlock and
-Yama change nothing it judges. Where SELinux runs, the check reads the mode
+Yama change nothing it judges. A host whose os-release names Fedora, as its
+`ID` or in its `ID_LIKE`, warns instead where SELinux does not run, since
+NAILS is tested on Fedora only with SELinux enforcing the targeted policy. Where SELinux runs, the check reads the mode
 from `/sys/fs/selinux/enforce`, `SELINUX=` and `SELINUXTYPE=` from
 `/etc/selinux/config` the way libselinux reads them, when that file last
 changed, and the SELinux context of the `nails` process from
@@ -1098,8 +1100,9 @@ logind.
   hardware has passed.
 - **SELinux enforcing, with the targeted policy**, as Fedora installs it:
   the distribution tests boot the images so, but for one probe of each, which
-  records what a permissive boot shows. A permissive SELinux makes
-  `lsm-status` warn, and another policy fails it (see
+  records what a permissive boot shows. A permissive SELinux, or a host
+  where SELinux does not run, makes `lsm-status` warn, and another policy
+  fails it (see
   [Fail closed](#fail-closed-activation-is-refused)). In the gate's runs the
   kernel, which the gate has record every program run from below `/run` with
   its domain, shows the programs NAILS runs from its copies there in
