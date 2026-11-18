@@ -320,18 +320,22 @@ Keep all of it `root`-owned on the hidden volume.
      `x-systemd.wants-mounts-for=`, or its mount or path with
      `x-systemd.requires=` or `x-systemd.wants=`, as systemd has that entry's
      unit require or want the `noauto` mount. Every such entry counts, and
-     where a boot target requires one, the `noauto` mount is skipped, or
-     masked with a warning where its device is not there. `nofail` with any
-     value counts as `nofail`. An entry kept off that gives an option of
-     systemd's own (`x-systemd.`, `x-initrd.`) whose effect on what its
-     units pull in NAILS does not read, or one with a backslash, is masked
-     rather than skipped, and activation warns that the hidden session will
-     not reach the target that requires it. A backslash may hide a comma
-     before `noauto` or `nofail`, so for an entry with one, other than one for
-     `/usr`, the warning says that the target may require it. A quote does
-     not change how systemd splits the options, so it keeps the skip. An
-     overlay entry that gives `upperdir` more than once, or with no value, is
-     kept off.
+     where a boot target requires one, or may, the `noauto` mount is
+     skipped, or masked with a warning where its device is not there.
+     `nofail` with any value counts as `nofail`. An entry kept off that gives
+     an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
+     what its units pull in NAILS does not read, or one with a backslash, is
+     masked rather than skipped, and activation warns that the hidden session
+     will not reach the target that requires it. A backslash anywhere in an
+     entry's options means NAILS cannot read them as systemd does, which
+     keeps a comma after a backslash in an option and reads `\054` as one.
+     So the warning for such an entry kept off, other than one for `/usr`,
+     says that the target may require it, whatever `noauto`, `nofail` or
+     `x-systemd.wanted-by=` NAILS reads on it. Such an entry that needs a
+     `noauto` mount counts as one a target may require, never as one it
+     surely requires. A quote does not change how systemd splits the
+     options, so it keeps the skip. An overlay entry that gives `upperdir`
+     more than once, or with no value, is kept off.
 
    An activation without a build (`--overlay-only`, and on Debian and Ubuntu
    every activation) applies the same policy to the fstab the hidden session
