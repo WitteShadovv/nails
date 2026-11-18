@@ -29,8 +29,10 @@
 //! generated unit elsewhere (`systemctl edit --full` writes one to
 //! `/etc/systemd/system`, which outranks the generator's) is decided like any
 //! other unit, and so is a generated unit of a line the policy leaves as it
-//! is (its drop-ins, or a link to a `noauto` line's unit, can make it mount a
-//! disk) or of no line at all. Each is read from the first unit
+//! is (its drop-ins can make it mount a disk), of a `noauto` line the policy
+//! masks as one nothing NAILS reads pulls in (a link to its unit pulls it
+//! in, and the mask yields to a skip of the unit that waits for the line's
+//! device, [`policy::runtime_units`]) or of no line at all. Each is read from the first unit
 //! directory in systemd's order that has it, with its drop-ins, those of its
 //! name's prefixes (`srv-.mount.d`) and of its type (`mount.d`) included
 //! ([`unit_dirs`], [`unit_file`]); a `.requires` link says a target requires
@@ -414,6 +416,12 @@ pub fn kept_off(
 ) -> (KeptOff, Vec<String>) {
     let mut kept = policy::runtime_units(fstab, decisions);
     let covered = covered_units(decisions);
+    let noauto = kept.noauto_masks.clone();
+    let new_graph = || {
+        let mut graph = deps::Graph::new(dirs, fstab, &covered);
+        graph.noauto = noauto.clone();
+        graph
+    };
     // Read only where a skip needs it: the walk reads the boot's targets too.
     let graph = std::cell::OnceCell::new();
     let mut warnings: Vec<String> = kept
@@ -441,11 +449,7 @@ pub fn kept_off(
                     .chain(&skip.pulled)
                     .find_map(|unit| skip_undone(dirs, unit));
                 match undone {
-                    None => match walk_skip(
-                        graph.get_or_init(|| deps::Graph::new(dirs, fstab, &covered)),
-                        &skip,
-                        &kept.masks,
-                    ) {
+                    None => match walk_skip(graph.get_or_init(new_graph), &skip, &kept.masks) {
                         Ok(_) => {
                             kept.skips.push(skip);
                             continue;
@@ -471,7 +475,7 @@ pub fn kept_off(
         }
     }
     for skip in &kept.skips {
-        let graph = graph.get_or_init(|| deps::Graph::new(dirs, fstab, &covered));
+        let graph = graph.get_or_init(new_graph);
         let Ok(masked) = walk_skip(graph, skip, &kept.masks) else {
             continue;
         };
@@ -642,10 +646,13 @@ fn mounted_at<'a>(mounts: &'a [MountEntry], target: &Path) -> Option<&'a MountEn
 /// mount point they bind or overlay, which the hidden systemd finds taken. A
 /// line the policy leaves as it is covers no unit: its unit may differ from
 /// the line (a drop-in, a link to a `noauto` line's unit) and is decided as
-/// a unit of its own.
+/// a unit of its own. Nor does the mask of a `noauto` line nothing NAILS
+/// reads pulls in ([`Decision::is_noauto_mask`]): a unit of it a target
+/// links is decided as a unit of its own, and the mask yields to a skip of
+/// it that waits for the line's device ([`policy::runtime_units`]).
 fn covered_units(decisions: &[Decision]) -> Vec<String> {
     let mut units = Vec::new();
-    for decision in decisions {
+    for decision in decisions.iter().filter(|d| !d.is_noauto_mask()) {
         match decision {
             Decision::ReadOnlyBind { target } | Decision::Overlay { target } => {
                 units.push(mount_unit(target));

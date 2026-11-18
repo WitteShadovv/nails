@@ -67,8 +67,8 @@ use crate::fstab::{FstabEntry, any_named, last_named, option_named};
 /// sets up whatever `noauto` says, names no unit to pull it in, is no line
 /// for `/` or `/usr`, which the generator takes for mandatory, and gives
 /// only options NAILS reads, each in a form it reads ([`reads_every_known`]).
-/// The session's fstab policy leaves a line alone as never mounted by the
-/// same reading.
+/// The session's fstab policy takes a line for one the boot never mounts by
+/// the same reading.
 pub(super) fn fstab_noauto(entry: &FstabEntry) -> bool {
     entry.is_noauto() && reads_every_known(entry)
 }

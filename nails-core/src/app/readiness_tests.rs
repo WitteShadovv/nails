@@ -182,11 +182,10 @@ fn summary_reports_an_explicit_flake_on_any_host() {
 
 /// `decoy_filesystems` lists what the fstab policy does with each decoy
 /// filesystem, in the order activation puts them in place, and leaves out
-/// the entries the policy leaves as they are. Here the swap and the
-/// unmounted `/srv/archive` are masked, the ESP is bound read-only, the
-/// mounted `/srv/data` is overlaid and the entry inside the hidden volume
-/// is refused, while the root, a tmpfs and a `noauto` entry are not
-/// listed. An empty list would make `check` say that only the root is
+/// the entries the policy leaves as they are. Here the swap, the unmounted
+/// `/srv/archive` and the `noauto` disk `/srv/spare` are masked, the ESP is
+/// bound read-only, the mounted `/srv/data` is overlaid and the entry inside
+/// the hidden volume is refused, while the root and a tmpfs are not listed. An empty list would make `check` say that only the root is
 /// overlaid.
 #[test]
 fn decoy_filesystems_list_each_decision_but_the_entries_left_as_they_are() {
@@ -231,6 +230,7 @@ fn decoy_filesystems_list_each_decision_but_the_entries_left_as_they_are() {
             "/boot: read-only",
             "/srv/data: overlaid",
             "/srv/archive: masked",
+            "/srv/spare: masked",
             "/mnt/data/inner: refused",
         ],
         "{rows:?}"

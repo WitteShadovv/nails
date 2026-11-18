@@ -23,9 +23,9 @@
 //! | a local filesystem mounted read-only in the decoy | read-only bind |
 //! | any other local filesystem mounted in the decoy | an overlay with its upper on the hidden volume |
 //! | a local filesystem not mounted now, mounted at boot | kept unmounted (and its automount off) |
-//! | `noauto` without an automount or a unit named to pull it in, not for `/usr`, and with only options NAILS reads | left alone: no boot target pulls it in (a skip whose pulls reach it is masked, see [`super::mount_units`]; another unit that pulls it in mounts it) |
+//! | a local filesystem not mounted now that is `noauto`, without an automount or a unit named to pull it in, not for `/usr`, and with only options NAILS reads | masked, its automount too, whatever pulls it in ([`Decision::is_noauto_mask`]): a unit outside the fstab that pulls in its mount (a `Requires=`, a `RequiresMountsFor=`) would have the hidden session mount the disk read-write. Masked, the mount starts for none of them: a unit that requires it by name (`Requires=`) does not start, and systemd 260.5 started one that requires it by a path (`RequiresMountsFor=`) without it. A unit a target links for the line itself is decided as a unit, and its skip, which waits for the line's device, keeps the line off in place of the mask; a skip whose pulls reach it is masked (see [`super::mount_units`]) |
 //! | `noauto` with an option NAILS does not read | masked, its automount too: the option may have the boot mount it. Where NAILS does not read what the option pulls in either, it may have a boot target require the line, which is warned of |
-//! | `noauto`, whose mount the unit of a line the boot starts, left to the hidden systemd or put in place, needs (a mount below it, a source, a path `x-systemd.requires-mounts-for=` or `wants-mounts-for=` names, a unit or path `x-systemd.requires=` or `wants=` names) | kept unmounted: that unit pulls it in, so the boot mounts it ([`decide_all`]) |
+//! | `noauto` with only options NAILS reads, masked as above, whose mount the unit of a line the boot starts, left to the hidden systemd or put in place, needs (a mount below it, a source, a path `x-systemd.requires-mounts-for=` or `wants-mounts-for=` names, a unit or path `x-systemd.requires=` or `wants=` names) | kept unmounted as a line the boot mounts: that unit pulls it in, so the boot mounts it ([`decide_all`]) |
 //! | a network filesystem | kept unmounted: the hidden session would write to the server |
 //! | an overlay entry not mounted now, its upper in RAM | left to the hidden systemd |
 //! | an overlay entry not mounted now, its upper on a disk | kept unmounted |
@@ -377,6 +377,19 @@ impl Decision {
         }
     }
 
+    /// Whether this is the mask of a `noauto` line that nothing NAILS reads
+    /// pulls in ([`NOAUTO_KEPT`]): a unit outside the fstab may still pull it
+    /// in, and the hidden systemd would mount the decoy's disk read-write.
+    /// The decisions for the units outside the fstab and the walk of a
+    /// skip's pulls do not count it as keeping its unit off
+    /// ([`super::mount_units`]): a unit a target links for the line is
+    /// decided as a unit, and a skip that pulls the mount in is masked. A
+    /// skip of its unit that waits for its device keeps it off in place of
+    /// the mask ([`runtime_units`]).
+    pub fn is_noauto_mask(&self) -> bool {
+        matches!(self, Decision::Mask { reason, unreached: None, .. } if reason == NOAUTO_KEPT)
+    }
+
     /// The units to skip, if this is a skip.
     pub fn skip(&self) -> Option<&Skip> {
         match self {
@@ -617,9 +630,12 @@ enum Below {
     KeptOff,
 }
 
-/// Why a `noauto` line is left alone, when no other line needs it
-/// ([`needed::needed_below`]).
-const NEVER_MOUNTED: &str = "noauto: never mounted";
+/// Why a `noauto` line is masked when nothing NAILS reads pulls it in
+/// ([`Decision::is_noauto_mask`], [`needed::needed_below`]): a unit outside
+/// the fstab can still pull it in, a `Requires=`, a `RequiresMountsFor=` or
+/// a link, which NAILS does not read in full.
+const NOAUTO_KEPT: &str =
+    "noauto, but a unit that pulls it in would have the hidden session mount it read-write";
 
 /// Why a line of the next root's own fstab at or below the hidden root is
 /// kept off ([`decide_hidden_fstab`]).
@@ -1054,9 +1070,16 @@ fn decide_entry(
             });
             let Some(option) = pulls.or_else(|| unread_options(entry, units).into_iter().next())
             else {
-                return Decision::Leave {
+                // Nothing NAILS reads pulls it in, but a unit outside the
+                // fstab may: masked whatever pulls it.
+                return Decision::Mask {
+                    units: vec![
+                        units.unit.clone().unwrap_or_else(|| mount_unit(&target)),
+                        automount_unit(&target),
+                    ],
                     target,
-                    reason: NEVER_MOUNTED,
+                    reason: NOAUTO_KEPT.into(),
+                    unreached: None,
                 };
             };
             Decision::Mask {
@@ -1165,3 +1188,7 @@ mod tests;
 #[cfg(test)]
 #[path = "policy_options_tests.rs"]
 mod options_tests;
+
+#[cfg(test)]
+#[path = "policy_noauto_tests.rs"]
+mod noauto_tests;
