@@ -725,20 +725,52 @@ fn the_way_back_waits_for_the_shutdown_s_stops_and_leaves_udevd_to_pid_1() {
 #[test]
 fn the_drain_of_journald_s_sockets_is_the_last_step_before_the_cursor() {
     // Something may reach journald's sockets while the last step waits for
-    // the units of the mounts the scrub detached, ends the leftovers again and
-    // settles journald's socket units. Here every systemctl call of those
-    // steps returns only once a datagram reached journald's native socket:
-    // the drain has to come after all of them, so the socket holds nothing
-    // when the step is done.
+    // the units of the mounts the scrub detached, ends the leftovers again,
+    // settles journald's socket units and quiets the hidden ext4 filesystem.
+    // Here every systemctl call of those steps, and the quiet's read of the
+    // filesystem's message interval, returns only once a datagram reached
+    // journald's native socket: the drain has to come after all of them, so
+    // the socket holds nothing when the step is done.
     use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::net::UnixDatagram;
     use std::sync::atomic::{AtomicBool, Ordering};
     let world = World::new();
-    let plan = armed(Direction::Leave);
+    let mut plan = armed(Direction::Leave);
     let journal_run = world.dir.path().join("run-systemd");
     fs::create_dir_all(journal_run.join("journal")).unwrap();
     let native_path = journal_run.join("journal/socket");
     let native = UnixDatagram::bind(&native_path).unwrap();
+    // The hidden volume is an ext4 filesystem on sdb2, whose message interval
+    // is a FIFO: its writer opens it once the quiet opens it to read, sends a
+    // datagram and only then gives the interval.
+    plan.hidden_dev = Some("8:18".to_string());
+    let sys_dev_block = world.dir.path().join("sys/dev/block");
+    fs::create_dir_all(&sys_dev_block).unwrap();
+    symlink("../../devices/sdb/sdb2", sys_dev_block.join("8:18")).unwrap();
+    let ext4 = world.dir.path().join("sys/fs/ext4/sdb2");
+    fs::create_dir_all(&ext4).unwrap();
+    fs::write(ext4.join("msg_ratelimit_burst"), "10\n").unwrap();
+    let interval = ext4.join("msg_ratelimit_interval_ms");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &interval,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let quiet_sender = {
+        let (interval, native_path) = (interval.clone(), native_path.clone());
+        std::thread::spawn(move || {
+            let mut fifo = fs::OpenOptions::new().write(true).open(&interval).unwrap();
+            UnixDatagram::unbound()
+                .unwrap()
+                .send_to(b"during the quiet", &native_path)
+                .unwrap();
+            fifo.write_all(b"5000\n").unwrap();
+        })
+    };
     // A procfs that shows only this process, which holds the socket: the
     // second pass ends nothing, and the drain takes this process's
     // descriptors.
@@ -794,7 +826,7 @@ fn the_drain_of_journald_s_sockets_is_the_last_step_before_the_cursor() {
     env.systemctl = Some(systemctl);
     env.tail = Some(tail::Places {
         proc,
-        sys_dev_block: world.dir.path().join("sys/dev/block"),
+        sys_dev_block,
         sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
         journal_holder: own,
         journal_run,
@@ -805,6 +837,19 @@ fn the_drain_of_journald_s_sockets_is_the_last_step_before_the_cursor() {
 
     stop.store(true, Ordering::SeqCst);
     let sent = sender.join().unwrap();
+    // A writer still waiting for a reader is let go, and its datagram then
+    // stays.
+    let _reader = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&interval)
+        .unwrap();
+    quiet_sender.join().unwrap();
+    assert_eq!(
+        fs::read_to_string(ext4.join("msg_ratelimit_burst")).unwrap(),
+        "0",
+        "the hidden ext4 filesystem was quieted"
+    );
     let every_call = fs::read_to_string(&calls).unwrap();
     assert_eq!(sent, every_call.lines().count(), "{every_call}");
     assert!(
