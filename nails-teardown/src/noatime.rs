@@ -29,7 +29,7 @@
 //! back as it was. It changes only mounts of local disk filesystems whose
 //! mount points a lookup reaches through local mounts alone, decided from the
 //! mount table, and never looks up a FUSE or network mount or anything inside
-//! one: those keep their mode, and their access times are kept by their
+//! one: it changes none of those, and their access times are kept by their
 //! daemon or server.
 //!
 //! A lookup of NAILS' own updates the access time of every symlink it follows,
@@ -168,21 +168,25 @@ const MOUNT_ATTR_RELATIME: u64 = 0x00;
 /// `MOUNT_ATTR_STRICTATIME`.
 const MOUNT_ATTR_STRICTATIME: u64 = 0x20;
 
-/// The local disk filesystems whose mounts [`QuietMounts`] may change: each
-/// keeps its access times on a block device and is run by the kernel itself,
-/// with no FUSE daemon or network server behind it. A mount of any other
-/// type keeps its mode, a type this list does not name included.
+/// The filesystem types whose mounts [`QuietMounts`] may change, and the
+/// only ones: each is a filesystem the kernel runs itself, which keeps its
+/// files and their access times on a block device. The filesystem itself
+/// asks no FUSE daemon or network server; what serves its block device (a
+/// network block device, a loop file on a network filesystem) the mount
+/// table does not show, and this list says nothing about it. A mount of any
+/// other type is never changed, a type this list does not name included.
 const LOCAL_DISK: &[&str] = &[
     "bcachefs", "btrfs", "exfat", "ext2", "ext3", "ext4", "f2fs", "hfsplus", "jfs", "msdos",
     "nilfs2", "ntfs", "ntfs3", "reiserfs", "udf", "vfat", "xfs", "zfs",
 ];
 
-/// The filesystems besides [`LOCAL_DISK`] that a lookup of [`QuietMounts`]
-/// may go through, which it leaves as they are: each is run by the kernel
-/// itself, from its memory or from a read-only image, with no FUSE daemon or
-/// network server behind it, and none keeps access times that the window
-/// needs to change. A mount inside a mount of any other type, or below the
-/// mount point of one, is out of the window ([`in_window`]).
+/// The filesystem types besides [`LOCAL_DISK`] that a lookup of
+/// [`QuietMounts`] may go through, and that it never changes: each is a
+/// filesystem the kernel runs itself, from its memory or from a read-only
+/// image, which asks no FUSE daemon or network server and keeps no access
+/// time on a disk it writes. A mount inside a mount of a type neither list
+/// names, or below the mount point of one, is out of the window
+/// ([`in_window`]).
 const KERNEL_ONLY: &[&str] = &[
     "binfmt_misc",
     "bpf",
@@ -227,9 +231,8 @@ fn crossable(mount: &crate::mountinfo::MountEntry) -> bool {
 /// chain is one a lookup may go through ([`crossable`]), and so is every
 /// other mount at its mount point or at one on the way to it, which can be
 /// stacked on one of those or cover it. Every lookup of its mount point then
-/// goes through local mounts alone. Every other mount keeps its mode, and
-/// [`QuietMounts`] never looks it up, opens or stats it, nor anything inside
-/// it.
+/// goes through local mounts alone. [`QuietMounts`] changes no other mount,
+/// and never looks one up, opens or stats one, nor anything inside one.
 fn in_window(
     mount: &crate::mountinfo::MountEntry,
     mounts: &[crate::mountinfo::MountEntry],
@@ -311,9 +314,13 @@ fn set_attr(
 /// dropped.
 ///
 /// A bind made while it lives takes `noatime` from the mount it copies. When
-/// it is closed, every mount made since that is `noatime` and shows a part
-/// of a filesystem it changed gets that mount's own mode too ([`inherited`]),
-/// the mode the bind would have had without it.
+/// it is closed, every mount made since that is `noatime`, is itself in the
+/// window and shows a part of a filesystem it changed gets that mount's own
+/// mode too ([`inherited`]), the mode the bind would have had without it. A
+/// bind out of the window, such as one below an overlay, keeps `noatime`:
+/// every bind the session's entry makes into its next root lies below the
+/// overlay at `/run/nextroot`, so each of those that copies a changed mount
+/// stays `noatime`.
 ///
 /// A process that dies without unwinding (`SIGKILL`, the OOM killer) closes
 /// nothing. [`QuietMounts::open_recorded`] hands what it changes to a record
@@ -564,7 +571,7 @@ impl QuietMounts {
     /// (`relatime` or `strictatime`): a mount of a local disk filesystem whose
     /// mount point a lookup reaches through local mounts alone. A FUSE mount,
     /// a network filesystem's, a mount of any other type, and every mount
-    /// inside one of them or below its mount point keep their mode, and none
+    /// inside one of them or below its mount point are not changed, and none
     /// of them is looked up. A mount in the window is reached by its mount
     /// point and taken only when the mount found there is the one listed: a
     /// mount another covers is out of reach of every lookup and is left.
@@ -631,9 +638,10 @@ impl QuietMounts {
     }
 
     /// Give every mount it changed its own mode back, the last first, and
-    /// every mount made since that took `noatime` from one of them that one's
-    /// mode ([`inherited`]). Every mount is tried; the first error is
-    /// returned.
+    /// every mount made since that took `noatime` from one of them and is
+    /// itself in the window ([`in_window`]) that one's mode ([`inherited`]);
+    /// one out of the window keeps `noatime`. Every mount is tried; the first
+    /// error is returned.
     pub fn close(mut self) -> std::io::Result<()> {
         self.give_back()
     }

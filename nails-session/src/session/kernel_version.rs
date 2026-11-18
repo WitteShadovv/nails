@@ -5,8 +5,8 @@
 //! [`MIN_LINUX`] or newer.
 //!
 //! NAILS starts every program it runs as root with every mount `noatime`, and
-//! makes the decoy's mounts `noatime` while it asks PID 1 for something that
-//! makes PID 1 read the decoy ([`nails_teardown::noatime`]). Both change
+//! makes the decoy's local disk mounts `noatime` while it asks PID 1 for
+//! something that makes PID 1 read the decoy ([`nails_teardown::noatime`]). Both change
 //! mounts with `mount_setattr(2)`, which Linux 5.12 added. NAILS supports
 //! Linux 6.1, a long-term kernel, and newer. The check reads the release as
 //! `uname(2)` gives it, starting no program, and refuses a release it cannot

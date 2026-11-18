@@ -24,8 +24,8 @@ of this changelog for that version becomes the release notes word for word, and
   row (exit 4) and `activate` refuses, and so they do where the running kernel's release cannot be
   read or its version told; the row names the running release and the floor. The check reads the
   release from the kernel (`uname`) and starts no program. NAILS starts the programs it runs as root
-  with every mount `noatime` and makes the decoy's mounts `noatime` while the service manager reads
-  them, both through `mount_setattr` (Linux 5.12). The default kernel of Debian
+  with every mount `noatime` and makes the decoy's local disk mounts `noatime` while the service
+  manager reads them, both through `mount_setattr` (Linux 5.12). The default kernel of Debian
   13 (6.12), Ubuntu 24.04 (6.8) and 26.04 and of current NixOS is new enough. On a NixOS decoy that
   boots an older long-term kernel, boot a newer one before you activate with the new binary.
 - A decoy whose fstab mounts another disk or a RAM filesystem at or below the hidden root, a
@@ -2664,15 +2664,21 @@ of this changelog for that version becomes the release notes word for word, and
   NAILS decides that from the mount table alone. FUSE mounts
   (`fuse`, `fuse.*`, `fuseblk`), network and cluster filesystems (NFS, SMB, 9p, virtiofs and the
   like), mounts of every type NAILS does not list as local (an overlay, an automount point, an
-  unknown type), and every mount inside one of them or below its mount point keep their mode, as
-  earlier releases left every mount, and NAILS never looks them up, opens or stats them, nor
-  anything inside them, so a dead or hung FUSE daemon neither makes this step refuse nor makes it
-  wait. Access
-  times on a FUSE or network mount are its daemon's or its server's to keep, which a mount flag on
-  this side does not change. Activation refuses where it cannot look up a mount it must change or
-  make it `noatime`, and names that mount and its type. It writes those mounts and their modes to
-  the session plan first, and `nails recover`, a rollback and the emergency on the decoy give them
-  their modes back where an activation was killed before it could. NAILS reads
+  unknown type), and every mount inside one of them or below its mount point are left out of this
+  window, which changes none of them, as earlier releases changed the access-time mode of none of
+  the decoy's mounts. The window never looks them up, opens or stats them, nor anything inside them,
+  so a dead or hung FUSE daemon neither makes it refuse nor makes it wait. Activation itself still
+  resolves the operator's home inside the decoy root, which looks up each name on the way to it, on
+  such a mount too. A bind made while the window is open takes `noatime` from the mount it copies
+  and gets that mount's mode back only where the bind lies in the window, which none of the binds
+  activation leaves in place does: they lie below the next root's overlay at `/run/nextroot`, so the
+  binds of changed mounts activation makes there, such as the hidden volume's, stay `noatime` in the
+  hidden session.
+  Access times on a FUSE or network mount are its daemon's or its server's to keep, which a mount
+  flag on this side does not change. Activation refuses where it cannot look up a mount it must
+  change or make it `noatime`, and names that mount and its type. It writes those mounts and their
+  modes to the session plan first, and `nails recover`, a rollback and the emergency on the decoy
+  give them their modes back where an activation was killed before it could. NAILS reads
   the operator's account from `/etc/passwd` with `O_NOATIME`, where musl's `getpwuid` read it with
   access times on. It asks nscd nothing, which musl's lookup did for an account missing from the
   file, so an account only nscd resolves no longer resolves; the operator's account belongs in
