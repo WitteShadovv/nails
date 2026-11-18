@@ -1159,13 +1159,17 @@ of this changelog for that version becomes the release notes word for word, and
   `x-systemd.requires=` with no value) keeps it off too. Every line that needs it is read: it is
   skipped where a boot target requires one of them, or a line that requires one in turn, and its
   device is there, masked with a warning that the target will not be reached where the device is
-  not there, and masked where nothing a target requires needs it.
+  not there, and masked where nothing a target requires needs it. The warning names the lines the
+  target requires on the way, which `nofail` lets it be reached without (`x-systemd.wanted-by=` in
+  place of an `x-systemd.required-by=`). Where only a line with an option NAILS cannot read may
+  pull it in, the warning says that the target may require it, and `nails status` does not list
+  the mask among the units a target requires.
 - A line kept off that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect
   on what its units pull in NAILS does not read, or an option with a backslash, is masked rather
   than skipped, so a boot target that requires it is not reached, and activation warns of that,
   naming the option. Options outside systemd's namespaces, such as those of an NFS or CIFS share,
-  keep their skip, and so do options with a quote, such as an SELinux `context=`. An overlay line that gives `upperdir` more than once, or with no
-  value, is kept off.
+  keep their skip, and so do options with a quote, such as an SELinux `context=`. An overlay line
+  that gives `upperdir` more than once, or with no value, is kept off.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
