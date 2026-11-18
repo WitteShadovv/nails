@@ -478,6 +478,31 @@ impl UnitDirs<'_> {
         }
     }
 
+    /// Whether the file systemd loads for the unit `name` lies in a unit
+    /// directory it reads before `/run/systemd/generator`, where the fstab
+    /// generator writes the units of the fstab's lines: then no fstab line
+    /// makes the unit the name loads, in the decoy or in the hidden session.
+    /// `false` where the first entry for the name is a mask, or one on the
+    /// way cannot be read.
+    pub(super) fn outranks_fstab_generator(&self, name: &str) -> bool {
+        for &(base, dir) in UNIT_DIRS {
+            if base == Base::Run && dir == "systemd/generator" {
+                return false;
+            }
+            let (root, path) = self.locate(base, dir, name);
+            match self.masks(root, &path) {
+                Ok(false) => {}
+                Ok(true) | Err(()) => return false,
+            }
+            match self.read_file(root, &path) {
+                Ok(Some(bytes)) => return !bytes.is_empty(),
+                Ok(None) => {}
+                Err(()) => return false,
+            }
+        }
+        false
+    }
+
     /// [`Self::load`] of a unit systemd loads without a file of its own too,
     /// from its drop-ins: a device or a slice. One with neither is
     /// [`Load::Missing`].
