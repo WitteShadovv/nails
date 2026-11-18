@@ -116,7 +116,7 @@ const UNIT_TYPES: &[&str] = &[
 /// Whether `name` can name a unit: a name of a type systemd knows, with no
 /// `/` or NUL in it, that does not begin with a dot and is not longer than
 /// systemd lets one be. systemd refuses more names, never fewer.
-fn is_unit_name(name: &str) -> bool {
+pub(crate) fn is_unit_name(name: &str) -> bool {
     name.rsplit_once('.')
         .is_some_and(|(stem, kind)| !stem.is_empty() && UNIT_TYPES.contains(&kind))
         && !name.starts_with('.')

@@ -117,41 +117,65 @@ fn a_noauto_line_nails_reads_fully_is_left_alone_as_before() {
 
 /// A noauto line with an option NAILS does not read, or one it knows in
 /// another form, may be mounted at boot whatever noauto says: masked, mount
-/// and automount, with the option named and never its value.
+/// and automount, with the option named and never its value. Where NAILS
+/// does not read what the option pulls in either (a backslash in it, or an
+/// option of systemd's own), it may have a boot target require the line,
+/// which the mask then keeps from being reached: warned of.
 #[test]
 fn a_noauto_line_with_an_option_nails_does_not_read_is_masked() {
-    for (options, named) in [
+    for (options, named, may_require) in [
         (
             "noauto,x-systemd.before=multi-user.target",
             "x-systemd.before",
+            false,
         ),
-        ("noauto,x-systemd.after=foo.service", "x-systemd.after"),
+        (
+            "noauto,x-systemd.after=foo.service",
+            "x-systemd.after",
+            false,
+        ),
         (
             "noauto,x-systemd.requires=foo.service",
             "x-systemd.requires",
+            false,
         ),
-        ("noauto,X-mount.subdir=sub", "X-mount.subdir"),
+        ("noauto,X-mount.subdir=sub", "X-mount.subdir", false),
         (
             "noauto,x-systemd.requires-mounts-for=srv",
             "x-systemd.requires-mounts-for",
+            false,
         ),
-        ("noauto,nofail=1", "nofail"),
-        ("noauto,secret=/dev/vdc", "secret"),
-        ("noauto,x-nails.probe", "x-nails.probe"),
-        ("noauto,loop", "loop"),
-        ("noauto,x-systemd.pcrfs=1", "x-systemd.pcrfs"),
-        // systemd keeps the comma after a backslash in the option, and
-        // libmount decodes \054 to a comma: the generator mounted these at
-        // boot, and set up an automount for the last.
-        ("noauto,auto=x\\,noauto", "auto"),
-        ("noauto,auto=\\,noauto", "auto"),
-        ("noauto,comment=x\\054auto", "comment"),
-        ("noauto,x-gvfs-show\\054auto", "x-gvfs-show\\054auto"),
-        ("noauto,comment=x\\054x-systemd.automount", "comment"),
+        ("noauto,nofail=1", "nofail", false),
+        ("noauto,secret=/dev/vdc", "secret", false),
+        ("noauto,x-nails.probe", "x-nails.probe", false),
+        ("noauto,loop", "loop", false),
+        ("noauto,x-systemd.pcrfs=1", "x-systemd.pcrfs", false),
+        // Of systemd's own namespaces, and not read: it may have a target
+        // require the line.
+        (
+            "noauto,x-systemd.nails-probe",
+            "x-systemd.nails-probe",
+            true,
+        ),
+        ("noauto,x-initrd.attach", "x-initrd.attach", true),
+        // systemd keeps the comma after a backslash in the option, and reads
+        // \054 as a comma: the generator mounted these at boot, and set up
+        // an automount for the last.
+        ("noauto,auto=x\\,noauto", "auto", true),
+        ("noauto,auto=\\,noauto", "auto", true),
+        ("noauto,comment=x\\054auto", "comment", true),
+        ("noauto,x-gvfs-show\\054auto", "x-gvfs-show\\054auto", true),
+        ("noauto,comment=x\\054x-systemd.automount", "comment", true),
         // A quote: systemd splits at the comma between the quotes, as NAILS
         // does, but libmount, which `mount` reads the line with, keeps it in
         // the option.
-        ("noauto,comment=\"x,auto\"", "comment"),
+        ("noauto,comment=\"x,auto\"", "comment", false),
+        // The option whose pulls NAILS does not read is named first.
+        (
+            "noauto,X-mount.subdir=a,x-systemd.nails-probe",
+            "x-systemd.nails-probe",
+            true,
+        ),
     ] {
         let line = format!("/dev/vdb1 /opt ext4 {options} 0 0");
         for decision in [decide_line(&line), decide_own(&line)] {
@@ -162,7 +186,28 @@ fn a_noauto_line_with_an_option_nails_does_not_read_is_masked() {
                 panic!("{options}: {decision:?}");
             };
             assert_eq!(units, &["opt.mount", "opt.automount"], "{options}");
-            assert_eq!(*unreached, None, "{options}");
+            if may_require {
+                assert_eq!(
+                    unreached,
+                    &Some(Unreached {
+                        target: "local-fs.target".into(),
+                        cause: Unskippable::MayRequire,
+                        origin: Origin::Fstab,
+                    }),
+                    "{options}"
+                );
+                let warning = decision.warning().expect("a warning");
+                assert!(
+                    warning.contains(
+                        "where that option has local-fs.target or another unit require it, \
+                         the hidden session will not reach that unit"
+                    ),
+                    "{warning}"
+                );
+            } else {
+                assert_eq!(*unreached, None, "{options}");
+                assert_eq!(decision.warning(), None, "{options}");
+            }
             let why = reason(&decision);
             assert_eq!(
                 why,
@@ -174,6 +219,9 @@ fn a_noauto_line_with_an_option_nails_does_not_read_is_masked() {
             assert!(!why.contains("/dev/vdc"), "{why}");
         }
     }
+    // NAILS cannot tell that a target requires it: no required mask.
+    let decision = decide_line("/dev/vdb1 /opt ext4 noauto,auto=x\\,noauto 0 0");
+    assert!(runtime_units(&[], &[decision]).required_masks.is_empty());
 }
 
 /// A line named to pull it in by x-systemd.wanted-by= or required-by= and a
@@ -527,7 +575,7 @@ fn a_noauto_line_another_line_needs_is_kept_off() {
     assert_eq!(skip.device.as_deref(), Some(Path::new("/dev/vdb1")));
     assert_eq!(
         reason,
-        "noauto, but the line for /data/tmp needs a path in it, so the boot mounts it"
+        "noauto, but the line for /data/tmp needs its mount, so the boot mounts it"
     );
     assert!(matches!(decisions[1], Decision::Leave { .. }));
 
@@ -599,4 +647,192 @@ fn a_noauto_line_another_line_needs_is_kept_off() {
         &present,
     );
     assert_eq!(own[0].skip().expect("a skip").units, ["data.mount"]);
+}
+
+/// Every line that needs a noauto line's mount is read, not the first alone:
+/// with a `nofail` tmpfs below it first and one a target requires after it,
+/// next's successor masked the noauto line with no warning, and the tmpfs
+/// local-fs.target requires could not start, the target unreached. Skipped
+/// where its device is there, masked with a warning where not.
+#[test]
+fn a_noauto_line_is_judged_by_every_line_that_needs_it() {
+    let fstab = "/dev/vdr1 /p/r1 ext4 noauto 0 0\n\
+                 tmpfs /p/r1/a tmpfs nofail 0 0\n\
+                 tmpfs /p/r1/b tmpfs defaults 0 0\n";
+    let decisions = decide_fstab(fstab, true);
+    let skip = decisions[0].skip().expect("a skip");
+    assert_eq!(skip.units, ["p-r1.mount"]);
+    assert_eq!(
+        reason(&decisions[0]),
+        "noauto, but the line for /p/r1/b needs its mount, so the boot mounts it"
+    );
+    let absent = decide_fstab(fstab, false);
+    let Decision::Mask { unreached, .. } = &absent[0] else {
+        panic!("{absent:?}");
+    };
+    assert_eq!(
+        unreached,
+        &Some(Unreached {
+            target: "local-fs.target".into(),
+            cause: Unskippable::NoDevice("/dev/vdr1".into()),
+            origin: Origin::Needed,
+        })
+    );
+    assert!(absent[0].warning().is_some());
+
+    // A line the target requires that requires a nofail line in turn, which
+    // needs the noauto mount: the target requires that mount too.
+    let chain = "/dev/vdb1 /data ext4 noauto 0 0\n\
+                 tmpfs /t1 tmpfs nofail,x-systemd.requires=/data 0 0\n\
+                 tmpfs /t2 tmpfs x-systemd.requires=t1.mount 0 0\n";
+    let decisions = decide_fstab(chain, true);
+    assert_eq!(
+        decisions[0].skip().expect("a skip").units,
+        ["data.mount"],
+        "{decisions:?}"
+    );
+
+    // Two targets require it: both are named.
+    let both = "/dev/vdb1 /data ext4 noauto 0 0\n\
+                tmpfs /data/a tmpfs defaults 0 0\n\
+                tmpfs /data/b tmpfs x-systemd.required-by=foo.service 0 0\n";
+    let Decision::Mask { unreached, .. } = &decide_fstab(both, false)[0] else {
+        panic!("not masked");
+    };
+    assert_eq!(
+        unreached.as_ref().map(|u| u.target.as_str()),
+        Some("local-fs.target and foo.service")
+    );
+}
+
+/// A noauto line below which a noauto RAM line with an option NAILS does not
+/// read lies: that line may start, so the boot may mount the noauto line.
+#[test]
+fn a_noauto_line_a_line_that_may_start_needs_may_be_mounted() {
+    let decisions = decide_fstab(
+        "/dev/vdl3 /p/l3 ext4 noauto 0 0\ntmpfs /p/l3/tmp tmpfs noauto,x-nails.probe 0 0\n",
+        true,
+    );
+    assert_eq!(
+        reason(&decisions[0]),
+        "noauto, but the line for /p/l3/tmp needs its mount, so the boot may mount it"
+    );
+    assert_eq!(decisions[0].masked_units(), ["p-l3.mount"]);
+}
+
+/// The fstab generator has a unit require the unit `x-systemd.requires=`
+/// names and want the one `x-systemd.wants=` names, a path standing for its
+/// mount: systemd 260.5 wrote `Requires=r-a.mount` for
+/// `tmpfs /r/t1 tmpfs x-systemd.requires=/r/a` and for
+/// `x-systemd.requires=r-a.mount`, and `Wants=r-a.mount` for
+/// `x-systemd.wants=r-a.mount`, each tmpfs linked into
+/// `local-fs.target.requires`. next left the noauto line for /r/a alone, and
+/// the hidden systemd mounted the disk read-write. It is kept off: skipped
+/// where a target requires a line that requires it, masked where lines only
+/// want it.
+#[test]
+fn a_noauto_line_a_left_line_pulls_in_is_kept_off() {
+    for (pull, skipped) in [
+        ("x-systemd.requires=/r/a", true),
+        ("x-systemd.requires=/r//a/", true),
+        ("x-systemd.requires=r-a.mount", true),
+        ("x-systemd.requires=r-a", true),
+        ("x-systemd.requires=r/a", true),
+        ("x-systemd.wants=r-a.mount", false),
+        ("x-systemd.wants=/r/a", false),
+    ] {
+        let fstab = format!("/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs {pull} 0 0\n");
+        for decisions in [
+            decide_fstab(&fstab, true),
+            decide_all_hidden_fstab(&parse_fstab(&fstab), &mounts(), Path::new(HIDDEN), &present),
+        ] {
+            assert_eq!(
+                reason(&decisions[0]),
+                "noauto, but the line for /r/t1 needs its mount, so the boot mounts it",
+                "{pull}"
+            );
+            if skipped {
+                assert_eq!(
+                    decisions[0].skip().expect("a skip").units,
+                    ["r-a.mount"],
+                    "{pull}"
+                );
+            } else {
+                let Decision::Mask {
+                    units, unreached, ..
+                } = &decisions[0]
+                else {
+                    panic!("{pull}: {decisions:?}");
+                };
+                assert_eq!(units, &["r-a.mount"], "{pull}");
+                assert_eq!(*unreached, None, "{pull}");
+            }
+            assert!(matches!(decisions[1], Decision::Leave { .. }), "{pull}");
+        }
+    }
+    // A RAM overlay and a host share left to the hidden systemd pull it in
+    // alike.
+    for line in [
+        "overlay /r/o overlay lowerdir=/usr,upperdir=/tmp/u,workdir=/tmp/w,x-systemd.requires=/r/a 0 0",
+        "share /r/s 9p trans=virtio,x-systemd.requires=r-a.mount 0 0",
+    ] {
+        let fstab = format!("/dev/vdy1 /r/a ext4 noauto 0 0\n{line}\n");
+        let decisions = decide_fstab(&fstab, true);
+        assert_eq!(
+            decisions[0].skip().expect("a skip").units,
+            ["r-a.mount"],
+            "{line}"
+        );
+    }
+    // Where NAILS cannot read what the line pulls in, it may be the noauto
+    // line: kept off. The unit is taken for one the line requires. systemd
+    // 260.5's generator wrote Requires=r-a.mount for the last.
+    for pull in [
+        "x-systemd.requires=",
+        "x-systemd.wants=r\\x2da.mount",
+        "comment=x\\054x-systemd.requires=/r/a",
+    ] {
+        let fstab = format!("/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs {pull} 0 0\n");
+        let decisions = decide_fstab(&fstab, true);
+        assert_eq!(
+            decisions[0].skip().expect("a skip").units,
+            ["r-a.mount"],
+            "{pull}: {decisions:?}"
+        );
+        assert_eq!(
+            reason(&decisions[0]),
+            "noauto, but the line for /r/t1 gives an option NAILS cannot read that may pull \
+             in its mount, so the boot may mount it",
+            "{pull}"
+        );
+    }
+    // Another unit, a mount below a path it names, a device or a line
+    // kept off itself pulls in nothing of it.
+    for fstab in [
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.requires=foo.service 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.requires=/r/a/sub 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.requires=/dev/vdy1 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.requires=r-ab.mount 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.after=r-a.mount 0 0\n",
+        // The generator wrote no dependency for a name alone, and escaped
+        // these: Requires=\x25i.mount, r\x2ba.mount and -r-..-r-a.mount,
+        // and RequiresMountsFor=/r/a%%i, a path below /r alone.
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.requires 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.requires=%i.mount 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.requires=r+a.mount 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\ntmpfs /r/t1 tmpfs x-systemd.requires=/r/../r/a 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\n\
+         tmpfs /r/t1 tmpfs x-systemd.requires-mounts-for=/r/a%i 0 0\n",
+        "/dev/vdy1 /r/a ext4 noauto 0 0\n/dev/vdz1 /r/b ext4 x-systemd.requires=/r/a 0 0\n",
+    ] {
+        let decisions = decide_fstab(fstab, true);
+        assert_eq!(
+            decisions[0],
+            Decision::Leave {
+                target: "/r/a".into(),
+                reason: NEVER_MOUNTED,
+            },
+            "{fstab}"
+        );
+    }
 }
