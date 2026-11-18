@@ -54,9 +54,10 @@
 //! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), the
 //! end of a detached mount's unit that PID 1 logs after
 //! [`wait_for_unmounted`] has ended (past its bound of about two seconds, at
-//! once without an answer from `systemctl` or for a mount point whose path is
-//! not valid UTF-8, whose unit [`mount_unit`] cannot name, or without
-//! `systemctl`, where the wait does not run), a
+//! once without an answer from `systemctl` or for a mount point whose unit
+//! [`mount_unit`] cannot name: one whose path is not valid UTF-8, or whose
+//! unit name has 256 characters or more, which PID 1 shortens with a hash;
+//! or without `systemctl`, where the wait does not run), a
 //! filesystem other than ext4's unmount line, and the kernel's lines of the
 //! hidden mapping's teardown, which the kernel logs as PID 1 starts the
 //! decoy. A journald socket PID 1 closed during the soft-reboot is new,
@@ -557,8 +558,8 @@ pub struct Drained {
 /// sockets stay the same objects, with their labels and their units' start
 /// time, as a plain soft-reboot keeps them.
 ///
-/// Run once the session's last writer is gone: what is sent after this
-/// reaches the decoy's journald.
+/// Run once every process of the session but udevd's has ended, last before
+/// the kmsg cursor: what is sent after this reaches the decoy's journald.
 pub fn drain_journal_sockets(places: &Places) -> Drained {
     let mut drained = Drained::default();
     let holder = places.proc.join(places.journal_holder.to_string());
