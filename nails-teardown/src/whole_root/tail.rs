@@ -54,10 +54,8 @@
 //! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), the
 //! end of a detached mount's unit that PID 1 logs after
 //! [`wait_for_unmounted`] has ended (past its bound of about two seconds, at
-//! once without an answer from `systemctl` or for a mount point whose unit
-//! [`mount_unit`] cannot name: one whose unit name has 256 characters or
-//! more, which PID 1 shortens with a hash;
-//! or without `systemctl`, where the wait does not run), a
+//! once without an answer from `systemctl`, or without `systemctl`, where the
+//! wait does not run), a
 //! filesystem other than ext4's unmount line, and the kernel's lines of the
 //! hidden mapping's teardown, which the kernel logs as PID 1 starts the
 //! decoy. A journald socket PID 1 closed during the soft-reboot is new,
@@ -680,78 +678,54 @@ pub enum Quiet {
 /// to about a second late.
 pub const UNMOUNTED_BUDGET: Duration = Duration::from_secs(2);
 
-/// The `systemctl` call that lists every mount unit PID 1 has loaded, one a
-/// line, with its load, active and sub state.
-pub const MOUNT_UNITS: [&str; 6] = [
-    "list-units",
-    "--all",
-    "--type=mount",
-    "--plain",
-    "--no-legend",
-    "--full",
-];
-
-/// The name `systemd-escape --path --suffix=mount` gives the mount unit of
-/// `path` (`/run/my-disk` is `run-my\x2ddisk.mount`), for a path that is
-/// valid UTF-8: this reads the path as UTF-8, so a byte that is not gives
-/// another name. PID 1 gives the unit that name only up to 255
-/// characters and shortens a longer one with a hash, which this does not.
-pub fn mount_unit(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    let joined = text
-        .split('/')
-        .filter(|c| !c.is_empty() && *c != ".")
-        .collect::<Vec<_>>()
-        .join("/");
-    if joined.is_empty() {
-        return "-.mount".to_string();
-    }
-    let mut name = String::new();
-    for (i, byte) in joined.bytes().enumerate() {
-        match byte {
-            b'/' => name.push('-'),
-            b'.' if i == 0 => name.push_str("\\x2e"),
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b':' | b'_' | b'.' => name.push(byte as char),
-            other => name.push_str(&format!("\\x{other:02x}")),
-        }
-    }
-    name + ".mount"
+/// The `systemctl` call that asks PID 1 the active state of each of `units`,
+/// one a line, in their order. Unlike a listing of every mount unit
+/// (`list-units`), which PID 1 refuses as a whole while any mount point is
+/// not valid UTF-8 (its unit's description cannot go over D-Bus), this asks
+/// for each unit's state alone, which PID 1 answers for such a unit too.
+pub fn unit_states_call(units: &[String]) -> Vec<&str> {
+    let mut args = vec!["is-active", "--"];
+    args.extend(units.iter().map(String::as_str));
+    args
 }
 
-/// Which of `units` a [`MOUNT_UNITS`] `listing` shows in another active
-/// state than `inactive` or `failed`: units PID 1 has not yet taken down.
-/// A unit the listing does not show is down.
-pub fn still_up<'a>(listing: &str, units: &'a [String]) -> Vec<&'a str> {
-    let up: Vec<&str> = listing
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line
-                .split_whitespace()
-                .skip_while(|field| !field.ends_with(".mount"));
-            let unit = fields.next()?;
-            let active = fields.nth(1)?;
-            (active != "inactive" && active != "failed").then_some(unit)
-        })
-        .collect();
-    units
-        .iter()
-        .map(String::as_str)
-        .filter(|unit| up.contains(unit))
-        .collect()
+pub use crate::whole_root::unit_name::mount_unit;
+
+/// Which of `units` the answer of a [`unit_states_call`] for them shows in
+/// another active state than `inactive` or `failed` (a unit PID 1 has not
+/// loaded is `inactive`): units PID 1 has not yet taken down. `None` when the
+/// answer is not one state a line for each unit, as when `systemctl` could
+/// not ask PID 1.
+pub fn still_up<'a>(answer: &str, units: &'a [String]) -> Option<Vec<&'a str>> {
+    let states: Vec<&str> = answer.lines().map(str::trim).collect();
+    let known = |state: &str| {
+        !state.is_empty() && state.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+    };
+    if states.len() != units.len() || !states.iter().all(|state| known(state)) {
+        return None;
+    }
+    Some(
+        units
+            .iter()
+            .zip(states)
+            .filter(|(_, state)| !matches!(*state, "inactive" | "failed"))
+            .map(|(unit, _)| unit.as_str())
+            .collect(),
+    )
 }
 
-/// Wait, bounded by [`UNMOUNTED_BUDGET`], until PID 1 lists none of the
+/// Wait, bounded by [`UNMOUNTED_BUDGET`], until PID 1 holds none of the
 /// mount units of `detached` as up ([`still_up`]): the mounts the `/run`
 /// scrub detached, whose unit's end PID 1 logs (`<unit>: Deactivated
 /// successfully.`) once it reads the mount table again, which must come
-/// before the kmsg cursor. A mount point still in `mounted()` (a mount stacked
-/// below the one detached) keeps its unit up and is left out; where
-/// `mounted()` cannot read the mount table, no unit is left out and the wait
-/// runs to its bound unless PID 1 lists every one down first. Returns
-/// whether PID 1 lists none of those units as up; a unit [`mount_unit`]
-/// does not name as PID 1 does never shows in the listing and counts as
-/// down, though PID 1 may still have it up. Without an answer from
-/// `systemctl` it stops at once.
+/// before the kmsg cursor. Each unit is named as PID 1 names it
+/// ([`mount_unit`]), a mount point that is not valid UTF-8 and one whose
+/// name PID 1 shortens with a hash included. A mount point still in
+/// `mounted()` (a mount stacked below the one detached) keeps its unit up and
+/// is left out; where `mounted()` cannot read the mount table, no unit is
+/// left out and the wait runs to its bound unless PID 1 holds every one down
+/// first. Returns whether PID 1 holds none of those units as up. Without an
+/// answer from `systemctl` it stops at once.
 pub fn wait_for_unmounted(
     systemctl: &Path,
     detached: &[PathBuf],
@@ -766,17 +740,19 @@ pub fn wait_for_unmounted(
     if units.is_empty() {
         return true;
     }
+    let call = unit_states_call(&units);
     let deadline = Instant::now() + UNMOUNTED_BUDGET;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return false;
         }
-        let Some(listing) = tools::run_output(systemctl, &MOUNT_UNITS, left.min(TOOL_BUDGET))
+        let Some(up) = tools::run_output_any_status(systemctl, &call, left.min(TOOL_BUDGET))
+            .and_then(|answer| still_up(&answer, &units).map(|up| up.is_empty()))
         else {
             return false;
         };
-        if still_up(&listing, &units).is_empty() {
+        if up {
             return true;
         }
         std::thread::sleep(Duration::from_millis(20));

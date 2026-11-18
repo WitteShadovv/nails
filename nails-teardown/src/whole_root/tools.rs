@@ -240,6 +240,16 @@ pub fn run_output(program: &Path, args: &[&str], budget: Duration) -> Option<Str
     }
 }
 
+/// Run `program args…` like [`run`] and return its standard output when it
+/// exited in time, whatever its status: for a call such as `systemctl
+/// is-active`, whose status says something other than whether it answered.
+pub fn run_output_any_status(program: &Path, args: &[&str], budget: Duration) -> Option<String> {
+    match run_reading(program, args, budget, Stream::Stdout) {
+        (Ran::Exited(_), text) => Some(text),
+        _ => None,
+    }
+}
+
 /// Run `program args…` like [`run`], with the last line it wrote to its
 /// standard error: what a tool that refused says about why.
 pub fn run_explained(program: &Path, args: &[&str], budget: Duration) -> (Outcome, String) {

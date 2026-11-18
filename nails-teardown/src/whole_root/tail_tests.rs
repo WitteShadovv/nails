@@ -475,12 +475,7 @@ fn a_mount_unit_is_named_as_systemd_escapes_its_path() {
 }
 
 #[test]
-fn only_a_listed_unit_that_is_not_down_is_still_up() {
-    let listing = "run-a.mount loaded active mounted /run/a\n\
-                   run-b.mount loaded inactive dead /run/b\n\
-                   \u{25cf} run-c.mount not-found failed failed run-c.mount\n\
-                   run-d.mount loaded deactivating unmounting /run/d\n\
-                   run-e.mount loaded active mounted /run/e\n";
+fn only_a_unit_whose_state_is_not_down_is_still_up() {
     let units = units(&[
         "run-a.mount",
         "run-b.mount",
@@ -488,21 +483,32 @@ fn only_a_listed_unit_that_is_not_down_is_still_up() {
         "run-d.mount",
         "run-f.mount",
     ]);
-    assert_eq!(still_up(listing, &units), ["run-a.mount", "run-d.mount"]);
-    assert!(still_up("", &units).is_empty());
+    let answer = "active\ninactive\nfailed\ndeactivating\ninactive\n";
+    assert_eq!(
+        still_up(answer, &units),
+        Some(vec!["run-a.mount", "run-d.mount"])
+    );
+    // An answer that is not one state a line for each unit is no answer.
+    assert_eq!(still_up("", &units), None);
+    assert_eq!(still_up("active\ninactive\n", &units), None);
+    assert_eq!(still_up("Failed to connect to bus\n\n\n\n\n", &units), None);
+    assert_eq!(still_up("", &[]), Some(vec![]));
 }
 
-/// A fake `systemctl` that appends its arguments to `calls` and lists the
-/// mount unit `unit` as mounted for the first `up` calls.
-fn mounts_systemctl(dir: &Path, calls: &Path, unit: &str, up: u32) -> PathBuf {
+/// A fake `systemctl` that appends its arguments to `calls` and answers the
+/// state of each unit it is asked about as active for the first `up` calls,
+/// then as inactive.
+fn mounts_systemctl(dir: &Path, calls: &Path, up: u32) -> PathBuf {
     let systemctl = dir.join("systemctl");
     write_executable(
         &systemctl,
         format!(
             "#!/bin/sh\necho \"$*\" >> '{calls}'\n\
-             if [ \"$(wc -l < '{calls}')\" -le {up} ]; then\n\
-               echo '{unit} loaded active mounted /x'\n\
-             fi\n",
+             [ \"$1\" = is-active ] || exit 0\n\
+             shift 2\n\
+             if [ \"$(wc -l < '{calls}')\" -le {up} ]; then s=active; else s=inactive; fi\n\
+             for u in \"$@\"; do echo \"$s\"; done\n\
+             [ \"$s\" = active ]\n",
             calls = calls.display()
         ),
         0o755,
@@ -511,17 +517,18 @@ fn mounts_systemctl(dir: &Path, calls: &Path, unit: &str, up: u32) -> PathBuf {
 }
 
 #[test]
-fn the_wait_ends_once_pid_1_lists_the_detached_mount_s_unit_down() {
+fn the_wait_ends_once_pid_1_holds_the_detached_mount_s_unit_down() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
-    let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", 2);
+    let systemctl = mounts_systemctl(world.path(), &calls, 2);
     let detached = [PathBuf::from("/run/initramfs")];
 
     assert!(wait_for_unmounted(&systemctl, &detached, || Ok(Vec::new())));
-    let listing = MOUNT_UNITS.join(" ");
+    let call = unit_states_call(&["run-initramfs.mount".to_string()]).join(" ");
+    assert_eq!(call, "is-active -- run-initramfs.mount");
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
-        format!("{listing}\n{listing}\n{listing}\n")
+        format!("{call}\n{call}\n{call}\n")
     );
 }
 
@@ -529,7 +536,7 @@ fn the_wait_ends_once_pid_1_lists_the_detached_mount_s_unit_down() {
 fn a_mount_point_still_mounted_or_none_detached_asks_nothing() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
-    let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", 99);
+    let systemctl = mounts_systemctl(world.path(), &calls, 99);
     let detached = [PathBuf::from("/run/initramfs")];
 
     // A mount stacked below the detached one keeps its unit up.
@@ -547,7 +554,7 @@ fn a_mount_point_still_mounted_or_none_detached_asks_nothing() {
 fn without_the_mount_table_every_detached_unit_is_waited_for() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
-    let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", u32::MAX);
+    let systemctl = mounts_systemctl(world.path(), &calls, u32::MAX);
     let detached = [PathBuf::from("/run/initramfs")];
 
     let start = Instant::now();
@@ -561,7 +568,7 @@ fn without_the_mount_table_every_detached_unit_is_waited_for() {
 fn a_unit_that_stays_up_or_no_answer_lets_the_way_back_go_on() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
-    let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", u32::MAX);
+    let systemctl = mounts_systemctl(world.path(), &calls, u32::MAX);
     let detached = [PathBuf::from("/run/initramfs")];
 
     let start = Instant::now();
@@ -583,32 +590,36 @@ fn a_unit_that_stays_up_or_no_answer_lets_the_way_back_go_on() {
     assert!(start.elapsed() < UNMOUNTED_BUDGET, "{:?}", start.elapsed());
 }
 
+/// The units of a mount point that is not valid UTF-8 and of one whose name
+/// PID 1 shortens with a hash are named as PID 1 names them, and waited for
+/// by name: `list-units` fails as a whole while such a mount exists
+/// (systemd 255), `is-active` answers for each unit.
 #[test]
-fn a_mount_point_that_is_not_utf8_is_not_waited_for() {
-    // systemd escapes every byte of the path, one that is not UTF-8 too
-    // (`systemd-escape --path` gives `run-a\xff` for `/run/a` and byte 0xff).
-    // The wait names the unit from the path read as UTF-8, finds no such unit
-    // in PID 1's listing and takes it for down at once.
+fn a_mount_point_that_is_not_utf8_or_long_is_waited_for_by_its_unit() {
     use std::os::unix::ffi::OsStrExt;
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
-    let systemctl = world.path().join("systemctl");
-    write_executable(
-        &systemctl,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> '{calls}'\n\
-             printf '%s loaded active mounted /x\\n' 'run-a\\xff.mount'\n",
-            calls = calls.display()
-        ),
-        0o755,
+    let systemctl = mounts_systemctl(world.path(), &calls, 2);
+    let mut long = b"/run/nails-unit-probe/".to_vec();
+    long.extend(b"a".repeat(250));
+    let detached = [
+        PathBuf::from(std::ffi::OsStr::from_bytes(b"/run/a\xff")),
+        PathBuf::from(std::ffi::OsStr::from_bytes(&long)),
+    ];
+    let units: Vec<String> = detached.iter().map(|path| mount_unit(path)).collect();
+    assert_eq!(units[0], "run-a\\xff.mount");
+    assert!(
+        units[1].ends_with("_01599071334b551b.mount"),
+        "{}",
+        units[1]
     );
-    let detached = [PathBuf::from(std::ffi::OsStr::from_bytes(b"/run/a\xff"))];
 
-    assert_ne!(mount_unit(&detached[0]), "run-a\\xff.mount");
-    let start = Instant::now();
     assert!(wait_for_unmounted(&systemctl, &detached, || Ok(Vec::new())));
-    assert!(start.elapsed() < UNMOUNTED_BUDGET, "{:?}", start.elapsed());
-    assert_eq!(fs::read_to_string(&calls).unwrap().lines().count(), 1);
+    let call = unit_states_call(&units).join(" ");
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        format!("{call}\n{call}\n{call}\n")
+    );
 }
 
 /// A fake `/sys` with block device `dev` named `name` and, when `ext4`, an

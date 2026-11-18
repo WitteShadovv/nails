@@ -42,6 +42,7 @@
 //!   switch but udevd's, journald's sockets and the hidden filesystem's
 //!   unmount line, ended, emptied and quieted before the kmsg cursor, and
 //!   the empty `/run/nextroot` the switch leaves;
+//! - [`unit_name`]: the name PID 1 gives the mount unit of a mount point;
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in), with
 //!   [`guard_policy`] (what the loaded SELinux policy lets the guard do);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
@@ -81,5 +82,6 @@ pub mod switch_refusal;
 pub mod tail;
 pub mod tools;
 pub mod transition;
+pub mod unit_name;
 pub mod utab;
 pub mod zram;
