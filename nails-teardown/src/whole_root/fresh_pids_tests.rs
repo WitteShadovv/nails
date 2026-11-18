@@ -464,7 +464,7 @@ fn the_counter_is_measured_from_the_aim() {
 
 /// The consoles' numbers in Fedora 44 and 45 admission gate runs before the
 /// aim: the cold boot's, after the first way back (`deactivate`) and after the
-/// second (the emergency), each session anchored on the number before it.
+/// second (the emergency), each session starting from the number before it.
 const GATE_RUNS: [(u32, u32, u32); 18] = [
     (960, 969, 970),
     (980, 986, 998),
@@ -488,10 +488,10 @@ const GATE_RUNS: [(u32, u32, u32); 18] = [
 
 #[test]
 fn the_measured_spreads_land_in_the_cold_boot_s_range() {
-    // Each way back of those runs landed its anchor off the number it aimed
-    // at, its anchor's own then, by up to 35. Aimed as the way back aims now,
-    // with the same offsets, the anchor stays in the cold boot's range after
-    // both sessions: the runs at 990 and 991 that reached 1025 among them.
+    // Each way back of those runs landed the console's unit off its number
+    // before the session by up to 35. Aimed as the way back aims now, with the
+    // same offsets, it stays in the cold boot's range after both sessions:
+    // the runs at 990 and 991 that reached 1025 among them.
     let mut largest = 0;
     for (cold, first, second) in GATE_RUNS {
         let (one, two) = (
