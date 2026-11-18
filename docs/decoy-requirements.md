@@ -947,9 +947,10 @@ logind.
   interpolated name (`luks.devices.${"data"}`), nor a name Nix builds from
   parts (`"/mnt/da" + "ta"`, `lib.concatStrings`), nor a path written with a
   `..` component or relative to the file (`/mnt/x/../data`,
-  `../../mnt/data`); a `.` component or a doubled slash it reads as the
-  kernel does (`/mnt/./data`, `/mnt//data`). It does not know these names of
-  the storage: the
+  `../../mnt/data`), nor a `.` part right after the leading slash
+  (`/./mnt/data`); a `.` part or a doubled slash between the parts of a path
+  it reads as the kernel does (`/mnt/./data`, `/mnt//data`). It does not
+  know these names of the storage: the
   units systemd names after its device nodes and links (`dev-sdb2.device`,
   `dev-dm\x2d0.device`), and its `<major>:<minor>` outside `/dev/block/`
   (`8:18` in a device-mapper table). Keep such lines out of `/etc/nixos`

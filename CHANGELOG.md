@@ -1115,7 +1115,8 @@ of this changelog for that version becomes the release notes word for word, and
   that filesystem lies on, as `hardware-configuration.nix` usually does, with the flag too: it reads
   text and cannot tell whether Nix uses such a name only for the decoy's own mounts. Its fix now
   says so. A later release may tell these apart by evaluating the configuration. The check now also
-  reads a path with `.` components (`/mnt/./data`) as the kernel does.
+  reads a `.` part between the parts of a path as the kernel does (`/mnt/./data` is `/mnt/data`). A
+  `.` part right after the leading slash (`/./mnt/data`) still passes, as before.
 
 ### Fixed
 
