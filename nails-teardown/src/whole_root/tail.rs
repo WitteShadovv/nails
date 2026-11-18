@@ -160,9 +160,9 @@ fn service_of(proc: &Path, pid: u32) -> Option<String> {
 }
 
 /// The services whose processes [`end_leftovers`] leaves to PID 1, which
-/// ends them at the switch as at a plain soft-reboot: udevd. Before systemd
-/// 258 the soft-reboot leaves udevd running until PID 1's final kill, and the
-/// way back hands it events after the first pass: the network restore
+/// ends them at the switch as at a plain soft-reboot: udevd. Where the
+/// soft-reboot leaves udevd running until PID 1's final kill (as on Debian 13
+/// and Ubuntu 24.04), the way back hands it events after the first pass: the network restore
 /// deletes the links the session made. Stopped before them, udevd would
 /// handle none of them: its record of a deleted link would stay in
 /// `/run/udev`, and the first event would make PID 1 try to start it again
