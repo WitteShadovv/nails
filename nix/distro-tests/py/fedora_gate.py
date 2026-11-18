@@ -1914,13 +1914,14 @@ class Gate:
         """The marker the zram probe of session ``n`` holds, as the shell
         writes it, so that no command line holds it whole, and the command
         that counts it on every zram device. The count reads each device past
-        the page cache, so that reading the device's gigabytes does not press
-        other memory, the counting shell's with the marker among it, out to
-        the zram swap it counts on."""
+        the page cache and cuts its zeros into short lines, so that reading
+        the device's gigabytes does not press other memory, the counting
+        shell's with the marker among it, out to the zram swap it counts on."""
         mark = f'"GATE""ZRAM-{self.nonce}-{n}"'
         count = (
             "for z in /dev/zram*; do test -b $z || continue; "
             "echo $z=$(dd if=$z iflag=direct bs=1M status=none | "
+            "tr -s '\\000' '\\n' | "
             f"grep -a -c 'GATE[Z]RAM-{self.nonce}-{n}'); done"
         )
         return mark, count
