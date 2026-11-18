@@ -1913,20 +1913,24 @@ class Gate:
     def zram_marker(self, n: int) -> tuple[str, str]:
         """The marker the zram probe of session ``n`` holds, as the shell
         writes it, so that no command line holds it whole, and the command
-        that counts it on every zram device."""
+        that counts it on every zram device. The count reads each device past
+        the page cache, so that reading the device's gigabytes does not press
+        other memory, the counting shell's with the marker among it, out to
+        the zram swap it counts on."""
         mark = f'"GATE""ZRAM-{self.nonce}-{n}"'
         count = (
             "for z in /dev/zram*; do test -b $z || continue; "
-            f"echo $z=$(grep -a -c {mark} $z); done"
+            "echo $z=$(dd if=$z iflag=direct bs=1M status=none | "
+            f"grep -a -c 'GATE[Z]RAM-{self.nonce}-{n}'); done"
         )
         return mark, count
 
     def zram_probe(self, n: int) -> str:
         """Whether the hidden session's pages reach a zram device: a unit holds
         a marker in its memory, and the kernel is asked to reclaim the unit's
-        memory (``memory.reclaim``), which swaps it out where the session has
-        a swap. The marker is counted on every zram device while the unit
-        holds it and once it has stopped."""
+        memory (``memory.reclaim``), which can move part of it to a swap where
+        the session has one. The marker is counted on every zram device while
+        the unit holds it and once it has stopped."""
         unit = f"gate-zram-{n}"
         flag = f"{HIDDEN}/.gate-zram-{n}"
         mark, count = self.zram_marker(n)
