@@ -2,12 +2,13 @@
 # generator reads it, and leaves a line alone as never mounted only where
 # NAILS reads every option it gives.
 #
-# Five disks stand in for decoy disks the decoy does not mount now, four
+# Six disks stand in for decoy disks the decoy does not mount now, five
 # with a decoy filesystem and one empty:
 #
-#   - "optauto", whose line says noauto,auto=1: the generator takes the last of
-#     noauto and auto by name, whatever the value, and links its mount into
-#     local-fs.target.requires;
+#   - "optauto", whose line says noauto,auto=1,comment="x,y": the generator
+#     takes the last of noauto and auto by name, whatever the value, and links
+#     its mount into local-fs.target.requires; the quote changes nothing in
+#     how it splits the options, so the mount is skipped, not masked;
 #   - "optautomount", whose line says noauto,x-systemd.automount=0: the
 #     generator sets up its automount whatever the value;
 #   - "optmakefs", empty, whose line says x-systemd.makefs=1: the generator
@@ -18,15 +19,18 @@
 #   - "optparent", whose line says noauto, with a tmpfs line for a directory
 #     below its mount point: systemd has the tmpfs mount require the mount
 #     of its parent directory, so the boot mounts the noauto line all the
-#     same.
+#     same;
+#   - "optpull", whose line says noauto, with a tmpfs line elsewhere that
+#     names its mount point with x-systemd.requires=: the generator has the
+#     tmpfs mount require its mount, so the boot mounts it all the same.
 #
 # The lines go into the hidden session's own /etc/fstab, which the next entry
 # without a build decides as the decoy's: the decoy's own boot never read
 # them, so no unit its generator made stands for them. In that second hidden
 # session the hidden systemd mounts none of the disks, formats none and
 # changes none, local-fs.target is reached, the noauto line with the
-# unknown option is masked with a reason that names it, and the tmpfs below
-# the skipped noauto line is mounted. Back on the decoy
+# unknown option is masked with a reason that names it, and the tmpfs lines
+# that need the skipped noauto lines are mounted. Back on the decoy
 # every disk is byte for byte as before, and `check` reads a decoy line with
 # noauto,auto=1, written without a reload, as one the boot mounts.
 { self, ... }:
@@ -66,6 +70,10 @@ in
         size = 64;
         driveConfig.deviceExtraOpts.serial = "optparent";
       }
+      {
+        size = 64;
+        driveConfig.deviceExtraOpts.serial = "optpull";
+      }
     ];
     environment.systemPackages = [ self.packages.x86_64-linux.nails ];
   };
@@ -82,14 +90,17 @@ in
     MAKEFS = "/dev/disk/by-id/virtio-optmakefs"
     PROBE = "/dev/disk/by-id/virtio-optprobe"
     PARENT = "/dev/disk/by-id/virtio-optparent"
-    DISKS = (AUTO, AUTOMOUNT, MAKEFS, PROBE, PARENT)
+    PULL = "/dev/disk/by-id/virtio-optpull"
+    DISKS = (AUTO, AUTOMOUNT, MAKEFS, PROBE, PARENT, PULL)
     LINES = (
-        f"{AUTO} /srv/auto ext4 noauto,auto=1 0 0",
+        f"{AUTO} /srv/auto ext4 noauto,auto=1,comment=\"x,y\" 0 0",
         f"{AUTOMOUNT} /srv/automount ext4 noauto,x-systemd.automount=0 0 0",
         f"{MAKEFS} /srv/makefs ext4 x-systemd.makefs=1 0 0",
         f"{PROBE} /srv/probe ext4 noauto,x-nails.probe 0 0",
         f"{PARENT} /srv/parent ext4 noauto 0 0",
         "tmpfs /srv/parent/tmp tmpfs defaults 0 0",
+        f"{PULL} /srv/pull ext4 noauto 0 0",
+        "tmpfs /srv/pullram tmpfs x-systemd.requires=/srv/pull 0 0",
     )
 
 
@@ -119,9 +130,9 @@ in
         "minimum_space_mb = 100\n"
         "EOF"
     )
-    # Four disks with a decoy filesystem and a file on it; the makefs one
+    # Five disks with a decoy filesystem and a file on it; the makefs one
     # stays empty.
-    for disk in (AUTO, AUTOMOUNT, PROBE, PARENT):
+    for disk in (AUTO, AUTOMOUNT, PROBE, PARENT, PULL):
         machine.succeed(
             f"mkfs.ext4 -q {disk} && mkdir -p /run/fill && mount {disk} /run/fill && "
             "echo decoy > /run/fill/decoy-file && umount /run/fill"
@@ -163,6 +174,8 @@ in
             problems.append("noauto,x-nails.probe: no reason that names the option")
         if machine.execute("mountpoint -q /srv/parent")[0] == 0:
             problems.append("noauto below a tmpfs line: the disk is mounted")
+        if machine.execute("mountpoint -q /srv/pull")[0] == 0:
+            problems.append("noauto a tmpfs line requires: the disk is mounted")
         after = hashes()
         problems += [f"{disk} changed" for disk in DISKS if after[disk] != before[disk]]
         machine.log(f"forms the policy misread: {problems}")
@@ -171,6 +184,8 @@ in
         assert load_state("srv-automount.mount") == "masked"
         assert load_state("srv-parent.mount") == "loaded", "skipped, as the tmpfs requires it"
         machine.succeed("findmnt -n -t tmpfs /srv/parent/tmp")
+        assert load_state("srv-pull.mount") == "loaded", "skipped, as the tmpfs requires it"
+        machine.succeed("findmnt -n -t tmpfs /srv/pullram")
         # What a session that wants its own lines gone does: NixOS's link.
         machine.succeed("ln -sfn /etc/static/fstab /etc/fstab")
 
@@ -178,17 +193,18 @@ in
 
     with subtest("back on the decoy, every disk is as before"):
         assert hashes() == before, "a session changed a disk"
-        for disk in (AUTO, AUTOMOUNT, PROBE, PARENT):
+        for disk in (AUTO, AUTOMOUNT, PROBE, PARENT, PULL):
             machine.succeed(
                 f"mkdir -p /run/fill && mount -o ro {disk} /run/fill && "
                 "grep -Fx decoy /run/fill/decoy-file && umount /run/fill"
             )
         machine.fail(f"blkid {MAKEFS}")
 
-    with subtest("check reads noauto,auto=1 on a decoy line as mounted at boot"):
+    with subtest("check reads noauto,auto=1 with a quote on a decoy line as mounted at boot"):
         # Written without a reload: the decoy's generator never read it, and
         # check reads the fstab itself. Left as noauto, the line would not
-        # show; kept off, it is skipped, as local-fs.target requires it.
+        # show; kept off, it is skipped, as local-fs.target requires it, the
+        # quote in its options notwithstanding.
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         with_lines(LINES[:1])
         _, out = machine.execute(f"nails --config {CONFIG} check --overlay-only 2>&1")
