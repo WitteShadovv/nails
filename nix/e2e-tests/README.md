@@ -777,7 +777,8 @@ which kills it itself), and after it asserts
 that the decoy's journal holds none of it and no other line of the hidden
 session past the cursor but a device-mapper volume's teardown lines, that
 the decoy's start opened neither journald's socket nor its `/dev/log`
-socket anew, that the
+socket anew where the hidden start had not either (the decoy's own shutdown
+can close one before systemd 258), that the
 lingering unit's file in `/run` is gone, and that `/run/nextroot` and the
 line that removes it are gone; runs a second session
 that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
