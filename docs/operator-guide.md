@@ -144,14 +144,16 @@ mapping) where `/etc/nixos` gives it as the `device` or `label` of a
 `boot.initrd.luks.devices` entry's name or `device`, as
 `hardware-configuration.nix` does for `/` and `/home`. It says how many lines
 it let be. Such a name anywhere else (an entry for `/btr_pool`, an entry's
-options, `boot.resumeDevice`, a service's settings, a `let` binding) still
+options, `boot.resumeDevice`, a service's own settings, a `let` binding) still
 fails it, and so do the root's mount point, the folder the root is as another
 mount shows it, the root's own name inside the filesystem (`@vault`, or
-`vault` for a folder `/home/alice/vault`) wherever it stands whole in a path,
-a string or an attribute name, a `subvolid=` with the subvolume's id in any
-base the kernel reads, a `subvol=` or `subvolid=` value NAILS cannot read, a
-name of any other device the volume is stored on and a place NAILS cannot
-read. Without the flag every such name fails it. The check reads text and does
+`vault` for a folder `/home/alice/vault`) wherever it stands as a word of its
+own or an attribute name, comments included, a `subvolid=` with the
+subvolume's id in any base the kernel reads, a `subvol=`, `subvolid=` or
+`X-mount.subdir=` value NAILS cannot read whole, a `device` or `label` in
+those entries that is not written out in one string, a name of any other
+device the volume is stored on and a place NAILS cannot read. Without the
+flag every such name fails it. The check reads text and does
 not evaluate Nix; [the NixOS decoy requirements](decoy-requirements.md#nixos)
 list what it does not read.
 See
